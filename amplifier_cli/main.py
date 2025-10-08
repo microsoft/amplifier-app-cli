@@ -262,7 +262,11 @@ def resolve_app_config(
     """
     import tomli
 
-    from amplifier_app_cli.profiles import ProfileLoader, ProfileManager, compile_profile_to_mount_plan
+    from amplifier_app_cli.profiles import (
+        ProfileLoader,
+        ProfileManager,
+        compile_profile_to_mount_plan,
+    )
 
     # Helper to safely load TOML
     def load_toml_safe(path: Path) -> dict[str, Any]:
