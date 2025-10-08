@@ -2,6 +2,8 @@
 
 Command-line interface for the Amplifier AI-powered modular development platform.
 
+> **Note**: This is a **reference implementation** of an Amplifier CLI. It works with [amplifier-core](https://github.com/microsoft/amplifier-core) and demonstrates how to build a CLI around the official kernel. You can use this as-is, fork it, or build your own CLI using the core.
+
 ## Installation
 
 ```bash

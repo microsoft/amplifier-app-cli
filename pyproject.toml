@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "amplifier-app-cli"
 version = "0.1.0"
-description = "Command-line interface for Amplifier - AI-powered modular development platform"
+description = "Reference CLI implementation for Amplifier AI development platform"
 authors = ["Microsoft"]
 readme = "README.md"
 license = "MIT"
