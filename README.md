@@ -67,13 +67,6 @@ The CLI provides commands to manage Amplifier modules:
 - `amplifier module info <name>` - Show detailed module information
 - `amplifier module list --type agent` - List modules by type
 
-## Development
-
-This CLI is part of the Amplifier ecosystem. For development:
-
-1. See [amplifier-dev](https://github.com/microsoft/amplifier-dev) for the development workspace
-2. See [amplifier-core](https://github.com/microsoft/amplifier-core) for the core library
-
 ## License
 
 MIT - See LICENSE file for details
