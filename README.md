@@ -39,6 +39,50 @@ amplifier module list
 amplifier module info loop-basic
 ```
 
+## Interactive Chat Mode
+
+When you run `amplifier run --mode chat`, you enter an interactive session with powerful slash commands:
+
+```bash
+# Planning and execution
+/think          # Enter plan mode (read-only, thoughtful responses)
+/do             # Exit plan mode and allow modifications
+
+# Session management
+/save [file]    # Save conversation transcript
+/clear          # Clear conversation history
+/status         # Show current session status
+
+# Discovery
+/tools          # List available tools
+/config         # Show current configuration
+/help           # Show all commands
+
+# Control
+/stop           # Stop current execution
+```
+
+### Plan Mode
+
+Use `/think` to enable plan mode where the AI can analyze and plan without making modifications. This is useful for:
+- Reviewing complex changes before executing
+- Getting thoughtful analysis of large codebases
+- Planning multi-step refactoring
+
+Use `/do` to exit plan mode and allow the AI to make modifications.
+
+### Saving Transcripts
+
+The `/save` command saves your conversation history to `.amplifier/transcripts/`:
+
+```bash
+# In chat mode
+> /save my_session.json
+✓ Transcript saved to .amplifier/transcripts/my_session.json
+```
+
+For detailed interactive mode documentation, see [docs/INTERACTIVE_MODE.md](docs/INTERACTIVE_MODE.md).
+
 ## Configuration
 
 The CLI can be configured via:
