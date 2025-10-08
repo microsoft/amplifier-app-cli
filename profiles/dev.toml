@@ -1,0 +1,21 @@
+# Development Profile
+# Extended base with development tools and features
+
+[profile]
+name = "dev"
+version = "1.0.0"
+description = "Development configuration with full toolset"
+extends = "base"
+
+[session]
+orchestrator = "loop-streaming"
+context = "context-simple"
+
+[[tools]]
+module = "tool-web"
+
+[[tools]]
+module = "tool-search"
+
+[[agents]]
+module = "agent-architect"

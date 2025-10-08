@@ -1,0 +1,53 @@
+[tool.poetry]
+name = "amplifier-app-cli"
+version = "0.1.0"
+description = "Command-line interface for Amplifier - AI-powered modular development platform"
+authors = ["Microsoft"]
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/microsoft/amplifier-app-cli"
+keywords = ["ai", "development", "cli", "modular", "amplifier"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+
+[tool.poetry.scripts]
+amplifier = "amplifier_app_cli.main:main"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+amplifier-core = "^1.0.0"
+click = "^8.1.0"
+rich = "^13.0.0"
+toml = "^0.10.2"
+pydantic = "^2.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.21.0"
+pytest-cov = "^4.1.0"
+black = "^23.0.0"
+ruff = "^0.1.0"
+mypy = "^1.5.0"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

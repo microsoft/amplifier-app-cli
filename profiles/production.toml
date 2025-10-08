@@ -1,0 +1,21 @@
+# Production Profile
+# Optimized for production use with enhanced reliability
+
+[profile]
+name = "production"
+version = "1.0.0"
+description = "Production configuration optimized for reliability"
+extends = "base"
+
+[session]
+orchestrator = "loop-streaming"
+context = "context-persistent"
+max_tokens = 150000
+compact_threshold = 0.9
+auto_compact = true
+
+[[tools]]
+module = "tool-web"
+
+[[hooks]]
+module = "hooks-logging"

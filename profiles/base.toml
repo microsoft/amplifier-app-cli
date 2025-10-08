@@ -1,0 +1,23 @@
+# Base Profile
+# Provides sensible defaults that other profiles can extend
+
+[profile]
+name = "base"
+version = "1.0.0"
+description = "Base configuration with core functionality"
+
+[session]
+orchestrator = "loop-basic"
+context = "context-simple"
+max_tokens = 100000
+compact_threshold = 0.8
+auto_compact = true
+
+[[providers]]
+module = "provider-anthropic"
+
+[[tools]]
+module = "tool-filesystem"
+
+[[tools]]
+module = "tool-bash"
