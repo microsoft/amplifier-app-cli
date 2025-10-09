@@ -262,7 +262,7 @@ def resolve_app_config(
     """
     import tomli
 
-    from amplifier_app_cli.profiles import (
+    from amplifier_cli.profiles import (
         ProfileLoader,
         ProfileManager,
         compile_profile_to_mount_plan,

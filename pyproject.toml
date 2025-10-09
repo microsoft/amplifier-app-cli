@@ -14,9 +14,10 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
+packages = [{include = "amplifier_cli"}]
 
 [tool.poetry.scripts]
-amplifier = "amplifier_app_cli.main:main"
+amplifier = "amplifier_cli.main:main"
 
 [tool.poetry.dependencies]
 python = "^3.11"
