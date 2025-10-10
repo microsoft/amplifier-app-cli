@@ -354,6 +354,12 @@ def resolve_app_config(
             if explicit_config:
                 # Transform and merge
                 explicit_config = transform_toml_to_session_config(explicit_config)
+
+                # OVERRIDE SEMANTICS: If explicit config specifies providers,
+                # clear any accumulated providers so they get replaced, not merged
+                if "providers" in explicit_config:
+                    config.pop("providers", None)
+
                 config = deep_merge(config, explicit_config)
         else:
             console.print(f"[red]Error: Config file not found: {config_file}[/red]")
