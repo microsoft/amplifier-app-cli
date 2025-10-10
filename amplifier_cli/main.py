@@ -820,8 +820,12 @@ def transform_toml_to_session_config(toml_config: dict[str, Any]) -> dict[str, A
         if "model" in provider:
             config_dict["model"] = provider["model"]
 
-        # Add any other provider settings
-        extra_config = {k: v for k, v in provider.items() if k not in ["name", "model"]}
+        # Handle nested provider.config section - merge it into the top level
+        if "config" in provider and isinstance(provider["config"], dict):
+            config_dict.update(provider["config"])
+
+        # Add any other provider settings (excluding name, model, and config)
+        extra_config = {k: v for k, v in provider.items() if k not in ["name", "model", "config"]}
         if extra_config:
             config_dict.update(extra_config)
 
