@@ -55,6 +55,10 @@ def compile_profile_to_mount_plan(
     if base.has_context_config():
         mount_plan["context"] = {"config": base.get_context_config()}
 
+    # Add orchestrator config if present
+    if base.orchestrator and base.orchestrator.config:
+        mount_plan["orchestrator"] = {"config": base.orchestrator.config}
+
     # Add base modules
     mount_plan["providers"] = [p.to_dict() for p in base.providers]
     mount_plan["tools"] = [t.to_dict() for t in base.tools]
@@ -101,6 +105,15 @@ def _merge_profile_into_mount_plan(mount_plan: dict[str, Any], overlay: Profile)
 
         overlay_context_config = overlay.get_context_config()
         mount_plan["context"]["config"].update(overlay_context_config)
+
+    # Merge orchestrator config if present in overlay
+    if overlay.orchestrator and overlay.orchestrator.config:
+        if "orchestrator" not in mount_plan:
+            mount_plan["orchestrator"] = {"config": {}}
+        if "config" not in mount_plan["orchestrator"]:
+            mount_plan["orchestrator"]["config"] = {}
+
+        mount_plan["orchestrator"]["config"].update(overlay.orchestrator.config)
 
     # Merge module lists
     mount_plan["providers"] = _merge_module_list(mount_plan["providers"], overlay.providers)

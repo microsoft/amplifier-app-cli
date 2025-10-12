@@ -4,13 +4,18 @@
 
 [profile]
 name = "dev"
-version = "1.1.0"  # Updated to reflect base changes
+version = "1.1.0"                                           # Updated to reflect base changes
 description = "Development configuration with full toolset"
 extends = "base"
 
 [session]
 orchestrator = "loop-streaming"
 context = "context-simple"
+
+[[providers]]
+module = "provider-openai"
+config.default_model = "gpt-5-codex"
+config.priority = 1                  # Higher priority than inherited provider
 
 [[tools]]
 module = "tool-web"

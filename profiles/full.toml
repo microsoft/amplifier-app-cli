@@ -15,6 +15,9 @@ max_tokens = 200000             # Maximum capacity
 compact_threshold = 0.9
 auto_compact = true
 
+[orchestrator.config]
+extended_thinking = true # Enable thinking blocks for Claude Sonnet 4.5
+
 # Additional providers (base provides anthropic)
 [[providers]]
 module = "provider-openai"

@@ -40,11 +40,20 @@ class ModuleConfig(BaseModel):
         return result
 
 
+class OrchestratorConfig(BaseModel):
+    """Configuration for the orchestrator module."""
+
+    config: dict[str, Any] = Field(
+        default_factory=dict, description="Orchestrator-specific configuration"
+    )
+
+
 class Profile(BaseModel):
     """Complete profile specification."""
 
     profile: ProfileMetadata
     session: SessionConfig
+    orchestrator: OrchestratorConfig | None = Field(None, description="Orchestrator configuration")
     providers: list[ModuleConfig] = Field(default_factory=list)
     tools: list[ModuleConfig] = Field(default_factory=list)
     hooks: list[ModuleConfig] = Field(default_factory=list)
