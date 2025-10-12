@@ -4,7 +4,7 @@
 
 [profile]
 name = "production"
-version = "1.1.0"  # Updated to reflect base changes
+version = "1.1.0"                                                  # Updated to reflect base changes
 description = "Production configuration optimized for reliability"
 extends = "base"
 
@@ -16,7 +16,7 @@ compact_threshold = 0.9
 auto_compact = true
 
 [orchestrator.config]
-extended_thinking = true  # Enable thinking blocks for Claude Sonnet 4.5
+extended_thinking = true # Enable thinking blocks for Claude Sonnet 4.5
 
 # Additional production tools
 [[tools]]
