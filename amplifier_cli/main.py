@@ -16,9 +16,14 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from amplifier_core import AmplifierSession, ModuleCoordinator, ModuleLoader
+from amplifier_core import AmplifierSession, ModuleLoader
 
+from .commands.logs import logs_cmd
+from .logging_setup import init_json_logging
 from .profiles import ProfileLoader, ProfileManager
+
+# Initialize JSON logging early
+init_json_logging()
 
 console = Console()
 
@@ -611,10 +616,214 @@ def profile_current():
         console.print("  Project: [cyan]amplifier profile default --set <name>[/cyan]")
 
 
+def build_effective_config_with_sources(chain):
+    """Build effective configuration with source tracking.
+
+    Args:
+        chain: List of Profile objects (foundation → base → dev order)
+
+    Returns:
+        Tuple of (effective_config_dict, sources_dict)
+        - effective_config: The merged configuration
+        - sources: Dict tracking source profile for each value
+    """
+    effective_config = {
+        "session": {},
+        "providers": {},  # Dict keyed by module name
+        "tools": {},  # Dict keyed by module name
+        "hooks": {},  # Dict keyed by module name
+        "agents": {},  # Dict keyed by module name
+    }
+
+    sources = {
+        "session": {},
+        "providers": {},
+        "tools": {},
+        "hooks": {},
+        "agents": {},
+    }
+
+    # Process each profile in the chain
+    for profile in chain:
+        profile_name = profile.profile.name
+
+        # Merge session fields
+        if profile.session:
+            for field in [
+                "orchestrator",
+                "context",
+                "max_tokens",
+                "compact_threshold",
+                "auto_compact",
+            ]:
+                value = getattr(profile.session, field, None)
+                if value is not None:
+                    # Track previous source if this is an override
+                    if field in effective_config["session"] and field in sources["session"]:
+                        old_source = sources["session"][field]
+                        # Handle nested tuples - just keep the original source
+                        if isinstance(old_source, tuple):
+                            old_source = old_source[0]
+                        sources["session"][field] = (profile_name, old_source)
+                    else:
+                        sources["session"][field] = profile_name
+                    effective_config["session"][field] = value
+
+        # Merge providers
+        if profile.providers:
+            for provider in profile.providers:
+                module_name = provider.module
+                if module_name in effective_config["providers"]:
+                    old_source = sources["providers"][module_name]
+                    if isinstance(old_source, tuple):
+                        old_source = old_source[0]
+                    sources["providers"][module_name] = (profile_name, old_source)
+                else:
+                    sources["providers"][module_name] = profile_name
+                effective_config["providers"][module_name] = provider
+
+        # Merge tools
+        if profile.tools:
+            for tool in profile.tools:
+                module_name = tool.module
+                if module_name in effective_config["tools"]:
+                    old_source = sources["tools"][module_name]
+                    if isinstance(old_source, tuple):
+                        old_source = old_source[0]
+                    sources["tools"][module_name] = (profile_name, old_source)
+                else:
+                    sources["tools"][module_name] = profile_name
+                effective_config["tools"][module_name] = tool
+
+        # Merge hooks
+        if profile.hooks:
+            for hook in profile.hooks:
+                module_name = hook.module
+                if module_name in effective_config["hooks"]:
+                    old_source = sources["hooks"][module_name]
+                    if isinstance(old_source, tuple):
+                        old_source = old_source[0]
+                    sources["hooks"][module_name] = (profile_name, old_source)
+                else:
+                    sources["hooks"][module_name] = profile_name
+                effective_config["hooks"][module_name] = hook
+
+        # Merge agents
+        if profile.agents:
+            for agent in profile.agents:
+                module_name = agent.module
+                if module_name in effective_config["agents"]:
+                    old_source = sources["agents"][module_name]
+                    if isinstance(old_source, tuple):
+                        old_source = old_source[0]
+                    sources["agents"][module_name] = (profile_name, old_source)
+                else:
+                    sources["agents"][module_name] = profile_name
+                effective_config["agents"][module_name] = agent
+
+    return effective_config, sources
+
+
+def render_effective_config(chain, detailed):
+    """Render the effective configuration with source annotations.
+
+    Args:
+        chain: List of Profile objects (foundation → base → dev order)
+        detailed: Whether to show detailed configuration fields
+    """
+    # Build the effective configuration
+    config, sources = build_effective_config_with_sources(chain)
+
+    # Show inheritance chain
+    console.print("\n[bold]Inheritance:[/bold]", end=" ")
+    chain_names = " → ".join([p.profile.name for p in chain])
+    console.print(f"{chain_names}")
+
+    console.print("\n[bold]Effective Configuration:[/bold]\n")
+
+    # Helper to format source annotation
+    def format_source(source):
+        from rich.markup import escape
+
+        if isinstance(source, (list, tuple)) and len(source) == 2:
+            # This is an override - escape for Rich markup
+            current, previous = source
+            current_escaped = escape(str(current))
+            previous_escaped = escape(str(previous))
+            return f" [yellow]\\[from {current_escaped}, overrides {previous_escaped}][/yellow]"
+        elif source:
+            # New value - escape for Rich markup
+            source_escaped = escape(str(source))
+            return f" [cyan]\\[from {source_escaped}][/cyan]"
+        else:
+            return ""
+
+    # Render Session section
+    if config["session"]:
+        console.print("[bold]Session:[/bold]")
+        for field, value in config["session"].items():
+            source = sources["session"].get(field, "")
+            source_str = format_source(source)
+            console.print(f"  {field}: {value}{source_str}")
+        console.print()
+
+    # Render Providers section
+    if config["providers"]:
+        console.print("[bold]Providers:[/bold]")
+        for module_name, provider in config["providers"].items():
+            source = sources["providers"].get(module_name, "")
+            source_str = format_source(source)
+            console.print(f"  {module_name}{source_str}")
+
+            if detailed and provider.config:
+                for k, v in provider.config.items():
+                    console.print(f"    {k}: {v}")
+        console.print()
+
+    # Render Tools section
+    if config["tools"]:
+        console.print("[bold]Tools:[/bold]")
+        for module_name, tool in config["tools"].items():
+            source = sources["tools"].get(module_name, "")
+            source_str = format_source(source)
+            console.print(f"  {module_name}{source_str}")
+
+            if detailed and tool.config:
+                for k, v in tool.config.items():
+                    console.print(f"    {k}: {v}")
+        console.print()
+
+    # Render Hooks section
+    if config["hooks"]:
+        console.print("[bold]Hooks:[/bold]")
+        for module_name, hook in config["hooks"].items():
+            source = sources["hooks"].get(module_name, "")
+            source_str = format_source(source)
+            console.print(f"  {module_name}{source_str}")
+
+            if detailed and hook.config:
+                for k, v in hook.config.items():
+                    console.print(f"    {k}: {v}")
+        console.print()
+
+    # Render Agents section
+    if config["agents"]:
+        console.print("[bold]Agents:[/bold]")
+        for module_name, agent in config["agents"].items():
+            source = sources["agents"].get(module_name, "")
+            source_str = format_source(source)
+            console.print(f"  {module_name}{source_str}")
+
+            if detailed and agent.config:
+                for k, v in agent.config.items():
+                    console.print(f"    {k}: {v}")
+
+
 @profile.command(name="show")
 @click.argument("name")
-def profile_show(name: str):
-    """Show details of a specific profile."""
+@click.option("--detailed", "-d", is_flag=True, help="Show detailed configuration values")
+def profile_show(name: str, detailed: bool):
+    """Show details of a specific profile with inheritance chain."""
     loader = ProfileLoader()
 
     try:
@@ -630,34 +839,12 @@ def profile_show(name: str):
     console.print(f"[bold]Profile:[/bold] {profile_obj.profile.name}")
     console.print(f"[bold]Version:[/bold] {profile_obj.profile.version}")
     console.print(f"[bold]Description:[/bold] {profile_obj.profile.description}")
-    if profile_obj.profile.extends:
-        console.print(f"[bold]Extends:[/bold] {profile_obj.profile.extends}")
 
-    # Show session config
-    console.print("\n[bold]Session:[/bold]")
-    console.print(f"  Orchestrator: {profile_obj.session.orchestrator}")
-    console.print(f"  Context: {profile_obj.session.context}")
+    # Get inheritance chain
+    chain = loader.resolve_inheritance(profile_obj)
 
-    # Show modules
-    if profile_obj.providers:
-        console.print("\n[bold]Providers:[/bold]")
-        for p in profile_obj.providers:
-            console.print(f"  • {p.module}")
-
-    if profile_obj.tools:
-        console.print("\n[bold]Tools:[/bold]")
-        for t in profile_obj.tools:
-            console.print(f"  • {t.module}")
-
-    if profile_obj.hooks:
-        console.print("\n[bold]Hooks:[/bold]")
-        for h in profile_obj.hooks:
-            console.print(f"  • {h.module}")
-
-    if profile_obj.agents:
-        console.print("\n[bold]Agents:[/bold]")
-        for a in profile_obj.agents:
-            console.print(f"  • {a.module}")
+    # Show effective configuration
+    render_effective_config(chain, detailed)
 
 
 @profile.command(name="apply")
@@ -1000,45 +1187,29 @@ def module():
 )
 def list_modules(type: str):
     """List installed modules."""
-    coordinator = ModuleCoordinator()
+    import asyncio
 
-    # Get loaded modules from coordinator
+    # Create a loader to discover modules
+    loader = ModuleLoader()
+
+    # Get all discovered modules
+    modules_info = asyncio.run(loader.discover())
+
+    # Create display table
     table = Table(title="Installed Modules", show_header=True, header_style="bold cyan")
     table.add_column("Name", style="green")
     table.add_column("Type", style="yellow")
     table.add_column("Mount Point")
     table.add_column("Description")
 
-    # Module types we support
-    module_types = ["orchestrator", "provider", "tool", "agent", "context", "hook"]
-
-    for module_type in module_types:
-        if type != "all" and type != module_type:
+    # Filter and display modules
+    for module_info in modules_info:
+        if type != "all" and type != module_info.type:
             continue
 
-        # Get modules of this type from coordinator using mount_point names
-        mount_point = module_type if module_type == "context" else f"{module_type}s"
-        modules = coordinator.get(mount_point) if hasattr(coordinator, "get") else {}
-
-        # Handle single vs multi module mount points
-        if module_type in ["orchestrator", "context"]:
-            # Single module mount points
-            if modules:
-                table.add_row(
-                    module_type,
-                    module_type,
-                    module_type,
-                    getattr(modules, "description", "N/A") if modules else "N/A",
-                )
-        elif isinstance(modules, dict):
-            # Multi-module mount points
-            for mod_name, mod_instance in modules.items():
-                table.add_row(
-                    mod_name,
-                    module_type,
-                    mod_name,
-                    getattr(mod_instance, "description", "N/A") if mod_instance else "N/A",
-                )
+        table.add_row(
+            module_info.id, module_info.type, module_info.mount_point, module_info.description
+        )
 
     console.print(table)
 
@@ -1047,38 +1218,31 @@ def list_modules(type: str):
 @click.argument("module_name")
 def module_info(module_name: str):
     """Show detailed information about a module."""
-    coordinator = ModuleCoordinator()
+    import asyncio
 
-    # Module types to search
-    module_types = ["orchestrator", "provider", "tool", "agent", "context", "hook"]
+    # Create a loader to discover modules
+    loader = ModuleLoader()
 
-    # Find module
-    module = None
-    module_type_found = None
-    for module_type in module_types:
-        mount_point = module_type if module_type == "context" else f"{module_type}s"
-        modules = coordinator.get(mount_point) if hasattr(coordinator, "get") else {}
+    # Get all discovered modules
+    modules_info = asyncio.run(loader.discover())
 
-        if module_type in ["orchestrator", "context"]:
-            # Single module mount points - check if this is the one
-            if modules and module_name == module_type:
-                module = modules
-                module_type_found = module_type
-                break
-        elif isinstance(modules, dict) and module_name in modules:
-            module = modules[module_name]
-            module_type_found = module_type
+    # Find the requested module
+    found_module = None
+    for module_info in modules_info:
+        if module_info.id == module_name:
+            found_module = module_info
             break
 
-    if not module:
+    if not found_module:
         console.print(f"[red]Module '{module_name}' not found[/red]")
         sys.exit(1)
 
     # Display module info
-    panel_content = f"""[bold]Name:[/bold] {module_name}
-[bold]Type:[/bold] {module_type_found}
-[bold]Description:[/bold] {getattr(module, "description", "N/A") if module else "N/A"}
-[bold]Mount Point:[/bold] {module_name}"""
+    panel_content = f"""[bold]Name:[/bold] {found_module.id}
+[bold]Type:[/bold] {found_module.type}
+[bold]Description:[/bold] {found_module.description}
+[bold]Mount Point:[/bold] {found_module.mount_point}
+[bold]Version:[/bold] {found_module.version}"""
 
     console.print(Panel(panel_content, title=f"Module: {module_name}", border_style="cyan"))
 
@@ -1105,6 +1269,10 @@ def init(output: Optional[str]):
     with open(output_path) as f:
         syntax = Syntax(f.read(), "toml", theme="monokai", line_numbers=True)
         console.print(Panel(syntax, title="Configuration", border_style="green"))
+
+
+# Register logs command
+cli.add_command(logs_cmd)
 
 
 def main():

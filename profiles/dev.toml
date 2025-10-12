@@ -1,9 +1,10 @@
 # Development Profile
-# Extended base with development tools and features
+# Extends base with development tools and features
+# Inherits filesystem, bash tools, and redaction/logging hooks from base
 
 [profile]
 name = "dev"
-version = "1.0.0"
+version = "1.1.0"  # Updated to reflect base changes
 description = "Development configuration with full toolset"
 extends = "base"
 

@@ -1,23 +1,37 @@
 # Base Profile
+# Extends foundation with essential tools and hooks that most profiles will need
 # Provides sensible defaults that other profiles can extend
 
 [profile]
 name = "base"
-version = "1.0.0"
-description = "Base configuration with core functionality"
+version = "1.1.0"  # Updated to reflect inheritance and hook additions
+description = "Base configuration with core functionality, tools, and hooks"
+extends = "foundation"
 
 [session]
+# Required fields - inherit values from foundation
 orchestrator = "loop-basic"
 context = "context-simple"
+# Add session management settings
 max_tokens = 100000
 compact_threshold = 0.8
 auto_compact = true
 
-[[providers]]
-module = "provider-anthropic"
-
+# Essential tools that most profiles will need
 [[tools]]
 module = "tool-filesystem"
 
 [[tools]]
 module = "tool-bash"
+
+# Essential hooks for security and observability
+[[hooks]]
+module = "hooks-redaction"
+priority = 10  # Run early to redact sensitive data
+enabled = true
+
+[[hooks]]
+module = "hooks-logging"
+priority = 100  # Run late to log everything
+enabled = true
+config.path = "./amplifier.log.jsonl"

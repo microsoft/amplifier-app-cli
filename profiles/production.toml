@@ -1,21 +1,22 @@
 # Production Profile
 # Optimized for production use with enhanced reliability
+# Inherits filesystem, bash tools, and redaction/logging hooks from base
 
 [profile]
 name = "production"
-version = "1.0.0"
+version = "1.1.0"  # Updated to reflect base changes
 description = "Production configuration optimized for reliability"
 extends = "base"
 
 [session]
 orchestrator = "loop-streaming"
-context = "context-persistent"
+context = "context-persistent"  # Use persistent context for production
 max_tokens = 150000
 compact_threshold = 0.9
 auto_compact = true
 
+# Additional production tools
 [[tools]]
 module = "tool-web"
 
-[[hooks]]
-module = "hooks-logging"
+# hooks-logging is now inherited from base, no need to duplicate

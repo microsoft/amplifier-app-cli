@@ -1,0 +1,29 @@
+# Test Profile
+# Configuration for testing scenarios with mock provider
+# Inherits filesystem, bash tools, and redaction/logging hooks from base
+
+[profile]
+name = "test"
+version = "1.0.0"
+description = "Test configuration with mock provider for testing scenarios"
+extends = "base"
+
+[session]
+# Required fields for testing
+orchestrator = "loop-basic"
+context = "context-simple"
+max_tokens = 50000  # Smaller limit for testing
+compact_threshold = 0.7
+auto_compact = true
+
+# Override provider with mock for testing
+[[providers]]
+module = "provider-mock"
+priority = 1  # Higher priority to override base provider
+config.default_response = "This is a mock response for testing"
+config.response_delay = 0.1  # Simulate processing delay
+config.fail_probability = 0.0  # Set to non-zero to test error handling
+
+# Additional test-specific tools can be added here
+[[tools]]
+module = "tool-task"  # Enable sub-agent testing

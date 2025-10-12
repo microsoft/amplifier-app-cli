@@ -17,28 +17,43 @@ Amplifier uses a **two-tier profile system** to separate personal developer pref
 
 This design prevents git merge conflicts while allowing projects to specify sensible defaults.
 
+## Profile Architecture
+
+The profiles follow a hierarchical inheritance structure:
+
+```
+foundation (absolute minimum - orchestrator, context, provider)
+    ↓
+base (adds essential tools and hooks)
+    ↓
+dev/production/test (environment-specific configurations)
+    ↓
+full (kitchen sink - all available modules)
+```
+
 ## Available Profiles
 
-### base.toml
-Sensible defaults with core functionality:
-- Basic orchestrator
-- Simple context manager
-- Anthropic provider
-- Filesystem and bash tools
-- Context management (100K tokens, 80% compact threshold)
-
-### minimal.toml
+### foundation.toml
 Absolute minimum configuration:
 - Basic orchestrator
-- Simple context
+- Simple context manager
 - Anthropic provider only
-- No tools (add your own as needed)
+- No tools, no hooks (pure foundation)
+
+### base.toml
+Core functionality (extends foundation):
+- Inherits orchestrator, context, and provider from foundation
+- Adds filesystem and bash tools
+- Adds essential hooks: redaction (priority 10), logging (priority 100)
+- Context management (100K tokens, 80% compact threshold)
+- Auto-compaction enabled
 
 ### dev.toml
 Development configuration (extends base):
 - Streaming orchestrator for better feedback
-- All tools from base plus web and search
-- Task delegation agent
+- Inherits all tools and hooks from base
+- Adds web and search tools
+- Adds agent-architect for task delegation
 - Ideal for interactive development
 
 ### production.toml
@@ -46,8 +61,26 @@ Production-optimized (extends base):
 - Streaming orchestrator
 - Persistent context for session continuity
 - Enhanced context limits (150K tokens, 90% threshold)
-- Web tools enabled
-- Logging hook for audit trails
+- Inherits all tools and hooks from base
+- Adds web tools for production features
+
+### test.toml
+Testing configuration (extends base):
+- Mock provider for deterministic testing
+- Reduced token limits for faster testing
+- Inherits all tools and hooks from base
+- Adds task tool for sub-agent testing
+- Configurable failure simulation
+
+### full.toml
+Kitchen sink configuration (extends base):
+- All available providers (Anthropic, OpenAI, Azure OpenAI, Ollama)
+- All available tools (filesystem, bash, web, search, task)
+- All available agents (agent-architect)
+- All available hooks (redaction, logging, approval, backup, cost-aware scheduler, heuristic scheduler)
+- Maximum token capacity (200K)
+- Persistent context
+- Comprehensive feature testing
 
 ## Using Profiles
 
