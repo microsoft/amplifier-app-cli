@@ -63,9 +63,9 @@ config.auto_approve = false # Require manual approval
 
 [[hooks]]
 module = "hooks-backup"
-priority = 20                   # Run after redaction but before most processing
+priority = 20                                  # Run after redaction but before most processing
 enabled = true
-config.backup_dir = "./backups"
+config.backup_dir = ".amplifier/local/backups"
 config.max_backups = 10
 
 # Cost-aware scheduler for managing API costs
