@@ -29,6 +29,7 @@ module = "tool-bash"
 module = "hooks-redaction"
 priority = 10  # Run early to redact sensitive data
 enabled = true
+config.allowlist = ["session_id", "turn_id", "span_id", "parent_span_id"]  # Don't redact infrastructure IDs
 
 [[hooks]]
 module = "hooks-logging"

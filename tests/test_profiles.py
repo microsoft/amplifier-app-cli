@@ -273,7 +273,6 @@ class TestProfileLoader:
             official_dir.mkdir(parents=True)
             team_dir = Path(tmpdir) / ".amplifier" / "profiles"
             team_dir.mkdir(parents=True)
-            user_dir = Path.home() / ".amplifier" / "profiles"
 
             # Create test profiles
             official_profile = {

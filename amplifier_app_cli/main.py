@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import uuid
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
@@ -505,6 +506,7 @@ def cli():
 @click.option("--provider", "-p", default=None, help="LLM provider to use")
 @click.option("--model", "-m", help="Model to use (provider-specific)")
 @click.option("--mode", type=click.Choice(["chat", "single"]), default="single", help="Execution mode")
+@click.option("--session-id", help="Session ID for persistence (generates UUID if not provided)")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 def run(
     prompt: str | None,
@@ -513,6 +515,7 @@ def run(
     provider: str,
     model: str | None,
     mode: str,
+    session_id: str | None,
     verbose: bool,
 ):
     """Execute a prompt or start an interactive session."""
@@ -532,7 +535,11 @@ def run(
     search_paths = get_module_search_paths()
 
     if mode == "chat":
-        asyncio.run(interactive_chat(config_data, search_paths, verbose))
+        # Generate session ID if not provided
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            console.print(f"[dim]Session ID: {session_id}[/dim]")
+        asyncio.run(interactive_chat(config_data, search_paths, verbose, session_id))
     else:
         if not prompt:
             console.print("[red]Error:[/red] Prompt required in single mode")
@@ -1050,8 +1057,12 @@ def transform_toml_to_session_config(toml_config: dict[str, Any]) -> dict[str, A
     return session_config
 
 
-async def interactive_chat(config: dict, search_paths: list[Path], verbose: bool):
+async def interactive_chat(config: dict, search_paths: list[Path], verbose: bool, session_id: str | None = None):
     """Run an interactive chat session."""
+    # Generate session ID if not provided
+    if not session_id:
+        session_id = str(uuid.uuid4())
+
     # Create loader with search paths
     loader = ModuleLoader(search_paths=search_paths if search_paths else None)
 
@@ -1064,6 +1075,9 @@ async def interactive_chat(config: dict, search_paths: list[Path], verbose: bool
 
     # Create command processor
     command_processor = CommandProcessor(session)
+
+    # Create session store for saving
+    store = SessionStore()
 
     console.print(
         Panel.fit(
@@ -1089,6 +1103,28 @@ async def interactive_chat(config: dict, search_paths: list[Path], verbose: bool
                         console.print("[dim]Processing...[/dim]")
                         response = await session.execute(data["text"])
                         console.print("\n" + response)
+
+                        # Save session after each interaction
+                        context = session.coordinator.get("context")
+                        if context and hasattr(context, "get_messages"):
+                            messages = await context.get_messages()
+                            # Get profile name from config
+                            profile_name = "unknown"
+                            if "profile" in config and isinstance(config["profile"], dict):
+                                profile_name = config["profile"].get("name", "unknown")
+                            elif isinstance(config, dict):
+                                # Try to extract profile from resolved config
+                                profile_name = config.get("active_profile", "unknown")
+
+                            metadata = {
+                                "created": datetime.now(UTC).isoformat(),
+                                "profile": profile_name,
+                                "model": config.get("providers", [{}])[0].get("config", {}).get("model", "unknown")
+                                if config.get("providers")
+                                else "unknown",
+                                "turn_count": len([m for m in messages if m.get("role") == "user"]),
+                            }
+                            store.save(session_id, messages, metadata)
                     else:
                         # Handle command
                         result = await command_processor.handle_command(action, data)
