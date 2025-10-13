@@ -88,30 +88,67 @@ class ProfileLoader:
 
         return None
 
-    def load_profile(self, name: str) -> Profile:
+    def load_profile(self, name: str, _visited: set | None = None) -> Profile:
         """
-        Load a profile by name.
+        Load a profile with inheritance resolution.
 
         Args:
             name: Profile name (without .toml extension)
+            _visited: Set of already visited profiles (for circular detection)
 
         Returns:
-            Loaded and validated Profile object
+            Fully resolved profile
 
         Raises:
             FileNotFoundError: If profile not found
-            ValueError: If profile is invalid
+            ValueError: If circular inheritance or invalid profile
         """
-        profile_file = self.find_profile_file(name)
+        if _visited is None:
+            _visited = set()
 
+        if name in _visited:
+            raise ValueError(f"Circular dependency detected: {' -> '.join(_visited)} -> {name}")
+
+        _visited.add(name)
+
+        profile_file = self.find_profile_file(name)
         if profile_file is None:
-            raise FileNotFoundError(f"Profile '{name}' not found in search paths: {self.search_paths}")
+            raise FileNotFoundError(f"Profile '{name}' not found in search paths")
 
         try:
             with open(profile_file, "rb") as f:
                 data = tomli.load(f)
 
-            profile = Profile(**data)
+            # Check for inheritance BEFORE validation
+            # This allows child profiles to not specify all required fields
+            # if they will inherit them from parents
+            extends = data.get("profile", {}).get("extends")
+
+            if extends:
+                # Load parent first
+                parent = self.load_profile(extends, _visited)
+
+                # Convert data to dict for merging
+                # Use exclude_unset=True to only include explicitly set fields
+
+                # Create a partial profile just for getting the data
+                # We'll validate the merged result later
+                child_dict = data
+                parent_dict = parent.model_dump()
+
+                # Merge parent into child
+                merged_data = self._deep_merge_dicts(parent_dict, child_dict)
+
+                # Now validate the merged profile
+                profile = Profile(**merged_data)
+            else:
+                # No inheritance, validate directly
+                profile = Profile(**data)
+
+            # Validate model pair if present
+            if hasattr(profile.profile, "model") and profile.profile.model:
+                self.validate_model_pair(profile.profile.model)
+
             logger.debug(f"Loaded profile '{name}' from {profile_file}")
             return profile
 
@@ -281,3 +318,71 @@ class ProfileLoader:
             return "user"
 
         return "unknown"
+
+    def validate_model_pair(self, model: str) -> None:
+        """
+        Validate model is in 'provider/model' format.
+
+        Args:
+            model: Model string to validate
+
+        Raises:
+            ValueError: If format is invalid
+        """
+        if "/" not in model:
+            raise ValueError(f"Model must be 'provider/model' format, got: {model}")
+
+        provider, model_name = model.split("/", 1)
+        if not provider or not model_name:
+            raise ValueError(f"Invalid model pair: {model}")
+
+    def merge_profiles(self, parent: Profile, child: Profile) -> Profile:
+        """
+        Deep merge child profile over parent.
+
+        Lists are replaced, not concatenated.
+        None values in child remove parent values.
+
+        Args:
+            parent: Parent profile
+            child: Child profile that inherits from parent
+
+        Returns:
+            Merged profile with child overriding parent
+        """
+        # Convert to dicts
+        parent_dict = parent.model_dump()
+        # Use exclude_unset to only get fields that were explicitly set (including None)
+        child_dict = child.model_dump(exclude_unset=True)
+
+        # Merge dicts
+        merged = self._deep_merge_dicts(parent_dict, child_dict)
+
+        # Validate and return
+        return Profile(**merged)
+
+    def _deep_merge_dicts(self, parent: dict, child: dict) -> dict:
+        """
+        Recursively merge dictionaries.
+
+        Args:
+            parent: Parent dictionary
+            child: Child dictionary
+
+        Returns:
+            Merged dictionary
+        """
+        result = parent.copy()
+
+        for key, value in child.items():
+            if value is None:
+                # Explicit None removes inherited value
+                result.pop(key, None)
+            elif isinstance(value, dict) and key in result and isinstance(result[key], dict):
+                # Deep merge nested dicts
+                result[key] = self._deep_merge_dicts(result[key], value)
+            else:
+                # Replace value (including lists)
+                result[key] = value
+
+        return result

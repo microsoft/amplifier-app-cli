@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+from datetime import UTC
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from .commands.logs import logs_cmd
 from .logging_setup import init_json_logging
 from .profiles import ProfileLoader
 from .profiles import ProfileManager
+from .session_store import SessionStore
 
 # Initialize JSON logging early
 init_json_logging()
@@ -1236,6 +1238,257 @@ def init(output: str | None):
 
 # Register logs command
 cli.add_command(logs_cmd)
+
+
+@cli.group()
+def sessions():
+    """Manage Amplifier sessions."""
+    pass
+
+
+@sessions.command(name="list")
+@click.option("--limit", "-n", default=20, help="Number of sessions to show")
+def sessions_list(limit: int):
+    """List recent sessions."""
+    store = SessionStore()
+    session_ids = store.list_sessions()[:limit]
+
+    if not session_ids:
+        console.print("[yellow]No sessions found.[/yellow]")
+        return
+
+    # Create display table
+    table = Table(title="Recent Sessions", show_header=True, header_style="bold cyan")
+    table.add_column("Session ID", style="green")
+    table.add_column("Last Modified", style="yellow")
+    table.add_column("Messages")
+
+    for session_id in session_ids:
+        try:
+            # Get session info
+            session_path = store.base_dir / session_id
+            mtime = session_path.stat().st_mtime
+            modified = datetime.fromtimestamp(mtime, tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+            # Try to get message count
+            transcript_file = session_path / "transcript.jsonl"
+            message_count = "?"
+            if transcript_file.exists():
+                with open(transcript_file) as f:
+                    message_count = str(sum(1 for _ in f))
+
+            table.add_row(session_id, modified, message_count)
+        except Exception:
+            # Skip sessions we can't read
+            continue
+
+    console.print(table)
+
+
+@sessions.command(name="show")
+@click.argument("session_id")
+@click.option("--detailed", "-d", is_flag=True, help="Show full transcript")
+def sessions_show(session_id: str, detailed: bool):
+    """Show session details."""
+    store = SessionStore()
+
+    if not store.exists(session_id):
+        console.print(f"[red]Error:[/red] Session '{session_id}' not found")
+        sys.exit(1)
+
+    try:
+        transcript, metadata = store.load(session_id)
+
+        # Show metadata
+        console.print(f"[bold]Session:[/bold] {session_id}")
+        console.print(f"[bold]Created:[/bold] {metadata.get('created', 'Unknown')}")
+        console.print(f"[bold]Messages:[/bold] {len(transcript)}")
+
+        if metadata.get("profile"):
+            console.print(f"[bold]Profile:[/bold] {metadata['profile']}")
+        if metadata.get("model"):
+            console.print(f"[bold]Model:[/bold] {metadata['model']}")
+
+        if detailed and transcript:
+            console.print("\n[bold]Transcript:[/bold]")
+            for msg in transcript:
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+
+                if role == "user":
+                    console.print("\n[bold green]User:[/bold green]")
+                    console.print(content[:500] + ("..." if len(content) > 500 else ""))
+                elif role == "assistant":
+                    console.print("\n[bold blue]Assistant:[/bold blue]")
+                    console.print(content[:500] + ("..." if len(content) > 500 else ""))
+
+    except Exception as e:
+        console.print(f"[red]Error loading session:[/red] {e}")
+        sys.exit(1)
+
+
+@sessions.command(name="delete")
+@click.argument("session_id")
+@click.option("--force", "-f", is_flag=True, help="Skip confirmation")
+def sessions_delete(session_id: str, force: bool):
+    """Delete a session."""
+    store = SessionStore()
+
+    if not store.exists(session_id):
+        console.print(f"[red]Error:[/red] Session '{session_id}' not found")
+        sys.exit(1)
+
+    if not force:
+        confirm = console.input(f"Delete session '{session_id}'? [y/N]: ")
+        if confirm.lower() != "y":
+            console.print("[yellow]Cancelled[/yellow]")
+            return
+
+    try:
+        import shutil
+
+        session_path = store.base_dir / session_id
+        shutil.rmtree(session_path)
+        console.print(f"[green]✓[/green] Deleted session: {session_id}")
+    except Exception as e:
+        console.print(f"[red]Error deleting session:[/red] {e}")
+        sys.exit(1)
+
+
+@sessions.command(name="resume")
+@click.argument("session_id")
+@click.option("--config", "-c", type=click.Path(exists=True), help="Configuration file path")
+@click.option("--profile", "-P", help="Profile to use for resumed session")
+def sessions_resume(session_id: str, config: str | None, profile: str | None):
+    """Resume a previous session."""
+    store = SessionStore()
+
+    if not store.exists(session_id):
+        console.print(f"[red]Error:[/red] Session '{session_id}' not found")
+        sys.exit(1)
+
+    try:
+        transcript, metadata = store.load(session_id)
+
+        console.print(f"[green]✓[/green] Resuming session: {session_id}")
+        console.print(f"  Messages: {len(transcript)}")
+
+        # Resolve configuration (use profile from session if not overridden)
+        if not profile and metadata.get("profile"):
+            profile = metadata["profile"]
+            console.print(f"  Using saved profile: {profile}")
+
+        config_data = resolve_app_config(config_file=config, profile_override=profile)
+
+        # Get module search paths
+        search_paths = get_module_search_paths()
+
+        # Run interactive chat with restored context
+        asyncio.run(interactive_chat_with_session(config_data, search_paths, False, session_id, transcript))
+
+    except Exception as e:
+        console.print(f"[red]Error resuming session:[/red] {e}")
+        sys.exit(1)
+
+
+@sessions.command(name="cleanup")
+@click.option("--days", "-d", default=30, help="Delete sessions older than N days")
+@click.option("--force", "-f", is_flag=True, help="Skip confirmation")
+def sessions_cleanup(days: int, force: bool):
+    """Clean up old sessions."""
+    store = SessionStore()
+
+    if not force:
+        confirm = console.input(f"Delete sessions older than {days} days? [y/N]: ")
+        if confirm.lower() != "y":
+            console.print("[yellow]Cancelled[/yellow]")
+            return
+
+    try:
+        removed = store.cleanup_old_sessions(days=days)
+        console.print(f"[green]✓[/green] Removed {removed} old session(s)")
+    except Exception as e:
+        console.print(f"[red]Error during cleanup:[/red] {e}")
+        sys.exit(1)
+
+
+async def interactive_chat_with_session(
+    config: dict, search_paths: list[Path], verbose: bool, session_id: str, initial_transcript: list[dict]
+):
+    """Run an interactive chat session with restored context."""
+    # Create loader with search paths
+    loader = ModuleLoader(search_paths=search_paths if search_paths else None)
+
+    # Create session with resolved config and loader
+    session = AmplifierSession(config, loader=loader)
+    await session.initialize()
+
+    # Restore context from transcript if available
+    context = session.coordinator.get("context")
+    if context and hasattr(context, "set_messages") and initial_transcript:
+        await context.set_messages(initial_transcript)
+        console.print(f"[dim]Restored {len(initial_transcript)} messages[/dim]")
+
+    # Create command processor
+    command_processor = CommandProcessor(session)
+
+    console.print(
+        Panel.fit(
+            "[bold cyan]Amplifier Interactive Session (Resumed)[/bold cyan]\n"
+            "Type '/help' for commands, 'exit' or press Ctrl+C to quit",
+            border_style="cyan",
+        )
+    )
+
+    # Create session store for saving
+    store = SessionStore()
+
+    try:
+        while True:
+            try:
+                prompt = console.input("\n[bold green]>[/bold green] ")
+                if prompt.lower() in ["exit", "quit"]:
+                    break
+
+                if prompt.strip():
+                    # Process input for commands
+                    action, data = command_processor.process_input(prompt)
+
+                    if action == "prompt":
+                        # Normal prompt execution
+                        console.print("[dim]Processing...[/dim]")
+                        response = await session.execute(data["text"])
+                        console.print("\n" + response)
+
+                        # Save session after each interaction
+                        if context and hasattr(context, "get_messages"):
+                            messages = await context.get_messages()
+                            metadata = {
+                                "created": datetime.now(UTC).isoformat(),
+                                "profile": config.get("profile", {}).get("name", "unknown"),
+                                "model": config.get("providers", [{}])[0].get("config", {}).get("model", "unknown"),
+                                "turn_count": len([m for m in messages if m.get("role") == "user"]),
+                            }
+                            store.save(session_id, messages, metadata)
+                    else:
+                        # Handle command
+                        result = await command_processor.handle_command(action, data)
+                        console.print(f"[cyan]{result}[/cyan]")
+
+            except KeyboardInterrupt:
+                # Allow /stop command or Ctrl+C to interrupt execution
+                if command_processor.halted:
+                    command_processor.halted = False
+                    console.print("\n[yellow]Execution stopped[/yellow]")
+                else:
+                    break
+            except Exception as e:
+                console.print(f"[red]Error:[/red] {e}")
+                if verbose:
+                    console.print_exception()
+    finally:
+        await session.cleanup()
+        console.print("\n[yellow]Session ended[/yellow]")
 
 
 def main():

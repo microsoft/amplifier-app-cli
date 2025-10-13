@@ -12,6 +12,7 @@ class ProfileMetadata(BaseModel):
     name: str = Field(..., description="Unique profile identifier")
     version: str = Field(..., description="Semantic version (e.g., '1.0.0')")
     description: str = Field(..., description="Human-readable description")
+    model: str | None = Field(None, description="Model in 'provider/model' format")
     extends: str | None = Field(None, description="Parent profile to inherit from")
 
 
@@ -45,16 +46,56 @@ class OrchestratorConfig(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict, description="Orchestrator-specific configuration")
 
 
+class ContextConfig(BaseModel):
+    """Context loading configuration."""
+
+    files: list[str] = Field(default_factory=list, description="Context files/globs to load each turn")
+    max_depth: int | None = Field(default=5, description="Maximum @mention recursion depth (None = unlimited)")
+
+
+class AgentsConfig(BaseModel):
+    """Agent registry configuration."""
+
+    dirs: list[str] = Field(default_factory=list, description="Directories to search for agent .md files")
+
+
+class TaskConfig(BaseModel):
+    """Task tool configuration."""
+
+    max_recursion_depth: int = Field(default=1, description="Maximum sub-agent recursion depth")
+
+
+class LoggingConfig(BaseModel):
+    """Logging configuration."""
+
+    capture_model_io: bool = Field(default=False, description="Capture raw LLM requests/responses")
+    redaction: list[str] = Field(
+        default_factory=lambda: ["secrets", "pii-basic"], description="Redaction rules to apply"
+    )
+
+
+class UIConfig(BaseModel):
+    """UI display configuration."""
+
+    show_thinking_stream: bool = Field(default=True, description="Stream thinking deltas progressively")
+    show_tool_lines: int = Field(default=5, description="Number of tool I/O lines to show in UI")
+
+
 class Profile(BaseModel):
     """Complete profile specification."""
 
     profile: ProfileMetadata
     session: SessionConfig
     orchestrator: OrchestratorConfig | None = Field(None, description="Orchestrator configuration")
+    context: ContextConfig | None = Field(None, description="Context loading configuration")
+    agents_config: AgentsConfig | None = Field(None, description="Agent registry configuration")
+    task: TaskConfig | None = Field(None, description="Task tool configuration")
+    logging: LoggingConfig | None = Field(None, description="Logging configuration")
+    ui: UIConfig | None = Field(None, description="UI display configuration")
     providers: list[ModuleConfig] = Field(default_factory=list)
     tools: list[ModuleConfig] = Field(default_factory=list)
     hooks: list[ModuleConfig] = Field(default_factory=list)
-    agents: list[ModuleConfig] = Field(default_factory=list)
+    agents: list[ModuleConfig] = Field(default_factory=list, description="Agent modules to load")
 
     def has_context_config(self) -> bool:
         """Check if profile has context-specific configuration."""

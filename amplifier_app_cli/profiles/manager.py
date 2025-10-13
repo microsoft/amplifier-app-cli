@@ -54,7 +54,7 @@ class ProfileManager:
 
         return None
 
-    def get_profile_source(self) -> tuple[str | None, str]:
+    def get_profile_source(self) -> tuple[str | None, str | None]:
         """
         Get the active profile and its source.
 
@@ -62,7 +62,7 @@ class ProfileManager:
             Tuple of (profile_name, source) where source is:
             - "local" for .amplifier/profile
             - "default" for .amplifier/default-profile
-            - "none" if no profile is active
+            - None if no profile is active
         """
         # Check local profile first
         local = self._read_profile_file(self.local_profile_file)
@@ -74,7 +74,7 @@ class ProfileManager:
         if default:
             return (default, "default")
 
-        return (None, "none")
+        return (None, None)
 
     def set_active_profile(self, name: str) -> None:
         """
