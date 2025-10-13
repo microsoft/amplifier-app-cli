@@ -2,7 +2,8 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from pydantic import Field
 
 
 class ProfileMetadata(BaseModel):
@@ -20,9 +21,7 @@ class SessionConfig(BaseModel):
     orchestrator: str = Field(..., description="Orchestrator module ID")
     context: str = Field(..., description="Context manager module ID")
     max_tokens: int | None = Field(None, description="Maximum tokens for context")
-    compact_threshold: float | None = Field(
-        None, description="Context compaction threshold (0.0-1.0)"
-    )
+    compact_threshold: float | None = Field(None, description="Context compaction threshold (0.0-1.0)")
     auto_compact: bool | None = Field(None, description="Enable automatic compaction")
 
 
@@ -43,9 +42,7 @@ class ModuleConfig(BaseModel):
 class OrchestratorConfig(BaseModel):
     """Configuration for the orchestrator module."""
 
-    config: dict[str, Any] = Field(
-        default_factory=dict, description="Orchestrator-specific configuration"
-    )
+    config: dict[str, Any] = Field(default_factory=dict, description="Orchestrator-specific configuration")
 
 
 class Profile(BaseModel):

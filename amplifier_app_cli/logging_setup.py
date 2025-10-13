@@ -6,6 +6,7 @@ Initializes a single canonical JSONL sink early in CLI startup.
 import json
 import logging
 import os
+from datetime import UTC
 from datetime import datetime
 from pathlib import Path
 
@@ -23,7 +24,7 @@ class JsonlHandler(logging.Handler):
         try:
             # Build a structured payload
             base = {
-                "ts": datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+                "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
                 "lvl": record.levelname,
                 "schema": {"name": "amplifier.log", "ver": "1.0.0"},
                 "logger": record.name,

@@ -8,9 +8,7 @@ from .schema import Profile
 logger = logging.getLogger(__name__)
 
 
-def compile_profile_to_mount_plan(
-    base: Profile, overlays: list[Profile] | None = None
-) -> dict[str, Any]:
+def compile_profile_to_mount_plan(base: Profile, overlays: list[Profile] | None = None) -> dict[str, Any]:
     """
     Compile a profile and its overlays into a Mount Plan.
 
@@ -124,9 +122,7 @@ def _merge_profile_into_mount_plan(mount_plan: dict[str, Any], overlay: Profile)
     return mount_plan
 
 
-def _merge_module_list(
-    base_modules: list[dict[str, Any]], overlay_modules: list
-) -> list[dict[str, Any]]:
+def _merge_module_list(base_modules: list[dict[str, Any]], overlay_modules: list) -> list[dict[str, Any]]:
     """
     Merge two module lists, with overlay modules overriding base modules.
 

@@ -3,12 +3,11 @@
 import asyncio
 import logging
 
+from amplifier_core import ApprovalRequest
+from amplifier_core import ApprovalResponse
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm
-
-from amplifier_core import ApprovalRequest
-from amplifier_core import ApprovalResponse
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +46,7 @@ class CLIApprovalProvider:
 
         panel_content = self._format_request(request, risk_color)
 
-        self.console.print(
-            Panel(
-                panel_content, title="⚠️  Approval Required", border_style=risk_color, padding=(1, 2)
-            )
-        )
+        self.console.print(Panel(panel_content, title="⚠️  Approval Required", border_style=risk_color, padding=(1, 2)))
 
         # Handle timeout if specified
         try:
@@ -61,14 +56,12 @@ class CLIApprovalProvider:
             else:
                 # No timeout - wait indefinitely
                 approved = await self._get_user_input()
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.console.print(f"\n[yellow]⏱️  Approval timed out after {request.timeout}s[/yellow]")
             raise TimeoutError(f"Approval timed out after {request.timeout}s")
 
         # Return response
-        return ApprovalResponse(
-            approved=approved, reason="User approved" if approved else "User denied"
-        )
+        return ApprovalResponse(approved=approved, reason="User approved" if approved else "User denied")
 
     def _get_risk_color(self, risk_level: str) -> str:
         """Get Rich color for risk level."""
@@ -110,7 +103,5 @@ class CLIApprovalProvider:
         """
         # Run synchronous console input in thread pool to make it async
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None, lambda: Confirm.ask("\nApprove this action?", default=False)
-        )
+        result = await loop.run_in_executor(None, lambda: Confirm.ask("\nApprove this action?", default=False))
         return result

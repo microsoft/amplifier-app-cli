@@ -4,14 +4,29 @@ Command-line interface for the Amplifier AI-powered modular development platform
 
 > **Note**: This is a **reference implementation** of an Amplifier CLI. It works with [amplifier-core](https://github.com/microsoft/amplifier-core) and demonstrates how to build a CLI around the official kernel. You can use this as-is, fork it, or build your own CLI using the core.
 
+## Prerequisites
+
+- **Python 3.11+**
+- **[UV](https://github.com/astral-sh/uv)** - Fast Python package manager
+
+### Installing UV
+
+```bash
+# macOS/Linux/WSL
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
 ## Installation
 
 ```bash
 # Install from PyPI (when published)
-pip install amplifier-app-cli
+uv pip install amplifier-app-cli
 
 # Install from source
-pip install -e .
+uv pip install -e .
 
 # Or use with uvx directly from GitHub
 uvx --from git+https://github.com/microsoft/amplifier-app-cli amplifier --help

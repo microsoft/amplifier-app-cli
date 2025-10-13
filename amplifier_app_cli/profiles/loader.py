@@ -105,9 +105,7 @@ class ProfileLoader:
         profile_file = self.find_profile_file(name)
 
         if profile_file is None:
-            raise FileNotFoundError(
-                f"Profile '{name}' not found in search paths: {self.search_paths}"
-            )
+            raise FileNotFoundError(f"Profile '{name}' not found in search paths: {self.search_paths}")
 
         try:
             with open(profile_file, "rb") as f:
@@ -141,10 +139,7 @@ class ProfileLoader:
         while current is not None:
             # Check for circular inheritance
             if current.profile.name in seen:
-                raise ValueError(
-                    f"Circular inheritance detected: {current.profile.name} "
-                    f"already in chain {list(seen)}"
-                )
+                raise ValueError(f"Circular inheritance detected: {current.profile.name} already in chain {list(seen)}")
 
             seen.add(current.profile.name)
             chain.append(current)
@@ -280,9 +275,9 @@ class ProfileLoader:
 
         if "/usr/share/amplifier/profiles" in str(profile_file):
             return "official"
-        elif ".amplifier/profiles" in str(profile_file):
+        if ".amplifier/profiles" in str(profile_file):
             return "team"
-        elif str(Path.home()) in str(profile_file):
+        if str(Path.home()) in str(profile_file):
             return "user"
 
         return "unknown"

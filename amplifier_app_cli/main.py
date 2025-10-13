@@ -7,20 +7,21 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import click
 import toml
+from amplifier_core import AmplifierSession
+from amplifier_core import ModuleLoader
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from amplifier_core import AmplifierSession, ModuleLoader
-
 from .commands.logs import logs_cmd
 from .logging_setup import init_json_logging
-from .profiles import ProfileLoader, ProfileManager
+from .profiles import ProfileLoader
+from .profiles import ProfileManager
 
 # Initialize JSON logging early
 init_json_logging()
@@ -52,7 +53,7 @@ class CommandProcessor:
         self.halted = False
         self.plan_mode_unregister = None  # Store unregister function
 
-    def process_input(self, user_input: str) -> Tuple[str, Dict[str, Any]]:
+    def process_input(self, user_input: str) -> tuple[str, dict[str, Any]]:
         """
         Process user input and extract commands.
 
@@ -68,13 +69,12 @@ class CommandProcessor:
             if command in self.COMMANDS:
                 cmd_info = self.COMMANDS[command]
                 return cmd_info["action"], {"args": args, "command": command}
-            else:
-                return "unknown_command", {"command": command}
+            return "unknown_command", {"command": command}
 
         # Regular prompt
         return "prompt", {"text": user_input, "plan_mode": self.plan_mode}
 
-    async def handle_command(self, action: str, data: Dict[str, Any]) -> str:
+    async def handle_command(self, action: str, data: dict[str, Any]) -> str:
         """Handle a command action."""
 
         if action == "enable_plan_mode":
@@ -82,44 +82,44 @@ class CommandProcessor:
             self._configure_plan_mode(True)
             return "✓ Plan Mode enabled - all modifications disabled"
 
-        elif action == "disable_plan_mode":
+        if action == "disable_plan_mode":
             self.plan_mode = False
             self._configure_plan_mode(False)
             return "✓ Plan Mode disabled - modifications enabled"
 
-        elif action == "halt_execution":
+        if action == "halt_execution":
             self.halted = True
-            # Signal orchestrator to stop
-            if hasattr(self.session, "halt"):
-                await self.session.halt()
+            # Signal orchestrator to stop if it supports halting
+            orchestrator = self.session.coordinator.get("orchestrator")
+            if orchestrator and hasattr(orchestrator, "halt"):
+                await orchestrator.halt()
             return "✓ Execution halted"
 
-        elif action == "save_transcript":
+        if action == "save_transcript":
             path = await self._save_transcript(data.get("args", ""))
             return f"✓ Transcript saved to {path}"
 
-        elif action == "show_status":
+        if action == "show_status":
             status = await self._get_status()
             return status
 
-        elif action == "clear_context":
+        if action == "clear_context":
             await self._clear_context()
             return "✓ Context cleared"
 
-        elif action == "show_help":
+        if action == "show_help":
             return self._format_help()
 
-        elif action == "show_config":
+        if action == "show_config":
             return await self._get_config_display()
 
-        elif action == "list_tools":
+        if action == "list_tools":
             return await self._list_tools()
 
-        elif action == "unknown_command":
+        if action == "unknown_command":
             return f"Unknown command: {data['command']}. Use /help for available commands."
 
-        else:
-            return f"Unhandled action: {action}"
+        return f"Unhandled action: {action}"
 
     def _configure_plan_mode(self, enabled: bool):
         """Configure session for plan mode."""
@@ -131,7 +131,7 @@ class CommandProcessor:
         if hooks:
             if enabled:
                 # Register plan mode hook that denies write operations
-                async def plan_mode_hook(_event: str, data: Dict[str, Any]) -> HookResult:
+                async def plan_mode_hook(_event: str, data: dict[str, Any]) -> HookResult:
                     tool_name = data.get("tool")
                     if tool_name in ["write", "edit", "bash", "task"]:
                         return HookResult(
@@ -142,9 +142,7 @@ class CommandProcessor:
 
                 # Register the hook with the hooks registry and store unregister function
                 if hasattr(hooks, "register"):
-                    self.plan_mode_unregister = hooks.register(
-                        "tool:pre", plan_mode_hook, priority=0, name="plan_mode"
-                    )
+                    self.plan_mode_unregister = hooks.register("tool:pre", plan_mode_hook, priority=0, name="plan_mode")
             else:
                 # Unregister plan mode hook if we have the unregister function
                 if self.plan_mode_unregister:
@@ -267,11 +265,9 @@ def resolve_app_config(
     """
     import tomli
 
-    from amplifier_cli.profiles import (
-        ProfileLoader,
-        ProfileManager,
-        compile_profile_to_mount_plan,
-    )
+    from amplifier_app_cli.profiles import ProfileLoader
+    from amplifier_app_cli.profiles import ProfileManager
+    from amplifier_app_cli.profiles import compile_profile_to_mount_plan
 
     # Helper to safely load TOML
     def load_toml_safe(path: Path) -> dict[str, Any]:
@@ -315,9 +311,7 @@ def resolve_app_config(
 
                 # Merge each parent in the chain
                 for parent_profile in inheritance_chain[1:]:
-                    profile_config = deep_merge(
-                        profile_config, compile_profile_to_mount_plan(parent_profile, [])
-                    )
+                    profile_config = deep_merge(profile_config, compile_profile_to_mount_plan(parent_profile, []))
 
                 # Load and apply overlays for the final profile
                 overlays = loader.load_overlays(active_profile_name)
@@ -329,9 +323,7 @@ def resolve_app_config(
                 config = deep_merge(config, profile_config)
 
         except Exception as e:
-            console.print(
-                f"[yellow]Warning: Could not load profile '{active_profile_name}': {e}[/yellow]"
-            )
+            console.print(f"[yellow]Warning: Could not load profile '{active_profile_name}': {e}[/yellow]")
 
     # 3. Merge user config (~/.amplifier/config.toml)
     user_path = Path.home() / ".amplifier" / "config.toml"
@@ -419,9 +411,7 @@ def _merge_module_lists(
     """
     # Create lookup dictionaries by module ID
     base_by_id = {m.get("module"): m for m in base_modules if isinstance(m, dict) and "module" in m}
-    overlay_by_id = {
-        m.get("module"): m for m in overlay_modules if isinstance(m, dict) and "module" in m
-    }
+    overlay_by_id = {m.get("module"): m for m in overlay_modules if isinstance(m, dict) and "module" in m}
 
     # Start with base modules, updating with overlay modules
     merged_by_id = base_by_id.copy()
@@ -468,9 +458,9 @@ def expand_env_vars(config: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, str):
             # Replace ${VAR} with os.environ.get("VAR", "")
             return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), value)
-        elif isinstance(value, dict):
+        if isinstance(value, dict):
             return {k: expand_value(v) for k, v in value.items()}
-        elif isinstance(value, list):
+        if isinstance(value, list):
             return [expand_value(v) for v in value]
         return value
 
@@ -512,16 +502,14 @@ def cli():
 @click.option("--profile", "-P", help="Profile to use for this session")
 @click.option("--provider", "-p", default=None, help="LLM provider to use")
 @click.option("--model", "-m", help="Model to use (provider-specific)")
-@click.option(
-    "--mode", type=click.Choice(["chat", "single"]), default="single", help="Execution mode"
-)
+@click.option("--mode", type=click.Choice(["chat", "single"]), default="single", help="Execution mode")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 def run(
-    prompt: Optional[str],
-    config: Optional[str],
-    profile: Optional[str],
+    prompt: str | None,
+    config: str | None,
+    profile: str | None,
     provider: str,
-    model: Optional[str],
+    model: str | None,
     mode: str,
     verbose: bool,
 ):
@@ -536,9 +524,7 @@ def run(
         cli_overrides.setdefault("provider", {})["model"] = model
 
     # Resolve full configuration with proper precedence
-    config_data = resolve_app_config(
-        cli_config=cli_overrides, config_file=config, profile_override=profile
-    )
+    config_data = resolve_app_config(cli_config=cli_overrides, config_file=config, profile_override=profile)
 
     # Get module search paths
     search_paths = get_module_search_paths()
@@ -584,9 +570,7 @@ def profile_list():
 
         # Mark active profile
         if profile_name == active_profile:
-            console.print(
-                f"  ★ [bold green]{profile_name}[/bold green] {source_label} [dim](active)[/dim]"
-            )
+            console.print(f"  ★ [bold green]{profile_name}[/bold green] {source_label} [dim](active)[/dim]")
         else:
             console.print(f"  • {profile_name} {source_label}")
 
@@ -599,14 +583,10 @@ def profile_current():
 
     if profile_name:
         if source == "local":
-            console.print(
-                f"[bold green]Active profile:[/bold green] {profile_name} [dim](from local choice)[/dim]"
-            )
+            console.print(f"[bold green]Active profile:[/bold green] {profile_name} [dim](from local choice)[/dim]")
             console.print("Source: [cyan].amplifier/profile[/cyan]")
         elif source == "default":
-            console.print(
-                f"[bold green]Active profile:[/bold green] {profile_name} [dim](from project default)[/dim]"
-            )
+            console.print(f"[bold green]Active profile:[/bold green] {profile_name} [dim](from project default)[/dim]")
             console.print("Source: [cyan].amplifier/default-profile[/cyan]")
     else:
         console.print("[yellow]No active profile set[/yellow]")
@@ -745,18 +725,17 @@ def render_effective_config(chain, detailed):
     def format_source(source):
         from rich.markup import escape
 
-        if isinstance(source, (list, tuple)) and len(source) == 2:
+        if isinstance(source, list | tuple) and len(source) == 2:
             # This is an override - escape for Rich markup
             current, previous = source
             current_escaped = escape(str(current))
             previous_escaped = escape(str(previous))
             return f" [yellow]\\[from {current_escaped}, overrides {previous_escaped}][/yellow]"
-        elif source:
+        if source:
             # New value - escape for Rich markup
             source_escaped = escape(str(source))
             return f" [cyan]\\[from {source_escaped}][/cyan]"
-        else:
-            return ""
+        return ""
 
     # Render Session section
     if config["session"]:
@@ -888,7 +867,7 @@ def profile_reset():
 @profile.command(name="default")
 @click.option("--set", "set_default", metavar="NAME", help="Set project default profile")
 @click.option("--clear", is_flag=True, help="Clear project default profile")
-def profile_default(set_default: Optional[str], clear: bool):
+def profile_default(set_default: str | None, clear: bool):
     """
     Manage project default profile.
 
@@ -1034,29 +1013,21 @@ def transform_toml_to_session_config(toml_config: dict[str, Any]) -> dict[str, A
             session_config["hooks"] = hooks
 
     # Copy session settings if present
-    if "session" in toml_config:
+    if "session" in toml_config and any(
+        key in toml_config["session"] for key in ["max_tokens", "compact_threshold", "auto_compact"]
+    ):
         # Context config specifically
-        if any(
-            key in toml_config["session"]
-            for key in ["max_tokens", "compact_threshold", "auto_compact"]
-        ):
-            if "context" not in session_config:
-                session_config["context"] = {}
-            if "config" not in session_config["context"]:
-                session_config["context"]["config"] = {}
+        if "context" not in session_config:
+            session_config["context"] = {}
+        if "config" not in session_config["context"]:
+            session_config["context"]["config"] = {}
 
-            if "max_tokens" in toml_config["session"]:
-                session_config["context"]["config"]["max_tokens"] = toml_config["session"][
-                    "max_tokens"
-                ]
-            if "compact_threshold" in toml_config["session"]:
-                session_config["context"]["config"]["compact_threshold"] = toml_config["session"][
-                    "compact_threshold"
-                ]
-            if "auto_compact" in toml_config["session"]:
-                session_config["context"]["config"]["auto_compact"] = toml_config["session"][
-                    "auto_compact"
-                ]
+        if "max_tokens" in toml_config["session"]:
+            session_config["context"]["config"]["max_tokens"] = toml_config["session"]["max_tokens"]
+        if "compact_threshold" in toml_config["session"]:
+            session_config["context"]["config"]["compact_threshold"] = toml_config["session"]["compact_threshold"]
+        if "auto_compact" in toml_config["session"]:
+            session_config["context"]["config"]["auto_compact"] = toml_config["session"]["auto_compact"]
 
     # Transform agents if present
     if "agents" in toml_config:
@@ -1086,12 +1057,8 @@ async def interactive_chat(config: dict, search_paths: list[Path], verbose: bool
     session = AmplifierSession(config, loader=loader)
     await session.initialize()
 
-    # Register CLI approval provider if approval hook is loaded
-    from .approval_provider import CLIApprovalProvider
-
-    approval_provider = CLIApprovalProvider(console)
-    if hasattr(session.coordinator, "_approval_hook"):
-        session.coordinator._approval_hook.register_provider(approval_provider)
+    # Note: Approval provider registration would require kernel changes (violates philosophy)
+    # The approval hook works via the existing hook registry mechanism
 
     # Create command processor
     command_processor = CommandProcessor(session)
@@ -1157,9 +1124,7 @@ async def execute_single(prompt: str, config: dict, search_paths: list[Path], ve
 
         response = await session.execute(prompt)
         if verbose:
-            console.print(
-                f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]"
-            )
+            console.print(f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]")
         console.print(response)
 
     except Exception as e:
@@ -1207,9 +1172,7 @@ def list_modules(type: str):
         if type != "all" and type != module_info.type:
             continue
 
-        table.add_row(
-            module_info.id, module_info.type, module_info.mount_point, module_info.description
-        )
+        table.add_row(module_info.id, module_info.type, module_info.mount_point, module_info.description)
 
     console.print(table)
 
@@ -1249,7 +1212,7 @@ def module_info(module_name: str):
 
 @cli.command()
 @click.option("--output", "-o", type=click.Path(), help="Output path for configuration")
-def init(output: Optional[str]):
+def init(output: str | None):
     """Initialize a new Amplifier configuration."""
     config_template = {
         "provider": {"name": "mock", "model": "mock-model"},
