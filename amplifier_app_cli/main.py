@@ -534,12 +534,16 @@ def run(
     # Get module search paths
     search_paths = get_module_search_paths()
 
+    # Determine active profile name for session metadata
+    manager = ProfileManager()
+    active_profile_name = profile or manager.get_active_profile() or "default"
+
     if mode == "chat":
         # Generate session ID if not provided
         if not session_id:
             session_id = str(uuid.uuid4())
             console.print(f"[dim]Session ID: {session_id}[/dim]")
-        asyncio.run(interactive_chat(config_data, search_paths, verbose, session_id))
+        asyncio.run(interactive_chat(config_data, search_paths, verbose, session_id, active_profile_name))
     else:
         if not prompt:
             console.print("[red]Error:[/red] Prompt required in single mode")
@@ -1057,7 +1061,9 @@ def transform_toml_to_session_config(toml_config: dict[str, Any]) -> dict[str, A
     return session_config
 
 
-async def interactive_chat(config: dict, search_paths: list[Path], verbose: bool, session_id: str | None = None):
+async def interactive_chat(
+    config: dict, search_paths: list[Path], verbose: bool, session_id: str | None = None, profile_name: str = "default"
+):
     """Run an interactive chat session."""
     # Generate session ID if not provided
     if not session_id:
@@ -1108,20 +1114,17 @@ async def interactive_chat(config: dict, search_paths: list[Path], verbose: bool
                         context = session.coordinator.get("context")
                         if context and hasattr(context, "get_messages"):
                             messages = await context.get_messages()
-                            # Get profile name from config
-                            profile_name = "unknown"
-                            if "profile" in config and isinstance(config["profile"], dict):
-                                profile_name = config["profile"].get("name", "unknown")
-                            elif isinstance(config, dict):
-                                # Try to extract profile from resolved config
-                                profile_name = config.get("active_profile", "unknown")
+                            # Extract model from providers config
+                            model_name = "unknown"
+                            if isinstance(config.get("providers"), list) and config["providers"]:
+                                first_provider = config["providers"][0]
+                                if isinstance(first_provider, dict) and "config" in first_provider:
+                                    model_name = first_provider["config"].get("model", "unknown")
 
                             metadata = {
                                 "created": datetime.now(UTC).isoformat(),
                                 "profile": profile_name,
-                                "model": config.get("providers", [{}])[0].get("config", {}).get("model", "unknown")
-                                if config.get("providers")
-                                else "unknown",
+                                "model": model_name,
                                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
                             }
                             store.save(session_id, messages, metadata)
@@ -1410,8 +1413,9 @@ def sessions_resume(session_id: str, config: str | None, profile: str | None):
         console.print(f"  Messages: {len(transcript)}")
 
         # Resolve configuration (use profile from session if not overridden)
-        if not profile and metadata.get("profile"):
-            profile = metadata["profile"]
+        saved_profile = metadata.get("profile", "unknown")
+        if not profile and saved_profile and saved_profile != "unknown":
+            profile = saved_profile
             console.print(f"  Using saved profile: {profile}")
 
         config_data = resolve_app_config(config_file=config, profile_override=profile)
@@ -1419,8 +1423,13 @@ def sessions_resume(session_id: str, config: str | None, profile: str | None):
         # Get module search paths
         search_paths = get_module_search_paths()
 
+        # Determine profile name for session tracking
+        active_profile = profile if profile else saved_profile
+
         # Run interactive chat with restored context
-        asyncio.run(interactive_chat_with_session(config_data, search_paths, False, session_id, transcript))
+        asyncio.run(
+            interactive_chat_with_session(config_data, search_paths, False, session_id, transcript, active_profile)
+        )
 
     except Exception as e:
         console.print(f"[red]Error resuming session:[/red] {e}")
@@ -1449,7 +1458,12 @@ def sessions_cleanup(days: int, force: bool):
 
 
 async def interactive_chat_with_session(
-    config: dict, search_paths: list[Path], verbose: bool, session_id: str, initial_transcript: list[dict]
+    config: dict,
+    search_paths: list[Path],
+    verbose: bool,
+    session_id: str,
+    initial_transcript: list[dict],
+    profile_name: str = "unknown",
 ):
     """Run an interactive chat session with restored context."""
     # Create loader with search paths
@@ -1499,10 +1513,17 @@ async def interactive_chat_with_session(
                         # Save session after each interaction
                         if context and hasattr(context, "get_messages"):
                             messages = await context.get_messages()
+                            # Extract model from providers config
+                            model_name = "unknown"
+                            if isinstance(config.get("providers"), list) and config["providers"]:
+                                first_provider = config["providers"][0]
+                                if isinstance(first_provider, dict) and "config" in first_provider:
+                                    model_name = first_provider["config"].get("model", "unknown")
+
                             metadata = {
                                 "created": datetime.now(UTC).isoformat(),
-                                "profile": config.get("profile", {}).get("name", "unknown"),
-                                "model": config.get("providers", [{}])[0].get("config", {}).get("model", "unknown"),
+                                "profile": profile_name,
+                                "model": model_name,
                                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
                             }
                             store.save(session_id, messages, metadata)
