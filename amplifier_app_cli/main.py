@@ -1119,7 +1119,11 @@ async def interactive_chat(
                             if isinstance(config.get("providers"), list) and config["providers"]:
                                 first_provider = config["providers"][0]
                                 if isinstance(first_provider, dict) and "config" in first_provider:
-                                    model_name = first_provider["config"].get("model", "unknown")
+                                    # Check both "model" and "default_model" keys
+                                    provider_config = first_provider["config"]
+                                    model_name = provider_config.get("model") or provider_config.get(
+                                        "default_model", "unknown"
+                                    )
 
                             metadata = {
                                 "created": datetime.now(UTC).isoformat(),
@@ -1518,7 +1522,11 @@ async def interactive_chat_with_session(
                             if isinstance(config.get("providers"), list) and config["providers"]:
                                 first_provider = config["providers"][0]
                                 if isinstance(first_provider, dict) and "config" in first_provider:
-                                    model_name = first_provider["config"].get("model", "unknown")
+                                    # Check both "model" and "default_model" keys
+                                    provider_config = first_provider["config"]
+                                    model_name = provider_config.get("model") or provider_config.get(
+                                        "default_model", "unknown"
+                                    )
 
                             metadata = {
                                 "created": datetime.now(UTC).isoformat(),

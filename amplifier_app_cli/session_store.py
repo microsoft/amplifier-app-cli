@@ -70,6 +70,78 @@ class SessionStore:
 
         logger.debug(f"Session {session_id} saved successfully")
 
+    def _sanitize_value(self, value):
+        """Sanitize any value to ensure it's JSON-serializable.
+
+        Args:
+            value: Any value that may or may not be serializable
+
+        Returns:
+            Sanitized value that's JSON-serializable, or None if not serializable
+        """
+        # Handle None and basic types that are always serializable
+        if value is None or isinstance(value, bool | int | float | str):
+            return value
+
+        # Handle dictionaries recursively
+        if isinstance(value, dict):
+            return self._sanitize_message(value)
+
+        # Handle lists recursively
+        if isinstance(value, list):
+            sanitized_list = []
+            for item in value:
+                sanitized_item = self._sanitize_value(item)
+                # Only include items that could be sanitized
+                if sanitized_item is not None:
+                    sanitized_list.append(sanitized_item)
+            return sanitized_list
+
+        # Try to serialize other types
+        try:
+            json.dumps(value)
+            return value
+        except (TypeError, ValueError):
+            # Can't serialize, return None to indicate it should be skipped
+            logger.debug(f"Skipping non-serializable value of type {type(value)}")
+            return None
+
+    def _sanitize_message(self, message: dict) -> dict:
+        """Sanitize a message to ensure it's JSON-serializable.
+
+        Removes non-serializable objects like ThinkingBlock instances
+        while preserving the essential message content.
+
+        Args:
+            message: Message dictionary that may contain non-serializable objects
+
+        Returns:
+            Sanitized message dictionary that's JSON-serializable
+        """
+        if not isinstance(message, dict):
+            # If not a dict, use the general sanitizer
+            sanitized = self._sanitize_value(message)
+            return sanitized if sanitized is not None else {}
+
+        # Create a copy to avoid modifying the original
+        sanitized = {}
+
+        for key, value in message.items():
+            # Skip known non-serializable fields
+            if key in ["thinking_block", "content_blocks"]:
+                # These contain raw API objects that can't be serialized
+                # We preserve the thinking text if available but skip the raw objects
+                if key == "thinking_block" and isinstance(value, dict) and "text" in value:
+                    sanitized["thinking_text"] = value["text"]
+                continue
+
+            # Sanitize the value
+            sanitized_value = self._sanitize_value(value)
+            if sanitized_value is not None:
+                sanitized[key] = sanitized_value
+
+        return sanitized
+
     def _save_transcript(self, session_dir: Path, transcript: list) -> None:
         """Save transcript with atomic write and backup.
 
@@ -94,7 +166,9 @@ class SessionStore:
             temp_path = Path(tmp_file.name)
             try:
                 for message in transcript:
-                    json.dump(message, tmp_file, ensure_ascii=False)
+                    # Sanitize message to ensure it's JSON-serializable
+                    sanitized_message = self._sanitize_message(message)
+                    json.dump(sanitized_message, tmp_file, ensure_ascii=False)
                     tmp_file.write("\n")
                 tmp_file.flush()
 

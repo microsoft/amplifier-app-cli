@@ -66,7 +66,7 @@ class TestSessionStore:
         assert loaded_metadata == sample_metadata
 
     def test_atomic_write_on_failure(self, store, sample_metadata):
-        """Test that atomic write preserves original file on failure."""
+        """Test that non-serializable objects are sanitized gracefully."""
         session_id = "test-atomic"
         good_transcript = [{"role": "user", "content": "good"}]
 
@@ -78,14 +78,18 @@ class TestSessionStore:
         assert loaded_transcript == good_transcript
 
         # Try to save with an object that can't be JSON serialized
+        # This should now succeed with sanitization instead of failing
         bad_transcript = [{"role": "user", "content": "bad", "obj": object()}]
 
-        with pytest.raises(OSError):
-            store.save(session_id, bad_transcript, sample_metadata)
+        # This should not raise an error anymore - objects are sanitized
+        store.save(session_id, bad_transcript, sample_metadata)
 
-        # Original data should still be intact
+        # Data should be saved with non-serializable fields removed
         loaded_transcript, _ = store.load(session_id)
-        assert loaded_transcript == good_transcript
+        assert len(loaded_transcript) == 1
+        assert loaded_transcript[0]["role"] == "user"
+        assert loaded_transcript[0]["content"] == "bad"
+        assert "obj" not in loaded_transcript[0]  # Non-serializable field removed
 
     def test_corruption_recovery_transcript(self, store, sample_transcript, sample_metadata, temp_dir):
         """Test recovery from corrupted transcript file using backup."""
