@@ -67,6 +67,9 @@ def compile_profile_to_mount_plan(base: Profile, overlays: list[Profile] | None 
     for overlay in overlays:
         mount_plan = _merge_profile_into_mount_plan(mount_plan, overlay)
 
+    # Inject profile-level config sections into specific modules
+    mount_plan = _inject_profile_configs(mount_plan, base)
+
     logger.debug(f"Compiled profile '{base.profile.name}' with {len(overlays)} overlays")
 
     return mount_plan
@@ -118,6 +121,39 @@ def _merge_profile_into_mount_plan(mount_plan: dict[str, Any], overlay: Profile)
     mount_plan["tools"] = _merge_module_list(mount_plan["tools"], overlay.tools)
     mount_plan["hooks"] = _merge_module_list(mount_plan["hooks"], overlay.hooks)
     mount_plan["agents"] = _merge_module_list(mount_plan["agents"], overlay.agents)
+
+    return mount_plan
+
+
+def _inject_profile_configs(mount_plan: dict[str, Any], profile: Profile) -> dict[str, Any]:
+    """
+    Inject profile-level config sections into specific modules.
+
+    This passes profile.agents_config to agent-registry module,
+    profile.task to task-tool module, etc.
+
+    Args:
+        mount_plan: Mount plan to update
+        profile: Profile containing config sections
+
+    Returns:
+        Updated mount plan
+    """
+    # Inject agents_config into agent-registry module
+    if profile.agents_config:
+        for hook in mount_plan.get("hooks", []):
+            if hook.get("module") == "agent-registry":
+                if "config" not in hook:
+                    hook["config"] = {}
+                hook["config"]["agents"] = {"dirs": profile.agents_config.dirs}
+
+    # Inject task config into task-tool module
+    if profile.task:
+        for tool in mount_plan.get("tools", []):
+            if tool.get("module") == "tool-task":
+                if "config" not in tool:
+                    tool["config"] = {}
+                tool["config"]["max_recursion_depth"] = profile.task.max_recursion_depth
 
     return mount_plan
 

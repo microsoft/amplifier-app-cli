@@ -4,13 +4,21 @@
 
 [profile]
 name = "dev"
-version = "1.1.0"                                           # Updated to reflect base changes
+version = "1.2.0"                                           # Updated for Phase 3 features
 description = "Development configuration with full toolset"
 extends = "base"
 
 [session]
 orchestrator = "loop-streaming"
 context = "context-simple"
+
+# Agent registry configuration
+[agents_config]
+dirs = ["amplifier-app-cli/agents/core"]
+
+# Task tool configuration
+[task]
+max_recursion_depth = 1
 
 [[providers]]
 module = "provider-openai"
@@ -22,6 +30,12 @@ module = "tool-web"
 
 [[tools]]
 module = "tool-search"
+
+[[tools]]
+module = "tool-task"                 # Phase 3: Task delegation tool
+
+[[hooks]]
+module = "agent-registry"            # Phase 3: Agent registry (provides agents.list/get capabilities)
 
 [[agents]]
 module = "agent-architect"
