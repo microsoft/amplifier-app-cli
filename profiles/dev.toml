@@ -20,6 +20,11 @@ dirs = ["amplifier-app-cli/agents/core"]
 [task]
 max_recursion_depth = 1
 
+# UI display configuration (Phase 4)
+[ui]
+show_thinking_stream = true
+show_tool_lines = 5
+
 [[providers]]
 module = "provider-openai"
 config.default_model = "gpt-5-codex"
@@ -36,6 +41,9 @@ module = "tool-task"                 # Phase 3: Task delegation tool
 
 [[hooks]]
 module = "agent-registry"            # Phase 3: Agent registry (provides agents.list/get capabilities)
+
+[[hooks]]
+module = "hooks-streaming-ui"        # Phase 4: Streaming UI display for thinking and tools
 
 [[agents]]
 module = "agent-architect"

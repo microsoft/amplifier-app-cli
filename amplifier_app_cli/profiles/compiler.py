@@ -155,6 +155,17 @@ def _inject_profile_configs(mount_plan: dict[str, Any], profile: Profile) -> dic
                     tool["config"] = {}
                 tool["config"]["max_recursion_depth"] = profile.task.max_recursion_depth
 
+    # Inject UI config into streaming-ui hook module
+    if profile.ui:
+        for hook in mount_plan.get("hooks", []):
+            if hook.get("module") == "hooks-streaming-ui":
+                if "config" not in hook:
+                    hook["config"] = {}
+                hook["config"]["ui"] = {
+                    "show_thinking_stream": profile.ui.show_thinking_stream,
+                    "show_tool_lines": profile.ui.show_tool_lines,
+                }
+
     return mount_plan
 
 
