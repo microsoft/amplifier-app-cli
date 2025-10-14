@@ -28,10 +28,8 @@ max_recursion_depth = 1
 show_thinking_stream = true
 show_tool_lines = 5
 
-[[providers]]
-module = "provider-openai"
-config.default_model = "gpt-5-codex"
-config.priority = 1                  # Higher priority than inherited provider
+# Use Anthropic provider from foundation (supports extended_thinking and tools)
+# No provider override - inherits provider-anthropic with claude-sonnet-4-5
 
 [[tools]]
 module = "tool-web"
