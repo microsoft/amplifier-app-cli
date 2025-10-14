@@ -548,7 +548,8 @@ def run(
         if not prompt:
             console.print("[red]Error:[/red] Prompt required in single mode")
             sys.exit(1)
-        asyncio.run(execute_single(prompt, config_data, search_paths, verbose))
+        # Pass session_id to execute_single (None if not provided)
+        asyncio.run(execute_single(prompt, config_data, search_paths, verbose, session_id))
 
 
 @cli.group()
@@ -1072,8 +1073,8 @@ async def interactive_chat(
     # Create loader with search paths
     loader = ModuleLoader(search_paths=search_paths if search_paths else None)
 
-    # Create session with resolved config and loader
-    session = AmplifierSession(config, loader=loader)
+    # Create session with resolved config, loader, and session_id
+    session = AmplifierSession(config, loader=loader, session_id=session_id)
     await session.initialize()
 
     # Note: Approval provider registration would require kernel changes (violates philosophy)
@@ -1153,13 +1154,15 @@ async def interactive_chat(
         console.print("\n[yellow]Session ended[/yellow]")
 
 
-async def execute_single(prompt: str, config: dict, search_paths: list[Path], verbose: bool):
+async def execute_single(
+    prompt: str, config: dict, search_paths: list[Path], verbose: bool, session_id: str | None = None
+):
     """Execute a single prompt and exit."""
     # Create loader with search paths
     loader = ModuleLoader(search_paths=search_paths if search_paths else None)
 
-    # Create session with resolved config and loader
-    session = AmplifierSession(config, loader=loader)
+    # Create session with resolved config, loader, and optional session_id
+    session = AmplifierSession(config, loader=loader, session_id=session_id)
 
     try:
         await session.initialize()
@@ -1473,8 +1476,8 @@ async def interactive_chat_with_session(
     # Create loader with search paths
     loader = ModuleLoader(search_paths=search_paths if search_paths else None)
 
-    # Create session with resolved config and loader
-    session = AmplifierSession(config, loader=loader)
+    # Create session with resolved config, loader, and session_id
+    session = AmplifierSession(config, loader=loader, session_id=session_id)
     await session.initialize()
 
     # Restore context from transcript if available
