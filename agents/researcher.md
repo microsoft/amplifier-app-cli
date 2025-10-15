@@ -1,10 +1,10 @@
 ---
 name: researcher
-description: Research and information gathering from files and web sources
+description: "Research specialist who gathers and synthesizes information from files and web sources. Use when you need to research content, find documentation, analyze multiple sources, or provide comprehensive summaries with citations."
 providers:
   - module: provider-anthropic
     config:
-      model: claude-3-5-sonnet
+      model: claude-sonnet-4-5
 tools:
   - module: tool-web
   - module: tool-search

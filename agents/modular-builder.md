@@ -1,10 +1,10 @@
 ---
 name: modular-builder
-description: Primary implementation agent that builds code from specifications
+description: "Primary implementation agent that builds code from specifications. Use PROACTIVELY for ALL implementation tasks. Works with zen-architect specifications to create self-contained, regeneratable modules following the 'bricks and studs' philosophy. Builds working code without stubs or placeholders."
 providers:
   - module: provider-anthropic
     config:
-      model: claude-3-5-sonnet
+      model: claude-sonnet-4-5
 tools:
   - module: tool-filesystem
   - module: tool-bash

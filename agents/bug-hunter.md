@@ -1,10 +1,10 @@
 ---
 name: bug-hunter
-description: Systematic debugging and bug fixing with hypothesis-driven approach
+description: "Specialized debugging expert focused on finding and fixing bugs systematically. Use PROACTIVELY when encountering errors, unexpected behavior, or test failures. Uses hypothesis-driven debugging to efficiently locate root causes and implement minimal fixes."
 providers:
   - module: provider-anthropic
     config:
-      model: claude-3-5-sonnet
+      model: claude-sonnet-4-5
 tools:
   - module: tool-filesystem
   - module: tool-bash

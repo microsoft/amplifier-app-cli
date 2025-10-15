@@ -1,10 +1,10 @@
 ---
 name: zen-architect
-description: System design, architecture, and code review with ruthless simplicity
+description: "Use this agent PROACTIVELY for code planning, architecture design, and review tasks. It embodies ruthless simplicity and analysis-first development. This agent operates in three modes: ANALYZE mode for breaking down problems and designing solutions, ARCHITECT mode for system design and module specification, and REVIEW mode for code quality assessment. It creates specifications that the modular-builder agent then implements."
 providers:
   - module: provider-anthropic
     config:
-      model: claude-3-5-sonnet
+      model: claude-sonnet-4-5
 tools:
   - module: tool-filesystem
   - module: tool-bash
