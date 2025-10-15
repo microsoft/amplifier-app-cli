@@ -31,9 +31,12 @@ class ProfileLoader:
         paths = []
 
         # Bundled profiles shipped with the package (lowest precedence)
-        bundled = Path(__file__).parent.parent.parent / "profiles"
+        # Look in the amplifier-app-cli package directory (sibling to profiles/ submodule)
+        package_dir = Path(__file__).parent.parent  # amplifier_app_cli package
+        bundled = package_dir.parent / "profiles"  # Sibling profiles directory
         if bundled.exists():
             paths.append(bundled)
+            logger.debug(f"Found bundled profiles: {bundled}")
 
         # Official profiles (second lowest precedence)
         official = Path("/usr/share/amplifier/profiles")
