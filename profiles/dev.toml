@@ -15,10 +15,6 @@ context = "context-simple"
 [orchestrator.config]
 extended_thinking = true  # Enable thinking blocks for Claude Sonnet 4.5
 
-# Agent registry configuration
-[agents_config]
-dirs = ["amplifier-app-cli/agents/core"]
-
 # Task tool configuration
 [task]
 max_recursion_depth = 1
@@ -42,9 +38,7 @@ module = "tool-task"                 # Phase 3: Task delegation tool
 
 [[hooks]]
 module = "agent-registry"            # Phase 3: Agent registry (provides agents.list/get capabilities)
+config.dirs = ["/home/brkrabac/repos/amplifier.amplifier-v2-codespace/amplifier-dev/amplifier-app-cli/agents/core"]
 
 [[hooks]]
 module = "hooks-streaming-ui"        # Phase 4: Streaming UI display for thinking and tools
-
-[[agents]]
-module = "agent-architect"

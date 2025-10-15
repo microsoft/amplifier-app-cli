@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import re
 import sys
@@ -25,6 +26,8 @@ from .logging_setup import init_json_logging
 from .profiles import ProfileLoader
 from .profiles import ProfileManager
 from .session_store import SessionStore
+
+logger = logging.getLogger(__name__)
 
 # Initialize JSON logging early
 init_json_logging()
@@ -548,8 +551,8 @@ def run(
         if not prompt:
             console.print("[red]Error:[/red] Prompt required in single mode")
             sys.exit(1)
-        # Pass session_id to execute_single (None if not provided)
-        asyncio.run(execute_single(prompt, config_data, search_paths, verbose, session_id))
+        # Pass session_id and profile_name to execute_single
+        asyncio.run(execute_single(prompt, config_data, search_paths, verbose, session_id, active_profile_name))
 
 
 @cli.group()
@@ -1077,8 +1080,14 @@ async def interactive_chat(
     session = AmplifierSession(config, loader=loader, session_id=session_id)
     await session.initialize()
 
-    # Note: Approval provider registration would require kernel changes (violates philosophy)
-    # The approval hook works via the existing hook registry mechanism
+    # Register CLI approval provider if approval hook is active (app-layer policy)
+    from .approval_provider import CLIApprovalProvider
+
+    register_provider = session.coordinator.get_capability("approval.register_provider")
+    if register_provider:
+        approval_provider = CLIApprovalProvider(console)
+        register_provider(approval_provider)
+        logger.info("Registered CLIApprovalProvider for interactive approvals")
 
     # Create command processor
     command_processor = CommandProcessor(session)
@@ -1155,7 +1164,12 @@ async def interactive_chat(
 
 
 async def execute_single(
-    prompt: str, config: dict, search_paths: list[Path], verbose: bool, session_id: str | None = None
+    prompt: str,
+    config: dict,
+    search_paths: list[Path],
+    verbose: bool,
+    session_id: str | None = None,
+    profile_name: str = "unknown",
 ):
     """Execute a single prompt and exit."""
     # Create loader with search paths
@@ -1167,6 +1181,14 @@ async def execute_single(
     try:
         await session.initialize()
 
+        # Register CLI approval provider if approval hook is active (app-layer policy)
+        from .approval_provider import CLIApprovalProvider
+
+        register_provider = session.coordinator.get_capability("approval.register_provider")
+        if register_provider:
+            approval_provider = CLIApprovalProvider(console)
+            register_provider(approval_provider)
+
         if verbose:
             console.print(f"[dim]Executing: {prompt}[/dim]")
 
@@ -1174,6 +1196,35 @@ async def execute_single(
         if verbose:
             console.print(f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]")
         console.print(response)
+
+        # Save session if session_id was explicitly provided
+        if session_id:
+            context = session.coordinator.get("context")
+            messages = getattr(context, "messages", [])
+            if messages:
+                # Get model name from provider
+                providers = session.coordinator.get("providers") or {}
+                model_name = "unknown"
+                for prov_name, prov in providers.items():
+                    if hasattr(prov, "model"):
+                        model_name = f"{prov_name}/{prov.model}"
+                        break
+                    if hasattr(prov, "default_model"):
+                        model_name = f"{prov_name}/{prov.default_model}"
+                        break
+
+                # Use profile name passed from caller
+
+                store = SessionStore()
+                metadata = {
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "profile": profile_name,
+                    "model": model_name,
+                    "turn_count": len([m for m in messages if m.get("role") == "user"]),
+                }
+                store.save(session_id, messages, metadata)
+                if verbose:
+                    console.print(f"[dim]Session {session_id[:8]}... saved[/dim]")
 
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -1479,6 +1530,14 @@ async def interactive_chat_with_session(
     # Create session with resolved config, loader, and session_id
     session = AmplifierSession(config, loader=loader, session_id=session_id)
     await session.initialize()
+
+    # Register CLI approval provider if approval hook is active (app-layer policy)
+    from .approval_provider import CLIApprovalProvider
+
+    register_provider = session.coordinator.get_capability("approval.register_provider")
+    if register_provider:
+        approval_provider = CLIApprovalProvider(console)
+        register_provider(approval_provider)
 
     # Restore context from transcript if available
     context = session.coordinator.get("context")

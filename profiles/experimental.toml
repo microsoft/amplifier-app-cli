@@ -17,7 +17,7 @@ files = [
 ]
 # No limit on recursion depth
 
-[agents_config]
+[agents]
 dirs = ["./agents/core", "./agents/experimental", "./agents/research"]
 
 [task]
