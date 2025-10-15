@@ -705,18 +705,17 @@ def build_effective_config_with_sources(chain):
                     sources["hooks"][module_name] = profile_name
                 effective_config["hooks"][module_name] = hook
 
-        # Merge agents
+        # Merge agents (dict of config overlays)
         if profile.agents:
-            for agent in profile.agents:
-                module_name = agent.module
-                if module_name in effective_config["agents"]:
-                    old_source = sources["agents"][module_name]
+            for agent_name, agent_config in profile.agents.items():
+                if agent_name in effective_config["agents"]:
+                    old_source = sources["agents"][agent_name]
                     if isinstance(old_source, tuple):
                         old_source = old_source[0]
-                    sources["agents"][module_name] = (profile_name, old_source)
+                    sources["agents"][agent_name] = (profile_name, old_source)
                 else:
-                    sources["agents"][module_name] = profile_name
-                effective_config["agents"][module_name] = agent
+                    sources["agents"][agent_name] = profile_name
+                effective_config["agents"][agent_name] = agent_config
 
     return effective_config, sources
 
@@ -802,17 +801,30 @@ def render_effective_config(chain, detailed):
                     console.print(f"    {k}: {v}")
         console.print()
 
-    # Render Agents section
+    # Render Agents section (config overlays for sub-sessions)
     if config["agents"]:
         console.print("[bold]Agents:[/bold]")
-        for module_name, agent in config["agents"].items():
-            source = sources["agents"].get(module_name, "")
+        for agent_name, agent_config in config["agents"].items():
+            source = sources["agents"].get(agent_name, "")
             source_str = format_source(source)
-            console.print(f"  {module_name}{source_str}")
+            # Show description if available
+            description = agent_config.get("description", "")
+            desc_str = f" - {description}" if description else ""
+            console.print(f"  {agent_name}{desc_str}{source_str}")
 
-            if detailed and agent.config:
-                for k, v in agent.config.items():
-                    console.print(f"    {k}: {v}")
+            if detailed:
+                # Show system instruction if present
+                if "system" in agent_config and "instruction" in agent_config["system"]:
+                    instruction = agent_config["system"]["instruction"]
+                    # Truncate long instructions
+                    if len(instruction) > 80:
+                        instruction = instruction[:77] + "..."
+                    console.print(f"    instruction: {instruction}")
+                # Show provider/tool counts
+                if "providers" in agent_config:
+                    console.print(f"    providers: {len(agent_config['providers'])}")
+                if "tools" in agent_config:
+                    console.print(f"    tools: {len(agent_config['tools'])}")
 
 
 @profile.command(name="show")
@@ -1088,6 +1100,26 @@ async def interactive_chat(
         approval_provider = CLIApprovalProvider(console)
         register_provider(approval_provider)
         logger.info("Registered CLIApprovalProvider for interactive approvals")
+
+    # Register session spawning capability for agent delegation (app-layer policy)
+    from .agent_config import load_agent_configs_from_directory
+
+    async def spawn_with_agent_wrapper(agent_name: str, instruction: str, sub_session_id: str):
+        """Wrapper for session spawning using coordinator infrastructure."""
+        from .session_spawner import spawn_sub_session
+
+        # Get agents from session config
+        agents = session.config.get("agents", {})
+
+        # Also try loading from directory if configured
+        agent_dir = Path(__file__).parent / "agents" / "core"
+        if agent_dir.exists():
+            file_agents = load_agent_configs_from_directory(agent_dir)
+            agents = {**file_agents, **agents}  # Profile agents override file agents
+
+        return await spawn_sub_session(agent_name, instruction, session, agents, sub_session_id)
+
+    session.coordinator.register_capability("session.spawn_with_agent", spawn_with_agent_wrapper)
 
     # Create command processor
     command_processor = CommandProcessor(session)

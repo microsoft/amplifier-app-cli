@@ -37,8 +37,45 @@ module = "tool-search"
 module = "tool-task"                 # Phase 3: Task delegation tool
 
 [[hooks]]
-module = "agent-registry"            # Phase 3: Agent registry (provides agents.list/get capabilities)
-config.dirs = ["/home/brkrabac/repos/amplifier.amplifier-v2-codespace/amplifier-dev/amplifier-app-cli/agents/core"]
+module = "hooks-streaming-ui"        # Streaming UI display for thinking and tools
 
-[[hooks]]
-module = "hooks-streaming-ui"        # Phase 4: Streaming UI display for thinking and tools
+# Agent configurations (config overlays for sub-session spawning)
+[agents.zen-architect]
+description = "System design with ruthless simplicity"
+[[agents.zen-architect.providers]]
+module = "provider-anthropic"
+config.model = "claude-3-5-sonnet"
+config.temperature = 0.7
+[[agents.zen-architect.tools]]
+module = "tool-filesystem"
+[[agents.zen-architect.tools]]
+module = "tool-bash"
+[agents.zen-architect.system]
+instruction = "You are a zen architect who values ruthless simplicity. Question every abstraction, favor clarity over cleverness."
+
+[agents.bug-hunter]
+description = "Systematic debugging and bug fixing"
+[[agents.bug-hunter.providers]]
+module = "provider-anthropic"
+config.model = "claude-3-5-sonnet"
+config.temperature = 0.3
+[[agents.bug-hunter.tools]]
+module = "tool-filesystem"
+[[agents.bug-hunter.tools]]
+module = "tool-bash"
+[agents.bug-hunter.system]
+instruction = "You are a systematic debugger. Form hypotheses, test methodically, isolate root causes, propose minimal fixes."
+
+[agents.researcher]
+description = "Research and information gathering"
+[[agents.researcher.providers]]
+module = "provider-anthropic"
+config.model = "claude-3-5-sonnet"
+[[agents.researcher.tools]]
+module = "tool-web"
+[[agents.researcher.tools]]
+module = "tool-search"
+[[agents.researcher.tools]]
+module = "tool-filesystem"
+[agents.researcher.system]
+instruction = "You are a research specialist. Identify key questions, search authoritative sources, synthesize findings with citations."

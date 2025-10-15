@@ -61,7 +61,7 @@ def compile_profile_to_mount_plan(base: Profile, overlays: list[Profile] | None 
     mount_plan["providers"] = [p.to_dict() for p in base.providers]
     mount_plan["tools"] = [t.to_dict() for t in base.tools]
     mount_plan["hooks"] = [h.to_dict() for h in base.hooks]
-    mount_plan["agents"] = [a.to_dict() for a in base.agents]
+    mount_plan["agents"] = base.agents  # Dict of config overlays (app-layer data), not modules
 
     # Apply overlays
     for overlay in overlays:
@@ -120,7 +120,12 @@ def _merge_profile_into_mount_plan(mount_plan: dict[str, Any], overlay: Profile)
     mount_plan["providers"] = _merge_module_list(mount_plan["providers"], overlay.providers)
     mount_plan["tools"] = _merge_module_list(mount_plan["tools"], overlay.tools)
     mount_plan["hooks"] = _merge_module_list(mount_plan["hooks"], overlay.hooks)
-    mount_plan["agents"] = _merge_module_list(mount_plan["agents"], overlay.agents)
+
+    # Merge agents dict (config overlays, not modules)
+    if overlay.agents:
+        if "agents" not in mount_plan:
+            mount_plan["agents"] = {}
+        mount_plan["agents"].update(overlay.agents)  # Dict merge, overlay wins
 
     return mount_plan
 

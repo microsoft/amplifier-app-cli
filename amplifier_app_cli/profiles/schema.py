@@ -95,7 +95,9 @@ class Profile(BaseModel):
     providers: list[ModuleConfig] = Field(default_factory=list)
     tools: list[ModuleConfig] = Field(default_factory=list)
     hooks: list[ModuleConfig] = Field(default_factory=list)
-    agents: list[ModuleConfig] = Field(default_factory=list, description="Agent modules to load")
+    agents: dict[str, dict] = Field(
+        default_factory=dict, description="Agent configuration overlays (partial mount plans for sub-sessions)"
+    )
 
     def has_context_config(self) -> bool:
         """Check if profile has context-specific configuration."""
