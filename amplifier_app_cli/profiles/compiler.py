@@ -61,14 +61,14 @@ def compile_profile_to_mount_plan(base: Profile, overlays: list[Profile] | None 
     mount_plan["providers"] = [p.to_dict() for p in base.providers]
     mount_plan["tools"] = [t.to_dict() for t in base.tools]
     mount_plan["hooks"] = [h.to_dict() for h in base.hooks]
-    mount_plan["agents"] = base.agents  # Dict of config overlays (app-layer data), not modules
+    mount_plan["agents"] = {}  # Will be populated from agents config
 
     # Apply overlays
     for overlay in overlays:
         mount_plan = _merge_profile_into_mount_plan(mount_plan, overlay)
 
-    # Load agents from directories if agents_config present
-    if base.agents_config and base.agents_config.dirs:
+    # Load agents from new agents field
+    if base.agents:
         from pathlib import Path
 
         from amplifier_app_cli.agent_config import load_agent_configs_from_directory
@@ -76,20 +76,31 @@ def compile_profile_to_mount_plan(base: Profile, overlays: list[Profile] | None 
         # Resolve agent dirs relative to bundled profiles directory
         bundled_base = Path(__file__).parent.parent.parent  # Points to amplifier-app-cli/
 
-        for agent_dir in base.agents_config.dirs:
-            # Resolve relative paths relative to bundled package location
-            if agent_dir.startswith("./") or agent_dir.startswith("../"):
-                resolved_dir = (bundled_base / agent_dir).resolve()
-            else:
-                resolved_dir = Path(agent_dir)
+        # Load from directories
+        if base.agents.dirs:
+            for agent_dir in base.agents.dirs:
+                # Resolve relative paths relative to bundled package location
+                if agent_dir.startswith("./") or agent_dir.startswith("../"):
+                    resolved_dir = (bundled_base / agent_dir).resolve()
+                else:
+                    resolved_dir = Path(agent_dir)
 
-            # Load agents from this directory
-            loaded_agents = load_agent_configs_from_directory(resolved_dir)
+                # Load agents from this directory
+                loaded_agents = load_agent_configs_from_directory(resolved_dir)
 
-            # Merge loaded agents into mount plan agents dict
-            if loaded_agents:
-                mount_plan["agents"].update(loaded_agents)
-                logger.debug(f"Loaded {len(loaded_agents)} agents from {resolved_dir}")
+                # Filter by include list if specified
+                if base.agents.include:
+                    loaded_agents = {k: v for k, v in loaded_agents.items() if k in base.agents.include}
+
+                # Merge loaded agents into mount plan agents dict
+                if loaded_agents:
+                    mount_plan["agents"].update(loaded_agents)
+                    logger.debug(f"Loaded {len(loaded_agents)} agents from {resolved_dir}")
+
+        # Add inline definitions
+        if base.agents.inline:
+            mount_plan["agents"].update(base.agents.inline)
+            logger.debug(f"Added {len(base.agents.inline)} inline agents")
 
     # Inject profile-level config sections into specific modules
     mount_plan = _inject_profile_configs(mount_plan, base)
@@ -145,11 +156,7 @@ def _merge_profile_into_mount_plan(mount_plan: dict[str, Any], overlay: Profile)
     mount_plan["tools"] = _merge_module_list(mount_plan["tools"], overlay.tools)
     mount_plan["hooks"] = _merge_module_list(mount_plan["hooks"], overlay.hooks)
 
-    # Merge agents dict (config overlays, not modules)
-    if overlay.agents:
-        if "agents" not in mount_plan:
-            mount_plan["agents"] = {}
-        mount_plan["agents"].update(overlay.agents)  # Dict merge, overlay wins
+    # Agents are handled by loading from directories + inline, not merged here
 
     return mount_plan
 
@@ -158,8 +165,8 @@ def _inject_profile_configs(mount_plan: dict[str, Any], profile: Profile) -> dic
     """
     Inject profile-level config sections into specific modules.
 
-    This passes profile.agents_config to agent-registry module,
-    profile.task to task-tool module, etc.
+    This passes profile.task to task-tool module,
+    profile.ui to streaming-ui hook module, etc.
 
     Args:
         mount_plan: Mount plan to update
@@ -168,14 +175,6 @@ def _inject_profile_configs(mount_plan: dict[str, Any], profile: Profile) -> dic
     Returns:
         Updated mount plan
     """
-    # Inject agents_config into agent-registry module
-    if profile.agents_config:
-        for hook in mount_plan.get("hooks", []):
-            if hook.get("module") == "agent-registry":
-                if "config" not in hook:
-                    hook["config"] = {}
-                hook["config"]["agents"] = {"dirs": profile.agents_config.dirs}
-
     # Inject task config into task-tool module
     if profile.task:
         for tool in mount_plan.get("tools", []):

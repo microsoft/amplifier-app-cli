@@ -14,7 +14,6 @@ session:
 
 providers:
   - module: provider-mock
-    priority: 1
     config:
       default_response: This is a mock response for testing
       response_delay: 0.1

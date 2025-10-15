@@ -18,8 +18,6 @@ tools:
 
 hooks:
   - module: hooks-redaction
-    priority: 10
-    enabled: true
     config:
       allowlist:
         - session_id
@@ -27,8 +25,6 @@ hooks:
         - span_id
         - parent_span_id
   - module: hooks-logging
-    priority: 100
-    enabled: true
     config:
       path: ./amplifier.log.jsonl
 ---
@@ -43,7 +39,7 @@ The standard starting point for most Amplifier configurations. Extends foundatio
 
 **Key features**:
 - Essential filesystem and bash tools for basic operations
-- Redaction hook for security (runs early at priority 10)
-- Logging hook for observability (runs late at priority 100)
+- Redaction hook for security
+- Logging hook for observability
 - Session management with 100K token limit and auto-compaction at 80% threshold
 - Infrastructure IDs (session_id, turn_id, etc.) are allowlisted from redaction

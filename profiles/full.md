@@ -20,15 +20,12 @@ providers:
   - module: provider-openai
     config:
       default_model: gpt-5-mini
-    priority: 2
   - module: provider-azure-openai
     config:
       default_model: gpt-5-mini
-    priority: 3
   - module: provider-ollama
     config:
       default_model: llama3.2:3b
-    priority: 4
 
 tools:
   - module: tool-web
@@ -36,12 +33,11 @@ tools:
   - module: tool-task
 
 agents:
-  - module: agent-architect
+  dirs:
+    - ./agents
 
 hooks:
   - module: hooks-approval
-    priority: 5
-    enabled: true
     config:
       patterns:
         - rm -rf
@@ -50,20 +46,14 @@ hooks:
         - DROP
       auto_approve: false
   - module: hooks-backup
-    priority: 20
-    enabled: true
     config:
       backup_dir: .amplifier/local/backups
       max_backups: 10
   - module: hooks-scheduler-cost-aware
-    priority: 30
-    enabled: true
     config:
       budget_limit: 10.0
       warn_threshold: 0.8
   - module: hooks-scheduler-heuristic
-    priority: 35
-    enabled: true
     config:
       max_concurrent: 5
       batch_size: 10
@@ -85,4 +75,4 @@ Kitchen sink configuration with all available modules for comprehensive testing 
 - Backup hook for automatic state preservation
 - Cost-aware scheduler to manage API spending ($10 budget with 80% warning)
 - Heuristic scheduler for performance optimization (5 concurrent operations, batch size 10)
-- Agent architect module for specialized architecture tasks
+- Loads all agents from ./agents directory for task delegation

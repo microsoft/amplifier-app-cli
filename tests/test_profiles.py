@@ -446,14 +446,13 @@ class TestCompileProfileToMountPlan:
             ),
             orchestrator=None,
             context=None,
-            agents_config=None,
+            agents=None,
             task=None,
             logging=None,
             ui=None,
             providers=[ModuleConfig(module="provider-mock", config=None)],
             tools=[ModuleConfig(module="tool-filesystem", config=None), ModuleConfig(module="tool-bash", config=None)],
             hooks=[],
-            agents={},  # Dict of config overlays, not list of modules
         )
 
         mount_plan = compile_profile_to_mount_plan(profile, [])
@@ -486,14 +485,13 @@ class TestCompileProfileToMountPlan:
             ),
             orchestrator=None,
             context=None,
-            agents_config=None,
+            agents=None,
             task=None,
             logging=None,
             ui=None,
             providers=[],
             tools=[ModuleConfig(module="tool-filesystem", config=None)],
             hooks=[],
-            agents={},  # Dict of config overlays, not list of modules
         )
 
         base = Profile(
@@ -507,14 +505,13 @@ class TestCompileProfileToMountPlan:
             ),
             orchestrator=None,
             context=None,
-            agents_config=None,
+            agents=None,
             task=None,
             logging=None,
             ui=None,
             providers=[ModuleConfig(module="provider-mock", config=None)],
             tools=[ModuleConfig(module="tool-bash", config=None)],
             hooks=[],
-            agents={},  # Dict of config overlays, not list of modules
         )
 
         mount_plan = compile_profile_to_mount_plan(base, [foundation])

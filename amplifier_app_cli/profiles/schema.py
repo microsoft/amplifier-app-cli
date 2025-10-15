@@ -54,9 +54,11 @@ class ContextConfig(BaseModel):
 
 
 class AgentsConfig(BaseModel):
-    """Agent registry configuration."""
+    """Configuration for agent discovery and filtering."""
 
-    dirs: list[str] = Field(default_factory=list, description="Directories to search for agent .md files")
+    dirs: list[str] | None = Field(None, description="Directories to search for agent .md files")
+    include: list[str] | None = Field(None, description="Specific agents to include (filters discovered agents)")
+    inline: dict[str, dict] | None = Field(None, description="Inline agent definitions (partial mount plans)")
 
 
 class TaskConfig(BaseModel):
@@ -88,16 +90,13 @@ class Profile(BaseModel):
     session: SessionConfig
     orchestrator: OrchestratorConfig | None = Field(None, description="Orchestrator configuration")
     context: ContextConfig | None = Field(None, description="Context loading configuration")
-    agents_config: AgentsConfig | None = Field(None, description="Agent registry configuration")
+    agents: AgentsConfig | None = Field(None, description="Agent discovery, filtering, and inline definitions")
     task: TaskConfig | None = Field(None, description="Task tool configuration")
     logging: LoggingConfig | None = Field(None, description="Logging configuration")
     ui: UIConfig | None = Field(None, description="UI display configuration")
     providers: list[ModuleConfig] = Field(default_factory=list)
     tools: list[ModuleConfig] = Field(default_factory=list)
     hooks: list[ModuleConfig] = Field(default_factory=list)
-    agents: dict[str, dict] = Field(
-        default_factory=dict, description="Agent configuration overlays (partial mount plans for sub-sessions)"
-    )
 
     def has_context_config(self) -> bool:
         """Check if profile has context-specific configuration."""

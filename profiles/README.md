@@ -53,7 +53,7 @@ Development configuration (extends base):
 - Streaming orchestrator for better feedback
 - Inherits all tools and hooks from base
 - Adds web and search tools
-- Adds agent-architect for task delegation
+- Includes zen-architect agent for task delegation (via agents schema)
 - Ideal for interactive development
 
 ### production.md
@@ -76,7 +76,7 @@ Testing configuration (extends base):
 Kitchen sink configuration (extends base):
 - All available providers (Anthropic, OpenAI, Azure OpenAI, Ollama)
 - All available tools (filesystem, bash, web, search, task)
-- All available agents (agent-architect)
+- All available agents (loaded via unified agents schema)
 - All available hooks (redaction, logging, approval, backup, cost-aware scheduler, heuristic scheduler)
 - Maximum token capacity (200K)
 - Persistent context
@@ -160,6 +160,18 @@ profile:
 # Override or add specific settings
 tools:
   - module: tool-custom
+
+# Configure agents using unified schema
+agents:
+  dirs: ["./agents"]  # Load from directory
+  include: ["zen-architect"]  # Only load specific ones
+  inline:  # Add custom inline agents
+    my-agent:
+      description: "My custom agent"
+      providers:
+        - module: provider-anthropic
+          config:
+            model: claude-3-5-sonnet
 ---
 ```
 
@@ -215,6 +227,50 @@ When using profiles, configuration is merged in this order (later overrides earl
 5. `--config` file flag
 6. CLI flags (`--provider`, `--model`, etc.)
 7. Environment variables (`${VAR_NAME}` expansion)
+
+## Agent Configuration
+
+The unified `agents` schema supports flexible agent loading:
+
+### Loading Patterns
+
+```yaml
+# 1. Load all agents from directory
+agents:
+  dirs: ["./agents"]
+
+# 2. Load specific agents from directory
+agents:
+  dirs: ["./agents"]
+  include: ["zen-architect", "bug-hunter"]
+
+# 3. Define agents inline only
+agents:
+  inline:
+    custom-agent:
+      description: "Custom agent"
+      providers:
+        - module: provider-anthropic
+      tools:
+        - module: tool-filesystem
+
+# 4. Combine directory and inline agents
+agents:
+  dirs: ["./agents"]
+  include: ["zen-architect"]  # Filter directory agents
+  inline:
+    extra-agent:
+      description: "Additional agent"
+```
+
+### Schema Fields
+
+- **dirs** (optional): List of directories to scan for agent .md files
+- **include** (optional): Filter to only load specific agent names from directories
+- **inline** (optional): Define agents directly in the profile
+
+When `dirs` is specified without `include`, all agents in those directories are loaded.
+When both `dirs` and `inline` are used, agents from both sources are merged.
 
 ## Environment Variable Expansion
 

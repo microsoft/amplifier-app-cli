@@ -28,7 +28,7 @@ tools:
 hooks:
   - module: hooks-streaming-ui
 
-agents_config:
+agents:
   dirs:
     - ./agents
 ---
