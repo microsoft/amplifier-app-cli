@@ -18,6 +18,7 @@ orchestrator:
 
 tools:
   - module: tool-web
+    source: git+https://github.com/microsoft/amplifier-module-tool-web@main
 
 # Example: Selective agent loading for production
 # Only researcher (no bug-hunter, modular-builder, zen-architect)

@@ -14,6 +14,7 @@ session:
 
 providers:
   - module: provider-mock
+    source: git+https://github.com/microsoft/amplifier-module-provider-mock@main
     config:
       default_response: This is a mock response for testing
       response_delay: 0.1
@@ -21,6 +22,7 @@ providers:
 
 tools:
   - module: tool-task
+    source: git+https://github.com/microsoft/amplifier-module-tool-task@main
 
 # Example: Inline agent definition for testing
 agents:
