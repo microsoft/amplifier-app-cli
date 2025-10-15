@@ -30,11 +30,16 @@ class ModuleConfig(BaseModel):
     """Configuration for a single module."""
 
     module: str = Field(..., description="Module ID to load")
+    source: str | dict[str, Any] | None = Field(
+        None, description="Module source (git URL, file path, or package name). String or object format."
+    )
     config: dict[str, Any] | None = Field(None, description="Module-specific configuration")
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary format for Mount Plan."""
         result: dict[str, Any] = {"module": self.module}
+        if self.source is not None:
+            result["source"] = self.source
         if self.config is not None:
             result["config"] = self.config
         return result
