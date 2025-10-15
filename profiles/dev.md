@@ -30,8 +30,7 @@ tools:
 
 hooks:
   - module: hooks-streaming-ui
-    # TODO: Publish hooks-streaming-ui repo, then add:
-    # source: git+https://github.com/microsoft/amplifier-module-hooks-streaming-ui@main
+    source: git+https://github.com/microsoft/amplifier-module-hooks-streaming-ui@main
 
 agents:
   dirs:

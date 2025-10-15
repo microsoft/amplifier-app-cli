@@ -20,8 +20,7 @@ tools:
 
 hooks:
   - module: hooks-redaction
-    # TODO: Publish hooks-redaction repo, then add:
-    # source: git+https://github.com/microsoft/amplifier-module-hooks-redaction@main
+    source: git+https://github.com/microsoft/amplifier-module-hooks-redaction@main
     config:
       allowlist:
         - session_id

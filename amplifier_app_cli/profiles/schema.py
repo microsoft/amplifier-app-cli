@@ -93,11 +93,11 @@ class Profile(BaseModel):
 
     profile: ProfileMetadata
     session: SessionConfig
-    orchestrator: list[ModuleConfig] | OrchestratorConfig | None = Field(
-        None, description="Orchestrator module config(s) or legacy config"
+    orchestrator: ModuleConfig | OrchestratorConfig | None = Field(
+        None, description="Orchestrator module config or legacy orchestrator config"
     )
-    context: list[ModuleConfig] | ContextConfig | None = Field(
-        None, description="Context module config(s) or legacy context loading config"
+    context: ModuleConfig | ContextConfig | None = Field(
+        None, description="Context module config or legacy context loading config"
     )
     agents: AgentsConfig | None = Field(None, description="Agent discovery, filtering, and inline definitions")
     task: TaskConfig | None = Field(None, description="Task tool configuration")

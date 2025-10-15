@@ -9,12 +9,12 @@ session:
   context: context-simple
 
 orchestrator:
-  - module: loop-basic
-    source: git+https://github.com/microsoft/amplifier-module-loop-basic@main
+  module: loop-basic
+  source: git+https://github.com/microsoft/amplifier-module-loop-basic@main
 
 context:
-  - module: context-simple
-    source: git+https://github.com/microsoft/amplifier-module-context-simple@main
+  module: context-simple
+  source: git+https://github.com/microsoft/amplifier-module-context-simple@main
 
 providers:
   - module: provider-anthropic
