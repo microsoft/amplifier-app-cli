@@ -31,12 +31,25 @@ class ProfileLoader:
         paths = []
 
         # Bundled profiles shipped with the package (lowest precedence)
-        # Look in the amplifier-app-cli package directory (sibling to profiles/ submodule)
+        # Try multiple locations for dev vs installed scenarios
+        import importlib.util
+
+        # Option 1: Installed package data (via shared-data in hatch)
+        spec = importlib.util.find_spec("amplifier_app_cli")
+        if spec and spec.origin:
+            # In installed package, profiles are in site-packages/profiles/
+            site_packages = Path(spec.origin).parent.parent
+            bundled_installed = site_packages / "profiles"
+            if bundled_installed.exists():
+                paths.append(bundled_installed)
+                logger.debug(f"Found installed profiles: {bundled_installed}")
+
+        # Option 2: Development (sibling to package)
         package_dir = Path(__file__).parent.parent  # amplifier_app_cli package
-        bundled = package_dir.parent / "profiles"  # Sibling profiles directory
-        if bundled.exists():
-            paths.append(bundled)
-            logger.debug(f"Found bundled profiles: {bundled}")
+        bundled_dev = package_dir.parent / "profiles"
+        if bundled_dev.exists() and bundled_dev not in paths:
+            paths.append(bundled_dev)
+            logger.debug(f"Found dev profiles: {bundled_dev}")
 
         # Official profiles (second lowest precedence)
         official = Path("/usr/share/amplifier/profiles")
