@@ -1081,6 +1081,9 @@ async def interactive_chat(
     config: dict, search_paths: list[Path], verbose: bool, session_id: str | None = None, profile_name: str = "default"
 ):
     """Run an interactive chat session."""
+    # Immediate feedback that session is starting
+    console.print("[dim]Starting chat session...[/dim]", end="")
+
     # Generate session ID if not provided
     if not session_id:
         session_id = str(uuid.uuid4())
@@ -1091,6 +1094,9 @@ async def interactive_chat(
     # Create session with resolved config, loader, and session_id
     session = AmplifierSession(config, loader=loader, session_id=session_id)
     await session.initialize()
+
+    # Clear the initialization message
+    console.print("\r" + " " * 40 + "\r", end="")
 
     # Register CLI approval provider if approval hook is active (app-layer policy)
     from .approval_provider import CLIApprovalProvider
@@ -1204,6 +1210,10 @@ async def execute_single(
     profile_name: str = "unknown",
 ):
     """Execute a single prompt and exit."""
+    # Immediate feedback that something is happening
+    console.print("[dim]Initializing session...[/dim]", end="")
+    console.print("\r", end="")  # Clear the line after initialization
+
     # Create loader with search paths
     loader = ModuleLoader(search_paths=search_paths if search_paths else None)
 
