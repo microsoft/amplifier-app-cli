@@ -31,25 +31,27 @@ class ProfileLoader:
         paths = []
 
         # Bundled profiles shipped with the package (lowest precedence)
-        # Try multiple locations for dev vs installed scenarios
-        import importlib.util
+        # Use importlib.resources for proper package data access
+        try:
+            if sys.version_info >= (3, 9):
+                from importlib.resources import files
+            else:
+                from importlib_resources import files  # type: ignore
 
-        # Option 1: Installed package data (via shared-data in hatch)
-        spec = importlib.util.find_spec("amplifier_app_cli")
-        if spec and spec.origin:
-            # In installed package, profiles are in site-packages/profiles/
-            site_packages = Path(spec.origin).parent.parent
-            bundled_installed = site_packages / "profiles"
-            if bundled_installed.exists():
-                paths.append(bundled_installed)
-                logger.debug(f"Found installed profiles: {bundled_installed}")
+            # Profiles are installed as package data in amplifier_app_cli
+            profile_files = files("amplifier_app_cli") / "profiles"
+            if profile_files.is_dir():  # type: ignore
+                paths.append(Path(str(profile_files)))
+                logger.debug("Found installed profiles via importlib.resources")
+        except Exception as e:
+            logger.debug(f"Could not locate profiles via importlib.resources: {e}")
 
-        # Option 2: Development (sibling to package)
-        package_dir = Path(__file__).parent.parent  # amplifier_app_cli package
-        bundled_dev = package_dir.parent / "profiles"
-        if bundled_dev.exists() and bundled_dev not in paths:
-            paths.append(bundled_dev)
-            logger.debug(f"Found dev profiles: {bundled_dev}")
+            # Fallback: Try development location
+            package_dir = Path(__file__).parent.parent  # amplifier_app_cli package
+            bundled_dev = package_dir.parent / "profiles"
+            if bundled_dev.exists():
+                paths.append(bundled_dev)
+                logger.debug(f"Found dev profiles: {bundled_dev}")
 
         # Official profiles (second lowest precedence)
         official = Path("/usr/share/amplifier/profiles")

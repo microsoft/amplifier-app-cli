@@ -25,10 +25,6 @@ package = true
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_app_cli"]
 
-[tool.hatch.build.targets.wheel.shared-data]
-"profiles" = "profiles"
-"agents" = "agents"
-
 [tool.hatch.metadata]
 allow-direct-references = true
 
