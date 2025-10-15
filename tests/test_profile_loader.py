@@ -119,17 +119,19 @@ class TestProfileLoader:
     def test_load_profile_simple(self, temp_profiles_dir):
         """Test loading a simple profile without inheritance."""
         # Create a simple profile file
-        profile_content = """
-[profile]
-name = "simple"
-version = "1.0.0"
-description = "Simple profile"
+        profile_content = """---
+profile:
+  name: simple
+  version: 1.0.0
+  description: Simple profile
+session:
+  orchestrator: loop
+  context: simple
+---
 
-[session]
-orchestrator = "loop"
-context = "simple"
+Simple test profile for unit testing.
 """
-        (temp_profiles_dir / "simple.toml").write_text(profile_content)
+        (temp_profiles_dir / "simple.md").write_text(profile_content)
 
         loader = ProfileLoader([temp_profiles_dir])
         profile = loader.load_profile("simple")
@@ -141,39 +143,41 @@ context = "simple"
     def test_load_profile_with_inheritance(self, temp_profiles_dir):
         """Test loading a profile with inheritance."""
         # Create parent profile
-        parent_content = """
-[profile]
-name = "base"
-version = "1.0.0"
-description = "Base profile"
+        parent_content = """---
+profile:
+  name: base
+  version: 1.0.0
+  description: Base profile
+session:
+  orchestrator: loop
+  context: simple
+  max_tokens: 1000
+providers:
+  - module: provider-base
+---
 
-[session]
-orchestrator = "loop"
-context = "simple"
-max_tokens = 1000
-
-[[providers]]
-module = "provider-base"
+Base profile for testing inheritance.
 """
-        (temp_profiles_dir / "base.toml").write_text(parent_content)
+        (temp_profiles_dir / "base.md").write_text(parent_content)
 
         # Create child profile
-        child_content = """
-[profile]
-name = "extended"
-version = "1.0.0"
-description = "Extended profile"
-extends = "base"
+        child_content = """---
+profile:
+  name: extended
+  version: 1.0.0
+  description: Extended profile
+  extends: base
+session:
+  orchestrator: loop
+  context: simple
+  max_tokens: 2000
+tools:
+  - module: tool-extra
+---
 
-[session]
-orchestrator = "loop"
-context = "simple"
-max_tokens = 2000
-
-[[tools]]
-module = "tool-extra"
+Extended profile that inherits from base.
 """
-        (temp_profiles_dir / "extended.toml").write_text(child_content)
+        (temp_profiles_dir / "extended.md").write_text(child_content)
 
         loader = ProfileLoader([temp_profiles_dir])
         profile = loader.load_profile("extended")
@@ -189,32 +193,36 @@ module = "tool-extra"
     def test_circular_dependency_detection(self, temp_profiles_dir):
         """Test that circular dependencies are detected."""
         # Create profile A that extends B
-        profile_a = """
-[profile]
-name = "a"
-version = "1.0.0"
-description = "Profile A"
-extends = "b"
+        profile_a = """---
+profile:
+  name: a
+  version: 1.0.0
+  description: Profile A
+  extends: b
+session:
+  orchestrator: loop
+  context: simple
+---
 
-[session]
-orchestrator = "loop"
-context = "simple"
+Profile A (circular dependency test).
 """
-        (temp_profiles_dir / "a.toml").write_text(profile_a)
+        (temp_profiles_dir / "a.md").write_text(profile_a)
 
         # Create profile B that extends A (circular)
-        profile_b = """
-[profile]
-name = "b"
-version = "1.0.0"
-description = "Profile B"
-extends = "a"
+        profile_b = """---
+profile:
+  name: b
+  version: 1.0.0
+  description: Profile B
+  extends: a
+session:
+  orchestrator: loop
+  context: simple
+---
 
-[session]
-orchestrator = "loop"
-context = "simple"
+Profile B (circular dependency test).
 """
-        (temp_profiles_dir / "b.toml").write_text(profile_b)
+        (temp_profiles_dir / "b.md").write_text(profile_b)
 
         loader = ProfileLoader([temp_profiles_dir])
 
@@ -226,10 +234,10 @@ context = "simple"
         with pytest.raises(FileNotFoundError, match="Profile 'nonexistent' not found"):
             loader_with_temp.load_profile("nonexistent")
 
-    def test_load_profile_invalid_toml(self, temp_profiles_dir):
-        """Test loading an invalid TOML file."""
-        # Create invalid TOML
-        (temp_profiles_dir / "invalid.toml").write_text("This is not valid TOML {{")
+    def test_load_profile_invalid_yaml(self, temp_profiles_dir):
+        """Test loading an invalid YAML file."""
+        # Create invalid YAML frontmatter
+        (temp_profiles_dir / "invalid.md").write_text("---\nthis is not valid yaml: {{\n---")
 
         loader = ProfileLoader([temp_profiles_dir])
 
@@ -239,13 +247,16 @@ context = "simple"
     def test_load_profile_missing_required_fields(self, temp_profiles_dir):
         """Test loading profile with missing required fields."""
         # Profile missing required session fields
-        incomplete_profile = """
-[profile]
-name = "incomplete"
-version = "1.0.0"
-description = "Incomplete profile"
+        incomplete_profile = """---
+profile:
+  name: incomplete
+  version: 1.0.0
+  description: Incomplete profile
+---
+
+Incomplete profile for testing validation.
 """
-        (temp_profiles_dir / "incomplete.toml").write_text(incomplete_profile)
+        (temp_profiles_dir / "incomplete.md").write_text(incomplete_profile)
 
         loader = ProfileLoader([temp_profiles_dir])
 
@@ -256,19 +267,21 @@ description = "Incomplete profile"
         """Test listing available profiles."""
         # Create several profile files
         for name in ["profile1", "profile2", "profile3"]:
-            content = f"""
-[profile]
-name = "{name}"
-version = "1.0.0"
-description = "Test profile {name}"
+            content = f"""---
+profile:
+  name: {name}
+  version: 1.0.0
+  description: Test profile {name}
+session:
+  orchestrator: loop
+  context: simple
+---
 
-[session]
-orchestrator = "loop"
-context = "simple"
+Test profile {name} for listing.
 """
-            (temp_profiles_dir / f"{name}.toml").write_text(content)
+            (temp_profiles_dir / f"{name}.md").write_text(content)
 
-        # Also create a non-TOML file that should be ignored
+        # Also create a non-MD file that should be ignored
         (temp_profiles_dir / "not-a-profile.txt").write_text("Not a profile")
 
         loader = ProfileLoader([temp_profiles_dir])
@@ -286,31 +299,33 @@ context = "simple"
         high_priority.mkdir()
 
         # Same profile in both directories
-        (low_priority / "test.toml").write_text("low priority")
-        (high_priority / "test.toml").write_text("high priority")
+        (low_priority / "test.md").write_text("---\nprofile:\n  name: test\n---\nlow priority")
+        (high_priority / "test.md").write_text("---\nprofile:\n  name: test\n---\nhigh priority")
 
         # Loader with paths in order: low, high
         # find_profile_file searches in reverse (high first)
         loader = ProfileLoader([low_priority, high_priority])
 
         found = loader.find_profile_file("test")
-        assert found == high_priority / "test.toml"
+        assert found == high_priority / "test.md"
 
     def test_load_profile_with_model_validation(self, temp_profiles_dir):
         """Test that model field is validated when present."""
         # Profile with valid model
-        valid_model_profile = """
-[profile]
-name = "with-model"
-version = "1.0.0"
-description = "Profile with model"
-model = "anthropic/claude-3-5-sonnet"
+        valid_model_profile = """---
+profile:
+  name: with-model
+  version: 1.0.0
+  description: Profile with model
+  model: anthropic/claude-3-5-sonnet
+session:
+  orchestrator: loop
+  context: simple
+---
 
-[session]
-orchestrator = "loop"
-context = "simple"
+Profile with model specification.
 """
-        (temp_profiles_dir / "with-model.toml").write_text(valid_model_profile)
+        (temp_profiles_dir / "with-model.md").write_text(valid_model_profile)
 
         loader = ProfileLoader([temp_profiles_dir])
 
@@ -319,18 +334,20 @@ context = "simple"
         assert profile.profile.model == "anthropic/claude-3-5-sonnet"
 
         # Profile with invalid model
-        invalid_model_profile = """
-[profile]
-name = "bad-model"
-version = "1.0.0"
-description = "Profile with invalid model"
-model = "invalid-format"
+        invalid_model_profile = """---
+profile:
+  name: bad-model
+  version: 1.0.0
+  description: Profile with invalid model
+  model: invalid-format
+session:
+  orchestrator: loop
+  context: simple
+---
 
-[session]
-orchestrator = "loop"
-context = "simple"
+Profile with invalid model format.
 """
-        (temp_profiles_dir / "bad-model.toml").write_text(invalid_model_profile)
+        (temp_profiles_dir / "bad-model.md").write_text(invalid_model_profile)
 
         # Should fail validation
         with pytest.raises(ValueError, match="must be 'provider/model'"):
@@ -339,54 +356,57 @@ context = "simple"
     def test_deep_inheritance_chain(self, temp_profiles_dir):
         """Test loading profile with deep inheritance chain."""
         # Create a chain: base -> middle -> top
-        base_content = """
-[profile]
-name = "base"
-version = "1.0.0"
-description = "Base profile"
+        base_content = """---
+profile:
+  name: base
+  version: 1.0.0
+  description: Base profile
+session:
+  orchestrator: loop
+  context: simple
+  max_tokens: 1000
+providers:
+  - module: provider-base
+---
 
-[session]
-orchestrator = "loop"
-context = "simple"
-max_tokens = 1000
-
-[[providers]]
-module = "provider-base"
+Base profile in inheritance chain.
 """
-        (temp_profiles_dir / "base.toml").write_text(base_content)
+        (temp_profiles_dir / "base.md").write_text(base_content)
 
-        middle_content = """
-[profile]
-name = "middle"
-version = "1.0.0"
-description = "Middle profile"
-extends = "base"
+        middle_content = """---
+profile:
+  name: middle
+  version: 1.0.0
+  description: Middle profile
+  extends: base
+session:
+  orchestrator: loop
+  context: simple
+  max_tokens: 2000
+tools:
+  - module: tool-middle
+---
 
-[session]
-orchestrator = "loop"
-context = "simple"
-max_tokens = 2000
-
-[[tools]]
-module = "tool-middle"
+Middle profile in inheritance chain.
 """
-        (temp_profiles_dir / "middle.toml").write_text(middle_content)
+        (temp_profiles_dir / "middle.md").write_text(middle_content)
 
-        top_content = """
-[profile]
-name = "top"
-version = "1.0.0"
-description = "Top profile"
-extends = "middle"
+        top_content = """---
+profile:
+  name: top
+  version: 1.0.0
+  description: Top profile
+  extends: middle
+session:
+  orchestrator: loop
+  context: advanced
+hooks:
+  - module: hook-top
+---
 
-[session]
-orchestrator = "loop"
-context = "advanced"
-
-[[hooks]]
-module = "hook-top"
+Top profile in inheritance chain.
 """
-        (temp_profiles_dir / "top.toml").write_text(top_content)
+        (temp_profiles_dir / "top.md").write_text(top_content)
 
         loader = ProfileLoader([temp_profiles_dir])
         profile = loader.load_profile("top")

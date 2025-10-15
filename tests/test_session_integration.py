@@ -75,13 +75,16 @@ def test_realistic_session_workflow():
         assert final_metadata["tokens_used"] == 250
 
         # Test profile loading
-        profile_file = Path(tmpdir) / session_id / "profile.toml"
+        profile_file = Path(tmpdir) / session_id / "profile.md"
         assert profile_file.exists()
 
-        import tomllib
+        # Parse YAML frontmatter
+        import yaml
 
-        with open(profile_file, "rb") as f:
-            loaded_profile = tomllib.load(f)
+        content = profile_file.read_text()
+        parts = content.split("---")
+        frontmatter = parts[1] if len(parts) >= 3 else parts[0]
+        loaded_profile = yaml.safe_load(frontmatter)
 
         assert loaded_profile["profile"]["model"] == "anthropic/claude-3-5-sonnet"
         assert loaded_profile["session"]["max_tokens"] == 100000

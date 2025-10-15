@@ -1,25 +1,26 @@
 """Agent configuration management for Amplifier.
 
 Loads and manages agent configuration overlays (partial mount plans)
-from TOML files or profile definitions.
+from Markdown files with YAML frontmatter or profile definitions.
 """
 
 import logging
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-import tomli
+import yaml
 
 logger = logging.getLogger(__name__)
 
 
 def load_agent_configs_from_directory(directory: str | Path) -> dict[str, dict]:
     """
-    Load agent configurations from TOML files in a directory.
+    Load agent configurations from Markdown files with YAML frontmatter.
 
     Args:
-        directory: Path to directory containing agent TOML files
+        directory: Path to directory containing agent Markdown files
 
     Returns:
         Dict of {agent_name: config_overlay}
@@ -30,19 +31,54 @@ def load_agent_configs_from_directory(directory: str | Path) -> dict[str, dict]:
         return {}
 
     agents = {}
-    for toml_file in dir_path.glob("*.toml"):
+    for md_file in dir_path.glob("*.md"):
         try:
-            with open(toml_file, "rb") as f:
-                config = tomli.load(f)
+            # Read file content
+            content = md_file.read_text()
 
-            # Get name from meta section or filename
-            name = config.get("meta", {}).get("name", toml_file.stem)
+            # Parse YAML frontmatter
+            match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)", content, re.DOTALL)
+            if not match:
+                logger.warning(f"No YAML frontmatter found in {md_file}")
+                continue
+
+            frontmatter_yaml = match.group(1)
+            markdown_body = match.group(2).strip()
+
+            # Load YAML configuration
+            config = yaml.safe_load(frontmatter_yaml)
+
+            # If markdown body exists, use it as system instruction
+            if markdown_body:
+                if "system" not in config:
+                    config["system"] = {}
+                config["system"]["instruction"] = markdown_body
+
+            # Get name from meta section, top level, or filename
+            name = None
+            if "meta" in config and "name" in config["meta"]:
+                name = config["meta"]["name"]
+            elif "name" in config:
+                # Support name at top level for convenience
+                name = config["name"]
+                # Move it to meta section for consistency
+                if "meta" not in config:
+                    config["meta"] = {}
+                config["meta"]["name"] = name
+                del config["name"]
+            else:
+                # Use filename stem as fallback
+                name = md_file.stem
+                if "meta" not in config:
+                    config["meta"] = {}
+                config["meta"]["name"] = name
+
             agents[name] = config
 
-            logger.debug(f"Loaded agent config: {name} from {toml_file.name}")
+            logger.debug(f"Loaded agent config: {name} from {md_file.name}")
 
         except Exception as e:
-            logger.warning(f"Failed to load agent config from {toml_file}: {e}")
+            logger.warning(f"Failed to load agent config from {md_file}: {e}")
 
     logger.info(f"Loaded {len(agents)} agent configs from {directory}")
     return agents
@@ -96,12 +132,12 @@ def validate_agent_config(config: dict[str, Any]) -> bool:
     Raises:
         ValueError: If configuration is invalid
     """
-    # Must have meta section with name
-    if "meta" not in config:
-        raise ValueError("Agent config must have 'meta' section")
+    # Must have name either at top level or in meta section
+    has_top_level_name = "name" in config
+    has_meta_name = "meta" in config and "name" in config.get("meta", {})
 
-    if "name" not in config.get("meta", {}):
-        raise ValueError("Agent config 'meta' section must have 'name'")
+    if not has_top_level_name and not has_meta_name:
+        raise ValueError("Agent config must have 'name' (either at top level or in 'meta' section)")
 
     # System instruction is optional but recommended
     if "system" in config and "instruction" not in config.get("system", {}):

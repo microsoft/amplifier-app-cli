@@ -33,14 +33,14 @@ full (kitchen sink - all available modules)
 
 ## Available Profiles
 
-### foundation.toml
+### foundation.md
 Absolute minimum configuration:
 - Basic orchestrator
 - Simple context manager
 - Anthropic provider only
 - No tools, no hooks (pure foundation)
 
-### base.toml
+### base.md
 Core functionality (extends foundation):
 - Inherits orchestrator, context, and provider from foundation
 - Adds filesystem and bash tools
@@ -48,7 +48,7 @@ Core functionality (extends foundation):
 - Context management (100K tokens, 80% compact threshold)
 - Auto-compaction enabled
 
-### dev.toml
+### dev.md
 Development configuration (extends base):
 - Streaming orchestrator for better feedback
 - Inherits all tools and hooks from base
@@ -56,7 +56,7 @@ Development configuration (extends base):
 - Adds agent-architect for task delegation
 - Ideal for interactive development
 
-### production.toml
+### production.md
 Production-optimized (extends base):
 - Streaming orchestrator
 - Persistent context for session continuity
@@ -64,7 +64,7 @@ Production-optimized (extends base):
 - Inherits all tools and hooks from base
 - Adds web tools for production features
 
-### test.toml
+### test.md
 Testing configuration (extends base):
 - Mock provider for deterministic testing
 - Reduced token limits for faster testing
@@ -72,7 +72,7 @@ Testing configuration (extends base):
 - Adds task tool for sub-agent testing
 - Configurable failure simulation
 
-### full.toml
+### full.md
 Kitchen sink configuration (extends base):
 - All available providers (Anthropic, OpenAI, Azure OpenAI, Ollama)
 - All available tools (filesystem, bash, web, search, task)
@@ -143,30 +143,32 @@ amplifier profile show dev
 Profiles are searched in order of precedence:
 
 1. **User profiles** (highest): `~/.amplifier/profiles/`
-2. **Team profiles** (middle): `.amplifier/profiles/`
+2. **Project profiles** (middle): `.amplifier/profiles/`
 3. **Official profiles** (lowest): `/usr/share/amplifier/profiles/` or bundled with CLI
 
 ## Creating Custom Profiles
 
 ### Extending Official Profiles
-```toml
-[profile]
-name = "my-custom"
-version = "1.0.0"
-description = "Custom profile based on dev"
-extends = "dev"  # Inherit from dev profile
+```markdown
+---
+profile:
+  name: my-custom
+  version: 1.0.0
+  description: Custom profile based on dev
+  extends: dev  # Inherit from dev profile
 
 # Override or add specific settings
-[[tools]]
-module = "tool-custom"
+tools:
+  - module: tool-custom
+---
 ```
 
 ### Profile Overlays
 Create a profile with the same name in a higher precedence location to override settings:
 
-- Official `dev.toml` provides base configuration
-- Team `.amplifier/profiles/dev.toml` adds team-specific tools
-- User `~/.amplifier/profiles/dev.toml` adds personal preferences
+- Official `dev.md` provides base configuration
+- Project `.amplifier/profiles/dev.md` adds project-specific tools
+- User `~/.amplifier/profiles/dev.md` adds personal preferences
 
 All three merge automatically, with user settings taking precedence.
 
@@ -189,7 +191,7 @@ Amplifier uses two state files to track which profiles are active:
 - Clear with: `amplifier profile default --clear`
 
 **File Naming Convention:**
-Following Unix conventions (like git's `HEAD` file), profile state files use no extension. Config files that require parsing (like `*.toml`) keep their extensions for format clarity.
+Following Unix conventions (like git's `HEAD` file), profile state files use no extension. Config files that require parsing (like `*.md` with YAML frontmatter) keep their extensions for format clarity.
 
 **Git Strategy:**
 ```gitignore
@@ -198,7 +200,7 @@ Following Unix conventions (like git's `HEAD` file), profile state files use no 
 
 # But DO commit:
 # .amplifier/default-profile (project default)
-# .amplifier/config.toml     (project config)
+# .amplifier/config.md      (project config)
 # .amplifier/profiles/       (custom profiles)
 ```
 
@@ -208,8 +210,8 @@ When using profiles, configuration is merged in this order (later overrides earl
 
 1. Default configuration
 2. Active profile (with inheritance + overlays)
-3. User config (`~/.amplifier/config.toml`)
-4. Project config (`.amplifier/config.toml`)
+3. User config (`~/.amplifier/config.md`)
+4. Project config (`.amplifier/config.md`)
 5. `--config` file flag
 6. CLI flags (`--provider`, `--model`, etc.)
 7. Environment variables (`${VAR_NAME}` expansion)
@@ -218,10 +220,11 @@ When using profiles, configuration is merged in this order (later overrides earl
 
 Profiles support environment variable expansion:
 
-```toml
-[[providers]]
-module = "provider-anthropic"
-config = { api_key = "${ANTHROPIC_API_KEY}" }
+```yaml
+providers:
+  - module: provider-anthropic
+    config:
+      api_key: ${ANTHROPIC_API_KEY}
 ```
 
 The `${VAR_NAME}` syntax is expanded when the profile is loaded.

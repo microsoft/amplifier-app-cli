@@ -239,14 +239,21 @@ class TestSessionStore:
         store.save_profile(session_id, profile)
 
         # Verify file exists and contains correct content
-        profile_file = temp_dir / session_id / "profile.toml"
+        profile_file = temp_dir / session_id / "profile.md"
         assert profile_file.exists()
 
-        # Read and verify TOML content
-        import tomllib
+        # Read and verify YAML frontmatter content
+        import yaml
 
-        with open(profile_file, "rb") as f:
-            loaded_profile = tomllib.load(f)
+        with open(profile_file, encoding="utf-8") as f:
+            content = f.read()
+            # Extract YAML frontmatter between --- markers
+            if content.startswith("---\n"):
+                # Find the closing ---
+                end_marker = content.find("\n---\n", 4)
+                if end_marker > 0:
+                    yaml_content = content[4:end_marker]
+                    loaded_profile = yaml.safe_load(yaml_content)
 
         assert loaded_profile == profile
 

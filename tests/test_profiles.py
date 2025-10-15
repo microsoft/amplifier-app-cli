@@ -9,7 +9,6 @@ import tempfile
 from pathlib import Path
 
 import pytest
-import toml
 from amplifier_app_cli.profiles import ProfileLoader
 from amplifier_app_cli.profiles import ProfileManager
 from amplifier_app_cli.profiles import compile_profile_to_mount_plan
@@ -26,85 +25,110 @@ class TestProfileLoader:
             profiles_dir.mkdir()
 
             # Create foundation profile
-            foundation = {
-                "profile": {
-                    "name": "foundation",
-                    "version": "1.0",
-                    "description": "Base foundation",
-                },
-                "session": {"orchestrator": "loop-basic", "context": "context-simple"},
-                "tools": [{"module": "tool-filesystem"}],
-            }
-            with open(profiles_dir / "foundation.toml", "w") as f:
-                toml.dump(foundation, f)
+            foundation_content = """---
+profile:
+  name: foundation
+  version: "1.0"
+  description: Base foundation
+session:
+  orchestrator: loop-basic
+  context: context-simple
+tools:
+  - module: tool-filesystem
+---
+
+Foundation profile for testing.
+"""
+            (profiles_dir / "foundation.md").write_text(foundation_content)
 
             # Create base profile that inherits from foundation
-            base = {
-                "profile": {
-                    "name": "base",
-                    "version": "1.0",
-                    "description": "Base profile",
-                    "extends": "foundation",
-                },
-                "session": {"orchestrator": "loop-basic", "context": "context-simple", "max_tokens": 100000},
-                "tools": [{"module": "tool-bash"}],
-                "providers": [{"module": "provider-mock"}],
-            }
-            with open(profiles_dir / "base.toml", "w") as f:
-                toml.dump(base, f)
+            base_content = """---
+profile:
+  name: base
+  version: "1.0"
+  description: Base profile
+  extends: foundation
+session:
+  orchestrator: loop-basic
+  context: context-simple
+  max_tokens: 100000
+tools:
+  - module: tool-bash
+providers:
+  - module: provider-mock
+---
+
+Base profile that extends foundation.
+"""
+            (profiles_dir / "base.md").write_text(base_content)
 
             # Create dev profile that inherits from base
-            dev = {
-                "profile": {
-                    "name": "dev",
-                    "version": "1.0",
-                    "description": "Development profile",
-                    "extends": "base",
-                },
-                "session": {"orchestrator": "loop-basic", "context": "context-simple", "max_tokens": 200000},
-                "tools": [{"module": "tool-web"}],
-                "hooks": [{"module": "hooks-logging"}],
-            }
-            with open(profiles_dir / "dev.toml", "w") as f:
-                toml.dump(dev, f)
+            dev_content = """---
+profile:
+  name: dev
+  version: "1.0"
+  description: Development profile
+  extends: base
+session:
+  orchestrator: loop-basic
+  context: context-simple
+  max_tokens: 200000
+tools:
+  - module: tool-web
+hooks:
+  - module: hooks-logging
+---
+
+Development profile that extends base.
+"""
+            (profiles_dir / "dev.md").write_text(dev_content)
 
             # Create profile with circular dependency
-            circular_a = {
-                "profile": {
-                    "name": "circular_a",
-                    "version": "1.0",
-                    "description": "Circular A",
-                    "extends": "circular_b",
-                },
-                "session": {"orchestrator": "loop-basic", "context": "context-simple"},
-            }
-            with open(profiles_dir / "circular_a.toml", "w") as f:
-                toml.dump(circular_a, f)
+            circular_a_content = """---
+profile:
+  name: circular_a
+  version: "1.0"
+  description: Circular A
+  extends: circular_b
+session:
+  orchestrator: loop-basic
+  context: context-simple
+---
 
-            circular_b = {
-                "profile": {
-                    "name": "circular_b",
-                    "version": "1.0",
-                    "description": "Circular B",
-                    "extends": "circular_a",
-                },
-                "session": {"orchestrator": "loop-basic", "context": "context-simple"},
-            }
-            with open(profiles_dir / "circular_b.toml", "w") as f:
-                toml.dump(circular_b, f)
+Circular dependency test profile A.
+"""
+            (profiles_dir / "circular_a.md").write_text(circular_a_content)
+
+            circular_b_content = """---
+profile:
+  name: circular_b
+  version: "1.0"
+  description: Circular B
+  extends: circular_a
+session:
+  orchestrator: loop-basic
+  context: context-simple
+---
+
+Circular dependency test profile B.
+"""
+            (profiles_dir / "circular_b.md").write_text(circular_b_content)
 
             # Create profile with missing parent
-            orphan = {
-                "profile": {
-                    "name": "orphan",
-                    "version": "1.0",
-                    "description": "Orphan profile",
-                    "extends": "nonexistent",
-                },
-                "session": {"orchestrator": "loop-basic", "context": "context-simple"},
-            }
-            with open(profiles_dir / "orphan.toml", "w") as f:
-                toml.dump(orphan, f)
+            orphan_content = """---
+profile:
+  name: orphan
+  version: "1.0"
+  description: Orphan profile
+  extends: nonexistent
+session:
+  orchestrator: loop-basic
+  context: context-simple
+---
+
+Orphan profile with missing parent.
+"""
+            (profiles_dir / "orphan.md").write_text(orphan_content)
 
             yield profiles_dir
 
@@ -193,18 +217,20 @@ class TestProfileLoader:
     def test_model_pair_validation(self, temp_profiles_dir):
         """Test that model/provider pairs are validated."""
         # Test invalid model format (missing provider)
-        invalid_profile = {
-            "profile": {
-                "name": "invalid",
-                "version": "1.0",
-                "description": "Invalid profile",
-                "model": "gpt-4",  # Invalid: missing provider/model format
-            },
-            "session": {"orchestrator": "loop-basic", "context": "context-simple"},
-        }
-        invalid_path = temp_profiles_dir / "invalid.toml"
-        with open(invalid_path, "w") as f:
-            toml.dump(invalid_profile, f)
+        invalid_content = """---
+profile:
+  name: invalid
+  version: "1.0"
+  description: Invalid profile
+  model: gpt-4
+session:
+  orchestrator: loop-basic
+  context: context-simple
+---
+
+Invalid profile with bad model format.
+"""
+        (temp_profiles_dir / "invalid.md").write_text(invalid_content)
 
         loader = ProfileLoader(search_paths=[temp_profiles_dir])
         with pytest.raises(ValueError, match="Model must be 'provider/model' format"):
@@ -217,16 +243,19 @@ class TestProfileLoader:
             profiles_dir2 = Path(tmpdir2) / "profiles"
             profiles_dir2.mkdir()
 
-            extra = {
-                "profile": {
-                    "name": "extra",
-                    "version": "1.0",
-                    "description": "Extra profile",
-                },
-                "session": {"orchestrator": "loop-basic", "context": "context-simple"},
-            }
-            with open(profiles_dir2 / "extra.toml", "w") as f:
-                toml.dump(extra, f)
+            extra_content = """---
+profile:
+  name: extra
+  version: "1.0"
+  description: Extra profile
+session:
+  orchestrator: loop-basic
+  context: context-simple
+---
+
+Extra profile for search path testing.
+"""
+            (profiles_dir2 / "extra.md").write_text(extra_content)
 
             # Loader with both paths
             loader = ProfileLoader(search_paths=[temp_profiles_dir, profiles_dir2])
@@ -243,17 +272,21 @@ class TestProfileLoader:
             overlay_dir.mkdir()
 
             # Create an overlay profile with the same name as the base
-            overlay = {
-                "profile": {
-                    "name": "dev",
-                    "version": "1.0",
-                    "description": "Dev overlay",
-                },
-                "session": {"orchestrator": "loop-basic", "context": "context-simple"},
-                "hooks": [{"module": "hooks-debug"}],
-            }
-            with open(overlay_dir / "dev.toml", "w") as f:
-                toml.dump(overlay, f)
+            overlay_content = """---
+profile:
+  name: dev
+  version: "1.0"
+  description: Dev overlay
+session:
+  orchestrator: loop-basic
+  context: context-simple
+hooks:
+  - module: hooks-debug
+---
+
+Dev overlay profile.
+"""
+            (overlay_dir / "dev.md").write_text(overlay_content)
 
             # Loader with both paths (base path and overlay path)
             loader = ProfileLoader(search_paths=[temp_profiles_dir, overlay_dir])
@@ -275,33 +308,40 @@ class TestProfileLoader:
             team_dir.mkdir(parents=True)
 
             # Create test profiles
-            official_profile = {
-                "profile": {
-                    "name": "official",
-                    "version": "1.0",
-                    "description": "Official profile",
-                },
-                "session": {"orchestrator": "loop-basic", "context": "context-simple"},
-            }
-            with open(official_dir / "official.toml", "w") as f:
-                toml.dump(official_profile, f)
+            official_content = """---
+profile:
+  name: official
+  version: "1.0"
+  description: Official profile
+session:
+  orchestrator: loop-basic
+  context: context-simple
+---
 
-            team_profile = {
-                "profile": {
-                    "name": "team",
-                    "version": "1.0",
-                    "description": "Team profile",
-                },
-                "session": {"orchestrator": "loop-basic", "context": "context-simple"},
-            }
-            with open(team_dir / "team.toml", "w") as f:
-                toml.dump(team_profile, f)
+Official profile for testing.
+"""
+            (official_dir / "official.md").write_text(official_content)
+
+            team_content = """---
+profile:
+  name: team
+  version: "1.0"
+  description: Team profile
+session:
+  orchestrator: loop-basic
+  context: context-simple
+---
+
+Team profile for testing.
+"""
+            (team_dir / "team.md").write_text(team_content)
 
             loader = ProfileLoader(search_paths=[official_dir, team_dir])
 
             # Test source detection based on path patterns
             assert loader.get_profile_source("official") in ["official", "unknown"]
-            assert loader.get_profile_source("team") in ["team", "unknown"]
+            # .amplifier/profiles is detected as "project" not "team"
+            assert loader.get_profile_source("team") in ["project", "unknown"]
             assert loader.get_profile_source("nonexistent") is None
 
 

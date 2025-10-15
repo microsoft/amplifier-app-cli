@@ -1,9 +1,10 @@
 """Profile loader for discovering and loading profile files."""
 
 import logging
+import re
 from pathlib import Path
 
-import tomli
+import yaml
 
 from .schema import Profile
 
@@ -39,10 +40,10 @@ class ProfileLoader:
         if official.exists():
             paths.append(official)
 
-        # Team profiles (middle precedence)
-        team = Path(".amplifier/profiles")
-        if team.exists():
-            paths.append(team)
+        # Project profiles (middle precedence)
+        project = Path(".amplifier/profiles")
+        if project.exists():
+            paths.append(project)
 
         # User profiles (highest precedence)
         user = Path.home() / ".amplifier" / "profiles"
@@ -51,12 +52,34 @@ class ProfileLoader:
 
         return paths
 
+    def _parse_frontmatter(self, file_path: Path) -> dict:
+        """Parse YAML frontmatter from markdown file.
+
+        Args:
+            file_path: Path to markdown file with frontmatter
+
+        Returns:
+            Dict with parsed YAML data
+
+        Raises:
+            ValueError: If frontmatter is invalid or missing
+        """
+        content = file_path.read_text()
+
+        # Match frontmatter between --- delimiters
+        match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
+        if not match:
+            raise ValueError(f"No frontmatter found in {file_path}")
+
+        frontmatter_yaml = match.group(1)
+        return yaml.safe_load(frontmatter_yaml)
+
     def list_profiles(self) -> list[str]:
         """
         Discover all available profile names.
 
         Returns:
-            List of profile names (without .toml extension)
+            List of profile names (without .md extension)
         """
         profiles = set()
 
@@ -64,7 +87,7 @@ class ProfileLoader:
             if not search_path.exists():
                 continue
 
-            for profile_file in search_path.glob("*.toml"):
+            for profile_file in search_path.glob("*.md"):
                 # Profile name is filename without extension
                 profiles.add(profile_file.stem)
 
@@ -75,14 +98,14 @@ class ProfileLoader:
         Find a profile file by name, checking paths in reverse order (highest precedence first).
 
         Args:
-            name: Profile name (without .toml extension)
+            name: Profile name (without .md extension)
 
         Returns:
             Path to profile file if found, None otherwise
         """
         # Search in reverse order (highest precedence first)
         for search_path in reversed(self.search_paths):
-            profile_file = search_path / f"{name}.toml"
+            profile_file = search_path / f"{name}.md"
             if profile_file.exists():
                 return profile_file
 
@@ -93,7 +116,7 @@ class ProfileLoader:
         Load a profile with inheritance resolution.
 
         Args:
-            name: Profile name (without .toml extension)
+            name: Profile name (without .md extension)
             _visited: Set of already visited profiles (for circular detection)
 
         Returns:
@@ -116,8 +139,7 @@ class ProfileLoader:
             raise FileNotFoundError(f"Profile '{name}' not found in search paths")
 
         try:
-            with open(profile_file, "rb") as f:
-                data = tomli.load(f)
+            data = self._parse_frontmatter(profile_file)
 
             # Check for inheritance BEFORE validation
             # This allows child profiles to not specify all required fields
@@ -201,7 +223,7 @@ class ProfileLoader:
         Load profile overlays for a given base profile name.
 
         Overlays are additional profile files with the same name in different
-        search paths. They are merged in order: official → team → user.
+        search paths. They are merged in order: official → project → user.
 
         Args:
             base_name: Base profile name to find overlays for
@@ -211,13 +233,12 @@ class ProfileLoader:
         """
         overlays = []
 
-        # Check each search path for overlays (in order: official, team, user)
+        # Check each search path for overlays (in order: official, project, user)
         for search_path in self.search_paths:
-            overlay_file = search_path / f"{base_name}.toml"
+            overlay_file = search_path / f"{base_name}.md"
             if overlay_file.exists():
                 try:
-                    with open(overlay_file, "rb") as f:
-                        data = tomli.load(f)
+                    data = self._parse_frontmatter(overlay_file)
                     overlay = Profile(**data)
                     overlays.append(overlay)
                     logger.debug(f"Loaded overlay for '{base_name}' from {overlay_file}")
@@ -233,7 +254,7 @@ class ProfileLoader:
         # Wait, no. We want all of them because we'll merge them.
         # Actually, the base is loaded separately. Overlays are ADDITIONAL files
         # with the same name in DIFFERENT paths.
-        # So if we find the same name in official, team, and user paths,
+        # So if we find the same name in official, project, and user paths,
         # we have the base (from highest precedence path) and overlays (from lower paths).
 
         # Actually, rethinking this: the way overlays work is:
@@ -241,10 +262,10 @@ class ProfileLoader:
         # 2. Look for files with the same name in LOWER precedence paths
         # 3. Merge them in precedence order
 
-        # So if "dev.toml" exists in:
-        # - /usr/share/amplifier/profiles/dev.toml (official)
-        # - .amplifier/profiles/dev.toml (team)
-        # - ~/.amplifier/profiles/dev.toml (user)
+        # So if "dev.md" exists in:
+        # - /usr/share/amplifier/profiles/dev.md (official)
+        # - .amplifier/profiles/dev.md (project)
+        # - ~/.amplifier/profiles/dev.md (user)
 
         # The base is the USER one (highest precedence)
         # The overlays to merge are TEAM and OFFICIAL (in that order)
@@ -259,20 +280,20 @@ class ProfileLoader:
 
         # So the base profile has a NAME (e.g., "dev")
         # The system then looks for overlay files with that name in each search path
-        # And merges them in order: official < team < user
+        # And merges them in order: official < project < user
 
         # So actually, if you activate "dev" profile:
         # 1. Load "dev" from the highest precedence path (that's the PRIMARY profile)
         # 2. Check if "dev" ALSO exists in lower precedence paths (those are overlays)
-        # 3. Merge: primary <- team overlay <- user overlay
+        # 3. Merge: primary <- project overlay <- user overlay
 
         # Wait, I think I'm overthinking this. Let me look at the design again:
 
         # From PROFILES.md:
         # "After resolving inheritance, the system looks for overlays:
-        # 1. Official overlay: <profile-name>.toml in official profiles directory
-        # 2. Team overlay: <profile-name>.toml in team profiles directory
-        # 3. User overlay: <profile-name>.toml in user profiles directory
+        # 1. Official overlay: <profile-name>.md in official profiles directory
+        # 2. Project overlay: <profile-name>.md in project profiles directory
+        # 3. User overlay: <profile-name>.md in user profiles directory
         # Each overlay is merged with increasing precedence"
 
         # So if you have a profile called "base", the system:
@@ -281,13 +302,13 @@ class ProfileLoader:
         # 3. Merges them: official -> team -> user
 
         # But find_profile_file returns the FIRST match in REVERSE order (highest precedence).
-        # So if "base.toml" exists in all three paths, find_profile_file returns the USER one.
+        # So if "base.md" exists in all three paths, find_profile_file returns the USER one.
 
         # Then load_overlays should return the TEAM and OFFICIAL ones?
 
         # Actually, I think the intent is:
         # - There's ONE primary profile (e.g., "dev" in official profiles)
-        # - You can OVERLAY it by creating "dev.toml" in team or user profiles
+        # - You can OVERLAY it by creating "dev.md" in team or user profiles
         # - These overlays add/override settings from the base
 
         # So the correct logic is:
@@ -304,18 +325,24 @@ class ProfileLoader:
             name: Profile name
 
         Returns:
-            "official", "team", "user", or None if not found
+            "bundled", "official", "project", "user", or None if not found
         """
         profile_file = self.find_profile_file(name)
         if profile_file is None:
             return None
 
-        if "/usr/share/amplifier/profiles" in str(profile_file):
+        path_str = str(profile_file)
+
+        # Check in precedence order
+        if "/usr/share/amplifier/profiles" in path_str:
             return "official"
-        if ".amplifier/profiles" in str(profile_file):
-            return "team"
-        if str(Path.home()) in str(profile_file):
+        if ".amplifier/profiles" in path_str:
+            return "project"
+        if str(Path.home()) in path_str:
             return "user"
+        # Bundled profiles (shipped with package)
+        if "amplifier-app-cli/profiles" in path_str or "amplifier_app_cli/../profiles" in path_str:
+            return "bundled"
 
         return "unknown"
 

@@ -67,6 +67,30 @@ def compile_profile_to_mount_plan(base: Profile, overlays: list[Profile] | None 
     for overlay in overlays:
         mount_plan = _merge_profile_into_mount_plan(mount_plan, overlay)
 
+    # Load agents from directories if agents_config present
+    if base.agents_config and base.agents_config.dirs:
+        from pathlib import Path
+
+        from amplifier_app_cli.agent_config import load_agent_configs_from_directory
+
+        # Resolve agent dirs relative to bundled profiles directory
+        bundled_base = Path(__file__).parent.parent.parent  # Points to amplifier-app-cli/
+
+        for agent_dir in base.agents_config.dirs:
+            # Resolve relative paths relative to bundled package location
+            if agent_dir.startswith("./") or agent_dir.startswith("../"):
+                resolved_dir = (bundled_base / agent_dir).resolve()
+            else:
+                resolved_dir = Path(agent_dir)
+
+            # Load agents from this directory
+            loaded_agents = load_agent_configs_from_directory(resolved_dir)
+
+            # Merge loaded agents into mount plan agents dict
+            if loaded_agents:
+                mount_plan["agents"].update(loaded_agents)
+                logger.debug(f"Loaded {len(loaded_agents)} agents from {resolved_dir}")
+
     # Inject profile-level config sections into specific modules
     mount_plan = _inject_profile_configs(mount_plan, base)
 

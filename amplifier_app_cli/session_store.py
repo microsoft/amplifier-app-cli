@@ -26,7 +26,7 @@ class SessionStore:
     - Outputs: Saved files or loaded data tuples
     - Side Effects: Filesystem writes to ~/.amplifier/sessions/<session-id>/
     - Errors: FileNotFoundError for missing sessions, IOError for disk issues
-    - Files created: transcript.jsonl, metadata.json, profile.toml
+    - Files created: transcript.jsonl, metadata.json, profile.md
     """
 
     def __init__(self, base_dir: Path | None = None):
@@ -395,10 +395,10 @@ class SessionStore:
         session_dir = self.base_dir / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
 
-        profile_file = session_dir / "profile.toml"
+        profile_file = session_dir / "profile.md"
 
-        # Convert profile dict to TOML format
-        import tomli_w
+        # Convert profile dict to Markdown+YAML frontmatter
+        import yaml
 
         # Write to temp file first (atomic write pattern)
         with tempfile.NamedTemporaryFile(
@@ -406,8 +406,13 @@ class SessionStore:
         ) as tmp_file:
             temp_path = Path(tmp_file.name)
             try:
-                toml_content = tomli_w.dumps(profile)
-                tmp_file.write(toml_content)
+                # Write YAML frontmatter
+                tmp_file.write("---\n")
+                yaml_content = yaml.dump(profile, default_flow_style=False, sort_keys=False)
+                tmp_file.write(yaml_content)
+                tmp_file.write("---\n\n")
+                # Add a description
+                tmp_file.write(f"Profile snapshot for session {session_id}\n")
                 tmp_file.flush()
 
                 # Atomic rename

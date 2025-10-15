@@ -1,0 +1,29 @@
+---
+profile:
+  name: foundation
+  version: 1.0.0
+  description: Foundation configuration with only essential components
+
+session:
+  orchestrator: loop-basic
+  context: context-simple
+
+providers:
+  - module: provider-anthropic
+    config:
+      default_model: claude-sonnet-4-5
+---
+
+# Foundation Profile
+
+The absolute minimum configuration required to run Amplifier. This profile serves as the base for all other profiles and contains only the essential components.
+
+**When to use**: Never used directly - this is the foundation that all other profiles extend from.
+
+**Extends**: None (this is the root profile)
+
+**Key features**:
+- Basic loop orchestrator for simple request-response flow
+- Simple context manager with no persistence
+- Anthropic provider with Claude Sonnet 4.5 as the default model
+- No tools, hooks, or agents - pure foundation
