@@ -5,16 +5,12 @@ profile:
   description: Foundation configuration with only essential components
 
 session:
-  orchestrator: loop-basic
-  context: context-simple
-
-orchestrator:
-  module: loop-basic
-  source: git+https://github.com/microsoft/amplifier-module-loop-basic@main
-
-context:
-  module: context-simple
-  source: git+https://github.com/microsoft/amplifier-module-context-simple@main
+  orchestrator:
+    module: loop-basic
+    source: git+https://github.com/microsoft/amplifier-module-loop-basic@main
+  context:
+    module: context-simple
+    source: git+https://github.com/microsoft/amplifier-module-context-simple@main
 
 providers:
   - module: provider-anthropic

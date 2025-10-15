@@ -37,11 +37,22 @@ def compile_profile_to_mount_plan(base: Profile, overlays: list[Profile] | None 
     if overlays is None:
         overlays = []
 
+    # Extract from ModuleConfig objects directly (no branching)
+    orchestrator = base.session.orchestrator
+    orchestrator_id = orchestrator.module
+    orchestrator_source = orchestrator.source
+    orchestrator_config = orchestrator.config or {}
+
+    context = base.session.context
+    context_id = context.module
+    context_source = context.source
+    context_config = context.config or {}
+
     # Start with base profile
     mount_plan: dict[str, Any] = {
         "session": {
-            "orchestrator": base.session.orchestrator,
-            "context": base.session.context,
+            "orchestrator": orchestrator_id,
+            "context": context_id,
         },
         "providers": [],
         "tools": [],
@@ -49,38 +60,17 @@ def compile_profile_to_mount_plan(base: Profile, overlays: list[Profile] | None 
         "agents": [],
     }
 
-    # Extract sources from orchestrator/context modules (consistent with other modules)
-    # If orchestrator is a ModuleConfig, extract source
-    if base.orchestrator and hasattr(base.orchestrator, "module"):
-        if base.orchestrator.source:
-            mount_plan["session"]["orchestrator_source"] = base.orchestrator.source
-        if base.orchestrator.config:
-            mount_plan["orchestrator"] = {"config": base.orchestrator.config}
-    # Legacy: orchestrator as OrchestratorConfig
-    elif base.orchestrator and hasattr(base.orchestrator, "config"):
-        if base.orchestrator.config:
-            mount_plan["orchestrator"] = {"config": base.orchestrator.config}
+    # Add sources if present
+    if orchestrator_source:
+        mount_plan["session"]["orchestrator_source"] = orchestrator_source
+    if context_source:
+        mount_plan["session"]["context_source"] = context_source
 
-    # If context is a ModuleConfig, extract source
-    if base.context and hasattr(base.context, "module"):
-        if base.context.source:
-            mount_plan["session"]["context_source"] = base.context.source
-        if base.context.config:
-            if "context" not in mount_plan:
-                mount_plan["context"] = {}
-            mount_plan["context"]["config"] = base.context.config
-    # Legacy: context as ContextConfig (for context loading config)
-    elif base.context and hasattr(base.context, "files"):
-        # This is ContextConfig (context loading settings), not module config
-        pass  # Handled separately
-
-    # Add context config from session if present (for backward compat)
-    if base.has_context_config():
-        if "context" not in mount_plan:
-            mount_plan["context"] = {}
-        if "config" not in mount_plan["context"]:
-            mount_plan["context"]["config"] = {}
-        mount_plan["context"]["config"].update(base.get_context_config())
+    # Add config sections if present
+    if orchestrator_config:
+        mount_plan["orchestrator"] = {"config": orchestrator_config}
+    if context_config:
+        mount_plan["context"] = {"config": context_config}
 
     # Add base modules
     mount_plan["providers"] = [p.to_dict() for p in base.providers]
@@ -153,28 +143,28 @@ def _merge_profile_into_mount_plan(mount_plan: dict[str, Any], overlay: Profile)
     """
     # Override session fields if present in overlay
     if overlay.session.orchestrator:
-        mount_plan["session"]["orchestrator"] = overlay.session.orchestrator
+        # Extract from ModuleConfig directly
+        mount_plan["session"]["orchestrator"] = overlay.session.orchestrator.module
+        if overlay.session.orchestrator.source:
+            mount_plan["session"]["orchestrator_source"] = overlay.session.orchestrator.source
+        else:
+            mount_plan["session"].pop("orchestrator_source", None)
+        if overlay.session.orchestrator.config:
+            if "orchestrator" not in mount_plan:
+                mount_plan["orchestrator"] = {}
+            mount_plan["orchestrator"]["config"] = overlay.session.orchestrator.config
+
     if overlay.session.context:
-        mount_plan["session"]["context"] = overlay.session.context
-
-    # Merge context config if present in overlay
-    if overlay.has_context_config():
-        if "context" not in mount_plan:
-            mount_plan["context"] = {"config": {}}
-        if "config" not in mount_plan["context"]:
-            mount_plan["context"]["config"] = {}
-
-        overlay_context_config = overlay.get_context_config()
-        mount_plan["context"]["config"].update(overlay_context_config)
-
-    # Merge orchestrator config if present in overlay
-    if overlay.orchestrator and overlay.orchestrator.config:
-        if "orchestrator" not in mount_plan:
-            mount_plan["orchestrator"] = {"config": {}}
-        if "config" not in mount_plan["orchestrator"]:
-            mount_plan["orchestrator"]["config"] = {}
-
-        mount_plan["orchestrator"]["config"].update(overlay.orchestrator.config)
+        # Extract from ModuleConfig directly
+        mount_plan["session"]["context"] = overlay.session.context.module
+        if overlay.session.context.source:
+            mount_plan["session"]["context_source"] = overlay.session.context.source
+        else:
+            mount_plan["session"].pop("context_source", None)
+        if overlay.session.context.config:
+            if "context" not in mount_plan:
+                mount_plan["context"] = {}
+            mount_plan["context"]["config"] = overlay.session.context.config
 
     # Merge module lists
     mount_plan["providers"] = _merge_module_list(mount_plan["providers"], overlay.providers)

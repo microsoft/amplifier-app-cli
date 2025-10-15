@@ -6,11 +6,14 @@ profile:
   extends: base
 
 session:
-  orchestrator: loop-basic
-  context: context-simple
-  max_tokens: 50000
-  compact_threshold: 0.7
-  auto_compact: true
+  orchestrator:
+    module: loop-basic
+  context:
+    module: context-simple
+    config:
+      max_tokens: 50000
+      compact_threshold: 0.7
+      auto_compact: true
 
 providers:
   - module: provider-mock

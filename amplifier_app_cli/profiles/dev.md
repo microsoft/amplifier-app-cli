@@ -6,12 +6,13 @@ profile:
   extends: base
 
 session:
-  orchestrator: loop-streaming
-  context: context-simple
-
-orchestrator:
-  config:
-    extended_thinking: true
+  orchestrator:
+    module: loop-streaming
+    source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main
+    config:
+      extended_thinking: true
+  context:
+    module: context-simple
 
 task:
   max_recursion_depth: 1

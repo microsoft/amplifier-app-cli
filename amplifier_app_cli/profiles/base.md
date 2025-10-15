@@ -6,11 +6,14 @@ profile:
   extends: foundation
 
 session:
-  orchestrator: loop-basic
-  context: context-simple
-  max_tokens: 100000
-  compact_threshold: 0.8
-  auto_compact: true
+  orchestrator:
+    module: loop-basic
+  context:
+    module: context-simple
+    config:
+      max_tokens: 100000
+      compact_threshold: 0.8
+      auto_compact: true
 
 tools:
   - module: tool-filesystem

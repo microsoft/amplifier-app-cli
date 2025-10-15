@@ -6,15 +6,18 @@ profile:
   extends: base
 
 session:
-  orchestrator: loop-streaming
-  context: context-persistent
-  max_tokens: 150000
-  compact_threshold: 0.9
-  auto_compact: true
-
-orchestrator:
-  config:
-    extended_thinking: true
+  orchestrator:
+    module: loop-streaming
+    source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main
+    config:
+      extended_thinking: true
+  context:
+    module: context-persistent
+    source: git+https://github.com/microsoft/amplifier-module-context-persistent@main
+    config:
+      max_tokens: 150000
+      compact_threshold: 0.9
+      auto_compact: true
 
 tools:
   - module: tool-web

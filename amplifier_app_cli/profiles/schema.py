@@ -16,16 +16,6 @@ class ProfileMetadata(BaseModel):
     extends: str | None = Field(None, description="Parent profile to inherit from")
 
 
-class SessionConfig(BaseModel):
-    """Core session configuration."""
-
-    orchestrator: str = Field(..., description="Orchestrator module ID")
-    context: str = Field(..., description="Context manager module ID")
-    max_tokens: int | None = Field(None, description="Maximum tokens for context")
-    compact_threshold: float | None = Field(None, description="Context compaction threshold (0.0-1.0)")
-    auto_compact: bool | None = Field(None, description="Enable automatic compaction")
-
-
 class ModuleConfig(BaseModel):
     """Configuration for a single module."""
 
@@ -45,17 +35,11 @@ class ModuleConfig(BaseModel):
         return result
 
 
-class OrchestratorConfig(BaseModel):
-    """Configuration for the orchestrator module."""
+class SessionConfig(BaseModel):
+    """Core session configuration."""
 
-    config: dict[str, Any] = Field(default_factory=dict, description="Orchestrator-specific configuration")
-
-
-class ContextConfig(BaseModel):
-    """Context loading configuration."""
-
-    files: list[str] = Field(default_factory=list, description="Context files/globs to load each turn")
-    max_depth: int | None = Field(default=5, description="Maximum @mention recursion depth (None = unlimited)")
+    orchestrator: ModuleConfig = Field(..., description="Orchestrator module configuration")
+    context: ModuleConfig = Field(..., description="Context module configuration")
 
 
 class AgentsConfig(BaseModel):
@@ -93,12 +77,6 @@ class Profile(BaseModel):
 
     profile: ProfileMetadata
     session: SessionConfig
-    orchestrator: ModuleConfig | OrchestratorConfig | None = Field(
-        None, description="Orchestrator module config or legacy orchestrator config"
-    )
-    context: ModuleConfig | ContextConfig | None = Field(
-        None, description="Context module config or legacy context loading config"
-    )
     agents: AgentsConfig | None = Field(None, description="Agent discovery, filtering, and inline definitions")
     task: TaskConfig | None = Field(None, description="Task tool configuration")
     logging: LoggingConfig | None = Field(None, description="Logging configuration")
@@ -106,24 +84,3 @@ class Profile(BaseModel):
     providers: list[ModuleConfig] = Field(default_factory=list)
     tools: list[ModuleConfig] = Field(default_factory=list)
     hooks: list[ModuleConfig] = Field(default_factory=list)
-
-    def has_context_config(self) -> bool:
-        """Check if profile has context-specific configuration."""
-        return any(
-            [
-                self.session.max_tokens is not None,
-                self.session.compact_threshold is not None,
-                self.session.auto_compact is not None,
-            ]
-        )
-
-    def get_context_config(self) -> dict[str, Any]:
-        """Extract context configuration from session settings."""
-        config = {}
-        if self.session.max_tokens is not None:
-            config["max_tokens"] = self.session.max_tokens
-        if self.session.compact_threshold is not None:
-            config["compact_threshold"] = self.session.compact_threshold
-        if self.session.auto_compact is not None:
-            config["auto_compact"] = self.session.auto_compact
-        return config
