@@ -18,6 +18,14 @@ orchestrator:
 
 tools:
   - module: tool-web
+
+# Example: Selective agent loading for production
+# Only researcher (no bug-hunter, modular-builder, zen-architect)
+agents:
+  dirs:
+    - ./agents
+  include:
+    - researcher
 ---
 
 # Production Profile
@@ -29,6 +37,7 @@ An optimized configuration for production use with enhanced reliability, persist
 **Extends**: base (inherits filesystem, bash, redaction, and logging)
 
 **Key features**:
+
 - Streaming orchestrator with extended thinking enabled
 - Persistent context manager for maintaining state across sessions
 - Increased token limit (150K) with higher compaction threshold (90%)

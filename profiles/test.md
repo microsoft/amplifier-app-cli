@@ -21,6 +21,17 @@ providers:
 
 tools:
   - module: tool-task
+
+# Example: Inline agent definition for testing
+agents:
+  inline:
+    test-agent:
+      name: test-agent
+      description: Simple test agent for validation
+      tools:
+        - module: tool-filesystem
+      system:
+        instruction: "You are a test agent. Respond with 'Test successful' to any query."
 ---
 
 # Test Profile
@@ -32,6 +43,7 @@ A testing configuration with mock provider for automated testing and development
 **Extends**: base (inherits filesystem, bash, redaction, and logging)
 
 **Key features**:
+
 - Mock provider with configurable responses and failure simulation
 - Reduced token limits (50K) for faster test execution
 - Lower compaction threshold (70%) for testing compaction logic

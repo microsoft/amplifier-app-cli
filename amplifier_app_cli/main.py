@@ -495,11 +495,14 @@ def get_module_search_paths() -> list[Path]:
     return paths
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.version_option()
-def cli():
+@click.pass_context
+def cli(ctx):
     """Amplifier - AI-powered modular development platform."""
-    pass
+    # If no command specified, launch chat mode with current profile
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(run, prompt=None, mode="chat")
 
 
 @cli.command()
@@ -705,17 +708,14 @@ def build_effective_config_with_sources(chain):
                     sources["hooks"][module_name] = profile_name
                 effective_config["hooks"][module_name] = hook
 
-        # Merge agents (dict of config overlays)
+        # Note: agents is now AgentsConfig (with dirs, include, inline fields)
+        # Actual agent loading happens in compiler, not here
+        # Store agents config for display
         if profile.agents:
-            for agent_name, agent_config in profile.agents.items():
-                if agent_name in effective_config["agents"]:
-                    old_source = sources["agents"][agent_name]
-                    if isinstance(old_source, tuple):
-                        old_source = old_source[0]
-                    sources["agents"][agent_name] = (profile_name, old_source)
-                else:
-                    sources["agents"][agent_name] = profile_name
-                effective_config["agents"][agent_name] = agent_config
+            if "agents_config" not in effective_config:
+                effective_config["agents_config"] = {}
+            effective_config["agents_config"] = profile.agents.model_dump()
+            sources["agents_config"] = profile_name
 
     return effective_config, sources
 
@@ -801,30 +801,23 @@ def render_effective_config(chain, detailed):
                     console.print(f"    {k}: {v}")
         console.print()
 
-    # Render Agents section (config overlays for sub-sessions)
-    if config["agents"]:
+    # Render Agents section (config for agent discovery/loading)
+    if config.get("agents_config"):
         console.print("[bold]Agents:[/bold]")
-        for agent_name, agent_config in config["agents"].items():
-            source = sources["agents"].get(agent_name, "")
-            source_str = format_source(source)
-            # Show description if available
-            description = agent_config.get("description", "")
-            desc_str = f" - {description}" if description else ""
-            console.print(f"  {agent_name}{desc_str}{source_str}")
+        agents_cfg = config["agents_config"]
+        source = sources.get("agents_config", "")
+        source_str = format_source(source)
 
+        if agents_cfg.get("dirs"):
+            console.print(f"  dirs: {agents_cfg['dirs']}{source_str}")
+        if agents_cfg.get("include"):
+            console.print(f"  include: {agents_cfg['include']}{source_str}")
+        if agents_cfg.get("inline"):
+            inline_count = len(agents_cfg["inline"])
+            console.print(f"  inline: {inline_count} agent(s){source_str}")
             if detailed:
-                # Show system instruction if present
-                if "system" in agent_config and "instruction" in agent_config["system"]:
-                    instruction = agent_config["system"]["instruction"]
-                    # Truncate long instructions
-                    if len(instruction) > 80:
-                        instruction = instruction[:77] + "..."
-                    console.print(f"    instruction: {instruction}")
-                # Show provider/tool counts
-                if "providers" in agent_config:
-                    console.print(f"    providers: {len(agent_config['providers'])}")
-                if "tools" in agent_config:
-                    console.print(f"    tools: {len(agent_config['tools'])}")
+                for agent_name in agents_cfg["inline"]:
+                    console.print(f"    - {agent_name}")
 
 
 @profile.command(name="show")
@@ -1082,7 +1075,7 @@ async def interactive_chat(
 ):
     """Run an interactive chat session."""
     # Immediate feedback that session is starting
-    console.print("[dim]Starting chat session...[/dim]", end="")
+    console.print("[dim]Starting chat session...[/dim]")
 
     # Generate session ID if not provided
     if not session_id:
@@ -1094,9 +1087,6 @@ async def interactive_chat(
     # Create session with resolved config, loader, and session_id
     session = AmplifierSession(config, loader=loader, session_id=session_id)
     await session.initialize()
-
-    # Clear the initialization message
-    console.print("\r" + " " * 40 + "\r", end="")
 
     # Register CLI approval provider if approval hook is active (app-layer policy)
     from .approval_provider import CLIApprovalProvider
