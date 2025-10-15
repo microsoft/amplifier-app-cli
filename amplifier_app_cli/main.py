@@ -1228,6 +1228,7 @@ async def execute_single(
         if verbose:
             console.print(f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]")
         console.print(response)
+        console.print()  # Add blank line after output to prevent running into shell prompt
 
         # Save session if session_id was explicitly provided
         if session_id:
