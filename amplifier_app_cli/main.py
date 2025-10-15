@@ -1086,6 +1086,12 @@ async def interactive_chat(
 
     # Create session with resolved config, loader, and session_id
     session = AmplifierSession(config, loader=loader, session_id=session_id)
+
+    # Mount module source resolver (app-layer policy)
+    from .module_resolution import StandardModuleSourceResolver
+
+    await session.coordinator.mount("module-source-resolver", StandardModuleSourceResolver())
+
     await session.initialize()
 
     # Register CLI approval provider if approval hook is active (app-layer policy)
@@ -1211,6 +1217,11 @@ async def execute_single(
     session = AmplifierSession(config, loader=loader, session_id=session_id)
 
     try:
+        # Mount module source resolver (app-layer policy)
+        from .module_resolution import StandardModuleSourceResolver
+
+        await session.coordinator.mount("module-source-resolver", StandardModuleSourceResolver())
+
         await session.initialize()
 
         # Register CLI approval provider if approval hook is active (app-layer policy)
@@ -1562,6 +1573,12 @@ async def interactive_chat_with_session(
 
     # Create session with resolved config, loader, and session_id
     session = AmplifierSession(config, loader=loader, session_id=session_id)
+
+    # Mount module source resolver (app-layer policy)
+    from .module_resolution import StandardModuleSourceResolver
+
+    await session.coordinator.mount("module-source-resolver", StandardModuleSourceResolver())
+
     await session.initialize()
 
     # Register CLI approval provider if approval hook is active (app-layer policy)

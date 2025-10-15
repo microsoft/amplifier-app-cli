@@ -184,7 +184,7 @@ Extended profile that inherits from base.
 
         # Check inheritance worked
         assert profile.profile.name == "extended"
-        assert profile.session.max_tokens == 2000  # Overridden
+        assert profile.session.context.config and profile.session.context.config.get("max_tokens") == 2000  # Overridden
         assert len(profile.providers) == 1  # Inherited
         assert profile.providers[0].module == "provider-base"
         assert len(profile.tools) == 1  # New in child
@@ -413,8 +413,8 @@ Top profile in inheritance chain.
 
         # Check full inheritance chain
         assert profile.profile.name == "top"
-        assert profile.session.context == "advanced"  # Overridden at top
-        assert profile.session.max_tokens == 2000  # From middle
+        assert profile.session.context.module == "advanced"  # Overridden at top
+        assert profile.session.context.config.get("max_tokens") == 2000  # From middle
         assert len(profile.providers) == 1  # From base
         assert len(profile.tools) == 1  # From middle
         assert len(profile.hooks) == 1  # From top

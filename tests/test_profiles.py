@@ -438,20 +438,21 @@ class TestCompileProfileToMountPlan:
         profile = Profile(
             profile=ProfileMetadata(name="test", version="1.0", description="Test", model=None, extends=None),
             session=SessionConfig(
-                orchestrator="loop-basic",
-                context="context-simple",
-                max_tokens=100000,
-                compact_threshold=None,
-                auto_compact=None,
+                orchestrator=ModuleConfig(module="loop-basic"),
+                context=ModuleConfig(
+                    module="context-simple",
+                    config={"max_tokens": 100000, "compact_threshold": None, "auto_compact": None},
+                ),
             ),
-            orchestrator=None,
-            context=None,
             agents=None,
             task=None,
             logging=None,
             ui=None,
-            providers=[ModuleConfig(module="provider-mock", config=None)],
-            tools=[ModuleConfig(module="tool-filesystem", config=None), ModuleConfig(module="tool-bash", config=None)],
+            providers=[ModuleConfig(module="provider-mock", source=None, config=None)],
+            tools=[
+                ModuleConfig(module="tool-filesystem", source=None, config=None),
+                ModuleConfig(module="tool-bash", source=None, config=None),
+            ],
             hooks=[],
         )
 
@@ -477,40 +478,36 @@ class TestCompileProfileToMountPlan:
                 name="foundation", version="1.0", description="Foundation", model=None, extends=None
             ),
             session=SessionConfig(
-                orchestrator="loop-basic",
-                context="context-simple",
-                max_tokens=None,
-                compact_threshold=None,
-                auto_compact=None,
+                orchestrator=ModuleConfig(module="loop-basic"),
+                context=ModuleConfig(
+                    module="context-simple",
+                    config={"max_tokens": None, "compact_threshold": None, "auto_compact": None},
+                ),
             ),
-            orchestrator=None,
-            context=None,
             agents=None,
             task=None,
             logging=None,
             ui=None,
             providers=[],
-            tools=[ModuleConfig(module="tool-filesystem", config=None)],
+            tools=[ModuleConfig(module="tool-filesystem", source=None, config=None)],
             hooks=[],
         )
 
         base = Profile(
             profile=ProfileMetadata(name="base", version="1.0", description="Base", model=None, extends="foundation"),
             session=SessionConfig(
-                orchestrator="loop-basic",
-                context="context-simple",
-                max_tokens=100000,
-                compact_threshold=None,
-                auto_compact=None,
+                orchestrator=ModuleConfig(module="loop-basic"),
+                context=ModuleConfig(
+                    module="context-simple",
+                    config={"max_tokens": 100000, "compact_threshold": None, "auto_compact": None},
+                ),
             ),
-            orchestrator=None,
-            context=None,
             agents=None,
             task=None,
             logging=None,
             ui=None,
-            providers=[ModuleConfig(module="provider-mock", config=None)],
-            tools=[ModuleConfig(module="tool-bash", config=None)],
+            providers=[ModuleConfig(module="provider-mock", source=None, config=None)],
+            tools=[ModuleConfig(module="tool-bash", source=None, config=None)],
             hooks=[],
         )
 
