@@ -6,7 +6,9 @@ profile:
 
 session:
   orchestrator: loop-basic
+  orchestrator_source: git+https://github.com/microsoft/amplifier-module-loop-basic@main
   context: context-simple
+  context_source: git+https://github.com/microsoft/amplifier-module-context-simple@main
 
 providers:
   - module: provider-anthropic
