@@ -81,6 +81,15 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     """
     Resume existing sub-session for multi-turn engagement.
 
+    NOTE: Multi-turn resumption not yet implemented.
+
+    Implementation would require:
+    1. Loading session transcript and metadata from storage
+    2. Reconstructing mount plan from metadata
+    3. Recreating session with loaded context
+    4. Executing new instruction
+    5. Returning response
+
     Args:
         sub_session_id: ID of existing sub-session to resume
         instruction: Follow-up instruction
@@ -90,17 +99,10 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
 
     Raises:
         FileNotFoundError: If session not found
+        RuntimeError: Currently always raised (not implemented)
     """
-    # Load session from storage
-    from .session_store import SessionStore
-
-    store = SessionStore()
-    if not store.exists(sub_session_id):
-        raise FileNotFoundError(f"Sub-session {sub_session_id} not found")
-
-    transcript, metadata = store.load(sub_session_id)
-
-    # Recreate session with same config
-    # Note: This is simplified - full implementation would need to
-    # reconstruct the full mount plan from metadata
-    raise NotImplementedError("Multi-turn sub-session resumption not yet implemented")
+    # Multi-turn resumption not yet implemented
+    # See docs/AGENT_DELEGATION.md for future implementation plan
+    raise RuntimeError(
+        "Multi-turn sub-session resumption not yet implemented. Create a new sub-session for each delegation."
+    )
