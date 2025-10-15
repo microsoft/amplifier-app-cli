@@ -2,7 +2,6 @@
 
 import logging
 import re
-import sys
 from pathlib import Path
 
 import yaml
@@ -32,12 +31,9 @@ class ProfileLoader:
         paths = []
 
         # Bundled profiles shipped with the package (lowest precedence)
-        # Use importlib.resources for proper package data access
+        # Use importlib.resources for proper package data access (Python 3.11+)
         try:
-            if sys.version_info >= (3, 9):
-                from importlib.resources import files
-            else:
-                from importlib_resources import files  # type: ignore
+            from importlib.resources import files
 
             # Profiles are installed as package data in amplifier_app_cli
             profile_files = files("amplifier_app_cli") / "profiles"
