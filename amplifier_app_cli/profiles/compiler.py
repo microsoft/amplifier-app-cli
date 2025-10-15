@@ -49,13 +49,46 @@ def compile_profile_to_mount_plan(base: Profile, overlays: list[Profile] | None 
         "agents": [],
     }
 
-    # Add context config if present
-    if base.has_context_config():
-        mount_plan["context"] = {"config": base.get_context_config()}
+    # Extract sources from orchestrator/context module lists
+    # If orchestrator is a module list, find matching module and extract source
+    if isinstance(base.orchestrator, list):
+        orchestrator_id = base.session.orchestrator
+        for mod_config in base.orchestrator:
+            if mod_config.module == orchestrator_id:
+                if mod_config.source:
+                    mount_plan["session"]["orchestrator_source"] = mod_config.source
+                if mod_config.config:
+                    mount_plan["orchestrator"] = {"config": mod_config.config}
+                break
+    # Legacy: orchestrator as OrchestratorConfig
+    elif base.orchestrator and hasattr(base.orchestrator, "config"):
+        if base.orchestrator.config:
+            mount_plan["orchestrator"] = {"config": base.orchestrator.config}
 
-    # Add orchestrator config if present
-    if base.orchestrator and base.orchestrator.config:
-        mount_plan["orchestrator"] = {"config": base.orchestrator.config}
+    # If context is a module list, find matching module and extract source
+    if isinstance(base.context, list):
+        context_id = base.session.context
+        for mod_config in base.context:
+            if mod_config.module == context_id:
+                if mod_config.source:
+                    mount_plan["session"]["context_source"] = mod_config.source
+                if mod_config.config:
+                    if "context" not in mount_plan:
+                        mount_plan["context"] = {}
+                    mount_plan["context"]["config"] = mod_config.config
+                break
+    # Legacy: context as ContextConfig
+    elif base.context and hasattr(base.context, "files"):
+        # This is legacy ContextConfig, not a module config
+        pass  # Context loading config handled separately
+
+    # Add context config from session if present (for backward compat)
+    if base.has_context_config():
+        if "context" not in mount_plan:
+            mount_plan["context"] = {}
+        if "config" not in mount_plan["context"]:
+            mount_plan["context"]["config"] = {}
+        mount_plan["context"]["config"].update(base.get_context_config())
 
     # Add base modules
     mount_plan["providers"] = [p.to_dict() for p in base.providers]
