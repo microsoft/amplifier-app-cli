@@ -10,6 +10,7 @@ session:
 
 providers:
   - module: provider-anthropic
+    source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
     config:
       default_model: claude-sonnet-4-5
 ---

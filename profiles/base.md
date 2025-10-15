@@ -14,10 +14,14 @@ session:
 
 tools:
   - module: tool-filesystem
+    source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
   - module: tool-bash
+    source: git+https://github.com/microsoft/amplifier-module-tool-bash@main
 
 hooks:
   - module: hooks-redaction
+    # TODO: Publish hooks-redaction repo, then add:
+    # source: git+https://github.com/microsoft/amplifier-module-hooks-redaction@main
     config:
       allowlist:
         - session_id
@@ -25,6 +29,7 @@ hooks:
         - span_id
         - parent_span_id
   - module: hooks-logging
+    source: git+https://github.com/microsoft/amplifier-module-hooks-logging@main
     config:
       path: ./amplifier.log.jsonl
 ---
