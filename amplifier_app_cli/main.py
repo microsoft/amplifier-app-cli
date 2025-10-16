@@ -1081,11 +1081,9 @@ async def interactive_chat(
     if not session_id:
         session_id = str(uuid.uuid4())
 
-    # Create loader with search paths
-    loader = ModuleLoader(search_paths=search_paths if search_paths else None)
-
-    # Create session with resolved config, loader, and session_id
-    session = AmplifierSession(config, loader=loader, session_id=session_id)
+    # Create session with resolved config and session_id
+    # Session creates its own loader with coordinator (so it can see mounted resolver)
+    session = AmplifierSession(config, session_id=session_id)
 
     # Mount module source resolver (app-layer policy)
     from .module_resolution import StandardModuleSourceResolver
@@ -1225,7 +1223,12 @@ async def execute_single(
         # Mount module source resolver (app-layer policy)
         from .module_resolution import StandardModuleSourceResolver
 
-        await session.coordinator.mount("module-source-resolver", StandardModuleSourceResolver())
+        resolver = StandardModuleSourceResolver()
+        print(f"DEBUG: About to mount resolver: {resolver}", file=sys.stderr)
+        await session.coordinator.mount("module-source-resolver", resolver)
+        print("DEBUG: Mount complete", file=sys.stderr)
+        got = session.coordinator.get("module-source-resolver")
+        print(f"DEBUG: Got back from coordinator: {got}", file=sys.stderr)
 
         await session.initialize()
 
@@ -1573,11 +1576,9 @@ async def interactive_chat_with_session(
     profile_name: str = "unknown",
 ):
     """Run an interactive chat session with restored context."""
-    # Create loader with search paths
-    loader = ModuleLoader(search_paths=search_paths if search_paths else None)
-
-    # Create session with resolved config, loader, and session_id
-    session = AmplifierSession(config, loader=loader, session_id=session_id)
+    # Create session with resolved config and session_id
+    # Session creates its own loader with coordinator (so it can see mounted resolver)
+    session = AmplifierSession(config, session_id=session_id)
 
     # Mount module source resolver (app-layer policy)
     from .module_resolution import StandardModuleSourceResolver
