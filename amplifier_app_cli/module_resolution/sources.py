@@ -162,7 +162,8 @@ class GitSource(ModuleSource):
         if self.subdirectory:
             git_url += f"#subdirectory={self.subdirectory}"
 
-        # Use uv to download with dependencies
+        # Use uv to download module with its dependencies
+        # Note: amplifier-core should NOT be in module dependencies (peer dependency)
         cmd = [
             "uv",
             "pip",

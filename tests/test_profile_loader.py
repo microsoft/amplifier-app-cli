@@ -414,7 +414,9 @@ Top profile in inheritance chain.
         # Check full inheritance chain
         assert profile.profile.name == "top"
         assert profile.session.context.module == "advanced"  # Overridden at top
-        assert profile.session.context.config.get("max_tokens") == 2000  # From middle
+        assert (
+            profile.session.context.config and profile.session.context.config.get("max_tokens") == 2000
+        )  # From middle
         assert len(profile.providers) == 1  # From base
         assert len(profile.tools) == 1  # From middle
         assert len(profile.hooks) == 1  # From top

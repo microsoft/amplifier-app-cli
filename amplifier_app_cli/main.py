@@ -1302,7 +1302,10 @@ def list_modules(type: str):
     """List installed modules."""
     import asyncio
 
+    from amplifier_core.loader import ModuleLoader
+
     # Create a loader to discover modules
+    loader = ModuleLoader()
 
     # Get all discovered modules
     modules_info = asyncio.run(loader.discover())
@@ -1330,7 +1333,10 @@ def module_info(module_name: str):
     """Show detailed information about a module."""
     import asyncio
 
+    from amplifier_core.loader import ModuleLoader
+
     # Create a loader to discover modules
+    loader = ModuleLoader()
 
     # Get all discovered modules
     modules_info = asyncio.run(loader.discover())
