@@ -31,9 +31,9 @@ class ProfileLoader:
         paths = []
 
         # Bundled profiles shipped with package (lowest precedence)
-        # Profiles are in data/profiles/ directory at package root
+        # data/ is inside amplifier_app_cli package
         package_dir = Path(__file__).parent.parent  # amplifier_app_cli package
-        bundled = package_dir.parent / "data" / "profiles"
+        bundled = package_dir / "data" / "profiles"
         if bundled.exists():
             paths.append(bundled)
             logger.debug(f"Found bundled profiles: {bundled}")
