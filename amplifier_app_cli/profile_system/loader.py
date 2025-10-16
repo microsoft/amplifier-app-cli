@@ -75,7 +75,23 @@ class ProfileLoader:
             raise ValueError(f"No frontmatter found in {file_path}")
 
         frontmatter_yaml = match.group(1)
-        return yaml.safe_load(frontmatter_yaml)
+
+        try:
+            return yaml.safe_load(frontmatter_yaml)
+        except yaml.YAMLError as e:
+            # Provide friendly error message for common YAML syntax issues
+            error_msg = str(e)
+            # Check if it's a scanner error with colons (common mistake)
+            if "scanner" in error_msg.lower() or "could not find expected" in error_msg:
+                raise ValueError(
+                    f"YAML syntax error in {file_path}:\n\n"
+                    f"{error_msg}\n\n"
+                    f"💡 Tip: If your description contains colons (like 'Note: something'), "
+                    f"you must quote it:\n"
+                    f'   description: "Note: something"\n\n'
+                    f"See PROFILE_AUTHORING.md or AGENT_AUTHORING.md for YAML quoting guidelines."
+                ) from e
+            raise ValueError(f"YAML syntax error in {file_path}: {error_msg}") from e
 
     def list_profiles(self) -> list[str]:
         """
