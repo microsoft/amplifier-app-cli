@@ -1088,11 +1088,7 @@ async def interactive_chat(
     from .module_resolution import StandardModuleSourceResolver
 
     resolver = StandardModuleSourceResolver()
-    print(f"DEBUG: About to mount resolver: {resolver}", file=sys.stderr)
     await session.coordinator.mount("module-source-resolver", resolver)
-    print("DEBUG: Mount complete", file=sys.stderr)
-    got = session.coordinator.get("module-source-resolver")
-    print(f"DEBUG: Got back from coordinator: {got}", file=sys.stderr)
 
     await session.initialize()
 
@@ -1585,11 +1581,7 @@ async def interactive_chat_with_session(
     from .module_resolution import StandardModuleSourceResolver
 
     resolver = StandardModuleSourceResolver()
-    print(f"DEBUG: About to mount resolver: {resolver}", file=sys.stderr)
     await session.coordinator.mount("module-source-resolver", resolver)
-    print("DEBUG: Mount complete", file=sys.stderr)
-    got = session.coordinator.get("module-source-resolver")
-    print(f"DEBUG: Got back from coordinator: {got}", file=sys.stderr)
 
     await session.initialize()
 
