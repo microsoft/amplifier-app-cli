@@ -438,9 +438,10 @@ class TestCompileProfileToMountPlan:
         profile = Profile(
             profile=ProfileMetadata(name="test", version="1.0", description="Test", model=None, extends=None),
             session=SessionConfig(
-                orchestrator=ModuleConfig(module="loop-basic"),
+                orchestrator=ModuleConfig(module="loop-basic", source=None, config=None),
                 context=ModuleConfig(
                     module="context-simple",
+                    source=None,
                     config={"max_tokens": 100000, "compact_threshold": None, "auto_compact": None},
                 ),
             ),
@@ -478,9 +479,10 @@ class TestCompileProfileToMountPlan:
                 name="foundation", version="1.0", description="Foundation", model=None, extends=None
             ),
             session=SessionConfig(
-                orchestrator=ModuleConfig(module="loop-basic"),
+                orchestrator=ModuleConfig(module="loop-basic", source=None, config=None),
                 context=ModuleConfig(
                     module="context-simple",
+                    source=None,
                     config={"max_tokens": None, "compact_threshold": None, "auto_compact": None},
                 ),
             ),
@@ -496,9 +498,10 @@ class TestCompileProfileToMountPlan:
         base = Profile(
             profile=ProfileMetadata(name="base", version="1.0", description="Base", model=None, extends="foundation"),
             session=SessionConfig(
-                orchestrator=ModuleConfig(module="loop-basic"),
+                orchestrator=ModuleConfig(module="loop-basic", source=None, config=None),
                 context=ModuleConfig(
                     module="context-simple",
+                    source=None,
                     config={"max_tokens": 100000, "compact_threshold": None, "auto_compact": None},
                 ),
             ),
