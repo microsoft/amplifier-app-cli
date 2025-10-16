@@ -1217,12 +1217,7 @@ async def execute_single(
         from .module_resolution import StandardModuleSourceResolver
 
         resolver = StandardModuleSourceResolver()
-        print(f"DEBUG: About to mount resolver: {resolver}", file=sys.stderr)
         await session.coordinator.mount("module-source-resolver", resolver)
-        print("DEBUG: Mount complete", file=sys.stderr)
-        got = session.coordinator.get("module-source-resolver")
-        print(f"DEBUG: Got back from coordinator: {got}", file=sys.stderr)
-
         await session.initialize()
 
         # Register CLI approval provider if approval hook is active (app-layer policy)
