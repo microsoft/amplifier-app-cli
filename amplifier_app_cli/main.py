@@ -15,7 +15,6 @@ from typing import Any
 import click
 import toml
 from amplifier_core import AmplifierSession
-from amplifier_core import ModuleLoader
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -1213,11 +1212,9 @@ async def execute_single(
     console.print("[dim]Initializing session...[/dim]", end="")
     console.print("\r", end="")  # Clear the line after initialization
 
-    # Create loader with search paths
-    loader = ModuleLoader(search_paths=search_paths if search_paths else None)
-
-    # Create session with resolved config, loader, and optional session_id
-    session = AmplifierSession(config, loader=loader, session_id=session_id)
+    # Create session with resolved config and session_id
+    # Session creates its own loader with coordinator
+    session = AmplifierSession(config, session_id=session_id)
 
     try:
         # Mount module source resolver (app-layer policy)
@@ -1306,7 +1303,6 @@ def list_modules(type: str):
     import asyncio
 
     # Create a loader to discover modules
-    loader = ModuleLoader()
 
     # Get all discovered modules
     modules_info = asyncio.run(loader.discover())
@@ -1335,7 +1331,6 @@ def module_info(module_name: str):
     import asyncio
 
     # Create a loader to discover modules
-    loader = ModuleLoader()
 
     # Get all discovered modules
     modules_info = asyncio.run(loader.discover())
