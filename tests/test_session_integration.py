@@ -124,7 +124,6 @@ def test_multiple_sessions_management():
             assert metadata["index"] == expected_index
 
         print("✅ Multiple sessions managed successfully")
-        return True
 
 
 if __name__ == "__main__":
