@@ -13,11 +13,9 @@ from pathlib import Path
 from typing import Any
 
 import click
-import toml
 from amplifier_core import AmplifierSession
 from rich.console import Console
 from rich.panel import Panel
-from rich.syntax import Syntax
 from rich.table import Table
 
 from .commands.logs import logs_cmd
@@ -268,20 +266,9 @@ def resolve_app_config(
     Returns:
         Resolved configuration dictionary
     """
-    import tomli
-
     from amplifier_app_cli.profile_system import ProfileLoader
     from amplifier_app_cli.profile_system import ProfileManager
     from amplifier_app_cli.profile_system import compile_profile_to_mount_plan
-
-    # Helper to safely load TOML
-    def load_toml_safe(path: Path) -> dict[str, Any]:
-        try:
-            with open(path, "rb") as f:
-                return tomli.load(f)
-        except Exception as e:
-            console.print(f"[yellow]Warning: Could not load {path}: {e}[/yellow]")
-            return {}
 
     # 1. Start with minimal default mount plan
     config = {
@@ -330,48 +317,11 @@ def resolve_app_config(
         except Exception as e:
             console.print(f"[yellow]Warning: Could not load profile '{active_profile_name}': {e}[/yellow]")
 
-    # 3. Merge user config (~/.amplifier/config.toml)
-    user_path = Path.home() / ".amplifier" / "config.toml"
-    if user_path.exists():
-        user_config = load_toml_safe(user_path)
-        if user_config:
-            # Transform and merge
-            user_config = transform_toml_to_session_config(user_config)
-            config = deep_merge(config, user_config)
-
-    # 4. Merge project config (.amplifier/config.toml)
-    project_path = Path(".amplifier") / "config.toml"
-    if project_path.exists():
-        project_config = load_toml_safe(project_path)
-        if project_config:
-            # Transform and merge
-            project_config = transform_toml_to_session_config(project_config)
-            config = deep_merge(config, project_config)
-
-    # 5. Merge --config file if provided
-    if config_file:
-        explicit_path = Path(config_file)
-        if explicit_path.exists():
-            explicit_config = load_toml_safe(explicit_path)
-            if explicit_config:
-                # Transform and merge
-                explicit_config = transform_toml_to_session_config(explicit_config)
-
-                # OVERRIDE SEMANTICS: If explicit config specifies providers,
-                # clear any accumulated providers so they get replaced, not merged
-                if "providers" in explicit_config:
-                    config.pop("providers", None)
-
-                config = deep_merge(config, explicit_config)
-        else:
-            console.print(f"[red]Error: Config file not found: {config_file}[/red]")
-            sys.exit(1)
-
-    # 6. Apply CLI overrides (already in session format)
+    # 3. Apply CLI overrides (already in session format)
     if cli_config:
         config = deep_merge(config, cli_config)
 
-    # 7. Expand environment variables
+    # 4. Expand environment variables
     config = expand_env_vars(config)
 
     return config
@@ -934,141 +884,6 @@ def profile_default(set_default: str | None, clear: bool):
         console.print("  [cyan]amplifier profile default --set <name>[/cyan]")
 
 
-def transform_toml_to_session_config(toml_config: dict[str, Any]) -> dict[str, Any]:
-    """
-    Transform TOML config format to AmplifierSession expected format.
-
-    This transforms user-friendly TOML into the internal session config structure.
-    Does NOT provide defaults - that's done by resolve_app_config().
-
-    TOML format:
-        [provider]
-        name = "anthropic"
-        model = "claude-sonnet-4-5"
-
-        [modules]
-        orchestrator = "loop-basic"
-        context = "context-simple"
-        tools = ["filesystem", "bash"]
-
-    AmplifierSession format:
-        {
-            "session": {
-                "orchestrator": "loop-basic",
-                "context": "context-simple"
-            },
-            "providers": [
-                {
-                    "module": "provider-anthropic",
-                    "config": {"model": "claude-sonnet-4-5"}
-                }
-            ],
-            "tools": [
-                {"module": "tool-filesystem"},
-                {"module": "tool-bash"}
-            ]
-        }
-    """
-    # Start with empty structure
-    session_config: dict[str, Any] = {}
-
-    # Transform orchestrator and context from modules section
-    if "modules" in toml_config:
-        if "orchestrator" in toml_config["modules"] or "context" in toml_config["modules"]:
-            session_config["session"] = {}
-            if "orchestrator" in toml_config["modules"]:
-                session_config["session"]["orchestrator"] = toml_config["modules"]["orchestrator"]
-            if "context" in toml_config["modules"]:
-                session_config["session"]["context"] = toml_config["modules"]["context"]
-
-        # Transform tools list
-        if "tools" in toml_config["modules"]:
-            tools = toml_config["modules"]["tools"]
-            if isinstance(tools, list):
-                tool_configs = []
-                for tool in tools:
-                    tool_module = {"module": f"tool-{tool}"}
-                    # Check for tool-specific config in [tools.X] sections
-                    if "tools" in toml_config and tool in toml_config["tools"]:
-                        tool_module["config"] = toml_config["tools"][tool]
-                    tool_configs.append(tool_module)
-                session_config["tools"] = tool_configs
-
-        # Transform hooks from modules section
-        if "hooks" in toml_config["modules"]:
-            hooks = toml_config["modules"]["hooks"]
-            if isinstance(hooks, list):
-                session_config["hooks"] = hooks
-
-    # Transform provider configuration
-    if "provider" in toml_config:
-        provider = toml_config["provider"]
-        provider_name = provider.get("name", "mock")
-
-        # Build provider config
-        provider_config: dict[str, Any] = {"module": f"provider-{provider_name}"}
-
-        # Add provider-specific config
-        config_dict: dict[str, Any] = {}
-        if "model" in provider:
-            config_dict["model"] = provider["model"]
-
-        # Handle nested provider.config section - merge it into the top level
-        if "config" in provider and isinstance(provider["config"], dict):
-            config_dict.update(provider["config"])
-
-        # Add any other provider settings (excluding name, model, and config)
-        extra_config = {k: v for k, v in provider.items() if k not in ["name", "model", "config"]}
-        if extra_config:
-            config_dict.update(extra_config)
-
-        if config_dict:
-            provider_config["config"] = config_dict
-
-        session_config["providers"] = [provider_config]
-
-    # Transform hooks from top level (preferred location)
-    if "hooks" in toml_config:
-        hooks = toml_config["hooks"]
-        if isinstance(hooks, list):
-            session_config["hooks"] = hooks
-
-    # Copy session settings if present
-    if "session" in toml_config and any(
-        key in toml_config["session"] for key in ["max_tokens", "compact_threshold", "auto_compact"]
-    ):
-        # Context config specifically
-        if "context" not in session_config:
-            session_config["context"] = {}
-        if "config" not in session_config["context"]:
-            session_config["context"]["config"] = {}
-
-        if "max_tokens" in toml_config["session"]:
-            session_config["context"]["config"]["max_tokens"] = toml_config["session"]["max_tokens"]
-        if "compact_threshold" in toml_config["session"]:
-            session_config["context"]["config"]["compact_threshold"] = toml_config["session"]["compact_threshold"]
-        if "auto_compact" in toml_config["session"]:
-            session_config["context"]["config"]["auto_compact"] = toml_config["session"]["auto_compact"]
-
-    # Transform agents if present
-    if "agents" in toml_config:
-        agents = toml_config["agents"]
-        if isinstance(agents, list):
-            session_config["agents"] = [{"module": f"agent-{agent}"} for agent in agents]
-
-    # Transform hooks if present
-    if "hooks" in toml_config:
-        hooks = toml_config["hooks"]
-        # Handle direct array format: hooks = [{module = "hooks-logging", config = {...}}]
-        if isinstance(hooks, list):
-            session_config["hooks"] = hooks
-        # Handle nested format: hooks = {enabled = ["backup", "logging"]}
-        elif "enabled" in hooks and isinstance(hooks["enabled"], list):
-            session_config["hooks"] = [{"module": f"hooks-{hook}"} for hook in hooks["enabled"]]
-
-    return session_config
-
-
 async def interactive_chat(
     config: dict, search_paths: list[Path], verbose: bool, session_id: str | None = None, profile_name: str = "default"
 ):
@@ -1351,30 +1166,6 @@ def module_info(module_name: str):
 [bold]Version:[/bold] {found_module.version}"""
 
     console.print(Panel(panel_content, title=f"Module: {module_name}", border_style="cyan"))
-
-
-@cli.command()
-@click.option("--output", "-o", type=click.Path(), help="Output path for configuration")
-def init(output: str | None):
-    """Initialize a new Amplifier configuration."""
-    config_template = {
-        "provider": {"name": "mock", "model": "mock-model"},
-        "modules": {"orchestrator": "loop-basic", "context": "context-simple"},
-        "hooks": {"enabled": ["backup"]},
-        "session": {"max_tokens": 100000, "auto_compact": True, "compact_threshold": 0.9},
-    }
-
-    output_path = Path(output if output else "amplifier.toml")
-
-    with open(output_path, "w") as f:
-        toml.dump(config_template, f)
-
-    console.print(f"[green]✓[/green] Configuration created at {output_path}")
-
-    # Show the created config
-    with open(output_path) as f:
-        syntax = Syntax(f.read(), "toml", theme="monokai", line_numbers=True)
-        console.print(Panel(syntax, title="Configuration", border_style="green"))
 
 
 # Register logs command
