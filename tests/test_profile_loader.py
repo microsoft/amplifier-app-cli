@@ -1,8 +1,8 @@
 """Tests for ProfileLoader."""
 
 import pytest
-from amplifier_app_cli.profiles.loader import ProfileLoader
-from amplifier_app_cli.profiles.schema import Profile
+from amplifier_app_cli.profile_system.loader import ProfileLoader
+from amplifier_app_cli.profile_system.schema import Profile
 
 
 class TestProfileLoader:
