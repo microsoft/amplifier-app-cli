@@ -23,8 +23,8 @@ from rich.table import Table
 
 from .commands.logs import logs_cmd
 from .logging_setup import init_json_logging
-from .profiles import ProfileLoader
-from .profiles import ProfileManager
+from .profile_system import ProfileLoader
+from .profile_system import ProfileManager
 from .session_store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -271,9 +271,9 @@ def resolve_app_config(
     """
     import tomli
 
-    from amplifier_app_cli.profiles import ProfileLoader
-    from amplifier_app_cli.profiles import ProfileManager
-    from amplifier_app_cli.profiles import compile_profile_to_mount_plan
+    from amplifier_app_cli.profile_system import ProfileLoader
+    from amplifier_app_cli.profile_system import ProfileManager
+    from amplifier_app_cli.profile_system import compile_profile_to_mount_plan
 
     # Helper to safely load TOML
     def load_toml_safe(path: Path) -> dict[str, Any]:

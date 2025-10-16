@@ -9,9 +9,9 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from amplifier_app_cli.profiles import ProfileLoader
-from amplifier_app_cli.profiles import ProfileManager
-from amplifier_app_cli.profiles import compile_profile_to_mount_plan
+from amplifier_app_cli.profile_system import ProfileLoader
+from amplifier_app_cli.profile_system import ProfileManager
+from amplifier_app_cli.profile_system import compile_profile_to_mount_plan
 
 
 class TestProfileLoader:
@@ -430,10 +430,10 @@ class TestCompileProfileToMountPlan:
 
     def test_compile_simple_profile(self):
         """Test compiling a simple profile without inheritance."""
-        from amplifier_app_cli.profiles import ModuleConfig
-        from amplifier_app_cli.profiles import Profile
-        from amplifier_app_cli.profiles import ProfileMetadata
-        from amplifier_app_cli.profiles import SessionConfig
+        from amplifier_app_cli.profile_system import ModuleConfig
+        from amplifier_app_cli.profile_system import Profile
+        from amplifier_app_cli.profile_system import ProfileMetadata
+        from amplifier_app_cli.profile_system import SessionConfig
 
         profile = Profile(
             profile=ProfileMetadata(name="test", version="1.0", description="Test", model=None, extends=None),
@@ -468,10 +468,10 @@ class TestCompileProfileToMountPlan:
 
     def test_compile_with_inheritance(self):
         """Test compiling profile with inheritance chain."""
-        from amplifier_app_cli.profiles import ModuleConfig
-        from amplifier_app_cli.profiles import Profile
-        from amplifier_app_cli.profiles import ProfileMetadata
-        from amplifier_app_cli.profiles import SessionConfig
+        from amplifier_app_cli.profile_system import ModuleConfig
+        from amplifier_app_cli.profile_system import Profile
+        from amplifier_app_cli.profile_system import ProfileMetadata
+        from amplifier_app_cli.profile_system import SessionConfig
 
         foundation = Profile(
             profile=ProfileMetadata(

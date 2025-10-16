@@ -30,25 +30,13 @@ class ProfileLoader:
         """Get default profile search paths in precedence order (lowest to highest)."""
         paths = []
 
-        # Bundled profiles shipped with the package (lowest precedence)
-        # Use importlib.resources for proper package data access (Python 3.11+)
-        try:
-            from importlib.resources import files
-
-            # Profiles are installed as package data in amplifier_app_cli
-            profile_files = files("amplifier_app_cli") / "profiles"
-            if profile_files.is_dir():  # type: ignore
-                paths.append(Path(str(profile_files)))
-                logger.debug("Found installed profiles via importlib.resources")
-        except Exception as e:
-            logger.debug(f"Could not locate profiles via importlib.resources: {e}")
-
-            # Fallback: Try development location
-            package_dir = Path(__file__).parent.parent  # amplifier_app_cli package
-            bundled_dev = package_dir.parent / "profiles"
-            if bundled_dev.exists():
-                paths.append(bundled_dev)
-                logger.debug(f"Found dev profiles: {bundled_dev}")
+        # Bundled profiles shipped with package (lowest precedence)
+        # Profiles are in data/profiles/ directory at package root
+        package_dir = Path(__file__).parent.parent  # amplifier_app_cli package
+        bundled = package_dir.parent / "data" / "profiles"
+        if bundled.exists():
+            paths.append(bundled)
+            logger.debug(f"Found bundled profiles: {bundled}")
 
         # Official profiles (second lowest precedence)
         official = Path("/usr/share/amplifier/profiles")
