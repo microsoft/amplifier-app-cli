@@ -50,7 +50,7 @@ class TestProfileLoader:
         # Create parent profile
         parent_dict = {
             "profile": {"name": "parent", "version": "1.0.0", "description": "Parent profile"},
-            "session": {"orchestrator": "loop", "context": "simple", "max_tokens": 1000},
+            "session": {"orchestrator": {"module": "loop"}, "context": {"module": "simple"}},
             "providers": [{"module": "provider-base"}],
         }
         parent = Profile(**parent_dict)
@@ -58,7 +58,7 @@ class TestProfileLoader:
         # Create child profile that overrides some values
         child_dict = {
             "profile": {"name": "child", "version": "1.0.0", "description": "Child profile", "extends": "parent"},
-            "session": {"orchestrator": "loop", "context": "simple", "max_tokens": 2000},
+            "session": {"orchestrator": {"module": "loop-advanced"}, "context": {"module": "simple"}},
             "tools": [{"module": "tool-extra"}],
         }
         child = Profile(**child_dict)
@@ -67,7 +67,7 @@ class TestProfileLoader:
         merged = loader_with_temp.merge_profiles(parent, child)
 
         # Check overridden values
-        assert merged.session.max_tokens == 2000  # Child overrides
+        assert merged.session.orchestrator.module == "loop-advanced"  # Child overrides
 
         # Check inherited values
         assert merged.providers == parent.providers  # Inherited from parent
@@ -79,42 +79,48 @@ class TestProfileLoader:
         """Test merging with deeply nested configuration."""
         parent_dict = {
             "profile": {"name": "parent", "version": "1.0.0", "description": "Parent"},
-            "session": {"orchestrator": "loop", "context": "simple"},
-            "orchestrator": {"config": {"timeout": 30, "retry": 3}},
+            "session": {
+                "orchestrator": {"module": "loop", "config": {"timeout": 30, "retry": 3}},
+                "context": {"module": "simple"},
+            },
         }
         parent = Profile(**parent_dict)
 
         child_dict = {
             "profile": {"name": "child", "version": "1.0.0", "description": "Child"},
-            "session": {"orchestrator": "loop", "context": "simple"},
-            "orchestrator": {"config": {"timeout": 60}},  # Override only timeout
+            "session": {
+                "orchestrator": {"module": "loop", "config": {"timeout": 60}},  # Override only timeout
+                "context": {"module": "simple"},
+            },
         }
         child = Profile(**child_dict)
 
         merged = loader_with_temp.merge_profiles(parent, child)
 
         # Deep merge should override only specified values
-        assert merged.orchestrator.config["timeout"] == 60  # Overridden
-        assert merged.orchestrator.config["retry"] == 3  # Preserved from parent
+        assert merged.session.orchestrator.config["timeout"] == 60  # Overridden
+        assert merged.session.orchestrator.config["retry"] == 3  # Preserved from parent
 
     def test_merge_profiles_none_removal(self, loader_with_temp):
         """Test that None values in child remove parent values."""
         parent_dict = {
             "profile": {"name": "parent", "version": "1.0.0", "description": "Parent"},
-            "session": {"orchestrator": "loop", "context": "simple", "max_tokens": 1000},
+            "session": {"orchestrator": {"module": "loop"}, "context": {"module": "simple"}},
+            "ui": {"show_thinking_stream": True},
         }
         parent = Profile(**parent_dict)
 
         child_dict = {
             "profile": {"name": "child", "version": "1.0.0", "description": "Child"},
-            "session": {"orchestrator": "loop", "context": "simple", "max_tokens": None},
+            "session": {"orchestrator": {"module": "loop"}, "context": {"module": "simple"}},
+            "ui": None,  # Remove UI config
         }
         child = Profile(**child_dict)
 
         merged = loader_with_temp.merge_profiles(parent, child)
 
         # None in child should remove the value
-        assert merged.session.max_tokens is None
+        assert merged.ui is None
 
     def test_load_profile_simple(self, temp_profiles_dir):
         """Test loading a simple profile without inheritance."""
@@ -125,8 +131,10 @@ profile:
   version: 1.0.0
   description: Simple profile
 session:
-  orchestrator: loop
-  context: simple
+  orchestrator:
+    module: loop
+  context:
+    module: simple
 ---
 
 Simple test profile for unit testing.
@@ -137,8 +145,8 @@ Simple test profile for unit testing.
         profile = loader.load_profile("simple")
 
         assert profile.profile.name == "simple"
-        assert profile.session.orchestrator == "loop"
-        assert profile.session.context == "simple"
+        assert profile.session.orchestrator.module == "loop"
+        assert profile.session.context.module == "simple"
 
     def test_load_profile_with_inheritance(self, temp_profiles_dir):
         """Test loading a profile with inheritance."""
@@ -149,9 +157,10 @@ profile:
   version: 1.0.0
   description: Base profile
 session:
-  orchestrator: loop
-  context: simple
-  max_tokens: 1000
+  orchestrator:
+    module: loop
+  context:
+    module: simple
 providers:
   - module: provider-base
 ---
@@ -168,9 +177,10 @@ profile:
   description: Extended profile
   extends: base
 session:
-  orchestrator: loop
-  context: simple
-  max_tokens: 2000
+  orchestrator:
+    module: loop-advanced
+  context:
+    module: simple
 tools:
   - module: tool-extra
 ---
@@ -184,7 +194,7 @@ Extended profile that inherits from base.
 
         # Check inheritance worked
         assert profile.profile.name == "extended"
-        assert profile.session.context.config and profile.session.context.config.get("max_tokens") == 2000  # Overridden
+        assert profile.session.orchestrator.module == "loop-advanced"  # Overridden
         assert len(profile.providers) == 1  # Inherited
         assert profile.providers[0].module == "provider-base"
         assert len(profile.tools) == 1  # New in child
@@ -200,8 +210,10 @@ profile:
   description: Profile A
   extends: b
 session:
-  orchestrator: loop
-  context: simple
+  orchestrator:
+    module: loop
+  context:
+    module: simple
 ---
 
 Profile A (circular dependency test).
@@ -216,8 +228,10 @@ profile:
   description: Profile B
   extends: a
 session:
-  orchestrator: loop
-  context: simple
+  orchestrator:
+    module: loop
+  context:
+    module: simple
 ---
 
 Profile B (circular dependency test).
@@ -273,8 +287,10 @@ profile:
   version: 1.0.0
   description: Test profile {name}
 session:
-  orchestrator: loop
-  context: simple
+  orchestrator:
+    module: loop
+  context:
+    module: simple
 ---
 
 Test profile {name} for listing.
@@ -319,8 +335,10 @@ profile:
   description: Profile with model
   model: anthropic/claude-3-5-sonnet
 session:
-  orchestrator: loop
-  context: simple
+  orchestrator:
+    module: loop
+  context:
+    module: simple
 ---
 
 Profile with model specification.
@@ -341,8 +359,10 @@ profile:
   description: Profile with invalid model
   model: invalid-format
 session:
-  orchestrator: loop
-  context: simple
+  orchestrator:
+    module: loop
+  context:
+    module: simple
 ---
 
 Profile with invalid model format.
@@ -362,9 +382,10 @@ profile:
   version: 1.0.0
   description: Base profile
 session:
-  orchestrator: loop
-  context: simple
-  max_tokens: 1000
+  orchestrator:
+    module: loop
+  context:
+    module: simple
 providers:
   - module: provider-base
 ---
@@ -380,9 +401,10 @@ profile:
   description: Middle profile
   extends: base
 session:
-  orchestrator: loop
-  context: simple
-  max_tokens: 2000
+  orchestrator:
+    module: loop
+  context:
+    module: simple
 tools:
   - module: tool-middle
 ---
@@ -398,8 +420,10 @@ profile:
   description: Top profile
   extends: middle
 session:
-  orchestrator: loop
-  context: advanced
+  orchestrator:
+    module: loop
+  context:
+    module: advanced
 hooks:
   - module: hook-top
 ---
@@ -414,9 +438,6 @@ Top profile in inheritance chain.
         # Check full inheritance chain
         assert profile.profile.name == "top"
         assert profile.session.context.module == "advanced"  # Overridden at top
-        assert (
-            profile.session.context.config and profile.session.context.config.get("max_tokens") == 2000
-        )  # From middle
         assert len(profile.providers) == 1  # From base
         assert len(profile.tools) == 1  # From middle
         assert len(profile.hooks) == 1  # From top

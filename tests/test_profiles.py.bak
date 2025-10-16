@@ -232,10 +232,8 @@ profile:
   description: Invalid profile
   model: gpt-4
 session:
-  orchestrator:
-    module: loop-basic
-  context:
-    module: context-simple
+  orchestrator: loop-basic
+  context: context-simple
 ---
 
 Invalid profile with bad model format.
@@ -259,10 +257,8 @@ profile:
   version: "1.0"
   description: Extra profile
 session:
-  orchestrator:
-    module: loop-basic
-  context:
-    module: context-simple
+  orchestrator: loop-basic
+  context: context-simple
 ---
 
 Extra profile for search path testing.
@@ -290,10 +286,8 @@ profile:
   version: "1.0"
   description: Dev overlay
 session:
-  orchestrator:
-    module: loop-basic
-  context:
-    module: context-simple
+  orchestrator: loop-basic
+  context: context-simple
 hooks:
   - module: hooks-debug
 ---
@@ -328,10 +322,8 @@ profile:
   version: "1.0"
   description: Official profile
 session:
-  orchestrator:
-    module: loop-basic
-  context:
-    module: context-simple
+  orchestrator: loop-basic
+  context: context-simple
 ---
 
 Official profile for testing.
@@ -344,10 +336,8 @@ profile:
   version: "1.0"
   description: Team profile
 session:
-  orchestrator:
-    module: loop-basic
-  context:
-    module: context-simple
+  orchestrator: loop-basic
+  context: context-simple
 ---
 
 Team profile for testing.
