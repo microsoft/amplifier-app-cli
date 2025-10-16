@@ -162,14 +162,13 @@ class GitSource(ModuleSource):
         if self.subdirectory:
             git_url += f"#subdirectory={self.subdirectory}"
 
-        # Use uv to download
+        # Use uv to download with dependencies
         cmd = [
             "uv",
             "pip",
             "install",
             "--target",
             str(target),
-            "--no-deps",  # Don't install dependencies
             git_url,
         ]
 
