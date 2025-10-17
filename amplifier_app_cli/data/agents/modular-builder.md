@@ -1,6 +1,8 @@
 ---
-name: modular-builder
-description: "Primary implementation agent that builds code from specifications. Use PROACTIVELY for ALL implementation tasks. Works with zen-architect specifications to create self-contained, regeneratable modules following the 'bricks and studs' philosophy. Examples: <example>user: 'Implement the caching layer we designed' assistant: 'I'll use the modular-builder agent to implement the caching layer from the specifications.' <commentary>The modular-builder implements modules based on specifications from zen-architect.</commentary></example> <example>user: 'Build the authentication module' assistant: 'Let me use the modular-builder agent to implement the authentication module following the specifications.' <commentary>Perfect for implementing components that follow the modular design philosophy.</commentary></example>"
+meta:
+  name: modular-builder
+  description: "Primary implementation agent that builds code from specifications. Use PROACTIVELY for ALL implementation tasks. Works with zen-architect specifications to create self-contained, regeneratable modules following the 'bricks and studs' philosophy. Examples: <example>user: 'Implement the caching layer we designed' assistant: 'I'll use the modular-builder agent to implement the caching layer from the specifications.' <commentary>The modular-builder implements modules based on specifications from zen-architect.</commentary></example> <example>user: 'Build the authentication module' assistant: 'Let me use the modular-builder agent to implement the authentication module following the specifications.' <commentary>Perfect for implementing components that follow the modular design philosophy.</commentary></example>"
+
 providers:
   - module: provider-anthropic
     config:

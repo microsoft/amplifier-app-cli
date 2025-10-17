@@ -82,40 +82,51 @@ def compile_profile_to_mount_plan(base: Profile, overlays: list[Profile] | None 
     for overlay in overlays:
         mount_plan = _merge_profile_into_mount_plan(mount_plan, overlay)
 
-    # Load agents from new agents field
+    # Load agents using new agent loading system
     if base.agents:
-        from pathlib import Path
+        from .agent_loader import AgentLoader
+        from .agent_schema import Agent
 
-        from amplifier_app_cli.agent_config import load_agent_configs_from_directory
+        agent_loader = AgentLoader()
+        agents_dict = {}
 
-        # Resolve agent dirs relative to bundled profiles directory
-        bundled_base = Path(__file__).parent.parent.parent  # Points to amplifier-app-cli/
-
-        # Load from directories
-        if base.agents.dirs:
-            for agent_dir in base.agents.dirs:
-                # Resolve relative paths relative to bundled package location
-                if agent_dir.startswith("./") or agent_dir.startswith("../"):
-                    resolved_dir = (bundled_base / agent_dir).resolve()
-                else:
-                    resolved_dir = Path(agent_dir)
-
-                # Load agents from this directory
-                loaded_agents = load_agent_configs_from_directory(resolved_dir)
-
-                # Filter by include list if specified
-                if base.agents.include:
-                    loaded_agents = {k: v for k, v in loaded_agents.items() if k in base.agents.include}
-
-                # Merge loaded agents into mount plan agents dict
-                if loaded_agents:
-                    mount_plan["agents"].update(loaded_agents)
-                    logger.debug(f"Loaded {len(loaded_agents)} agents from {resolved_dir}")
-
-        # Add inline definitions
+        # Load inline agents first (highest priority for these names)
         if base.agents.inline:
-            mount_plan["agents"].update(base.agents.inline)
-            logger.debug(f"Added {len(base.agents.inline)} inline agents")
+            for name, config_dict in base.agents.inline.items():
+                try:
+                    # Validate inline agent as Agent model
+                    agent = Agent(**config_dict)
+                    agents_dict[name] = agent.to_mount_plan_fragment()
+                    logger.debug(f"Loaded inline agent: {name}")
+                except Exception as e:
+                    logger.warning(f"Failed to load inline agent '{name}': {e}")
+
+        # Determine which agents to load
+        if base.agents.include:
+            # Explicit include list - load only these agents
+            agent_names_to_load = base.agents.include
+        elif base.agents.dirs:
+            # Dirs specified without include - load all available agents
+            agent_names_to_load = agent_loader.list_agents()
+        else:
+            # No dirs, no include - just inline agents
+            agent_names_to_load = []
+
+        # Load agents from standard search locations
+        for agent_name in agent_names_to_load:
+            if agent_name in agents_dict:
+                # Inline already defined this agent, skip
+                continue
+
+            try:
+                # AgentLoader uses AgentResolver to find agent file
+                agent = agent_loader.load_agent(agent_name)
+                agents_dict[agent_name] = agent.to_mount_plan_fragment()
+                logger.debug(f"Loaded agent '{agent_name}' from search path")
+            except Exception as e:
+                logger.warning(f"Failed to load agent '{agent_name}': {e}")
+
+        mount_plan["agents"] = agents_dict
 
     # Inject profile-level config sections into specific modules
     mount_plan = _inject_profile_configs(mount_plan, base)

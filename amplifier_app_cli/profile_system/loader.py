@@ -1,12 +1,10 @@
 """Profile loader for discovering and loading profile files."""
 
 import logging
-import re
 from pathlib import Path
 
-import yaml
-
 from .schema import Profile
+from .utils import parse_frontmatter
 
 logger = logging.getLogger(__name__)
 
@@ -30,68 +28,24 @@ class ProfileLoader:
         """Get default profile search paths in precedence order (lowest to highest)."""
         paths = []
 
-        # Bundled profiles shipped with package (lowest precedence)
-        # data/ is inside amplifier_app_cli package
+        # 1. Bundled profiles (lowest precedence)
         package_dir = Path(__file__).parent.parent  # amplifier_app_cli package
         bundled = package_dir / "data" / "profiles"
         if bundled.exists():
             paths.append(bundled)
             logger.debug(f"Found bundled profiles: {bundled}")
 
-        # Official profiles (second lowest precedence)
-        official = Path("/usr/share/amplifier/profiles")
-        if official.exists():
-            paths.append(official)
-
-        # Project profiles (middle precedence)
+        # 2. Project profiles (middle precedence)
         project = Path(".amplifier/profiles")
         if project.exists():
             paths.append(project)
 
-        # User profiles (highest precedence)
+        # 3. User profiles (highest precedence)
         user = Path.home() / ".amplifier" / "profiles"
         if user.exists():
             paths.append(user)
 
         return paths
-
-    def _parse_frontmatter(self, file_path: Path) -> dict:
-        """Parse YAML frontmatter from markdown file.
-
-        Args:
-            file_path: Path to markdown file with frontmatter
-
-        Returns:
-            Dict with parsed YAML data
-
-        Raises:
-            ValueError: If frontmatter is invalid or missing
-        """
-        content = file_path.read_text()
-
-        # Match frontmatter between --- delimiters
-        match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
-        if not match:
-            raise ValueError(f"No frontmatter found in {file_path}")
-
-        frontmatter_yaml = match.group(1)
-
-        try:
-            return yaml.safe_load(frontmatter_yaml)
-        except yaml.YAMLError as e:
-            # Provide friendly error message for common YAML syntax issues
-            error_msg = str(e)
-            # Check if it's a scanner error with colons (common mistake)
-            if "scanner" in error_msg.lower() or "could not find expected" in error_msg:
-                raise ValueError(
-                    f"YAML syntax error in {file_path}:\n\n"
-                    f"{error_msg}\n\n"
-                    f"💡 Tip: If your description contains colons (like 'Note: something'), "
-                    f"you must quote it:\n"
-                    f'   description: "Note: something"\n\n'
-                    f"See PROFILE_AUTHORING.md or AGENT_AUTHORING.md for YAML quoting guidelines."
-                ) from e
-            raise ValueError(f"YAML syntax error in {file_path}: {error_msg}") from e
 
     def list_profiles(self) -> list[str]:
         """
@@ -158,7 +112,7 @@ class ProfileLoader:
             raise FileNotFoundError(f"Profile '{name}' not found in search paths")
 
         try:
-            data = self._parse_frontmatter(profile_file)
+            data = parse_frontmatter(profile_file)
 
             # Check for inheritance BEFORE validation
             # This allows child profiles to not specify all required fields
@@ -242,7 +196,7 @@ class ProfileLoader:
         Load profile overlays for a given base profile name.
 
         Overlays are additional profile files with the same name in different
-        search paths. They are merged in order: official → project → user.
+        search paths. They are merged in order: bundled → project → user.
 
         Args:
             base_name: Base profile name to find overlays for
@@ -252,12 +206,12 @@ class ProfileLoader:
         """
         overlays = []
 
-        # Check each search path for overlays (in order: official, project, user)
+        # Check each search path for overlays (in order: bundled, project, user)
         for search_path in self.search_paths:
             overlay_file = search_path / f"{base_name}.md"
             if overlay_file.exists():
                 try:
-                    data = self._parse_frontmatter(overlay_file)
+                    data = parse_frontmatter(overlay_file)
                     overlay = Profile(**data)
                     overlays.append(overlay)
                     logger.debug(f"Loaded overlay for '{base_name}' from {overlay_file}")
@@ -344,7 +298,7 @@ class ProfileLoader:
             name: Profile name
 
         Returns:
-            "bundled", "official", "project", "user", or None if not found
+            "bundled", "project", "user", or None if not found
         """
         profile_file = self.find_profile_file(name)
         if profile_file is None:
@@ -352,15 +306,13 @@ class ProfileLoader:
 
         path_str = str(profile_file)
 
-        # Check in precedence order
-        if "/usr/share/amplifier/profiles" in path_str:
-            return "official"
+        # Check in precedence order (highest first)
+        if str(Path.home()) in path_str and ".amplifier/profiles" in path_str:
+            return "user"
         if ".amplifier/profiles" in path_str:
             return "project"
-        if str(Path.home()) in path_str:
-            return "user"
         # Bundled profiles (shipped with package)
-        if "amplifier-app-cli/profiles" in path_str or "amplifier_app_cli/../profiles" in path_str:
+        if "amplifier_app_cli" in path_str:
             return "bundled"
 
         return "unknown"

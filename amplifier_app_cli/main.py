@@ -20,6 +20,7 @@ from rich.table import Table
 
 from .commands.logs import logs_cmd
 from .logging_setup import init_json_logging
+from .profile_system import AgentManager
 from .profile_system import ProfileLoader
 from .profile_system import ProfileManager
 from .session_store import SessionStore
@@ -1170,6 +1171,35 @@ def module_info(module_name: str):
 
 # Register logs command
 cli.add_command(logs_cmd)
+
+
+@cli.group()
+def agents():
+    """Manage Amplifier agents."""
+    pass
+
+
+@agents.command(name="list")
+def agents_list():
+    """List all available agents."""
+    manager = AgentManager()
+    manager.list_agents()
+
+
+@agents.command(name="show")
+@click.argument("name")
+def agents_show(name: str):
+    """Show details of a specific agent."""
+    manager = AgentManager()
+    manager.show_agent(name)
+
+
+@agents.command(name="validate")
+@click.argument("file_path", type=click.Path(exists=True))
+def agents_validate(file_path: str):
+    """Validate an agent file."""
+    manager = AgentManager()
+    manager.validate_agent(file_path)
 
 
 @cli.group()

@@ -1,18 +1,18 @@
-# Amplifier Profiles
+# Bundled Amplifier Profiles
 
-This directory contains official Amplifier profiles that provide pre-configured setups for common use cases.
+This directory contains bundled Amplifier profiles that ship with the `amplifier-app-cli` package. These provide pre-configured setups for common use cases.
 
 ## Profile System Overview
 
-Amplifier uses a **two-tier profile system** to separate personal developer preferences from team defaults:
+Amplifier uses a **layered profile system** to separate personal developer preferences from project defaults:
 
 - **Local profile** (`.amplifier/profile`) - Your personal choice, gitignored
-- **Project default** (`.amplifier/default-profile`) - Team's recommended profile, checked in
+- **Project default** (`.amplifier/default-profile`) - Project's recommended profile, checked in
 
 **Precedence order:**
 1. CLI flag `--profile` (highest priority)
 2. Local profile (your choice)
-3. Project default (team's choice)
+3. Project default (project's choice)
 4. Hardcoded defaults (fallback)
 
 This design prevents git merge conflicts while allowing projects to specify sensible defaults.
@@ -140,22 +140,23 @@ amplifier profile show dev
 
 ## Profile Locations
 
-Profiles are searched in order of precedence:
+Profiles are searched in order of precedence (lowest to highest):
 
-1. **User profiles** (highest): `~/.amplifier/profiles/`
-2. **Project profiles** (middle): `.amplifier/profiles/`
-3. **Official profiles** (lowest): `/usr/share/amplifier/profiles/` or bundled with CLI
+1. **Bundled profiles** (lowest): Included with `amplifier-app-cli` package (`amplifier_app_cli/data/profiles/`)
+2. **Project profiles** (middle): `.amplifier/profiles/` (committed to git)
+3. **User profiles** (highest): `~/.amplifier/profiles/` (personal)
+4. **Environment variables** (absolute highest): `AMPLIFIER_PROFILE_<NAME>=path`
 
 ## Creating Custom Profiles
 
-### Extending Official Profiles
+### Extending Bundled Profiles
 ```markdown
 ---
 profile:
   name: my-custom
   version: 1.0.0
   description: Custom profile based on dev
-  extends: dev  # Inherit from dev profile
+  extends: dev  # Inherit from bundled dev profile
 
 # Override or add specific settings
 tools:
@@ -178,11 +179,11 @@ agents:
 ### Profile Overlays
 Create a profile with the same name in a higher precedence location to override settings:
 
-- Official `dev.md` provides base configuration
+- Bundled `dev.md` provides base configuration
 - Project `.amplifier/profiles/dev.md` adds project-specific tools
 - User `~/.amplifier/profiles/dev.md` adds personal preferences
 
-All three merge automatically, with user settings taking precedence.
+All layers merge automatically, with user settings taking highest precedence.
 
 ## Profile State Files
 
@@ -196,9 +197,9 @@ Amplifier uses two state files to track which profiles are active:
 - Clear with: `amplifier profile reset`
 
 ### `.amplifier/default-profile` (Project Default)
-- Contains the team's recommended profile
+- Contains the project's recommended profile
 - Simple text file with profile name
-- **Checked into git** - shared across team
+- **Checked into git** - shared across project
 - Set with: `amplifier profile default --set <name>`
 - Clear with: `amplifier profile default --clear`
 
