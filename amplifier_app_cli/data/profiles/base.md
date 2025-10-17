@@ -31,9 +31,9 @@ hooks:
         - span_id
         - parent_span_id
   - module: hooks-logging
-    source: git+https://github.com/microsoft/amplifier-module-hooks-logging@main
     config:
-      path: ./amplifier.log.jsonl
+      mode: session-only
+      session_log_template: ~/.amplifier/projects/{project}/sessions/{session_id}/events.jsonl
 ---
 
 # Base Profile

@@ -19,7 +19,6 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .commands.logs import logs_cmd
-from .logging_setup import init_json_logging
 from .profile_system import AgentManager
 from .profile_system import ProfileLoader
 from .profile_system import ProfileManager
@@ -27,10 +26,11 @@ from .session_store import SessionStore
 
 logger = logging.getLogger(__name__)
 
-# Initialize JSON logging early
-init_json_logging()
-
 console = Console()
+
+# Default fallback profile when no profile is configured
+# Change this single constant to adjust the fallback
+DEFAULT_FALLBACK_PROFILE = "dev"
 
 
 class CommandProcessor:
@@ -484,21 +484,21 @@ def run(
     if model:
         cli_overrides.setdefault("provider", {})["model"] = model
 
+    # Determine active profile name (including fallback)
+    manager = ProfileManager()
+    active_profile_name = profile or manager.get_active_profile() or DEFAULT_FALLBACK_PROFILE
+
     # Resolve full configuration with proper precedence
-    config_data = resolve_app_config(cli_config=cli_overrides, config_file=config, profile_override=profile)
+    config_data = resolve_app_config(cli_config=cli_overrides, config_file=config, profile_override=active_profile_name)
 
     # Get module search paths
     search_paths = get_module_search_paths()
-
-    # Determine active profile name for session metadata
-    manager = ProfileManager()
-    active_profile_name = profile or manager.get_active_profile() or "default"
 
     if mode == "chat":
         # Generate session ID if not provided
         if not session_id:
             session_id = str(uuid.uuid4())
-            console.print(f"[dim]Session ID: {session_id}[/dim]")
+            console.print(f"\n[dim]Session ID: {session_id}[/dim]")
         asyncio.run(interactive_chat(config_data, search_paths, verbose, session_id, active_profile_name))
     else:
         if not prompt:
@@ -508,10 +508,13 @@ def run(
         asyncio.run(execute_single(prompt, config_data, search_paths, verbose, session_id, active_profile_name))
 
 
-@cli.group()
-def profile():
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def profile(ctx):
     """Manage Amplifier profiles."""
-    pass
+    if ctx.invoked_subcommand is None:
+        click.echo("\n" + ctx.get_help())
+        ctx.exit()
 
 
 @profile.command(name="list")
@@ -889,9 +892,6 @@ async def interactive_chat(
     config: dict, search_paths: list[Path], verbose: bool, session_id: str | None = None, profile_name: str = "default"
 ):
     """Run an interactive chat session."""
-    # Immediate feedback that session is starting
-    console.print("[dim]Starting chat session...[/dim]")
-
     # Generate session ID if not provided
     if not session_id:
         session_id = str(uuid.uuid4())
@@ -906,7 +906,9 @@ async def interactive_chat(
     resolver = StandardModuleSourceResolver()
     await session.coordinator.mount("module-source-resolver", resolver)
 
-    await session.initialize()
+    # Show loading indicator during initialization (modules loading, etc.)
+    with console.status("[dim]Loading...[/dim]", spinner="dots"):
+        await session.initialize()
 
     # Register CLI approval provider if approval hook is active (app-layer policy)
     from .approval_provider import CLIApprovalProvider
@@ -1008,7 +1010,7 @@ async def interactive_chat(
                     console.print_exception()
     finally:
         await session.cleanup()
-        console.print("\n[yellow]Session ended[/yellow]")
+        console.print("\n[yellow]Session ended[/yellow]\n")
 
 
 async def execute_single(
@@ -1053,34 +1055,34 @@ async def execute_single(
         console.print(response)
         console.print()  # Add blank line after output to prevent running into shell prompt
 
-        # Save session if session_id was explicitly provided
-        if session_id:
-            context = session.coordinator.get("context")
-            messages = getattr(context, "messages", [])
-            if messages:
-                # Get model name from provider
-                providers = session.coordinator.get("providers") or {}
-                model_name = "unknown"
-                for prov_name, prov in providers.items():
-                    if hasattr(prov, "model"):
-                        model_name = f"{prov_name}/{prov.model}"
-                        break
-                    if hasattr(prov, "default_model"):
-                        model_name = f"{prov_name}/{prov.default_model}"
-                        break
+        # Always save session (for debugging/archival)
+        context = session.coordinator.get("context")
+        messages = getattr(context, "messages", [])
+        if messages:
+            # Get actual session_id from session (may be auto-generated)
+            actual_session_id = session.session_id
 
-                # Use profile name passed from caller
+            # Get model name from provider
+            providers = session.coordinator.get("providers") or {}
+            model_name = "unknown"
+            for prov_name, prov in providers.items():
+                if hasattr(prov, "model"):
+                    model_name = f"{prov_name}/{prov.model}"
+                    break
+                if hasattr(prov, "default_model"):
+                    model_name = f"{prov_name}/{prov.default_model}"
+                    break
 
-                store = SessionStore()
-                metadata = {
-                    "created_at": datetime.now(UTC).isoformat(),
-                    "profile": profile_name,
-                    "model": model_name,
-                    "turn_count": len([m for m in messages if m.get("role") == "user"]),
-                }
-                store.save(session_id, messages, metadata)
-                if verbose:
-                    console.print(f"[dim]Session {session_id[:8]}... saved[/dim]")
+            store = SessionStore()
+            metadata = {
+                "created_at": datetime.now(UTC).isoformat(),
+                "profile": profile_name,
+                "model": model_name,
+                "turn_count": len([m for m in messages if m.get("role") == "user"]),
+            }
+            store.save(actual_session_id, messages, metadata)
+            if verbose:
+                console.print(f"[dim]Session {actual_session_id[:8]}... saved[/dim]")
 
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -1091,10 +1093,13 @@ async def execute_single(
         await session.cleanup()
 
 
-@cli.group()
-def module():
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def module(ctx):
     """Manage Amplifier modules."""
-    pass
+    if ctx.invoked_subcommand is None:
+        click.echo("\n" + ctx.get_help())
+        ctx.exit()
 
 
 @module.command("list")
@@ -1173,20 +1178,23 @@ def module_info(module_name: str):
 cli.add_command(logs_cmd)
 
 
-@cli.group()
-def agents():
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def agent(ctx):
     """Manage Amplifier agents."""
-    pass
+    if ctx.invoked_subcommand is None:
+        click.echo("\n" + ctx.get_help())
+        ctx.exit()
 
 
-@agents.command(name="list")
+@agent.command(name="list")
 def agents_list():
     """List all available agents."""
     manager = AgentManager()
     manager.list_agents()
 
 
-@agents.command(name="show")
+@agent.command(name="show")
 @click.argument("name")
 def agents_show(name: str):
     """Show details of a specific agent."""
@@ -1194,7 +1202,7 @@ def agents_show(name: str):
     manager.show_agent(name)
 
 
-@agents.command(name="validate")
+@agent.command(name="validate")
 @click.argument("file_path", type=click.Path(exists=True))
 def agents_validate(file_path: str):
     """Validate an agent file."""
@@ -1202,17 +1210,106 @@ def agents_validate(file_path: str):
     manager.validate_agent(file_path)
 
 
-@cli.group()
-def sessions():
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def session(ctx):
     """Manage Amplifier sessions."""
-    pass
+    if ctx.invoked_subcommand is None:
+        click.echo("\n" + ctx.get_help())
+        ctx.exit()
 
 
-@sessions.command(name="list")
+@session.command(name="list")
 @click.option("--limit", "-n", default=20, help="Number of sessions to show")
-def sessions_list(limit: int):
-    """List recent sessions."""
-    store = SessionStore()
+@click.option("--all-projects", is_flag=True, help="Show sessions from all projects")
+@click.option("--project", type=click.Path(), help="Show sessions for specific project path")
+def sessions_list(limit: int, all_projects: bool, project: str | None):
+    """List recent sessions for current project (or all projects with --all-projects)."""
+    from .project_utils import get_project_slug
+
+    if all_projects:
+        # List sessions from all projects
+        projects_dir = Path.home() / ".amplifier" / "projects"
+        if not projects_dir.exists():
+            console.print("[yellow]No sessions found.[/yellow]")
+            return
+
+        # Collect all sessions across all projects
+        all_sessions = []
+        for project_dir in projects_dir.iterdir():
+            if not project_dir.is_dir():
+                continue
+            sessions_dir = project_dir / "sessions"
+            if not sessions_dir.exists():
+                continue
+
+            store = SessionStore(base_dir=sessions_dir)
+            for session_id in store.list_sessions():
+                session_path = sessions_dir / session_id
+                try:
+                    mtime = session_path.stat().st_mtime
+                    all_sessions.append((project_dir.name, session_id, session_path, mtime))
+                except Exception:
+                    continue
+
+        # Sort by mtime (newest first) and take limit
+        all_sessions.sort(key=lambda x: x[3], reverse=True)
+        all_sessions = all_sessions[:limit]
+
+        if not all_sessions:
+            console.print("[yellow]No sessions found.[/yellow]")
+            return
+
+        # Create display table
+        table = Table(title="All Sessions (All Projects)", show_header=True, header_style="bold cyan")
+        table.add_column("Project", style="magenta")
+        table.add_column("Session ID", style="green")
+        table.add_column("Last Modified", style="yellow")
+        table.add_column("Messages")
+
+        for project_slug, session_id, session_path, mtime in all_sessions:
+            modified = datetime.fromtimestamp(mtime, tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+            # Try to get message count
+            transcript_file = session_path / "transcript.jsonl"
+            message_count = "?"
+            if transcript_file.exists():
+                try:
+                    with open(transcript_file) as f:
+                        message_count = str(sum(1 for _ in f))
+                except Exception:
+                    pass
+
+            # Truncate project slug for display
+            display_slug = project_slug if len(project_slug) <= 30 else project_slug[:27] + "..."
+            table.add_row(display_slug, session_id, modified, message_count)
+
+        console.print(table)
+
+    elif project:
+        # List sessions for specific project
+        project_path = Path(project).resolve()
+        project_slug = str(project_path).replace("/", "-").replace("\\", "-").replace(":", "")
+        if not project_slug.startswith("-"):
+            project_slug = "-" + project_slug
+
+        sessions_dir = Path.home() / ".amplifier" / "projects" / project_slug / "sessions"
+        if not sessions_dir.exists():
+            console.print(f"[yellow]No sessions found for project: {project}[/yellow]")
+            return
+
+        store = SessionStore(base_dir=sessions_dir)
+        _display_project_sessions(store, limit, f"Sessions for {project}")
+
+    else:
+        # List sessions for current project only (default)
+        store = SessionStore()
+        project_slug = get_project_slug()
+        _display_project_sessions(store, limit, f"Sessions for Current Project ({project_slug})")
+
+
+def _display_project_sessions(store: SessionStore, limit: int, title: str):
+    """Helper to display sessions for a single project."""
     session_ids = store.list_sessions()[:limit]
 
     if not session_ids:
@@ -1220,7 +1317,7 @@ def sessions_list(limit: int):
         return
 
     # Create display table
-    table = Table(title="Recent Sessions", show_header=True, header_style="bold cyan")
+    table = Table(title=title, show_header=True, header_style="bold cyan")
     table.add_column("Session ID", style="green")
     table.add_column("Last Modified", style="yellow")
     table.add_column("Messages")
@@ -1247,7 +1344,7 @@ def sessions_list(limit: int):
     console.print(table)
 
 
-@sessions.command(name="show")
+@session.command(name="show")
 @click.argument("session_id")
 @click.option("--detailed", "-d", is_flag=True, help="Show full transcript")
 def sessions_show(session_id: str, detailed: bool):
@@ -1263,7 +1360,9 @@ def sessions_show(session_id: str, detailed: bool):
 
         # Show metadata
         console.print(f"[bold]Session:[/bold] {session_id}")
-        console.print(f"[bold]Created:[/bold] {metadata.get('created', 'Unknown')}")
+        # Handle both 'created' and 'created_at' for backward compatibility
+        created = metadata.get("created") or metadata.get("created_at", "Unknown")
+        console.print(f"[bold]Created:[/bold] {created}")
         console.print(f"[bold]Messages:[/bold] {len(transcript)}")
 
         if metadata.get("profile"):
@@ -1289,7 +1388,7 @@ def sessions_show(session_id: str, detailed: bool):
         sys.exit(1)
 
 
-@sessions.command(name="delete")
+@session.command(name="delete")
 @click.argument("session_id")
 @click.option("--force", "-f", is_flag=True, help="Skip confirmation")
 def sessions_delete(session_id: str, force: bool):
@@ -1317,7 +1416,7 @@ def sessions_delete(session_id: str, force: bool):
         sys.exit(1)
 
 
-@sessions.command(name="resume")
+@session.command(name="resume")
 @click.argument("session_id")
 @click.option("--config", "-c", type=click.Path(exists=True), help="Configuration file path")
 @click.option("--profile", "-P", help="Profile to use for resumed session")
@@ -1359,7 +1458,7 @@ def sessions_resume(session_id: str, config: str | None, profile: str | None):
         sys.exit(1)
 
 
-@sessions.command(name="cleanup")
+@session.command(name="cleanup")
 @click.option("--days", "-d", default=30, help="Delete sessions older than N days")
 @click.option("--force", "-f", is_flag=True, help="Skip confirmation")
 def sessions_cleanup(days: int, force: bool):
@@ -1485,7 +1584,7 @@ async def interactive_chat_with_session(
                     console.print_exception()
     finally:
         await session.cleanup()
-        console.print("\n[yellow]Session ended[/yellow]")
+        console.print("\n[yellow]Session ended[/yellow]\n")
 
 
 def main():

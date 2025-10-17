@@ -14,6 +14,8 @@ from datetime import UTC
 from datetime import datetime
 from pathlib import Path
 
+from amplifier_app_cli.project_utils import get_project_slug
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,7 +26,7 @@ class SessionStore:
     Contract:
     - Inputs: session_id (str), transcript (list), metadata (dict)
     - Outputs: Saved files or loaded data tuples
-    - Side Effects: Filesystem writes to ~/.amplifier/sessions/<session-id>/
+    - Side Effects: Filesystem writes to ~/.amplifier/projects/<project-slug>/sessions/<session-id>/
     - Errors: FileNotFoundError for missing sessions, IOError for disk issues
     - Files created: transcript.jsonl, metadata.json, profile.md
     """
@@ -33,10 +35,12 @@ class SessionStore:
         """Initialize with base directory for sessions.
 
         Args:
-            base_dir: Base directory for session storage. Defaults to ~/.amplifier/sessions
+            base_dir: Base directory for session storage.
+                     Defaults to ~/.amplifier/projects/<project-slug>/sessions/
         """
         if base_dir is None:
-            base_dir = Path.home() / ".amplifier" / "sessions"
+            project_slug = get_project_slug()
+            base_dir = Path.home() / ".amplifier" / "projects" / project_slug / "sessions"
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
