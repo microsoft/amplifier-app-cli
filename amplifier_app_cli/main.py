@@ -452,11 +452,8 @@ def cli(ctx):
     """Amplifier - AI-powered modular development platform."""
     # If no command specified, launch chat mode with current profile
     if ctx.invoked_subcommand is None:
-        # Use Click's forward to properly handle defaults
-        ctx.forward(run)
-        # Override mode to chat after forwarding defaults
-        ctx.params["mode"] = "chat"
-        ctx.invoke(run, **ctx.params)
+        # Only override mode; let Click handle all other parameter defaults
+        ctx.invoke(run, mode="chat")
 
 
 @cli.command()
