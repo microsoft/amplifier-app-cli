@@ -452,7 +452,17 @@ def cli(ctx):
     """Amplifier - AI-powered modular development platform."""
     # If no command specified, launch chat mode with current profile
     if ctx.invoked_subcommand is None:
-        ctx.invoke(run, prompt=None, mode="chat")
+        ctx.invoke(
+            run,
+            prompt=None,
+            config=None,
+            profile=None,
+            provider=None,
+            model=None,
+            mode="chat",
+            session_id=None,
+            verbose=False,
+        )
 
 
 @cli.command()

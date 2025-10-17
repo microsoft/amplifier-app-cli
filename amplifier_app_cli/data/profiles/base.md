@@ -8,8 +8,10 @@ profile:
 session:
   orchestrator:
     module: loop-basic
+    source: git+https://github.com/microsoft/amplifier-module-loop-basic@main
   context:
     module: context-simple
+    source: git+https://github.com/microsoft/amplifier-module-context-simple@main
     config:
       max_tokens: 100000
       compact_threshold: 0.8
