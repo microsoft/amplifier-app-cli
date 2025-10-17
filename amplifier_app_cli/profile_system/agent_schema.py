@@ -47,8 +47,13 @@ class Agent(BaseModel):
         """
         result: dict[str, Any] = {}
 
-        # Always include meta for identification
+        # Include meta for structured access
         result["meta"] = self.meta.model_dump()
+
+        # ALSO include name and description at top level for backward compatibility
+        # (task tool and other components expect this format)
+        result["name"] = self.meta.name
+        result["description"] = self.meta.description
 
         # Add module lists if present
         if self.providers:
