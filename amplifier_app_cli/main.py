@@ -19,6 +19,11 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .commands.logs import logs_cmd
+from .commands.setup import check_first_run
+from .commands.setup import prompt_first_run_setup
+from .commands.setup import setup_cmd
+from .data.profiles import get_system_default_profile
+from .key_manager import KeyManager
 from .profile_system import AgentManager
 from .profile_system import ProfileLoader
 from .profile_system import ProfileManager
@@ -28,9 +33,9 @@ logger = logging.getLogger(__name__)
 
 console = Console()
 
-# Default fallback profile when no profile is configured
-# Change this single constant to adjust the fallback
-DEFAULT_FALLBACK_PROFILE = "dev"
+# Load API keys from ~/.amplifier/keys.env on startup
+# This allows keys saved by 'amplifier setup' to be available
+_key_manager = KeyManager()
 
 
 class CommandProcessor:
@@ -497,7 +502,12 @@ def run(
 
     # Determine active profile name (including fallback)
     manager = ProfileManager()
-    active_profile_name = profile or manager.get_active_profile() or DEFAULT_FALLBACK_PROFILE
+    active_profile_name = profile or manager.get_active_profile() or get_system_default_profile()
+
+    # Check for first run (no API keys) and offer setup
+    if check_first_run() and not profile and not config and prompt_first_run_setup(console):
+        # Setup was run, reload active profile
+        active_profile_name = manager.get_active_profile() or get_system_default_profile()
 
     # Resolve full configuration with proper precedence
     config_data = resolve_app_config(cli_config=cli_overrides, config_file=config, profile_override=active_profile_name)
@@ -535,28 +545,34 @@ def profile_list():
     manager = ProfileManager()
     profiles = loader.list_profiles()
     active_profile = manager.get_active_profile()
+    project_default = manager.get_project_default()
 
     if not profiles:
         console.print("[yellow]No profiles found.[/yellow]")
         return
 
-    console.print("[bold]Available Profiles:[/bold]\n")
+    # Create table like module and agent lists
+    table = Table(title="Available Profiles", show_header=True, header_style="bold cyan")
+    table.add_column("Name", style="green")
+    table.add_column("Source", style="yellow")
+    table.add_column("Status")
+
     for profile_name in profiles:
         source = loader.get_profile_source(profile_name)
-        if source is None:
-            source_label = ""
-        else:
-            source_label = {
-                "official": "[blue](official)[/blue]",
-                "team": "[green](team)[/green]",
-                "user": "[cyan](user)[/cyan]",
-            }.get(source, "")
+        source_label = source or "unknown"
 
-        # Mark active profile
+        # Build status indicators
+        status_parts = []
         if profile_name == active_profile:
-            console.print(f"  ★ [bold green]{profile_name}[/bold green] {source_label} [dim](active)[/dim]")
-        else:
-            console.print(f"  • {profile_name} {source_label}")
+            status_parts.append("[bold green]active[/bold green]")
+        if profile_name == project_default:
+            status_parts.append("[cyan]default[/cyan]")
+
+        status = ", ".join(status_parts) if status_parts else ""
+
+        table.add_row(profile_name, source_label, status)
+
+    console.print(table)
 
 
 @profile.command(name="current")
@@ -567,14 +583,17 @@ def profile_current():
 
     if profile_name:
         if source == "local":
-            console.print(f"[bold green]Active profile:[/bold green] {profile_name} [dim](from local choice)[/dim]")
-            console.print("Source: [cyan].amplifier/profile[/cyan]")
+            console.print(f"[bold green]Active profile:[/bold green] {profile_name} [dim](from local settings)[/dim]")
+            console.print("Source: [cyan].amplifier/settings.local.yaml[/cyan]")
         elif source == "default":
             console.print(f"[bold green]Active profile:[/bold green] {profile_name} [dim](from project default)[/dim]")
-            console.print("Source: [cyan].amplifier/default-profile[/cyan]")
+            console.print("Source: [cyan].amplifier/settings.yaml[/cyan]")
+        elif source == "user":
+            console.print(f"[bold green]Active profile:[/bold green] {profile_name} [dim](from user settings)[/dim]")
+            console.print("Source: [cyan]~/.amplifier/settings.yaml[/cyan]")
     else:
         console.print("[yellow]No active profile set[/yellow]")
-        console.print("Using hardcoded defaults")
+        console.print(f"Using system default: [bold]{get_system_default_profile()}[/bold]")
         console.print("\n[bold]To set a profile:[/bold]")
         console.print("  Local:   [cyan]amplifier profile apply <name>[/cyan]")
         console.print("  Project: [cyan]amplifier profile default --set <name>[/cyan]")
@@ -847,7 +866,7 @@ def profile_reset():
         console.print(f"Now using project default: [bold]{project_default}[/bold]")
     else:
         console.print("[green]✓[/green] Cleared local profile")
-        console.print("Now using hardcoded defaults")
+        console.print(f"Now using system default: [bold]{get_system_default_profile()}[/bold]")
 
 
 @profile.command(name="default")
@@ -860,7 +879,7 @@ def profile_default(set_default: str | None, clear: bool):
     Without options, shows the current project default.
     The project default is used when no local profile is set.
 
-    Note: The project default file (.amplifier/default-profile) is intended
+    Note: The project default (.amplifier/settings.yaml profile.default) is intended
     to be checked into version control.
     """
     manager = ProfileManager()
@@ -885,16 +904,17 @@ def profile_default(set_default: str | None, clear: bool):
         # Set project default
         manager.set_project_default(set_default)
         console.print(f"[green]✓[/green] Set project default: {set_default}")
-        console.print("\n[yellow]Note:[/yellow] Remember to commit .amplifier/default-profile")
+        console.print("\n[yellow]Note:[/yellow] Remember to commit .amplifier/settings.yaml")
         return
 
     # Show current project default
     project_default = manager.get_project_default()
     if project_default:
         console.print(f"[bold green]Project default:[/bold green] {project_default}")
-        console.print("Source: [cyan].amplifier/default-profile[/cyan]")
+        console.print("Source: [cyan].amplifier/settings.yaml[/cyan]")
     else:
         console.print("[yellow]No project default set[/yellow]")
+        console.print(f"System default: [bold]{get_system_default_profile()}[/bold]")
         console.print("\nSet a project default with:")
         console.print("  [cyan]amplifier profile default --set <name>[/cyan]")
 
@@ -1122,10 +1142,12 @@ def module(ctx):
     help="Module type to list",
 )
 def list_modules(type: str):
-    """List installed modules."""
+    """List installed modules with sources and origins."""
     import asyncio
 
     from amplifier_core.loader import ModuleLoader
+
+    from .module_resolution import StandardModuleSourceResolver
 
     # Create a loader to discover modules
     loader = ModuleLoader()
@@ -1133,11 +1155,15 @@ def list_modules(type: str):
     # Get all discovered modules
     modules_info = asyncio.run(loader.discover())
 
+    # Create resolver to get sources
+    resolver = StandardModuleSourceResolver()
+
     # Create display table
     table = Table(title="Installed Modules", show_header=True, header_style="bold cyan")
     table.add_column("Name", style="green")
     table.add_column("Type", style="yellow")
-    table.add_column("Mount Point")
+    table.add_column("Source", style="magenta")
+    table.add_column("Origin", style="cyan")
     table.add_column("Description")
 
     # Filter and display modules
@@ -1145,14 +1171,25 @@ def list_modules(type: str):
         if type != "all" and type != module_info.type:
             continue
 
-        table.add_row(module_info.id, module_info.type, module_info.mount_point, module_info.description)
+        # Try to resolve source and origin
+        try:
+            source_obj, origin = resolver.resolve_with_layer(module_info.id)
+            source_str = str(source_obj)
+            # Truncate long sources
+            if len(source_str) > 40:
+                source_str = source_str[:37] + "..."
+        except Exception:
+            source_str = "unknown"
+            origin = "unknown"
+
+        table.add_row(module_info.id, module_info.type, source_str, origin, module_info.description)
 
     console.print(table)
 
 
-@module.command("info")
+@module.command("show")
 @click.argument("module_name")
-def module_info(module_name: str):
+def module_show(module_name: str):
     """Show detailed information about a module."""
     import asyncio
 
@@ -1185,8 +1222,9 @@ def module_info(module_name: str):
     console.print(Panel(panel_content, title=f"Module: {module_name}", border_style="cyan"))
 
 
-# Register logs command
+# Register standalone commands
 cli.add_command(logs_cmd)
+cli.add_command(setup_cmd)
 
 
 @cli.group(invoke_without_command=True)
@@ -1332,6 +1370,7 @@ def _display_project_sessions(store: SessionStore, limit: int, title: str):
     table.add_column("Session ID", style="green")
     table.add_column("Last Modified", style="yellow")
     table.add_column("Messages")
+    table.add_column("Profile", style="cyan")
 
     for session_id in session_ids:
         try:
@@ -1347,7 +1386,20 @@ def _display_project_sessions(store: SessionStore, limit: int, title: str):
                 with open(transcript_file) as f:
                     message_count = str(sum(1 for _ in f))
 
-            table.add_row(session_id, modified, message_count)
+            # Try to get profile from metadata
+            metadata_file = session_path / "metadata.json"
+            profile_name = "?"
+            if metadata_file.exists():
+                try:
+                    import json
+
+                    with open(metadata_file) as f:
+                        metadata = json.load(f)
+                        profile_name = metadata.get("profile", "?")
+                except Exception:
+                    pass
+
+            table.add_row(session_id, modified, message_count, profile_name)
         except Exception:
             # Skip sessions we can't read
             continue
@@ -1488,6 +1540,136 @@ def sessions_cleanup(days: int, force: bool):
     except Exception as e:
         console.print(f"[red]Error during cleanup:[/red] {e}")
         sys.exit(1)
+
+
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def source(ctx):
+    """Manage module source overrides."""
+    if ctx.invoked_subcommand is None:
+        click.echo("\n" + ctx.get_help())
+        ctx.exit()
+
+
+@source.command("add")
+@click.argument("module_id")
+@click.argument("source_uri")
+@click.option("--global", "-g", "is_global", is_flag=True, help="Add to user settings (~/.amplifier/)")
+def source_add(module_id: str, source_uri: str, is_global: bool):
+    """Add module source override.
+
+    Examples:
+      amplifier source add tool-bash ~/dev/amplifier-module-tool-bash
+      amplifier source add provider-openai git+https://github.com/me/fork@main --global
+    """
+    from .settings import SettingsManager
+
+    manager = SettingsManager()
+    scope = "user" if is_global else "project"
+    manager.add_source_override(module_id, source_uri, scope=scope)
+
+    scope_label = "user" if is_global else "project"
+    console.print(f"[green]✓[/green] Added {scope_label} override for '{module_id}'")
+    console.print(f"  Source: {source_uri}")
+    console.print(f"  File: {manager.user_settings_file if is_global else manager.project_settings_file}")
+
+
+@source.command("remove")
+@click.argument("module_id")
+@click.option("--global", "-g", "is_global", is_flag=True, help="Remove from user settings")
+def source_remove(module_id: str, is_global: bool):
+    """Remove module source override."""
+    from .settings import SettingsManager
+
+    manager = SettingsManager()
+    scope = "user" if is_global else "project"
+    removed = manager.remove_source_override(module_id, scope=scope)
+
+    if removed:
+        scope_label = "user" if is_global else "project"
+        console.print(f"[green]✓[/green] Removed {scope_label} override for '{module_id}'")
+    else:
+        console.print(f"[yellow]No override found for '{module_id}'[/yellow]")
+
+
+@source.command("list")
+def source_list():
+    """List all module source overrides."""
+    from .settings import SettingsManager
+
+    manager = SettingsManager()
+    sources = manager.get_module_sources()
+
+    if not sources:
+        console.print("[yellow]No source overrides configured[/yellow]")
+        console.print("\nAdd overrides with:")
+        console.print("  [cyan]amplifier source add <module> <uri>[/cyan]")
+        return
+
+    # Create table
+    table = Table(title="Module Source Overrides", show_header=True, header_style="bold cyan")
+    table.add_column("Module", style="green")
+    table.add_column("Source", style="magenta")
+
+    for module_id, source_uri in sorted(sources.items()):
+        # Truncate long URIs
+        display_uri = source_uri if len(source_uri) <= 60 else source_uri[:57] + "..."
+        table.add_row(module_id, display_uri)
+
+    console.print(table)
+
+
+@source.command("show")
+@click.argument("module_id")
+def source_show(module_id: str):
+    """Show resolution path for a module.
+
+    Displays all 6 resolution layers and which one resolved the module.
+    """
+    from .module_resolution import StandardModuleSourceResolver
+
+    resolver = StandardModuleSourceResolver()
+
+    console.print(f"[bold]Module:[/bold] {module_id}\n")
+    console.print("[bold]Resolution Path:[/bold]")
+
+    # Show all 6 layers
+    env_key = f"AMPLIFIER_MODULE_{module_id.upper().replace('-', '_')}"
+    env_val = os.getenv(env_key)
+    console.print(
+        f"  1. Environment ({env_key}): " + (f"[green]✓ {env_val}[/green]" if env_val else "[dim]not set[/dim]")
+    )
+
+    # Check workspace
+    workspace = Path(".amplifier/modules") / module_id
+    console.print(
+        "  2. Workspace (.amplifier/modules/): "
+        + ("[green]✓ found[/green]" if workspace.exists() else "[dim]not found[/dim]")
+    )
+
+    # Check project settings
+    from .settings import SettingsManager
+
+    manager = SettingsManager()
+    merged_sources = manager.get_module_sources()
+    project_source = merged_sources.get(module_id) if module_id in merged_sources else None
+
+    console.print(
+        "  3. Project (.amplifier/settings.yaml): "
+        + (f"[green]✓ {project_source}[/green]" if project_source else "[dim]not found[/dim]")
+    )
+
+    console.print("  4. User (~/.amplifier/settings.yaml): [dim](merged with project)[/dim]")
+    console.print("  5. Profile: [dim](depends on active profile)[/dim]")
+    console.print("  6. Package: [dim](installed packages)[/dim]")
+
+    # Try to resolve
+    try:
+        source, layer = resolver.resolve_with_layer(module_id)
+        console.print(f"\n[bold green]✓ Resolved via:[/bold green] {layer}")
+        console.print(f"[bold green]Source:[/bold green] {source}")
+    except Exception as e:
+        console.print(f"\n[bold red]✗ Failed:[/bold red] {e}")
 
 
 async def interactive_chat_with_session(

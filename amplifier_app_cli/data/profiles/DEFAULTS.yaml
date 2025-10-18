@@ -1,0 +1,22 @@
+# Amplifier System Defaults
+# This is the SINGLE source of truth for system-level defaults
+
+# Default profile when no profile is active
+# This is the ONLY place to change the system default
+default_profile: dev
+
+# Rationale for "dev" as default:
+# - foundation: Too minimal (no tools, no hooks) - not practical
+# - base: Good foundation but dev adds developer experience
+# - dev: Best starting point (streaming, web/search tools, zen-architect agent)
+# - production: Too restrictive for general use (persistent context not always wanted)
+# - full: Too heavy (loads everything, slower startup, overwhelming)
+#
+# When to change:
+# - If we create a better general-purpose profile
+# - After user research shows different preferences
+# - If "base" becomes feature-complete enough for most users
+#
+# Note: Projects can override via .amplifier/settings.yaml (profile.default)
+#       Users can override via ~/.amplifier/settings.yaml (profile.active)
+#       Local dev can override via .amplifier/settings.local.yaml (profile.active)

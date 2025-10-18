@@ -30,45 +30,54 @@ class StandardModuleSourceResolver:
     Resolution order (first match wins):
     1. Environment variable (AMPLIFIER_MODULE_<ID>)
     2. Workspace convention (.amplifier/modules/<id>/)
-    3. Project config (.amplifier/sources.yaml)
-    4. User config (~/.amplifier/sources.yaml)
+    3. Project settings (.amplifier/settings.yaml sources section)
+    4. User settings (~/.amplifier/settings.yaml sources section)
     5. Profile source (profile_hint)
     6. Installed package (amplifier-module-<id> or <id>)
     """
 
     def resolve(self, module_id: str, profile_hint=None) -> ModuleSource:
         """Resolve module through 6-layer fallback."""
+        source, _layer = self.resolve_with_layer(module_id, profile_hint)
+        return source
 
+    def resolve_with_layer(self, module_id: str, profile_hint=None) -> tuple[ModuleSource, str]:
+        """Resolve module and return which layer resolved it.
+
+        Returns:
+            Tuple of (ModuleSource, layer_name)
+            layer_name is one of: env, workspace, project, user, profile, package
+        """
         # Layer 1: Environment variable
         env_key = f"AMPLIFIER_MODULE_{module_id.upper().replace('-', '_')}"
         if env_value := os.getenv(env_key):
             logger.debug(f"[module:resolve] {module_id} -> env var ({env_value})")
-            return self._parse_source(env_value, module_id)
+            return (self._parse_source(env_value, module_id), "env")
 
         # Layer 2: Workspace convention
         if workspace_source := self._check_workspace(module_id):
             logger.debug(f"[module:resolve] {module_id} -> workspace")
-            return workspace_source
+            return (workspace_source, "workspace")
 
-        # Layer 3: Project configuration
-        if project_source := self._read_yaml_source(Path(".amplifier/sources.yaml"), module_id):
-            logger.debug(f"[module:resolve] {module_id} -> project config")
-            return self._parse_source(project_source, module_id)
+        # Layer 3: Project settings (.amplifier/settings.yaml)
+        if project_source := self._read_yaml_source(Path(".amplifier/settings.yaml"), module_id):
+            logger.debug(f"[module:resolve] {module_id} -> project settings")
+            return (self._parse_source(project_source, module_id), "project")
 
-        # Layer 4: User configuration
-        user_config = Path.home() / ".amplifier" / "sources.yaml"
+        # Layer 4: User settings (~/.amplifier/settings.yaml)
+        user_config = Path.home() / ".amplifier" / "settings.yaml"
         if user_source := self._read_yaml_source(user_config, module_id):
-            logger.debug(f"[module:resolve] {module_id} -> user config")
-            return self._parse_source(user_source, module_id)
+            logger.debug(f"[module:resolve] {module_id} -> user settings")
+            return (self._parse_source(user_source, module_id), "user")
 
         # Layer 5: Profile source
         if profile_hint:
             logger.debug(f"[module:resolve] {module_id} -> profile")
-            return self._parse_source(profile_hint, module_id)
+            return (self._parse_source(profile_hint, module_id), "profile")
 
         # Layer 6: Installed package (fallback)
         logger.debug(f"[module:resolve] {module_id} -> package")
-        return self._resolve_package(module_id)
+        return (self._resolve_package(module_id), "package")
 
     def _parse_source(self, source, module_id: str) -> ModuleSource:
         """Parse source (string URI or object) into ModuleSource.
@@ -214,14 +223,14 @@ class StandardModuleSourceResolver:
             f"Resolution attempted:\n"
             f"  1. Environment: AMPLIFIER_MODULE_{module_id.upper().replace('-', '_')} (not set)\n"
             f"  2. Workspace: .amplifier/modules/{module_id} (not found)\n"
-            f"  3. Project: .amplifier/sources.yaml (no entry)\n"
-            f"  4. User: ~/.amplifier/sources.yaml (no entry)\n"
+            f"  3. Project: .amplifier/settings.yaml (no entry)\n"
+            f"  4. User: ~/.amplifier/settings.yaml (no entry)\n"
             f"  5. Profile: (no source specified)\n"
             f"  6. Package: Tried '{module_id}' and '{convention_name}' (neither installed)\n\n"
             f"Suggestions:\n"
             f"  - Add source to profile: source: git+https://...\n"
-            f"  - Install package: uv pip install <package-name>\n"
-            f"  - Link local version: amplifier module link {module_id} /path"
+            f"  - Add source override: amplifier source add {module_id} git+https://...\n"
+            f"  - Install package: uv pip install <package-name>"
         )
 
     def __repr__(self) -> str:

@@ -84,8 +84,6 @@ class AgentManager:
             console.print(f"  Description: {agent.meta.description}\n")
 
             # Display configuration
-            mount_plan_fragment = agent.to_mount_plan_fragment()
-
             if agent.providers:
                 console.print("[bold]Providers:[/bold]")
                 for provider in agent.providers:

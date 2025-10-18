@@ -4,16 +4,18 @@ This directory contains bundled Amplifier profiles that ship with the `amplifier
 
 ## Profile System Overview
 
-Amplifier uses a **layered profile system** to separate personal developer preferences from project defaults:
+Amplifier uses **settings files** with clear scopes to manage configuration:
 
-- **Local profile** (`.amplifier/profile`) - Your personal choice, gitignored
-- **Project default** (`.amplifier/default-profile`) - Project's recommended profile, checked in
+- **Local settings** (`.amplifier/settings.local.yaml`) - Your personal choices, gitignored
+- **Project settings** (`.amplifier/settings.yaml`) - Project defaults, checked in
+- **User settings** (`~/.amplifier/settings.yaml`) - User-global preferences
 
 **Precedence order:**
 1. CLI flag `--profile` (highest priority)
-2. Local profile (your choice)
-3. Project default (project's choice)
-4. Hardcoded defaults (fallback)
+2. Local settings (`.amplifier/settings.local.yaml`)
+3. Project settings (`.amplifier/settings.yaml`)
+4. User settings (`~/.amplifier/settings.yaml`)
+5. System defaults (fallback)
 
 This design prevents git merge conflicts while allowing projects to specify sensible defaults.
 
@@ -110,7 +112,7 @@ amplifier profile default --set base
 amplifier profile default --clear
 ```
 
-**Note:** Remember to commit `.amplifier/default-profile` after setting it.
+**Note:** Remember to commit `.amplifier/settings.yaml` after setting project defaults.
 
 ### Use Profile for Single Run
 ```bash
@@ -185,49 +187,70 @@ Create a profile with the same name in a higher precedence location to override 
 
 All layers merge automatically, with user settings taking highest precedence.
 
-## Profile State Files
+## Settings Files
 
-Amplifier uses two state files to track which profiles are active:
+Amplifier uses YAML settings files with clear scope boundaries:
 
-### `.amplifier/profile` (Local Choice)
-- Contains your personal profile choice
-- Simple text file with profile name
+### `.amplifier/settings.local.yaml` (Local Overrides)
+- Your personal settings (profile choice, module sources, config overrides)
 - **Gitignored** - won't cause merge conflicts
-- Set with: `amplifier profile apply <name>`
-- Clear with: `amplifier profile reset`
+- Set profile with: `amplifier profile apply <name>`
+- Edit directly for advanced overrides
 
-### `.amplifier/default-profile` (Project Default)
-- Contains the project's recommended profile
-- Simple text file with profile name
+**Example:**
+```yaml
+profile:
+  active: dev
+
+sources:
+  tool-bash: file:///home/user/dev/tool-bash
+```
+
+### `.amplifier/settings.yaml` (Project Settings)
+- Project-wide settings (default profile, pinned module versions, config standards)
 - **Checked into git** - shared across project
-- Set with: `amplifier profile default --set <name>`
-- Clear with: `amplifier profile default --clear`
+- Set default with: `amplifier profile default --set <name>`
+- Edit directly for project standards
 
-**File Naming Convention:**
-Following Unix conventions (like git's `HEAD` file), profile state files use no extension. Config files that require parsing (like `*.md` with YAML frontmatter) keep their extensions for format clarity.
+**Example:**
+```yaml
+profile:
+  default: dev
+
+sources:
+  tool-web: git+https://github.com/microsoft/amplifier-module-tool-web@v1.2.0
+
+config:
+  session:
+    max_tokens: 150000
+```
+
+### `~/.amplifier/settings.yaml` (User Global)
+- User-wide settings across all projects
+- Personal preferences and module source overrides
 
 **Git Strategy:**
 ```gitignore
 # .gitignore
-.amplifier/profile          # Local choice (gitignored)
+.amplifier/settings.local.yaml    # Local overrides (gitignored)
 
 # But DO commit:
-# .amplifier/default-profile (project default)
-# .amplifier/config.md      (project config)
-# .amplifier/profiles/       (custom profiles)
+# .amplifier/settings.yaml         # Project settings
+# .amplifier/profiles/              # Custom profiles
 ```
 
 ## Configuration Precedence
 
 When using profiles, configuration is merged in this order (later overrides earlier):
 
-1. Default configuration
+1. Bundled defaults
 2. Active profile (with inheritance + overlays)
-3. User config (`~/.amplifier/config.md`)
-4. Project config (`.amplifier/config.md`)
-5. `--config` file flag
-6. CLI flags (`--provider`, `--model`, etc.)
-7. Environment variables (`${VAR_NAME}` expansion)
+3. User settings (`~/.amplifier/settings.yaml`)
+4. Project settings (`.amplifier/settings.yaml`)
+5. Local settings (`.amplifier/settings.local.yaml`)
+6. `--config` file flag
+7. CLI flags (`--profile`, `--provider`, `--model`, etc.)
+8. Environment variables (`${VAR_NAME}` expansion)
 
 ## Agent Configuration
 

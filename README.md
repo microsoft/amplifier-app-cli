@@ -51,7 +51,7 @@ amplifier run --provider anthropic --model claude-sonnet-4.5 "Your prompt"
 amplifier module list
 
 # Get info about a specific module
-amplifier module info loop-basic
+amplifier module show loop-basic
 ```
 
 ## Interactive Chat Mode
@@ -125,7 +125,7 @@ auto_compact = true
 The CLI provides commands to manage Amplifier modules:
 
 - `amplifier module list` - List all installed modules
-- `amplifier module info <name>` - Show detailed module information
+- `amplifier module show <name>` - Show detailed module information
 - `amplifier module list --type agent` - List modules by type
 
 ## License
