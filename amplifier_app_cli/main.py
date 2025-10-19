@@ -161,7 +161,7 @@ class CommandProcessor:
                     self.plan_mode_unregister = None
 
     async def _save_transcript(self, filename: str) -> str:
-        """Save current transcript."""
+        """Save current transcript with sanitization for non-JSON-serializable objects."""
         # Default filename if not provided
         if not filename:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -172,6 +172,12 @@ class CommandProcessor:
         if context and hasattr(context, "get_messages"):
             messages = await context.get_messages()
 
+            # Sanitize messages to handle ThinkingBlock and other non-serializable objects
+            from .session_store import SessionStore
+
+            store = SessionStore()
+            sanitized_messages = [store._sanitize_message(msg) for msg in messages]
+
             # Save to file
             path = Path(".amplifier/transcripts") / filename
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -180,7 +186,7 @@ class CommandProcessor:
                 json.dump(
                     {
                         "timestamp": datetime.now().isoformat(),
-                        "messages": messages,
+                        "messages": sanitized_messages,
                         "config": self.session.config,
                     },
                     f,
