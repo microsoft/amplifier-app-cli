@@ -23,7 +23,7 @@ class TestProfileLoader:
     def test_validate_model_pair_valid(self, loader_with_temp):
         """Test validation of valid model pairs."""
         # Valid formats
-        loader_with_temp.validate_model_pair("anthropic/claude-3-5-sonnet")
+        loader_with_temp.validate_model_pair("anthropic/claude-sonnet-4-5")
         loader_with_temp.validate_model_pair("openai/gpt-4")
         loader_with_temp.validate_model_pair("provider/model-with-dashes")
 
@@ -333,7 +333,7 @@ profile:
   name: with-model
   version: 1.0.0
   description: Profile with model
-  model: anthropic/claude-3-5-sonnet
+  model: anthropic/claude-sonnet-4-5
 session:
   orchestrator:
     module: loop
@@ -349,7 +349,7 @@ Profile with model specification.
 
         # Should load successfully
         profile = loader.load_profile("with-model")
-        assert profile.profile.model == "anthropic/claude-3-5-sonnet"
+        assert profile.profile.model == "anthropic/claude-sonnet-4-5"
 
         # Profile with invalid model
         invalid_model_profile = """---

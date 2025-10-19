@@ -166,7 +166,7 @@ def configure_anthropic(key_manager: KeyManager) -> dict:
 
     console.print(f"[green]✓ Using {model}[/green]")
 
-    return {"model": model, "api_key": "${ANTHROPIC_API_KEY}"}
+    return {"default_model": model, "api_key": "${ANTHROPIC_API_KEY}"}
 
 
 def configure_openai(key_manager: KeyManager) -> dict:
@@ -207,7 +207,7 @@ def configure_openai(key_manager: KeyManager) -> dict:
 
     console.print(f"[green]✓ Using {model}[/green]")
 
-    return {"model": model, "api_key": "${OPENAI_API_KEY}"}
+    return {"default_model": model, "api_key": "${OPENAI_API_KEY}"}
 
 
 def configure_azure_openai(key_manager: KeyManager) -> dict:
@@ -291,4 +291,4 @@ def configure_ollama() -> dict:
     console.print(f"  ollama pull {model}")
     console.print(f"[green]✓ Using {model}[/green]")
 
-    return {"model": model, "base_url": "http://localhost:11434"}
+    return {"default_model": model, "base_url": "http://localhost:11434"}

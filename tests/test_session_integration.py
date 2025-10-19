@@ -28,13 +28,13 @@ def test_realistic_session_workflow():
         metadata = {
             "created": datetime.now(UTC).isoformat(),
             "profile": "dev",
-            "model": "claude-3-5-sonnet",
+            "model": "claude-sonnet-4-5",
             "turn_count": 2,
             "tokens_used": 150,
         }
 
         profile = {
-            "profile": {"name": "dev", "extends": "foundation", "model": "anthropic/claude-3-5-sonnet"},
+            "profile": {"name": "dev", "extends": "foundation", "model": "anthropic/claude-sonnet-4-5"},
             "session": {"orchestrator": "loop-streaming", "max_tokens": 100000},
             "tools": [{"module": "tool-filesystem"}, {"module": "tool-bash"}],
         }
@@ -86,7 +86,7 @@ def test_realistic_session_workflow():
         frontmatter = parts[1] if len(parts) >= 3 else parts[0]
         loaded_profile = yaml.safe_load(frontmatter)
 
-        assert loaded_profile["profile"]["model"] == "anthropic/claude-3-5-sonnet"
+        assert loaded_profile["profile"]["model"] == "anthropic/claude-sonnet-4-5"
         assert loaded_profile["session"]["max_tokens"] == 100000
 
         print(f"✅ Session {session_id} successfully created, updated, and loaded")

@@ -73,7 +73,7 @@ def provider_use(
         if not model:
             model = prompt_model_for_provider(provider_id)
 
-        config = {"model": model}
+        config = {"default_model": model}
 
         # Add API key reference
         if provider_id == "anthropic":

@@ -47,7 +47,7 @@ class TestSessionStore:
         return {
             "created": datetime.now(UTC).isoformat(),
             "profile": "dev",
-            "model": "claude-3-5-sonnet",
+            "model": "claude-sonnet-4-5",
             "turn_count": 2,
         }
 
@@ -228,7 +228,7 @@ class TestSessionStore:
         profile = {
             "profile": {
                 "name": "dev",
-                "model": "claude-3-5-sonnet",
+                "model": "claude-sonnet-4-5",
             },
             "session": {
                 "max_tokens": 100000,

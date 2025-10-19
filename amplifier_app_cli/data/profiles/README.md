@@ -192,7 +192,7 @@ agents:
       providers:
         - module: provider-anthropic
           config:
-            model: claude-3-5-sonnet
+            default_model: claude-sonnet-4-5
 ---
 ```
 
