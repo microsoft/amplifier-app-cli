@@ -1,8 +1,8 @@
 """
-Amplifier-Dev Toolkit
+Amplifier Toolkit
 
-A focused, philosophy-aligned utility package for building development tools
-in amplifier-dev. Adopts proven patterns while staying true to amplifier's
+A focused, philosophy-aligned utility package for building tools
+using Amplifier. Adopts proven patterns while staying true to Amplifier's
 kernel philosophy.
 
 Core principles:

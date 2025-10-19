@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-CLI Tool Template for Amplifier-Dev
+CLI Tool Template for Amplifier Tools
 
-This template provides a standard structure for building development tools.
+This template provides a standard structure for building Amplifier-powered tools.
 Follows toolkit best practices and amplifier philosophy.
 
 To use:

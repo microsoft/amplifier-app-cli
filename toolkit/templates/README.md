@@ -1,19 +1,22 @@
-# Amplifier-Dev Toolkit Templates
+# Amplifier Toolkit Templates
 
 ## Quick Start
 
 1. **Copy the template:**
+
    ```bash
    cp toolkit/templates/cli_tool_template.py scripts/my_tool.py
    ```
 
 2. **Update the module contract:**
+
    - Define purpose (ONE clear responsibility)
    - Specify inputs and outputs
    - Document side effects
    - List dependencies
 
 3. **Implement processing logic:**
+
    - Fill in the `_process_single_item()` function
    - Use toolkit utilities for common operations
    - Follow the fail-gracefully principle
@@ -37,6 +40,7 @@ The template provides a standard structure with:
 ## Best Practices Checklist
 
 ### Functionality
+
 - [ ] Single, clear purpose (do one thing well)
 - [ ] Recursive file discovery (`**/pattern` not `*.pattern`)
 - [ ] Input validation before processing
@@ -44,6 +48,7 @@ The template provides a standard structure with:
 - [ ] Incremental saving (save after each item or batch)
 
 ### Robustness
+
 - [ ] Handles missing/invalid files gracefully
 - [ ] Continues processing on failures (partial > nothing)
 - [ ] Collects and reports all errors
@@ -51,6 +56,7 @@ The template provides a standard structure with:
 - [ ] Uses retry logic for I/O operations
 
 ### Code Quality
+
 - [ ] Follows ruthless simplicity principle
 - [ ] Clear public interface (`__all__` exports)
 - [ ] Complete contract specification
@@ -62,6 +68,7 @@ The template provides a standard structure with:
 The toolkit provides tested utilities for common operations:
 
 ### File Operations
+
 ```python
 from toolkit.utilities import discover_files, read_json, write_json
 
@@ -74,6 +81,7 @@ write_json(results, Path("output.json"))
 ```
 
 ### Progress Reporting
+
 ```python
 from toolkit.utilities import ProgressReporter
 
@@ -86,6 +94,7 @@ progress.complete()
 ```
 
 ### Validation
+
 ```python
 from toolkit.utilities import (
     validate_input_path,
@@ -104,21 +113,25 @@ validate_output_path(output_path)
 Tools built with this toolkit follow amplifier philosophy:
 
 ### Mechanism not Policy
+
 Tools provide capabilities, users decide how to use them. Don't bake in assumptions about workflows.
 
 ### Ruthless Simplicity
+
 - Minimal abstractions
 - Direct implementations
 - Clear failure modes
 - No unnecessary complexity
 
 ### Modular Design
+
 - Clear contracts (inputs/outputs/side-effects)
 - Self-contained functionality
 - Regeneratable from specification
 - No hidden dependencies
 
 ### Fail Gracefully
+
 - Partial results > complete failure
 - Continue on errors when sensible
 - Report what worked and what didn't
@@ -127,6 +140,7 @@ Tools provide capabilities, users decide how to use them. Don't bake in assumpti
 ## Common Patterns
 
 ### Pattern 1: Batch Processing
+
 ```python
 def process(input_dir, output_path):
     files = discover_files(Path(input_dir), "**/*.md")
@@ -157,6 +171,7 @@ def process(input_dir, output_path):
 ```
 
 ### Pattern 2: Validation Pipeline
+
 ```python
 def validate_profiles(profiles_dir):
     # Stage 1: Discovery
@@ -190,19 +205,25 @@ def validate_profiles(profiles_dir):
 Here are examples of tools built with this toolkit:
 
 ### Profile Validator
+
 Validates YAML configuration profiles:
+
 ```bash
 python scripts/validate_profiles.py profiles/ -o validation.json
 ```
 
 ### Module Smoke Test
+
 Tests all modules in a directory:
+
 ```bash
-python scripts/test_modules.py amplifier-dev/ -o test_results.json
+python scripts/test_modules.py modules/ -o test_results.json
 ```
 
 ### Dependency Checker
+
 Checks for missing or outdated dependencies:
+
 ```bash
 python scripts/check_deps.py . -p "**/pyproject.toml" -o deps.json
 ```
@@ -212,16 +233,19 @@ python scripts/check_deps.py . -p "**/pyproject.toml" -o deps.json
 ### Common Issues
 
 **No files found:**
+
 - Check your pattern uses `**` for recursion
 - Verify the input path exists
 - Try with `-v` flag for verbose logging
 
 **I/O errors with cloud sync:**
+
 - Toolkit handles retries automatically
 - Enable "Always keep on this device" for OneDrive/Dropbox folders
 - Check file permissions
 
 **Tool runs slowly:**
+
 - Process fewer items with `-m/--max-items`
 - Save results less frequently (modify template)
 - Use parallel processing if appropriate (advanced)

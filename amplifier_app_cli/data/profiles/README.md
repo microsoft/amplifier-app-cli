@@ -11,6 +11,7 @@ Amplifier uses **settings files** with clear scopes to manage configuration:
 - **User settings** (`~/.amplifier/settings.yaml`) - User-global preferences
 
 **Precedence order:**
+
 1. CLI flag `--profile` (highest priority)
 2. Local settings (`.amplifier/settings.local.yaml`)
 3. Project settings (`.amplifier/settings.yaml`)
@@ -36,14 +37,18 @@ full (kitchen sink - all available modules)
 ## Available Profiles
 
 ### foundation.md
+
 Absolute minimum configuration:
+
 - Basic orchestrator
 - Simple context manager
 - Anthropic provider only
 - No tools, no hooks (pure foundation)
 
 ### base.md
+
 Core functionality (extends foundation):
+
 - Inherits orchestrator, context, and provider from foundation
 - Adds filesystem and bash tools
 - Adds essential hooks: redaction (priority 10), logging (priority 100)
@@ -51,7 +56,9 @@ Core functionality (extends foundation):
 - Auto-compaction enabled
 
 ### dev.md
+
 Development configuration (extends base):
+
 - Streaming orchestrator for better feedback
 - Inherits all tools and hooks from base
 - Adds web and search tools
@@ -59,7 +66,9 @@ Development configuration (extends base):
 - Ideal for interactive development
 
 ### production.md
+
 Production-optimized (extends base):
+
 - Streaming orchestrator
 - Persistent context for session continuity
 - Enhanced context limits (150K tokens, 90% threshold)
@@ -67,7 +76,9 @@ Production-optimized (extends base):
 - Adds web tools for production features
 
 ### test.md
+
 Testing configuration (extends base):
+
 - Mock provider for deterministic testing
 - Reduced token limits for faster testing
 - Inherits all tools and hooks from base
@@ -75,7 +86,9 @@ Testing configuration (extends base):
 - Configurable failure simulation
 
 ### full.md
+
 Kitchen sink configuration (extends base):
+
 - All available providers (Anthropic, OpenAI, Azure OpenAI, Ollama)
 - All available tools (filesystem, bash, web, search, task)
 - All available agents (loaded via unified agents schema)
@@ -86,41 +99,43 @@ Kitchen sink configuration (extends base):
 
 ## Using Profiles
 
-### Set Local Profile (Personal Choice)
+### Set Active Profile (Personal Choice)
+
 ```bash
 # Set your personal profile choice
-amplifier profile apply dev
+amplifier profile use dev
 
 # All your runs use this profile
 amplifier run "your prompt"
 
-# Clear local choice (falls back to project default if set)
-amplifier profile reset
+# Check what's active
+amplifier profile current
 ```
 
-**Note:** Your local profile choice is gitignored and won't affect other developers.
+**Note:** Your profile choice is saved to `.amplifier/settings.local.yaml` (gitignored).
 
 ### Set Project Default (Team Standard)
+
 ```bash
-# Show current project default
-amplifier profile default
+# Set project default for team
+amplifier profile use base --project
 
-# Set project default (requires commit)
-amplifier profile default --set base
-
-# Clear project default
-amplifier profile default --clear
+# Commit to share with team
+git add .amplifier/settings.yaml
+git commit -m "Set base as project default"
 ```
 
-**Note:** Remember to commit `.amplifier/settings.yaml` after setting project defaults.
+**Note:** Project settings are saved to `.amplifier/settings.yaml` (committed).
 
 ### Use Profile for Single Run
+
 ```bash
 # Override active profile for one session
 amplifier run --profile production "your prompt"
 ```
 
 ### List Available Profiles
+
 ```bash
 amplifier profile list
 ```
@@ -128,6 +143,7 @@ amplifier profile list
 The active profile is marked with a star (★) and highlighted in green.
 
 ### Check Active Profile
+
 ```bash
 # Show which profile is currently active and its source
 amplifier profile current
@@ -136,6 +152,7 @@ amplifier profile current
 This shows whether the profile comes from local choice or project default.
 
 ### Show Profile Details
+
 ```bash
 amplifier profile show dev
 ```
@@ -152,13 +169,14 @@ Profiles are searched in order of precedence (lowest to highest):
 ## Creating Custom Profiles
 
 ### Extending Bundled Profiles
+
 ```markdown
 ---
 profile:
   name: my-custom
   version: 1.0.0
   description: Custom profile based on dev
-  extends: dev  # Inherit from bundled dev profile
+  extends: dev # Inherit from bundled dev profile
 
 # Override or add specific settings
 tools:
@@ -166,9 +184,9 @@ tools:
 
 # Configure agents using unified schema
 agents:
-  dirs: ["./agents"]  # Load from directory
-  include: ["zen-architect"]  # Only load specific ones
-  inline:  # Add custom inline agents
+  dirs: ["./agents"] # Load from directory
+  include: ["zen-architect"] # Only load specific ones
+  inline: # Add custom inline agents
     my-agent:
       description: "My custom agent"
       providers:
@@ -179,6 +197,7 @@ agents:
 ```
 
 ### Profile Overlays
+
 Create a profile with the same name in a higher precedence location to override settings:
 
 - Bundled `dev.md` provides base configuration
@@ -192,12 +211,14 @@ All layers merge automatically, with user settings taking highest precedence.
 Amplifier uses YAML settings files with clear scope boundaries:
 
 ### `.amplifier/settings.local.yaml` (Local Overrides)
+
 - Your personal settings (profile choice, module sources, config overrides)
 - **Gitignored** - won't cause merge conflicts
-- Set profile with: `amplifier profile apply <name>`
+- Set profile with: `amplifier profile use <name>`
 - Edit directly for advanced overrides
 
 **Example:**
+
 ```yaml
 profile:
   active: dev
@@ -207,12 +228,14 @@ sources:
 ```
 
 ### `.amplifier/settings.yaml` (Project Settings)
+
 - Project-wide settings (default profile, pinned module versions, config standards)
 - **Checked into git** - shared across project
-- Set default with: `amplifier profile default --set <name>`
+- Set default with: `amplifier profile use <name> --project`
 - Edit directly for project standards
 
 **Example:**
+
 ```yaml
 profile:
   default: dev
@@ -226,10 +249,12 @@ config:
 ```
 
 ### `~/.amplifier/settings.yaml` (User Global)
+
 - User-wide settings across all projects
 - Personal preferences and module source overrides
 
 **Git Strategy:**
+
 ```gitignore
 # .gitignore
 .amplifier/settings.local.yaml    # Local overrides (gitignored)

@@ -18,9 +18,11 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from .commands.init import check_first_run
+from .commands.init import init_cmd
+from .commands.init import prompt_first_run_init
 from .commands.logs import logs_cmd
-from .commands.setup import check_first_run
-from .commands.setup import prompt_first_run_setup
+from .commands.provider import provider as provider_group
 from .commands.setup import setup_cmd
 from .data.profiles import get_system_default_profile
 from .key_manager import KeyManager
@@ -323,11 +325,35 @@ def resolve_app_config(
         except Exception as e:
             console.print(f"[yellow]Warning: Could not load profile '{active_profile_name}': {e}[/yellow]")
 
-    # 3. Apply CLI overrides (already in session format)
+    # 3. Apply settings.yaml overrides (user → project → local)
+    from .settings import SettingsManager
+
+    settings_mgr = SettingsManager()
+    merged_settings = settings_mgr.get_merged_settings()
+
+    # Provider override REPLACES profile providers (policy override)
+    if "config" in merged_settings and "providers" in merged_settings["config"]:
+        config["providers"] = merged_settings["config"]["providers"]
+
+    # Module overrides merge with profile modules (additive)
+    if "modules" in merged_settings:
+        settings_overlay: dict[str, Any] = {}
+        if "tools" in merged_settings["modules"]:
+            settings_overlay["tools"] = merged_settings["modules"]["tools"]
+        if "hooks" in merged_settings["modules"]:
+            settings_overlay["hooks"] = merged_settings["modules"]["hooks"]
+        if "agents" in merged_settings["modules"]:
+            settings_overlay["agents"] = merged_settings["modules"]["agents"]
+
+        # Deep merge module additions (uses smart module list merging)
+        if settings_overlay:
+            config = deep_merge(config, settings_overlay)
+
+    # 4. Apply CLI overrides (already in session format)
     if cli_config:
         config = deep_merge(config, cli_config)
 
-    # 4. Expand environment variables
+    # 5. Expand environment variables
     config = expand_env_vars(config)
 
     return config
@@ -504,9 +530,9 @@ def run(
     manager = ProfileManager()
     active_profile_name = profile or manager.get_active_profile() or get_system_default_profile()
 
-    # Check for first run (no API keys) and offer setup
-    if check_first_run() and not profile and not config and prompt_first_run_setup(console):
-        # Setup was run, reload active profile
+    # Check for first run (no API keys) and offer init
+    if check_first_run() and not profile and not config and prompt_first_run_init(console):
+        # Init was run, reload active profile
         active_profile_name = manager.get_active_profile() or get_system_default_profile()
 
     # Resolve full configuration with proper precedence
@@ -595,8 +621,9 @@ def profile_current():
         console.print("[yellow]No active profile set[/yellow]")
         console.print(f"Using system default: [bold]{get_system_default_profile()}[/bold]")
         console.print("\n[bold]To set a profile:[/bold]")
-        console.print("  Local:   [cyan]amplifier profile apply <name>[/cyan]")
-        console.print("  Project: [cyan]amplifier profile default --set <name>[/cyan]")
+        console.print("  Local:   [cyan]amplifier profile use <name>[/cyan]")
+        console.print("  Project: [cyan]amplifier profile use <name> --project[/cyan]")
+        console.print("  Global:  [cyan]amplifier profile use <name> --global[/cyan]")
 
 
 def build_effective_config_with_sources(chain):
@@ -831,10 +858,65 @@ def profile_show(name: str, detailed: bool):
     render_effective_config(chain, detailed)
 
 
+@profile.command(name="use")
+@click.argument("name")
+@click.option("--local", "scope_flag", flag_value="local", help="Set locally (just you)")
+@click.option("--project", "scope_flag", flag_value="project", help="Set for project (team)")
+@click.option("--global", "scope_flag", flag_value="global", help="Set globally (all projects)")
+def profile_use(name: str, scope_flag: str | None):
+    """Set active profile.
+
+    Without scope: Sets locally (.amplifier/settings.local.yaml)
+    With --project: Sets project default (.amplifier/settings.yaml)
+    With --global: Sets user default (~/.amplifier/settings.yaml)
+
+    Examples:
+      amplifier profile use dev
+      amplifier profile use production --project
+      amplifier profile use base --global
+    """
+    loader = ProfileLoader()
+    manager = ProfileManager()
+
+    # Verify profile exists
+    try:
+        loader.load_profile(name)
+    except FileNotFoundError:
+        console.print(f"[red]Error:[/red] Profile '{name}' not found")
+        sys.exit(1)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    # Determine scope (default to local)
+    scope = scope_flag or "local"
+
+    if scope == "local":
+        manager.set_active_profile(name)
+        console.print(f"[green]✓ Using '{name}' profile locally[/green]")
+        console.print("  File: .amplifier/settings.local.yaml")
+    elif scope == "project":
+        manager.set_project_default(name)
+        console.print(f"[green]✓ Set '{name}' as project default[/green]")
+        console.print("  File: .amplifier/settings.yaml")
+        console.print("  [yellow]Remember to commit .amplifier/settings.yaml[/yellow]")
+    elif scope == "global":
+        # Set in user settings
+        from .settings import SettingsManager
+
+        settings = SettingsManager()
+        settings._update_settings(settings.user_settings_file, {"profile": {"active": name}})
+        console.print(f"[green]✓ Set '{name}' globally[/green]")
+        console.print("  File: ~/.amplifier/settings.yaml")
+
+
 @profile.command(name="apply")
 @click.argument("name")
 def profile_apply(name: str):
-    """Set the active profile for the current project."""
+    """Set the active profile (alias for 'profile use').
+
+    DEPRECATED: Use 'amplifier profile use <name>' instead.
+    """
     loader = ProfileLoader()
     manager = ProfileManager()
 
@@ -851,6 +933,7 @@ def profile_apply(name: str):
     # Set active profile
     manager.set_active_profile(name)
     console.print(f"[green]✓[/green] Activated profile: {name}")
+    console.print("[dim]Note: 'profile apply' is deprecated, use 'profile use' instead[/dim]")
 
 
 @profile.command(name="reset")
@@ -1222,9 +1305,134 @@ def module_show(module_name: str):
     console.print(Panel(panel_content, title=f"Module: {module_name}", border_style="cyan"))
 
 
+@module.command("add")
+@click.argument("module_id")
+@click.option("--local", "scope_flag", flag_value="local", help="Add locally (just you)")
+@click.option("--project", "scope_flag", flag_value="project", help="Add for project (team)")
+@click.option("--global", "scope_flag", flag_value="global", help="Add globally (all projects)")
+def module_add(module_id: str, scope_flag: str | None):
+    """Add module to configuration.
+
+    Examples:
+      amplifier module add tool-jupyter --local
+      amplifier module add hook-custom --project
+    """
+    from typing import Literal
+    from typing import cast
+
+    from .module_manager import ModuleManager
+    from .settings import SettingsManager
+
+    # Determine module type from ID
+    if module_id.startswith("tool-"):
+        module_type = "tool"
+    elif module_id.startswith("hooks-"):
+        module_type = "hook"
+    elif module_id.startswith("agent-"):
+        module_type = "agent"
+    else:
+        console.print("[red]Error:[/red] Module ID must start with tool-, hooks-, or agent-")
+        console.print("\nExamples:")
+        console.print("  amplifier module add tool-jupyter")
+        console.print("  amplifier module add hooks-logging")
+        console.print("  amplifier module add agent-custom")
+        return
+
+    # Prompt for scope if not provided
+    if not scope_flag:
+        console.print("\nAdd for:")
+        console.print("  [1] Just you (local)")
+        console.print("  [2] Whole team (project)")
+        console.print("  [3] All your projects (global)")
+        choice = click.prompt("Choice", type=click.Choice(["1", "2", "3"]), default="1")
+        scope_map: dict[str, Literal["local", "project", "global"]] = {"1": "local", "2": "project", "3": "global"}
+        scope = scope_map[choice]
+    else:
+        scope = cast(Literal["local", "project", "global"], scope_flag)
+
+    # Add module
+    settings = SettingsManager()
+    module_mgr = ModuleManager(settings)
+
+    result = module_mgr.add_module(module_id, module_type, scope)  # type: ignore[arg-type]
+
+    console.print(f"[green]✓ Added {module_id}[/green]")
+    console.print(f"  Scope: {scope}")
+    console.print(f"  File: {result.file}")
+
+
+@module.command("remove")
+@click.argument("module_id")
+@click.option("--local", "scope_flag", flag_value="local", help="Remove from local")
+@click.option("--project", "scope_flag", flag_value="project", help="Remove from project")
+@click.option("--global", "scope_flag", flag_value="global", help="Remove from global")
+def module_remove(module_id: str, scope_flag: str | None):
+    """Remove module from configuration.
+
+    Examples:
+      amplifier module remove tool-jupyter --local
+    """
+    from typing import Literal
+    from typing import cast
+
+    from .module_manager import ModuleManager
+    from .settings import SettingsManager
+
+    # Prompt for scope if not provided
+    if not scope_flag:
+        console.print("\nRemove from:")
+        console.print("  [1] Just you (local)")
+        console.print("  [2] Whole team (project)")
+        console.print("  [3] All your projects (global)")
+        choice = click.prompt("Choice", type=click.Choice(["1", "2", "3"]), default="1")
+        scope_map: dict[str, Literal["local", "project", "global"]] = {"1": "local", "2": "project", "3": "global"}
+        scope = scope_map[choice]
+    else:
+        scope = cast(Literal["local", "project", "global"], scope_flag)
+
+    settings = SettingsManager()
+    module_mgr = ModuleManager(settings)
+
+    module_mgr.remove_module(module_id, scope)  # type: ignore[arg-type]
+
+    console.print(f"[green]✓ Removed {module_id} from {scope}[/green]")
+
+
+@module.command("current")
+def module_current():
+    """Show currently configured modules from settings."""
+    from .module_manager import ModuleManager
+    from .settings import SettingsManager
+
+    settings = SettingsManager()
+    module_mgr = ModuleManager(settings)
+
+    modules = module_mgr.get_current_modules()
+
+    if not modules:
+        console.print("[yellow]No modules configured in settings[/yellow]")
+        console.print("\nAdd modules with:")
+        console.print("  [cyan]amplifier module add <module-id>[/cyan]")
+        return
+
+    table = Table(title="Currently Configured Modules (from settings)")
+    table.add_column("Module", style="green")
+    table.add_column("Type", style="yellow")
+    table.add_column("Source", style="cyan")
+
+    for mod in modules:
+        table.add_row(mod.module_id, mod.module_type, mod.source)
+
+    console.print(table)
+    console.print("\n[dim]Note: This shows modules added via settings.[/dim]")
+    console.print("[dim]For all installed modules, use: amplifier module list[/dim]")
+
+
 # Register standalone commands
 cli.add_command(logs_cmd)
-cli.add_command(setup_cmd)
+cli.add_command(init_cmd)
+cli.add_command(provider_group)
+cli.add_command(setup_cmd)  # Keep for backward compat, deprecated
 
 
 @cli.group(invoke_without_command=True)

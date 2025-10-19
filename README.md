@@ -2,135 +2,141 @@
 
 Command-line interface for the Amplifier AI-powered modular development platform.
 
-> **Note**: This is a **reference implementation** of an Amplifier CLI. It works with [amplifier-core](https://github.com/microsoft/amplifier-core) and demonstrates how to build a CLI around the official kernel. You can use this as-is, fork it, or build your own CLI using the core.
-
-## Prerequisites
-
-- **Python 3.11+**
-- **[UV](https://github.com/astral-sh/uv)** - Fast Python package manager
-
-### Installing UV
-
-```bash
-# macOS/Linux/WSL
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Windows
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
+> **Note**: This is a **reference implementation** of an Amplifier CLI. It works with [amplifier-core](https://github.com/microsoft/amplifier-core) and demonstrates how to build a CLI around the kernel. You can use this as-is, fork it, or build your own CLI using the core.
 
 ## Installation
 
+### For Users
+
 ```bash
-# Install from PyPI (when published)
-uv pip install amplifier-app-cli
+# Try without installing
+uvx --from git+https://github.com/microsoft/amplifier@next amplifier
 
-# Install from source
-uv pip install -e .
-
-# Or use with uvx directly from GitHub
-uvx --from git+https://github.com/microsoft/amplifier-app-cli amplifier --help
+# Install globally
+uv tool install git+https://github.com/microsoft/amplifier@next
 ```
 
 ## Quick Start
 
 ```bash
-# Initialize a configuration
+# First-time setup (auto-runs if no config)
 amplifier init
 
-# Run a single command
+# Single command
 amplifier run "Create a Python function to calculate fibonacci numbers"
 
-# Start interactive chat mode
-amplifier run --mode chat
+# Interactive chat mode
+amplifier
 
-# Use a specific provider
-amplifier run --provider anthropic --model claude-sonnet-4.5 "Your prompt"
+# Use specific profile
+amplifier run --profile dev "Your prompt"
+```
 
-# List installed modules
+## Commands
+
+### Configuration Commands
+
+```bash
+# Provider management
+amplifier provider use <name> [--local|--project|--global]
+amplifier provider current
+amplifier provider list
+amplifier provider reset [--scope]
+
+# Profile management
+amplifier profile use <name> [--local|--project|--global]
+amplifier profile create <name> --extend <parent>
+amplifier profile current
+amplifier profile list
+amplifier profile show <name>
+
+# Module management
+amplifier module add <name> [--local|--project|--global]
+amplifier module remove <name> [--scope]
+amplifier module current
 amplifier module list
+amplifier module show <name>
 
-# Get info about a specific module
-amplifier module show loop-basic
+# Source management
+amplifier source add <id> <uri> [--local|--project|--global]
+amplifier source remove <id> [--scope]
+amplifier source list
+amplifier source show <id>
 ```
 
-## Interactive Chat Mode
-
-When you run `amplifier run --mode chat`, you enter an interactive session with powerful slash commands:
+### Session Commands
 
 ```bash
-# Planning and execution
-/think          # Enter plan mode (read-only, thoughtful responses)
-/do             # Exit plan mode and allow modifications
-
-# Session management
-/save [file]    # Save conversation transcript
-/clear          # Clear conversation history
-/status         # Show current session status
-
-# Discovery
-/tools          # List available tools
-/config         # Show current configuration
-/help           # Show all commands
-
-# Control
-/stop           # Stop current execution
+amplifier run "prompt"               # Single interaction
+amplifier                            # Interactive chat
+amplifier session list               # Recent sessions
+amplifier session show <id>          # Session details
+amplifier session resume <id>        # Continue session
 ```
 
-### Plan Mode
-
-Use `/think` to enable plan mode where the AI can analyze and plan without making modifications. This is useful for:
-- Reviewing complex changes before executing
-- Getting thoughtful analysis of large codebases
-- Planning multi-step refactoring
-
-Use `/do` to exit plan mode and allow the AI to make modifications.
-
-### Saving Transcripts
-
-The `/save` command saves your conversation history to `.amplifier/transcripts/`:
+### Utility Commands
 
 ```bash
-# In chat mode
-> /save my_session.json
-✓ Transcript saved to .amplifier/transcripts/my_session.json
+amplifier init                       # First-time setup
+amplifier logs                       # Watch activity log
+amplifier --version                  # Show version
+amplifier --help                     # Show help
 ```
 
-For detailed interactive mode documentation, see [docs/INTERACTIVE_MODE.md](docs/INTERACTIVE_MODE.md).
+## Architecture
 
-## Configuration
+This CLI is built on top of amplifier-core and provides:
 
-The CLI can be configured via:
-- Command-line options (highest priority)
-- Configuration file (`amplifier.toml` or custom path via `--config`)
-- Environment variables
+- **Profile system** - Reusable, composable configuration bundles
+- **Settings management** - Three-scope configuration (local/project/global)
+- **Module resolution** - Six-layer module source resolution
+- **Session storage** - Project-scoped session persistence
+- **Interactive mode** - REPL with slash commands
+- **Key management** - Secure API key storage
 
-Example configuration:
-```toml
-[provider]
-name = "anthropic"
-model = "claude-sonnet-4.5"
+## Supported Providers
 
-[modules]
-orchestrator = "loop-basic"
-context = "context-simple"
+- **Anthropic Claude** - Recommended, most tested (Sonnet, Opus models)
+- **OpenAI** - Good alternative (GPT-4o, GPT-4o-mini, o1 models)
+- **Azure OpenAI** - Enterprise users with Azure subscriptions
+- **Ollama** - Local, free, no API key needed
 
-[session]
-max_tokens = 100000
-auto_compact = true
+## Development
+
+### Prerequisites
+
+- Python 3.11+
+- [UV](https://github.com/astral-sh/uv) package manager
+
+### Setup
+
+```bash
+cd amplifier-app-cli
+uv pip install -e .
+uv run pytest
 ```
 
-## Module Management
+### Project Structure
 
-The CLI provides commands to manage Amplifier modules:
+```
+amplifier_app_cli/
+├── commands/          # CLI command implementations
+├── data/
+│   ├── profiles/      # Bundled profiles
+│   └── agents/        # Bundled agent definitions
+├── profile_system/    # Profile loading and compilation
+├── session_storage/   # Session persistence
+├── settings.py        # Settings management
+├── key_manager.py     # API key management
+└── main.py            # CLI entry point
+```
 
-- `amplifier module list` - List all installed modules
-- `amplifier module show <name>` - Show detailed module information
-- `amplifier module list --type agent` - List modules by type
+## Related Documentation
 
-## License
-
-MIT - See LICENSE file for details
+- [Complete user guide](../docs/USER_ONBOARDING.md)
+- [Configuration reference](../docs/USER_ONBOARDING.md#quick-reference)
+- [Profile authoring](../docs/PROFILE_AUTHORING.md)
+- [Module development](../docs/MODULE_DEVELOPMENT.md)
 
 ## Contributing
 
