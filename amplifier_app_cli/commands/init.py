@@ -105,9 +105,18 @@ def init_cmd():
     profile_map = {"1": "dev", "2": "base", "3": "full"}
     profile_id = profile_map[profile_choice]
 
+    # Get canonical source for provider
+    from ..module_resolution.registry import get_canonical_module_source
+
+    try:
+        provider_source = get_canonical_module_source(f"provider-{provider_id}")
+    except ValueError as e:
+        console.print(f"[yellow]Warning: Could not get canonical source for provider: {e}[/yellow]")
+        provider_source = None
+
     # Save configuration
     settings.set_active_profile(profile_id)
-    provider_mgr.use_provider(f"provider-{provider_id}", scope="local", config=config)
+    provider_mgr.use_provider(f"provider-{provider_id}", scope="local", config=config, source=provider_source)
 
     console.print()
     console.print(

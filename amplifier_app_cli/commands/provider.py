@@ -152,11 +152,20 @@ def provider_use(
         console.print(f"[red]Error:[/red] Unsupported provider: {provider_id}")
         return
 
+    # Get canonical source for provider
+    from ..module_resolution.registry import get_canonical_module_source
+
+    try:
+        provider_source = get_canonical_module_source(module_id)
+    except ValueError as e:
+        console.print(f"[yellow]Warning: Could not get canonical source for provider: {e}[/yellow]")
+        provider_source = None
+
     # Determine scope
     scope = scope_flag or prompt_scope()
 
     # Configure provider
-    result = provider_mgr.use_provider(module_id, cast(ScopeType, scope), config)
+    result = provider_mgr.use_provider(module_id, cast(ScopeType, scope), config, source=provider_source)
 
     # Display result
     console.print(f"\n[green]✓ Configured {provider_id}[/green]")

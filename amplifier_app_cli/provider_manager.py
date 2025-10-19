@@ -54,6 +54,7 @@ class ProviderManager:
         provider_id: str,
         scope: ScopeType,
         config: dict,
+        source: str | None = None,
     ) -> ConfigureResult:
         """Configure provider at specified scope.
 
@@ -61,12 +62,17 @@ class ProviderManager:
             provider_id: Provider module ID (provider-anthropic, provider-openai, etc.)
             scope: Where to save configuration (local/project/global)
             config: Provider-specific configuration (model, api_key, etc.)
+            source: Module source URL (optional, will use canonical if not provided)
 
         Returns:
             ConfigureResult with what changed and where
         """
         # Build provider config entry
         provider_entry = {"module": provider_id, "config": config}
+
+        # Add source if provided
+        if source:
+            provider_entry["source"] = source
 
         # Update settings at scope
         scope_map = {
