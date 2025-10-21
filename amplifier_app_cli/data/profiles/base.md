@@ -9,6 +9,8 @@ session:
   orchestrator:
     module: loop-basic
     source: git+https://github.com/microsoft/amplifier-module-loop-basic@main
+    config:
+      max_iterations: 30
   context:
     module: context-simple
     source: git+https://github.com/microsoft/amplifier-module-context-simple@main
@@ -37,6 +39,13 @@ hooks:
     config:
       mode: session-only
       session_log_template: ~/.amplifier/projects/{project}/sessions/{session_id}/events.jsonl
+
+ui:
+  tool_output_lines: 3
+  max_arg_length: 100
+  show_elapsed_time: true
+  use_tree_formatting: true
+  render_markdown: true
 ---
 
 # Base Profile
@@ -53,3 +62,5 @@ The standard starting point for most Amplifier configurations. Extends foundatio
 - Logging hook for observability
 - Session management with 100K token limit and auto-compaction at 80% threshold
 - Infrastructure IDs (session_id, turn_id, etc.) are allowlisted from redaction
+- Enhanced UI with markdown rendering and tree-style formatting
+- Configurable tool output truncation for cleaner conversations

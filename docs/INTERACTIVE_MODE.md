@@ -6,6 +6,55 @@ This guide covers the powerful interactive features available in Amplifier's cha
 
 Interactive mode (`amplifier run --mode chat`) provides a conversational interface with the AI, enhanced by slash commands that control execution, save work, and manage sessions.
 
+## Visual Features
+
+The CLI provides enhanced visual formatting for a better development experience:
+
+### Markdown Rendering
+
+LLM responses are displayed with proper markdown formatting:
+- **Bold** and *italic* text
+- `Inline code` and code blocks with syntax highlighting
+- Bulleted and numbered lists
+- Headers and blockquotes
+
+### Live Progress Feedback
+
+During LLM operations, you see real-time feedback:
+```
+Processing... (3.2s ctrl+c to interrupt)
+```
+
+The timer updates continuously, showing you the system is working. Press `ctrl+c` to interrupt if needed.
+
+### Tree-Style Output
+
+Tool calls and outputs use visual hierarchy for clarity:
+```
+● read_file(path="config.yaml")
+  ⎿  api_key: ${API_KEY}
+     timeout: 30
+     max_retries: 3
+
+● bash(command="ls -la")
+  ⎿  total 64
+     drwxr-xr-x  12 user  staff  384
+  ... (25 more lines)
+```
+
+### Configurable Truncation
+
+Tool output is truncated by default (first 3 lines) to keep conversations readable. The "... (N more lines)" indicator shows how much was truncated.
+
+To change truncation settings, configure in your profile:
+```yaml
+ui:
+  tool_output_lines: 5    # Show first 5 lines
+  tool_output_lines: -1   # Show all output (verbose)
+```
+
+See [Profile Documentation](../amplifier_app_cli/data/profiles/README.md#ui-configuration) for all UI options.
+
 ### Two Execution Modes
 
 **Normal Mode** (default):

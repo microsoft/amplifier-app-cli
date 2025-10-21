@@ -11,6 +11,7 @@ session:
     source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main
     config:
       extended_thinking: true
+      max_iterations: 100
   context:
     module: context-persistent
     source: git+https://github.com/microsoft/amplifier-module-context-persistent@main
@@ -18,6 +19,13 @@ session:
       max_tokens: 200000
       compact_threshold: 0.9
       auto_compact: true
+
+ui:
+  tool_output_lines: 5
+  max_arg_length: 120
+  show_elapsed_time: true
+  use_tree_formatting: true
+  render_markdown: true
 
 providers:
   - module: provider-openai
@@ -89,3 +97,4 @@ Kitchen sink configuration with all available modules for comprehensive testing 
 - Cost-aware scheduler to manage API spending ($10 budget with 80% warning)
 - Heuristic scheduler for performance optimization (5 concurrent operations, batch size 10)
 - Loads all agents from ./agents directory for task delegation
+- Enhanced UI with all features enabled (markdown, progress feedback, clean formatting)

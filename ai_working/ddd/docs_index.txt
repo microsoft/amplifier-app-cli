@@ -1,0 +1,26 @@
+# DDD Phase 2: Documentation File Index
+# Mark [x] when complete
+
+## Profile YAML Files (6 files)
+[x] amplifier_app_cli/data/profiles/dev.md
+[x] amplifier_app_cli/data/profiles/base.md
+[x] amplifier_app_cli/data/profiles/production.md
+[x] amplifier_app_cli/data/profiles/test.md
+[x] amplifier_app_cli/data/profiles/full.md
+[x] amplifier_app_cli/data/profiles/foundation.md
+
+## Profile Documentation
+[x] amplifier_app_cli/data/profiles/README.md
+
+## Main Documentation
+[x] README.md
+[x] docs/INTERACTIVE_MODE.md
+
+## Changelog
+[x] CHANGELOG.md (created)
+
+## Examples (optional - skipped, covered in Profile README)
+[~] docs/examples/custom-profile-with-ui.md
+
+---
+Total: 11 files to process

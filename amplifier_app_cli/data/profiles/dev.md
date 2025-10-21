@@ -11,6 +11,7 @@ session:
     source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main
     config:
       extended_thinking: true
+      max_iterations: 50
   context:
     module: context-simple
 
@@ -20,6 +21,11 @@ task:
 ui:
   show_thinking_stream: true
   show_tool_lines: 5
+  tool_output_lines: 3
+  max_arg_length: 100
+  show_elapsed_time: true
+  use_tree_formatting: true
+  render_markdown: true
 
 tools:
   - module: tool-web
@@ -52,4 +58,6 @@ A fully-featured development configuration with streaming UI, extended thinking 
 - Task delegation tool with configurable recursion depth
 - Streaming UI hook for real-time display of thinking and tool output
 - Three specialized agents: zen-architect, bug-hunter, and researcher
-- UI configuration to show thinking stream and up to 5 lines of tool output
+- Enhanced UI with markdown rendering, live progress feedback, and tree-style formatting
+- Configurable tool output truncation (first 3 lines by default)
+- Live elapsed time display during LLM operations

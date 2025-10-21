@@ -93,6 +93,19 @@ This CLI is built on top of amplifier-core and provides:
 - **Session storage** - Project-scoped session persistence
 - **Interactive mode** - REPL with slash commands
 - **Key management** - Secure API key storage
+- **Enhanced UI** - Markdown rendering, live progress, tree-style formatting
+
+## UI Features
+
+The CLI includes visual enhancements for a polished development experience:
+
+- **Markdown Rendering** - LLM responses display with proper formatting (bold, italic, code blocks, lists)
+- **Live Progress Feedback** - Real-time elapsed time display during LLM operations
+- **Tree-Style Formatting** - Visual hierarchy with bullet characters (● and ⎿) for clean output
+- **Configurable Truncation** - Tool output can be truncated to keep conversations readable
+- **Event-Driven Display** - Clean separation between execution logic and display logic
+
+All UI features are configurable per-profile. See [Profile Documentation](amplifier_app_cli/data/profiles/README.md#ui-configuration) for details.
 
 ## Supported Providers
 

@@ -8,12 +8,21 @@ profile:
 session:
   orchestrator:
     module: loop-basic
+    config:
+      max_iterations: 20
   context:
     module: context-simple
     config:
       max_tokens: 50000
       compact_threshold: 0.7
       auto_compact: true
+
+ui:
+  tool_output_lines: -1
+  max_arg_length: 150
+  show_elapsed_time: true
+  use_tree_formatting: true
+  render_markdown: true
 
 providers:
   - module: provider-mock
@@ -54,3 +63,4 @@ A testing configuration with mock provider for automated testing and development
 - Lower compaction threshold (70%) for testing compaction logic
 - Task tool enabled for testing sub-session delegation
 - Configurable response delay and failure probability for testing error handling
+- Verbose UI configuration for testing (shows all output, no truncation)

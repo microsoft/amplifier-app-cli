@@ -11,6 +11,7 @@ session:
     source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main
     config:
       extended_thinking: true
+      max_iterations: 100
   context:
     module: context-persistent
     source: git+https://github.com/microsoft/amplifier-module-context-persistent@main
@@ -18,6 +19,13 @@ session:
       max_tokens: 150000
       compact_threshold: 0.9
       auto_compact: true
+
+ui:
+  tool_output_lines: 2
+  max_arg_length: 80
+  show_elapsed_time: true
+  use_tree_formatting: true
+  render_markdown: true
 
 tools:
   - module: tool-web
@@ -47,3 +55,4 @@ An optimized configuration for production use with enhanced reliability, persist
 - Increased token limit (150K) with higher compaction threshold (90%)
 - Web tool for external data access
 - Inherits security and observability hooks from base profile
+- Optimized UI for production with minimal output truncation (2 lines) and clean formatting
