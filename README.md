@@ -22,6 +22,9 @@ uv tool install git+https://github.com/microsoft/amplifier@next
 # First-time setup (auto-runs if no config)
 amplifier init
 
+# Install shell completion (optional, one-time setup)
+amplifier --install-completion
+
 # Single command
 amplifier run "Create a Python function to calculate fibonacci numbers"
 
@@ -79,8 +82,56 @@ amplifier session resume <id>        # Continue session
 ```bash
 amplifier init                       # First-time setup
 amplifier logs                       # Watch activity log
+amplifier --install-completion       # Set up tab completion
 amplifier --version                  # Show version
 amplifier --help                     # Show help
+```
+
+## Shell Completion
+
+Enable tab completion with one command. Amplifier automatically installs completion for standard shell setups.
+
+### One-Command Installation
+
+```bash
+amplifier --install-completion
+```
+
+**What happens**:
+1. Detects your shell (bash, zsh, or fish) from `$SHELL`
+2. **Automatically appends** the completion line to your shell config:
+   - Bash: `~/.bashrc`
+   - Zsh: `~/.zshrc`
+   - Fish: `~/.config/fish/completions/amplifier.fish`
+3. Checks if already installed (safe to run multiple times)
+4. Falls back to manual instructions if custom configuration detected
+
+**Output (standard setup)**:
+```
+Detected shell: bash
+✓ Added completion to /home/user/.bashrc
+
+To activate:
+  source ~/.bashrc
+
+Or start a new terminal.
+```
+
+**Output (already installed)**:
+```
+Detected shell: bash
+✓ Completion already configured in /home/user/.bashrc
+```
+
+### Tab Completion Works Everywhere
+
+Once active, tab completion works throughout the CLI:
+
+```bash
+amplifier pro<TAB>         # Completes to "profile"
+amplifier profile u<TAB>   # Completes to "use"
+amplifier profile use <TAB> # Shows available profiles
+amplifier run --<TAB>      # Shows all options
 ```
 
 ## Architecture

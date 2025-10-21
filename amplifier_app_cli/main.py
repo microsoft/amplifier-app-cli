@@ -11,6 +11,7 @@ from datetime import UTC
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from typing import cast
 
 import click
 from amplifier_core import AmplifierSession
@@ -38,6 +39,163 @@ console = Console()
 # Load API keys from ~/.amplifier/keys.env on startup
 # This allows keys saved by 'amplifier setup' to be available
 _key_manager = KeyManager()
+
+
+def _detect_shell() -> str | None:
+    """Detect current shell from $SHELL environment variable.
+
+    Returns:
+        Shell name ('bash', 'zsh', or 'fish') or None if detection fails
+    """
+    shell_path = os.environ.get("SHELL", "")
+    if not shell_path:
+        return None
+
+    shell_name = Path(shell_path).name.lower()
+
+    # Check for known shells
+    if "bash" in shell_name:
+        return "bash"
+    if "zsh" in shell_name:
+        return "zsh"
+    if "fish" in shell_name:
+        return "fish"
+
+    return None
+
+
+def _get_shell_config_file(shell: str) -> Path:
+    """Get the standard config file path for a shell.
+
+    Args:
+        shell: Shell name ('bash', 'zsh', or 'fish')
+
+    Returns:
+        Path to shell config file
+    """
+    home = Path.home()
+
+    if shell == "bash":
+        # Prefer .bashrc on Linux, .bash_profile on macOS
+        bashrc = home / ".bashrc"
+        bash_profile = home / ".bash_profile"
+        if bashrc.exists():
+            return bashrc
+        return bash_profile
+
+    if shell == "zsh":
+        return home / ".zshrc"
+
+    if shell == "fish":
+        # For fish, we create a completion file directly
+        return home / ".config" / "fish" / "completions" / "amplifier.fish"
+
+    return home / f".{shell}rc"  # Fallback
+
+
+def _completion_already_installed(config_file: Path, shell: str) -> bool:
+    """Check if completion is already installed in config file.
+
+    Args:
+        config_file: Path to shell config file
+        shell: Shell name
+
+    Returns:
+        True if completion marker found in file
+    """
+    if not config_file.exists():
+        return False
+
+    try:
+        content = config_file.read_text()
+        completion_marker = f"_AMPLIFIER_COMPLETE={shell}_source"
+        return completion_marker in content
+    except Exception:
+        return False
+
+
+def _can_safely_modify(config_file: Path) -> bool:
+    """Check if it's safe to modify the config file.
+
+    Args:
+        config_file: Path to shell config file
+
+    Returns:
+        True if safe to append to file
+    """
+    # If file exists, must be writable
+    if config_file.exists():
+        return os.access(config_file, os.W_OK)
+
+    # If file doesn't exist, parent directory must be writable
+    parent = config_file.parent
+    if not parent.exists():
+        # Need to create parent directories - check if we can
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception:
+            return False
+
+    return os.access(parent, os.W_OK)
+
+
+def _install_completion_to_config(config_file: Path, shell: str) -> bool:
+    """Append completion line to shell config file.
+
+    Args:
+        config_file: Path to shell config file
+        shell: Shell name
+
+    Returns:
+        True if successful
+    """
+    try:
+        # Ensure parent directory exists
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # For fish, write the actual completion script
+        if shell == "fish":
+            # Fish uses a different approach - we need to invoke Click's completion
+            import subprocess
+
+            result = subprocess.run(
+                ["amplifier"],
+                env={**os.environ, "_AMPLIFIER_COMPLETE": "fish_source"},
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                config_file.write_text(result.stdout)
+                return True
+            return False
+
+        # For bash/zsh, append eval line
+        with open(config_file, "a") as f:
+            f.write("\n# Amplifier shell completion\n")
+            f.write(f'eval "$(_AMPLIFIER_COMPLETE={shell}_source amplifier)"\n')
+
+        return True
+
+    except Exception:
+        return False
+
+
+def _show_manual_instructions(shell: str, config_file: Path):
+    """Show manual installation instructions as fallback.
+
+    Args:
+        shell: Shell name
+        config_file: Suggested config file path
+    """
+    console.print(f"\n[yellow]Add this line to {config_file}:[/yellow]")
+
+    if shell == "fish":
+        console.print(f"  [cyan]_AMPLIFIER_COMPLETE=fish_source amplifier > {config_file}[/cyan]")
+    else:
+        console.print(f'  [cyan]eval "$(_AMPLIFIER_COMPLETE={shell}_source amplifier)"[/cyan]')
+
+    console.print("\n[dim]Then reload your shell or start a new terminal.[/dim]")
 
 
 class CommandProcessor:
@@ -484,9 +642,67 @@ def get_module_search_paths() -> list[Path]:
 
 @click.group(invoke_without_command=True)
 @click.version_option()
+@click.option(
+    "--install-completion",
+    is_flag=False,
+    flag_value="auto",
+    default=None,
+    help="Install shell completion for the specified shell (bash, zsh, or fish)",
+)
 @click.pass_context
-def cli(ctx):
+def cli(ctx, install_completion):
     """Amplifier - AI-powered modular development platform."""
+    # Handle --install-completion flag
+    if install_completion:
+        # Auto-detect shell (always, no argument needed)
+        shell = _detect_shell()
+
+        if not shell:
+            console.print("[yellow]⚠️ Could not detect shell from $SHELL[/yellow]\n")
+            console.print("Supported shells: bash, zsh, fish\n")
+            console.print("Add completion manually for your shell:\n")
+            console.print('  [cyan]Bash:  eval "$(_AMPLIFIER_COMPLETE=bash_source amplifier)"[/cyan]')
+            console.print('  [cyan]Zsh:   eval "$(_AMPLIFIER_COMPLETE=zsh_source amplifier)"[/cyan]')
+            console.print(
+                "  [cyan]Fish:  _AMPLIFIER_COMPLETE=fish_source amplifier > ~/.config/fish/completions/amplifier.fish[/cyan]"
+            )
+            ctx.exit(1)
+
+        # At this point, shell is guaranteed to be str (not None)
+        assert shell is not None  # Help type checker
+        console.print(f"[dim]Detected shell: {shell}[/dim]")
+
+        # Get config file location
+        config_file = _get_shell_config_file(shell)
+
+        # Check if already installed (idempotent!)
+        if _completion_already_installed(config_file, shell):
+            console.print(f"[green]✓ Completion already configured in {config_file}[/green]\n")
+            console.print("[dim]To use in this terminal:[/dim]")
+            if shell == "fish":
+                console.print(f"  [cyan]source {config_file}[/cyan]")
+            else:
+                console.print(f"  [cyan]source {config_file}[/cyan]")
+            console.print("\n[dim]Already active in new terminals.[/dim]")
+            ctx.exit(0)
+
+        # Check if safe to auto-install
+        if _can_safely_modify(config_file):
+            # Auto-install!
+            success = _install_completion_to_config(config_file, shell)
+
+            if success:
+                console.print(f"[green]✓ Added completion to {config_file}[/green]\n")
+                console.print("[dim]To activate:[/dim]")
+                console.print(f"  [cyan]source {config_file}[/cyan]")
+                console.print("\n[dim]Or start a new terminal.[/dim]")
+                ctx.exit(0)
+
+        # Fallback to manual instructions
+        console.print("[yellow]⚠️ Could not auto-install[/yellow]")
+        _show_manual_instructions(shell, config_file)
+        ctx.exit(1)
+
     # If no command specified, launch chat mode with current profile
     if ctx.invoked_subcommand is None:
         # Explicitly pass all parameters with defaults (Click doesn't auto-fill when using ctx.invoke)
@@ -1324,7 +1540,6 @@ def module_add(module_id: str, scope_flag: str | None):
       amplifier module add hook-custom --project
     """
     from typing import Literal
-    from typing import cast
 
     from .module_manager import ModuleManager
     from .settings import SettingsManager
@@ -1379,7 +1594,6 @@ def module_remove(module_id: str, scope_flag: str | None):
       amplifier module remove tool-jupyter --local
     """
     from typing import Literal
-    from typing import cast
 
     from .module_manager import ModuleManager
     from .settings import SettingsManager
