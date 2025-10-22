@@ -8,7 +8,7 @@ profile:
 session:
   orchestrator:
     module: loop-streaming
-    source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main
+    source: git+https://github.com/robotdad/amplifier-module-loop-streaming@fix/preserve-newlines-in-tokenize-stream
     config:
       extended_thinking: true
       max_iterations: 50

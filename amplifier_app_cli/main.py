@@ -28,11 +28,9 @@ from .commands.logs import logs_cmd
 from .commands.provider import provider as provider_group
 from .commands.setup import setup_cmd
 from .data.profiles import get_system_default_profile
-from .display import handle_event
-from .events import AssistantMessage
-from .events import EventBus
-from .events import TurnContext
-from .events import UserMessage
+
+# Display handlers are now registered as hooks in create_display_hooks()
+# EventBus removed - using core HookRegistry instead
 from .key_manager import KeyManager
 from .profile_system import AgentManager
 from .profile_system import ProfileLoader
@@ -1080,14 +1078,23 @@ async def interactive_chat(
         )
     )
 
-    # Initialize event bus for display
+    # Register display hooks on core HookRegistry
     profile_obj = ProfileLoader().load_profile(profile_name)
     ui_config = profile_obj.ui if profile_obj and profile_obj.ui else None
-    event_bus = EventBus(config=ui_config)
-    event_bus.subscribe(handle_event)
+
+    if ui_config:
+        from .display.handlers import create_display_hooks
+
+        display_hooks = create_display_hooks(ui_config)
+        hooks = session.coordinator.get("hooks")
+        if hooks:
+            for event_name, handler in display_hooks.items():
+                hooks.register(event_name, handler, priority=-500, name="cli-display")
+                logger.info(f"Registered display handler for {event_name}")
 
     # Register streaming markdown handler to suppress streaming-ui raw display
-    if ui_config and ui_config.render_markdown:
+    hooks = session.coordinator.get("hooks")
+    if hooks and ui_config and ui_config.render_markdown:
 
         async def streaming_suppressor(event: str, data: dict) -> HookResult:
             """Suppress streaming-ui content display for markdown rendering."""
@@ -1115,29 +1122,30 @@ async def interactive_chat(
                     action, data = command_processor.process_input(prompt)
 
                     if action == "prompt":
-                        # Normal prompt execution with event bus and live progress
-                        async with TurnContext(event_bus) as turn:
-                            turn.emit_event(UserMessage(content=data["text"]))
+                        # Normal prompt execution with live progress
+                        # Live progress feedback with elapsed time
+                        with console.status("Processing... (0.0s)", spinner="dots") as status:
+                            start_time = time.time()
 
-                            # Live progress feedback with elapsed time
-                            with console.status("Processing... (0.0s)", spinner="dots") as status:
-                                start_time = time.time()
+                            async def update_status(start: float = start_time):
+                                while True:
+                                    elapsed = time.time() - start
+                                    status.update(f"Processing... ({elapsed:.1f}s ctrl+c to interrupt)")
+                                    await asyncio.sleep(0.1)
 
-                                async def update_status(start: float = start_time):
-                                    while True:
-                                        elapsed = time.time() - start
-                                        status.update(f"Processing... ({elapsed:.1f}s ctrl+c to interrupt)")
-                                        await asyncio.sleep(0.1)
+                            status_task = asyncio.create_task(update_status())
 
-                                status_task = asyncio.create_task(update_status())
+                            try:
+                                response = await session.execute(data["text"])
+                            finally:
+                                status_task.cancel()
+                                with suppress(asyncio.CancelledError):
+                                    await status_task
 
-                                try:
-                                    response = await session.execute(data["text"])
-                                    turn.emit_event(AssistantMessage(content=response))
-                                finally:
-                                    status_task.cancel()
-                                    with suppress(asyncio.CancelledError):
-                                        await status_task
+                        # Emit response event to core hooks AFTER status context exits
+                        hooks = session.coordinator.get("hooks")
+                        if hooks:
+                            await hooks.emit("display:assistant_response", {"data": {"content": response}})
 
                         # Save session after each interaction
                         context = session.coordinator.get("context")
@@ -1215,14 +1223,22 @@ async def execute_single(
             approval_provider = CLIApprovalProvider(console)
             register_provider(approval_provider)
 
-        # Initialize event bus for display
+        # Register display hooks on core HookRegistry
         profile_obj = ProfileLoader().load_profile(profile_name)
         ui_config = profile_obj.ui if profile_obj and profile_obj.ui else None
-        event_bus = EventBus(config=ui_config)
-        event_bus.subscribe(handle_event)
+
+        if ui_config:
+            from .display.handlers import create_display_hooks
+
+            display_hooks = create_display_hooks(ui_config)
+            hooks = session.coordinator.get("hooks")
+            if hooks:
+                for event_name, handler in display_hooks.items():
+                    hooks.register(event_name, handler, priority=-500, name="cli-display")
 
         # Register streaming markdown handler to suppress streaming-ui raw display
-        if ui_config and ui_config.render_markdown:
+        hooks = session.coordinator.get("hooks")
+        if hooks and ui_config and ui_config.render_markdown:
 
             async def streaming_suppressor_single(event: str, data: dict) -> HookResult:
                 """Suppress streaming-ui content display for markdown rendering."""
@@ -1245,32 +1261,33 @@ async def execute_single(
         if verbose:
             console.print(f"[dim]Executing: {prompt}[/dim]")
 
-        # Execute with event bus and live progress
-        async with TurnContext(event_bus) as turn:
-            turn.emit_event(UserMessage(content=prompt))
+        # Execute with live progress
+        with console.status("Processing... (0.0s)", spinner="dots") as status:
+            start_time = time.time()
 
-            with console.status("Processing... (0.0s)", spinner="dots") as status:
-                start_time = time.time()
+            async def update_status(start: float = start_time):
+                while True:
+                    elapsed = time.time() - start
+                    status.update(f"Processing... ({elapsed:.1f}s ctrl+c to interrupt)")
+                    await asyncio.sleep(0.1)
 
-                async def update_status(start: float = start_time):
-                    while True:
-                        elapsed = time.time() - start
-                        status.update(f"Processing... ({elapsed:.1f}s ctrl+c to interrupt)")
-                        await asyncio.sleep(0.1)
+            status_task = asyncio.create_task(update_status())
 
-                status_task = asyncio.create_task(update_status())
+            try:
+                response = await session.execute(prompt)
+                if verbose:
+                    console.print(
+                        f"\n[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]"
+                    )
+            finally:
+                status_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await status_task
 
-                try:
-                    response = await session.execute(prompt)
-                    if verbose:
-                        console.print(
-                            f"\n[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]"
-                        )
-                    turn.emit_event(AssistantMessage(content=response))
-                finally:
-                    status_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await status_task
+        # Emit response event to core hooks AFTER status context exits
+        hooks = session.coordinator.get("hooks")
+        if hooks:
+            await hooks.emit("display:assistant_response", {"data": {"content": response}})
 
         console.print()  # Add blank line after output to prevent running into shell prompt
 
