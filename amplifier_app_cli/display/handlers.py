@@ -37,13 +37,21 @@ class LeftAlignedHeading(Heading):
         text = self.text
         text.justify = "left"  # Override the default center justification
 
+        # Make headings bold and add proper spacing
         if self.tag == "h1":
-            # h1: Bold text without panel
-            yield Text("")
+            # h1: Bold with spacing (no panel, no centering)
+            text.stylize("bold")
+            yield Text("\n")  # Blank line before
             yield text
-            yield Text("")
+            yield Text("\n")  # Blank line after
+        elif self.tag == "h2":
+            # h2: Bold with spacing before
+            text.stylize("bold")
+            yield Text("\n")  # Blank line before
+            yield text
         else:
-            # h2+: Just the styled text
+            # h3+: Bold, inline
+            text.stylize("bold")
             yield text
 
 
