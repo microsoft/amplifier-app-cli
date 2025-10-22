@@ -105,18 +105,23 @@ def display_assistant_message(event: AssistantMessage, config: UIConfig) -> None
     # Clear any lingering status line before rendering
     console.print()
 
-    table = Table(show_header=False, show_edge=False, box=None, padding=0)
-    table.add_column(width=2, no_wrap=True)
-    table.add_column()
-
     if config.render_markdown:
-        # Use Rich's Markdown with custom left-aligned heading
-        table.add_row("●", LeftAlignedMarkdown(event.content.strip()))
-    else:
-        table.add_row("●", event.content.strip())
+        # TEMP DEBUG: Add visible marker
+        console.print("[red]>>> MARKDOWN RENDERING ACTIVE <<<[/red]")
 
-    console.print(table)
-    console.print()
+        # Render markdown with bullet prefix (not in table - tables cause issues)
+        console.print("●", LeftAlignedMarkdown(event.content.strip()))
+        console.print()
+    else:
+        console.print("[yellow]>>> PLAIN TEXT MODE <<<[/yellow]")
+
+        # Plain text in table
+        table = Table(show_header=False, show_edge=False, box=None, padding=0)
+        table.add_column(width=2, no_wrap=True)
+        table.add_column()
+        table.add_row("●", event.content.strip())
+        console.print(table)
+        console.print()
 
 
 def display_tool_call(event: ToolCall, config: UIConfig) -> None:
