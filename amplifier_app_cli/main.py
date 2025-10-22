@@ -1241,8 +1241,7 @@ async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> N
     if not has_mentions(prompt):
         return
 
-    print("[RUNTIME] Detected @mentions in user input, loading context files...")
-    logger.info("[RUNTIME] Processing @mentions in user input")
+    logger.info("Processing @mentions in user input")
 
     # Load @mentioned files (resolve relative to current working directory)
     from pathlib import Path
@@ -1251,18 +1250,16 @@ async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> N
     context_messages = loader.load_mentions(prompt, relative_to=Path.cwd())
 
     if not context_messages:
-        print("[RUNTIME] No files found for @mentions")
+        logger.debug("No files found for runtime @mentions")
         return
 
-    print(f"[RUNTIME] Loaded {len(context_messages)} files from @mentions")
-    logger.info(f"[RUNTIME] Loaded {len(context_messages)} context files from runtime @mentions")
+    logger.info(f"Loaded {len(context_messages)} context files from runtime @mentions")
 
     # Add context messages to session (before user message)
     context = session.coordinator.get("context")
     for i, msg in enumerate(context_messages):
         msg_dict = msg.model_dump()
-        print(f"[RUNTIME] Adding file {i + 1}/{len(context_messages)}: {len(msg.content)} chars")
-        logger.info(f"[RUNTIME] Adding runtime context {i + 1}/{len(context_messages)}: {len(msg.content)} chars")
+        logger.debug(f"Adding runtime context {i + 1}/{len(context_messages)}: {len(msg.content)} chars")
         await context.add_message(msg_dict)
 
 
@@ -1284,79 +1281,60 @@ async def _process_profile_mentions(session: AmplifierSession, profile_name: str
 
     logger = logging.getLogger(__name__)
 
-    print(f"\n{'=' * 80}\n[MENTIONS] _process_profile_mentions() CALLED for profile: {profile_name}\n{'=' * 80}\n")
-
     # Load profile and extract markdown body
     profile_loader = ProfileLoader()
     try:
-        logger.info(f"[MENTIONS] Processing @mentions for profile: {profile_name}")
+        logger.info(f"Processing @mentions for profile: {profile_name}")
 
         profile_file = profile_loader.find_profile_file(profile_name)
         if not profile_file:
-            logger.info(f"[MENTIONS] Profile file not found for: {profile_name}")
+            logger.debug(f"Profile file not found for: {profile_name}")
             return
 
-        logger.info(f"[MENTIONS] Found profile file: {profile_file}")
+        logger.debug(f"Found profile file: {profile_file}")
 
         markdown_body = parse_markdown_body(profile_file)
         if not markdown_body:
-            print(f"[MENTIONS] No markdown body in profile: {profile_name}")
-            logger.info(f"[MENTIONS] No markdown body in profile: {profile_name}")
+            logger.debug(f"No markdown body in profile: {profile_name}")
             return
 
-        print(f"[MENTIONS] Profile markdown body length: {len(markdown_body)} chars")
-        print(f"[MENTIONS] Markdown body preview: {markdown_body[:200]}...")
-        logger.info(f"[MENTIONS] Profile markdown body length: {len(markdown_body)} chars")
+        logger.debug(f"Profile markdown body length: {len(markdown_body)} chars")
 
         if not has_mentions(markdown_body):
-            print("[MENTIONS] No @mentions found in profile markdown")
-            logger.info("[MENTIONS] No @mentions found in profile markdown")
+            logger.debug("No @mentions found in profile markdown")
             return
 
-        print("[MENTIONS] Profile contains @mentions, loading context files...")
-        logger.info("[MENTIONS] Profile contains @mentions, loading context files...")
+        logger.info("Profile contains @mentions, loading context files...")
 
         # Load @mentioned files
         loader = MentionLoader()
         context_messages = loader.load_mentions(markdown_body, relative_to=profile_file.parent)
 
-        print(f"[MENTIONS] Loaded {len(context_messages)} context messages from @mentions")
-        logger.info(f"[MENTIONS] Loaded {len(context_messages)} context messages from @mentions")
+        logger.info(f"Loaded {len(context_messages)} context messages from profile @mentions")
 
         # Add context messages to session
         context = session.coordinator.get("context")
-        print(f"[MENTIONS] Got context object: {type(context)}")
+        logger.debug(f"Got context object: {type(context)}")
 
         for i, msg in enumerate(context_messages):
             msg_dict = msg.model_dump()
-            content_preview = msg_dict.get("content", "")[:100] + (
-                "..." if len(msg_dict.get("content", "")) > 100 else ""
+            logger.debug(
+                f"Adding context message {i + 1}/{len(context_messages)}: role={msg.role}, content_length={len(msg.content)}"
             )
-            print(
-                f"[MENTIONS] Adding context message {i + 1}/{len(context_messages)}: role={msg.role}, content_length={len(msg.content)}"
-            )
-            logger.info(
-                f"[MENTIONS] Adding context message {i + 1}/{len(context_messages)}: role={msg.role}, content_length={len(msg.content)}"
-            )
-            logger.debug(f"[MENTIONS] Message preview: {content_preview}")
             await context.add_message(msg_dict)
 
         # Add system instruction with @mentions preserved as references
         system_msg = Message(role="system", content=markdown_body)
-        print(f"[MENTIONS] Adding system instruction with @mentions preserved (length={len(markdown_body)})")
-        logger.info(f"[MENTIONS] Adding system instruction with @mentions preserved (length={len(markdown_body)})")
+        logger.debug(f"Adding system instruction with @mentions preserved (length={len(markdown_body)})")
         await context.add_message(system_msg.model_dump())
 
         # Verify messages were added
         all_messages = await context.get_messages()
-        print(f"[MENTIONS] Total messages in context after processing: {len(all_messages)}")
-        print(f"[MENTIONS] Message roles: {[m.get('role') for m in all_messages]}")
-        logger.info(f"[MENTIONS] Total messages in context after processing: {len(all_messages)}")
-        logger.info(f"[MENTIONS] Message roles: {[m.get('role') for m in all_messages]}")
+        logger.debug(f"Total messages in context after processing: {len(all_messages)}")
 
     except (FileNotFoundError, ValueError) as e:
         # Profile not found or invalid - skip mention processing
-        logger.warning(f"[MENTIONS] Failed to process profile @mentions: {e}")
+        logger.warning(f"Failed to process profile @mentions: {e}")
         pass
 
 
