@@ -68,8 +68,20 @@ class LoggingConfig(BaseModel):
 class UIConfig(BaseModel):
     """UI display configuration."""
 
+    # Thinking & streaming (existing fields)
     show_thinking_stream: bool = Field(default=True, description="Stream thinking deltas progressively")
     show_tool_lines: int = Field(default=5, description="Number of tool I/O lines to show in UI")
+
+    # Tool output display
+    tool_output_lines: int = Field(
+        default=3, ge=-1, description="Number of tool execution output lines to display (-1 for all)"
+    )
+    max_arg_length: int = Field(default=100, gt=0, description="Maximum characters to show for tool arguments")
+
+    # Formatting & rendering
+    show_elapsed_time: bool = Field(default=True, description="Display elapsed time for operations")
+    use_tree_formatting: bool = Field(default=True, description="Use tree-style formatting for output hierarchy")
+    render_markdown: bool = Field(default=True, description="Render markdown content in output")
 
 
 class Profile(BaseModel):
