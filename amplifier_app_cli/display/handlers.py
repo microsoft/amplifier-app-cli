@@ -91,6 +91,13 @@ def display_assistant_message(event: AssistantMessage, config: UIConfig) -> None
         event: Assistant message event
         config: UI configuration
     """
+    # DEBUG: Log that handler was called
+    import logging
+
+    logger = logging.getLogger(__name__)
+    logger.info(f"display_assistant_message called, render_markdown={config.render_markdown if config else 'N/A'}")
+    logger.info(f"Content length: {len(event.content) if event.content else 0}")
+
     if not event.content:
         return
 
