@@ -1,7 +1,8 @@
 """Event display handlers for CLI output."""
 
+import re
+
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.table import Table
 
 from ..events.schemas import AssistantMessage
@@ -15,6 +16,44 @@ from .formatters import format_tree_line
 from .formatters import truncate_output
 
 console = Console()
+
+
+def markdown_to_rich_markup(content: str) -> str:
+    """Convert markdown to Rich markup format (avoids centering issues).
+
+    Converts:
+    - **bold** → [bold]bold[/bold]
+    - *italic* → [italic]italic[/italic]
+    - `code` → [code]code[/code]
+    - ## headers → Bold text (no centering)
+    - Lists and other elements → Plain text
+
+    Args:
+        content: Markdown content
+
+    Returns:
+        Content with Rich markup
+    """
+    # Convert markdown to Rich markup
+    result = content
+
+    # Remove headers but keep text as bold
+    result = re.sub(r"^#{1,6}\s+(.+)$", r"[bold]\1[/bold]", result, flags=re.MULTILINE)
+
+    # Convert markdown bold to Rich bold
+    result = re.sub(r"\*\*(.+?)\*\*", r"[bold]\1[/bold]", result)
+
+    # Convert markdown italic to Rich italic
+    result = re.sub(r"\*(.+?)\*", r"[italic]\1[/italic]", result)
+    result = re.sub(r"_(.+?)_", r"[italic]\1[/italic]", result)
+
+    # Convert markdown code to Rich code
+    result = re.sub(r"`([^`]+)`", r"[code]\1[/code]", result)
+
+    # Remove horizontal rules
+    result = re.sub(r"^[\s-]{3,}$", "", result, flags=re.MULTILINE)
+
+    return result
 
 
 def handle_event(event: MessageEvent, config: UIConfig) -> None:
@@ -64,7 +103,9 @@ def display_assistant_message(event: AssistantMessage, config: UIConfig) -> None
     table.add_column()
 
     if config.render_markdown:
-        table.add_row("●", Markdown(event.content.strip()))
+        # Convert markdown to Rich markup to avoid centering
+        rich_markup = markdown_to_rich_markup(event.content.strip())
+        table.add_row("●", rich_markup)
     else:
         table.add_row("●", event.content.strip())
 
