@@ -1,9 +1,12 @@
 """Event display handlers for CLI output."""
 
-import re
-
 from rich.console import Console
+from rich.console import ConsoleOptions
+from rich.console import RenderResult
+from rich.markdown import Heading
+from rich.markdown import Markdown
 from rich.table import Table
+from rich.text import Text
 
 from ..events.schemas import AssistantMessage
 from ..events.schemas import MessageEvent
@@ -18,39 +21,39 @@ from .formatters import truncate_output
 console = Console()
 
 
-def markdown_to_rich_markup(content: str) -> str:
-    """Convert markdown to Rich markup, preserving all formatting and newlines.
+class LeftAlignedHeading(Heading):
+    """Custom Heading class that renders left-aligned with proper spacing."""
 
-    Handles inline formatting only (bold, italic, code) and converts headers
-    to bold text. Preserves all newlines from original content.
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        """Render heading left-aligned instead of centered.
 
-    Args:
-        content: Markdown content from LLM
+        Args:
+            console: Rich console
+            options: Console options
 
-    Returns:
-        Content with Rich markup, newlines preserved
+        Yields:
+            Renderable elements
+        """
+        text = self.text
+        text.justify = "left"  # Override default center
+        text.stylize("bold")  # Make headings bold
+
+        # h2 gets spacing before (like Rich does)
+        if self.tag == "h2":
+            yield Text()
+
+        # All headings: just yield the styled text (Rich handles spacing via new_line)
+        yield text
+
+
+class LeftAlignedMarkdown(Markdown):
+    """Custom Markdown renderer with left-aligned headings.
+
+    Uses custom Heading that renders left-aligned without panels.
+    Preserves Rich's newline handling for proper spacing.
     """
-    # Bold: **text** → [bold]text[/bold]
-    content = re.sub(r"\*\*(.+?)\*\*", r"[bold]\1[/bold]", content)
 
-    # Italic: *text* or _text_ → [italic]text[/italic]
-    # Use negative lookbehind/ahead to avoid matching ** as *
-    content = re.sub(r"(?<!\*)\*(?!\*)(.+?)\*(?!\*)", r"[italic]\1[/italic]", content)
-    content = re.sub(r"_(.+?)_", r"[italic]\1[/italic]", content)
-
-    # Code: `text` → [code]text[/code]
-    content = re.sub(r"`([^`]+)`", r"[code]\1[/code]", content)
-
-    # Headers: # Text → [bold]Text[/bold] (preserve all newlines!)
-    content = re.sub(r"^#{1,6}\s+(.+)$", r"[bold]\1[/bold]", content, flags=re.MULTILINE)
-
-    # Remove horizontal rules (but keep the newline they're on)
-    content = re.sub(r"^---+$", "", content, flags=re.MULTILINE)
-
-    # Remove blockquote markers but keep content
-    content = re.sub(r"^>\s+", "", content, flags=re.MULTILINE)
-
-    return content
+    elements = {**Markdown.elements, "heading_open": LeftAlignedHeading}
 
 
 def handle_event(event: MessageEvent, config: UIConfig) -> None:
@@ -107,9 +110,8 @@ def display_assistant_message(event: AssistantMessage, config: UIConfig) -> None
     table.add_column()
 
     if config.render_markdown:
-        # Convert markdown to Rich markup, preserving newlines
-        rich_markup = markdown_to_rich_markup(event.content.strip())
-        table.add_row("●", rich_markup)
+        # Use Rich's Markdown with custom left-aligned heading
+        table.add_row("●", LeftAlignedMarkdown(event.content.strip()))
     else:
         table.add_row("●", event.content.strip())
 
