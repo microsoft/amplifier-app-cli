@@ -51,7 +51,8 @@ class LeftAlignedMarkdown(Markdown):
     """Custom Markdown renderer with left-aligned headings."""
 
     # Override the elements class variable with our custom heading
-    elements = {**Markdown.elements, "heading": LeftAlignedHeading}
+    # Key must be "heading_open" to match markdown-it token type
+    elements = {**Markdown.elements, "heading_open": LeftAlignedHeading}
 
 
 def handle_event(event: MessageEvent, config: UIConfig) -> None:

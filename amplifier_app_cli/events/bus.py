@@ -17,14 +17,15 @@ class EventBus:
     and logged to prevent one failing handler from breaking others.
     """
 
-    def __init__(self) -> None:
-        self._subscribers: list[Callable[[MessageEvent], None]] = []
+    def __init__(self, config: Any = None) -> None:
+        self._subscribers: list[Callable[[MessageEvent, Any], None]] = []
+        self._config = config
 
-    def subscribe(self, handler: Callable[[MessageEvent], None]) -> None:
+    def subscribe(self, handler: Callable[[MessageEvent, Any], None]) -> None:
         """Subscribe a handler to receive all message events.
 
         Args:
-            handler: Callable that takes a MessageEvent
+            handler: Callable that takes a MessageEvent and config
         """
         self._subscribers.append(handler)
 
@@ -38,7 +39,7 @@ class EventBus:
         """
         for handler in self._subscribers:
             try:
-                handler(event)
+                handler(event, self._config)
             except Exception:
                 logger.exception(f"Error in event handler {handler.__name__}")
 

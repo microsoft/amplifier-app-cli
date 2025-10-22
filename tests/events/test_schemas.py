@@ -25,7 +25,7 @@ class TestUserMessage:
     def test_missing_content(self):
         """Test user message requires content field."""
         with pytest.raises(ValidationError) as exc_info:
-            UserMessage()
+            UserMessage()  # type: ignore
         assert "content" in str(exc_info.value)
 
     def test_multiline_content(self):
@@ -42,7 +42,7 @@ class TestUserMessage:
     def test_invalid_type_override(self):
         """Test that type cannot be overridden to invalid value."""
         with pytest.raises(ValidationError):
-            UserMessage(type="wrong_type", content="test")
+            UserMessage(type="wrong_type", content="test")  # type: ignore
 
 
 class TestAssistantMessage:
@@ -62,7 +62,7 @@ class TestAssistantMessage:
     def test_missing_content(self):
         """Test assistant message requires content field."""
         with pytest.raises(ValidationError) as exc_info:
-            AssistantMessage()
+            AssistantMessage()  # type: ignore
         assert "content" in str(exc_info.value)
 
     def test_long_content(self):
@@ -113,14 +113,14 @@ class TestToolCall:
     def test_missing_required_fields(self):
         """Test tool call requires name, id, and arguments."""
         with pytest.raises(ValidationError) as exc_info:
-            ToolCall(name="test")
+            ToolCall(name="test")  # type: ignore
         assert "id" in str(exc_info.value)
         assert "arguments" in str(exc_info.value)
 
     def test_arguments_must_be_dict(self):
         """Test arguments must be a dict."""
         with pytest.raises(ValidationError):
-            ToolCall(name="test", id="call_001", arguments="not a dict")
+            ToolCall(name="test", id="call_001", arguments="not a dict")  # type: ignore
 
     def test_arguments_with_various_types(self):
         """Test arguments can contain various JSON-compatible types."""
@@ -177,7 +177,7 @@ class TestToolResult:
     def test_missing_required_fields(self):
         """Test tool result requires id, name, and output."""
         with pytest.raises(ValidationError) as exc_info:
-            ToolResult(id="call_001")
+            ToolResult(id="call_001")  # type: ignore
         assert "name" in str(exc_info.value)
         assert "output" in str(exc_info.value)
 
