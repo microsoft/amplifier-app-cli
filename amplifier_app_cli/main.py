@@ -16,6 +16,7 @@ from typing import Any
 
 import click
 from amplifier_core import AmplifierSession
+from amplifier_core.models import HookResult
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -142,7 +143,6 @@ class CommandProcessor:
     def _configure_plan_mode(self, enabled: bool):
         """Configure session for plan mode."""
         # Import HookResult here to avoid circular import
-        from amplifier_core.models import HookResult
 
         # Access hooks via the coordinator
         hooks = self.session.coordinator.get("hooks")
@@ -1086,6 +1086,23 @@ async def interactive_chat(
     event_bus = EventBus(config=ui_config)
     event_bus.subscribe(handle_event)
 
+    # Register streaming markdown handler to suppress streaming-ui raw display
+    if ui_config and ui_config.render_markdown:
+
+        async def streaming_suppressor(event: str, data: dict) -> HookResult:
+            """Suppress streaming-ui content display for markdown rendering."""
+            if event in ("content_block:start", "content_block:delta", "content_block:end"):
+                return HookResult(action="deny")  # Suppress streaming-ui, our handlers show markdown at end
+            return HookResult(action="continue")
+
+        # Register at priority -1000 (very high) to intercept before streaming-ui
+        hooks = session.coordinator.get("hooks")
+        if hooks:
+            hooks.register("content_block:start", streaming_suppressor, priority=-1000, name="markdown-suppressor")
+            hooks.register("content_block:delta", streaming_suppressor, priority=-1000, name="markdown-suppressor")
+            hooks.register("content_block:end", streaming_suppressor, priority=-1000, name="markdown-suppressor")
+            logger.info("Registered markdown suppressor hooks at priority -1000")
+
     try:
         while True:
             try:
@@ -1203,6 +1220,27 @@ async def execute_single(
         ui_config = profile_obj.ui if profile_obj and profile_obj.ui else None
         event_bus = EventBus(config=ui_config)
         event_bus.subscribe(handle_event)
+
+        # Register streaming markdown handler to suppress streaming-ui raw display
+        if ui_config and ui_config.render_markdown:
+
+            async def streaming_suppressor_single(event: str, data: dict) -> HookResult:
+                """Suppress streaming-ui content display for markdown rendering."""
+                if event in ("content_block:start", "content_block:delta", "content_block:end"):
+                    return HookResult(action="deny")  # Suppress streaming-ui, our handlers show markdown at end
+                return HookResult(action="continue")
+
+            hooks = session.coordinator.get("hooks")
+            if hooks:
+                hooks.register(
+                    "content_block:start", streaming_suppressor_single, priority=-1000, name="markdown-suppressor"
+                )
+                hooks.register(
+                    "content_block:delta", streaming_suppressor_single, priority=-1000, name="markdown-suppressor"
+                )
+                hooks.register(
+                    "content_block:end", streaming_suppressor_single, priority=-1000, name="markdown-suppressor"
+                )
 
         if verbose:
             console.print(f"[dim]Executing: {prompt}[/dim]")
@@ -2001,6 +2039,26 @@ async def interactive_chat_with_session(
     ui_config = profile_obj.ui if profile_obj and profile_obj.ui else None
     event_bus = EventBus(config=ui_config)
     event_bus.subscribe(handle_event)
+
+    # Register streaming markdown handler to suppress streaming-ui raw display
+    if ui_config and ui_config.render_markdown:
+
+        async def streaming_suppressor_resume(event: str, data: dict) -> HookResult:
+            """Suppress streaming-ui content display for markdown rendering."""
+            if event in ("content_block:start", "content_block:delta", "content_block:end"):
+                return HookResult(action="deny")  # Suppress streaming-ui, our handlers show markdown at end
+            return HookResult(action="continue")
+
+        # Register at priority -1000 (very high) to intercept before streaming-ui
+        hooks = session.coordinator.get("hooks")
+        if hooks:
+            hooks.register(
+                "content_block:start", streaming_suppressor_resume, priority=-1000, name="markdown-suppressor"
+            )
+            hooks.register(
+                "content_block:delta", streaming_suppressor_resume, priority=-1000, name="markdown-suppressor"
+            )
+            hooks.register("content_block:end", streaming_suppressor_resume, priority=-1000, name="markdown-suppressor")
 
     try:
         while True:

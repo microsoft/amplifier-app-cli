@@ -56,6 +56,9 @@ def display_assistant_message(event: AssistantMessage, config: UIConfig) -> None
     if not event.content:
         return
 
+    # Clear any lingering status line before rendering
+    console.print()
+
     table = Table(show_header=False, show_edge=False, box=None, padding=0)
     table.add_column(width=2, no_wrap=True)
     table.add_column()
