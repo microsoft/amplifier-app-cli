@@ -1,9 +1,12 @@
 """Event display handlers for CLI output."""
 
-import re
-
 from rich.console import Console
+from rich.console import ConsoleOptions
+from rich.console import RenderResult
+from rich.markdown import Heading
+from rich.markdown import Markdown
 from rich.table import Table
+from rich.text import Text
 
 from ..events.schemas import AssistantMessage
 from ..events.schemas import MessageEvent
@@ -18,42 +21,37 @@ from .formatters import truncate_output
 console = Console()
 
 
-def markdown_to_rich_markup(content: str) -> str:
-    """Convert markdown to Rich markup format (avoids centering issues).
+class LeftAlignedHeading(Heading):
+    """Custom Heading class that renders left-aligned instead of centered."""
 
-    Converts:
-    - **bold** → [bold]bold[/bold]
-    - *italic* → [italic]italic[/italic]
-    - `code` → [code]code[/code]
-    - ## headers → Bold text (no centering)
-    - Lists and other elements → Plain text
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        """Render heading left-aligned instead of centered.
 
-    Args:
-        content: Markdown content
+        Args:
+            console: Rich console
+            options: Console options
 
-    Returns:
-        Content with Rich markup
-    """
-    # Convert markdown to Rich markup
-    result = content
+        Yields:
+            Renderable elements
+        """
+        text = self.text
+        text.justify = "left"  # Override the default center justification
 
-    # Remove headers but keep text as bold
-    result = re.sub(r"^#{1,6}\s+(.+)$", r"[bold]\1[/bold]", result, flags=re.MULTILINE)
+        if self.tag == "h1":
+            # h1: Bold text without panel
+            yield Text("")
+            yield text
+            yield Text("")
+        else:
+            # h2+: Just the styled text
+            yield text
 
-    # Convert markdown bold to Rich bold
-    result = re.sub(r"\*\*(.+?)\*\*", r"[bold]\1[/bold]", result)
 
-    # Convert markdown italic to Rich italic
-    result = re.sub(r"\*(.+?)\*", r"[italic]\1[/italic]", result)
-    result = re.sub(r"_(.+?)_", r"[italic]\1[/italic]", result)
+class LeftAlignedMarkdown(Markdown):
+    """Custom Markdown renderer with left-aligned headings."""
 
-    # Convert markdown code to Rich code
-    result = re.sub(r"`([^`]+)`", r"[code]\1[/code]", result)
-
-    # Remove horizontal rules
-    result = re.sub(r"^[\s-]{3,}$", "", result, flags=re.MULTILINE)
-
-    return result
+    # Override the elements class variable with our custom heading
+    elements = {**Markdown.elements, "heading": LeftAlignedHeading}
 
 
 def handle_event(event: MessageEvent, config: UIConfig) -> None:
@@ -103,9 +101,8 @@ def display_assistant_message(event: AssistantMessage, config: UIConfig) -> None
     table.add_column()
 
     if config.render_markdown:
-        # Convert markdown to Rich markup to avoid centering
-        rich_markup = markdown_to_rich_markup(event.content.strip())
-        table.add_row("●", rich_markup)
+        # Use custom left-aligned markdown renderer
+        table.add_row("●", LeftAlignedMarkdown(event.content.strip(), justify="left"))
     else:
         table.add_row("●", event.content.strip())
 
