@@ -59,7 +59,9 @@ def test_loader_recursive_loading(temp_test_files):
 
     assert len(messages) == 3
 
-    contents = {m.content for m in messages}
+    # Check content (content is always str for loaded files, but type is str | list[ContentBlock])
+    contents = [m.content for m in messages if isinstance(m.content, str)]
+    assert len(contents) == 3
     assert any("File with mentions" in c for c in contents)
     assert any("Simple file content" in c for c in contents)
     assert any("Another file content" in c for c in contents)
@@ -78,7 +80,9 @@ def test_loader_cycle_detection(temp_test_files):
 
     assert len(messages) == 2
 
-    contents = {m.content for m in messages}
+    # Check content (content is always str for loaded files, but type is str | list[ContentBlock])
+    contents = [m.content for m in messages if isinstance(m.content, str)]
+    assert len(contents) == 2
     assert any("File A mentions" in c for c in contents)
     assert any("File B mentions" in c for c in contents)
 
@@ -141,6 +145,9 @@ def test_loader_message_format(temp_test_files):
     messages = loader.load_mentions("@simple.md")
 
     assert len(messages) == 1
-    assert messages[0].content.startswith("[Context from ")
-    assert "simple.md]" in messages[0].content
-    assert "\n\n" in messages[0].content
+    # Content is always str for loaded files, but need type guard for pyright
+    content = messages[0].content
+    assert isinstance(content, str)
+    assert content.startswith("[Context from ")
+    assert "simple.md]" in content
+    assert "\n\n" in content
