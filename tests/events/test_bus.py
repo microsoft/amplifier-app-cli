@@ -25,7 +25,7 @@ class TestEventBus:
         event = UserMessage(content="test")
         bus.publish(event)
 
-        handler.assert_called_once_with(event)
+        handler.assert_called_once_with(event, None)
 
     def test_subscribe_multiple_handlers(self):
         """Test subscribing multiple handlers."""
@@ -41,19 +41,19 @@ class TestEventBus:
         event = UserMessage(content="test")
         bus.publish(event)
 
-        handler1.assert_called_once_with(event)
-        handler2.assert_called_once_with(event)
-        handler3.assert_called_once_with(event)
+        handler1.assert_called_once_with(event, None)
+        handler2.assert_called_once_with(event, None)
+        handler3.assert_called_once_with(event, None)
 
     def test_publish_to_multiple_subscribers(self):
         """Test publishing reaches all subscribers."""
         bus = EventBus()
         events_received = []
 
-        def handler1(event):
+        def handler1(event, config):
             events_received.append(("handler1", event))
 
-        def handler2(event):
+        def handler2(event, config):
             events_received.append(("handler2", event))
 
         bus.subscribe(handler1)
@@ -76,7 +76,7 @@ class TestEventBus:
         bus = EventBus()
         handler1 = Mock()
 
-        def failing_handler(event):
+        def failing_handler(event, config):
             raise ValueError("Handler 2 failed")
 
         handler3 = Mock()
@@ -91,8 +91,8 @@ class TestEventBus:
             bus.publish(event)
 
         # All handlers should be called despite handler2 failing
-        handler1.assert_called_once_with(event)
-        handler3.assert_called_once_with(event)
+        handler1.assert_called_once_with(event, None)
+        handler3.assert_called_once_with(event, None)
 
         # Error should be logged
         assert "Error in event handler" in caplog.text
@@ -101,10 +101,10 @@ class TestEventBus:
         """Test that multiple handler failures are all logged."""
         bus = EventBus()
 
-        def failing_handler1(event):
+        def failing_handler1(event, config):
             raise ValueError("First failure")
 
-        def failing_handler2(event):
+        def failing_handler2(event, config):
             raise RuntimeError("Second failure")
 
         handler3 = Mock()
@@ -135,7 +135,7 @@ class TestEventBus:
         bus = EventBus()
         received = []
 
-        def handler(event):
+        def handler(event, config):
             received.append(event)
 
         bus.subscribe(handler)
@@ -172,7 +172,7 @@ class TestEventBus:
         bus = EventBus()
         state = {"count": 0}
 
-        def counting_handler(event):
+        def counting_handler(event, config):
             state["count"] += 1
 
         bus.subscribe(counting_handler)
@@ -187,7 +187,7 @@ class TestEventBus:
         bus = EventBus()
         stats = {"user": 0, "assistant": 0, "tool_call": 0, "tool_result": 0}
 
-        def stats_handler(event):
+        def stats_handler(event, config):
             if event.type == "user_message":
                 stats["user"] += 1
             elif event.type == "assistant_message":
@@ -242,14 +242,14 @@ class TestTurnContext:
             event = UserMessage(content="test")
             ctx.emit_event(event)
 
-        handler.assert_called_once_with(event)
+        handler.assert_called_once_with(event, None)
 
     @pytest.mark.asyncio
     async def test_emit_multiple_events(self):
         """Test emitting multiple events in a turn."""
         bus = EventBus()
         received = []
-        bus.subscribe(lambda e: received.append(e))
+        bus.subscribe(lambda e, c: received.append(e))
 
         ctx = TurnContext(bus)
 
@@ -299,7 +299,6 @@ class TestTurnContext:
 
         async with ctx1:
             await asyncio.sleep(0.05)
-            elapsed1 = ctx1.get_elapsed_time()
 
             async with ctx2:
                 elapsed2_initial = ctx2.get_elapsed_time()
@@ -369,7 +368,7 @@ class TestTurnContext:
         ctx = TurnContext(bus)
         received = []
 
-        def recursive_handler(event):
+        def recursive_handler(event, config):
             received.append(event)
             # Handler emits another event (tests re-entrancy)
             # Only emit on first user message (before any assistant messages)
@@ -396,7 +395,7 @@ class TestEventBusAndTurnContextIntegration:
         bus = EventBus()
         events_log = []
 
-        def logger_handler(event):
+        def logger_handler(event, config):
             events_log.append((event.type, event))
 
         bus.subscribe(logger_handler)
@@ -442,7 +441,7 @@ class TestEventBusAndTurnContextIntegration:
         """Test multiple turns sharing the same event bus."""
         bus = EventBus()
         all_events = []
-        bus.subscribe(lambda e: all_events.append(e))
+        bus.subscribe(lambda e, c: all_events.append(e))
 
         # First turn
         async with TurnContext(bus) as turn1:

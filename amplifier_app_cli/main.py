@@ -6,7 +6,9 @@ import logging
 import os
 import re
 import sys
+import time
 import uuid
+from contextlib import suppress
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +27,11 @@ from .commands.logs import logs_cmd
 from .commands.provider import provider as provider_group
 from .commands.setup import setup_cmd
 from .data.profiles import get_system_default_profile
+from .display import handle_event
+from .events import AssistantMessage
+from .events import EventBus
+from .events import TurnContext
+from .events import UserMessage
 from .key_manager import KeyManager
 from .profile_system import AgentManager
 from .profile_system import ProfileLoader
@@ -1073,6 +1080,12 @@ async def interactive_chat(
         )
     )
 
+    # Initialize event bus for display
+    profile_obj = ProfileLoader().load_profile(profile_name)
+    ui_config = profile_obj.ui if profile_obj and profile_obj.ui else None
+    event_bus = EventBus(config=ui_config)
+    event_bus.subscribe(handle_event)
+
     try:
         while True:
             try:
@@ -1085,10 +1098,29 @@ async def interactive_chat(
                     action, data = command_processor.process_input(prompt)
 
                     if action == "prompt":
-                        # Normal prompt execution
-                        console.print("[dim]Processing...[/dim]")
-                        response = await session.execute(data["text"])
-                        console.print("\n" + response)
+                        # Normal prompt execution with event bus and live progress
+                        async with TurnContext(event_bus) as turn:
+                            turn.emit_event(UserMessage(content=data["text"]))
+
+                            # Live progress feedback with elapsed time
+                            with console.status("Processing... (0.0s)", spinner="dots") as status:
+                                start_time = time.time()
+
+                                async def update_status(start: float = start_time):
+                                    while True:
+                                        elapsed = time.time() - start
+                                        status.update(f"Processing... ({elapsed:.1f}s ctrl+c to interrupt)")
+                                        await asyncio.sleep(0.1)
+
+                                status_task = asyncio.create_task(update_status())
+
+                                try:
+                                    response = await session.execute(data["text"])
+                                    turn.emit_event(AssistantMessage(content=response))
+                                finally:
+                                    status_task.cancel()
+                                    with suppress(asyncio.CancelledError):
+                                        await status_task
 
                         # Save session after each interaction
                         context = session.coordinator.get("context")
@@ -1166,13 +1198,42 @@ async def execute_single(
             approval_provider = CLIApprovalProvider(console)
             register_provider(approval_provider)
 
+        # Initialize event bus for display
+        profile_obj = ProfileLoader().load_profile(profile_name)
+        ui_config = profile_obj.ui if profile_obj and profile_obj.ui else None
+        event_bus = EventBus(config=ui_config)
+        event_bus.subscribe(handle_event)
+
         if verbose:
             console.print(f"[dim]Executing: {prompt}[/dim]")
 
-        response = await session.execute(prompt)
-        if verbose:
-            console.print(f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]")
-        console.print(response)
+        # Execute with event bus and live progress
+        async with TurnContext(event_bus) as turn:
+            turn.emit_event(UserMessage(content=prompt))
+
+            with console.status("Processing... (0.0s)", spinner="dots") as status:
+                start_time = time.time()
+
+                async def update_status(start: float = start_time):
+                    while True:
+                        elapsed = time.time() - start
+                        status.update(f"Processing... ({elapsed:.1f}s ctrl+c to interrupt)")
+                        await asyncio.sleep(0.1)
+
+                status_task = asyncio.create_task(update_status())
+
+                try:
+                    response = await session.execute(prompt)
+                    if verbose:
+                        console.print(
+                            f"\n[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]"
+                        )
+                    turn.emit_event(AssistantMessage(content=response))
+                finally:
+                    status_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await status_task
+
         console.print()  # Add blank line after output to prevent running into shell prompt
 
         # Always save session (for debugging/archival)
@@ -1935,6 +1996,12 @@ async def interactive_chat_with_session(
     # Create session store for saving
     store = SessionStore()
 
+    # Initialize event bus for display
+    profile_obj = ProfileLoader().load_profile(profile_name)
+    ui_config = profile_obj.ui if profile_obj and profile_obj.ui else None
+    event_bus = EventBus(config=ui_config)
+    event_bus.subscribe(handle_event)
+
     try:
         while True:
             try:
@@ -1947,10 +2014,28 @@ async def interactive_chat_with_session(
                     action, data = command_processor.process_input(prompt)
 
                     if action == "prompt":
-                        # Normal prompt execution
-                        console.print("[dim]Processing...[/dim]")
-                        response = await session.execute(data["text"])
-                        console.print("\n" + response)
+                        # Normal prompt execution with event bus and live progress
+                        async with TurnContext(event_bus) as turn:
+                            turn.emit_event(UserMessage(content=data["text"]))
+
+                            with console.status("Processing... (0.0s)", spinner="dots") as status:
+                                start_time = time.time()
+
+                                async def update_status(start: float = start_time):
+                                    while True:
+                                        elapsed = time.time() - start
+                                        status.update(f"Processing... ({elapsed:.1f}s ctrl+c to interrupt)")
+                                        await asyncio.sleep(0.1)
+
+                                status_task = asyncio.create_task(update_status())
+
+                                try:
+                                    response = await session.execute(data["text"])
+                                    turn.emit_event(AssistantMessage(content=response))
+                                finally:
+                                    status_task.cancel()
+                                    with suppress(asyncio.CancelledError):
+                                        await status_task
 
                         # Save session after each interaction
                         if context and hasattr(context, "get_messages"):

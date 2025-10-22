@@ -215,10 +215,8 @@ def _inject_profile_configs(mount_plan: dict[str, Any], profile: Profile) -> dic
             if hook.get("module") == "hooks-streaming-ui":
                 if "config" not in hook:
                     hook["config"] = {}
-                hook["config"]["ui"] = {
-                    "show_thinking_stream": profile.ui.show_thinking_stream,
-                    "show_tool_lines": profile.ui.show_tool_lines,
-                }
+                # Pass all UIConfig fields automatically
+                hook["config"]["ui"] = profile.ui.model_dump()
 
     return mount_plan
 
