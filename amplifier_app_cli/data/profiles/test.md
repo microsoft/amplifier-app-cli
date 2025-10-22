@@ -39,18 +39,6 @@ agents:
         instruction: "You are a test agent. Respond with 'Test successful' to any query."
 ---
 
-# Test Profile
+{{parent_instruction}}
 
-A testing configuration with mock provider for automated testing and development scenarios without API calls.
-
-**When to use**: For running tests, CI/CD pipelines, or development without consuming API tokens.
-
-**Extends**: base (inherits filesystem, bash, redaction, and logging)
-
-**Key features**:
-
-- Mock provider with configurable responses and failure simulation
-- Reduced token limits (50K) for faster test execution
-- Lower compaction threshold (70%) for testing compaction logic
-- Task tool enabled for testing sub-session delegation
-- Configurable response delay and failure probability for testing error handling
+Test mode: You are running with a mock provider for testing. Respond clearly and predictably to test scenarios.

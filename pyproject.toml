@@ -36,4 +36,4 @@ dev = [
 ]
 
 [tool.uv.sources]
-amplifier-core = { git = "https://github.com/microsoft/amplifier-core", branch = "main" }
+amplifier-core = { path = "../amplifier-core", editable = true }

@@ -1224,6 +1224,142 @@ def profile_default(set_default: str | None, clear: bool):
         console.print("  [cyan]amplifier profile default --set <name>[/cyan]")
 
 
+async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> None:
+    """Process @mentions in user input at runtime.
+
+    Args:
+        session: Active session to add context messages to
+        prompt: User's input that may contain @mentions
+    """
+    import logging
+
+    from .lib.mention_loading import MentionLoader
+    from .utils.mentions import has_mentions
+
+    logger = logging.getLogger(__name__)
+
+    if not has_mentions(prompt):
+        return
+
+    print("[RUNTIME] Detected @mentions in user input, loading context files...")
+    logger.info("[RUNTIME] Processing @mentions in user input")
+
+    # Load @mentioned files (resolve relative to current working directory)
+    from pathlib import Path
+
+    loader = MentionLoader()
+    context_messages = loader.load_mentions(prompt, relative_to=Path.cwd())
+
+    if not context_messages:
+        print("[RUNTIME] No files found for @mentions")
+        return
+
+    print(f"[RUNTIME] Loaded {len(context_messages)} files from @mentions")
+    logger.info(f"[RUNTIME] Loaded {len(context_messages)} context files from runtime @mentions")
+
+    # Add context messages to session (before user message)
+    context = session.coordinator.get("context")
+    for i, msg in enumerate(context_messages):
+        msg_dict = msg.model_dump()
+        print(f"[RUNTIME] Adding file {i + 1}/{len(context_messages)}: {len(msg.content)} chars")
+        logger.info(f"[RUNTIME] Adding runtime context {i + 1}/{len(context_messages)}: {len(msg.content)} chars")
+        await context.add_message(msg_dict)
+
+
+async def _process_profile_mentions(session: AmplifierSession, profile_name: str) -> None:
+    """Process @mentions in profile markdown body.
+
+    Args:
+        session: Active session to add context messages to
+        profile_name: Name of active profile
+    """
+    import logging
+
+    from amplifier_core.message_models import Message
+
+    from .lib.mention_loading import MentionLoader
+    from .profile_system.loader import ProfileLoader
+    from .profile_system.utils import parse_markdown_body
+    from .utils.mentions import has_mentions
+
+    logger = logging.getLogger(__name__)
+
+    print(f"\n{'=' * 80}\n[MENTIONS] _process_profile_mentions() CALLED for profile: {profile_name}\n{'=' * 80}\n")
+
+    # Load profile and extract markdown body
+    profile_loader = ProfileLoader()
+    try:
+        logger.info(f"[MENTIONS] Processing @mentions for profile: {profile_name}")
+
+        profile_file = profile_loader.find_profile_file(profile_name)
+        if not profile_file:
+            logger.info(f"[MENTIONS] Profile file not found for: {profile_name}")
+            return
+
+        logger.info(f"[MENTIONS] Found profile file: {profile_file}")
+
+        markdown_body = parse_markdown_body(profile_file)
+        if not markdown_body:
+            print(f"[MENTIONS] No markdown body in profile: {profile_name}")
+            logger.info(f"[MENTIONS] No markdown body in profile: {profile_name}")
+            return
+
+        print(f"[MENTIONS] Profile markdown body length: {len(markdown_body)} chars")
+        print(f"[MENTIONS] Markdown body preview: {markdown_body[:200]}...")
+        logger.info(f"[MENTIONS] Profile markdown body length: {len(markdown_body)} chars")
+
+        if not has_mentions(markdown_body):
+            print("[MENTIONS] No @mentions found in profile markdown")
+            logger.info("[MENTIONS] No @mentions found in profile markdown")
+            return
+
+        print("[MENTIONS] Profile contains @mentions, loading context files...")
+        logger.info("[MENTIONS] Profile contains @mentions, loading context files...")
+
+        # Load @mentioned files
+        loader = MentionLoader()
+        context_messages = loader.load_mentions(markdown_body, relative_to=profile_file.parent)
+
+        print(f"[MENTIONS] Loaded {len(context_messages)} context messages from @mentions")
+        logger.info(f"[MENTIONS] Loaded {len(context_messages)} context messages from @mentions")
+
+        # Add context messages to session
+        context = session.coordinator.get("context")
+        print(f"[MENTIONS] Got context object: {type(context)}")
+
+        for i, msg in enumerate(context_messages):
+            msg_dict = msg.model_dump()
+            content_preview = msg_dict.get("content", "")[:100] + (
+                "..." if len(msg_dict.get("content", "")) > 100 else ""
+            )
+            print(
+                f"[MENTIONS] Adding context message {i + 1}/{len(context_messages)}: role={msg.role}, content_length={len(msg.content)}"
+            )
+            logger.info(
+                f"[MENTIONS] Adding context message {i + 1}/{len(context_messages)}: role={msg.role}, content_length={len(msg.content)}"
+            )
+            logger.debug(f"[MENTIONS] Message preview: {content_preview}")
+            await context.add_message(msg_dict)
+
+        # Add system instruction with @mentions preserved as references
+        system_msg = Message(role="system", content=markdown_body)
+        print(f"[MENTIONS] Adding system instruction with @mentions preserved (length={len(markdown_body)})")
+        logger.info(f"[MENTIONS] Adding system instruction with @mentions preserved (length={len(markdown_body)})")
+        await context.add_message(system_msg.model_dump())
+
+        # Verify messages were added
+        all_messages = await context.get_messages()
+        print(f"[MENTIONS] Total messages in context after processing: {len(all_messages)}")
+        print(f"[MENTIONS] Message roles: {[m.get('role') for m in all_messages]}")
+        logger.info(f"[MENTIONS] Total messages in context after processing: {len(all_messages)}")
+        logger.info(f"[MENTIONS] Message roles: {[m.get('role') for m in all_messages]}")
+
+    except (FileNotFoundError, ValueError) as e:
+        # Profile not found or invalid - skip mention processing
+        logger.warning(f"[MENTIONS] Failed to process profile @mentions: {e}")
+        pass
+
+
 async def interactive_chat(
     config: dict, search_paths: list[Path], verbose: bool, session_id: str | None = None, profile_name: str = "default"
 ):
@@ -1245,6 +1381,9 @@ async def interactive_chat(
     # Show loading indicator during initialization (modules loading, etc.)
     with console.status("[dim]Loading...[/dim]", spinner="dots"):
         await session.initialize()
+
+    # Process profile @mentions if profile has markdown body
+    await _process_profile_mentions(session, profile_name)
 
     # Register CLI approval provider if approval hook is active (app-layer policy)
     from .approval_provider import CLIApprovalProvider
@@ -1303,6 +1442,10 @@ async def interactive_chat(
                     if action == "prompt":
                         # Normal prompt execution
                         console.print("[dim]Processing...[/dim]")
+
+                        # Process runtime @mentions in user input
+                        await _process_runtime_mentions(session, data["text"])
+
                         response = await session.execute(data["text"])
                         console.print("\n" + response)
 
@@ -1374,6 +1517,9 @@ async def execute_single(
         await session.coordinator.mount("module-source-resolver", resolver)
         await session.initialize()
 
+        # Process profile @mentions if profile has markdown body
+        await _process_profile_mentions(session, profile_name)
+
         # Register CLI approval provider if approval hook is active (app-layer policy)
         from .approval_provider import CLIApprovalProvider
 
@@ -1381,6 +1527,9 @@ async def execute_single(
         if register_provider:
             approval_provider = CLIApprovalProvider(console)
             register_provider(approval_provider)
+
+        # Process runtime @mentions in user input
+        await _process_runtime_mentions(session, prompt)
 
         if verbose:
             console.print(f"[dim]Executing: {prompt}[/dim]")
@@ -2163,6 +2312,10 @@ async def interactive_chat_with_session(
                     if action == "prompt":
                         # Normal prompt execution
                         console.print("[dim]Processing...[/dim]")
+
+                        # Process runtime @mentions in user input
+                        await _process_runtime_mentions(session, data["text"])
+
                         response = await session.execute(data["text"])
                         console.print("\n" + response)
 

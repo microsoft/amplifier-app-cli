@@ -14,6 +14,11 @@ session:
   context:
     module: context-simple
 
+providers:
+  - module: provider-anthropic
+    config:
+      debug: true
+
 task:
   max_recursion_depth: 1
 
@@ -38,18 +43,11 @@ agents:
     - ./agents
 ---
 
-# Development Profile
+{{parent_instruction}}
 
-A fully-featured development configuration with streaming UI, extended thinking capabilities, and specialized agents for common development tasks.
+Additional context for development:
+- @DISCOVERIES.md
+- @ai_context/KERNEL_PHILOSOPHY.md
+- @ai_context/IMPLEMENTATION_PHILOSOPHY.md
 
-**When to use**: Primary profile for development work with full access to web, search, and task delegation capabilities.
-
-**Extends**: base (inherits filesystem, bash, redaction, and logging)
-
-**Key features**:
-- Streaming orchestrator with extended thinking blocks enabled for Claude Sonnet 4.5
-- Web browsing and search tools for research
-- Task delegation tool with configurable recursion depth
-- Streaming UI hook for real-time display of thinking and tool output
-- Three specialized agents: zen-architect, bug-hunter, and researcher
-- UI configuration to show thinking stream and up to 5 lines of tool output
+You have web, search, and task delegation tools. Use extended thinking for complex analysis. You can delegate to specialized agents (zen-architect, bug-hunter, researcher) for focused tasks.

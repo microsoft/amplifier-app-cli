@@ -39,17 +39,9 @@ hooks:
       session_log_template: ~/.amplifier/projects/{project}/sessions/{session_id}/events.jsonl
 ---
 
-# Base Profile
+{{parent_instruction}}
 
-The standard starting point for most Amplifier configurations. Extends foundation with essential tools and hooks that provide sensible defaults for development and production use.
+Project context:
+- @AGENTS.md
 
-**When to use**: As the parent profile for most custom configurations. Provides the minimum viable feature set for practical use.
-
-**Extends**: foundation
-
-**Key features**:
-- Essential filesystem and bash tools for basic operations
-- Redaction hook for security
-- Logging hook for observability
-- Session management with 100K token limit and auto-compaction at 80% threshold
-- Infrastructure IDs (session_id, turn_id, etc.) are allowlisted from redaction
+You have access to filesystem and bash tools. Follow project conventions and coding standards.

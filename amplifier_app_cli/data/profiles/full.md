@@ -72,20 +72,10 @@ hooks:
       batch_size: 10
 ---
 
-# Full Profile
+{{parent_instruction}}
 
-Kitchen sink configuration with all available modules for comprehensive testing and maximum capabilities.
+Full capability context:
+- @DISCOVERIES.md
+- @ai_context/KERNEL_PHILOSOPHY.md
 
-**When to use**: For testing all features, demonstrating full capabilities, or when you need every available tool and hook.
-
-**Extends**: base (inherits filesystem, bash, redaction, and logging)
-
-**Key features**:
-- Multiple providers: OpenAI, Azure OpenAI, and Ollama (in addition to Anthropic from base)
-- All available tools: web, search, and task delegation
-- Maximum token capacity (200K) with persistent context
-- Approval hook for dangerous operations (rm -rf, sudo, DELETE, DROP)
-- Backup hook for automatic state preservation
-- Cost-aware scheduler to manage API spending ($10 budget with 80% warning)
-- Heuristic scheduler for performance optimization (5 concurrent operations, batch size 10)
-- Loads all agents from ./agents directory for task delegation
+You have access to all tools, multiple providers, and all agents. Use extended thinking and persistent context for complex tasks. Dangerous operations require approval.
