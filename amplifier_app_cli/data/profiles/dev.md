@@ -16,6 +16,7 @@ session:
 
 providers:
   - module: provider-anthropic
+    source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
     config:
       debug: true
 
