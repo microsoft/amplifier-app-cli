@@ -39,6 +39,11 @@ agents:
         instruction: "You are a test agent. Respond with 'Test successful' to any query."
 ---
 
-{{parent_instruction}}
+@shared/common-agent-base.md
 
-Test mode: You are running with a mock provider for testing. Respond clearly and predictably to test scenarios.
+Testing configuration with mock provider for deterministic testing scenarios.
+
+Project context:
+- @AGENTS.md
+
+You are running with a mock provider for predictable, offline testing. Respond clearly and deterministically to test scenarios. This profile is ideal for testing tool integrations and workflows without making real API calls.

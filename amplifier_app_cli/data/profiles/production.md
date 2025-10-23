@@ -32,9 +32,10 @@ agents:
     - researcher
 ---
 
-{{parent_instruction}}
+@shared/common-agent-base.md
 
 Production context:
+- @AGENTS.md
 - @DISCOVERIES.md
 
-You are operating in production mode. Prioritize reliability and careful operation. Use extended thinking for critical decisions.
+Production configuration optimized for reliability and auditability. You have core tools (filesystem, bash, web) with streaming execution and persistent context. Extended thinking is enabled for critical decisions. Only the researcher agent is available for focused analysis. Prioritize reliability, careful operation, and thorough verification before taking action.

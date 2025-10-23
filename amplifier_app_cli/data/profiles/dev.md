@@ -43,11 +43,12 @@ agents:
     - ./agents
 ---
 
-{{parent_instruction}}
+@shared/common-agent-base.md
 
-Additional context for development:
+Development context:
+- @AGENTS.md
 - @DISCOVERIES.md
 - @ai_context/KERNEL_PHILOSOPHY.md
 - @ai_context/IMPLEMENTATION_PHILOSOPHY.md
 
-You have web, search, and task delegation tools. Use extended thinking for complex analysis. You can delegate to specialized agents (zen-architect, bug-hunter, researcher) for focused tasks.
+Development configuration with extended capabilities. You have web, search, and task delegation tools. Use extended thinking for complex analysis. Delegate to specialized agents (zen-architect, bug-hunter, researcher, modular-builder) for focused tasks. Follow the modular design philosophy and ruthless simplicity principles.

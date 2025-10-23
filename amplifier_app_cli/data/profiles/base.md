@@ -39,9 +39,9 @@ hooks:
       session_log_template: ~/.amplifier/projects/{project}/sessions/{session_id}/events.jsonl
 ---
 
-{{parent_instruction}}
+@shared/common-agent-base.md
 
 Project context:
 - @AGENTS.md
 
-You have access to filesystem and bash tools. Follow project conventions and coding standards.
+Base configuration provides core development tools (filesystem, bash) and essential hooks (logging, redaction). Follow project conventions and coding standards.
