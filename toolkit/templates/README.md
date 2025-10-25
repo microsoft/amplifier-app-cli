@@ -1,261 +1,132 @@
-# Amplifier Toolkit Templates
+# Toolkit Templates
 
-## Quick Start
+## Philosophy: Use Mechanisms, Don't Wrap Them
 
-1. **Copy the template:**
+These templates demonstrate the correct pattern for building amplifier-dev CLI tools that use AI.
 
-   ```bash
-   cp toolkit/templates/cli_tool_template.py scripts/my_tool.py
-   ```
+**Core Principle**: Always use amplifier-core directly - never wrap `AmplifierSession`.
 
-2. **Update the module contract:**
-
-   - Define purpose (ONE clear responsibility)
-   - Specify inputs and outputs
-   - Document side effects
-   - List dependencies
-
-3. **Implement processing logic:**
-
-   - Fill in the `_process_single_item()` function
-   - Use toolkit utilities for common operations
-   - Follow the fail-gracefully principle
-
-4. **Test your tool:**
-   ```bash
-   python scripts/my_tool.py test_data/ -o results.json
-   ```
-
-## Template Structure
-
-The template provides a standard structure with:
-
-- **Module Contract**: Clear specification of what the tool does
-- **Data Models**: Standard result format using dataclasses
-- **Core Processing**: Main logic with error handling
-- **CLI Interface**: Consistent argument parsing and logging
-- **Progress Reporting**: Built-in progress tracking
-- **Incremental Saving**: Results saved periodically
-
-## Best Practices Checklist
-
-### Functionality
-
-- [ ] Single, clear purpose (do one thing well)
-- [ ] Recursive file discovery (`**/pattern` not `*.pattern`)
-- [ ] Input validation before processing
-- [ ] Progress visibility during execution
-- [ ] Incremental saving (save after each item or batch)
-
-### Robustness
-
-- [ ] Handles missing/invalid files gracefully
-- [ ] Continues processing on failures (partial > nothing)
-- [ ] Collects and reports all errors
-- [ ] Returns partial results when possible
-- [ ] Uses retry logic for I/O operations
-
-### Code Quality
-
-- [ ] Follows ruthless simplicity principle
-- [ ] Clear public interface (`__all__` exports)
-- [ ] Complete contract specification
-- [ ] Uses toolkit utilities (don't reinvent)
-- [ ] Meaningful error messages
-
-## Using Toolkit Utilities
-
-The toolkit provides tested utilities for common operations:
-
-### File Operations
+## The Correct Pattern
 
 ```python
-from toolkit.utilities import discover_files, read_json, write_json
+from amplifier_core import AmplifierSession
+from amplifier_app_cli.profile_system import ProfileManager
+from amplifier_app_cli.toolkit import discover_files, ProgressReporter
 
-# Discover files recursively
-files = discover_files(Path("docs"), "**/*.md")
+async def my_tool(input_dir: Path):
+    # 1. App-layer: Load profile to get mount plan
+    manager = ProfileManager()
+    mount_plan = manager.get_profile_as_mount_plan("dev")
 
-# Read/write JSON with retry logic (handles cloud sync)
-data = read_json(Path("config.json"))
-write_json(results, Path("output.json"))
+    # 2. Kernel: Create session (use directly - no wrapper!)
+    async with AmplifierSession(config=mount_plan) as session:
+        # 3. Toolkit: Use utilities for structure
+        files = discover_files(input_dir, "**/*.md")
+        progress = ProgressReporter(len(files), "Processing")
+
+        # 4. Amplifier-core: Use for ALL intelligence
+        for file in files:
+            # Amplifier-core handles everything:
+            # - Provider selection (from profile)
+            # - Retries and error handling
+            # - Response parsing
+            # - Streaming and progress
+            # - Hooks (logging, approval, redaction)
+            response = await session.execute(f"Analyze: {file.read_text()}")
+
+            # Response is clean - no parsing needed
+            save_result(file, response)
+            progress.update()
 ```
 
-### Progress Reporting
+## Using the Template
 
-```python
-from toolkit.utilities import ProgressReporter
-
-# Track progress with automatic logging
-progress = ProgressReporter(len(items), "Processing items")
-for item in items:
-    process(item)
-    progress.update(item.name)
-progress.complete()
-```
-
-### Validation
-
-```python
-from toolkit.utilities import (
-    validate_input_path,
-    validate_minimum_files,
-    validate_output_path
-)
-
-# Validate inputs with clear errors
-validate_input_path(input_path, must_be_dir=True)
-validate_minimum_files(files, minimum=2, file_type="profiles")
-validate_output_path(output_path)
-```
-
-## Philosophy Alignment
-
-Tools built with this toolkit follow amplifier philosophy:
-
-### Mechanism not Policy
-
-Tools provide capabilities, users decide how to use them. Don't bake in assumptions about workflows.
-
-### Ruthless Simplicity
-
-- Minimal abstractions
-- Direct implementations
-- Clear failure modes
-- No unnecessary complexity
-
-### Modular Design
-
-- Clear contracts (inputs/outputs/side-effects)
-- Self-contained functionality
-- Regeneratable from specification
-- No hidden dependencies
-
-### Fail Gracefully
-
-- Partial results > complete failure
-- Continue on errors when sensible
-- Report what worked and what didn't
-- Save progress incrementally
-
-## Common Patterns
-
-### Pattern 1: Batch Processing
-
-```python
-def process(input_dir, output_path):
-    files = discover_files(Path(input_dir), "**/*.md")
-    validate_minimum_files(files, 1)
-
-    results = []
-    errors = []
-    progress = ProgressReporter(len(files), "Processing")
-
-    for file in files:
-        try:
-            result = process_file(file)
-            results.append(result)
-        except Exception as e:
-            errors.append({"file": str(file), "error": str(e)})
-        progress.update(file.name)
-
-        # Save incrementally
-        if len(results) % 10 == 0:
-            write_json({"results": results, "errors": errors}, output_path)
-
-    progress.complete()
-    return ToolResult(
-        status="partial" if errors else "success",
-        data=results,
-        errors=errors
-    )
-```
-
-### Pattern 2: Validation Pipeline
-
-```python
-def validate_profiles(profiles_dir):
-    # Stage 1: Discovery
-    files = discover_files(Path(profiles_dir), "**/*.yaml")
-
-    # Stage 2: Validation
-    validation_results = []
-    for file in files:
-        try:
-            data = read_yaml(file)  # You implement read_yaml
-            validate_json_structure(data, ["name", "version"])
-            validation_results.append({"file": str(file), "valid": True})
-        except Exception as e:
-            validation_results.append({
-                "file": str(file),
-                "valid": False,
-                "error": str(e)
-            })
-
-    # Stage 3: Summary
-    valid_count = sum(1 for r in validation_results if r["valid"])
-    return ToolResult(
-        status="success" if valid_count == len(files) else "partial",
-        data=validation_results,
-        metadata={"valid": valid_count, "total": len(files)}
-    )
-```
-
-## Example Tools
-
-Here are examples of tools built with this toolkit:
-
-### Profile Validator
-
-Validates YAML configuration profiles:
+### 1. Copy the Template
 
 ```bash
-python scripts/validate_profiles.py profiles/ -o validation.json
+cp amplifier-app-cli/toolkit/templates/cli_tool_template.py my_tool.py
 ```
 
-### Module Smoke Test
+### 2. Customize for Your Use Case
 
-Tests all modules in a directory:
+The template has clear sections:
+
+**A. Update the prompt**:
+```python
+async def analyze_file(file: Path, session: AmplifierSession) -> dict:
+    # Change this prompt for your use case
+    prompt = f"YOUR CUSTOM PROMPT: Analyze {file.name}"
+
+    response = await session.execute(prompt)
+    return {"file": str(file), "result": response}
+```
+
+**B. Modify state structure** (if needed):
+```python
+STATE_FILE = ".my_tool_state.json"
+
+def save_state(data: dict):
+    # Customize for your tool
+    Path(STATE_FILE).write_text(json.dumps(data, indent=2))
+```
+
+### 3. Run Your Tool
 
 ```bash
-python scripts/test_modules.py modules/ -o test_results.json
+python my_tool.py ./input_directory
 ```
 
-### Dependency Checker
+## What NOT to Do
 
-Checks for missing or outdated dependencies:
+### ❌ Don't Wrap AmplifierSession
 
-```bash
-python scripts/check_deps.py . -p "**/pyproject.toml" -o deps.json
+**WRONG**:
+```python
+class Helper:
+    def __init__(self, profile: str):
+        self.session = AmplifierSession(...)  # Violation!
 ```
 
-## Troubleshooting
+**RIGHT**:
+```python
+mount_plan = ProfileManager().get_profile_as_mount_plan("dev")
+async with AmplifierSession(config=mount_plan) as session:
+    response = await session.execute(prompt)
+```
 
-### Common Issues
+### ❌ Don't Create State Frameworks
 
-**No files found:**
+**WRONG**:
+```python
+class StateManager:
+    """Don't generalize!"""
+```
 
-- Check your pattern uses `**` for recursion
-- Verify the input path exists
-- Try with `-v` flag for verbose logging
+**RIGHT**:
+```python
+# Each tool owns simple state
+STATE_FILE = ".tool_state.json"
 
-**I/O errors with cloud sync:**
+def save_state(data: dict):
+    Path(STATE_FILE).write_text(json.dumps(data))
+```
 
-- Toolkit handles retries automatically
-- Enable "Always keep on this device" for OneDrive/Dropbox folders
-- Check file permissions
+### ❌ Don't Bypass Amplifier-Core
 
-**Tool runs slowly:**
+**WRONG**:
+```python
+import anthropic
+response = anthropic.Client().messages.create(...)  # Violation!
+```
 
-- Process fewer items with `-m/--max-items`
-- Save results less frequently (modify template)
-- Use parallel processing if appropriate (advanced)
+**RIGHT**:
+```python
+# ALL LLM via amplifier-core
+response = await session.execute(prompt)
+```
 
-## Next Steps
+## Philosophy References
 
-1. Copy the template
-2. Define your tool's contract
-3. Implement the core logic
-4. Test with real data
-5. Iterate based on usage
-
-Remember: Start simple, make it work, then optimize if needed.
+- **Kernel Philosophy** (@docs/context/KERNEL_PHILOSOPHY.md) - Use mechanisms directly
+- **Implementation Philosophy** (@docs/context/IMPLEMENTATION_PHILOSOPHY.md) - Ruthless simplicity
+- **Modular Design** (@docs/context/MODULAR_DESIGN_PHILOSOPHY.md) - Clear bricks & studs
