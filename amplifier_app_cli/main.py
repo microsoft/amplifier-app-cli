@@ -1641,8 +1641,9 @@ def list_modules(type: str):
 
     from amplifier_core.loader import ModuleLoader
 
+    from .data.profiles import get_system_default_profile
     from .module_resolution import StandardModuleSourceResolver
-    from .settings import SettingsManager
+    from .profile_system import ProfileManager
 
     # Get installed modules
     loader = ModuleLoader()
@@ -1679,37 +1680,46 @@ def list_modules(type: str):
     else:
         console.print("[dim]No installed modules found[/dim]")
 
-    # Get active profile modules
-    settings = SettingsManager()
-    active_profile = settings.get_active_profile()
+    # Get active profile with proper fallback chain
+    # Priority: explicit active → project default → system default
+    manager = ProfileManager()
+    active_profile = manager.get_active_profile() or get_system_default_profile()
 
-    if active_profile:
-        profile_modules = _get_profile_modules(active_profile)
-
-        if profile_modules:
-            # Filter by type
-            filtered = [m for m in profile_modules if type == "all" or m["type"] == type]
-
-            if filtered:
-                console.print()  # Blank line between sections
-                table = Table(
-                    title=f"Profile Modules (from profile '{active_profile}')", show_header=True, header_style="bold green"
-                )
-                table.add_column("Name", style="green")
-                table.add_column("Type", style="yellow")
-                table.add_column("Source", style="magenta")
-
-                for mod in filtered:
-                    source_str = str(mod["source"])
-                    # Truncate long git URLs for display
-                    if len(source_str) > 60:
-                        source_str = source_str[:57] + "..."
-
-                    table.add_row(mod["id"], mod["type"], source_str)
-
-                console.print(table)
+    # Determine profile source for display
+    profile_source, source_type = manager.get_profile_source()
+    if source_type == "local":
+        source_label = "active"
+    elif source_type == "default":
+        source_label = "project default"
     else:
-        console.print("\n[dim]No active profile set (use 'amplifier profile use <name>')[/dim]")
+        source_label = "system default"
+
+    profile_modules = _get_profile_modules(active_profile)
+
+    if profile_modules:
+        # Filter by type
+        filtered = [m for m in profile_modules if type == "all" or m["type"] == type]
+
+        if filtered:
+            console.print()  # Blank line between sections
+            table = Table(
+                title=f"Profile Modules (from profile '{active_profile}' ({source_label}))",
+                show_header=True,
+                header_style="bold green",
+            )
+            table.add_column("Name", style="green")
+            table.add_column("Type", style="yellow")
+            table.add_column("Source", style="magenta")
+
+            for mod in filtered:
+                source_str = str(mod["source"])
+                # Truncate long git URLs for display
+                if len(source_str) > 60:
+                    source_str = source_str[:57] + "..."
+
+                table.add_row(mod["id"], mod["type"], source_str)
+
+            console.print(table)
 
 
 @module.command("show")
@@ -1720,27 +1730,38 @@ def module_show(module_name: str):
 
     from amplifier_core.loader import ModuleLoader
 
-    from .settings import SettingsManager
+    from .data.profiles import get_system_default_profile
+    from .profile_system import ProfileManager
+
+    # Get active profile with proper fallback chain
+    manager = ProfileManager()
+    active_profile = manager.get_active_profile() or get_system_default_profile()
 
     # Check profile modules first
-    settings = SettingsManager()
-    active_profile = settings.get_active_profile()
-
+    profile_modules = _get_profile_modules(active_profile)
     found_in_profile = None
-    if active_profile:
-        profile_modules = _get_profile_modules(active_profile)
-        for mod in profile_modules:
-            if mod["id"] == module_name:
-                found_in_profile = mod
-                break
+    for mod in profile_modules:
+        if mod["id"] == module_name:
+            found_in_profile = mod
+            break
 
     if found_in_profile:
         # Display profile module info
         source_str = str(found_in_profile["source"])
+
+        # Determine profile source for display
+        profile_source, source_type = manager.get_profile_source()
+        if source_type == "local":
+            origin_label = f"Profile '{active_profile}' (active)"
+        elif source_type == "default":
+            origin_label = f"Profile '{active_profile}' (project default)"
+        else:
+            origin_label = f"Profile '{active_profile}' (system default)"
+
         panel_content = f"""[bold]Name:[/bold] {found_in_profile['id']}
 [bold]Type:[/bold] {found_in_profile['type']}
 [bold]Source:[/bold] {source_str}
-[bold]Origin:[/bold] Profile '{active_profile}'
+[bold]Origin:[/bold] {origin_label}
 [bold]Status:[/bold] Configured (loaded at runtime)"""
 
         console.print(Panel(panel_content, title=f"Module: {module_name}", border_style="green"))
@@ -1759,10 +1780,7 @@ def module_show(module_name: str):
 
     if not found_module:
         console.print(f"[red]Module '{module_name}' not found[/red]")
-        if active_profile:
-            console.print(f"[dim]Checked profile '{active_profile}' and installed packages[/dim]")
-        else:
-            console.print("[dim]No active profile set. Checked installed packages only.[/dim]")
+        console.print(f"[dim]Checked profile '{active_profile}' and installed packages[/dim]")
         sys.exit(1)
 
     # Display installed module info
