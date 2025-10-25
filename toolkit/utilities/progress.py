@@ -14,15 +14,24 @@ logger = logging.getLogger(__name__)
 class ProgressReporter:
     """Simple progress reporter for CLI tools.
 
+    Structural utility for user feedback - does NOT involve LLM.
+    Use with AmplifierSession for AI operations.
+
     Provides consistent progress reporting that works well in both
     interactive terminals and logged output.
 
     Example:
-        >>> progress = ProgressReporter(100, "Processing files")
-        >>> for i, item in enumerate(items):
-        >>>     process(item)
-        >>>     progress.update(item.name)
-        >>> progress.complete()
+        >>> from amplifier_core import AmplifierSession
+        >>> from amplifier_app_cli.profile_system import ProfileManager
+        >>> mount_plan = ProfileManager().get_profile_as_mount_plan("dev")
+        >>>
+        >>> async with AmplifierSession(config=mount_plan) as session:
+        ...     progress = ProgressReporter(len(files), "Analyzing")
+        ...     for file in files:
+        ...         response = await session.execute(f"Analyze: {file.read_text()}")
+        ...         save_result(file, response)
+        ...         progress.update()
+        ...     progress.complete()
     """
 
     def __init__(
@@ -145,6 +154,9 @@ class ProgressReporter:
 
 class SimpleSpinner:
     """Simple activity indicator for operations without known total.
+
+    Structural utility for unknown-length operations - does NOT involve LLM.
+    Use when you don't know how many items will be processed.
 
     Useful for operations where you don't know how many items
     there will be (e.g., streaming results).

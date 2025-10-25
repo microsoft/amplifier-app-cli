@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 def discover_files(base_path: Path, pattern: str = "**/*.md", max_items: int | None = None) -> list[Path]:
     """Discover files recursively with pattern.
 
+    Structural utility for file discovery - does NOT involve LLM.
+    Use with AmplifierSession for AI operations on discovered files.
+
     Always uses recursive patterns (with **) to ensure complete discovery.
     This prevents common mistakes with non-recursive patterns.
 
@@ -29,8 +32,17 @@ def discover_files(base_path: Path, pattern: str = "**/*.md", max_items: int | N
         List of matching file paths, sorted for consistency
 
     Example:
+        >>> # Structural: discover files
         >>> files = discover_files(Path("docs"), "**/*.md")
         >>> print(f"Found {len(files)} markdown files")
+        >>>
+        >>> # AI operations: use AmplifierSession
+        >>> from amplifier_core import AmplifierSession
+        >>> from amplifier_app_cli.profile_system import ProfileManager
+        >>> mount_plan = ProfileManager().get_profile_as_mount_plan("dev")
+        >>> async with AmplifierSession(config=mount_plan) as session:
+        ...     for file in files:
+        ...         response = await session.execute(f"Analyze: {file.read_text()}")
     """
     if base_path.is_file():
         return [base_path]
@@ -61,6 +73,9 @@ def write_json(
     max_retries: int = 3,
 ) -> None:
     """Write JSON with error handling and retry logic.
+
+    Structural utility for JSON persistence - does NOT involve LLM.
+    Use for saving results after AmplifierSession processing.
 
     Handles cloud-synced folders (OneDrive, Dropbox) and network drives
     that may have transient I/O errors. Uses atomic writes to prevent
@@ -125,6 +140,9 @@ def write_json(
 
 def read_json(path: Path, max_retries: int = 3) -> dict | list:
     """Read and parse JSON file with retry logic.
+
+    Structural utility for JSON loading - does NOT involve LLM.
+    Use for loading data/config before AmplifierSession processing.
 
     Handles cloud-synced folders and network drives that may
     have transient I/O errors when files aren't immediately available.
@@ -265,6 +283,9 @@ def safe_write_text(content: str, path: Path, encoding: str = "utf-8", max_retri
 
 def append_jsonl(record: dict, path: Path, max_retries: int = 3) -> None:
     """Append a record to a JSONL (JSON Lines) file.
+
+    Structural utility for incremental logging - does NOT involve LLM.
+    Use for saving processing checkpoints during AmplifierSession work.
 
     Each record is written as a single line of JSON.
     Useful for streaming logs or incremental results.

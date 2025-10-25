@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 def validate_input_path(path: Path, must_exist: bool = True, must_be_dir: bool = False) -> bool:
     """Validate input path with specific requirements.
 
+    Structural utility - input validation before processing.
+    Use before creating expensive AmplifierSession.
+
     Args:
         path: Path to validate
         must_exist: Whether the path must exist
@@ -45,6 +48,9 @@ def validate_input_path(path: Path, must_exist: bool = True, must_be_dir: bool =
 
 def validate_output_path(path: Path, allow_overwrite: bool = True) -> bool:
     """Validate output path can be created or overwritten.
+
+    Structural utility - pre-processing validation.
+    Use before creating expensive AmplifierSession.
 
     Args:
         path: Output path to validate
@@ -83,6 +89,9 @@ def validate_output_path(path: Path, allow_overwrite: bool = True) -> bool:
 
 def validate_minimum_files(files: list, minimum: int, file_type: str = "files") -> bool:
     """Validate minimum number of files found.
+
+    Structural utility - input validation before processing.
+    Use before creating expensive AmplifierSession.
 
     Args:
         files: List of files found
