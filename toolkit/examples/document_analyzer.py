@@ -109,7 +109,7 @@ async def main(
     validate_input_path(input_dir, must_exist=True, must_be_dir=True)
 
     files = discover_files(input_dir, pattern)
-    require_minimum_files(files, minimum=1, context="document analysis")
+    require_minimum_files(files, minimum=1, file_type="markdown files")
 
     logger.info(f"Found {len(files)} files to analyze")
     for i, file in enumerate(files[:5], 1):

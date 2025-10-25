@@ -161,7 +161,7 @@ async def process(input_dir: str, profile: str = "dev", pattern: str = "**/*.md"
     files = discover_files(input_path, pattern)
 
     # Validate minimum files required for processing
-    require_minimum_files(files, minimum=1, context="processing requires at least one file")
+    require_minimum_files(files, minimum=1, file_type="files")
 
     logger.info(f"Found {len(files)} files to process")
     # Show preview of files (first 5)
