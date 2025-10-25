@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 
 [[package]]
@@ -21,7 +21,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "amplifier-core", editable = "../amplifier-core" },
+    { name = "amplifier-core", git = "https://github.com/microsoft/amplifier-core?branch=main" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
@@ -34,24 +34,13 @@ dev = [{ name = "pytest", specifier = ">=8.4.2" }]
 [[package]]
 name = "amplifier-core"
 version = "1.0.0"
-source = { editable = "../amplifier-core" }
+source = { git = "https://github.com/microsoft/amplifier-core?branch=main#57e8fab26699fecbd0e3eabbfcb5c90bae216f19" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "tomli" },
     { name = "typing-extensions" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "tomli", specifier = ">=2.0" },
-    { name = "typing-extensions", specifier = ">=4.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.4.2" }]
 
 [[package]]
 name = "annotated-types"
