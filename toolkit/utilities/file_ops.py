@@ -14,7 +14,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def discover_files(base_path: Path, pattern: str = "**/*.md", max_items: int | None = None) -> list[Path]:
+def discover_files(base_path: Path | str, pattern: str = "**/*.md", max_items: int | None = None) -> list[Path]:
     """Discover files recursively with pattern.
 
     Structural utility for file discovery - does NOT involve LLM.
@@ -24,7 +24,7 @@ def discover_files(base_path: Path, pattern: str = "**/*.md", max_items: int | N
     This prevents common mistakes with non-recursive patterns.
 
     Args:
-        base_path: Directory to search (or single file)
+        base_path: Directory to search (or single file). Accepts str or Path.
         pattern: Glob pattern (should use ** for recursion)
         max_items: Optional limit on number of files
 
@@ -32,7 +32,8 @@ def discover_files(base_path: Path, pattern: str = "**/*.md", max_items: int | N
         List of matching file paths, sorted for consistency
 
     Example:
-        >>> # Structural: discover files
+        >>> # Structural: discover files (accepts str or Path)
+        >>> files = discover_files("docs", "**/*.md")
         >>> files = discover_files(Path("docs"), "**/*.md")
         >>> print(f"Found {len(files)} markdown files")
         >>>
@@ -44,6 +45,8 @@ def discover_files(base_path: Path, pattern: str = "**/*.md", max_items: int | N
         ...     for file in files:
         ...         response = await session.execute(f"Analyze: {file.read_text()}")
     """
+    base_path = Path(base_path) if isinstance(base_path, str) else base_path
+
     if base_path.is_file():
         return [base_path]
 
