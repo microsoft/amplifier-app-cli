@@ -11,15 +11,24 @@ Demonstrates:
 - Graceful error handling
 """
 
+import sys
+from pathlib import Path
+
+# Add amplifier-app-cli to path for direct execution
+# This allows running: python amplifier-app-cli/toolkit/examples/document_analyzer.py
+script_dir = Path(__file__).parent.absolute()
+amplifier_app_cli_root = script_dir.parent.parent  # Go up to amplifier-app-cli root
+if str(amplifier_app_cli_root) not in sys.path:
+    sys.path.insert(0, str(amplifier_app_cli_root))
+
 import asyncio
 import json
 import logging
 from datetime import datetime
-from pathlib import Path
 
 from amplifier_core import AmplifierSession
 from amplifier_app_cli.profile_system import ProfileLoader, compile_profile_to_mount_plan
-from amplifier_app_cli.toolkit import (
+from toolkit import (
     discover_files,
     ProgressReporter,
     require_minimum_files,

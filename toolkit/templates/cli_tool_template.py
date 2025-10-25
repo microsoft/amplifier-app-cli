@@ -19,18 +19,29 @@ This template shows:
 6. Graceful error handling (continue processing on failures)
 """
 
+import sys
+from pathlib import Path
+
+# Add amplifier-app-cli to path for direct execution
+# This allows running copied tools from anywhere: python my_tool.py input/
+script_dir = Path(__file__).parent.absolute()
+# For tools copied from template, this finds amplifier-app-cli in the expected location
+# Adjust this path if you move the template or run from a different structure
+amplifier_app_cli_root = script_dir.parent if (script_dir.parent / "amplifier_app_cli").exists() else script_dir.parent.parent
+if str(amplifier_app_cli_root) not in sys.path:
+    sys.path.insert(0, str(amplifier_app_cli_root))
+
 import asyncio
 import json
 import logging
 from datetime import datetime
-from pathlib import Path
 
 # Kernel mechanism - use directly (no wrapper!)
 from amplifier_core import AmplifierSession
 
 # App-layer utilities
 from amplifier_app_cli.profile_system import ProfileLoader, compile_profile_to_mount_plan
-from amplifier_app_cli.toolkit import (
+from toolkit import (
     discover_files,
     ProgressReporter,
     require_minimum_files,

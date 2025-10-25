@@ -11,7 +11,7 @@ These templates demonstrate the correct pattern for building amplifier-dev CLI t
 ```python
 from amplifier_core import AmplifierSession
 from amplifier_app_cli.profile_system import ProfileManager
-from amplifier_app_cli.toolkit import discover_files, ProgressReporter
+from toolkit import discover_files, ProgressReporter
 
 async def my_tool(input_dir: Path):
     # 1. App-layer: Load profile to get mount plan
