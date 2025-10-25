@@ -1556,6 +1556,68 @@ async def execute_single(
         await session.cleanup()
 
 
+def _get_profile_modules(profile_name: str) -> list[dict[str, Any]]:
+    """Extract modules from a profile.
+
+    Args:
+        profile_name: Profile name to load
+
+    Returns:
+        List of module dicts with: id, type, source, description
+    """
+    from .profile_system import ProfileLoader
+
+    try:
+        loader = ProfileLoader()
+        profile = loader.load_profile(profile_name)
+
+        modules = []
+
+        # Extract providers
+        for provider in profile.providers:
+            modules.append(
+                {
+                    "id": provider.module,
+                    "type": "provider",
+                    "source": provider.source or "unknown",
+                    "description": "",
+                }
+            )
+
+        # Extract tools
+        for tool in profile.tools:
+            modules.append({"id": tool.module, "type": "tool", "source": tool.source or "unknown", "description": ""})
+
+        # Extract hooks
+        for hook in profile.hooks:
+            modules.append({"id": hook.module, "type": "hook", "source": hook.source or "unknown", "description": ""})
+
+        # Extract session modules
+        modules.append(
+            {
+                "id": profile.session.orchestrator.module,
+                "type": "orchestrator",
+                "source": profile.session.orchestrator.source or "unknown",
+                "description": "",
+            }
+        )
+
+        modules.append(
+            {
+                "id": profile.session.context.module,
+                "type": "context",
+                "source": profile.session.context.source or "unknown",
+                "description": "",
+            }
+        )
+
+        return modules
+
+    except Exception as e:
+        logger.warning(f"Failed to load profile modules from '{profile_name}': {e}")
+        return []
+
+
 @cli.group(invoke_without_command=True)
 @click.pass_context
 def module(ctx):
@@ -1574,49 +1636,80 @@ def module(ctx):
     help="Module type to list",
 )
 def list_modules(type: str):
-    """List installed modules with sources and origins."""
+    """List installed and profile modules."""
     import asyncio
 
     from amplifier_core.loader import ModuleLoader
 
     from .module_resolution import StandardModuleSourceResolver
+    from .settings import SettingsManager
 
-    # Create a loader to discover modules
+    # Get installed modules
     loader = ModuleLoader()
-
-    # Get all discovered modules
     modules_info = asyncio.run(loader.discover())
-
-    # Create resolver to get sources
     resolver = StandardModuleSourceResolver()
 
-    # Create display table
-    table = Table(title="Installed Modules", show_header=True, header_style="bold cyan")
-    table.add_column("Name", style="green")
-    table.add_column("Type", style="yellow")
-    table.add_column("Source", style="magenta")
-    table.add_column("Origin", style="cyan")
-    table.add_column("Description")
+    # Display installed modules
+    if modules_info:
+        table = Table(title="Installed Modules (via entry points)", show_header=True, header_style="bold cyan")
+        table.add_column("Name", style="green")
+        table.add_column("Type", style="yellow")
+        table.add_column("Source", style="magenta")
+        table.add_column("Origin", style="cyan")
+        table.add_column("Description")
 
-    # Filter and display modules
-    for module_info in modules_info:
-        if type != "all" and type != module_info.type:
-            continue
+        for module_info in modules_info:
+            if type != "all" and type != module_info.type:
+                continue
 
-        # Try to resolve source and origin
-        try:
-            source_obj, origin = resolver.resolve_with_layer(module_info.id)
-            source_str = str(source_obj)
-            # Truncate long sources
-            if len(source_str) > 40:
-                source_str = source_str[:37] + "..."
-        except Exception:
-            source_str = "unknown"
-            origin = "unknown"
+            # Try to resolve source and origin
+            try:
+                source_obj, origin = resolver.resolve_with_layer(module_info.id)
+                source_str = str(source_obj)
+                # Truncate long sources
+                if len(source_str) > 40:
+                    source_str = source_str[:37] + "..."
+            except Exception:
+                source_str = "unknown"
+                origin = "unknown"
 
-        table.add_row(module_info.id, module_info.type, source_str, origin, module_info.description)
+            table.add_row(module_info.id, module_info.type, source_str, origin, module_info.description)
 
-    console.print(table)
+        console.print(table)
+    else:
+        console.print("[dim]No installed modules found[/dim]")
+
+    # Get active profile modules
+    settings = SettingsManager()
+    active_profile = settings.get_active_profile()
+
+    if active_profile:
+        profile_modules = _get_profile_modules(active_profile)
+
+        if profile_modules:
+            # Filter by type
+            filtered = [m for m in profile_modules if type == "all" or m["type"] == type]
+
+            if filtered:
+                console.print()  # Blank line between sections
+                table = Table(
+                    title=f"Profile Modules (from profile '{active_profile}')", show_header=True, header_style="bold green"
+                )
+                table.add_column("Name", style="green")
+                table.add_column("Type", style="yellow")
+                table.add_column("Source", style="magenta")
+
+                for mod in filtered:
+                    source_str = str(mod["source"])
+                    # Truncate long git URLs for display
+                    if len(source_str) > 60:
+                        source_str = source_str[:57] + "..."
+
+                    table.add_row(mod["id"], mod["type"], source_str)
+
+                console.print(table)
+    else:
+        console.print("\n[dim]No active profile set (use 'amplifier profile use <name>')[/dim]")
 
 
 @module.command("show")
@@ -1627,10 +1720,34 @@ def module_show(module_name: str):
 
     from amplifier_core.loader import ModuleLoader
 
-    # Create a loader to discover modules
-    loader = ModuleLoader()
+    from .settings import SettingsManager
 
-    # Get all discovered modules
+    # Check profile modules first
+    settings = SettingsManager()
+    active_profile = settings.get_active_profile()
+
+    found_in_profile = None
+    if active_profile:
+        profile_modules = _get_profile_modules(active_profile)
+        for mod in profile_modules:
+            if mod["id"] == module_name:
+                found_in_profile = mod
+                break
+
+    if found_in_profile:
+        # Display profile module info
+        source_str = str(found_in_profile["source"])
+        panel_content = f"""[bold]Name:[/bold] {found_in_profile['id']}
+[bold]Type:[/bold] {found_in_profile['type']}
+[bold]Source:[/bold] {source_str}
+[bold]Origin:[/bold] Profile '{active_profile}'
+[bold]Status:[/bold] Configured (loaded at runtime)"""
+
+        console.print(Panel(panel_content, title=f"Module: {module_name}", border_style="green"))
+        return
+
+    # Fall back to installed modules
+    loader = ModuleLoader()
     modules_info = asyncio.run(loader.discover())
 
     # Find the requested module
@@ -1642,14 +1759,19 @@ def module_show(module_name: str):
 
     if not found_module:
         console.print(f"[red]Module '{module_name}' not found[/red]")
+        if active_profile:
+            console.print(f"[dim]Checked profile '{active_profile}' and installed packages[/dim]")
+        else:
+            console.print("[dim]No active profile set. Checked installed packages only.[/dim]")
         sys.exit(1)
 
-    # Display module info
+    # Display installed module info
     panel_content = f"""[bold]Name:[/bold] {found_module.id}
 [bold]Type:[/bold] {found_module.type}
 [bold]Description:[/bold] {found_module.description}
 [bold]Mount Point:[/bold] {found_module.mount_point}
-[bold]Version:[/bold] {found_module.version}"""
+[bold]Version:[/bold] {found_module.version}
+[bold]Origin:[/bold] Installed (entry point)"""
 
     console.print(Panel(panel_content, title=f"Module: {module_name}", border_style="cyan"))
 
