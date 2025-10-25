@@ -1,259 +1,251 @@
 #!/usr/bin/env python3
 """
-CLI Tool Template for Amplifier Tools
+CLI Tool Template - Demonstrates Correct Amplifier-Dev Pattern
 
-This template provides a standard structure for building Amplifier-powered tools.
-Follows toolkit best practices and amplifier philosophy.
+CRITICAL: Always use amplifier-core for LLM interactions.
+Never wrap AmplifierSession - use it directly.
 
-To use:
-1. Copy this template to your scripts directory
-2. Update the MODULE CONTRACT section
-3. Implement the _process_single_item function
-4. Test with: python your_tool.py <input_path> -o results.json
+Pattern:
+- Code handles: loops, file I/O, state, coordination
+- Amplifier-core handles: LLM interactions via orchestrator
+- Toolkit utilities handle: file discovery, progress, validation
+
+This template shows:
+1. Profile loading via ProfileLoader + compile_profile_to_mount_plan
+2. AmplifierSession direct use (async context manager)
+3. Tool-specific state management (save/load functions)
+4. All toolkit utilities (discover_files, ProgressReporter, validation)
+5. Incremental saves after each operation
+6. Graceful error handling (continue processing on failures)
 """
 
-import argparse
+import asyncio
 import json
 import logging
-import sys
-from dataclasses import asdict
-from dataclasses import dataclass
-from dataclasses import field
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+
+# Kernel mechanism - use directly (no wrapper!)
+from amplifier_core import AmplifierSession
+
+# App-layer utilities
+from amplifier_app_cli.profile_system import ProfileLoader, compile_profile_to_mount_plan
+from amplifier_app_cli.toolkit import (
+    discover_files,
+    ProgressReporter,
+    require_minimum_files,
+    validate_input_path,
+)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 # ============================================================================
-# MODULE CONTRACT
+# STATE MANAGEMENT (Tool-Specific Pattern)
 # ============================================================================
-"""
-Module: [Tool Name]
-Purpose: [Single clear responsibility]
+# Fixed filename, overwrite pattern - enables resumability after interruption
 
-Inputs:
-  - input_path: Path to file or directory to process
-  - pattern: Glob pattern for file discovery (default: "**/*.md")
-  - output: Output file path (default: "results.json")
-
-Outputs:
-  - JSON file with processing results
-  - Status: "success", "partial", or "error"
-  - Data: Processing results
-  - Metadata: Errors, statistics, etc.
-
-Side Effects:
-  - Writes to output file incrementally
-  - [Any other side effects]
-
-Dependencies:
-  - [List any external dependencies]
-"""
-
-__all__ = ["process", "validate_input", "ToolResult"]
+STATE_FILE = ".tool_state.json"
 
 
-# ============================================================================
-# DATA MODELS
-# ============================================================================
+def save_state(processed: list[str], results: list[dict]) -> None:
+    """Save tool state for resumability (fixed filename, overwrite pattern).
 
-
-@dataclass
-class ToolResult:
-    """Standard result format for all tools."""
-
-    status: str  # "success", "partial", "error"
-    data: Any
-    metadata: dict = field(default_factory=dict)
-    errors: list = field(default_factory=list)
-
-    def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization."""
-        return asdict(self)
-
-
-# ============================================================================
-# CORE PROCESSING
-# ============================================================================
-
-
-def validate_input(input_path: Path) -> bool:
-    """Validate input before processing.
+    This function writes state after EVERY operation to ensure no data loss
+    if the process is interrupted.
 
     Args:
-        input_path: Path to validate
+        processed: List of items already processed (file paths as strings)
+        results: List of result dictionaries from processing
+    """
+    state = {"processed": processed, "results": results, "updated": datetime.now().isoformat()}
+    Path(STATE_FILE).write_text(json.dumps(state, indent=2))
+
+
+def load_state() -> tuple[list[str], list[dict]]:
+    """Load saved state if exists.
 
     Returns:
-        True if valid
-
-    Raises:
-        ValueError: If input is invalid
+        Tuple of (processed items, results) or ([], []) if no state file exists
     """
-    if not input_path.exists():
-        raise ValueError(f"Path does not exist: {input_path}")
+    if not Path(STATE_FILE).exists():
+        return [], []
 
-    # Add more validation as needed
-    return True
+    data = json.loads(Path(STATE_FILE).read_text())
+    return data.get("processed", []), data.get("results", [])
 
 
-def discover_files(base_path: Path, pattern: str = "**/*.md") -> list[Path]:
-    """Discover files recursively with pattern.
+# ============================================================================
+# CORE PROCESSING FUNCTIONS
+# ============================================================================
+
+
+async def analyze_file(file: Path, session: AmplifierSession) -> dict:
+    """
+    Analyze a single file using amplifier-core.
+
+    CRITICAL: This function demonstrates the correct pattern:
+    - Use session.execute() directly (no wrapper!)
+    - Amplifier-core handles: providers, retries, parsing, streaming, hooks
+    - Tool handles: prompt construction, result extraction, error handling
 
     Args:
-        base_path: Directory to search
-        pattern: Glob pattern (always recursive with **)
+        file: Path to file to analyze
+        session: AmplifierSession instance (kernel mechanism)
 
     Returns:
-        List of matching file paths
+        Dictionary with analysis results
     """
-    if base_path.is_file():
-        return [base_path]
+    # Construct prompt (tool-specific logic)
+    content = file.read_text(encoding="utf-8")
+    prompt = f"""Analyze this file and extract key information:
 
-    files = list(base_path.glob(pattern))
-    return sorted(files)  # Consistent ordering
+{content}
+
+Provide key insights about the file's purpose, structure, and important details."""
+
+    # Use amplifier-core for intelligence (kernel mechanism)
+    # Session handles: provider selection, retries, parsing, hooks
+    response = await session.execute(prompt)
+
+    # Return structured result (tool-specific format)
+    return {"file": str(file), "analysis": response, "timestamp": datetime.now().isoformat()}
 
 
-def _process_single_item(item_path: Path) -> dict:
-    """Process a single item (file or other unit).
+async def process(input_dir: str, profile: str = "dev", pattern: str = "**/*.md") -> dict:
+    """
+    Main processing function demonstrating complete pattern.
 
-    This is where your tool's core logic goes.
+    Pattern breakdown:
+    1. Validate inputs (toolkit utilities)
+    2. Discover files (toolkit utilities)
+    3. Load profile (app-layer: ProfileLoader + compile_profile_to_mount_plan)
+    4. Create session (kernel: AmplifierSession - use directly!)
+    5. Process with progress (code for structure, amplifier-core for intelligence)
+    6. Save state incrementally (tool-specific state management)
+    7. Handle errors gracefully (continue processing on failures)
 
     Args:
-        item_path: Path to item to process
+        input_dir: Path to input directory
+        profile: Profile name to use (default: "dev")
+        pattern: Glob pattern for file discovery (default: "**/*.md")
 
     Returns:
-        Processing result dictionary
-
-    Raises:
-        Exception: Any processing errors (will be caught and logged)
+        Dictionary with processing summary
     """
-    # TODO: Implement your processing logic here
-    # Example:
-    content = item_path.read_text(encoding="utf-8")
+    # ========================================================================
+    # STEP 1: Validate Input (Toolkit Utilities)
+    # ========================================================================
+    # Fail fast with clear errors if input is invalid
+    logger.info("Validating input...")
+    input_path = Path(input_dir)
+    validate_input_path(input_path, must_exist=True, must_be_dir=True)
+
+    # ========================================================================
+    # STEP 2: Discover Files (Toolkit Utilities)
+    # ========================================================================
+    # Always use recursive patterns (**/) to search all subdirectories
+    logger.info(f"Discovering files with pattern: {pattern}")
+    files = discover_files(input_path, pattern)
+
+    # Validate minimum files required for processing
+    require_minimum_files(files, minimum=1, context="processing requires at least one file")
+
+    logger.info(f"Found {len(files)} files to process")
+    # Show preview of files (first 5)
+    for file in files[:5]:
+        logger.info(f"  • {file.name}")
+    if len(files) > 5:
+        logger.info(f"  • ... and {len(files) - 5} more")
+
+    # ========================================================================
+    # STEP 3: Load Profile (App-Layer Responsibility)
+    # ========================================================================
+    # CRITICAL: Use ProfileLoader + compile_profile_to_mount_plan
+    # NOT ProfileManager.get_profile_as_mount_plan() (that method doesn't exist)
+    logger.info(f"Loading profile: {profile}")
+    loader = ProfileLoader()
+    profile_obj = loader.load_profile(profile)  # Load profile object
+    mount_plan = compile_profile_to_mount_plan(profile_obj)  # Compile to mount plan
+
+    # ========================================================================
+    # STEP 4: Load State for Resumability (Tool-Specific Pattern)
+    # ========================================================================
+    # Load any previously saved state to enable resume after interruption
+    processed, results = load_state()
+    if processed:
+        logger.info(f"Resuming from previous run - {len(processed)} files already processed")
+
+    # ========================================================================
+    # STEP 5: Create Session and Process (Kernel Mechanism - Use Directly!)
+    # ========================================================================
+    # CRITICAL: Use AmplifierSession directly (no wrapper!)
+    # Session handles: providers, orchestrator, hooks, context
+    async with AmplifierSession(config=mount_plan) as session:
+        # Progress reporting (toolkit utility)
+        progress = ProgressReporter(len(files), "Processing files")
+
+        # Process each file with error handling
+        for file in files:
+            # ================================================================
+            # Resume Check: Skip Already Processed Files
+            # ================================================================
+            if str(file) in processed:
+                progress.update()  # Still update progress for skipped files
+                continue
+
+            try:
+                # ============================================================
+                # Use Amplifier-Core for Intelligence
+                # ============================================================
+                # Session.execute() handles:
+                # - Provider selection (from profile)
+                # - Retries (from orchestrator)
+                # - Response parsing (from provider)
+                # - Streaming (if enabled)
+                # - Hook execution (logging, approval, redaction)
+                result = await analyze_file(file, session)
+
+                # ============================================================
+                # Save Result and Update State
+                # ============================================================
+                processed.append(str(file))
+                results.append(result)
+
+                # ============================================================
+                # Incremental Save (After EVERY Operation!)
+                # ============================================================
+                # CRITICAL: Save after each file, not in batches
+                # This ensures no data loss if interrupted
+                save_state(processed, results)
+
+                # Update progress
+                progress.update()
+
+            except Exception as e:
+                # ============================================================
+                # Graceful Error Handling
+                # ============================================================
+                # Log error but CONTINUE processing other files
+                # Partial results better than nothing
+                logger.error(f"Error processing {file}: {e}")
+                # Optional: Record error in state
+                # Continue to next file without saving as "processed"
+                continue
+
+        # Finish progress reporting
+        progress.finish()
+
+    # ========================================================================
+    # STEP 6: Return Summary
+    # ========================================================================
     return {
-        "path": str(item_path),
-        "size": len(content),
-        "lines": content.count("\n"),
-        # Add your processing results
+        "total": len(files),
+        "processed": len(processed),
+        "results": results,
+        "state_file": STATE_FILE,
     }
-
-
-def save_results(results: ToolResult, output_path: str | Path) -> None:
-    """Save results to JSON file incrementally.
-
-    Args:
-        results: Results to save
-        output_path: Output file path
-    """
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Atomic write with temporary file
-    temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-    try:
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(results.to_dict(), f, indent=2, ensure_ascii=False)
-        temp_path.replace(output_path)  # Atomic on POSIX
-    except Exception:
-        if temp_path.exists():
-            temp_path.unlink()
-        raise
-
-
-def process(
-    input_path: str | Path,
-    output_path: str | Path = "results.json",
-    pattern: str = "**/*.md",
-    max_items: int | None = None,
-) -> ToolResult:
-    """Main processing function with standard interface.
-
-    Args:
-        input_path: Path to file or directory to process
-        output_path: Output file path for results
-        pattern: Glob pattern for file discovery
-        max_items: Optional limit on items to process
-
-    Returns:
-        ToolResult with processing outcome
-    """
-    # 1. Validate input
-    input_path_obj = Path(input_path)
-    validate_input(input_path_obj)
-
-    # 2. Discover files/items
-    items = discover_files(input_path_obj, pattern)
-    if max_items:
-        items = items[:max_items]
-
-    # Validate minimum items
-    if len(items) == 0:
-        return ToolResult(
-            status="error",
-            data=[],
-            metadata={"error": f"No files matching pattern: {pattern}"},
-        )
-
-    logging.info(f"Processing {len(items)} items")
-    if len(items) <= 5:
-        for item in items:
-            logging.info(f"  • {item.name}")
-    else:
-        for item in items[:3]:
-            logging.info(f"  • {item.name}")
-        logging.info(f"  • ... and {len(items) - 3} more")
-
-    # 3. Process with progress
-    results_data = []
-    errors = []
-    processed = 0
-
-    for i, item in enumerate(items, 1):
-        try:
-            # Process single item
-            result = _process_single_item(item)
-            results_data.append(result)
-            processed += 1
-
-            # Log progress
-            if i % 10 == 0 or i == len(items):
-                logging.info(f"Progress: {i}/{len(items)} items processed")
-
-            # Save incrementally every 10 items
-            if i % 10 == 0:
-                partial_result = ToolResult(
-                    status="partial",
-                    data=results_data,
-                    metadata={"processed": processed, "total": len(items)},
-                    errors=errors,
-                )
-                save_results(partial_result, output_path)
-
-        except Exception as e:
-            # Collect error but continue processing
-            error_info = {"item": str(item), "error": str(e)}
-            errors.append(error_info)
-            logging.warning(f"Failed to process {item.name}: {e}")
-
-    # 5. Final save with status
-    if errors:
-        status = "partial" if results_data else "error"
-    else:
-        status = "success"
-
-    final_result = ToolResult(
-        status=status,
-        data=results_data,
-        metadata={
-            "processed": processed,
-            "total": len(items),
-            "failed": len(errors),
-        },
-        errors=errors,
-    )
-
-    save_results(final_result, output_path)
-    logging.info(f"✓ Results saved to: {output_path}")
-
-    return final_result
 
 
 # ============================================================================
@@ -261,78 +253,45 @@ def process(
 # ============================================================================
 
 
-def setup_logging(verbose: bool = False) -> None:
-    """Configure logging with consistent format."""
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-
 def main() -> None:
-    """Standard CLI with consistent argument handling."""
+    """Standard CLI interface with argument parsing."""
+    import argparse
+
     parser = argparse.ArgumentParser(
-        description="[Tool purpose description]",
+        description="CLI Tool Template - Demonstrates Correct Amplifier-Dev Pattern",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Process all markdown files in directory
-  python tool.py docs/ -o results.json
+  python cli_tool_template.py ./docs
 
-  # Process specific file
-  python tool.py README.md -o results.json
+  # Use different profile
+  python cli_tool_template.py ./docs --profile production
 
-  # Process with custom pattern
-  python tool.py src/ -p "**/*.py" -o results.json
+  # Process Python files instead
+  python cli_tool_template.py ./src --pattern "**/*.py"
 
-  # Limit processing
-  python tool.py data/ -m 100 -o results.json
+State Management:
+  - Tool saves state to .tool_state.json after each file
+  - Interrupt with Ctrl+C - safe to restart, will resume
+  - Delete .tool_state.json to start fresh
         """,
     )
 
-    parser.add_argument("input_path", help="Path to file or directory to process")
-    parser.add_argument("-o", "--output", default="results.json", help="Output file path (default: results.json)")
-    parser.add_argument(
-        "-p",
-        "--pattern",
-        default="**/*.md",
-        help="Glob pattern for file discovery (default: **/*.md)",
-    )
-    parser.add_argument("-m", "--max-items", type=int, help="Maximum items to process")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("input_dir", help="Input directory to process")
+    parser.add_argument("--profile", default="dev", help="Profile to use (default: dev)")
+    parser.add_argument("--pattern", default="**/*.md", help="File pattern (default: **/*.md)")
 
     args = parser.parse_args()
 
-    # Setup logging
-    setup_logging(args.verbose)
-    logger = logging.getLogger(__name__)
+    # Run processing
+    result = asyncio.run(process(args.input_dir, args.profile, args.pattern))
 
-    try:
-        # Process
-        result = process(
-            input_path=args.input_path,
-            output_path=args.output,
-            pattern=args.pattern,
-            max_items=args.max_items,
-        )
-
-        # Report summary
-        logger.info(f"Status: {result.status}")
-        logger.info(f"Processed: {result.metadata.get('processed', 0)} items")
-        if result.errors:
-            logger.warning(f"Errors: {len(result.errors)}")
-
-        # Exit with appropriate code
-        if result.status == "error":
-            sys.exit(1)
-        elif result.status == "partial":
-            sys.exit(2)  # Partial success
-
-    except Exception as e:
-        logger.error(f"Tool failed: {e}", exc_info=True)
-        sys.exit(1)
+    # Report results
+    logger.info(f"\n✓ Processing complete!")
+    logger.info(f"  Total files: {result['total']}")
+    logger.info(f"  Processed: {result['processed']}")
+    logger.info(f"  Results saved to: {result['state_file']}")
 
 
 if __name__ == "__main__":
