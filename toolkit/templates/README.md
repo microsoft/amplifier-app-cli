@@ -1,132 +1,280 @@
 # Toolkit Templates
 
-## Philosophy: Use Mechanisms, Don't Wrap Them
+## Philosophy: Multi-Config Metacognitive Recipes
 
-These templates demonstrate the correct pattern for building amplifier-dev CLI tools that use AI.
+These templates demonstrate how to build sophisticated AI tools using **metacognitive recipes** - code-orchestrated multi-stage thinking processes where each stage uses a specialized AI config optimized for its cognitive role.
 
-**Core Principle**: Always use amplifier-core directly - never wrap `AmplifierSession`.
+**Core Principle**: Don't use one config - use multiple specialized configs orchestrated by code.
 
-## The Correct Pattern
+## The Multi-Config Pattern
 
 ```python
 from amplifier_core import AmplifierSession
-from amplifier_app_cli.profile_system import ProfileManager
-from toolkit import discover_files, ProgressReporter
+from amplifier_app_cli.toolkit import discover_files, ProgressReporter
 
+# Multiple specialized configs (not one!)
+ANALYZER_CONFIG = {
+    "session": {"orchestrator": "loop-basic"},
+    "providers": [{
+        "module": "provider-anthropic",
+        "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
+        "config": {
+            "model": "claude-sonnet-4",
+            "temperature": 0.3,  # Analytical precision
+            "system_prompt": "You are an expert content analyzer."
+        }
+    }],
+}
+
+SYNTHESIZER_CONFIG = {
+    "session": {"orchestrator": "loop-streaming"},
+    "providers": [{
+        "module": "provider-anthropic",
+        "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
+        "config": {
+            "model": "claude-opus-4",
+            "temperature": 0.7,  # Creative synthesis
+            "system_prompt": "You are a creative content synthesizer."
+        }
+    }],
+}
+
+# Code orchestrates thinking across configs
 async def my_tool(input_dir: Path):
-    # 1. App-layer: Load profile to get mount plan
-    manager = ProfileManager()
-    mount_plan = manager.get_profile_as_mount_plan("dev")
+    # Toolkit utilities for structure
+    files = discover_files(input_dir, "**/*.md")
+    progress = ProgressReporter(len(files), "Processing")
 
-    # 2. Kernel: Create session (use directly - no wrapper!)
-    async with AmplifierSession(config=mount_plan) as session:
-        # 3. Toolkit: Use utilities for structure
-        files = discover_files(input_dir, "**/*.md")
-        progress = ProgressReporter(len(files), "Processing")
-
-        # 4. Amplifier-core: Use for ALL intelligence
+    # Stage 1: Analytical config
+    extractions = []
+    async with AmplifierSession(config=ANALYZER_CONFIG) as session:
         for file in files:
-            # Amplifier-core handles everything:
-            # - Provider selection (from profile)
-            # - Retries and error handling
-            # - Response parsing
-            # - Streaming and progress
-            # - Hooks (logging, approval, redaction)
-            response = await session.execute(f"Analyze: {file.read_text()}")
-
-            # Response is clean - no parsing needed
-            save_result(file, response)
+            extraction = await session.execute(f"Extract key concepts: {file.read_text()}")
+            extractions.append(extraction)
             progress.update()
+
+    # Stage 2: Creative config
+    async with AmplifierSession(config=SYNTHESIZER_CONFIG) as session:
+        synthesis = await session.execute(f"Synthesize these concepts: {extractions}")
+
+    return synthesis
 ```
 
 ## Using the Template
 
-### 1. Copy the Template
+### 1. Copy and Customize
 
 ```bash
-cp amplifier-app-cli/toolkit/templates/cli_tool_template.py my_tool.py
+cp amplifier-app-cli/toolkit/templates/standalone_tool.py my_tool.py
 ```
 
-### 2. Customize for Your Use Case
+### 2. Define Your Specialized Configs
 
-The template has clear sections:
+Think about the cognitive roles needed for your tool:
 
-**A. Update the prompt**:
+**Analytical tasks** (temp=0.2-0.3):
 ```python
-async def analyze_file(file: Path, session: AmplifierSession) -> dict:
-    # Change this prompt for your use case
-    prompt = f"YOUR CUSTOM PROMPT: Analyze {file.name}"
-
-    response = await session.execute(prompt)
-    return {"file": str(file), "result": response}
+ANALYZER_CONFIG = {
+    "providers": [{
+        "config": {
+            "model": "claude-sonnet-4",
+            "temperature": 0.3,
+            "system_prompt": "You are an expert analyzer."
+        }
+    }],
+    ...
+}
 ```
 
-**B. Modify state structure** (if needed):
+**Creative tasks** (temp=0.6-0.8):
+```python
+CREATOR_CONFIG = {
+    "providers": [{
+        "config": {
+            "model": "claude-opus-4",
+            "temperature": 0.7,
+            "system_prompt": "You are a creative generator."
+        }
+    }],
+    ...
+}
+```
+
+**Evaluative tasks** (temp=0.1-0.2):
+```python
+EVALUATOR_CONFIG = {
+    "providers": [{
+        "config": {
+            "model": "claude-sonnet-4",
+            "temperature": 0.2,
+            "system_prompt": "You are a quality evaluator."
+        }
+    }],
+    ...
+}
+```
+
+### 3. Write Orchestration Logic
+
+Code decides:
+- Which config to use when
+- How to combine results across stages
+- When to loop or iterate
+- When to ask for human input
+
+```python
+async def orchestrate(input_data):
+    # Stage 1: Analyze
+    async with AmplifierSession(config=ANALYZER_CONFIG) as session:
+        analysis = await session.execute(...)
+
+    # Stage 2: Create
+    async with AmplifierSession(config=CREATOR_CONFIG) as session:
+        creation = await session.execute(...)
+
+    # Stage 3: Evaluate
+    async with AmplifierSession(config=EVALUATOR_CONFIG) as session:
+        evaluation = await session.execute(...)
+
+    # Code makes decision
+    if evaluation["score"] < threshold:
+        # Iterate with feedback...
+        pass
+
+    return creation
+```
+
+### 4. Add State Management
+
+For multi-stage tools, checkpoint after each stage:
+
 ```python
 STATE_FILE = ".my_tool_state.json"
 
-def save_state(data: dict):
-    # Customize for your tool
-    Path(STATE_FILE).write_text(json.dumps(data, indent=2))
+async def process_with_resumability():
+    state = load_state()
+
+    # Stage 1
+    if "analysis" not in state:
+        async with AmplifierSession(config=ANALYZER_CONFIG) as session:
+            state["analysis"] = await session.execute(...)
+        save_state(state)  # Checkpoint
+
+    # Stage 2
+    if "creation" not in state:
+        async with AmplifierSession(config=CREATOR_CONFIG) as session:
+            state["creation"] = await session.execute(...)
+        save_state(state)  # Checkpoint
+
+    return state
 ```
 
-### 3. Run Your Tool
+## What the Template Shows
 
-```bash
-python my_tool.py ./input_directory
-```
+### ✅ Correct Patterns
 
-## What NOT to Do
+**Multi-config orchestration**:
+- Multiple specialized configs (not one!)
+- Each optimized for its cognitive role
+- Code orchestrates between configs
 
-### ❌ Don't Wrap AmplifierSession
+**State management**:
+- Tool-specific state structure
+- Checkpoint after each stage
+- Resumability on failure
 
-**WRONG**:
+**Error handling**:
+- Graceful failures per stage
+- Continue processing when possible
+- Return partial results
+
+**Toolkit utilities**:
+- File discovery with `discover_files`
+- Progress reporting with `ProgressReporter`
+- Validation with `validate_input_path`, `require_minimum_files`
+
+### ❌ Anti-Patterns to Avoid
+
+**Don't use single config**:
 ```python
+# WRONG: One config trying to do everything
+ONE_CONFIG = {"temperature": 0.5}  # Compromise
+
+async with AmplifierSession(config=ONE_CONFIG) as session:
+    # Analyze (needs low temp)
+    analysis = await session.execute("Analyze...")
+    # Create (needs high temp)
+    creation = await session.execute("Create...")
+```
+
+**Don't wrap AmplifierSession**:
+```python
+# WRONG: Wrapping kernel mechanism
 class Helper:
-    def __init__(self, profile: str):
+    def __init__(self):
         self.session = AmplifierSession(...)  # Violation!
 ```
 
-**RIGHT**:
+**Don't create state frameworks**:
 ```python
-mount_plan = ProfileManager().get_profile_as_mount_plan("dev")
-async with AmplifierSession(config=mount_plan) as session:
-    response = await session.execute(prompt)
-```
-
-### ❌ Don't Create State Frameworks
-
-**WRONG**:
-```python
+# WRONG: Generalizing state management
 class StateManager:
-    """Don't generalize!"""
+    """Don't do this!"""
 ```
 
-**RIGHT**:
+**Don't bypass amplifier-core**:
 ```python
-# Each tool owns simple state
-STATE_FILE = ".tool_state.json"
-
-def save_state(data: dict):
-    Path(STATE_FILE).write_text(json.dumps(data))
-```
-
-### ❌ Don't Bypass Amplifier-Core
-
-**WRONG**:
-```python
+# WRONG: Direct LLM calls
 import anthropic
 response = anthropic.Client().messages.create(...)  # Violation!
 ```
 
-**RIGHT**:
-```python
-# ALL LLM via amplifier-core
-response = await session.execute(prompt)
-```
+## Complete Example
+
+See `toolkit/examples/tutorial_analyzer/` for a complete working exemplar:
+- 6 specialized configs (analyzer, learner_simulator, diagnostician, improver, critic, synthesizer)
+- Multi-stage orchestration with code managing flow
+- Human-in-loop at strategic decision points
+- State management with checkpointing
+- Evaluative loops with quality thresholds
+- Complex flow control (nested loops, conditional jumps)
+
+## Quick Start Checklist
+
+When creating a new tool:
+
+- [ ] Identify cognitive stages (analyze, create, evaluate, etc.)
+- [ ] Define specialized config for each stage
+- [ ] Optimize temperature per role (analytical=0.3, creative=0.7, evaluative=0.2)
+- [ ] Write orchestration code (which config when)
+- [ ] Add state management (checkpoint after each stage)
+- [ ] Add error handling (continue on non-critical failures)
+- [ ] Use toolkit utilities (discover_files, ProgressReporter, validation)
+- [ ] Test with real inputs
+- [ ] Package for distribution (see toolkit/PACKAGING_GUIDE.md)
 
 ## Philosophy References
 
-- **Kernel Philosophy** (@docs/context/KERNEL_PHILOSOPHY.md) - Use mechanisms directly
-- **Implementation Philosophy** (@docs/context/IMPLEMENTATION_PHILOSOPHY.md) - Ruthless simplicity
-- **Modular Design** (@docs/context/MODULAR_DESIGN_PHILOSOPHY.md) - Clear bricks & studs
+- **TOOLKIT_GUIDE.md** - Complete guide to multi-config pattern
+- **METACOGNITIVE_RECIPES.md** - Deep dive on recipes and configuration spectrum
+- **HOW_TO_CREATE_YOUR_OWN.md** - Step-by-step creation guide
+- **BEST_PRACTICES.md** - Strategic guidance and decomposition patterns
+- **PHILOSOPHY.md** - Why multi-config, mechanism vs policy
+
+## Configuration Levels
+
+Start with **Level 1 (Fixed Configs)** - hardcoded CONFIG constants (90% of tools).
+
+Only advance to Level 2 (Code-Modified) or Level 3 (AI-Generated) when you need runtime adaptability.
+
+See `toolkit/METACOGNITIVE_RECIPES.md` for complete configuration sophistication spectrum.
+
+## Remember
+
+**Sophisticated AI tools are built from simple, specialized AI sessions orchestrated by straightforward code.**
+
+- Each config is simple (optimized for one role)
+- Each stage is simple (one focused task)
+- Sophistication emerges from composition
+
+Start simple. Add complexity only when you need it.

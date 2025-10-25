@@ -1758,8 +1758,8 @@ def module_show(module_name: str):
         else:
             origin_label = f"Profile '{active_profile}' (system default)"
 
-        panel_content = f"""[bold]Name:[/bold] {found_in_profile['id']}
-[bold]Type:[/bold] {found_in_profile['type']}
+        panel_content = f"""[bold]Name:[/bold] {found_in_profile["id"]}
+[bold]Type:[/bold] {found_in_profile["type"]}
 [bold]Source:[/bold] {source_str}
 [bold]Origin:[/bold] {origin_label}
 [bold]Status:[/bold] Configured (loaded at runtime)"""

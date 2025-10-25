@@ -1,24 +1,26 @@
-"""
-Amplifier Toolkit - Structural Utilities for CLI Tools
+"""Amplifier-Dev Toolkit: Build Sophisticated AI Tools with Metacognitive Recipes.
 
-Ultra-simple utilities for building amplifier-dev CLI tools.
+The toolkit teaches building AI tools using multi-config metacognitive recipes:
+- Multiple specialized configs (each optimized for its cognitive role)
+- Code orchestration (flow control, state management, decisions)
+- Structural utilities (file discovery, progress, validation)
+
+Key principle: Code for structure, specialized AI configs for intelligence.
+
+See docs/TOOLKIT_GUIDE.md for complete guide.
+
+Example: toolkit/examples/tutorial_analyzer/ - Complete pedagogical exemplar.
+
+Modules:
+- utilities.file_ops: File discovery, JSON I/O, path validation
+- utilities.progress: Progress reporting
+- utilities.validation: Input validation
 
 Philosophy:
-- Code handles: loops, file I/O, state, coordination
-- Amplifier-core handles: LLM interactions via orchestrator
-- Toolkit provides: structural utilities only
-
-What This Provides:
-- File operations (discover_files, read_json, write_json)
-- Progress reporting (ProgressReporter)
-- Input validation (validate_input_path, validate_minimum_files)
-
-What This Does NOT Provide:
-- Session wrappers (use AmplifierSession directly)
-- State management frameworks (each tool owns its state)
-- LLM utilities (amplifier-core handles everything)
-
-See docs/TOOLKIT_GUIDE.md for complete usage patterns.
+- Use AmplifierSession directly (don't wrap kernel mechanisms)
+- Each tool owns its state (no state frameworks)
+- Multi-config pattern for sophisticated tools
+- Start simple (Level 1 fixed configs), add complexity only when needed
 """
 
 __version__ = "0.1.0"
