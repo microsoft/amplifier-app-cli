@@ -1,15 +1,24 @@
 """
-Amplifier Toolkit
+Amplifier Toolkit - Structural Utilities for CLI Tools
 
-A focused, philosophy-aligned utility package for building tools
-using Amplifier. Adopts proven patterns while staying true to Amplifier's
-kernel philosophy.
+Ultra-simple utilities for building amplifier-dev CLI tools.
 
-Core principles:
-- Ruthless simplicity (minimal abstractions)
-- Standard patterns (consistent interfaces)
-- Fail gracefully (partial results > complete failure)
-- Mechanism not policy (provide capabilities, users decide usage)
+Philosophy:
+- Code handles: loops, file I/O, state, coordination
+- Amplifier-core handles: LLM interactions via orchestrator
+- Toolkit provides: structural utilities only
+
+What This Provides:
+- File operations (discover_files, read_json, write_json)
+- Progress reporting (ProgressReporter)
+- Input validation (validate_input_path, validate_minimum_files)
+
+What This Does NOT Provide:
+- Session wrappers (use AmplifierSession directly)
+- State management frameworks (each tool owns its state)
+- LLM utilities (amplifier-core handles everything)
+
+See docs/TOOLKIT_GUIDE.md for complete usage patterns.
 """
 
 __version__ = "0.1.0"
@@ -24,6 +33,9 @@ from toolkit.utilities.validation import validate_input_path
 from toolkit.utilities.validation import validate_minimum_files
 from toolkit.utilities.validation import validate_output_path
 
+# Alias for compatibility with template/examples
+require_minimum_files = validate_minimum_files
+
 __all__ = [
     # File operations
     "discover_files",
@@ -36,4 +48,5 @@ __all__ = [
     "validate_input_path",
     "validate_output_path",
     "validate_minimum_files",
+    "require_minimum_files",  # Alias for validate_minimum_files
 ]
