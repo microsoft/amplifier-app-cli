@@ -13,7 +13,7 @@ Philosophy:
 
 from amplifier_core import AmplifierSession
 
-from ..utils import extract_json_from_response
+from ..utils import extract_dict_from_response
 
 ANALYZER_CONFIG = {
     "session": {
@@ -67,4 +67,4 @@ Return JSON with:
     async with AmplifierSession(config=ANALYZER_CONFIG) as session:
         response = await session.execute(prompt)
 
-    return extract_json_from_response(response)
+    return extract_dict_from_response(response)

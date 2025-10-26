@@ -13,7 +13,7 @@ Philosophy:
 
 from amplifier_core import AmplifierSession
 
-from ..utils import extract_json_from_response
+from ..utils import extract_dict_from_response
 
 DIAGNOSTICIAN_CONFIG = {
     "session": {
@@ -72,4 +72,4 @@ Return as JSON with arrays of issue objects.
     async with AmplifierSession(config=DIAGNOSTICIAN_CONFIG) as session:
         response = await session.execute(prompt)
 
-    return extract_json_from_response(response)
+    return extract_dict_from_response(response)

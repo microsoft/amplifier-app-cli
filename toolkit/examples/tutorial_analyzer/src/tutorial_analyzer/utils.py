@@ -102,3 +102,45 @@ def extract_json_from_response(response: str | object) -> dict[str, Any] | list[
     raise ValueError(
         f"Could not extract valid JSON from response.\nResponse preview (first 300 chars):\n{text[:300]}..."
     )
+
+
+def extract_dict_from_response(response: str | object) -> dict[str, Any]:
+    """Extract dict from LLM response with structure validation.
+
+    Wrapper around extract_json_from_response that validates result is a dict.
+    Use this when you expect a JSON object, not an array.
+
+    Args:
+        response: Response from AmplifierSession
+
+    Returns:
+        Parsed JSON dict
+
+    Raises:
+        ValueError: If response doesn't contain valid JSON dict
+    """
+    result = extract_json_from_response(response)
+    if not isinstance(result, dict):
+        raise ValueError(f"Expected JSON object (dict), got {type(result).__name__}: {result}")
+    return result
+
+
+def extract_list_from_response(response: str | object) -> list[Any]:
+    """Extract list from LLM response with structure validation.
+
+    Wrapper around extract_json_from_response that validates result is a list.
+    Use this when you expect a JSON array, not an object.
+
+    Args:
+        response: Response from AmplifierSession
+
+    Returns:
+        Parsed JSON list
+
+    Raises:
+        ValueError: If response doesn't contain valid JSON list
+    """
+    result = extract_json_from_response(response)
+    if not isinstance(result, list):
+        raise ValueError(f"Expected JSON array (list), got {type(result).__name__}: {result}")
+    return result

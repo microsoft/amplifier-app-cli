@@ -22,8 +22,10 @@ Customize:
 
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
+from typing import Any
 
 from amplifier_core import AmplifierSession
 
@@ -85,6 +87,50 @@ EVALUATOR_CONFIG = {
 }
 
 
+# ==== DEFENSIVE JSON PARSING ====
+
+
+def extract_dict_from_response(response: str) -> dict[str, Any]:
+    """Extract dict from LLM response with defensive parsing.
+
+    Handles markdown-wrapped JSON and explanatory text that LLMs often add.
+
+    For production tools with comprehensive extraction, see:
+    tutorial_analyzer/utils.py (5-step defensive parsing with all edge cases)
+
+    Args:
+        response: String response from session.execute()
+
+    Returns:
+        Parsed JSON dict
+
+    Raises:
+        ValueError: If response doesn't contain valid JSON dict
+    """
+    # Try direct JSON parsing
+    try:
+        result = json.loads(response)
+        if isinstance(result, dict):
+            return result
+        raise ValueError(f"Expected JSON object, got {type(result).__name__}")
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Try extracting from markdown code blocks
+    for pattern in [r"```json\s*\n?(.*?)```", r"```\s*\n?(.*?)```"]:
+        matches = re.findall(pattern, response, re.DOTALL | re.IGNORECASE)
+        for match in matches:
+            try:
+                result = json.loads(match)
+                if isinstance(result, dict):
+                    return result
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+    # Failed all extraction attempts
+    raise ValueError(f"Could not extract valid JSON dict from response.\nPreview: {response[:300]}...")
+
+
 # ==== STATE MANAGEMENT: Tool-specific, simple dict to JSON ====
 
 STATE_FILE = ".standalone_tool_state.json"
@@ -105,36 +151,34 @@ def load_state() -> dict:
 # ==== STAGE PROCESSING: Each stage uses specialized config ====
 
 
-async def analyze_content(content: str) -> dict:
+async def analyze_content(content: str) -> dict[str, Any]:
     """Stage 1: Analyze content (analytical config).
 
-    Note: In production, use defensive JSON parsing (see tutorial_analyzer/utils.py).
-    This template uses simple json.loads() for clarity.
+    Uses defensive JSON parsing to handle LLM response variability.
     """
     async with AmplifierSession(config=ANALYZER_CONFIG) as session:
         response = await session.execute(f"Analyze this content and extract key information:\n\n{content}")
-    # Parse response to dict (in production, use defensive parsing)
-    return json.loads(response)  # type: ignore[arg-type]  # session.execute() returns str
+    return extract_dict_from_response(response)
 
 
-async def create_from_analysis(analysis: dict, requirements: str) -> dict:
+async def create_from_analysis(analysis: dict, requirements: str) -> dict[str, Any]:
     """Stage 2: Create content (creative config).
 
-    Note: In production, use defensive JSON parsing (see tutorial_analyzer/utils.py).
+    Uses defensive JSON parsing to handle LLM response variability.
     """
     async with AmplifierSession(config=CREATOR_CONFIG) as session:
         response = await session.execute(f"Create content based on:\nAnalysis: {analysis}\nRequirements: {requirements}")
-    return json.loads(response)  # type: ignore[arg-type]
+    return extract_dict_from_response(response)
 
 
-async def evaluate_quality(creation: dict) -> dict:
+async def evaluate_quality(creation: dict) -> dict[str, Any]:
     """Stage 3: Evaluate quality (evaluative config).
 
-    Note: In production, use defensive JSON parsing (see tutorial_analyzer/utils.py).
+    Uses defensive JSON parsing to handle LLM response variability.
     """
     async with AmplifierSession(config=EVALUATOR_CONFIG) as session:
         response = await session.execute(f"Evaluate this creation and score 0-1:\n\n{creation}")
-    return json.loads(response)  # type: ignore[arg-type]
+    return extract_dict_from_response(response)
 
 
 # ==== ORCHESTRATION: Code manages flow, state, decisions ====

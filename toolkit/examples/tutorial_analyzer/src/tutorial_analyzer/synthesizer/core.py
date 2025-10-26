@@ -13,7 +13,7 @@ Philosophy:
 
 from amplifier_core import AmplifierSession
 
-from ..utils import extract_json_from_response
+from ..utils import extract_dict_from_response
 
 SYNTHESIZER_CONFIG = {
     "session": {
@@ -78,4 +78,4 @@ Provide clear, prioritized recommendations. Quality score from 0.0 to 1.0.
     async with AmplifierSession(config=SYNTHESIZER_CONFIG) as session:
         response = await session.execute(prompt)
 
-    return extract_json_from_response(response)
+    return extract_dict_from_response(response)
