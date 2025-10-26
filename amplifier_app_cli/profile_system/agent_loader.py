@@ -2,6 +2,8 @@
 
 import logging
 
+from ..lib.mention_loading import MentionLoader
+from ..utils.mentions import has_mentions
 from .agent_resolver import AgentResolver
 from .agent_schema import Agent
 from .utils import parse_frontmatter
@@ -58,6 +60,29 @@ class AgentLoader:
 
             # Parse markdown body
             markdown_body = parse_markdown_body(agent_file)
+
+            # Process @mentions in markdown body (same as profiles)
+            if markdown_body and has_mentions(markdown_body):
+                logger.debug(f"Agent '{name}' has @mentions, loading context files...")
+                mention_loader = MentionLoader()
+                context_messages = mention_loader.load_mentions(markdown_body, relative_to=agent_file.parent)
+
+                # Prepend loaded context to markdown body
+                if context_messages:
+                    # Extract string content from messages (handle both str and ContentBlock list)
+                    context_parts = []
+                    for msg in context_messages:
+                        if isinstance(msg.content, str):
+                            context_parts.append(msg.content)
+                        elif isinstance(msg.content, list):
+                            # ContentBlock list - extract text
+                            context_parts.append("".join(block.text if hasattr(block, "text") else str(block) for block in msg.content))  # type: ignore[attr-defined]
+                        else:
+                            context_parts.append(str(msg.content))
+
+                    context_content = "\n\n".join(context_parts)
+                    markdown_body = f"{context_content}\n\n{markdown_body}"
+                    logger.debug(f"Expanded {len(context_messages)} @mentions for agent '{name}'")
 
             # Add markdown body as system instruction if present and not already defined
             if markdown_body:

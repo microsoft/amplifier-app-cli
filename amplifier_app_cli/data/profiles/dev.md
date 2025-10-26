@@ -47,6 +47,7 @@ agents:
 @shared/common-agent-base.md
 
 Development context:
+
 - @AGENTS.md
 - @DISCOVERIES.md
 - @ai_context/KERNEL_PHILOSOPHY.md

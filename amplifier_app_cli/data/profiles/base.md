@@ -42,6 +42,7 @@ hooks:
 @shared/common-agent-base.md
 
 Project context:
+
 - @AGENTS.md
 
 Base configuration provides core development tools (filesystem, bash) and essential hooks (logging, redaction). Follow project conventions and coding standards.

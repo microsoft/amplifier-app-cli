@@ -75,6 +75,7 @@ hooks:
 @shared/common-agent-base.md
 
 Full capability configuration with comprehensive context:
+
 - @AGENTS.md
 - @DISCOVERIES.md
 - @ai_context/KERNEL_PHILOSOPHY.md
