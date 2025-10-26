@@ -301,4 +301,4 @@ You are the architect of simplicity, the designer of clean systems, and the guar
 
 ---
 
-@shared/common-agent-base.md
+@bundle:shared/common-agent-base.md

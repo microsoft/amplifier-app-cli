@@ -36,4 +36,4 @@ If no content is found to be relevant, clearly state this and suggest what types
 
 ---
 
-@shared/common-agent-base.md
+@bundle:shared/common-agent-base.md

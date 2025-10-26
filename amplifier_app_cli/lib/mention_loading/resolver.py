@@ -1,17 +1,21 @@
 """Path resolution for @mentions with search path support."""
 
 import importlib.resources
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class MentionResolver:
-    """Resolves @mentions to file paths using configured search paths.
+    """Resolves @mentions to file paths with explicit prefix handling.
 
-    Search order (first match wins):
-    1. Relative paths (if starts with ./)
-    2. Bundled context (amplifier_app_cli/data/)
-    3. Project context (.amplifier/context/)
-    4. User context (~/.amplifier/context/)
+    Three explicit mention types (no searching, no fallbacks):
+    1. @bundle:path - Resolves ONLY to amplifier_app_cli/data/context/{path}
+    2. @~/path - Resolves ONLY to user home directory
+    3. @path - Resolves relative to CWD or relative_to parameter
+
+    Missing files are skipped gracefully (returns None).
     """
 
     def __init__(
@@ -62,39 +66,67 @@ class MentionResolver:
     def resolve(self, mention: str) -> Path | None:
         """Resolve @mention to file path.
 
+        Three types supported:
+        1. @bundle:path - Resolves to amplifier_app_cli/data/context/{path}
+        2. @~/path - Resolves to user home directory
+        3. @path - Resolves relative to CWD or relative_to
+
         Args:
-            mention: @mention string (e.g., '@AGENTS.md', '@bundled/file.md', './relative.md')
+            mention: @mention string with prefix
 
         Returns:
-            Resolved Path if file exists, None if not found
+            Absolute Path if file exists, None if not found (graceful skip)
         """
-        if mention.startswith("@"):
-            mention = mention[1:]
+        # Type 1: @bundle: - bundled context files ONLY
+        if mention.startswith("@bundle:"):
+            path_str = mention[8:]  # Remove '@bundle:'
 
-        if mention.startswith("./") or mention.startswith("../"):
-            return self._resolve_relative(mention)
+            # Security: Prevent path traversal
+            if ".." in path_str:
+                logger.warning(f"Path traversal attempt blocked: {mention}")
+                return None
 
-        if mention.startswith("bundled/"):
-            return self._resolve_bundled(mention[8:])
+            bundle_path = self.bundled_data_dir / "context" / path_str
 
-        # Try working directory first (for files like ai_context/README.md)
-        from pathlib import Path
+            if bundle_path.exists() and bundle_path.is_file():
+                return bundle_path.resolve()
 
-        cwd_path = Path.cwd() / mention
-        if cwd_path.exists() and cwd_path.is_file():
-            return cwd_path.resolve()
+            # Graceful skip - bundled file missing (shouldn't happen but handle it)
+            logger.debug(f"Bundled context file not found: {bundle_path}")
+            return None
 
-        paths_to_try = [
-            self.bundled_data_dir / "context" / mention,  # Bundled context files
-            self.bundled_data_dir / mention,  # Fallback to data root
-            self.project_context_dir / mention,
-            self.user_context_dir / mention,
-        ]
+        # Type 2: @~/ - user home directory ONLY
+        if mention.startswith("@~/"):
+            path_str = mention[3:]  # Remove '@~/'
+            home_path = Path.home() / path_str
 
-        for path in paths_to_try:
-            if path.exists() and path.is_file():
-                return path.resolve()
+            if home_path.exists() and home_path.is_file():
+                return home_path.resolve()
 
+            # Graceful skip - user file doesn't exist (expected - optional files)
+            logger.debug(f"User home file not found: {home_path}")
+            return None
+
+        # Type 3: Regular @ - CWD or relative_to (EXISTING LOGIC - keep it)
+        path_str = mention.lstrip("@")
+
+        # Handle old ./ and ../ syntax (keep backward compat)
+        if path_str.startswith("./") or path_str.startswith("../"):
+            return self._resolve_relative(path_str)
+
+        # If relative_to set (agent/profile loading), try that first
+        if self.relative_to:
+            candidate = self.relative_to / path_str
+            if candidate.exists() and candidate.is_file():
+                return candidate.resolve()
+
+        # Try CWD (for user prompts)
+        candidate = Path.cwd() / path_str
+        if candidate.exists() and candidate.is_file():
+            return candidate.resolve()
+
+        # Not found - graceful skip
+        logger.debug(f"Project file not found: {path_str} (tried relative_to and CWD)")
         return None
 
     def _resolve_relative(self, path: str) -> Path | None:
@@ -105,11 +137,4 @@ class MentionResolver:
         resolved = (self.relative_to / path).resolve()
         if resolved.exists() and resolved.is_file():
             return resolved
-        return None
-
-    def _resolve_bundled(self, path: str) -> Path | None:
-        """Resolve bundled/ prefix path."""
-        resolved = self.bundled_data_dir / path
-        if resolved.exists() and resolved.is_file():
-            return resolved.resolve()
         return None

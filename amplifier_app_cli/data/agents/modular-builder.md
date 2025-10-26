@@ -744,4 +744,4 @@ Remember: You are the builder who brings specifications to life. Build modules l
 
 ---
 
-@shared/common-agent-base.md
+@bundle:shared/common-agent-base.md

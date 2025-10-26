@@ -194,4 +194,4 @@ Remember: Focus on finding and fixing the ROOT CAUSE, not just the symptoms. Kee
 
 ---
 
-@shared/common-agent-base.md
+@bundle:shared/common-agent-base.md
