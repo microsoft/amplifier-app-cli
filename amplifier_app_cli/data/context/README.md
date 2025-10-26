@@ -12,13 +12,7 @@ Context files are markdown documents that can be loaded into sessions to provide
 
 Shared project guidelines and best practices for AI assistants working with Amplifier. Contains build commands, code style, design philosophy, and common patterns.
 
-**Usage**: Reference with `@AGENTS.md` in profile markdown body
-
-### DISCOVERIES.md
-
-Non-obvious problems and solutions discovered during development. Documents patterns, gotchas, and lessons learned.
-
-**Usage**: Reference with `@DISCOVERIES.md` in profile markdown body
+**Usage**: Reference with `@bundle:AGENTS.md` in profile markdown body
 
 ## How Context Loading Works
 
@@ -44,25 +38,30 @@ When a profile uses @mentions in its markdown body, the context loader:
 
 ```markdown
 # profiles/dev.md
+
 ---
+
 profile:
-  name: dev
+name: dev
+
 ---
 
 You are a development assistant for Amplifier.
 
 Core context:
-- @AGENTS.md
-- @DISCOVERIES.md
-- @ai_context/IMPLEMENTATION_PHILOSOPHY.md
+
+- @bundle:AGENTS.md
+- @bundle:IMPLEMENTATION_PHILOSOPHY.md
+- ...
 
 Work efficiently and follow project conventions.
 ```
 
 When this profile loads, the context loader:
+
 - Loads AGENTS.md (from this bundled directory)
-- Loads DISCOVERIES.md (from this bundled directory)
-- Loads IMPLEMENTATION_PHILOSOPHY.md (from bundled ai_context/)
+- Loads IMPLEMENTATION_PHILOSOPHY.md (from this bundled directory)
+- ... additional context files as referenced
 - Combines into context messages
 - Injects before conversation messages
 

@@ -32,7 +32,7 @@ Provide structured analysis:
 
 ### Design Guidelines
 
-Always read @ai_context/IMPLEMENTATION_PHILOSOPHY.md and @ai_context/MODULAR_DESIGN_PHILOSOPHY.md first.
+Always read @bundle:IMPLEMENTATION_PHILOSOPHY.md and @bundle:MODULAR_DESIGN_PHILOSOPHY.md first.
 
 **Modular Design ("Bricks & Studs"):**
 
@@ -46,7 +46,6 @@ Always read @ai_context/IMPLEMENTATION_PHILOSOPHY.md and @ai_context/MODULAR_DES
 
 - Consult @DISCOVERIES.md for similar patterns
 - Document architectural decisions
-- Check decision records in @ai_working/decisions/
 - Specify dependencies clearly
 - Design for testability
 - Plan vertical slices

@@ -34,8 +34,4 @@ agents:
 
 @bundle:shared/common-agent-base.md
 
-Production context:
-- @AGENTS.md
-- @DISCOVERIES.md
-
 Production configuration optimized for reliability and auditability. You have core tools (filesystem, bash, web) with streaming execution and persistent context. Extended thinking is enabled for critical decisions. Only the researcher agent is available for focused analysis. Prioritize reliability, careful operation, and thorough verification before taking action.

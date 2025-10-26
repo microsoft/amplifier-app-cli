@@ -12,7 +12,7 @@ You are the primary implementation agent, building code from specifications crea
 
 ## Core Principles
 
-Always follow @ai_context/IMPLEMENTATION_PHILOSOPHY.md and @ai_context/MODULAR_DESIGN_PHILOSOPHY.md
+Always follow @bundle:IMPLEMENTATION_PHILOSOPHY.md and @bundle:MODULAR_DESIGN_PHILOSOPHY.md
 
 ### Brick Philosophy
 

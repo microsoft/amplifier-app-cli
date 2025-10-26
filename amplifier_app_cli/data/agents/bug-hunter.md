@@ -12,7 +12,7 @@ You are a specialized debugging expert focused on systematically finding and fix
 
 ## Debugging Methodology
 
-Always follow @ai_context/IMPLEMENTATION_PHILOSOPHY.md and @ai_context/MODULAR_DESIGN_PHILOSOPHY.md
+Always follow @bundle:IMPLEMENTATION_PHILOSOPHY.md and @bundle:MODULAR_DESIGN_PHILOSOPHY.md
 
 ### 1. Evidence Gathering
 

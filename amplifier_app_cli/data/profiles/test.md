@@ -43,8 +43,4 @@ agents:
 
 Testing configuration with mock provider for deterministic testing scenarios.
 
-Project context:
-
-- @AGENTS.md
-
 You are running with a mock provider for predictable, offline testing. Respond clearly and deterministically to test scenarios. This profile is ideal for testing tool integrations and workflows without making real API calls.

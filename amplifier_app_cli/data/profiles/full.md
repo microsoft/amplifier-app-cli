@@ -76,10 +76,4 @@ hooks:
 
 Full capability configuration with comprehensive context:
 
-- @AGENTS.md
-- @DISCOVERIES.md
-- @ai_context/KERNEL_PHILOSOPHY.md
-- @ai_context/IMPLEMENTATION_PHILOSOPHY.md
-- @ai_context/MODULAR_DESIGN_PHILOSOPHY.md
-
 You have access to all tools (filesystem, bash, web, search, task delegation), multiple providers (OpenAI, Azure, Ollama), and all specialized agents. Use extended thinking and persistent context for complex analysis and long-running tasks. Dangerous operations require explicit approval. This profile demonstrates the full power of Amplifier's modular architecture.
