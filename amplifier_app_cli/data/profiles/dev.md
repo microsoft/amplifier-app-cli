@@ -44,7 +44,7 @@ agents:
     - ./agents
 ---
 
-@shared/common-agent-base.md
+@bundle:shared/common-agent-base.md
 
 Development context:
 

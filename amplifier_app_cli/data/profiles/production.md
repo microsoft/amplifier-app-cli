@@ -32,7 +32,7 @@ agents:
     - researcher
 ---
 
-@shared/common-agent-base.md
+@bundle:shared/common-agent-base.md
 
 Production context:
 - @AGENTS.md

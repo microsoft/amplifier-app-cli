@@ -39,7 +39,7 @@ agents:
         instruction: "You are a test agent. Respond with 'Test successful' to any query."
 ---
 
-@shared/common-agent-base.md
+@bundle:shared/common-agent-base.md
 
 Testing configuration with mock provider for deterministic testing scenarios.
 

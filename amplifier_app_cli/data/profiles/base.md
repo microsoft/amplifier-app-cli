@@ -39,7 +39,7 @@ hooks:
       session_log_template: ~/.amplifier/projects/{project}/sessions/{session_id}/events.jsonl
 ---
 
-@shared/common-agent-base.md
+@bundle:shared/common-agent-base.md
 
 Project context:
 

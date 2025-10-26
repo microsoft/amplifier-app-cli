@@ -72,7 +72,7 @@ hooks:
       batch_size: 10
 ---
 
-@shared/common-agent-base.md
+@bundle:shared/common-agent-base.md
 
 Full capability configuration with comprehensive context:
 

@@ -3,8 +3,11 @@
 import logging
 from pathlib import Path
 
+from ..lib.mention_loading import MentionLoader
+from ..utils.mentions import has_mentions
 from .schema import Profile
 from .utils import parse_frontmatter
+from .utils import parse_markdown_body
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +116,41 @@ class ProfileLoader:
 
         try:
             data = parse_frontmatter(profile_file)
+
+            # Parse markdown body
+            markdown_body = parse_markdown_body(profile_file)
+
+            # Process @mentions in markdown body (same as agents)
+            if markdown_body and has_mentions(markdown_body):
+                logger.debug(f"Profile '{name}' has @mentions, loading context files...")
+                mention_loader = MentionLoader()
+                context_messages = mention_loader.load_mentions(markdown_body, relative_to=profile_file.parent)
+
+                # Prepend loaded context to markdown body
+                if context_messages:
+                    # Extract string content from messages (handle both str and ContentBlock list)
+                    context_parts = []
+                    for msg in context_messages:
+                        if isinstance(msg.content, str):
+                            context_parts.append(msg.content)
+                        elif isinstance(msg.content, list):
+                            # ContentBlock list - extract text
+                            context_parts.append(
+                                "".join(block.text if hasattr(block, "text") else str(block) for block in msg.content)  # type: ignore[attr-defined]
+                            )
+                        else:
+                            context_parts.append(str(msg.content))
+
+                    context_content = "\n\n".join(context_parts)
+                    markdown_body = f"{context_content}\n\n{markdown_body}"
+                    logger.debug(f"Expanded {len(context_messages)} @mentions for profile '{name}'")
+
+            # Add markdown body as system instruction if present and not already defined
+            if markdown_body:
+                if "system" not in data:
+                    data["system"] = {}
+                if "instruction" not in data.get("system", {}):
+                    data["system"]["instruction"] = markdown_body
 
             # Check for inheritance BEFORE validation
             # This allows child profiles to not specify all required fields
