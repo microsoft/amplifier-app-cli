@@ -1,0 +1,1 @@
+../../../profiles/full.md

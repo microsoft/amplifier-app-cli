@@ -54,18 +54,41 @@ class AgentResolver:
         """
         Resolve agent file by name using first-match-wins.
 
-        Resolution order (highest priority first):
+        Supports two formats (APP LAYER POLICY per KERNEL_PHILOSOPHY):
+        1. Collection syntax: "collection:agents/name.md" (e.g., "developer-expertise:agents/zen-architect.md")
+        2. Simple name: "zen-architect" (searches local paths)
+
+        Resolution order for simple names (highest priority first):
         1. Environment variable AMPLIFIER_AGENT_<NAME>
         2. User agents (~/.amplifier/agents/)
         3. Project agents (.amplifier/agents/)
         4. Bundled agents (package data)
 
         Args:
-            agent_name: Agent name (without .md extension)
+            agent_name: Agent name (simple or collection:path format)
 
         Returns:
             Path to agent file if found, None otherwise
         """
+        # NEW: Collection syntax (developer-expertise:agents/zen-architect.md)
+        if ":" in agent_name:
+            collection_name, agent_path = agent_name.split(":", 1)
+
+            from ..collections import CollectionResolver
+            collection_resolver = CollectionResolver()
+
+            collection_path = collection_resolver.resolve(collection_name)
+            if collection_path:
+                full_path = collection_path / agent_path
+                if full_path.exists() and full_path.is_file():
+                    logger.debug(f"Resolved agent from collection: {agent_name}")
+                    return full_path
+
+            # Collection or resource not found
+            logger.debug(f"Collection agent not found: {agent_name}")
+            return None
+
+        # EXISTING: Simple name resolution
         # 0. Check environment variable (absolute highest priority)
         env_key = f"AMPLIFIER_AGENT_{agent_name.upper().replace('-', '_')}"
         if env_path := os.getenv(env_key):

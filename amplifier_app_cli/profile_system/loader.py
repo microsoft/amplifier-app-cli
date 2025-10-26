@@ -73,12 +73,34 @@ class ProfileLoader:
         """
         Find a profile file by name, checking paths in reverse order (highest precedence first).
 
+        Supports two formats (APP LAYER POLICY per KERNEL_PHILOSOPHY):
+        1. Collection syntax: "collection:profiles/name.md" (e.g., "foundation:profiles/base.md")
+        2. Simple name: "base" (searches local paths)
+
         Args:
-            name: Profile name (without .md extension)
+            name: Profile name (simple or collection:path format)
 
         Returns:
             Path to profile file if found, None otherwise
         """
+        # NEW: Collection syntax (foundation:profiles/base.md)
+        if ":" in name:
+            collection_name, profile_path = name.split(":", 1)
+
+            from ..collections import CollectionResolver
+            collection_resolver = CollectionResolver()
+
+            collection_path = collection_resolver.resolve(collection_name)
+            if collection_path:
+                full_path = collection_path / profile_path
+                if full_path.exists() and full_path.is_file():
+                    return full_path
+
+            # Collection or resource not found
+            logger.debug(f"Collection profile not found: {name}")
+            return None
+
+        # EXISTING: Search local paths by simple name
         # Search in reverse order (highest precedence first)
         for search_path in reversed(self.search_paths):
             profile_file = search_path / f"{name}.md"
