@@ -1,17 +1,18 @@
 """Utility functions for tutorial_analyzer.
 
-Defensive JSON parsing adapted from proven ccsdk_toolkit patterns.
+Defensive JSON parsing adapted from proven ccsdk_toolkit patterns.  # cspell:ignore ccsdk
 See: DISCOVERIES.md - "LLM Response Handling and Defensive Utilities"
 """
 
 import json
 import logging
 import re
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-def extract_json_from_response(response: str | object) -> dict:
+def extract_json_from_response(response: str | object) -> dict[str, Any] | list[Any]:
     """Extract JSON from LLM response with defensive parsing.
 
     Handles multiple response formats from AmplifierSession:
@@ -35,7 +36,7 @@ def extract_json_from_response(response: str | object) -> dict:
         # Concatenate text from all blocks
         text = "".join(block.text if hasattr(block, "text") else str(block) for block in response)
     elif hasattr(response, "text"):
-        text = response.text
+        text = response.text  # type: ignore[attr-defined]  # Defensive: checked with hasattr
     else:
         text = str(response)
 
@@ -77,7 +78,7 @@ def extract_json_from_response(response: str | object) -> dict:
         for match in matches:
             try:
                 result = json.loads(match)
-                if isinstance(result, (dict, list)):
+                if isinstance(result, dict | list):
                     return result
             except (json.JSONDecodeError, TypeError):
                 continue

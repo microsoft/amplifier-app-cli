@@ -106,24 +106,35 @@ def load_state() -> dict:
 
 
 async def analyze_content(content: str) -> dict:
-    """Stage 1: Analyze content (analytical config)."""
+    """Stage 1: Analyze content (analytical config).
+
+    Note: In production, use defensive JSON parsing (see tutorial_analyzer/utils.py).
+    This template uses simple json.loads() for clarity.
+    """
     async with AmplifierSession(config=ANALYZER_CONFIG) as session:
-        result = await session.execute(f"Analyze this content and extract key information:\n\n{content}")
-    return result
+        response = await session.execute(f"Analyze this content and extract key information:\n\n{content}")
+    # Parse response to dict (in production, use defensive parsing)
+    return json.loads(response)  # type: ignore[arg-type]  # session.execute() returns str
 
 
 async def create_from_analysis(analysis: dict, requirements: str) -> dict:
-    """Stage 2: Create content (creative config)."""
+    """Stage 2: Create content (creative config).
+
+    Note: In production, use defensive JSON parsing (see tutorial_analyzer/utils.py).
+    """
     async with AmplifierSession(config=CREATOR_CONFIG) as session:
-        result = await session.execute(f"Create content based on:\nAnalysis: {analysis}\nRequirements: {requirements}")
-    return result
+        response = await session.execute(f"Create content based on:\nAnalysis: {analysis}\nRequirements: {requirements}")
+    return json.loads(response)  # type: ignore[arg-type]
 
 
 async def evaluate_quality(creation: dict) -> dict:
-    """Stage 3: Evaluate quality (evaluative config)."""
+    """Stage 3: Evaluate quality (evaluative config).
+
+    Note: In production, use defensive JSON parsing (see tutorial_analyzer/utils.py).
+    """
     async with AmplifierSession(config=EVALUATOR_CONFIG) as session:
-        result = await session.execute(f"Evaluate this creation and score 0-1:\n\n{creation}")
-    return result
+        response = await session.execute(f"Evaluate this creation and score 0-1:\n\n{creation}")
+    return json.loads(response)  # type: ignore[arg-type]
 
 
 # ==== ORCHESTRATION: Code manages flow, state, decisions ====
