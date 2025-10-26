@@ -53,6 +53,12 @@ amplifier profile current
 amplifier profile list
 amplifier profile show <name>
 
+# Collection management
+amplifier collection add <git-url> [--local]
+amplifier collection list
+amplifier collection show <name>
+amplifier collection remove <name> [--local]
+
 # Module management
 amplifier module add <name> [--local|--project|--global]
 amplifier module remove <name> [--scope]
@@ -172,11 +178,15 @@ uv run pytest
 ```
 amplifier_app_cli/
 ├── commands/          # CLI command implementations
+├── collections/       # Collection system (installation, resolution)
 ├── data/
-│   ├── profiles/      # Bundled profiles
-│   └── agents/        # Bundled agent definitions
+│   ├── collections/   # Bundled collections (foundation, developer-expertise)
+│   ├── profiles/      # Bundled profiles (inside collections)
+│   ├── agents/        # Bundled agents (inside collections)
+│   └── context/       # Bundled context files
 ├── profile_system/    # Profile loading and compilation
 ├── session_storage/   # Session persistence
+├── toolkit/           # Utilities for building scenario tools
 ├── settings.py        # Settings management
 ├── key_manager.py     # API key management
 └── main.py            # CLI entry point
@@ -186,8 +196,12 @@ amplifier_app_cli/
 
 - [Complete user guide](../docs/USER_ONBOARDING.md)
 - [Configuration reference](../docs/USER_ONBOARDING.md#quick-reference)
+- [Collections guide](../docs/COLLECTIONS_GUIDE.md)
+- [Scenario tools guide](../docs/SCENARIO_TOOLS_GUIDE.md)
 - [Profile authoring](../docs/PROFILE_AUTHORING.md)
+- [Agent authoring](../docs/AGENT_AUTHORING.md)
 - [Module development](../docs/MODULE_DEVELOPMENT.md)
+- [Toolkit guide](../docs/TOOLKIT_GUIDE.md)
 
 ## Contributing
 

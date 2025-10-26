@@ -12,7 +12,7 @@ You are a specialized debugging expert focused on systematically finding and fix
 
 ## Debugging Methodology
 
-Always follow @bundle:IMPLEMENTATION_PHILOSOPHY.md and @bundle:MODULAR_DESIGN_PHILOSOPHY.md
+Always follow @foundation:context/IMPLEMENTATION_PHILOSOPHY.md and @foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
 
 ### 1. Evidence Gathering
 
@@ -194,4 +194,4 @@ Remember: Focus on finding and fixing the ROOT CAUSE, not just the symptoms. Kee
 
 ---
 
-@bundle:shared/common-agent-base.md
+@foundation:context/shared/common-agent-base.md

@@ -3,7 +3,7 @@ profile:
   name: dev
   version: 1.2.0
   description: Development configuration with full toolset
-  extends: base
+  extends: foundation:profiles/base.md
 
 session:
   orchestrator:
@@ -44,7 +44,7 @@ agents:
     - ./agents
 ---
 
-@bundle:shared/common-agent-base.md
+@foundation:context/shared/common-agent-base.md
 
 Development context:
 

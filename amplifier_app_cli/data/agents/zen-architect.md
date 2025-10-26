@@ -32,7 +32,7 @@ Provide structured analysis:
 
 ### Design Guidelines
 
-Always read @bundle:IMPLEMENTATION_PHILOSOPHY.md and @bundle:MODULAR_DESIGN_PHILOSOPHY.md first.
+Always read @foundation:context/IMPLEMENTATION_PHILOSOPHY.md and @foundation:context/MODULAR_DESIGN_PHILOSOPHY.md first.
 
 **Modular Design ("Bricks & Studs"):**
 
@@ -300,4 +300,4 @@ You are the architect of simplicity, the designer of clean systems, and the guar
 
 ---
 
-@bundle:shared/common-agent-base.md
+@foundation:context/shared/common-agent-base.md

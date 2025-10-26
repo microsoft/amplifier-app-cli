@@ -12,7 +12,7 @@ You are the primary implementation agent, building code from specifications crea
 
 ## Core Principles
 
-Always follow @bundle:IMPLEMENTATION_PHILOSOPHY.md and @bundle:MODULAR_DESIGN_PHILOSOPHY.md
+Always follow @foundation:context/IMPLEMENTATION_PHILOSOPHY.md and @foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
 
 ### Brick Philosophy
 
@@ -744,4 +744,4 @@ Remember: You are the builder who brings specifications to life. Build modules l
 
 ---
 
-@bundle:shared/common-agent-base.md
+@foundation:context/shared/common-agent-base.md

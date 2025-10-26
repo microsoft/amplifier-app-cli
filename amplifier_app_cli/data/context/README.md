@@ -1,71 +1,129 @@
-# Bundled Context Library
+# Bundled Context Files
 
-This directory contains context files that are bundled with the Amplifier CLI application and can be referenced from profiles using @mentions.
+This directory contains context files bundled with the Amplifier CLI that can be referenced in profiles and agents using @mention syntax.
 
 ## What Are Context Files?
 
-Context files are markdown documents that can be loaded into sessions to provide additional context beyond the system instruction. Profiles can reference these files using @mention syntax in their markdown bodies.
+Context files are markdown documents that provide additional context to AI sessions. Profiles and agents reference these files using @mentions to load relevant knowledge and instructions.
+
+---
 
 ## Files in This Directory
 
-### AGENTS.md
+**Project Anchors**:
+- `AGENTS.md` - Project guidelines for AI assistants (from root, symlinked)
 
-Shared project guidelines and best practices for AI assistants working with Amplifier. Contains build commands, code style, design philosophy, and common patterns.
+**Concept Overviews** (for AI agents):
+- `collections-overview.md` - Collections system quick reference
+- `scenario-tools-overview.md` - Scenario tools concept and patterns
 
-**Usage**: Reference with `@bundle:AGENTS.md` in profile markdown body
+---
+
+## Collections-Based Context
+
+Most context files are now organized in **collections** rather than this flat directory. Collections provide better organization and shareability.
+
+### Foundation Collection Context
+
+Core philosophy and shared patterns:
+
+```markdown
+@foundation:context/IMPLEMENTATION_PHILOSOPHY.md
+@foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
+@foundation:context/shared/common-agent-base.md
+```
+
+### Developer Expertise Collection
+
+Development-focused context (if developer-expertise collection is installed):
+
+```markdown
+@developer-expertise:context/...
+```
+
+---
+
+## @Mention Syntax
+
+Reference context files using @mention syntax:
+
+### Collection References
+
+```markdown
+@collection-name:path/to/file.md
+```
+
+**Examples**:
+```markdown
+# Foundation collection context
+@foundation:context/IMPLEMENTATION_PHILOSOPHY.md
+@foundation:context/shared/common-agent-base.md
+
+# Other collection context
+@memory-solution:context/patterns.md
+```
+
+### Shortcuts
+
+```markdown
+@user:path         →  ~/.amplifier/path
+@project:path      →  .amplifier/path
+@path              →  Direct path (CWD or relative)
+```
+
+### Examples in Profiles
+
+```markdown
+# profiles/custom.md
+---
+name: custom
+---
+
+You are a specialized assistant.
+
+Core context:
+- @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
+- @user:context/my-standards.md
+- @project:context/project-specific.md
+
+Work according to these principles.
+```
+
+---
+
+## Resolution Order
+
+When resolving @mentions, Amplifier searches in precedence order:
+
+**For collection references** (`@collection:path`):
+1. Project collections (`.amplifier/collections/`)
+2. User collections (`~/.amplifier/collections/`)
+3. Bundled collections (`<package>/data/collections/`)
+
+**For direct paths** (`@path`):
+1. Relative to profile file (if `./`)
+2. Project context (`.amplifier/context/`)
+3. User context (`~/.amplifier/context/`)
+4. Current working directory
+
+---
 
 ## How Context Loading Works
 
-When a profile uses @mentions in its markdown body, the context loader:
+When a profile or agent includes @mentions:
 
-1. Parses @mentions from the profile markdown
-2. Resolves each mention to a file (bundled, project, or user)
-3. Loads the file content recursively (following @mentions in loaded files)
-4. Deduplicates content by hash (same content from multiple paths = one copy)
-5. Creates messages from the loaded context
-6. Injects into the session
-
-## Search Path Resolution
-
-@mentions are resolved using this search order (first match wins):
-
-1. Relative to profile file (if starts with `./`)
-2. Bundled context (`amplifier_app_cli/data/context/`)
-3. Project context (`.amplifier/context/`)
-4. User context (`~/.amplifier/context/`)
-
-## Example Usage
-
-```markdown
-# profiles/dev.md
+1. **Parse @mentions** from markdown body
+2. **Resolve each mention**:
+   - Collection references → search collection paths
+   - Direct paths → search context paths
+3. **Load files recursively** (following @mentions in loaded files)
+4. **Deduplicate content** by hash (same content = one copy)
+5. **Create context messages**
+6. **Inject into session** before conversation
 
 ---
 
-profile:
-name: dev
-
----
-
-You are a development assistant for Amplifier.
-
-Core context:
-
-- @bundle:AGENTS.md
-- @bundle:IMPLEMENTATION_PHILOSOPHY.md
-- ...
-
-Work efficiently and follow project conventions.
-```
-
-When this profile loads, the context loader:
-
-- Loads AGENTS.md (from this bundled directory)
-- Loads IMPLEMENTATION_PHILOSOPHY.md (from this bundled directory)
-- ... additional context files as referenced
-- Combines into context messages
-- Injects before conversation messages
-
-## Creating Custom Context Files
+## Creating Custom Context
 
 ### Project Context
 
@@ -73,10 +131,15 @@ Create `.amplifier/context/` in your project:
 
 ```bash
 mkdir -p .amplifier/context
-echo "Project-specific guidelines..." > .amplifier/context/project-standards.md
+cat > .amplifier/context/project-standards.md << 'EOF'
+# Project Standards
+
+Our project uses these patterns:
+- ...
+EOF
 ```
 
-Reference with `@project-standards.md` from profiles
+Reference with `@project:context/project-standards.md` or `@project-standards.md`
 
 ### User Context
 
@@ -84,13 +147,25 @@ Create `~/.amplifier/context/` for personal context:
 
 ```bash
 mkdir -p ~/.amplifier/context
-echo "My personal preferences..." > ~/.amplifier/context/my-standards.md
+cat > ~/.amplifier/context/my-preferences.md << 'EOF'
+# My Preferences
+
+I prefer:
+- ...
+EOF
 ```
 
-Reference with `@my-standards.md` from profiles
+Reference with `@user:context/my-preferences.md` or `@user:my-preferences.md`
 
-## Bundled Context Files
+---
 
-These context files ship with Amplifier and can be referenced by any profile without additional setup.
+## Related Documentation
 
-See individual files for their specific content and purpose.
+- [COLLECTIONS_GUIDE.md](../../../docs/COLLECTIONS_GUIDE.md) - Complete collections guide
+- [CONTEXT_LOADING.md](../../../docs/CONTEXT_LOADING.md) - @mention syntax details
+- [PROFILE_AUTHORING.md](../../../docs/PROFILE_AUTHORING.md) - Using context in profiles
+- [AGENT_AUTHORING.md](../../../docs/AGENT_AUTHORING.md) - Using context in agents
+
+---
+
+**Last Updated**: 2025-10-26

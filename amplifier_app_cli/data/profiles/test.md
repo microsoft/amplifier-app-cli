@@ -3,7 +3,7 @@ profile:
   name: test
   version: 1.0.0
   description: Test configuration with mock provider for testing scenarios
-  extends: base
+  extends: foundation:profiles/base.md
 
 session:
   orchestrator:
@@ -39,7 +39,7 @@ agents:
         instruction: "You are a test agent. Respond with 'Test successful' to any query."
 ---
 
-@bundle:shared/common-agent-base.md
+@foundation:context/shared/common-agent-base.md
 
 Testing configuration with mock provider for deterministic testing scenarios.
 

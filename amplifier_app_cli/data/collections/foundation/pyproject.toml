@@ -1,0 +1,16 @@
+[project]
+name = "foundation"
+version = "1.0.0"
+description = "Foundation collection - base profiles and shared context for Amplifier"
+
+[project.urls]
+repository = "https://github.com/microsoft/amplifier"
+
+[tool.amplifier.collection]
+author = "Amplifier Team"
+capabilities = [
+    "Base profiles (foundation, base, production, test)",
+    "Shared philosophy context (IMPLEMENTATION_PHILOSOPHY, MODULAR_DESIGN_PHILOSOPHY)",
+    "Common agent instruction components"
+]
+requires = {}

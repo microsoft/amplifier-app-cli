@@ -3,7 +3,7 @@ profile:
   name: base
   version: 1.1.0
   description: Base configuration with core functionality, tools, and hooks
-  extends: foundation
+  extends: foundation:profiles/foundation.md
 
 session:
   orchestrator:
@@ -39,7 +39,7 @@ hooks:
       session_log_template: ~/.amplifier/projects/{project}/sessions/{session_id}/events.jsonl
 ---
 
-@bundle:shared/common-agent-base.md
+@foundation:context/shared/common-agent-base.md
 
 Project context:
 

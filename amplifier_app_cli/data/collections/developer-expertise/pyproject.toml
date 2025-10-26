@@ -1,0 +1,16 @@
+[project]
+name = "developer-expertise"
+version = "1.0.0"
+description = "Developer expertise collection - development profiles and specialized agents"
+
+[project.urls]
+repository = "https://github.com/microsoft/amplifier"
+
+[tool.amplifier.collection]
+author = "Amplifier Team"
+capabilities = [
+    "Development profiles (dev, full)",
+    "Specialized agents (zen-architect, bug-hunter, modular-builder, researcher)",
+    "Software engineering expertise and automation"
+]
+requires = {foundation = "^1.0.0"}

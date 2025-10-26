@@ -3,7 +3,7 @@ profile:
   name: production
   version: 1.1.0
   description: Production configuration optimized for reliability
-  extends: base
+  extends: foundation:profiles/base.md
 
 session:
   orchestrator:
@@ -32,6 +32,6 @@ agents:
     - researcher
 ---
 
-@bundle:shared/common-agent-base.md
+@foundation:context/shared/common-agent-base.md
 
 Production configuration optimized for reliability and auditability. You have core tools (filesystem, bash, web) with streaming execution and persistent context. Extended thinking is enabled for critical decisions. Only the researcher agent is available for focused analysis. Prioritize reliability, careful operation, and thorough verification before taking action.

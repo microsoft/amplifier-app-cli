@@ -3,7 +3,7 @@ profile:
   name: full
   version: 1.0.0
   description: Full configuration with all available tools, hooks, and agents
-  extends: base
+  extends: foundation:profiles/base.md
 
 session:
   orchestrator:
@@ -72,7 +72,7 @@ hooks:
       batch_size: 10
 ---
 
-@bundle:shared/common-agent-base.md
+@foundation:context/shared/common-agent-base.md
 
 Full capability configuration with comprehensive context:
 
