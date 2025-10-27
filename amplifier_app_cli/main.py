@@ -1490,7 +1490,7 @@ async def interactive_chat(
 
                     if action == "prompt":
                         # Normal prompt execution
-                        console.print("[dim]Processing... (Ctrl-C to abort)[/dim]")
+                        console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
 
                         # Process runtime @mentions in user input
                         await _process_runtime_mentions(session, data["text"])
@@ -2515,7 +2515,7 @@ async def interactive_chat_with_session(
 
                     if action == "prompt":
                         # Normal prompt execution
-                        console.print("[dim]Processing... (Ctrl-C to abort)[/dim]")
+                        console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
 
                         # Process runtime @mentions in user input
                         await _process_runtime_mentions(session, data["text"])
