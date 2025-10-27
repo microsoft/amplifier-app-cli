@@ -1492,47 +1492,49 @@ async def interactive_chat(
                         # Normal prompt execution
                         console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
 
-                        # Process runtime @mentions in user input
-                        await _process_runtime_mentions(session, data["text"])
+                        try:
+                            # Process runtime @mentions in user input
+                            await _process_runtime_mentions(session, data["text"])
 
-                        response = await session.execute(data["text"])
-                        console.print("\n" + response)
+                            response = await session.execute(data["text"])
+                            console.print("\n" + response)
 
-                        # Save session after each interaction
-                        context = session.coordinator.get("context")
-                        if context and hasattr(context, "get_messages"):
-                            messages = await context.get_messages()
-                            # Extract model from providers config
-                            model_name = "unknown"
-                            if isinstance(config.get("providers"), list) and config["providers"]:
-                                first_provider = config["providers"][0]
-                                if isinstance(first_provider, dict) and "config" in first_provider:
-                                    # Check both "model" and "default_model" keys
-                                    provider_config = first_provider["config"]
-                                    model_name = provider_config.get("model") or provider_config.get(
-                                        "default_model", "unknown"
-                                    )
+                            # Save session after each interaction
+                            context = session.coordinator.get("context")
+                            if context and hasattr(context, "get_messages"):
+                                messages = await context.get_messages()
+                                # Extract model from providers config
+                                model_name = "unknown"
+                                if isinstance(config.get("providers"), list) and config["providers"]:
+                                    first_provider = config["providers"][0]
+                                    if isinstance(first_provider, dict) and "config" in first_provider:
+                                        # Check both "model" and "default_model" keys
+                                        provider_config = first_provider["config"]
+                                        model_name = provider_config.get("model") or provider_config.get(
+                                            "default_model", "unknown"
+                                        )
 
-                            metadata = {
-                                "created": datetime.now(UTC).isoformat(),
-                                "profile": profile_name,
-                                "model": model_name,
-                                "turn_count": len([m for m in messages if m.get("role") == "user"]),
-                            }
-                            store.save(session_id, messages, metadata)
+                                metadata = {
+                                    "created": datetime.now(UTC).isoformat(),
+                                    "profile": profile_name,
+                                    "model": model_name,
+                                    "turn_count": len([m for m in messages if m.get("role") == "user"]),
+                                }
+                                store.save(session_id, messages, metadata)
+                        except KeyboardInterrupt:
+                            # Ctrl-C during processing - abort but stay in REPL
+                            console.print("\n[yellow]Aborted by user (Ctrl-C)[/yellow]")
+                            if command_processor.halted:
+                                command_processor.halted = False
+                            # Continue to next prompt - don't exit REPL
                     else:
                         # Handle command
                         result = await command_processor.handle_command(action, data)
                         console.print(f"[cyan]{result}[/cyan]")
 
             except KeyboardInterrupt:
-                # Ctrl-C during execution - abort and stay in REPL
-                # Note: prompt_toolkit handles Ctrl-C at prompt internally (clears line)
-                # So this handler only triggers during await session.execute()
-                console.print("\n[yellow]Aborted by user (Ctrl-C)[/yellow]")
-                if command_processor.halted:
-                    command_processor.halted = False
-                # Always continue loop - don't exit REPL
+                # Catch-all for any KeyboardInterrupt at prompt level
+                # Just continue - don't exit REPL
                 continue
 
             except EOFError:
@@ -1544,6 +1546,10 @@ async def interactive_chat(
                 console.print(f"[red]Error:[/red] {e}")
                 if verbose:
                     console.print_exception()
+    except KeyboardInterrupt:
+        # Final safety net - if Ctrl-C somehow escapes inner handlers
+        # This should never happen, but if it does, exit gracefully
+        console.print("\n[yellow]Interrupted - exiting...[/yellow]")
     finally:
         await session.cleanup()
         console.print("\n[yellow]Session ended[/yellow]\n")
@@ -2517,46 +2523,48 @@ async def interactive_chat_with_session(
                         # Normal prompt execution
                         console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
 
-                        # Process runtime @mentions in user input
-                        await _process_runtime_mentions(session, data["text"])
+                        try:
+                            # Process runtime @mentions in user input
+                            await _process_runtime_mentions(session, data["text"])
 
-                        response = await session.execute(data["text"])
-                        console.print("\n" + response)
+                            response = await session.execute(data["text"])
+                            console.print("\n" + response)
 
-                        # Save session after each interaction
-                        if context and hasattr(context, "get_messages"):
-                            messages = await context.get_messages()
-                            # Extract model from providers config
-                            model_name = "unknown"
-                            if isinstance(config.get("providers"), list) and config["providers"]:
-                                first_provider = config["providers"][0]
-                                if isinstance(first_provider, dict) and "config" in first_provider:
-                                    # Check both "model" and "default_model" keys
-                                    provider_config = first_provider["config"]
-                                    model_name = provider_config.get("model") or provider_config.get(
-                                        "default_model", "unknown"
-                                    )
+                            # Save session after each interaction
+                            if context and hasattr(context, "get_messages"):
+                                messages = await context.get_messages()
+                                # Extract model from providers config
+                                model_name = "unknown"
+                                if isinstance(config.get("providers"), list) and config["providers"]:
+                                    first_provider = config["providers"][0]
+                                    if isinstance(first_provider, dict) and "config" in first_provider:
+                                        # Check both "model" and "default_model" keys
+                                        provider_config = first_provider["config"]
+                                        model_name = provider_config.get("model") or provider_config.get(
+                                            "default_model", "unknown"
+                                        )
 
-                            metadata = {
-                                "created": datetime.now(UTC).isoformat(),
-                                "profile": profile_name,
-                                "model": model_name,
-                                "turn_count": len([m for m in messages if m.get("role") == "user"]),
-                            }
-                            store.save(session_id, messages, metadata)
+                                metadata = {
+                                    "created": datetime.now(UTC).isoformat(),
+                                    "profile": profile_name,
+                                    "model": model_name,
+                                    "turn_count": len([m for m in messages if m.get("role") == "user"]),
+                                }
+                                store.save(session_id, messages, metadata)
+                        except KeyboardInterrupt:
+                            # Ctrl-C during processing - abort but stay in REPL
+                            console.print("\n[yellow]Aborted by user (Ctrl-C)[/yellow]")
+                            if command_processor.halted:
+                                command_processor.halted = False
+                            # Continue to next prompt - don't exit REPL
                     else:
                         # Handle command
                         result = await command_processor.handle_command(action, data)
                         console.print(f"[cyan]{result}[/cyan]")
 
             except KeyboardInterrupt:
-                # Ctrl-C during execution - abort and stay in REPL
-                # Note: prompt_toolkit handles Ctrl-C at prompt internally (clears line)
-                # So this handler only triggers during await session.execute()
-                console.print("\n[yellow]Aborted by user (Ctrl-C)[/yellow]")
-                if command_processor.halted:
-                    command_processor.halted = False
-                # Always continue loop - don't exit REPL
+                # Catch-all for any KeyboardInterrupt at prompt level
+                # Just continue - don't exit REPL
                 continue
 
             except EOFError:
@@ -2568,6 +2576,10 @@ async def interactive_chat_with_session(
                 console.print(f"[red]Error:[/red] {e}")
                 if verbose:
                     console.print_exception()
+    except KeyboardInterrupt:
+        # Final safety net - if Ctrl-C somehow escapes inner handlers
+        # This should never happen, but if it does, exit gracefully
+        console.print("\n[yellow]Interrupted - exiting...[/yellow]")
     finally:
         await session.cleanup()
         console.print("\n[yellow]Session ended[/yellow]\n")
