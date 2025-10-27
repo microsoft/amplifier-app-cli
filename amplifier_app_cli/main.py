@@ -1393,7 +1393,7 @@ def _create_prompt_session() -> PromptSession:
         history=history,
         key_bindings=kb,
         multiline=True,  # Enable multi-line display
-        prompt_continuation=lambda width, line_number: "... ",  # Continuation prompt
+        prompt_continuation="... ",  # Continuation prompt (string is simpler than lambda)
         enable_history_search=True,  # Enables Ctrl-R
     )
 
