@@ -225,6 +225,7 @@ class CommandProcessor:
         "/help": {"action": "show_help", "description": "Show available commands"},
         "/config": {"action": "show_config", "description": "Show current configuration"},
         "/tools": {"action": "list_tools", "description": "List available tools"},
+        "/agents": {"action": "list_agents", "description": "List available agents"},
     }
 
     def __init__(self, session: AmplifierSession):
@@ -419,9 +420,21 @@ class CommandProcessor:
         lines = ["Available Tools:"]
         for name, tool in tools.items():
             desc = getattr(tool, "description", "No description")
-            lines.append(f"  {name:<20} - {desc}")
+            # Handle multi-line descriptions - take first line only
+            first_line = desc.split('\n')[0]
+            # Truncate if too long
+            if len(first_line) > 60:
+                first_line = first_line[:57] + "..."
+            lines.append(f"  {name:<20} - {first_line}")
 
         return "\n".join(lines)
+
+    async def _list_agents(self) -> str:
+        """List available agents using AgentManager."""
+        from .profile_system import AgentManager
+        manager = AgentManager()
+        manager.list_agents()
+        return ""  # Table prints directly via console
 
 
 def resolve_app_config(

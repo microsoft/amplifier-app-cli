@@ -121,7 +121,7 @@ def init_cmd():
     console.print()
     console.print(
         Panel.fit(
-            '[bold green]✓ Ready![/bold green]\n\nTry it now:\n  [cyan]amplifier "Hello, Amplifier!"[/cyan]',
+            '[bold green]✓ Ready![/bold green]\n\nTry it now:\n  [cyan]amplifier run "Hello, Amplifier!"[/cyan]',
             border_style="green",
         )
     )
