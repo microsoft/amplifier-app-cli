@@ -23,7 +23,7 @@ def temp_context_dirs():
         project_dir.mkdir()
         user_dir.mkdir()
 
-        # Bundled context files (via @bundle:)
+        # Bundled context files
         (bundled_context / "base.md").write_text("bundled context content")
         (bundled_context / "shared.md").write_text("bundled shared")
 
@@ -36,19 +36,6 @@ def temp_context_dirs():
             "project": project_dir,
             "user": user_dir,
         }
-
-
-def test_resolver_bundle_prefix(temp_context_dirs):
-    """Test @bundle: prefix resolves to bundled context."""
-    resolver = MentionResolver(
-        bundled_data_dir=temp_context_dirs["bundled"],
-        project_context_dir=temp_context_dirs["project"],
-        user_context_dir=temp_context_dirs["user"],
-    )
-
-    path = resolver.resolve("@bundle:base.md")
-    assert path is not None
-    assert path.read_text() == "bundled context content"
 
 
 def test_resolver_cwd_file(temp_context_dirs, monkeypatch):
@@ -140,6 +127,6 @@ def test_resolver_path_traversal_blocked(temp_context_dirs):
         user_context_dir=temp_context_dirs["user"],
     )
 
-    # Should return None for path traversal attempts
-    path = resolver.resolve("@bundle:../../etc/passwd")
+    # Should return None for path traversal attempts in collection references
+    path = resolver.resolve("@foundation:../../etc/passwd")
     assert path is None

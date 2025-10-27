@@ -104,18 +104,3 @@ def test_resolve_path_traversal_blocked():
     # Should block path traversal
     path = resolver.resolve("@foundation:../../../etc/passwd")
     assert path is None
-
-
-def test_resolve_bundle_still_works():
-    """
-    Test that @bundle: (deprecated) still works for backward compat.
-
-    Uses REAL bundled context files in amplifier_app_cli/data/context/.
-    """
-    resolver = MentionResolver()
-
-    # collections-overview.md exists in data/context/ (created in Phase 1)
-    path = resolver.resolve("@bundle:collections-overview.md")
-    assert path is not None
-    assert path.name == "collections-overview.md"
-    assert "data/context" in str(path)

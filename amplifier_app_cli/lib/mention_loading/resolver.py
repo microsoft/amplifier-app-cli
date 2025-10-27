@@ -14,9 +14,8 @@ class MentionResolver:
     1. @collection:path - Resolves to collection resources (e.g., @foundation:context/file.md)
     2. @user:path - Shortcut to ~/.amplifier/{path}
     3. @project:path - Shortcut to .amplifier/{path}
-    4. @bundle:path - DEPRECATED: Resolves to amplifier_app_cli/data/context/{path}
-    5. @~/path - Resolves to user home directory
-    6. @path - Resolves relative to CWD or relative_to parameter
+    4. @~/path - Resolves to user home directory
+    5. @path - Resolves relative to CWD or relative_to parameter
 
     Missing files are skipped gracefully (returns None).
 
@@ -80,9 +79,8 @@ class MentionResolver:
         1. @collection:path - Collection resources (e.g., @foundation:context/file.md)
         2. @user:path - Shortcut to ~/.amplifier/{path}
         3. @project:path - Shortcut to .amplifier/{path}
-        4. @bundle:path - DEPRECATED: Resolves to amplifier_app_cli/data/context/{path}
-        5. @~/path - User home directory
-        6. @path - Relative to CWD or relative_to
+        4. @~/path - User home directory
+        5. @path - Relative to CWD or relative_to
 
         Args:
             mention: @mention string with prefix
@@ -90,25 +88,7 @@ class MentionResolver:
         Returns:
             Absolute Path if file exists, None if not found (graceful skip)
         """
-        # BACKWARD COMPAT: @bundle: (DEPRECATED but check first to avoid collision)
-        if mention.startswith("@bundle:"):
-            path_str = mention[8:]  # Remove '@bundle:'
-
-            # Security: Prevent path traversal
-            if ".." in path_str:
-                logger.warning(f"Path traversal attempt blocked: {mention}")
-                return None
-
-            bundle_path = self.bundled_data_dir / "context" / path_str
-
-            if bundle_path.exists() and bundle_path.is_file():
-                return bundle_path.resolve()
-
-            # Graceful skip - bundled file missing (shouldn't happen but handle it)
-            logger.debug(f"Bundled context file not found: {bundle_path}")
-            return None
-
-        # NEW PATTERN: Collection references (@collection:path)
+        # Collection references (@collection:path)
         # Also handles shortcuts (@user:path, @project:path)
         if ":" in mention[1:] and not mention.startswith("@~/"):
             prefix, path = mention[1:].split(":", 1)
