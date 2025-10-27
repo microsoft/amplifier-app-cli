@@ -27,11 +27,12 @@ This collection is for developers building software with Amplifier. It includes 
 
 **Usage**:
 ```bash
-# Use dev profile (most common for development)
+# Use profiles (natural syntax)
 amplifier profile use developer-expertise:dev
-
-# Use full profile (maximum capabilities)
 amplifier profile use developer-expertise:full
+
+# Full path also works
+amplifier profile use developer-expertise:profiles/dev.md
 ```
 
 ### Agents
@@ -65,7 +66,10 @@ Requires: `foundation ^1.0.0`
 The developer-expertise collection extends foundation with development-specific resources:
 
 ```markdown
-# dev.md profile extends base
+# dev.md profile extends base (natural syntax)
+extends: foundation:base
+
+# Or full path
 extends: foundation:profiles/base.md
 
 # Agents reference foundation context

@@ -29,10 +29,21 @@ Other collections build on foundation by depending on it in their `pyproject.tom
 
 **Usage**:
 ```bash
-# Use directly
+# Use profiles (natural syntax)
 amplifier profile use foundation:base
+amplifier profile use foundation:foundation
+amplifier profile use foundation:production
 
-# Extend in your profiles
+# Full path also works
+amplifier profile use foundation:profiles/base.md
+```
+
+**In your profiles**:
+```markdown
+# Extend foundation profiles (both syntaxes work)
+extends: foundation:base
+
+# Or full path
 extends: foundation:profiles/base.md
 ```
 

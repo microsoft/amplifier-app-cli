@@ -39,6 +39,22 @@ def test_find_profile_file_resource_not_found():
     assert path is None
 
 
+def test_find_profile_file_natural_collection_syntax():
+    """Test natural collection:name syntax (user-friendly)."""
+    loader = ProfileLoader()
+
+    # Natural syntax: foundation:base (auto-adds profiles/ and .md)
+    path = loader.find_profile_file("foundation:base")
+    assert path is not None
+    assert path.name == "base.md"
+    assert path.exists()
+
+    # Also test with .md extension
+    path2 = loader.find_profile_file("foundation:base.md")
+    assert path2 is not None
+    assert path2.name == "base.md"
+
+
 def test_find_profile_file_simple_name_still_works():
     """Test that simple profile names still work (backward compat)."""
     loader = ProfileLoader()
