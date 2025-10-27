@@ -46,18 +46,20 @@ amplifier profile use developer-expertise:profiles/dev.md
 
 **Usage**:
 ```bash
-# Use specific agent (natural syntax)
-amplifier run --agent developer-expertise:zen-architect "design auth system"
-amplifier run --agent developer-expertise:bug-hunter "fix login timeout"
-amplifier run --agent developer-expertise:modular-builder "build from spec"
-amplifier run --agent developer-expertise:researcher "how does pytest work?"
-
-# Full path also works
-amplifier run --agent developer-expertise:agents/zen-architect.md "design this"
-
-# Agents available when using dev/full profiles
+# Load profile that includes agents
 amplifier profile use developer-expertise:dev
-amplifier run --agent zen-architect "design this"  # Simple name works
+
+# Start session - agents available for delegation
+amplifier run "design an auth system"
+
+# The session includes:
+# - zen-architect for architecture and design
+# - bug-hunter for debugging
+# - modular-builder for implementation
+# - researcher for technical research
+
+# Agents are used via delegation within the session
+# See AGENT_DELEGATION.md for details
 ```
 
 ---
@@ -98,7 +100,9 @@ extends: foundation:profiles/base.md
 
 **Example**:
 ```bash
-amplifier run --agent zen-architect "Design a caching layer for the API"
+# Load dev profile (includes zen-architect)
+amplifier profile use developer-expertise:dev
+amplifier run "Design a caching layer for the API"
 ```
 
 ### bug-hunter
@@ -115,7 +119,9 @@ amplifier run --agent zen-architect "Design a caching layer for the API"
 
 **Example**:
 ```bash
-amplifier run --agent bug-hunter "The login times out intermittently"
+# Load dev profile (includes bug-hunter)
+amplifier profile use developer-expertise:dev
+amplifier run "The login times out intermittently"
 ```
 
 ### modular-builder
@@ -132,7 +138,9 @@ amplifier run --agent bug-hunter "The login times out intermittently"
 
 **Example**:
 ```bash
-amplifier run --agent modular-builder "Build the auth module from the spec"
+# Load dev profile (includes modular-builder)
+amplifier profile use developer-expertise:dev
+amplifier run "Build the auth module from the spec"
 ```
 
 ### researcher
@@ -149,7 +157,9 @@ amplifier run --agent modular-builder "Build the auth module from the spec"
 
 **Example**:
 ```bash
-amplifier run --agent researcher "How does FastAPI handle WebSocket connections?"
+# Load dev profile (includes researcher)
+amplifier profile use developer-expertise:dev
+amplifier run "How does FastAPI handle WebSocket connections?"
 ```
 
 ---
