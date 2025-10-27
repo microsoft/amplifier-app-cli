@@ -39,6 +39,27 @@ def test_resolve_agent_resource_not_found():
     assert path is None
 
 
+def test_resolve_agent_natural_collection_syntax():
+    """Test natural collection:name syntax for agents (user-friendly)."""
+    resolver = AgentResolver()
+
+    # Natural syntax: developer-expertise:zen-architect (auto-adds agents/ and .md)
+    path = resolver.resolve("developer-expertise:zen-architect")
+    assert path is not None
+    assert path.name == "zen-architect.md"
+    assert path.exists()
+
+    # Also test with .md extension
+    path2 = resolver.resolve("developer-expertise:zen-architect.md")
+    assert path2 is not None
+    assert path2.name == "zen-architect.md"
+
+    # Test another agent
+    path3 = resolver.resolve("developer-expertise:bug-hunter")
+    assert path3 is not None
+    assert path3.name == "bug-hunter.md"
+
+
 def test_resolve_agent_simple_name_still_works():
     """Test that simple agent names still work (backward compat)."""
     resolver = AgentResolver()

@@ -54,9 +54,10 @@ class AgentResolver:
         """
         Resolve agent file by name using first-match-wins.
 
-        Supports two formats (APP LAYER POLICY per KERNEL_PHILOSOPHY):
-        1. Collection syntax: "collection:agents/name.md" (e.g., "developer-expertise:agents/zen-architect.md")
-        2. Simple name: "zen-architect" (searches local paths)
+        Supports multiple formats (APP LAYER POLICY per KERNEL_PHILOSOPHY):
+        1. Collection with simple name: "developer-expertise:zen-architect" → searches collection/agents/zen-architect.md
+        2. Collection with full path: "developer-expertise:agents/zen-architect.md" → uses exact path
+        3. Simple name: "zen-architect" (searches local paths)
 
         Resolution order for simple names (highest priority first):
         1. Environment variable AMPLIFIER_AGENT_<NAME>
@@ -70,7 +71,7 @@ class AgentResolver:
         Returns:
             Path to agent file if found, None otherwise
         """
-        # NEW: Collection syntax (developer-expertise:agents/zen-architect.md)
+        # Collection syntax (developer-expertise:zen-architect or developer-expertise:agents/zen-architect.md)
         if ":" in agent_name:
             collection_name, agent_path = agent_name.split(":", 1)
 
@@ -80,10 +81,20 @@ class AgentResolver:
 
             collection_path = collection_resolver.resolve(collection_name)
             if collection_path:
+                # Try as full path first (developer-expertise:agents/zen-architect.md)
                 full_path = collection_path / agent_path
                 if full_path.exists() and full_path.is_file():
                     logger.debug(f"Resolved agent from collection: {agent_name}")
                     return full_path
+
+                # Try as simple name (developer-expertise:zen-architect → agents/zen-architect.md)
+                if not agent_path.startswith("agents/"):
+                    # Add agents/ prefix and .md extension if needed
+                    simple_name = agent_path if agent_path.endswith(".md") else f"{agent_path}.md"
+                    full_path = collection_path / "agents" / simple_name
+                    if full_path.exists() and full_path.is_file():
+                        logger.debug(f"Resolved agent from collection (natural syntax): {agent_name}")
+                        return full_path
 
             # Collection or resource not found
             logger.debug(f"Collection agent not found: {agent_name}")

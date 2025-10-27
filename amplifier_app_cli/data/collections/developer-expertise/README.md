@@ -46,15 +46,18 @@ amplifier profile use developer-expertise:profiles/dev.md
 
 **Usage**:
 ```bash
-# Use specific agent
+# Use specific agent (natural syntax)
 amplifier run --agent developer-expertise:zen-architect "design auth system"
 amplifier run --agent developer-expertise:bug-hunter "fix login timeout"
 amplifier run --agent developer-expertise:modular-builder "build from spec"
 amplifier run --agent developer-expertise:researcher "how does pytest work?"
 
+# Full path also works
+amplifier run --agent developer-expertise:agents/zen-architect.md "design this"
+
 # Agents available when using dev/full profiles
 amplifier profile use developer-expertise:dev
-amplifier run --agent zen-architect "design this"  # Short form works
+amplifier run --agent zen-architect "design this"  # Simple name works
 ```
 
 ---
