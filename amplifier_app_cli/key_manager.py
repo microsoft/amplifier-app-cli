@@ -65,11 +65,16 @@ class KeyManager:
         os.environ[key_name] = key_value
 
     def get_configured_provider(self) -> str | None:
-        """Determine which provider is configured based on available keys."""
+        """Determine which provider is configured based on available keys.
+
+        Note: For Azure OpenAI, we only check for ENDPOINT (not API_KEY) because
+        Azure supports multiple auth methods (API key, Azure CLI, Managed Identity)
+        and the endpoint is always configured regardless of auth method.
+        """
         if self.has_key("ANTHROPIC_API_KEY"):
             return "anthropic"
         if self.has_key("OPENAI_API_KEY"):
             return "openai"
-        if self.has_key("AZURE_OPENAI_API_KEY") and self.has_key("AZURE_OPENAI_ENDPOINT"):
+        if self.has_key("AZURE_OPENAI_ENDPOINT"):  # Detects both API key and Azure CLI auth
             return "azure"
         return None

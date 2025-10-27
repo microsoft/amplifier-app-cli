@@ -286,15 +286,18 @@ To add tools, hooks, or agents, extend from this profile or copy/modify it.
 
 
 def check_first_run() -> bool:
-    """Check if this appears to be first run (no API keys configured)."""
+    """Check if this appears to be first run (no provider configured)."""
     key_manager = KeyManager()
 
-    # Check if any common provider keys exist
+    # Check if any provider is configured
+    # Note: For Azure, we check ENDPOINT instead of API_KEY because Azure supports
+    # multiple auth methods (API key, Azure CLI via DefaultAzureCredential, Managed Identity)
+    # and ENDPOINT is always saved regardless of auth method.
     return not any(
         [
             key_manager.has_key("ANTHROPIC_API_KEY"),
             key_manager.has_key("OPENAI_API_KEY"),
-            key_manager.has_key("AZURE_OPENAI_API_KEY"),
+            key_manager.has_key("AZURE_OPENAI_ENDPOINT"),  # Detects both API key and Azure CLI auth
         ]
     )
 
