@@ -41,3 +41,6 @@ Thumbs.db
 
 # Amplifier local state (do not commit developer's profile choice)
 .amplifier/profile
+
+# Beads (issue tracking database - JSONL is tracked in parent)
+.beads/

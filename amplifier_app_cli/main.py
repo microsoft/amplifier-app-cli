@@ -19,6 +19,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.panel import Panel
@@ -1351,6 +1352,7 @@ def _create_prompt_session() -> PromptSession:
     - Persistent history at ~/.amplifier/repl_history
     - Green prompt styling matching Rich console
     - History search with Ctrl-R
+    - Multi-line input with Ctrl-J
     - Graceful fallback to in-memory history on errors
 
     Returns:
@@ -1360,6 +1362,7 @@ def _create_prompt_session() -> PromptSession:
     - Ruthless simplicity: Use library's defaults, minimal config
     - Graceful degradation: Fallback to in-memory if file history fails
     - User experience: History location follows XDG pattern (~/.amplifier/)
+    - Reliable keys: Ctrl-J works in all terminals (SSH, tmux, everywhere)
     """
     history_path = Path.home() / ".amplifier" / "repl_history"
 
@@ -1377,11 +1380,21 @@ def _create_prompt_session() -> PromptSession:
             "Using in-memory history for this session."
         )
 
+    # Create key bindings for multi-line support
+    kb = KeyBindings()
+
+    @kb.add("c-j")  # Ctrl-J inserts newline (terminal-reliable)
+    def insert_newline(event):
+        """Insert newline character for multi-line input."""
+        event.current_buffer.insert_text("\n")
+
     return PromptSession(
         message=HTML("\n<ansigreen><b>></b></ansigreen> "),
         history=history,
+        key_bindings=kb,
+        multiline=True,  # Enable multi-line display
+        prompt_continuation=lambda width, line_number: "... ",  # Continuation prompt
         enable_history_search=True,  # Enables Ctrl-R
-        multiline=False,  # Single-line input (Enter submits)
     )
 
 
@@ -1448,7 +1461,7 @@ async def interactive_chat(
     console.print(
         Panel.fit(
             "[bold cyan]Amplifier Interactive Session[/bold cyan]\n"
-            "Type '/help' for commands, 'exit' or press Ctrl+C to quit",
+            "Commands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D",
             border_style="cyan",
         )
     )
@@ -1472,7 +1485,7 @@ async def interactive_chat(
 
                     if action == "prompt":
                         # Normal prompt execution
-                        console.print("[dim]Processing...[/dim]")
+                        console.print("[dim]Processing... (Ctrl-C to abort)[/dim]")
 
                         # Process runtime @mentions in user input
                         await _process_runtime_mentions(session, data["text"])
@@ -1508,10 +1521,12 @@ async def interactive_chat(
                         console.print(f"[cyan]{result}[/cyan]")
 
             except KeyboardInterrupt:
-                # Ctrl-C at prompt or during execution - stay in REPL
+                # Ctrl-C during execution - abort and stay in REPL
+                # Note: prompt_toolkit handles Ctrl-C at prompt internally (clears line)
+                # So this handler only triggers during await session.execute()
+                console.print("\n[yellow]Aborted by user (Ctrl-C)[/yellow]")
                 if command_processor.halted:
                     command_processor.halted = False
-                    console.print("\n[yellow]Execution stopped[/yellow]")
                 # Always continue loop - don't exit REPL
                 continue
 
@@ -2468,7 +2483,7 @@ async def interactive_chat_with_session(
     console.print(
         Panel.fit(
             "[bold cyan]Amplifier Interactive Session (Resumed)[/bold cyan]\n"
-            "Type '/help' for commands, 'exit' or press Ctrl+C to quit",
+            "Commands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D",
             border_style="cyan",
         )
     )
@@ -2495,7 +2510,7 @@ async def interactive_chat_with_session(
 
                     if action == "prompt":
                         # Normal prompt execution
-                        console.print("[dim]Processing...[/dim]")
+                        console.print("[dim]Processing... (Ctrl-C to abort)[/dim]")
 
                         # Process runtime @mentions in user input
                         await _process_runtime_mentions(session, data["text"])
@@ -2530,10 +2545,12 @@ async def interactive_chat_with_session(
                         console.print(f"[cyan]{result}[/cyan]")
 
             except KeyboardInterrupt:
-                # Ctrl-C at prompt or during execution - stay in REPL
+                # Ctrl-C during execution - abort and stay in REPL
+                # Note: prompt_toolkit handles Ctrl-C at prompt internally (clears line)
+                # So this handler only triggers during await session.execute()
+                console.print("\n[yellow]Aborted by user (Ctrl-C)[/yellow]")
                 if command_processor.halted:
                     command_processor.halted = False
-                    console.print("\n[yellow]Execution stopped[/yellow]")
                 # Always continue loop - don't exit REPL
                 continue
 

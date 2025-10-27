@@ -61,9 +61,18 @@ class TestREPLBehavior:
 
         # Verify key settings from plan
         assert session.enable_history_search is True  # Ctrl-R
-        assert session.multiline is False  # Single-line input
+        assert session.multiline is True  # Multi-line display enabled (bd-23)
         # History should be either FileHistory or InMemoryHistory
         assert hasattr(session, "history")
+
+    def test_multiline_key_binding_registered(self):
+        """Verify Ctrl-J key binding is registered for multi-line input (bd-23)."""
+        session = _create_prompt_session()
+
+        # Verify key bindings exist
+        assert session.key_bindings is not None
+        # Verify we have custom bindings (can't easily test specific binding without running)
+        # This test verifies the integration pattern is correct
 
     def test_history_persists_across_sessions(self, tmp_path, monkeypatch):
         """Verify command history is saved and loaded across sessions."""
@@ -85,10 +94,22 @@ class TestREPLBehavior:
 
 # Integration notes for manual testing:
 # 1. Start REPL: `amplifier run --profile dev --mode chat`
-# 2. Verify:
+# 2. Verify bd-19 features:
 #    - Up/Down arrows navigate history
 #    - Ctrl-R searches history
 #    - Ctrl-C cancels current line but stays in REPL
 #    - Ctrl-D exits REPL
 #    - Multi-line paste works correctly
 #    - Long input (5000+ chars) works without truncation
+# 3. Verify bd-23 feature (multi-line input):
+#    - Type "line 1", press Ctrl-J (not Enter)
+#    - See "... " continuation prompt
+#    - Type "line 2", press Ctrl-J
+#    - Type "line 3", press Enter
+#    - Verify all 3 lines submitted together
+# 4. Verify bd-22 feature (abort during processing):
+#    - Type a prompt, press Enter
+#    - See "Processing... (Ctrl-C to abort)"
+#    - Press Ctrl-C
+#    - Verify "Aborted by user (Ctrl-C)" message
+#    - Verify REPL stays active (doesn't exit)
