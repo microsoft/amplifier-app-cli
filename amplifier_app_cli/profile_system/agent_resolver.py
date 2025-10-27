@@ -75,6 +75,7 @@ class AgentResolver:
             collection_name, agent_path = agent_name.split(":", 1)
 
             from ..collections import CollectionResolver
+
             collection_resolver = CollectionResolver()
 
             collection_path = collection_resolver.resolve(collection_name)

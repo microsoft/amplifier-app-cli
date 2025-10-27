@@ -167,7 +167,9 @@ async def create_from_analysis(analysis: dict, requirements: str) -> dict[str, A
     Uses defensive JSON parsing to handle LLM response variability.
     """
     async with AmplifierSession(config=CREATOR_CONFIG) as session:
-        response = await session.execute(f"Create content based on:\nAnalysis: {analysis}\nRequirements: {requirements}")
+        response = await session.execute(
+            f"Create content based on:\nAnalysis: {analysis}\nRequirements: {requirements}"
+        )
     return extract_dict_from_response(response)
 
 

@@ -1,4 +1,4 @@
-"""Tests for mention loader."""
+"""Tests for mention loader with explicit resolution."""
 
 import tempfile
 from pathlib import Path
@@ -31,14 +31,16 @@ def temp_test_files():
 
 def test_loader_single_file(temp_test_files):
     """Test loading a single file without mentions."""
+    # Use relative_to so @simple.md resolves correctly
     resolver = MentionResolver(
         bundled_data_dir=temp_test_files,
         project_context_dir=temp_test_files,
         user_context_dir=temp_test_files,
+        relative_to=temp_test_files,
     )
     loader = MentionLoader(resolver)
 
-    messages = loader.load_mentions("@simple.md")
+    messages = loader.load_mentions("@simple.md", relative_to=temp_test_files)
 
     assert len(messages) == 1
     assert messages[0].role == "developer"
@@ -52,10 +54,11 @@ def test_loader_recursive_loading(temp_test_files):
         bundled_data_dir=temp_test_files,
         project_context_dir=temp_test_files,
         user_context_dir=temp_test_files,
+        relative_to=temp_test_files,
     )
     loader = MentionLoader(resolver)
 
-    messages = loader.load_mentions("@with_mentions.md")
+    messages = loader.load_mentions("@with_mentions.md", relative_to=temp_test_files)
 
     assert len(messages) == 3
 
@@ -73,10 +76,11 @@ def test_loader_cycle_detection(temp_test_files):
         bundled_data_dir=temp_test_files,
         project_context_dir=temp_test_files,
         user_context_dir=temp_test_files,
+        relative_to=temp_test_files,
     )
     loader = MentionLoader(resolver)
 
-    messages = loader.load_mentions("@recursive_a.md")
+    messages = loader.load_mentions("@recursive_a.md", relative_to=temp_test_files)
 
     assert len(messages) == 2
 
@@ -93,10 +97,11 @@ def test_loader_missing_file_silent_skip(temp_test_files):
         bundled_data_dir=temp_test_files,
         project_context_dir=temp_test_files,
         user_context_dir=temp_test_files,
+        relative_to=temp_test_files,
     )
     loader = MentionLoader(resolver)
 
-    messages = loader.load_mentions("@missing.md @simple.md")
+    messages = loader.load_mentions("@missing.md @simple.md", relative_to=temp_test_files)
 
     assert len(messages) == 1
     assert "Simple file content" in messages[0].content
@@ -108,10 +113,11 @@ def test_loader_deduplication(temp_test_files):
         bundled_data_dir=temp_test_files,
         project_context_dir=temp_test_files,
         user_context_dir=temp_test_files,
+        relative_to=temp_test_files,
     )
     loader = MentionLoader(resolver)
 
-    messages = loader.load_mentions("@duplicate1.md @duplicate2.md")
+    messages = loader.load_mentions("@duplicate1.md @duplicate2.md", relative_to=temp_test_files)
 
     assert len(messages) == 1
     assert "Shared content" in messages[0].content
@@ -139,10 +145,11 @@ def test_loader_message_format(temp_test_files):
         bundled_data_dir=temp_test_files,
         project_context_dir=temp_test_files,
         user_context_dir=temp_test_files,
+        relative_to=temp_test_files,
     )
     loader = MentionLoader(resolver)
 
-    messages = loader.load_mentions("@simple.md")
+    messages = loader.load_mentions("@simple.md", relative_to=temp_test_files)
 
     assert len(messages) == 1
     # Content is always str for loaded files, but need type guard for pyright

@@ -19,6 +19,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from .commands.collection import collection as collection_group
 from .commands.init import check_first_run
 from .commands.init import init_cmd
 from .commands.init import prompt_first_run_init
@@ -1916,6 +1917,7 @@ def module_current():
 
 
 # Register standalone commands
+cli.add_command(collection_group)
 cli.add_command(logs_cmd)
 cli.add_command(init_cmd)
 cli.add_command(provider_group)

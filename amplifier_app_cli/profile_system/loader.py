@@ -88,6 +88,7 @@ class ProfileLoader:
             collection_name, profile_path = name.split(":", 1)
 
             from ..collections import CollectionResolver
+
             collection_resolver = CollectionResolver()
 
             collection_path = collection_resolver.resolve(collection_name)

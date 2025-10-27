@@ -54,6 +54,7 @@ class MentionResolver:
 
         # NEW: Collection resolver (APP LAYER POLICY)
         from ...collections import CollectionResolver
+
         self.collection_resolver = CollectionResolver()
 
     def _get_bundled_data_dir(self) -> Path:
@@ -157,10 +158,10 @@ class MentionResolver:
             logger.debug(f"User home file not found: {home_path}")
             return None
 
-        # Type 3: Regular @ - CWD or relative_to (EXISTING LOGIC - keep it)
+        # Type 3: Regular @ - CWD or relative_to
         path_str = mention.lstrip("@")
 
-        # Handle old ./ and ../ syntax (keep backward compat)
+        # Handle relative path syntax
         if path_str.startswith("./") or path_str.startswith("../"):
             return self._resolve_relative(path_str)
 

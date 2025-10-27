@@ -75,8 +75,14 @@ class AgentLoader:
                         if isinstance(msg.content, str):
                             context_parts.append(msg.content)
                         elif isinstance(msg.content, list):
-                            # ContentBlock list - extract text
-                            context_parts.append("".join(block.text if hasattr(block, "text") else str(block) for block in msg.content))  # type: ignore[attr-defined]
+                            # ContentBlock list - extract text with explicit type narrowing
+                            text_parts = []
+                            for block in msg.content:
+                                if hasattr(block, "text"):
+                                    text_parts.append(block.text)  # type: ignore[attr-defined]
+                                else:
+                                    text_parts.append(str(block))
+                            context_parts.append("".join(text_parts))
                         else:
                             context_parts.append(str(msg.content))
 

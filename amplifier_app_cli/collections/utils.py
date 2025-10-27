@@ -39,7 +39,7 @@ def get_collection_search_paths() -> list[Path]:
     bundled_collections = package_dir / "data" / "collections"
 
     return [
-        bundled_collections,                        # 1. Bundled (lowest precedence)
-        Path.home() / ".amplifier/collections",     # 2. User global
-        Path.cwd() / ".amplifier/collections",      # 3. Project local (highest precedence)
+        bundled_collections,  # 1. Bundled (lowest precedence)
+        Path.home() / ".amplifier/collections",  # 2. User global
+        Path.cwd() / ".amplifier/collections",  # 3. Project local (highest precedence)
     ]

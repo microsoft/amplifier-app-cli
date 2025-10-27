@@ -8,7 +8,6 @@ from pathlib import Path
 from textwrap import dedent
 
 import pytest
-
 from amplifier_app_cli.collections.resolver import CollectionResolver
 
 
@@ -27,52 +26,57 @@ def mock_collections(tmp_path: Path, monkeypatch):
     bundled = tmp_path / "bundled" / "collections"
     bundled_foundation = bundled / "foundation"
     bundled_foundation.mkdir(parents=True)
-    (bundled_foundation / "pyproject.toml").write_text(dedent("""
+    (bundled_foundation / "pyproject.toml").write_text(
+        dedent("""
         [project]
         name = "foundation"
         version = "1.0.0"
-    """))
+    """)
+    )
 
     # User collections
     user = tmp_path / "user" / ".amplifier" / "collections"
     user_foundation = user / "foundation"
     user_foundation.mkdir(parents=True)
-    (user_foundation / "pyproject.toml").write_text(dedent("""
+    (user_foundation / "pyproject.toml").write_text(
+        dedent("""
         [project]
         name = "foundation"
         version = "2.0.0"
-    """))
+    """)
+    )
 
     user_custom = user / "custom"
     user_custom.mkdir(parents=True)
-    (user_custom / "pyproject.toml").write_text(dedent("""
+    (user_custom / "pyproject.toml").write_text(
+        dedent("""
         [project]
         name = "custom"
         version = "1.0.0"
-    """))
+    """)
+    )
 
     # Project collections
     project = tmp_path / "project" / ".amplifier" / "collections"
     project_custom = project / "custom"
     project_custom.mkdir(parents=True)
-    (project_custom / "pyproject.toml").write_text(dedent("""
+    (project_custom / "pyproject.toml").write_text(
+        dedent("""
         [project]
         name = "custom"
         version = "3.0.0"
-    """))
+    """)
+    )
 
     # Mock search paths
     def mock_get_search_paths():
         return [
-            bundled,   # Lowest precedence
-            user,      # Middle
-            project,   # Highest precedence
+            bundled,  # Lowest precedence
+            user,  # Middle
+            project,  # Highest precedence
         ]
 
-    monkeypatch.setattr(
-        "amplifier_app_cli.collections.resolver.get_collection_search_paths",
-        mock_get_search_paths
-    )
+    monkeypatch.setattr("amplifier_app_cli.collections.resolver.get_collection_search_paths", mock_get_search_paths)
 
     return {
         "bundled": bundled,

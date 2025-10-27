@@ -9,18 +9,19 @@ from pathlib import Path
 from textwrap import dedent
 
 import pytest
-
 from amplifier_app_cli.collections.schema import CollectionMetadata
 
 
 def test_from_pyproject_minimal(tmp_path: Path):
     """Test parsing minimal valid pyproject.toml."""
     pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text(dedent("""
+    pyproject.write_text(
+        dedent("""
         [project]
         name = "test-collection"
         version = "1.0.0"
-    """))
+    """)
+    )
 
     metadata = CollectionMetadata.from_pyproject(pyproject)
 
@@ -35,7 +36,8 @@ def test_from_pyproject_minimal(tmp_path: Path):
 def test_from_pyproject_full(tmp_path: Path):
     """Test parsing complete pyproject.toml with all fields."""
     pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text(dedent("""
+    pyproject.write_text(
+        dedent("""
         [project]
         name = "memory-solution"
         version = "2.0.0"
@@ -52,7 +54,8 @@ def test_from_pyproject_full(tmp_path: Path):
             "Automated optimization"
         ]
         requires = {foundation = "^1.0.0", toolkit = "^1.2.0"}
-    """))
+    """)
+    )
 
     metadata = CollectionMetadata.from_pyproject(pyproject)
 
@@ -75,10 +78,12 @@ def test_from_pyproject_file_not_found():
 def test_from_pyproject_missing_project_section(tmp_path: Path):
     """Test error when [project] section missing."""
     pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text(dedent("""
+    pyproject.write_text(
+        dedent("""
         [tool.amplifier.collection]
         author = "test"
-    """))
+    """)
+    )
 
     with pytest.raises(KeyError, match="\\[project\\] section missing"):
         CollectionMetadata.from_pyproject(pyproject)
@@ -87,10 +92,12 @@ def test_from_pyproject_missing_project_section(tmp_path: Path):
 def test_from_pyproject_missing_name(tmp_path: Path):
     """Test error when required name field missing."""
     pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text(dedent("""
+    pyproject.write_text(
+        dedent("""
         [project]
         version = "1.0.0"
-    """))
+    """)
+    )
 
     with pytest.raises(KeyError, match="name"):
         CollectionMetadata.from_pyproject(pyproject)

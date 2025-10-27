@@ -5,8 +5,6 @@ Tests collection:agents/name.md syntax.
 Per AGENTS.md: Test real behavior with real bundled collections.
 """
 
-import pytest
-
 from amplifier_app_cli.profile_system.agent_resolver import AgentResolver
 
 

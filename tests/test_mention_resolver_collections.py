@@ -7,10 +7,8 @@ Per AGENTS.md: Use real bundled collections (ruthless simplicity).
 """
 
 from pathlib import Path
-from textwrap import dedent
 
 import pytest
-
 from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
 
 
