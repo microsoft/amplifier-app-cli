@@ -42,13 +42,10 @@ extends: foundation:profiles/base.md
 - `IMPLEMENTATION_PHILOSOPHY.md` - Ruthless simplicity principles
 - `MODULAR_DESIGN_PHILOSOPHY.md` - Bricks and studs approach
 
-**Common agent components**:
-- `context/shared/common-agent-base.md` - Base instructions for all agents
-
-**Usage in agents**:
+**Usage in agents and profiles**:
 ```markdown
 @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
-@foundation:context/shared/common-agent-base.md
+@foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
 ```
 
 ---
@@ -90,7 +87,7 @@ context:
   - @your-collection:context/specialized.md
 
 # In your agents
-@foundation:context/shared/common-agent-base.md
+@foundation:context/IMPLEMENTATION_PHILOSOPHY.md
 @your-collection:context/agent-specific.md
 ```
 

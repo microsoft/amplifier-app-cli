@@ -10,7 +10,6 @@ repository = "https://github.com/microsoft/amplifier"
 author = "Amplifier Team"
 capabilities = [
     "Base profiles (foundation, base, production, test)",
-    "Shared philosophy context (IMPLEMENTATION_PHILOSOPHY, MODULAR_DESIGN_PHILOSOPHY)",
-    "Common agent instruction components"
+    "Shared philosophy context (IMPLEMENTATION_PHILOSOPHY, MODULAR_DESIGN_PHILOSOPHY)"
 ]
 requires = {}

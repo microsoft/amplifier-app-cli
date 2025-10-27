@@ -70,7 +70,7 @@ extends: foundation:profiles/base.md
 
 # Agents reference foundation context
 @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
-@foundation:context/shared/common-agent-base.md
+@foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
 ```
 
 ---
