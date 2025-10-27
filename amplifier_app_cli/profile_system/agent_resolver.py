@@ -222,10 +222,10 @@ class AgentResolver:
             # Bundled collection (check BEFORE home, since uv installs to ~/.local/share/uv)
             if "amplifier_app_cli" in path_str and "data/collections" in path_str:
                 return "bundled"
-            # Project collection
-            if ".amplifier/collections" in path_str:
+            # Project collection (relative path, not under home)
+            if ".amplifier/collections" in path_str and str(Path.home()) not in path_str:
                 return "project-collection"
-            # User collection (must check after bundled to avoid ~/.local/share/uv false positive)
+            # User collection (under home directory)
             if str(Path.home()) in path_str and ".amplifier/collections" in path_str:
                 return "user-collection"
             return "collection"  # Unknown collection type

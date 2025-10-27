@@ -104,6 +104,10 @@ class ProfileLoader:
             for profile_file in search_path.glob("*.md"):
                 profile_name = profile_file.stem
 
+                # Skip README files
+                if profile_name.upper() == "README":
+                    continue
+
                 # Check if this profile is from a collection
                 # Collection profiles are in: .../collections/<collection-name>/profiles/<profile>.md
                 if "/collections/" in str(search_path):
@@ -437,10 +441,10 @@ class ProfileLoader:
             # Bundled collection (check BEFORE home, since uv installs to ~/.local/share/uv)
             if "amplifier_app_cli" in path_str and "data/collections" in path_str:
                 return "bundled"
-            # Project collection
-            if ".amplifier/collections" in path_str:
+            # Project collection (relative path, not under home)
+            if ".amplifier/collections" in path_str and str(Path.home()) not in path_str:
                 return "project-collection"
-            # User collection (must check after bundled to avoid ~/.local/share/uv false positive)
+            # User collection (under home directory)
             if str(Path.home()) in path_str and ".amplifier/collections" in path_str:
                 return "user-collection"
             return "collection"  # Unknown collection type
