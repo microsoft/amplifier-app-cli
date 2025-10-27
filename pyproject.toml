@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "amplifier-core",
     "pyyaml>=6.0.3",
+    "prompt-toolkit>=3.0.52",
 ]
 
 [project.scripts]

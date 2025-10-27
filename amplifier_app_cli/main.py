@@ -15,6 +15,11 @@ from typing import cast
 
 import click
 from amplifier_core import AmplifierSession
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -1339,6 +1344,47 @@ async def _process_profile_mentions(session: AmplifierSession, profile_name: str
         pass
 
 
+def _create_prompt_session() -> PromptSession:
+    """Create configured PromptSession for REPL.
+
+    Provides:
+    - Persistent history at ~/.amplifier/repl_history
+    - Green prompt styling matching Rich console
+    - History search with Ctrl-R
+    - Graceful fallback to in-memory history on errors
+
+    Returns:
+        Configured PromptSession instance
+
+    Philosophy:
+    - Ruthless simplicity: Use library's defaults, minimal config
+    - Graceful degradation: Fallback to in-memory if file history fails
+    - User experience: History location follows XDG pattern (~/.amplifier/)
+    """
+    history_path = Path.home() / ".amplifier" / "repl_history"
+
+    # Ensure .amplifier directory exists
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Try to use file history, fallback to in-memory
+    try:
+        history = FileHistory(str(history_path))
+    except Exception as e:
+        # Fallback if history file is corrupted or inaccessible
+        history = InMemoryHistory()
+        logger.warning(
+            f"Could not load history from {history_path}: {e}. "
+            "Using in-memory history for this session."
+        )
+
+    return PromptSession(
+        message=HTML("\n<ansigreen><b>></b></ansigreen> "),
+        history=history,
+        enable_history_search=True,  # Enables Ctrl-R
+        multiline=False,  # Single-line input (Enter submits)
+    )
+
+
 async def interactive_chat(
     config: dict, search_paths: list[Path], verbose: bool, session_id: str | None = None, profile_name: str = "default"
 ):
@@ -1407,16 +1453,22 @@ async def interactive_chat(
         )
     )
 
+    # Create prompt session for history and advanced editing
+    prompt_session = _create_prompt_session()
+
     try:
         while True:
             try:
-                prompt = console.input("\n[bold green]>[/bold green] ")
-                if prompt.lower() in ["exit", "quit"]:
+                # Get user input with history, editing, and paste support
+                with patch_stdout():
+                    user_input = await prompt_session.prompt_async()
+
+                if user_input.lower() in ["exit", "quit"]:
                     break
 
-                if prompt.strip():
+                if user_input.strip():
                     # Process input for commands
-                    action, data = command_processor.process_input(prompt)
+                    action, data = command_processor.process_input(user_input)
 
                     if action == "prompt":
                         # Normal prompt execution
@@ -1456,12 +1508,18 @@ async def interactive_chat(
                         console.print(f"[cyan]{result}[/cyan]")
 
             except KeyboardInterrupt:
-                # Allow /stop command or Ctrl+C to interrupt execution
+                # Ctrl-C at prompt or during execution - stay in REPL
                 if command_processor.halted:
                     command_processor.halted = False
                     console.print("\n[yellow]Execution stopped[/yellow]")
-                else:
-                    break
+                # Always continue loop - don't exit REPL
+                continue
+
+            except EOFError:
+                # Ctrl-D - graceful exit
+                console.print("\n[dim]Exiting...[/dim]")
+                break
+
             except Exception as e:
                 console.print(f"[red]Error:[/red] {e}")
                 if verbose:
@@ -2418,16 +2476,22 @@ async def interactive_chat_with_session(
     # Create session store for saving
     store = SessionStore()
 
+    # Create prompt session for history and advanced editing
+    prompt_session = _create_prompt_session()
+
     try:
         while True:
             try:
-                prompt = console.input("\n[bold green]>[/bold green] ")
-                if prompt.lower() in ["exit", "quit"]:
+                # Get user input with history, editing, and paste support
+                with patch_stdout():
+                    user_input = await prompt_session.prompt_async()
+
+                if user_input.lower() in ["exit", "quit"]:
                     break
 
-                if prompt.strip():
+                if user_input.strip():
                     # Process input for commands
-                    action, data = command_processor.process_input(prompt)
+                    action, data = command_processor.process_input(user_input)
 
                     if action == "prompt":
                         # Normal prompt execution
@@ -2466,12 +2530,18 @@ async def interactive_chat_with_session(
                         console.print(f"[cyan]{result}[/cyan]")
 
             except KeyboardInterrupt:
-                # Allow /stop command or Ctrl+C to interrupt execution
+                # Ctrl-C at prompt or during execution - stay in REPL
                 if command_processor.halted:
                     command_processor.halted = False
                     console.print("\n[yellow]Execution stopped[/yellow]")
-                else:
-                    break
+                # Always continue loop - don't exit REPL
+                continue
+
+            except EOFError:
+                # Ctrl-D - graceful exit
+                console.print("\n[dim]Exiting...[/dim]")
+                break
+
             except Exception as e:
                 console.print(f"[red]Error:[/red] {e}")
                 if verbose:
