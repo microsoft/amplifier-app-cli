@@ -188,7 +188,22 @@ def install_collection(
         logger.debug(f"Downloaded to cache: {cache_path}")
 
         # Step 2: Load metadata to get collection name
+        # Try root first (normal collections)
         metadata_path = cache_path / "pyproject.toml"
+
+        # If not at root, search in package directories (data-only collections)
+        # This handles collections that use setuptools package structure
+        if not metadata_path.exists():
+            logger.debug("pyproject.toml not at root, searching in package directories")
+            for item in cache_path.iterdir():
+                # Skip dist-info and hidden directories
+                if item.is_dir() and not item.name.endswith('.dist-info') and not item.name.startswith('.'):
+                    candidate = item / "pyproject.toml"
+                    if candidate.exists():
+                        metadata_path = candidate
+                        logger.debug(f"Found pyproject.toml in {item.name}/")
+                        break
+
         if not metadata_path.exists():
             raise CollectionInstallError(f"No pyproject.toml found in collection at {source_uri}")
 
@@ -204,6 +219,18 @@ def install_collection(
 
         logger.info(f"Installing to {collection_path}")
         shutil.copytree(cache_path, collection_path, symlinks=True)
+
+        # For data-only collections, ensure pyproject.toml is at root
+        # (it may be inside package directory after wheel extraction)
+        if not (collection_path / "pyproject.toml").exists():
+            # Search for pyproject.toml in package directories
+            for item in collection_path.iterdir():
+                if item.is_dir() and not item.name.endswith('.dist-info') and not item.name.startswith('.'):
+                    pkg_toml = item / "pyproject.toml"
+                    if pkg_toml.exists():
+                        shutil.copy2(pkg_toml, collection_path / "pyproject.toml")
+                        logger.debug(f"Copied pyproject.toml from {item.name}/ to collection root")
+                        break
 
         # Step 4: Install scenario tools (if any)
         installed_tools = install_scenario_tools(collection_path)
