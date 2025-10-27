@@ -1388,12 +1388,17 @@ def _create_prompt_session() -> PromptSession:
         """Insert newline character for multi-line input."""
         event.current_buffer.insert_text("\n")
 
+    @kb.add("enter")  # Enter submits (even in multiline mode)
+    def accept_input(event):
+        """Submit input on Enter."""
+        event.current_buffer.validate_and_handle()
+
     return PromptSession(
         message=HTML("\n<ansigreen><b>></b></ansigreen> "),
         history=history,
         key_bindings=kb,
         multiline=True,  # Enable multi-line display
-        prompt_continuation="... ",  # Continuation prompt (string is simpler than lambda)
+        prompt_continuation="  ",  # Two spaces for alignment (cleaner than "... ")
         enable_history_search=True,  # Enables Ctrl-R
     )
 
