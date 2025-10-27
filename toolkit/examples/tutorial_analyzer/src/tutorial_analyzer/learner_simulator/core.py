@@ -24,7 +24,7 @@ LEARNER_SIMULATOR_CONFIG = {
         {
             "module": "provider-anthropic",
             "config": {
-                "model": "claude-opus-4",
+                "model": "claude-opus-4-1",
                 "temperature": 0.5,  # Empathetic simulation
                 "system_prompt": """You are a learner encountering this tutorial for the first time.
 

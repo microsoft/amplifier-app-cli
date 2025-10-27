@@ -32,7 +32,7 @@ SYNTHESIZER_CONFIG = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
         "config": {
-            "model": "claude-opus-4",
+            "model": "claude-opus-4-1",
             "temperature": 0.7,  # Creative synthesis
             "system_prompt": "You are a creative content synthesizer."
         }
@@ -91,7 +91,7 @@ ANALYZER_CONFIG = {
 CREATOR_CONFIG = {
     "providers": [{
         "config": {
-            "model": "claude-opus-4",
+            "model": "claude-opus-4-1",
             "temperature": 0.7,
             "system_prompt": "You are a creative generator."
         }

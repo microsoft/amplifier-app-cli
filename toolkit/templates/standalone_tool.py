@@ -60,7 +60,7 @@ CREATOR_CONFIG = {
         {
             "module": "provider-anthropic",
             "config": {
-                "model": "claude-opus-4",
+                "model": "claude-opus-4-1",
                 "temperature": 0.7,  # Creative exploration
                 "system_prompt": "You are a creative content generator.",
             },

@@ -152,12 +152,12 @@ def configure_anthropic(key_manager: KeyManager) -> dict:
     console.print()
     console.print("Model?")
     console.print("  [1] claude-sonnet-4-5 (recommended)")
-    console.print("  [2] claude-opus-4 (most capable)")
+    console.print("  [2] claude-opus-4-1 (most capable)")
     console.print("  [3] claude-haiku-4-5 (fastest, cheapest)")
     console.print("  [4] custom")
 
     model_choice = Prompt.ask("Choice", choices=["1", "2", "3", "4"], default="1")
-    model_map = {"1": "claude-sonnet-4-5", "2": "claude-opus-4", "3": "claude-haiku-4-5", "4": None}
+    model_map = {"1": "claude-sonnet-4-5", "2": "claude-opus-4-1", "3": "claude-haiku-4-5", "4": None}
 
     if model_choice == "4":
         model = Prompt.ask("Model name")

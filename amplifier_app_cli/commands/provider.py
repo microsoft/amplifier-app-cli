@@ -43,7 +43,7 @@ def provider_use(
     """Configure provider.
 
     Examples:
-      amplifier provider use anthropic --model claude-opus-4 --local
+      amplifier provider use anthropic --model claude-opus-4-1 --local
       amplifier provider use openai --model gpt-4o --project
       amplifier provider use azure-openai --endpoint https://... --deployment gpt-5-codex --use-azure-cli
       amplifier provider use ollama --model llama3
@@ -274,9 +274,9 @@ def prompt_model_for_provider(provider_id: str) -> str:
     console.print("\nModel?")
 
     if provider_id == "anthropic":
-        models = {"1": "claude-sonnet-4-5", "2": "claude-opus-4", "3": "claude-haiku-4-5", "4": None}
+        models = {"1": "claude-sonnet-4-5", "2": "claude-opus-4-1", "3": "claude-haiku-4-5", "4": None}
         console.print("  [1] claude-sonnet-4-5 (recommended)")
-        console.print("  [2] claude-opus-4 (most capable)")
+        console.print("  [2] claude-opus-4-1 (most capable)")
         console.print("  [3] claude-haiku-4-5 (fastest, cheapest)")
         console.print("  [4] custom")
         choices = ["1", "2", "3", "4"]

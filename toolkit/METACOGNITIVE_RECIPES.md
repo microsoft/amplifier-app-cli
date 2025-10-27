@@ -76,7 +76,7 @@ CONFIG_CREATOR = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
         "config": {
-            "model": "claude-opus-4",
+            "model": "claude-opus-4-1",
             "temperature": 0.7,  # Creative exploration
             "system_prompt": "You are a creative content generator."
         }
@@ -220,7 +220,7 @@ def create_researcher_config(task_type: str, needs_web: bool, needs_code: bool) 
 
     # Adjust model based on task type
     if task_type == "deep_research":
-        config["providers"][0]["config"]["model"] = "claude-opus-4"
+        config["providers"][0]["config"]["model"] = "claude-opus-4-1"
         config["providers"][0]["config"]["temperature"] = 0.3
     else:
         config["providers"][0]["config"]["model"] = "claude-sonnet-4"
@@ -289,7 +289,7 @@ async def create_adaptive_config(task_description: str) -> dict:
     model_map = {
         "haiku": "claude-haiku-4",
         "sonnet": "claude-sonnet-4",
-        "opus": "claude-opus-4"
+        "opus": "claude-opus-4-1"
     }
     suggested_model = needs.get("optimal_model", "sonnet")
     config["providers"][0]["config"]["model"] = model_map.get(suggested_model, "claude-sonnet-4")
@@ -336,7 +336,7 @@ META_CONFIG_GENERATOR = {
     "providers": [{
         "module": "provider-anthropic",
         "config": {
-            "model": "claude-opus-4",  # Needs sophisticated understanding
+            "model": "claude-opus-4-1",  # Needs sophisticated understanding
             "temperature": 0.2
         }
     }],
@@ -363,7 +363,7 @@ async def explore_topic(topic: str, available_modules: dict) -> dict:
             "module": "provider-anthropic",
             "source": "git+...",
             "config": {{
-                "model": "claude-haiku-4" | "claude-sonnet-4" | "claude-opus-4",
+                "model": "claude-haiku-4" | "claude-sonnet-4" | "claude-opus-4-1",
                 "temperature": 0.0-1.0
             }}
         }}],
@@ -495,7 +495,7 @@ LEARNER_SIMULATOR_CONFIG = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
         "config": {
-            "model": "claude-opus-4",
+            "model": "claude-opus-4-1",
             "temperature": 0.5,
             "system_prompt": "You are a learner encountering this tutorial."
         }
@@ -523,7 +523,7 @@ IMPROVER_CONFIG = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
         "config": {
-            "model": "claude-opus-4",
+            "model": "claude-opus-4-1",
             "temperature": 0.7,
             "system_prompt": "You are a tutorial improvement specialist."
         }

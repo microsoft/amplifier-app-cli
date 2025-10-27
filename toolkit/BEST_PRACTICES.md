@@ -136,7 +136,7 @@ def create_config(task_type: str) -> dict:
     config = copy.deepcopy(BASE_CONFIG)
 
     if task_type == "deep_research":
-        config["providers"][0]["config"]["model"] = "claude-opus-4"
+        config["providers"][0]["config"]["model"] = "claude-opus-4-1"
         config["providers"][0]["config"]["temperature"] = 0.3
     else:
         config["providers"][0]["config"]["model"] = "claude-sonnet-4"
@@ -298,7 +298,7 @@ If output not what you expect:
 
 **Complex creative tasks**: Opus
 ```python
-{"model": "claude-opus-4", "temperature": 0.7}  # Sophisticated, expensive, creative
+{"model": "claude-opus-4-1", "temperature": 0.7}  # Sophisticated, expensive, creative
 ```
 
 **Balanced tasks**: Sonnet

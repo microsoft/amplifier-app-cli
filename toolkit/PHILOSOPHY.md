@@ -54,7 +54,7 @@ ANALYZER_CONFIG = {
 CREATOR_CONFIG = {
     "providers": [{
         "config": {
-            "model": "claude-opus-4",
+            "model": "claude-opus-4-1",
             "temperature": 0.7,  # Optimized for creativity
             "system_prompt": "You are a creative content generator..."  # Focused
         }
@@ -128,7 +128,7 @@ Standalone tools **ARE** the edges. They make all policy decisions:
 # Tool decides everything about its behavior
 CONFIGS = {
     "analyzer": {"temperature": 0.3, "model": "claude-sonnet-4"},
-    "creator": {"temperature": 0.7, "model": "claude-opus-4"},
+    "creator": {"temperature": 0.7, "model": "claude-opus-4-1"},
     "evaluator": {"temperature": 0.2, "model": "claude-sonnet-4"},
 }
 
@@ -287,7 +287,7 @@ def create_config(task_type: str) -> dict:
 
     # Deterministic decisions within predefined options
     if task_type == "deep_research":
-        config["providers"][0]["config"] = {"model": "claude-opus-4", "temperature": 0.3}
+        config["providers"][0]["config"] = {"model": "claude-opus-4-1", "temperature": 0.3}
         config["tools"].append(WEB_SEARCH_TOOL)
     else:
         config["providers"][0]["config"] = {"model": "claude-sonnet-4", "temperature": 0.5}
