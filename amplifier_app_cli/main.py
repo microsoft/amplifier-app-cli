@@ -297,6 +297,9 @@ class CommandProcessor:
         if action == "list_tools":
             return await self._list_tools()
 
+        if action == "list_agents":
+            return await self._list_agents()
+
         if action == "unknown_command":
             return f"Unknown command: {data['command']}. Use /help for available commands."
 
