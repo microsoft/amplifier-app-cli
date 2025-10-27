@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import signal
 import sys
 import uuid
 from datetime import UTC
@@ -46,6 +47,9 @@ console = Console()
 # Load API keys from ~/.amplifier/keys.env on startup
 # This allows keys saved by 'amplifier setup' to be available
 _key_manager = KeyManager()
+
+# Abort flag for ESC-based cancellation
+_abort_requested = False
 
 
 def _detect_shell() -> str | None:
@@ -1362,7 +1366,7 @@ def _create_prompt_session() -> PromptSession:
     - Ruthless simplicity: Use library's defaults, minimal config
     - Graceful degradation: Fallback to in-memory if file history fails
     - User experience: History location follows XDG pattern (~/.amplifier/)
-    - Reliable keys: Ctrl-J works in all terminals (SSH, tmux, everywhere)
+    - Reliable keys: Ctrl-J works in all terminals
     """
     history_path = Path.home() / ".amplifier" / "repl_history"
 
@@ -1492,50 +1496,71 @@ async def interactive_chat(
                         # Normal prompt execution
                         console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
 
+                        # Process runtime @mentions in user input
+                        await _process_runtime_mentions(session, data["text"])
+
+                        # Install signal handler to catch Ctrl-C without raising KeyboardInterrupt
+                        global _abort_requested
+                        _abort_requested = False
+
+                        def sigint_handler(signum, frame):
+                            """Handle Ctrl-C by setting abort flag instead of raising exception."""
+                            global _abort_requested
+                            _abort_requested = True
+
+                        original_handler = signal.signal(signal.SIGINT, sigint_handler)
+
                         try:
-                            # Process runtime @mentions in user input
-                            await _process_runtime_mentions(session, data["text"])
+                            # Run execute as cancellable task
+                            execute_task = asyncio.create_task(session.execute(data["text"]))
 
-                            response = await session.execute(data["text"])
-                            console.print("\n" + response)
+                            # Poll task while checking for abort flag
+                            while not execute_task.done():
+                                if _abort_requested:
+                                    execute_task.cancel()
+                                    break
+                                await asyncio.sleep(0.05)  # Check every 50ms
 
-                            # Save session after each interaction
-                            context = session.coordinator.get("context")
-                            if context and hasattr(context, "get_messages"):
-                                messages = await context.get_messages()
-                                # Extract model from providers config
-                                model_name = "unknown"
-                                if isinstance(config.get("providers"), list) and config["providers"]:
-                                    first_provider = config["providers"][0]
-                                    if isinstance(first_provider, dict) and "config" in first_provider:
-                                        # Check both "model" and "default_model" keys
-                                        provider_config = first_provider["config"]
-                                        model_name = provider_config.get("model") or provider_config.get(
-                                            "default_model", "unknown"
-                                        )
+                            # Handle result or cancellation
+                            try:
+                                response = await execute_task
+                                console.print("\n" + response)
 
-                                metadata = {
-                                    "created": datetime.now(UTC).isoformat(),
-                                    "profile": profile_name,
-                                    "model": model_name,
-                                    "turn_count": len([m for m in messages if m.get("role") == "user"]),
-                                }
-                                store.save(session_id, messages, metadata)
-                        except KeyboardInterrupt:
-                            # Ctrl-C during processing - abort but stay in REPL
-                            console.print("\n[yellow]Aborted by user (Ctrl-C)[/yellow]")
-                            if command_processor.halted:
-                                command_processor.halted = False
-                            # Continue to next prompt - don't exit REPL
+                                # Save session after each interaction
+                                context = session.coordinator.get("context")
+                                if context and hasattr(context, "get_messages"):
+                                    messages = await context.get_messages()
+                                    # Extract model from providers config
+                                    model_name = "unknown"
+                                    if isinstance(config.get("providers"), list) and config["providers"]:
+                                        first_provider = config["providers"][0]
+                                        if isinstance(first_provider, dict) and "config" in first_provider:
+                                            # Check both "model" and "default_model" keys
+                                            provider_config = first_provider["config"]
+                                            model_name = provider_config.get("model") or provider_config.get(
+                                                "default_model", "unknown"
+                                            )
+
+                                    metadata = {
+                                        "created": datetime.now(UTC).isoformat(),
+                                        "profile": profile_name,
+                                        "model": model_name,
+                                        "turn_count": len([m for m in messages if m.get("role") == "user"]),
+                                    }
+                                    store.save(session_id, messages, metadata)
+                            except asyncio.CancelledError:
+                                # Ctrl-C pressed during processing
+                                console.print("\n[yellow]Aborted (Ctrl-C)[/yellow]")
+                                if command_processor.halted:
+                                    command_processor.halted = False
+                        finally:
+                            # Always restore original signal handler
+                            signal.signal(signal.SIGINT, original_handler)
+                            _abort_requested = False
                     else:
                         # Handle command
                         result = await command_processor.handle_command(action, data)
                         console.print(f"[cyan]{result}[/cyan]")
-
-            except KeyboardInterrupt:
-                # Catch-all for any KeyboardInterrupt at prompt level
-                # Just continue - don't exit REPL
-                continue
 
             except EOFError:
                 # Ctrl-D - graceful exit
@@ -1546,10 +1571,6 @@ async def interactive_chat(
                 console.print(f"[red]Error:[/red] {e}")
                 if verbose:
                     console.print_exception()
-    except KeyboardInterrupt:
-        # Final safety net - if Ctrl-C somehow escapes inner handlers
-        # This should never happen, but if it does, exit gracefully
-        console.print("\n[yellow]Interrupted - exiting...[/yellow]")
     finally:
         await session.cleanup()
         console.print("\n[yellow]Session ended[/yellow]\n")
@@ -2523,49 +2544,70 @@ async def interactive_chat_with_session(
                         # Normal prompt execution
                         console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
 
+                        # Process runtime @mentions in user input
+                        await _process_runtime_mentions(session, data["text"])
+
+                        # Install signal handler to catch Ctrl-C without raising KeyboardInterrupt
+                        global _abort_requested
+                        _abort_requested = False
+
+                        def sigint_handler(signum, frame):
+                            """Handle Ctrl-C by setting abort flag instead of raising exception."""
+                            global _abort_requested
+                            _abort_requested = True
+
+                        original_handler = signal.signal(signal.SIGINT, sigint_handler)
+
                         try:
-                            # Process runtime @mentions in user input
-                            await _process_runtime_mentions(session, data["text"])
+                            # Run execute as cancellable task
+                            execute_task = asyncio.create_task(session.execute(data["text"]))
 
-                            response = await session.execute(data["text"])
-                            console.print("\n" + response)
+                            # Poll task while checking for abort flag
+                            while not execute_task.done():
+                                if _abort_requested:
+                                    execute_task.cancel()
+                                    break
+                                await asyncio.sleep(0.05)  # Check every 50ms
 
-                            # Save session after each interaction
-                            if context and hasattr(context, "get_messages"):
-                                messages = await context.get_messages()
-                                # Extract model from providers config
-                                model_name = "unknown"
-                                if isinstance(config.get("providers"), list) and config["providers"]:
-                                    first_provider = config["providers"][0]
-                                    if isinstance(first_provider, dict) and "config" in first_provider:
-                                        # Check both "model" and "default_model" keys
-                                        provider_config = first_provider["config"]
-                                        model_name = provider_config.get("model") or provider_config.get(
-                                            "default_model", "unknown"
-                                        )
+                            # Handle result or cancellation
+                            try:
+                                response = await execute_task
+                                console.print("\n" + response)
 
-                                metadata = {
-                                    "created": datetime.now(UTC).isoformat(),
-                                    "profile": profile_name,
-                                    "model": model_name,
-                                    "turn_count": len([m for m in messages if m.get("role") == "user"]),
-                                }
-                                store.save(session_id, messages, metadata)
-                        except KeyboardInterrupt:
-                            # Ctrl-C during processing - abort but stay in REPL
-                            console.print("\n[yellow]Aborted by user (Ctrl-C)[/yellow]")
-                            if command_processor.halted:
-                                command_processor.halted = False
-                            # Continue to next prompt - don't exit REPL
+                                # Save session after each interaction
+                                if context and hasattr(context, "get_messages"):
+                                    messages = await context.get_messages()
+                                    # Extract model from providers config
+                                    model_name = "unknown"
+                                    if isinstance(config.get("providers"), list) and config["providers"]:
+                                        first_provider = config["providers"][0]
+                                        if isinstance(first_provider, dict) and "config" in first_provider:
+                                            # Check both "model" and "default_model" keys
+                                            provider_config = first_provider["config"]
+                                            model_name = provider_config.get("model") or provider_config.get(
+                                                "default_model", "unknown"
+                                            )
+
+                                    metadata = {
+                                        "created": datetime.now(UTC).isoformat(),
+                                        "profile": profile_name,
+                                        "model": model_name,
+                                        "turn_count": len([m for m in messages if m.get("role") == "user"]),
+                                    }
+                                    store.save(session_id, messages, metadata)
+                            except asyncio.CancelledError:
+                                # Ctrl-C pressed during processing
+                                console.print("\n[yellow]Aborted (Ctrl-C)[/yellow]")
+                                if command_processor.halted:
+                                    command_processor.halted = False
+                        finally:
+                            # Always restore original signal handler
+                            signal.signal(signal.SIGINT, original_handler)
+                            _abort_requested = False
                     else:
                         # Handle command
                         result = await command_processor.handle_command(action, data)
                         console.print(f"[cyan]{result}[/cyan]")
-
-            except KeyboardInterrupt:
-                # Catch-all for any KeyboardInterrupt at prompt level
-                # Just continue - don't exit REPL
-                continue
 
             except EOFError:
                 # Ctrl-D - graceful exit
@@ -2576,10 +2618,6 @@ async def interactive_chat_with_session(
                 console.print(f"[red]Error:[/red] {e}")
                 if verbose:
                     console.print_exception()
-    except KeyboardInterrupt:
-        # Final safety net - if Ctrl-C somehow escapes inner handlers
-        # This should never happen, but if it does, exit gracefully
-        console.print("\n[yellow]Interrupted - exiting...[/yellow]")
     finally:
         await session.cleanup()
         console.print("\n[yellow]Session ended[/yellow]\n")
