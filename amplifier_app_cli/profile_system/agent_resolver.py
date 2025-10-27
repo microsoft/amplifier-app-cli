@@ -219,15 +219,15 @@ class AgentResolver:
 
         # Check for collections first (they have "/collections/" in path)
         if "/collections/" in path_str:
-            # User collection (highest precedence)
-            if str(Path.home()) in path_str:
-                return "user-collection"
+            # Bundled collection (check BEFORE home, since uv installs to ~/.local/share/uv)
+            if "amplifier_app_cli" in path_str and "data/collections" in path_str:
+                return "bundled"
             # Project collection
             if ".amplifier/collections" in path_str:
                 return "project-collection"
-            # Bundled collection
-            if "amplifier_app_cli" in path_str and "data/collections" in path_str:
-                return "bundled-collection"
+            # User collection (must check after bundled to avoid ~/.local/share/uv false positive)
+            if str(Path.home()) in path_str and ".amplifier/collections" in path_str:
+                return "user-collection"
             return "collection"  # Unknown collection type
 
         # Non-collection agents
