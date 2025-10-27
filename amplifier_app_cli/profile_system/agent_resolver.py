@@ -26,6 +26,9 @@ class AgentResolver:
         """
         Get default agent search paths in precedence order (lowest to highest).
 
+        Includes both direct agent directories and collection agents per
+        COLLECTIONS_GUIDE search path precedence.
+
         Returns:
             List of search paths
         """
@@ -38,15 +41,45 @@ class AgentResolver:
             paths.append(bundled)
             logger.debug(f"Found bundled agents: {bundled}")
 
-        # 2. Project agents (middle precedence)
+        # 2. Bundled collection agents
+        bundled_collections = package_dir / "data" / "collections"
+        if bundled_collections.exists():
+            for collection_dir in bundled_collections.iterdir():
+                if collection_dir.is_dir():
+                    agents_dir = collection_dir / "agents"
+                    if agents_dir.exists():
+                        paths.append(agents_dir)
+                        logger.debug(f"Found bundled collection agents: {agents_dir}")
+
+        # 3. Project agents (middle precedence)
         project = Path(".amplifier/agents")
         if project.exists():
             paths.append(project)
 
-        # 3. User agents (highest precedence)
+        # 4. Project collection agents
+        project_collections = Path(".amplifier/collections")
+        if project_collections.exists():
+            for collection_dir in project_collections.iterdir():
+                if collection_dir.is_dir():
+                    agents_dir = collection_dir / "agents"
+                    if agents_dir.exists():
+                        paths.append(agents_dir)
+                        logger.debug(f"Found project collection agents: {agents_dir}")
+
+        # 5. User agents (high precedence)
         user = Path.home() / ".amplifier" / "agents"
         if user.exists():
             paths.append(user)
+
+        # 6. User collection agents (highest precedence)
+        user_collections = Path.home() / ".amplifier" / "collections"
+        if user_collections.exists():
+            for collection_dir in user_collections.iterdir():
+                if collection_dir.is_dir():
+                    agents_dir = collection_dir / "agents"
+                    if agents_dir.exists():
+                        paths.append(agents_dir)
+                        logger.debug(f"Found user collection agents: {agents_dir}")
 
         return paths
 
@@ -123,8 +156,12 @@ class AgentResolver:
         """
         Discover all available agent names from all search paths.
 
+        Returns agent names with collection prefix when from collections:
+        - Simple: "zen-architect", "bug-hunter"
+        - Collection: "design-intelligence:art-director", "developer-expertise:zen-architect"
+
         Returns:
-            List of agent names (without .md extension)
+            List of agent names
         """
         agents = set()
 
@@ -136,8 +173,25 @@ class AgentResolver:
                 # Skip README files
                 if agent_file.stem.upper() == "README":
                     continue
-                # Agent name is filename without extension
-                agents.add(agent_file.stem)
+
+                agent_name = agent_file.stem
+
+                # Check if this agent is from a collection
+                # Collection agents are in: .../collections/<collection-name>/agents/<agent>.md
+                if "/collections/" in str(search_path):
+                    # Extract collection name
+                    parts = search_path.parts
+                    try:
+                        collections_idx = parts.index("collections")
+                        collection_name = parts[collections_idx + 1]
+                        # Use collection:agent format
+                        agents.add(f"{collection_name}:{agent_name}")
+                    except (ValueError, IndexError):
+                        # Fallback to simple name if parsing fails
+                        agents.add(agent_name)
+                else:
+                    # Simple agent (not from collection)
+                    agents.add(agent_name)
 
         return sorted(agents)
 
@@ -146,10 +200,11 @@ class AgentResolver:
         Determine which source an agent comes from.
 
         Args:
-            name: Agent name
+            name: Agent name (simple or collection:agent format)
 
         Returns:
-            "bundled", "project", "user", "env", or None if not found
+            "bundled", "bundled-collection", "project", "project-collection",
+            "user", "user-collection", "env", or None if not found
         """
         # Check env var first
         env_key = f"AMPLIFIER_AGENT_{name.upper().replace('-', '_')}"
@@ -162,7 +217,21 @@ class AgentResolver:
 
         path_str = str(agent_file)
 
-        # Check in precedence order
+        # Check for collections first (they have "/collections/" in path)
+        if "/collections/" in path_str:
+            # User collection (highest precedence)
+            if str(Path.home()) in path_str:
+                return "user-collection"
+            # Project collection
+            if ".amplifier/collections" in path_str:
+                return "project-collection"
+            # Bundled collection
+            if "amplifier_app_cli" in path_str and "data/collections" in path_str:
+                return "bundled-collection"
+            return "collection"  # Unknown collection type
+
+        # Non-collection agents
+        # Check in precedence order (highest first)
         if str(Path.home()) in path_str and ".amplifier/agents" in path_str:
             return "user"
         if ".amplifier/agents" in path_str:

@@ -197,7 +197,7 @@ def install_collection(
             logger.debug("pyproject.toml not at root, searching in package directories")
             for item in cache_path.iterdir():
                 # Skip dist-info and hidden directories
-                if item.is_dir() and not item.name.endswith('.dist-info') and not item.name.startswith('.'):
+                if item.is_dir() and not item.name.endswith(".dist-info") and not item.name.startswith("."):
                     candidate = item / "pyproject.toml"
                     if candidate.exists():
                         metadata_path = candidate
@@ -225,7 +225,7 @@ def install_collection(
         if not (collection_path / "pyproject.toml").exists():
             # Search for pyproject.toml in package directories
             for item in collection_path.iterdir():
-                if item.is_dir() and not item.name.endswith('.dist-info') and not item.name.startswith('.'):
+                if item.is_dir() and not item.name.endswith(".dist-info") and not item.name.startswith("."):
                     pkg_toml = item / "pyproject.toml"
                     if pkg_toml.exists():
                         shutil.copy2(pkg_toml, collection_path / "pyproject.toml")

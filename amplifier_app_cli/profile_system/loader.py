@@ -28,7 +28,11 @@ class ProfileLoader:
             self.search_paths = search_paths
 
     def _get_default_search_paths(self) -> list[Path]:
-        """Get default profile search paths in precedence order (lowest to highest)."""
+        """Get default profile search paths in precedence order (lowest to highest).
+
+        Includes both direct profile directories and collection profiles per
+        COLLECTIONS_GUIDE search path precedence.
+        """
         paths = []
 
         # 1. Bundled profiles (lowest precedence)
@@ -38,15 +42,45 @@ class ProfileLoader:
             paths.append(bundled)
             logger.debug(f"Found bundled profiles: {bundled}")
 
-        # 2. Project profiles (middle precedence)
+        # 2. Bundled collection profiles
+        bundled_collections = package_dir / "data" / "collections"
+        if bundled_collections.exists():
+            for collection_dir in bundled_collections.iterdir():
+                if collection_dir.is_dir():
+                    profiles_dir = collection_dir / "profiles"
+                    if profiles_dir.exists():
+                        paths.append(profiles_dir)
+                        logger.debug(f"Found bundled collection profiles: {profiles_dir}")
+
+        # 3. Project profiles (middle precedence)
         project = Path(".amplifier/profiles")
         if project.exists():
             paths.append(project)
 
-        # 3. User profiles (highest precedence)
+        # 4. Project collection profiles
+        project_collections = Path(".amplifier/collections")
+        if project_collections.exists():
+            for collection_dir in project_collections.iterdir():
+                if collection_dir.is_dir():
+                    profiles_dir = collection_dir / "profiles"
+                    if profiles_dir.exists():
+                        paths.append(profiles_dir)
+                        logger.debug(f"Found project collection profiles: {profiles_dir}")
+
+        # 5. User profiles (high precedence)
         user = Path.home() / ".amplifier" / "profiles"
         if user.exists():
             paths.append(user)
+
+        # 6. User collection profiles (highest precedence)
+        user_collections = Path.home() / ".amplifier" / "collections"
+        if user_collections.exists():
+            for collection_dir in user_collections.iterdir():
+                if collection_dir.is_dir():
+                    profiles_dir = collection_dir / "profiles"
+                    if profiles_dir.exists():
+                        paths.append(profiles_dir)
+                        logger.debug(f"Found user collection profiles: {profiles_dir}")
 
         return paths
 
@@ -54,8 +88,12 @@ class ProfileLoader:
         """
         Discover all available profile names.
 
+        Returns profile names with collection prefix when from collections:
+        - Simple: "base", "dev"
+        - Collection: "design-intelligence:designer", "foundation:base"
+
         Returns:
-            List of profile names (without .md extension)
+            List of profile names
         """
         profiles = set()
 
@@ -64,8 +102,24 @@ class ProfileLoader:
                 continue
 
             for profile_file in search_path.glob("*.md"):
-                # Profile name is filename without extension
-                profiles.add(profile_file.stem)
+                profile_name = profile_file.stem
+
+                # Check if this profile is from a collection
+                # Collection profiles are in: .../collections/<collection-name>/profiles/<profile>.md
+                if "/collections/" in str(search_path):
+                    # Extract collection name
+                    parts = search_path.parts
+                    try:
+                        collections_idx = parts.index("collections")
+                        collection_name = parts[collections_idx + 1]
+                        # Use collection:profile format
+                        profiles.add(f"{collection_name}:{profile_name}")
+                    except (ValueError, IndexError):
+                        # Fallback to simple name if parsing fails
+                        profiles.add(profile_name)
+                else:
+                    # Simple profile (not from collection)
+                    profiles.add(profile_name)
 
         return sorted(profiles)
 
@@ -366,10 +420,11 @@ class ProfileLoader:
         Determine which source a profile comes from.
 
         Args:
-            name: Profile name
+            name: Profile name (simple or collection:profile format)
 
         Returns:
-            "bundled", "project", "user", or None if not found
+            "bundled", "bundled-collection", "project", "project-collection",
+            "user", "user-collection", or None if not found
         """
         profile_file = self.find_profile_file(name)
         if profile_file is None:
@@ -377,6 +432,20 @@ class ProfileLoader:
 
         path_str = str(profile_file)
 
+        # Check for collections first (they have "/collections/" in path)
+        if "/collections/" in path_str:
+            # User collection (highest precedence)
+            if str(Path.home()) in path_str:
+                return "user-collection"
+            # Project collection
+            if ".amplifier/collections" in path_str:
+                return "project-collection"
+            # Bundled collection
+            if "amplifier_app_cli" in path_str and "data/collections" in path_str:
+                return "bundled-collection"
+            return "collection"  # Unknown collection type
+
+        # Non-collection profiles
         # Check in precedence order (highest first)
         if str(Path.home()) in path_str and ".amplifier/profiles" in path_str:
             return "user"
