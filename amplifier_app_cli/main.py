@@ -424,7 +424,7 @@ class CommandProcessor:
         for name, tool in tools.items():
             desc = getattr(tool, "description", "No description")
             # Handle multi-line descriptions - take first line only
-            first_line = desc.split('\n')[0]
+            first_line = desc.split("\n")[0]
             # Truncate if too long
             if len(first_line) > 60:
                 first_line = first_line[:57] + "..."
@@ -435,6 +435,7 @@ class CommandProcessor:
     async def _list_agents(self) -> str:
         """List available agents using AgentManager."""
         from .profile_system import AgentManager
+
         manager = AgentManager()
         manager.list_agents()
         return ""  # Table prints directly via console
@@ -1395,10 +1396,7 @@ def _create_prompt_session() -> PromptSession:
     except Exception as e:
         # Fallback if history file is corrupted or inaccessible
         history = InMemoryHistory()
-        logger.warning(
-            f"Could not load history from {history_path}: {e}. "
-            "Using in-memory history for this session."
-        )
+        logger.warning(f"Could not load history from {history_path}: {e}. Using in-memory history for this session.")
 
     # Create key bindings for multi-line support
     kb = KeyBindings()
@@ -1485,8 +1483,7 @@ async def interactive_chat(
 
     console.print(
         Panel.fit(
-            "[bold cyan]Amplifier Interactive Session[/bold cyan]\n"
-            "Commands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D",
+            "[bold cyan]Amplifier Interactive Session[/bold cyan]\nCommands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D",
             border_style="cyan",
         )
     )

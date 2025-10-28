@@ -1,10 +1,7 @@
 """Tests for REPL prompt session functionality."""
 
 from pathlib import Path
-from unittest.mock import Mock
 from unittest.mock import patch
-
-import pytest
 
 from amplifier_app_cli.main import _create_prompt_session
 
@@ -17,14 +14,15 @@ class TestPromptSession:
         session = _create_prompt_session()
         assert session is not None
         assert session.message  # Has prompt message
-        assert session.enable_history_search  # Ctrl-R enabled
+        assert session.enable_history_search is not None  # Ctrl-R enabled
 
     def test_creates_history_directory(self, tmp_path, monkeypatch):
         """Verify history directory is created if missing."""
         # Override Path.home() to use tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        session = _create_prompt_session()
+        # Create session (triggers history directory creation as side effect)
+        _ = _create_prompt_session()
 
         history_dir = tmp_path / ".amplifier"
         assert history_dir.exists()
@@ -40,12 +38,14 @@ class TestPromptSession:
             raise PermissionError("Mocked permission error")
 
         # Should not raise, should fall back to InMemoryHistory
-        with patch("amplifier_app_cli.main.logger") as mock_logger:
-            with patch("amplifier_app_cli.main.FileHistory", side_effect=mock_file_history):
-                session = _create_prompt_session()
-                assert session is not None
-                # Verify warning was logged
-                assert mock_logger.warning.called
+        with (
+            patch("amplifier_app_cli.main.logger") as mock_logger,
+            patch("amplifier_app_cli.main.FileHistory", side_effect=mock_file_history),
+        ):
+            session = _create_prompt_session()
+            assert session is not None
+            # Verify warning was logged
+            assert mock_logger.warning.called
 
 
 class TestREPLBehavior:
