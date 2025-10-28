@@ -40,22 +40,21 @@ class Agent(BaseModel):
 
     def to_mount_plan_fragment(self) -> dict[str, Any]:
         """
-        Convert agent to partial mount plan dict.
+        Convert agent to partial mount plan dict (configuration only).
+
+        Mount plans contain only runtime configuration, not metadata.
+        The task tool constructs agent names from dictionary keys, not from
+        a 'name' field in the config. Only 'description' is needed for display.
 
         Returns:
             Partial mount plan that can be merged with parent config
         """
         result: dict[str, Any] = {}
 
-        # Include meta for structured access
-        result["meta"] = self.meta.model_dump()
-
-        # ALSO include name and description at top level for backward compatibility
-        # (task tool and other components expect this format)
-        result["name"] = self.meta.name
+        # Description is part of mount plan spec (used by task tool for display)
         result["description"] = self.meta.description
 
-        # Add module lists if present
+        # Add module lists if present (config overlays)
         if self.providers:
             result["providers"] = [p.to_dict() for p in self.providers]
         if self.tools:
