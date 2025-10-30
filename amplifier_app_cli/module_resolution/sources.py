@@ -118,29 +118,34 @@ class GitSource(ModuleSource):
         Raises:
             ModuleNotFoundError: Git clone failed
         """
-        # Generate cache key
-        cache_key = hashlib.sha256(f"{self.url}@{self.ref}".encode()).hexdigest()[:12]
+        # Generate cache key - include subdirectory to avoid collisions
+        # (same repo+ref with different subdirectories need separate caches)
+        cache_key_input = f"{self.url}@{self.ref}"
+        if self.subdirectory:
+            cache_key_input += f"#{self.subdirectory}"
+        cache_key = hashlib.sha256(cache_key_input.encode()).hexdigest()[:12]
         cache_path = self.cache_dir / cache_key / self.ref
-
-        # Add subdirectory if specified
-        final_path = cache_path / self.subdirectory if self.subdirectory else cache_path
 
         # Check cache
         if cache_path.exists() and self._is_valid_cache(cache_path):
             logger.debug(f"Using cached git module: {cache_path}")
-            return final_path
+            return cache_path
 
         # Download
+        # Note: uv installs the package content FROM subdirectory TO cache_path directly
+        # It does NOT create the subdirectory structure in the target
         logger.info(f"Downloading git module: {self.url}@{self.ref}")
         try:
             self._download_via_uv(cache_path)
         except subprocess.CalledProcessError as e:
             raise ModuleNotFoundError(f"Failed to download {self.url}@{self.ref}: {e}")
 
-        if not final_path.exists():
-            raise ModuleNotFoundError(f"Subdirectory not found after download: {self.subdirectory}")
+        # Verify installation worked
+        if not self._is_valid_cache(cache_path):
+            sub_info = f"#subdirectory={self.subdirectory}" if self.subdirectory else ""
+            raise ModuleNotFoundError(f"Failed to install module from {self.url}@{self.ref}{sub_info}")
 
-        return final_path
+        return cache_path
 
     def _is_valid_cache(self, cache_path: Path) -> bool:
         """Check if cache directory contains valid module."""

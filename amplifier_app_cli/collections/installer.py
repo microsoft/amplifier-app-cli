@@ -232,6 +232,21 @@ def install_collection(
                         logger.debug(f"Copied pyproject.toml from {item.name}/ to collection root")
                         break
 
+        # Link resource directories from package to collection root for discovery
+        # (profiles, context, agents, scenario-tools, modules may be inside package after wheel extraction)
+        for resource_dir in ["profiles", "context", "agents", "scenario-tools", "modules"]:
+            root_resource = collection_path / resource_dir
+            if not root_resource.exists():
+                # Search for resource dir in package directories
+                for item in collection_path.iterdir():
+                    if item.is_dir() and not item.name.endswith(".dist-info") and not item.name.startswith("."):
+                        pkg_resource = item / resource_dir
+                        if pkg_resource.exists() and pkg_resource.is_dir():
+                            # Create symlink to avoid duplicating files
+                            root_resource.symlink_to(pkg_resource, target_is_directory=True)
+                            logger.debug(f"Linked {resource_dir}/ from {item.name}/ to collection root")
+                            break
+
         # Step 4: Install scenario tools (if any)
         installed_tools = install_scenario_tools(collection_path)
         if installed_tools:
