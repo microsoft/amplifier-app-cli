@@ -76,7 +76,7 @@ source = { git = "https://github.com/microsoft/amplifier-module-resolution?branc
 [[package]]
 name = "amplifier-profiles"
 version = "0.1.0"
-source = { git = "https://github.com/microsoft/amplifier-profiles?branch=main#981f229dc9e627351cecfc90a68d692cc8114f83" }
+source = { git = "https://github.com/microsoft/amplifier-profiles?branch=main#1de746792adc66c6691dabf929b2958abaa72b6e" }
 dependencies = [
     { name = "pydantic" },
 ]
