@@ -1301,6 +1301,17 @@ async def _process_profile_mentions(session: AmplifierSession, profile_name: str
 
         logger.debug(f"Profile markdown body length: {len(markdown_body)} chars")
 
+        # First, add the profile's own markdown body as context
+        logger.info("Adding profile markdown body as context")
+        context = session.coordinator.get("context")
+        if context and hasattr(context, "add_message"):
+            profile_context_msg = {"role": "system", "content": markdown_body}
+            await context.add_message(profile_context_msg)
+            logger.info(f"Added profile markdown body ({len(markdown_body)} chars) to context")
+        else:
+            logger.warning("Context not available, cannot add profile markdown body")
+
+        # Then, check for @mentions and load referenced files
         if not has_mentions(markdown_body):
             logger.debug("No @mentions found in profile markdown")
             return
