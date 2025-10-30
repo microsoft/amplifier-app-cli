@@ -14,6 +14,7 @@ Per IMPLEMENTATION_PHILOSOPHY:
 import asyncio
 import logging
 import re
+import shutil
 from pathlib import Path
 
 import click
@@ -113,6 +114,27 @@ def add(source_uri: str, local: bool):
 
         # Install using protocol API (library handles lock updates)
         metadata = asyncio.run(install_collection(source=source, target_dir=target_dir, lock=lock))
+
+        # Fix: Rename directory to match metadata name if different (APP LAYER POLICY)
+        # This ensures collection:profile format uses metadata name, not repo name
+        if target_dir.name != metadata.name:
+            logger.debug(f"Renaming {target_dir.name} → {metadata.name}")
+            new_target_dir = target_dir.parent / metadata.name
+
+            # Remove existing if present
+            if new_target_dir.exists():
+                logger.warning(f"Removing existing collection at {new_target_dir}")
+                shutil.rmtree(new_target_dir)
+
+            # Rename to metadata name
+            target_dir.rename(new_target_dir)
+            target_dir = new_target_dir
+
+            # Update lock file with correct path
+            lock.remove_entry(metadata.name)
+            source_uri_for_lock = getattr(source, "uri", source_uri)
+            commit_sha = getattr(source, "commit_sha", None)
+            lock.add_entry(name=metadata.name, source=source_uri_for_lock, commit=commit_sha, path=target_dir)
 
         path = target_dir
         click.echo(f"✓ Installed {metadata.name} v{metadata.version}")
