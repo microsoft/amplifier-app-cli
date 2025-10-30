@@ -77,17 +77,22 @@ def get_collection_lock_path(local: bool = False) -> Path:
 
 
 def get_profile_search_paths() -> list[Path]:
-    """Get CLI-specific profile search paths (APP LAYER POLICY).
+    """Get CLI-specific profile search paths using library mechanisms (DRY).
+
+    Per RUTHLESS_SIMPLICITY: Use library, don't duplicate logic.
+    Per DRY: CollectionResolver + discover_collection_resources are single source.
 
     Search order (highest precedence first):
     1. Project profiles (.amplifier/profiles/)
     2. User profiles (~/.amplifier/profiles/)
-    3. Collection profiles (via collections search paths)
+    3. Collection profiles (via CollectionResolver - DRY!)
     4. Bundled profiles (package data)
 
     Returns:
         List of paths to search for profiles
     """
+    from amplifier_collections import discover_collection_resources
+
     package_dir = Path(__file__).parent
     paths = []
 
@@ -101,14 +106,19 @@ def get_profile_search_paths() -> list[Path]:
     if user_profiles.exists():
         paths.append(user_profiles)
 
-    # Collection profiles (bundled + user + project collections)
-    for collection_path in get_collection_search_paths():
-        if collection_path.exists():
-            for collection_dir in collection_path.iterdir():
-                if collection_dir.is_dir():
-                    profiles_dir = collection_dir / "profiles"
-                    if profiles_dir.exists():
-                        paths.append(profiles_dir)
+    # Collection profiles (USE LIBRARY MECHANISMS - DRY!)
+    # This replaces manual iteration with library mechanism
+    resolver = create_collection_resolver()
+    for _metadata_name, collection_path in resolver.list_collections():
+        # Use library's resource discovery (handles ALL structures: flat, nested, hybrid)
+        resources = discover_collection_resources(collection_path)
+
+        if resources.profiles:
+            # All profiles are in same directory per convention
+            # Add the parent directory of first profile
+            profile_dir = resources.profiles[0].parent
+            if profile_dir not in paths:
+                paths.append(profile_dir)
 
     # Bundled profiles
     bundled_profiles = package_dir / "data" / "profiles"
@@ -175,17 +185,21 @@ def create_profile_loader(
 
 
 def get_agent_search_paths() -> list[Path]:
-    """Get CLI-specific agent search paths (APP LAYER POLICY).
+    """Get CLI-specific agent search paths using library mechanisms (DRY).
+
+    Identical pattern to get_profile_search_paths() but for agents.
 
     Search order (highest precedence first):
     1. Project agents (.amplifier/agents/)
     2. User agents (~/.amplifier/agents/)
-    3. Collection agents (via collections search paths)
+    3. Collection agents (via CollectionResolver - DRY!)
     4. Bundled agents (package data)
 
     Returns:
         List of paths to search for agents
     """
+    from amplifier_collections import discover_collection_resources
+
     package_dir = Path(__file__).parent
     paths = []
 
@@ -199,14 +213,15 @@ def get_agent_search_paths() -> list[Path]:
     if user_agents.exists():
         paths.append(user_agents)
 
-    # Collection agents (bundled + user + project collections)
-    for collection_path in get_collection_search_paths():
-        if collection_path.exists():
-            for collection_dir in collection_path.iterdir():
-                if collection_dir.is_dir():
-                    agents_dir = collection_dir / "agents"
-                    if agents_dir.exists():
-                        paths.append(agents_dir)
+    # Collection agents (USE LIBRARY MECHANISMS - DRY!)
+    resolver = create_collection_resolver()
+    for _metadata_name, collection_path in resolver.list_collections():
+        resources = discover_collection_resources(collection_path)
+
+        if resources.agents:
+            agent_dir = resources.agents[0].parent
+            if agent_dir not in paths:
+                paths.append(agent_dir)
 
     # Bundled agents
     bundled_agents = package_dir / "data" / "agents"

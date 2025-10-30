@@ -26,11 +26,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "amplifier-collections", git = "https://github.com/microsoft/amplifier-collections?branch=main" },
+    { name = "amplifier-collections", directory = "../amplifier-collections" },
     { name = "amplifier-config", git = "https://github.com/microsoft/amplifier-config?branch=main" },
     { name = "amplifier-core", git = "https://github.com/microsoft/amplifier-core?branch=main" },
     { name = "amplifier-module-resolution", git = "https://github.com/microsoft/amplifier-module-resolution?branch=main" },
-    { name = "amplifier-profiles", git = "https://github.com/microsoft/amplifier-profiles?branch=main" },
+    { name = "amplifier-profiles", directory = "../amplifier-profiles" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
     { name = "pydantic", specifier = ">=2.0.0" },
@@ -44,9 +44,19 @@ dev = [{ name = "pytest", specifier = ">=8.4.2" }]
 [[package]]
 name = "amplifier-collections"
 version = "0.1.0"
-source = { git = "https://github.com/microsoft/amplifier-collections?branch=main#5ac2c6c74fceebe274865893085e7498c011f33d" }
+source = { directory = "../amplifier-collections" }
 dependencies = [
     { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.0" }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-asyncio", specifier = ">=0.23.0" },
+    { name = "pytest-cov", specifier = ">=4.1.0" },
 ]
 
 [[package]]
@@ -76,10 +86,20 @@ source = { git = "https://github.com/microsoft/amplifier-module-resolution?branc
 [[package]]
 name = "amplifier-profiles"
 version = "0.1.0"
-source = { git = "https://github.com/microsoft/amplifier-profiles?branch=main#a9f07370cadf5b706c632a216322aa2086cf3b14" }
+source = { directory = "../amplifier-profiles" }
 dependencies = [
+    { name = "amplifier-collections" },
     { name = "pydantic" },
 ]
+
+[package.metadata]
+requires-dist = [
+    { name = "amplifier-collections", directory = "../amplifier-collections" },
+    { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "annotated-types"

@@ -514,7 +514,7 @@ def resolve_app_config(
 
             # Compile to mount plan (library handles merging)
             # Inject agent_loader so compiler can load agents from collections
-            profile_config = compile_profile_to_mount_plan(profile, agent_loader=agent_loader)
+            profile_config = compile_profile_to_mount_plan(profile, agent_loader=agent_loader)  # type: ignore[call-arg]
 
             # Merge into base config
             config = deep_merge(config, profile_config)

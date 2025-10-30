@@ -46,7 +46,7 @@ def load_banner(style: str = "classic", version: str = "0.1.0") -> None:
     try:
         # Use ansiterm to render authentic BBS art
         # Import here to avoid hard dependency at module load
-        from ansiterm import render_file
+        from ansiterm import render_file  # type: ignore
 
         render_file(banner_file, use_alt_screen=False)
 
