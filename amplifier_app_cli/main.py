@@ -37,6 +37,7 @@ from .commands.provider import provider as provider_group
 from .commands.setup import setup_cmd
 from .data.profiles import get_system_default_profile
 from .key_manager import KeyManager
+from .paths import create_agent_loader
 from .paths import create_config_manager
 from .paths import create_module_resolver
 from .paths import create_profile_loader
@@ -501,6 +502,7 @@ def resolve_app_config(
     # 2. Apply active profile (if set)
     config_manager = create_config_manager()
     loader = create_profile_loader()
+    agent_loader = create_agent_loader()  # Create agent loader with CLI search paths
 
     # Use profile override if provided, otherwise check for active profile
     active_profile_name = profile_override or config_manager.get_active_profile()
@@ -511,7 +513,8 @@ def resolve_app_config(
             profile = loader.load_profile(active_profile_name)
 
             # Compile to mount plan (library handles merging)
-            profile_config = compile_profile_to_mount_plan(profile)
+            # Inject agent_loader so compiler can load agents from collections
+            profile_config = compile_profile_to_mount_plan(profile, agent_loader=agent_loader)
 
             # Merge into base config
             config = deep_merge(config, profile_config)
