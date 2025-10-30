@@ -14,7 +14,6 @@ Per IMPLEMENTATION_PHILOSOPHY:
 import asyncio
 import logging
 import re
-import shutil
 from pathlib import Path
 
 import click
@@ -115,68 +114,21 @@ def add(source_uri: str, local: bool):
         # Install using protocol API (library handles lock updates)
         metadata = asyncio.run(install_collection(source=source, target_dir=target_dir, lock=lock))
 
-        # Fix: Rename directory to match metadata name if different (APP LAYER POLICY)
-        # This ensures collection:profile format uses metadata name, not repo name
-        if target_dir.name != metadata.name:
-            logger.debug(f"Renaming {target_dir.name} → {metadata.name}")
-            new_target_dir = target_dir.parent / metadata.name
+        # Discover collection using flexible resolver (handles both flat and nested structures)
+        # Per RUTHLESS_SIMPLICITY: Accept structure as-is, don't transform
+        # Per WORK_WITH_STANDARDS: Python packaging creates nested structure
+        resolver = create_collection_resolver()
+        collection_path = resolver.resolve(metadata.name)
 
-            # Remove existing if present
-            if new_target_dir.exists():
-                logger.warning(f"Removing existing collection at {new_target_dir}")
-                shutil.rmtree(new_target_dir)
+        if not collection_path:
+            raise click.ClickException(
+                f"Collection '{metadata.name}' installed but not discoverable.\n"
+                f"Expected pyproject.toml at:\n"
+                f"  - {target_dir / 'pyproject.toml'} (flat structure), or\n"
+                f"  - {target_dir / metadata.name.replace('-', '_') / 'pyproject.toml'} (pip install structure)"
+            )
 
-            # Rename to metadata name
-            target_dir.rename(new_target_dir)
-            target_dir = new_target_dir
-
-            # Update lock file with correct path
-            lock.remove_entry(metadata.name)
-            source_uri_for_lock = getattr(source, "uri", source_uri)
-            commit_sha = getattr(source, "commit_sha", None)
-            lock.add_entry(name=metadata.name, source=source_uri_for_lock, commit=commit_sha, path=target_dir)
-
-        # Fix: Normalize collection structure to root level (APP LAYER POLICY)
-        # uv pip install creates: target_dir/package_name/[pyproject.toml, profiles/, agents/, ...]
-        # We need: target_dir/[pyproject.toml, profiles/, agents/, ...]
-        #
-        # This ensures:
-        # - CollectionResolver can find collection (pyproject.toml at root)
-        # - Profile search paths find profiles/ at root
-        # - Agent search paths find agents/ at root
-        # - Consistent structure regardless of installation method
-        if not (target_dir / "pyproject.toml").exists():
-            # Find package subdirectory
-            package_subdir = None
-            for item in target_dir.iterdir():
-                if (
-                    item.is_dir()
-                    and not item.name.endswith(".dist-info")
-                    and not item.name.startswith(".")
-                    and (item / "pyproject.toml").exists()
-                ):
-                    package_subdir = item
-                    logger.debug(f"Found package subdirectory: {item.name}")
-                    break
-
-            if package_subdir:
-                # Move all contents from package subdir to collection root
-                for item in package_subdir.iterdir():
-                    dest = target_dir / item.name
-                    if dest.exists():
-                        # Remove existing to avoid conflicts
-                        if dest.is_dir():
-                            shutil.rmtree(dest)
-                        else:
-                            dest.unlink()
-                    shutil.move(str(item), str(target_dir))
-                    logger.debug(f"Moved {item.name} to collection root")
-
-                # Remove now-empty package subdirectory
-                package_subdir.rmdir()
-                logger.debug(f"Removed empty package subdirectory: {package_subdir.name}")
-
-        path = target_dir
+        path = collection_path
         click.echo(f"✓ Installed {metadata.name} v{metadata.version}")
         click.echo(f"  Location: {path}")
 
