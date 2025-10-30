@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 
 [[package]]
@@ -7,7 +7,11 @@ name = "amplifier-app-cli"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "amplifier-collections" },
+    { name = "amplifier-config" },
     { name = "amplifier-core" },
+    { name = "amplifier-module-resolution" },
+    { name = "amplifier-profiles" },
     { name = "click" },
     { name = "prompt-toolkit" },
     { name = "pydantic" },
@@ -22,7 +26,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "amplifier-collections", editable = "../amplifier-collections" },
+    { name = "amplifier-config", editable = "../amplifier-config" },
     { name = "amplifier-core", git = "https://github.com/microsoft/amplifier-core?branch=main" },
+    { name = "amplifier-module-resolution", editable = "../amplifier-module-resolution" },
+    { name = "amplifier-profiles", editable = "../amplifier-profiles" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
     { name = "pydantic", specifier = ">=2.0.0" },
@@ -34,6 +42,40 @@ requires-dist = [
 dev = [{ name = "pytest", specifier = ">=8.4.2" }]
 
 [[package]]
+name = "amplifier-collections"
+version = "0.1.0"
+source = { editable = "../amplifier-collections" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.0" }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-asyncio", specifier = ">=0.23.0" },
+    { name = "pytest-cov", specifier = ">=4.1.0" },
+]
+
+[[package]]
+name = "amplifier-config"
+version = "0.1.0"
+source = { editable = "../amplifier-config" }
+dependencies = [
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "amplifier-core"
 version = "1.0.0"
 source = { git = "https://github.com/microsoft/amplifier-core?branch=main#57e8fab26699fecbd0e3eabbfcb5c90bae216f19" }
@@ -43,6 +85,35 @@ dependencies = [
     { name = "tomli" },
     { name = "typing-extensions" },
 ]
+
+[[package]]
+name = "amplifier-module-resolution"
+version = "0.1.0"
+source = { editable = "../amplifier-module-resolution" }
+
+[package.metadata]
+requires-dist = [
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "amplifier-profiles"
+version = "0.1.0"
+source = { editable = "../amplifier-profiles" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "annotated-types"

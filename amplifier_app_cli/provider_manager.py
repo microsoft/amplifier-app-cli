@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
-from .settings import SettingsManager
+from amplifier_config import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +41,13 @@ class ResetResult:
 class ProviderManager:
     """Manage provider configuration across scopes."""
 
-    def __init__(self, settings: SettingsManager | None = None):
+    def __init__(self, config: ConfigManager):
         """Initialize provider manager.
 
         Args:
-            settings: Settings manager instance (creates new if None)
+            config: Config manager instance (required)
         """
-        self.settings = settings or SettingsManager()
+        self.config = config
 
     def use_provider(
         self,
@@ -74,23 +74,25 @@ class ProviderManager:
         if source:
             provider_entry["source"] = source
 
-        # Update settings at scope
-        scope_map = {
-            "local": "local",
-            "project": "project",
-            "global": "user",  # global maps to user settings
-        }
-        settings_scope = scope_map[scope]
+        # Update config at scope
+        from amplifier_config import Scope
 
-        self.settings._update_settings(
-            self._get_file_for_scope(settings_scope), {"config": {"providers": [provider_entry]}}
-        )
+        scope_map = {
+            "local": Scope.LOCAL,
+            "project": Scope.PROJECT,
+            "global": Scope.USER,
+        }
+        config_scope = scope_map[scope]
+
+        # Set provider config at scope (using generic update_settings)
+        self.config.update_settings({"providers": [provider_entry]}, scope=config_scope)
 
         logger.info(f"Configured {provider_id} at {scope} scope")
 
-        return ConfigureResult(
-            provider=provider_id, scope=scope, file=str(self._get_file_for_scope(settings_scope)), config=config
-        )
+        # Get file path for return value
+        file_path = str(self.config.scope_to_path(config_scope))
+
+        return ConfigureResult(provider=provider_id, scope=scope, file=file_path, config=config)
 
     def get_current_provider(self) -> ProviderInfo | None:
         """Get currently active provider from merged config.
@@ -98,12 +100,11 @@ class ProviderManager:
         Returns:
             ProviderInfo with provider details and source, or None
         """
-        # Get merged settings
-        merged = self.settings.get_merged_settings()
+        # Get providers from merged settings
+        merged = self.config.get_merged_settings()
+        providers = merged.get("providers", [])
 
-        # Extract provider from config
-        providers = merged.get("config", {}).get("providers", [])
-        if providers and isinstance(providers, list):
+        if providers:
             provider = providers[0]  # First provider
 
             # Determine source (which scope provided it)
@@ -135,61 +136,50 @@ class ProviderManager:
         Returns:
             ResetResult indicating success
         """
+        from amplifier_config import Scope
+
         scope_map = {
-            "local": "local",
-            "project": "project",
-            "global": "user",
+            "local": Scope.LOCAL,
+            "project": Scope.PROJECT,
+            "global": Scope.USER,
         }
-        settings_scope = scope_map[scope]
+        config_scope = scope_map[scope]
 
-        target_file = self._get_file_for_scope(settings_scope)
-        settings = self.settings._read_settings(target_file)
+        # Check if providers exist at this scope
+        scope_path = self.config.scope_to_path(config_scope)
+        scope_settings = self.config._read_yaml(scope_path) or {}
+        had_providers = "providers" in scope_settings and len(scope_settings.get("providers", [])) > 0
 
-        if settings and "config" in settings and "providers" in settings["config"]:
-            del settings["config"]["providers"]
-
-            # Clean up empty config section
-            if not settings["config"]:
-                del settings["config"]
-
-            self.settings._write_settings(target_file, settings)
+        if had_providers:
+            # Clear providers at this scope
+            del scope_settings["providers"]
+            self.config._write_yaml(scope_path, scope_settings)
             logger.info(f"Reset provider at {scope} scope")
             return ResetResult(scope=scope, removed=True)
 
         return ResetResult(scope=scope, removed=False)
 
-    def _get_file_for_scope(self, scope: str):
-        """Get settings file path for scope."""
-        if scope == "user":
-            return self.settings.user_settings_file
-        if scope == "project":
-            return self.settings.project_settings_file
-        # local
-        return self.settings.local_settings_file
-
     def _determine_provider_source(self, provider: dict) -> str:
         """Determine which scope provided this provider config."""
+
         module_id = provider["module"]
 
         # Check local first (highest priority)
-        local = self.settings._read_settings(self.settings.local_settings_file)
-        if local and "config" in local and "providers" in local["config"]:
-            local_providers = local["config"]["providers"]
-            if any(p.get("module") == module_id for p in local_providers):
-                return "local"
+        local_settings = self.config._read_yaml(self.config.paths.local) or {}
+        local_providers = local_settings.get("providers", [])
+        if any(p.get("module") == module_id for p in local_providers):
+            return "local"
 
         # Check project
-        project = self.settings._read_settings(self.settings.project_settings_file)
-        if project and "config" in project and "providers" in project["config"]:
-            project_providers = project["config"]["providers"]
-            if any(p.get("module") == module_id for p in project_providers):
-                return "project"
+        project_settings = self.config._read_yaml(self.config.paths.project) or {}
+        project_providers = project_settings.get("providers", [])
+        if any(p.get("module") == module_id for p in project_providers):
+            return "project"
 
         # Check user
-        user = self.settings._read_settings(self.settings.user_settings_file)
-        if user and "config" in user and "providers" in user["config"]:
-            user_providers = user["config"]["providers"]
-            if any(p.get("module") == module_id for p in user_providers):
-                return "global"
+        user_settings = self.config._read_yaml(self.config.paths.user) or {}
+        user_providers = user_settings.get("providers", [])
+        if any(p.get("module") == module_id for p in user_providers):
+            return "global"
 
         return "profile"  # Must be from profile

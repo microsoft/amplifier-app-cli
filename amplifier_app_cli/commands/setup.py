@@ -9,7 +9,7 @@ from rich.prompt import Confirm
 from rich.prompt import Prompt
 
 from ..key_manager import KeyManager
-from ..profile_system import ProfileManager
+from ..paths import create_config_manager
 
 console = Console()
 
@@ -70,7 +70,6 @@ def setup_cmd(provider: str | None, api_key: str | None):
     console.print()
 
     key_manager = KeyManager()
-    profile_manager = ProfileManager()
 
     # Step 1: Choose provider (if not specified)
     if not provider:
@@ -161,7 +160,7 @@ def setup_cmd(provider: str | None, api_key: str | None):
 
     if provider == "azure":
         model_or_deployment = Prompt.ask(
-            "Azure deployment name (chat models only: gpt-5-chat, gpt-5-mini, gpt-4o, etc.)",
+            "Azure deployment name (chat models only: gpt-5, gpt-5-mini, gpt-5-codex, etc.)",
             default=provider_info["model"],
         )
     elif provider == "ollama":
@@ -179,12 +178,11 @@ def setup_cmd(provider: str | None, api_key: str | None):
     profile_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Get canonical module sources from registry
-    from ..module_resolution.registry import get_canonical_module_source
-
+    # Sources will come from profile (no canonical registry - YAGNI cleanup)
     try:
-        orchestrator_source = get_canonical_module_source("loop-basic")
-        context_source = get_canonical_module_source("context-simple")
-        provider_source = get_canonical_module_source(provider_info["module"])
+        orchestrator_source = None
+        context_source = None
+        provider_source = None
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")
         console.print("\nCannot create profile - required modules not found in bundled profiles")
@@ -268,7 +266,8 @@ To add tools, hooks, or agents, extend from this profile or copy/modify it.
     # Step 5: Set as active
     console.print()
     if Confirm.ask(f"Set '{profile_name}' as your default profile?", default=True):
-        profile_manager.set_active_profile(profile_name)
+        config = create_config_manager()
+        config.set_active_profile(profile_name)
         console.print(f"[green]✓[/green] Activated profile: [cyan]{profile_name}[/cyan]")
 
     # Step 5: Success!

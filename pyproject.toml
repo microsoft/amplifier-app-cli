@@ -11,6 +11,10 @@ dependencies = [
     "rich>=13.0.0",
     "pydantic>=2.0.0",
     "amplifier-core",
+    "amplifier-config",
+    "amplifier-collections",
+    "amplifier-module-resolution",
+    "amplifier-profiles",
     "pyyaml>=6.0.3",
     "prompt-toolkit>=3.0.52",
 ]
@@ -38,3 +42,7 @@ dev = [
 
 [tool.uv.sources]
 amplifier-core = { git = "https://github.com/microsoft/amplifier-core", branch = "main" }
+amplifier-config = { path = "../amplifier-config", editable = true }
+amplifier-collections = { path = "../amplifier-collections", editable = true }
+amplifier-module-resolution = { path = "../amplifier-module-resolution", editable = true }
+amplifier-profiles = { path = "../amplifier-profiles", editable = true }

@@ -20,7 +20,9 @@ These examples demonstrate how to build sophisticated AI tools using **metacogni
 **The Pedagogical Exemplar** - This is THE example to study for understanding the multi-config metacognitive recipe pattern.
 
 **What it demonstrates**:
+
 - **6 specialized configs** - Each optimized for its cognitive role:
+
   - `ANALYZER_CONFIG` (analytical, temp=0.3) - Extract tutorial structure
   - `LEARNER_SIMULATOR_CONFIG` (empathetic, temp=0.5) - Simulate learner experience
   - `DIAGNOSTICIAN_CONFIG` (precise, temp=0.1) - Identify pedagogical issues
@@ -35,6 +37,7 @@ These examples demonstrate how to build sophisticated AI tools using **metacogni
 - **Complex flow control** - Nested loops, conditional jumps, context accumulation
 
 **Structure**:
+
 ```
 tutorial_analyzer/
   main.py                     # Main orchestration & CLI
@@ -52,6 +55,7 @@ tutorial_analyzer/
 ```
 
 **Pipeline**:
+
 ```
 Analyze → Simulate Learner → Diagnose Issues →
 → Plan Improvements [HUMAN] → Apply Fixes →
@@ -60,6 +64,7 @@ Analyze → Simulate Learner → Diagnose Issues →
 ```
 
 **Run it**:
+
 ```bash
 # Via uvx (after packaging)
 uvx tutorial-analyzer tutorial.md clarity engagement
@@ -69,6 +74,7 @@ python toolkit/examples/tutorial_analyzer/main.py tutorial.md clarity engagement
 ```
 
 **Expected workflow**:
+
 ```
 1. Analyzing tutorial structure...
 2. Simulating learner experience...
@@ -103,7 +109,7 @@ ANALYZER_CONFIG = {
     "providers": [{
         "module": "provider-anthropic",
         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
-        "config": {"model": "claude-sonnet-4", "temperature": 0.3}  # Analytical
+        "config": {"model": "claude-sonnet-4-5", "temperature": 0.3}  # Analytical
     }],
 }
 
@@ -162,26 +168,31 @@ async def multi_stage_with_resumability():
 ### ✅ Correct Patterns
 
 **Multi-config orchestration**:
+
 - Multiple specialized configs (each optimized for its role)
 - Code orchestrates between configs
 - Different temperatures for different cognitive tasks
 
 **State management**:
+
 - Tool-specific state structure (simple dict)
 - Checkpoint after each stage
 - Resumability on failure
 
 **Flow control**:
+
 - Code decides routing (which config when)
 - Loops and conditionals in code (not AI)
 - Human-in-loop at strategic points
 
 **Error handling**:
+
 - Graceful failures per stage
 - Continue processing when possible
 - Return partial results
 
 **Toolkit utilities**:
+
 - File discovery with `discover_files`
 - Progress reporting with `ProgressReporter`
 - Validation with `validate_input_path`, `require_minimum_files`
@@ -189,18 +200,22 @@ async def multi_stage_with_resumability():
 ### ❌ Anti-Patterns Avoided
 
 **Single-config pattern**:
+
 - ❌ One config with compromise temperature
 - ✅ Multiple configs, each optimized
 
 **Session wrapping**:
+
 - ❌ Classes that wrap AmplifierSession
 - ✅ Use AmplifierSession directly
 
 **State frameworks**:
+
 - ❌ Generic state management classes
 - ✅ Tool-specific state (simple dict to JSON)
 
 **LLM bypass**:
+
 - ❌ Direct API calls to Anthropic/OpenAI
 - ✅ ALL LLM via amplifier-core
 
@@ -209,6 +224,7 @@ async def multi_stage_with_resumability():
 ### 1. Study tutorial_analyzer
 
 The complete exemplar showing:
+
 - How to structure multi-config tools
 - How code orchestrates thinking
 - How to checkpoint state
@@ -220,6 +236,7 @@ Read `tutorial_analyzer/README.md` for complete walkthrough.
 ### 2. Understand the Pattern
 
 Key questions to ask when building your own:
+
 - **What are the cognitive stages?** (analyze, create, evaluate, etc.)
 - **What config does each stage need?** (analytical, creative, evaluative)
 - **How does code decide flow?** (loops, conditionals, human input)
@@ -237,6 +254,7 @@ Key questions to ask when building your own:
 ### Start Simple
 
 Begin with 2-3 configs:
+
 ```python
 ANALYZER_CONFIG = {...}   # Analytical (temp=0.3)
 CREATOR_CONFIG = {...}    # Creative (temp=0.7)
@@ -257,6 +275,7 @@ async def my_tool(input_data):
 ### Add Sophistication As Needed
 
 Only add complexity when you need it:
+
 - Add evaluator config if you need quality loops
 - Add human-in-loop if strategic decisions needed
 - Add state checkpointing if tool is long-running
@@ -278,13 +297,13 @@ python my_tool.py ./test_data  # Should resume from checkpoint
 
 ## Configuration Temperature Guide
 
-| Cognitive Role | Temperature | Use For |
-|----------------|-------------|---------|
-| **Analytical** | 0.1-0.3 | Structure extraction, classification, diagnosis |
-| **Empathetic** | 0.4-0.6 | User simulation, perspective-taking |
-| **Creative** | 0.6-0.8 | Content generation, brainstorming |
-| **Evaluative** | 0.1-0.3 | Quality assessment, scoring, critique |
-| **Synthesizing** | 0.3-0.5 | Combining information, summarization |
+| Cognitive Role   | Temperature | Use For                                         |
+| ---------------- | ----------- | ----------------------------------------------- |
+| **Analytical**   | 0.1-0.3     | Structure extraction, classification, diagnosis |
+| **Empathetic**   | 0.4-0.6     | User simulation, perspective-taking             |
+| **Creative**     | 0.6-0.8     | Content generation, brainstorming               |
+| **Evaluative**   | 0.1-0.3     | Quality assessment, scoring, critique           |
+| **Synthesizing** | 0.3-0.5     | Combining information, summarization            |
 
 ## Packaging for Distribution
 
@@ -306,6 +325,7 @@ See `toolkit/PACKAGING_GUIDE.md` for complete packaging instructions.
 ## Philosophy Alignment
 
 These examples embody:
+
 - **Mechanism not policy** - AmplifierSession unchanged, configs = policy decisions
 - **Policy at edges** - Tools decide all configs
 - **Ruthless simplicity** - Start simple, add complexity only when needed

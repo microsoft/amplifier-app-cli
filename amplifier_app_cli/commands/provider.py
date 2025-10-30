@@ -10,9 +10,9 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from ..key_manager import KeyManager
+from ..paths import create_config_manager
 from ..provider_manager import ProviderManager
 from ..provider_manager import ScopeType
-from ..settings import SettingsManager
 
 console = Console()
 
@@ -44,7 +44,7 @@ def provider_use(
 
     Examples:
       amplifier provider use anthropic --model claude-opus-4-1 --local
-      amplifier provider use openai --model gpt-4o --project
+      amplifier provider use openai --model gpt-5 --project
       amplifier provider use azure-openai --endpoint https://... --deployment gpt-5-codex --use-azure-cli
       amplifier provider use ollama --model llama3
     """
@@ -52,8 +52,8 @@ def provider_use(
     module_id = f"provider-{provider_id}"
 
     # Validate provider exists
-    settings = SettingsManager()
-    provider_mgr = ProviderManager(settings)
+    config_manager = create_config_manager()
+    provider_mgr = ProviderManager(config_manager)
 
     valid_providers = {p[0]: p[1] for p in provider_mgr.list_providers()}
     if module_id not in valid_providers:
@@ -152,14 +152,9 @@ def provider_use(
         console.print(f"[red]Error:[/red] Unsupported provider: {provider_id}")
         return
 
-    # Get canonical source for provider
-    from ..module_resolution.registry import get_canonical_module_source
-
-    try:
-        provider_source = get_canonical_module_source(module_id)
-    except ValueError as e:
-        console.print(f"[yellow]Warning: Could not get canonical source for provider: {e}[/yellow]")
-        provider_source = None
+    # Source will come from profile (no canonical registry - YAGNI cleanup)
+    # Profiles specify sources for all modules
+    provider_source = None
 
     # Determine scope
     scope = scope_flag or prompt_scope()
@@ -180,8 +175,8 @@ def provider_use(
 @provider.command("current")
 def provider_current():
     """Show currently active provider."""
-    settings = SettingsManager()
-    provider_mgr = ProviderManager(settings)
+    config = create_config_manager()
+    provider_mgr = ProviderManager(config)
 
     info = provider_mgr.get_current_provider()
 
@@ -205,8 +200,8 @@ def provider_current():
 @provider.command("list")
 def provider_list():
     """List available providers."""
-    settings = SettingsManager()
-    provider_mgr = ProviderManager(settings)
+    config = create_config_manager()
+    provider_mgr = ProviderManager(config)
 
     providers = provider_mgr.list_providers()
 
@@ -234,8 +229,8 @@ def provider_reset(scope_flag: str | None):
     """
     scope = scope_flag or prompt_scope()
 
-    settings = SettingsManager()
-    provider_mgr = ProviderManager(settings)
+    config = create_config_manager()
+    provider_mgr = ProviderManager(config)
 
     result = provider_mgr.reset_provider(cast(ScopeType, scope))
 

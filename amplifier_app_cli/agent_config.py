@@ -33,6 +33,11 @@ def load_agent_configs_from_directory(directory: str | Path) -> dict[str, dict]:
     agents = {}
     for md_file in dir_path.glob("*.md"):
         try:
+            # Skip README files (they're documentation, not agent configs)
+            if md_file.name.upper() == "README.MD":
+                logger.debug(f"Skipping README file: {md_file}")
+                continue
+
             # Read file content
             content = md_file.read_text()
 

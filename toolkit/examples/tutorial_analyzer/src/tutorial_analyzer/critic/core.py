@@ -24,7 +24,7 @@ CRITIC_CONFIG = {
         {
             "module": "provider-anthropic",
             "config": {
-                "model": "claude-sonnet-4",
+                "model": "claude-sonnet-4-5",
                 "temperature": 0.2,  # Evaluative consistency
                 "system_prompt": """You are a quality evaluator for tutorial improvements.
 

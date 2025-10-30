@@ -5,6 +5,7 @@
 Standalone tools built with this toolkit are **policy-making edges** in the Amplifier ecosystem. They make all decisions about configuration, flow, and behavior. The kernel (amplifier-core) provides only mechanisms.
 
 **The division of responsibility**:
+
 - **Kernel (amplifier-core)**: Provides `AmplifierSession` - the mechanism to execute with any config
 - **Tools (this toolkit)**: Make ALL policy decisions - which configs, when to use them, how to orchestrate
 
@@ -13,11 +14,12 @@ Standalone tools built with this toolkit are **policy-making edges** in the Ampl
 ### The Single-Config Limitation
 
 **Attempt**: One config tries to handle all cognitive tasks
+
 ```python
 GENERIC_CONFIG = {
     "providers": [{
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.5,  # Compromise
             "system_prompt": "You are a helpful assistant."  # Generic
         }
@@ -32,6 +34,7 @@ async with AmplifierSession(config=GENERIC_CONFIG) as session:
 ```
 
 **Problems**:
+
 - **Temperature compromise**: Can't optimize for precision (analysis) AND creativity (generation)
 - **Attention dilution**: Generic prompt not optimized for any specific task
 - **Context pollution**: All tasks share one session, context accumulates
@@ -40,11 +43,12 @@ async with AmplifierSession(config=GENERIC_CONFIG) as session:
 ### The Multi-Config Solution
 
 **Approach**: Specialized config per cognitive subtask
+
 ```python
 ANALYZER_CONFIG = {
     "providers": [{
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.3,  # Optimized for precision
             "system_prompt": "You are an expert content analyzer..."  # Focused
         }
@@ -64,7 +68,7 @@ CREATOR_CONFIG = {
 EVALUATOR_CONFIG = {
     "providers": [{
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.2,  # Optimized for consistency
             "system_prompt": "You are a quality evaluator..."  # Focused
         }
@@ -87,6 +91,7 @@ async def sophisticated_tool():
 ```
 
 **Benefits**:
+
 - **Optimized temperatures**: Each task gets its ideal temperature
 - **Focused attention**: Each session has one clear job
 - **Fresh context**: Each stage starts clean
@@ -97,6 +102,7 @@ async def sophisticated_tool():
 ### Mechanism Not Policy
 
 **Kernel provides mechanism**:
+
 ```python
 # AmplifierSession: mechanism to execute with ANY config
 async with AmplifierSession(config=ANY_CONFIG) as session:
@@ -104,6 +110,7 @@ async with AmplifierSession(config=ANY_CONFIG) as session:
 ```
 
 **Tool makes policy decisions**:
+
 ```python
 # Tool decides:
 # - Which model (haiku, sonnet, opus)
@@ -127,9 +134,9 @@ Standalone tools **ARE** the edges. They make all policy decisions:
 ```python
 # Tool decides everything about its behavior
 CONFIGS = {
-    "analyzer": {"temperature": 0.3, "model": "claude-sonnet-4"},
+    "analyzer": {"temperature": 0.3, "model": "claude-sonnet-4-5"},
     "creator": {"temperature": 0.7, "model": "claude-opus-4-1"},
-    "evaluator": {"temperature": 0.2, "model": "claude-sonnet-4"},
+    "evaluator": {"temperature": 0.2, "model": "claude-sonnet-4-5"},
 }
 
 # Code decides flow
@@ -150,17 +157,20 @@ No one else decides for you. **This is correct.**
 ### Ruthless Simplicity
 
 **Each piece stays simple**:
+
 - Each config: Simple dict with a few optimized values
 - Each stage: One focused task with one config
 - Code orchestration: Clear flow logic
 - State management: Simple dict to JSON
 
 **Sophistication emerges from composition**:
+
 - Multiple simple configs
 - Clear orchestration logic
 - Well-defined stages
 
 **No unnecessary abstraction**:
+
 - No session wrappers (use AmplifierSession directly)
 - No state frameworks (simple dict per tool)
 - No config builders (just dict literals)
@@ -168,11 +178,13 @@ No one else decides for you. **This is correct.**
 ### Small, Stable, Boring (Kernel)
 
 **Kernel stays unchanged**:
+
 - `AmplifierSession` interface same
 - Load modules, execute prompts
 - No new APIs needed
 
 **Tools innovate at edges**:
+
 - New metacognitive recipes
 - New config combinations
 - New orchestration patterns
@@ -185,6 +197,7 @@ The center stays still so the edges can move fast. **This is correct.**
 ### ProfileManager is App-Layer Policy
 
 **ProfileManager** is designed for `amplifier` CLI where users customize behavior at runtime:
+
 ```bash
 # User chooses profile at runtime
 amplifier run --profile dev "research AI safety"
@@ -192,6 +205,7 @@ amplifier run --profile production "research AI safety"
 ```
 
 **Standalone tools** make policy decisions at **build time**, not runtime:
+
 ```python
 # Tool author decides configs when building tool
 ANALYZER_CONFIG = {"temperature": 0.3}  # Build-time decision
@@ -205,7 +219,7 @@ Each standalone tool is a **specific solution** to a **specific problem** with *
 
 ```python
 # Tutorial evolver's choices:
-# - Use claude-sonnet-4 for analysis (not opus, not haiku)
+# - Use claude-sonnet-4-5 for analysis (not opus, not haiku)
 # - Use temperature 0.3 for analysis (not 0.5, not 0.1)
 # - Use 6 configs (not 3, not 10)
 # - Simulate learner perspective (not skip it)
@@ -246,6 +260,7 @@ Standalone tools can use three levels of configuration sophistication:
 ### Level 1: Fixed Configs (90% of tools)
 
 **Policy decision at build time**:
+
 ```python
 # Tool author decides these values when building tool
 ANALYZER_CONFIG = {
@@ -254,7 +269,7 @@ ANALYZER_CONFIG = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/...",
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.3,
             "system_prompt": "You are an expert analyzer."
         }
@@ -265,6 +280,7 @@ ANALYZER_CONFIG = {
 ```
 
 **Philosophy alignment**: ✅ Perfect
+
 - Mechanism not policy: Kernel unchanged, tool makes policy once
 - Policy at edges: Tool decides, kernel executes
 - Ruthless simplicity: Define once, use everywhere
@@ -273,6 +289,7 @@ ANALYZER_CONFIG = {
 ### Level 2: Code-Modified Configs (8% of tools)
 
 **Policy decision at runtime, bounded by code**:
+
 ```python
 # Base template with policy boundaries
 BASE_CONFIG = {
@@ -290,12 +307,13 @@ def create_config(task_type: str) -> dict:
         config["providers"][0]["config"] = {"model": "claude-opus-4-1", "temperature": 0.3}
         config["tools"].append(WEB_SEARCH_TOOL)
     else:
-        config["providers"][0]["config"] = {"model": "claude-sonnet-4", "temperature": 0.5}
+        config["providers"][0]["config"] = {"model": "claude-sonnet-4-5", "temperature": 0.5}
 
     return config
 ```
 
 **Philosophy alignment**: ✅ Good
+
 - Mechanism not policy: Kernel still unchanged
 - Policy at edges: Tool's code makes runtime decisions
 - Ruthless simplicity: Bounded options, deterministic logic
@@ -304,6 +322,7 @@ def create_config(task_type: str) -> dict:
 ### Level 3: AI-Generated Configs (2% of tools, EXPLORATORY)
 
 **Policy decision delegated to AI** (low-stakes exploration only):
+
 ```python
 async def generate_config_for_exploration(topic: str) -> dict:
     """AI creates config for exploration."""
@@ -326,17 +345,20 @@ async def generate_config_for_exploration(topic: str) -> dict:
 ```
 
 **Philosophy alignment**: ⚠️ CAUTION
+
 - Mechanism not policy: ✅ Kernel still unchanged
 - Policy at edges: ⚠️ AI controls policy (with code validation)
 - Ruthless simplicity: ⚠️ Complex if overused
 - Small, stable, boring: ⚠️ Unpredictable behavior
 
 **Use ONLY for**:
+
 - Exploratory research (low stakes)
 - Unknown domains (learning)
 - Prototyping (not production)
 
 **NEVER for**:
+
 - Production tools
 - Security-sensitive tasks
 - Well-understood domains
@@ -346,6 +368,7 @@ async def generate_config_for_exploration(topic: str) -> dict:
 ### Use Toolkit For
 
 **Structural operations**:
+
 - File discovery: `discover_files(path, "**/*.md")`
 - Progress reporting: `ProgressReporter(count, description)`
 - Input validation: `validate_input_path(path, must_be_dir=True)`
@@ -355,12 +378,14 @@ async def generate_config_for_exploration(topic: str) -> dict:
 ### Don't Use Toolkit For
 
 **LLM operations** - Use amplifier-core directly:
+
 - ❌ Don't wrap `AmplifierSession`
 - ❌ Don't create LLM helper classes
 - ❌ Don't parse LLM responses (amplifier-core handles it)
 - ❌ Don't retry LLM calls (orchestrator handles it)
 
 **State management** - Each tool owns its state:
+
 - ❌ Don't create state manager classes
 - ❌ Don't generalize state structure
 - ✅ Each tool has its own simple state dict
@@ -372,6 +397,7 @@ async def generate_config_for_exploration(topic: str) -> dict:
 ### Never Wrap These
 
 **AmplifierSession**:
+
 ```python
 # WRONG: Wrapping the mechanism
 class Helper:
@@ -384,6 +410,7 @@ async with AmplifierSession(config=MY_CONFIG) as session:
 ```
 
 **Providers**:
+
 ```python
 # WRONG: Direct provider access
 from amplifier_module_provider_anthropic import AnthropicProvider
@@ -395,6 +422,7 @@ async with AmplifierSession(config=config_with_provider) as session:
 ```
 
 **Orchestrators**:
+
 ```python
 # WRONG: Direct orchestrator use
 from amplifier_module_loop_streaming import StreamingOrchestrator
@@ -410,12 +438,14 @@ async with AmplifierSession(config=config) as session:
 ### Why Not Wrap?
 
 **Wrapping creates indirection**:
+
 - Adds complexity without value
 - Hides the kernel interface
 - Makes debugging harder
 - Violates "use mechanisms directly"
 
 **Kernel interfaces are designed for direct use**:
+
 - `AmplifierSession` is the public API
 - It's already simple and usable
 - Wrapping it makes it more complex, not simpler
@@ -425,23 +455,27 @@ async with AmplifierSession(config=config) as session:
 ### How Multi-Config Aligns
 
 **Mechanism not policy** ✅:
+
 - Kernel: `AmplifierSession.execute(config, prompt)` - pure mechanism
 - Tools: Multiple CONFIG dicts - pure policy decisions
 - Clean separation
 
 **Policy at edges** ✅:
+
 - Tools ARE the edges
 - Tools decide all configs (which model, what temperature, which orchestrator)
 - Multiple configs = multiple policy decisions at edges
 - Kernel just executes
 
 **Ruthless simplicity** ✅:
+
 - Each config is simple (just a dict with a few values)
 - Each stage is simple (one config, one task)
 - Code orchestration is simple (clear flow logic)
 - Sophistication emerges from composition
 
 **Small, stable, boring (kernel)** ✅:
+
 - Kernel unchanged
 - No new APIs needed
 - Just executing configs with prompts
@@ -450,12 +484,14 @@ async with AmplifierSession(config=config) as session:
 ### How Multi-Config Enables Innovation
 
 **Tools can innovate**:
+
 - Try new config combinations
 - Experiment with temperatures
 - Test different models
 - Explore new flow patterns
 
 **Kernel stays stable**:
+
 - Same `AmplifierSession` interface
 - Same module loading
 - Same event system
@@ -470,29 +506,35 @@ async with AmplifierSession(config=config) as session:
 Ask these questions:
 
 **1. Do you have distinct cognitive tasks?**
+
 - Analysis (precise) AND creation (creative)? → Multiple configs
 - Evaluation (consistent) AND generation (diverse)? → Multiple configs
 
 **2. Do tasks need different temperatures?**
+
 - Some need precision (temp=0.1-0.3)? → Multiple configs
 - Some need creativity (temp=0.6-0.8)? → Multiple configs
 
 **3. Do you have multiple stages?**
+
 - Extract → Synthesize → Evaluate? → Multiple configs
 - Analyze → Plan → Implement → Review? → Multiple configs
 
 **4. Do you need different models?**
+
 - Fast analysis (Haiku) and deep creation (Opus)? → Multiple configs
 
 ### When Single Config Is Fine
 
 **Indicators you're overthinking**:
+
 - Tool does ONE thing → Single config probably fine
 - All tasks similar (all analytical or all creative) → Single config probably fine
 - No multi-stage pipeline → Single config probably fine
 - No quality loops → Single config probably fine
 
 **Example of appropriate single-config tool**:
+
 ```python
 # Simple code formatter - one analytical task
 FORMATTER_CONFIG = {"temperature": 0.2}
@@ -534,18 +576,21 @@ async def format_code(code: str):
 ### Philosophy Alignment by Level
 
 **Level 1: Fixed Configs**
+
 - Mechanism not policy: ✅ Perfect
 - Policy at edges: ✅ Tool decides once
 - Ruthless simplicity: ✅ Maximum
 - Boring: ✅ Predictable
 
 **Level 2: Code-Modified**
+
 - Mechanism not policy: ✅ Good
 - Policy at edges: ✅ Code at edge decides
 - Ruthless simplicity: ⚠️ Some complexity
 - Boring: ⚠️ Some dynamism
 
 **Level 3: AI-Generated**
+
 - Mechanism not policy: ✅ Kernel still unchanged
 - Policy at edges: ⚠️ AI controls policy
 - Ruthless simplicity: ⚠️ Complex if overused
@@ -560,6 +605,7 @@ async def format_code(code: str):
 **Reality**: More configs can mean LESS complexity
 
 **Single config attempting everything**:
+
 ```python
 # Complex: One config trying to handle all cases
 prompt = """You will receive different types of tasks.
@@ -575,6 +621,7 @@ Type: {task_type}
 ```
 
 **Multiple configs, each simple**:
+
 ```python
 # Simple: Each config focused on one thing
 ANALYZER_CONFIG = {"temperature": 0.3}
@@ -619,6 +666,7 @@ This is the essence of ruthless simplicity: simple pieces, clear composition.
 ## Summary
 
 **Toolkit philosophy**:
+
 1. **Standalone tools are policy-making edges** - They decide all configs
 2. **Multi-config pattern** - Each cognitive subtask gets optimized config
 3. **Code orchestrates thinking** - Flow, state, decisions in code
@@ -627,6 +675,7 @@ This is the essence of ruthless simplicity: simple pieces, clear composition.
 6. **Add complexity only when needed** - Level 2/3 when justified
 
 **Alignment with kernel philosophy**:
+
 - ✅ Mechanism not policy (kernel provides capability, tools decide configs)
 - ✅ Policy at edges (tools ARE edges, make ALL decisions)
 - ✅ Ruthless simplicity (each piece simple, composition sophisticated)
@@ -635,6 +684,7 @@ This is the essence of ruthless simplicity: simple pieces, clear composition.
 **Key insight**: The most sophisticated AI tools are built from the simplest pieces - specialized configs and clear orchestration logic. Start simple, compose thoughtfully.
 
 **Next steps**:
+
 1. Study `toolkit/examples/tutorial_analyzer/` - See multi-config in action
 2. Read `toolkit/METACOGNITIVE_RECIPES.md` - Understand pattern deeply
 3. Read `toolkit/HOW_TO_CREATE_YOUR_OWN.md` - Build your own tool

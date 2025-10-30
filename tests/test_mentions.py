@@ -16,9 +16,9 @@ class TestParseMentions:
 
     def test_multiple_mentions(self: "TestParseMentions") -> None:
         """Parse multiple @mentions."""
-        text = "See @AGENTS.md and @CLAUDE.md for context"
+        text = "See @AGENTS.md and @README.md for context"
         result = parse_mentions(text)
-        assert result == ["@AGENTS.md", "@CLAUDE.md"]
+        assert result == ["@AGENTS.md", "@README.md"]
 
     def test_mentions_with_paths(self: "TestParseMentions") -> None:
         """Parse @mentions with directory paths."""
@@ -65,9 +65,9 @@ class TestParseMentions:
 
     def test_mentions_in_code_blocks(self: "TestParseMentions") -> None:
         """Parse @mentions even in code blocks."""
-        text = "```\n@AGENTS.md\n@CLAUDE.md\n```"
+        text = "```\n@AGENTS.md\n@README.md\n```"
         result = parse_mentions(text)
-        assert result == ["@AGENTS.md", "@CLAUDE.md"]
+        assert result == ["@AGENTS.md", "@README.md"]
 
     def test_mentions_with_underscores_and_dashes(self: "TestParseMentions") -> None:
         """Parse @mentions with underscores and dashes."""
@@ -115,7 +115,7 @@ class TestHasMentions:
 
     def test_with_multiple_mentions(self: "TestHasMentions") -> None:
         """Detect text with multiple @mentions."""
-        text = "@AGENTS.md and @CLAUDE.md"
+        text = "@AGENTS.md and @README.md"
         assert has_mentions(text) is True
 
 

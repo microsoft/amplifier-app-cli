@@ -5,10 +5,12 @@
 A **metacognitive recipe** is a structured thinking process encoded as code that orchestrates multiple LLM sessions, each optimized for a specific cognitive role. Instead of one monolithic AI session trying to do everything, you create specialized "thinkers" and code that decides which thinker to use when.
 
 **Think of it like a kitchen**:
+
 - **Bad approach**: One cook does everything at once (prep, cook, plate, critique, adjust) - rushed, unfocused
 - **Good approach**: Multiple specialists (prep chef, line cook, sous chef, head chef) each focused on their role - coordinated, optimized
 
 **In AI tools**:
+
 - **Bad approach**: One LLM session with one config trying to analyze, create, evaluate, and iterate
 - **Good approach**: Multiple sessions with specialized configs - analyzer (temp=0.3), creator (temp=0.7), evaluator (temp=0.2) - orchestrated by code
 
@@ -19,6 +21,7 @@ A **metacognitive recipe** is a structured thinking process encoded as code that
 ### The Temperature Problem
 
 One temperature can't optimize for all thinking modes:
+
 - **Analytical thinking** (temp=0.2-0.3): Breaking down structure, classifying, extracting patterns - needs low temperature for precision
 - **Creative thinking** (temp=0.6-0.8): Generating novel content, exploring possibilities - needs high temperature for diversity
 - **Evaluative thinking** (temp=0.1-0.2): Judging quality, scoring, critiquing - needs very low temperature for consistency
@@ -28,11 +31,13 @@ With one config, you compromise. With multiple configs, you optimize each.
 ### The Attention Problem
 
 Large prompts with many instructions dilute attention:
+
 - Model tries to do everything at once
 - Critical instructions get lost in context
 - Failures cascade (one mistake breaks everything)
 
 With multiple configs:
+
 - Each session has one focused job
 - Clear instructions optimized for that job
 - Failures isolated to one stage
@@ -40,11 +45,13 @@ With multiple configs:
 ### The Context Problem
 
 Everything must fit in one context window:
+
 - Limited by token limits
 - Can't process large multi-stage workflows
 - No checkpointing between stages
 
 With multiple configs:
+
 - Each stage starts with fresh context
 - Unlimited total context (spread across sessions)
 - Checkpoint after every stage (resumability)
@@ -63,7 +70,7 @@ CONFIG_ANALYZER = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.3,  # Analytical precision
             "system_prompt": "You are an expert content analyzer."
         }
@@ -89,7 +96,7 @@ CONFIG_EVALUATOR = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.2,  # Evaluative consistency
             "system_prompt": "You are a quality evaluator."
         }
@@ -123,18 +130,21 @@ async def metacognitive_pipeline(input_data):
 ### Key Components
 
 **1. Specialized Configs** - Each optimized for its cognitive role
+
 - Model choice (Haiku for fast analysis, Opus for complex creation)
 - Temperature (low for precision, high for creativity)
 - System prompt (focused instructions for specific task)
 - Orchestrator (basic for atomic tasks, streaming for long-form)
 
 **2. Code Orchestration** - Manages the thinking process
+
 - Decides which config to use when
 - Manages state across stages
 - Controls flow (loops, conditionals, jumps)
 - Determines when human input needed
 
 **3. State Management** - Tracks progress
+
 - Checkpoints after each stage
 - Enables resumability if interrupted
 - Passes relevant context between stages
@@ -149,6 +159,7 @@ There are three levels of configuration sophistication. Start with Level 1 (90% 
 **What**: Hardcoded CONFIG constants defined at tool creation time.
 
 **Example**:
+
 ```python
 ANALYZER_CONFIG = {
     "session": {"orchestrator": "loop-basic"},
@@ -156,7 +167,7 @@ ANALYZER_CONFIG = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.3,
             "system_prompt": "You are an expert tutorial analyzer."
         }
@@ -169,12 +180,14 @@ async with AmplifierSession(config=ANALYZER_CONFIG) as session:
 ```
 
 **When to use**:
+
 - Tool has well-defined, unchanging needs ✅
 - Predictability > adaptability ✅
 - Security is critical ✅
 - Most production tools ✅
 
 **Benefits**:
+
 - **Predictable**: Same config every time, no surprises
 - **Reviewable**: Can audit exactly what will happen
 - **Safe**: No dynamic behavior that could go wrong
@@ -193,6 +206,7 @@ async with AmplifierSession(config=ANALYZER_CONFIG) as session:
 **What**: Base template configs that code modifies based on runtime data or conditions.
 
 **Pattern A: Code-Driven Modification** (Deterministic):
+
 ```python
 # Base template
 BASE_RESEARCHER_CONFIG = {
@@ -223,7 +237,7 @@ def create_researcher_config(task_type: str, needs_web: bool, needs_code: bool) 
         config["providers"][0]["config"]["model"] = "claude-opus-4-1"
         config["providers"][0]["config"]["temperature"] = 0.3
     else:
-        config["providers"][0]["config"]["model"] = "claude-sonnet-4"
+        config["providers"][0]["config"]["model"] = "claude-sonnet-4-5"
         config["providers"][0]["config"]["temperature"] = 0.5
 
     return config
@@ -243,13 +257,14 @@ async def research(topic: str, task_type: str):
 ```
 
 **Pattern B: AI-Suggested, Code-Applied** (Hybrid):
+
 ```python
 # Meta-planner analyzes task and suggests needs
 META_PLANNER_CONFIG = {
     "session": {"orchestrator": "loop-basic"},
     "providers": [{
         "module": "provider-anthropic",
-        "config": {"model": "claude-sonnet-4", "temperature": 0.2}  # Analytical
+        "config": {"model": "claude-sonnet-4-5", "temperature": 0.2}  # Analytical
     }]
 }
 
@@ -288,27 +303,30 @@ async def create_adaptive_config(task_description: str) -> dict:
     # AI suggests model, code validates and applies
     model_map = {
         "haiku": "claude-haiku-4",
-        "sonnet": "claude-sonnet-4",
+        "sonnet": "claude-sonnet-4-5",
         "opus": "claude-opus-4-1"
     }
     suggested_model = needs.get("optimal_model", "sonnet")
-    config["providers"][0]["config"]["model"] = model_map.get(suggested_model, "claude-sonnet-4")
+    config["providers"][0]["config"]["model"] = model_map.get(suggested_model, "claude-sonnet-4-5")
 
     return config
 ```
 
 **When to use**:
+
 - Task requirements vary at runtime ✅
 - Need adaptability but maintain safety ✅
 - Hybrid AI-human decision making ✅
 - Advanced tools with bounded flexibility ✅
 
 **When NOT to use**:
+
 - Requirements are static ❌ (use Level 1)
 - Need maximum predictability ❌ (use Level 1)
 - Security-critical operations ❌ (use Level 1)
 
 **Benefits**:
+
 - **Adaptive**: Responds to varying task requirements
 - **Safe**: Code controls final decisions with validation
 - **Bounded**: Limited to predefined options
@@ -329,6 +347,7 @@ async def create_adaptive_config(task_description: str) -> dict:
 **⚠️ WARNING**: Use ONLY for exploration. NOT for production, security-sensitive tasks, or well-understood domains.
 
 **Example**:
+
 ```python
 # Meta-config for AI that understands mount plans
 META_CONFIG_GENERATOR = {
@@ -363,7 +382,7 @@ async def explore_topic(topic: str, available_modules: dict) -> dict:
             "module": "provider-anthropic",
             "source": "git+...",
             "config": {{
-                "model": "claude-haiku-4" | "claude-sonnet-4" | "claude-opus-4-1",
+                "model": "claude-haiku-4" | "claude-sonnet-4-5" | "claude-opus-4-1",
                 "temperature": 0.0-1.0
             }}
         }}],
@@ -395,18 +414,21 @@ async def explore_topic(topic: str, available_modules: dict) -> dict:
 ```
 
 **When to use** (RARE):
+
 - Exploratory analysis (low stakes) ✅
 - Research/prototyping tools ✅
 - Learning what's possible ✅
 - Expert users who understand risks ✅
 
 **When NOT to use** (DEFAULT):
+
 - Production tools ❌
 - Security-sensitive tasks ❌
 - Well-understood domains ❌
 - Most real-world applications ❌
 
 **Key Safeguards** (REQUIRED):
+
 1. **Use for exploration only** - Low stakes, validate results not config
 2. **Schema validation** - Config is well-formed
 3. **Module whitelist** - Only approved modules
@@ -416,6 +438,7 @@ async def explore_topic(topic: str, available_modules: dict) -> dict:
 7. **Fallback to safe defaults** - On error, use known-good config
 
 **Risk**: HIGH
+
 - AI could select inappropriate tools
 - AI could misconfigure security boundaries
 - AI could make poor model choices
@@ -423,12 +446,14 @@ async def explore_topic(topic: str, available_modules: dict) -> dict:
 - Unpredictable behavior
 
 **Power**: MAXIMUM
+
 - Fully adaptive to any task
 - Can optimize for specific scenarios
 - Can discover novel config combinations
 - Enables exploration of unknown domains
 
 **Philosophy alignment**: ⚠️ CAUTION
+
 - ✅ Still mechanism not policy (kernel unchanged)
 - ⚠️ Policy at edges but edges are AI-controlled
 - ⚠️ Violates "boring" if overused
@@ -465,6 +490,7 @@ Use this framework to choose the right level:
 ## Complete Example: tutorial_analyzer
 
 The toolkit includes `tutorial_analyzer` as the pedagogical exemplar. It demonstrates:
+
 - 6 specialized configs (analyzer, learner_simulator, diagnostician, improver, critic, synthesizer)
 - Multi-stage orchestration
 - Human-in-loop at strategic points
@@ -481,7 +507,7 @@ ANALYZER_CONFIG = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.3,
             "system_prompt": "You are an expert tutorial content analyzer."
         }
@@ -509,7 +535,7 @@ DIAGNOSTICIAN_CONFIG = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.1,
             "system_prompt": "You are a pedagogy expert identifying issues."
         }
@@ -537,7 +563,7 @@ CRITIC_CONFIG = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.2,
             "system_prompt": "You are a pedagogy critic evaluating improvements."
         }
@@ -551,7 +577,7 @@ SYNTHESIZER_CONFIG = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.3,
             "system_prompt": "You synthesize evaluation results into recommendations."
         }
@@ -639,6 +665,7 @@ async def evolve_tutorial(tutorial_path: Path):
 ```
 
 **Key teachings**:
+
 - **6 specialized configs** - Each optimized for its cognitive role
 - **Code orchestrates** - Decides flow, manages state, controls loops
 - **Checkpointing** - Save after every stage for resumability
@@ -765,6 +792,7 @@ else:
 Begin with fixed configs. Only add complexity when you need it.
 
 **Good progression**:
+
 1. Start: 2-3 fixed configs (analyzer, creator)
 2. If working: Done! Ship it.
 3. If needs vary: Add Level 2 code-modification
@@ -772,13 +800,13 @@ Begin with fixed configs. Only add complexity when you need it.
 
 ### 2. Optimize Temperature for Role
 
-| Role | Temperature | Why |
-|------|-------------|-----|
-| **Analytical** | 0.1-0.3 | Need precision, consistency |
-| **Empathetic** | 0.4-0.6 | Need perspective, nuance |
-| **Creative** | 0.6-0.8 | Need diversity, exploration |
-| **Evaluative** | 0.1-0.3 | Need consistency, objectivity |
-| **Synthesizing** | 0.3-0.5 | Need clarity, coherence |
+| Role             | Temperature | Why                           |
+| ---------------- | ----------- | ----------------------------- |
+| **Analytical**   | 0.1-0.3     | Need precision, consistency   |
+| **Empathetic**   | 0.4-0.6     | Need perspective, nuance      |
+| **Creative**     | 0.6-0.8     | Need diversity, exploration   |
+| **Evaluative**   | 0.1-0.3     | Need consistency, objectivity |
+| **Synthesizing** | 0.3-0.5     | Need clarity, coherence       |
 
 ### 3. Checkpoint After Every Stage
 
@@ -795,6 +823,7 @@ save_state(state)
 ### 4. Decide Flow in Code, Not AI
 
 **Good** (code decides):
+
 ```python
 if score < threshold:
     # Re-generate with feedback
@@ -802,6 +831,7 @@ if score < threshold:
 ```
 
 **Bad** (AI decides):
+
 ```python
 # Asking AI to decide flow
 prompt = "If quality is low, regenerate. Otherwise continue."
@@ -831,6 +861,7 @@ One stage failing shouldn't kill the whole pipeline.
 ### Mistake 1: One Config to Rule Them All
 
 **Bad**:
+
 ```python
 # Trying to do everything with one config
 ONE_CONFIG = {"temperature": 0.5}  # Compromise
@@ -853,6 +884,7 @@ async with AmplifierSession(config=ONE_CONFIG) as session:
 ### Mistake 2: Overusing Level 3
 
 **Bad**:
+
 ```python
 # Generating configs for well-understood task
 config = await generate_config_for_blog_writing()  # Why?!
@@ -865,6 +897,7 @@ config = await generate_config_for_blog_writing()  # Why?!
 ### Mistake 3: Not Checkpointing
 
 **Bad**:
+
 ```python
 # Run all stages, save at end
 stage1 = await do_stage1()
@@ -880,6 +913,7 @@ save_state({"results": stage3})  # Too late!
 ### Mistake 4: AI Decides Flow
 
 **Bad**:
+
 ```python
 prompt = """Analyze this content.
 If quality is low, improve it.
@@ -896,6 +930,7 @@ If quality is high, move to next stage.
 **Metacognitive recipes** = Code-orchestrated multi-config thinking
 
 **Key insights**:
+
 1. **Multiple configs** - Each optimized for its cognitive role
 2. **Code orchestrates** - Flow, state, decisions
 3. **Configuration spectrum** - Level 1 (fixed), 2 (code-modified), 3 (AI-generated)
@@ -903,12 +938,14 @@ If quality is high, move to next stage.
 5. **Advanced when needed** - Complex flow control available
 
 **Philosophy**:
+
 - **Mechanism not policy**: Kernel unchanged, configs = policy decisions
 - **Policy at edges**: Tools decide all configs
 - **Ruthless simplicity**: Start Level 1, add complexity only when needed
 - **Code for structure, AI for intelligence**: Each does what it does best
 
 **Next steps**:
+
 1. Study `toolkit/examples/tutorial_analyzer/` - Complete exemplar
 2. Read `toolkit/HOW_TO_CREATE_YOUR_OWN.md` - Step-by-step guide
 3. Read `toolkit/BEST_PRACTICES.md` - Strategic guidance

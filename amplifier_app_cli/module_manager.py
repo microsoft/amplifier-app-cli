@@ -5,7 +5,9 @@ from dataclasses import dataclass
 from typing import Any
 from typing import Literal
 
-from .settings import SettingsManager
+from amplifier_config import ConfigManager
+
+from .paths import create_config_manager
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +45,13 @@ class RemoveModuleResult:
 class ModuleManager:
     """Manage module configuration."""
 
-    def __init__(self, settings: SettingsManager | None = None):
+    def __init__(self, config_manager: ConfigManager | None = None):
         """Initialize module manager.
 
         Args:
-            settings: Settings manager instance (creates new if None)
+            config_manager: Config manager instance (creates new if None)
         """
-        self.settings = settings or SettingsManager()
+        self.settings = config_manager or create_config_manager()
 
     def add_module(
         self,
@@ -82,7 +84,7 @@ class ModuleManager:
         settings_scope = scope_map[scope]
         target_file = self._get_file_for_scope(settings_scope)
 
-        settings = self.settings._read_settings(target_file) or {}
+        settings = self.settings._read_yaml(target_file) or {}
         if "modules" not in settings:
             settings["modules"] = {}
         if module_list_key not in settings["modules"]:
@@ -92,7 +94,7 @@ class ModuleManager:
         existing_ids = {m.get("module") for m in settings["modules"][module_list_key] if isinstance(m, dict)}
         if module_id not in existing_ids:
             settings["modules"][module_list_key].append(module_entry)
-            self.settings._write_settings(target_file, settings)
+            self.settings._write_yaml(target_file, settings)
             logger.info(f"Added {module_type} '{module_id}' at {scope} scope")
         else:
             logger.warning(f"Module '{module_id}' already exists at {scope} scope")
@@ -117,7 +119,7 @@ class ModuleManager:
         settings_scope = scope_map[scope]
         target_file = self._get_file_for_scope(settings_scope)
 
-        settings = self.settings._read_settings(target_file)
+        settings = self.settings._read_yaml(target_file)
         if not settings or "modules" not in settings:
             logger.warning(f"No modules configured at {scope} scope")
             return RemoveModuleResult(module_id=module_id, scope=scope)
@@ -142,7 +144,7 @@ class ModuleManager:
             del settings["modules"]
 
         if removed:
-            self.settings._write_settings(target_file, settings)
+            self.settings._write_yaml(target_file, settings)
             logger.info(f"Removed module '{module_id}' from {scope} scope")
         else:
             logger.warning(f"Module '{module_id}' not found at {scope} scope")
@@ -184,8 +186,8 @@ class ModuleManager:
     def _get_file_for_scope(self, scope: str):
         """Get settings file path for scope."""
         if scope == "user":
-            return self.settings.user_settings_file
+            return self.settings.paths.user
         if scope == "project":
-            return self.settings.project_settings_file
+            return self.settings.paths.project
         # local
-        return self.settings.local_settings_file
+        return self.settings.paths.local

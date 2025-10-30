@@ -14,12 +14,14 @@ If a tool doesn't work as expected, it likely has one or both of these problems:
 ### The Context Solution Space is Bigger Than You Think
 
 The "not enough context" problem has a _very_ big space. It could be:
+
 - **Config optimization** - Wrong temperature for the cognitive role
 - **Missing stages** - Need additional analysis or evaluation step
 - **Poor orchestration** - Flow doesn't match the thinking process needed
 - **Insufficient specialization** - One config trying to do too many things
 
 **Example:** If your research tool produces shallow results, it might not be a capability problem. It might be:
+
 - **Config issue**: Using temp=0.7 (creative) when research needs temp=0.3 (analytical)
 - **Missing stage**: Needs "extract themes → prioritize → deep dive" instead of "just research"
 - **Orchestration issue**: No quality loop to validate and improve results
@@ -29,6 +31,7 @@ The "not enough context" problem has a _very_ big space. It could be:
 **Multi-config pattern** is fundamentally about providing better context:
 
 **Single-config** (limited context):
+
 ```python
 ONE_CONFIG = {"temperature": 0.5, "system_prompt": "You are helpful."}
 
@@ -39,6 +42,7 @@ async with AmplifierSession(config=ONE_CONFIG) as session:
 ```
 
 **Multi-config** (optimized context):
+
 ```python
 ANALYZER_CONFIG = {"temperature": 0.3, "system_prompt": "You are an expert analyzer."}
 CREATOR_CONFIG = {"temperature": 0.7, "system_prompt": "You are a creative generator."}
@@ -71,11 +75,13 @@ If you're trying to build a tool that doesn't achieve what you hope for, conside
 **Example: Document Synthesizer**
 
 **Too big** (one task):
+
 ```
 "Read all documents and create a comprehensive synthesis report"
 ```
 
 **Better** (decomposed):
+
 ```
 Stage 1 (analytical, temp=0.3): Extract key concepts from each document
 Stage 2 (analytical, temp=0.3): Identify themes across concepts
@@ -92,6 +98,7 @@ Each stage is small, focused, and optimized. Orchestration code combines them.
 **If something feels too complex to build reliably, don't give up.**
 
 Lean into decomposition:
+
 - Break into smaller cognitive stages
 - Create specialized config for each
 - Add orchestration code to combine them
@@ -113,7 +120,7 @@ ANALYZER_CONFIG = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.3,
             "system_prompt": "You are an expert analyzer."
         }
@@ -139,7 +146,7 @@ def create_config(task_type: str) -> dict:
         config["providers"][0]["config"]["model"] = "claude-opus-4-1"
         config["providers"][0]["config"]["temperature"] = 0.3
     else:
-        config["providers"][0]["config"]["model"] = "claude-sonnet-4"
+        config["providers"][0]["config"]["model"] = "claude-sonnet-4-5"
         config["providers"][0]["config"]["temperature"] = 0.5
 
     return config
@@ -193,6 +200,7 @@ async def multi_stage_tool(input_path: Path):
 ### Practice: Code Decides Flow, Not AI
 
 **Good** (code decides):
+
 ```python
 score = await evaluate(creation)
 if score < threshold:
@@ -201,6 +209,7 @@ if score < threshold:
 ```
 
 **Bad** (AI decides):
+
 ```python
 # Asking AI to decide
 prompt = "If quality is low, regenerate. Otherwise continue."
@@ -239,6 +248,7 @@ return {"status": "partial" if errors else "success", "results": results, "error
 Add human input where human judgment is valuable:
 
 **Strategic decision points**:
+
 ```python
 # AI proposes plan
 plan = await plan_approach(task)
@@ -253,6 +263,7 @@ result = await execute(plan)
 ```
 
 **Not for routine decisions**:
+
 ```python
 # Bad: Asking human about routine things
 if input("Analyze file1? (yes/no): ") == "yes":  # Don't do this!
@@ -265,24 +276,26 @@ if input("Analyze file1? (yes/no): ") == "yes":  # Don't do this!
 
 ### Strategy: Match Temperature to Cognitive Role
 
-| Role | Temp | When to Use | Example Tasks |
-|------|------|-------------|---------------|
-| **Analytical** | 0.1-0.3 | Need precision, consistency | Extract structure, classify items, identify patterns |
-| **Empathetic** | 0.4-0.6 | Need perspective, nuance | Simulate users, understand motivations |
-| **Creative** | 0.6-0.8 | Need diversity, exploration | Generate content, brainstorm ideas |
-| **Evaluative** | 0.1-0.3 | Need consistency, objectivity | Score quality, judge correctness |
-| **Synthesizing** | 0.3-0.5 | Need clarity, coherence | Combine information, summarize |
+| Role             | Temp    | When to Use                   | Example Tasks                                        |
+| ---------------- | ------- | ----------------------------- | ---------------------------------------------------- |
+| **Analytical**   | 0.1-0.3 | Need precision, consistency   | Extract structure, classify items, identify patterns |
+| **Empathetic**   | 0.4-0.6 | Need perspective, nuance      | Simulate users, understand motivations               |
+| **Creative**     | 0.6-0.8 | Need diversity, exploration   | Generate content, brainstorm ideas                   |
+| **Evaluative**   | 0.1-0.3 | Need consistency, objectivity | Score quality, judge correctness                     |
+| **Synthesizing** | 0.3-0.5 | Need clarity, coherence       | Combine information, summarize                       |
 
 ### Strategy: Iterate on Temperature
 
 If output not what you expect:
 
 **Too random/creative?** Lower temperature:
+
 ```python
 "temperature": 0.3  # Was 0.5
 ```
 
 **Too rigid/repetitive?** Raise temperature:
+
 ```python
 "temperature": 0.6  # Was 0.3
 ```
@@ -292,18 +305,21 @@ If output not what you expect:
 ### Strategy: Different Models for Different Roles
 
 **Fast analytical tasks**: Haiku
+
 ```python
 {"model": "claude-haiku-4", "temperature": 0.3}  # Fast, cheap, precise
 ```
 
 **Complex creative tasks**: Opus
+
 ```python
 {"model": "claude-opus-4-1", "temperature": 0.7}  # Sophisticated, expensive, creative
 ```
 
 **Balanced tasks**: Sonnet
+
 ```python
-{"model": "claude-sonnet-4", "temperature": 0.4}  # Good balance
+{"model": "claude-sonnet-4-5", "temperature": 0.4}  # Good balance
 ```
 
 ## State Management Patterns
@@ -375,11 +391,13 @@ if "evaluation" not in state:
 ### When Tools Fail: Diagnostic Process
 
 1. **Identify which stage failed**
+
 ```bash
 cat .tool_state.json  # See last successful stage
 ```
 
 2. **Check config for that stage**
+
 ```python
 # Is temperature appropriate for task?
 # Is system prompt clear and focused?
@@ -387,6 +405,7 @@ cat .tool_state.json  # See last successful stage
 ```
 
 3. **Test stage in isolation**
+
 ```python
 # Run just that stage
 result = await stage_that_failed(test_input)
@@ -394,6 +413,7 @@ print(result)
 ```
 
 4. **Adjust and iterate**
+
 - Lower temp if too random
 - Raise temp if too rigid
 - Clarify system prompt if unfocused
@@ -402,6 +422,7 @@ print(result)
 ### Improving Based on Failures
 
 **Document patterns that worked**:
+
 ```python
 # After finding optimal config
 # Add comment explaining why
@@ -413,6 +434,7 @@ ANALYZER_CONFIG = {
 ```
 
 **Share improvements**:
+
 - Update toolkit examples
 - Contribute patterns
 - Help others avoid same issues
@@ -461,18 +483,21 @@ print("✓ Simulation complete")
 ### Guideline: Start Simple, Add Complexity Only When Needed
 
 **90% of tools**: Level 1 (Fixed configs)
+
 ```python
 # Hardcoded, predictable
 ANALYZER_CONFIG = {"temperature": 0.3}
 ```
 
 **8% of tools**: Level 2 (Code-modified)
+
 ```python
 # Adaptive within bounds
 config = create_config_for_task_type(task_type)
 ```
 
 **2% of tools**: Level 3 (AI-generated)
+
 ```python
 # Exploratory only
 config = await generate_config(topic)  # Validate heavily!
@@ -481,11 +506,13 @@ config = await generate_config(topic)  # Validate heavily!
 ### Guideline: Justify Each Level Jump
 
 **Before moving from Level 1 to Level 2**, ask:
+
 - Do requirements genuinely vary at runtime?
 - Can't this be handled with multiple fixed configs?
 - Is the added complexity worth it?
 
 **Before moving from Level 2 to Level 3**, ask:
+
 - Is this truly exploratory (low-stakes)?
 - Can't this be handled with code-driven modification?
 - Are safeguards comprehensive?
@@ -501,11 +528,13 @@ Break problems into cognitive subtasks:
 **Example: Code Review Tool**
 
 **Monolithic** (too big):
+
 ```
 "Review this code and tell me what's wrong"
 ```
 
 **Decomposed** (cognitive stages):
+
 ```
 1. Structure Analysis (analytical, temp=0.3) - Extract code structure, identify patterns
 2. Security Review (precision, temp=0.1) - Identify security issues with high confidence
@@ -521,12 +550,14 @@ Each stage is small, focused, optimized.
 Some stages are useful across multiple tools:
 
 **Reusable stages**:
+
 - "Extract concepts from documents" (analytical, temp=0.3)
 - "Rank items by importance" (evaluative, temp=0.2)
 - "Generate creative variations" (creative, temp=0.7)
 - "Evaluate quality score" (evaluative, temp=0.2)
 
 **Build once, reuse everywhere**:
+
 ```python
 # In my_tool/common/concept_extractor.py
 CONCEPT_EXTRACTOR_CONFIG = {...}
@@ -582,6 +613,7 @@ Sophisticated tools aren't built with one amazing prompt. They're built with sim
 **New thinking**: "Tool runs stages, evaluates, iterates until quality threshold met"
 
 **Quality loops** make tools more reliable:
+
 ```python
 for iteration in range(max_iterations):
     output = await generate(input)
@@ -598,6 +630,7 @@ for iteration in range(max_iterations):
 **New thinking**: "Build specialized tools for specific use cases"
 
 **Better**: Multiple focused tools that compose
+
 ```bash
 research-papers topic.txt > papers.json
 extract-insights papers.json > insights.json
@@ -605,6 +638,7 @@ generate-report insights.json > report.md
 ```
 
 **Worse**: One monolithic tool trying to handle everything
+
 ```bash
 mega-research-tool topic.txt --extract-papers --get-insights --make-report
 ```
@@ -631,6 +665,7 @@ mega-research-tool topic.txt --extract-papers --get-insights --make-report
 ### The Amplifier Philosophy
 
 **Build sophisticated tools from simple pieces:**
+
 - Each config is simple (optimized for one cognitive role)
 - Each stage is simple (one focused task)
 - Orchestration code is simple (clear flow logic)
@@ -645,6 +680,7 @@ The challenges you overcome today (finding optimal configs, designing effective 
 ### Example: Research Tool Evolution
 
 **Iteration 1** (too simple):
+
 ```python
 # Single config, no stages
 async with AmplifierSession(config=ONE_CONFIG) as session:
@@ -654,6 +690,7 @@ async with AmplifierSession(config=ONE_CONFIG) as session:
 **Problems**: Shallow research, unfocused, no quality control
 
 **Iteration 2** (decomposed):
+
 ```python
 # Stage 1: Find sources (analytical, temp=0.3)
 sources = await find_sources(topic)
@@ -668,6 +705,7 @@ report = await synthesize(insights)
 **Better**: Deeper research, focused stages, but no quality control
 
 **Iteration 3** (with quality loop):
+
 ```python
 # ... stages 1-3 same ...
 
@@ -685,6 +723,7 @@ if score < 0.8:
 ### Example: Tutorial Improvement Tool
 
 See `toolkit/examples/tutorial_analyzer/` for complete implementation showing:
+
 - 6 specialized configs (each optimized)
 - Multi-stage orchestration (code manages flow)
 - Human-in-loop (approve improvements)
@@ -707,6 +746,7 @@ See `toolkit/examples/tutorial_analyzer/` for complete implementation showing:
 10. **Iterate and improve** - Test, observe, adjust, repeat
 
 **Philosophy alignment:**
+
 - **Mechanism not policy** - Kernel provides capabilities, tools make decisions
 - **Policy at edges** - Tools decide all configs (multiple policies!)
 - **Ruthless simplicity** - Each piece simple, sophistication from composition
@@ -715,6 +755,7 @@ See `toolkit/examples/tutorial_analyzer/` for complete implementation showing:
 **Remember**: Building great AI tools is about designing effective thinking processes and optimizing cognitive setups. Master the art of decomposition, configuration, and orchestration.
 
 **Next steps**:
+
 1. Study `toolkit/examples/tutorial_analyzer/` - See all practices in action
 2. Read `toolkit/METACOGNITIVE_RECIPES.md` - Understand patterns deeply
 3. Read `toolkit/HOW_TO_CREATE_YOUR_OWN.md` - Build your own tool

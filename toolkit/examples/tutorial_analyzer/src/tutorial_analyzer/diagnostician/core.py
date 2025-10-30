@@ -24,7 +24,7 @@ DIAGNOSTICIAN_CONFIG = {
         {
             "module": "provider-anthropic",
             "config": {
-                "model": "claude-sonnet-4",
+                "model": "claude-sonnet-4-5",
                 "temperature": 0.1,  # Diagnostic precision
                 "system_prompt": """You are a pedagogy expert identifying tutorial issues.
 

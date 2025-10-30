@@ -15,6 +15,7 @@ Amplifier is designed so **you can create new AI-powered tools** just by describ
 Every great tool begins with a **clear need**. Start by pinpointing a task that is repetitive, complex, or time-consuming – something you wish an AI assistant could handle reliably. This could be anything from _research synthesis_ (gathering and refining information on a topic) to _tutorial improvement_ (analyzing educational content and suggesting enhancements). The key is that you can describe **what the goal is** and **what a successful outcome looks like**.
 
 If you're unsure what to build, try **brainstorming**. For example, you might consider:
+
 - **Documentation Quality Analyzer** - Identify gaps, inconsistencies, unclear sections
 - **Code Review Assistant** - Multi-perspective analysis (security, performance, maintainability)
 - **Tutorial Evolver** - Simulate learners, diagnose issues, suggest improvements
@@ -43,19 +44,20 @@ If a task feels too big or complex, it's a sign to decompose it into smaller ste
 
 For each stage, think about the **cognitive role**:
 
-| Cognitive Role | Temperature | Characteristics |
-|----------------|-------------|-----------------|
-| **Analytical** | 0.1-0.3 | Precise, structured, extracting patterns, classification |
-| **Empathetic** | 0.4-0.6 | Perspective-taking, simulation, understanding users |
-| **Creative** | 0.6-0.8 | Generating novel content, exploring possibilities |
-| **Evaluative** | 0.1-0.3 | Judging quality, scoring, critique, consistency |
-| **Synthesizing** | 0.3-0.5 | Combining information, summarization, clarity |
+| Cognitive Role   | Temperature | Characteristics                                          |
+| ---------------- | ----------- | -------------------------------------------------------- |
+| **Analytical**   | 0.1-0.3     | Precise, structured, extracting patterns, classification |
+| **Empathetic**   | 0.4-0.6     | Perspective-taking, simulation, understanding users      |
+| **Creative**     | 0.6-0.8     | Generating novel content, exploring possibilities        |
+| **Evaluative**   | 0.1-0.3     | Judging quality, scoring, critique, consistency          |
+| **Synthesizing** | 0.3-0.5     | Combining information, summarization, clarity            |
 
 **Different roles need different configs.** This is the core insight of multi-config metacognitive recipes.
 
 ### Planning Checkpoints and Loops
 
 Consider what information each step needs and when to pause for review:
+
 - **Checkpoints**: Should the tool save state after each stage? (Yes, for multi-stage tools - enables resumability)
 - **Human-in-loop**: Should humans approve key decisions? (Yes, at strategic points - approve plan, validate safety)
 - **Quality loops**: Should the tool evaluate its own output and iterate? (Yes, for quality-critical tools - generate → evaluate → improve)
@@ -65,6 +67,7 @@ By building in checkpoints or reviews (even if just AI self-reviews), you make t
 ### Planning for Errors or Ambiguity
 
 Metacognitive recipes often include fallback plans. Think about what the AI should do if a step produces incomplete or low-quality results:
+
 - "If the analysis is incomplete, try again with more specific prompts"
 - "If quality score is below threshold, regenerate with feedback from evaluation"
 - "If no data is found, explain the issue rather than proceeding blindly"
@@ -125,7 +128,7 @@ ANALYZER_CONFIG = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.3,  # Analytical precision
             "system_prompt": "You are an expert content analyzer. Extract structure and patterns with precision."
         }
@@ -279,6 +282,7 @@ uv run my-tool test_input.md  # Should resume from checkpoint
 ### Observe and Adjust
 
 As it runs, watch for issues:
+
 - **Does it skip a stage?** Check state management logic
 - **Is output not what you expected?** Adjust temperature or system prompt for that stage
 - **Does it fail?** Add error handling, improve validation
@@ -287,6 +291,7 @@ As it runs, watch for issues:
 ### Common Adjustments
 
 **Adjust temperature**:
+
 ```python
 # Too random? Lower temperature
 "temperature": 0.3  # Was 0.5
@@ -296,12 +301,14 @@ As it runs, watch for issues:
 ```
 
 **Adjust system prompt**:
+
 ```python
 # Not focused enough? Be more specific
 "system_prompt": "You are an expert tutorial analyzer. Focus on pedagogical structure and clarity."  # More specific
 ```
 
 **Add quality loop**:
+
 ```python
 # Not achieving quality? Add evaluation loop
 if evaluation["score"] < threshold:
@@ -312,6 +319,7 @@ if evaluation["score"] < threshold:
 ```
 
 **Add human-in-loop**:
+
 ```python
 # Critical decision? Add human approval
 print(f"Proposed Plan:\n{state['plan']}\n")
@@ -323,6 +331,7 @@ if approval != "yes":
 ### Iterate Until Satisfied
 
 Repeat testing and adjusting. Since metacognitive recipes are about **describing thinking**, focus on:
+
 - **Is each stage doing the right kind of thinking?** (analytical vs creative vs evaluative)
 - **Is flow logical?** (does one stage properly feed the next)
 - **Are decision points clear?** (when to loop, when to get human input)
@@ -388,6 +397,7 @@ The metacognitive recipe pattern transfers across domains. Each tool you build t
 ### Daily Improvements
 
 As you use your tool, you'll discover refinements:
+
 - Better prompts for specific stages
 - More effective temperature tuning
 - Improved flow control logic
@@ -402,6 +412,7 @@ These insights feed back into your next tool. You're not just building tools; yo
 To deepen your understanding and improve your recipe-writing skills, study the examples in this toolkit:
 
 - **tutorial_analyzer** (`toolkit/examples/tutorial_analyzer/`) - Complete pedagogical exemplar
+
   - 6 specialized configs (analyzer, learner_simulator, diagnostician, improver, critic, synthesizer)
   - Multi-stage orchestration with human-in-loop
   - Evaluative loops with quality thresholds
@@ -416,6 +427,7 @@ To deepen your understanding and improve your recipe-writing skills, study the e
 ### Share Your Tools
 
 If your tool is broadly useful, consider sharing it:
+
 - Publish to PyPI (public package registry)
 - Share on GitHub (open source)
 - Write about it (blog posts, documentation)
@@ -430,12 +442,14 @@ Your tools extend the Amplifier ecosystem. Others can learn from your recipes an
 **Metacognition** = "thinking about thinking"
 
 When experts solve complex problems, they don't just _do_ the task - they think about:
+
 - **What kind of thinking does this task need?** (analytical, creative, evaluative)
 - **What's the right approach?** (systematic analysis vs exploratory brainstorming)
 - **How do I know if I'm on the right track?** (evaluation criteria, quality thresholds)
 - **When should I iterate?** (evaluate, get feedback, improve)
 
 **Metacognitive recipes** encode this expert thinking process into code and configs:
+
 - **Code** decides which kind of thinking when (orchestration)
 - **Configs** provide the right cognitive setup for each kind of thinking (temperature, prompt, model)
 
@@ -446,11 +460,13 @@ When designing your recipe, identify the cognitive subtasks:
 **Example: Research Synthesis Tool**
 
 **Bad** (one monolithic task):
+
 ```
 "Research this topic and create a comprehensive report"
 ```
 
 **Good** (decomposed into cognitive subtasks):
+
 ```
 1. Web search (retrieval, temp=0.3) - Find relevant sources
 2. Extraction (analytical, temp=0.3) - Extract key themes from sources
@@ -468,6 +484,7 @@ Each subtask has a clear cognitive role and optimized config.
 Code orchestrates the subtasks. Common patterns:
 
 **Linear pipeline**:
+
 ```python
 analysis = await analyze(input)
 creation = await create(analysis)
@@ -476,6 +493,7 @@ return creation
 ```
 
 **Quality loop**:
+
 ```python
 for iteration in range(max_iterations):
     creation = await create(input)
@@ -487,6 +505,7 @@ return creation
 ```
 
 **Conditional routing**:
+
 ```python
 analysis = await analyze(input)
 if analysis["needs_research"]:
@@ -498,6 +517,7 @@ return creation
 ```
 
 **Human-in-loop**:
+
 ```python
 plan = await plan_approach(input)
 approval = get_human_approval(plan)  # Pause for human
@@ -520,6 +540,7 @@ Let's walk through how `tutorial_analyzer` was designed:
 ### 2. Recipe Formulated
 
 **Cognitive stages identified**:
+
 1. **Analyze** (analytical) - Extract tutorial structure, identify sections
 2. **Simulate** (empathetic) - Experience tutorial as learner, note confusion points
 3. **Diagnose** (precision) - Identify pedagogical issues from learner experience
@@ -542,6 +563,7 @@ Let's walk through how `tutorial_analyzer` was designed:
 ### 4. Tool Refined
 
 **Tested on real tutorials** → Found issues → Adjusted:
+
 - Learner simulation too generic → Made system prompt more specific
 - Improvements too abstract → Added "actionable and specific" to prompt
 - No iteration happening → Added quality threshold and loop logic
@@ -551,6 +573,7 @@ Let's walk through how `tutorial_analyzer` was designed:
 **Created pyproject.toml** → **Built with `uv build`** → **Tested with `uvx`** → **Published to PyPI**
 
 **Now usable**:
+
 ```bash
 uvx tutorial-analyzer tutorial.md clarity engagement
 ```
@@ -562,6 +585,7 @@ This walkthrough shows the complete process from idea to packaged tool.
 ### Start Simple
 
 Begin with 2-3 configs:
+
 - Analyzer (temp=0.3)
 - Creator (temp=0.7)
 
@@ -579,6 +603,7 @@ Don't wait until all stages done. Test incrementally.
 ### Use Toolkit Utilities
 
 Leverage structural utilities:
+
 ```python
 from amplifier_app_cli.toolkit import (
     discover_files,
@@ -593,6 +618,7 @@ They handle common structural tasks so you focus on cognitive orchestration.
 ### Reference Production Prompts
 
 For sophisticated system prompts, see:
+
 - `amplifier-app-cli/data/agents/*.md` - Agent instruction templates
 - `amplifier-app-cli/data/context/*.md` - Context management prompts
 
@@ -601,6 +627,7 @@ These evolve over time. Use as inspiration for your own prompts.
 ### Study the Exemplar
 
 `tutorial_analyzer` is the complete pedagogical example. Study:
+
 - How configs are structured
 - How stages are organized
 - How orchestration works
@@ -621,6 +648,7 @@ By following this guide, you can turn ideas into reliable, reusable Amplifier to
 6. **Share** - Extend the ecosystem
 
 **Key principles**:
+
 - **Multiple configs** - Each optimized for its cognitive role
 - **Code orchestrates** - Flow, state, decisions
 - **Checkpoint progress** - Save after each stage
@@ -628,6 +656,7 @@ By following this guide, you can turn ideas into reliable, reusable Amplifier to
 - **Study examples** - Learn from tutorial_analyzer
 
 **Next steps**:
+
 1. Pick a problem you want to solve
 2. Write down the cognitive stages
 3. Define configs for each stage

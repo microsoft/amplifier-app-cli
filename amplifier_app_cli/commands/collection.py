@@ -11,21 +11,24 @@ Per IMPLEMENTATION_PHILOSOPHY:
 - User-friendly errors and progress messages
 """
 
+import asyncio
 import logging
+import re
 from pathlib import Path
 
 import click
+from amplifier_collections import CollectionInstallError
+from amplifier_collections import CollectionLock
+from amplifier_collections import CollectionMetadata
+from amplifier_collections import discover_collection_resources
+from amplifier_collections import install_collection
+from amplifier_collections import list_agents
+from amplifier_collections import list_profiles
+from amplifier_collections import uninstall_collection
+from amplifier_module_resolution import GitSource
 
-from ..collections.discovery import discover_collection_resources
-from ..collections.discovery import list_agents
-from ..collections.discovery import list_profiles
-from ..collections.installer import CollectionInstallError
-from ..collections.installer import install_collection
-from ..collections.installer import is_collection_installed
-from ..collections.installer import uninstall_collection
-from ..collections.lock import CollectionLock
-from ..collections.resolver import CollectionResolver
-from ..collections.schema import CollectionMetadata
+from ..paths import create_collection_resolver
+from ..paths import get_collection_lock_path
 
 logger = logging.getLogger(__name__)
 
@@ -87,20 +90,33 @@ def add(source_uri: str, local: bool):
     try:
         click.echo(f"Installing collection from {source_uri}...")
 
-        # Install collection
-        path, metadata = install_collection(source_uri, local=local)
+        # Extract collection name from URI (app policy)
+        # Format: git+https://github.com/org/collection@version
+        match = re.search(r"/([^/]+?)(?:\.git)?(?:@|$)", source_uri)
+        if not match:
+            raise ValueError(f"Cannot extract collection name from URI: {source_uri}")
+        collection_name = match.group(1)
 
+        # Determine installation location (app policy)
+        if local:
+            target_dir = Path.cwd() / ".amplifier" / "collections" / collection_name
+            lock_path = Path.cwd() / ".amplifier" / "collections.lock"
+        else:
+            target_dir = Path.home() / ".amplifier" / "collections" / collection_name
+            lock_path = Path.home() / ".amplifier" / "collections.lock"
+
+        # Create source object (protocol-based API)
+        source = GitSource.from_uri(source_uri)
+
+        # Create lock manager
+        lock = CollectionLock(lock_path=lock_path)
+
+        # Install using protocol API (library handles lock updates)
+        metadata = asyncio.run(install_collection(source=source, target_dir=target_dir, lock=lock))
+
+        path = target_dir
         click.echo(f"✓ Installed {metadata.name} v{metadata.version}")
         click.echo(f"  Location: {path}")
-
-        # Update lock file
-        lock = CollectionLock()
-        lock.add(
-            name=metadata.name,
-            source=source_uri,
-            commit=None,  # Commit SHA tracking requires enhancing GitSource (YAGNI for now)
-            path=path,
-        )
 
         # Show what was installed
         resources = discover_collection_resources(path)
@@ -157,8 +173,8 @@ def list(show_all: bool):
         # List all collections (including bundled)
         amplifier collection list --all
     """
-    resolver = CollectionResolver()
-    lock = CollectionLock()
+    resolver = create_collection_resolver()
+    lock = CollectionLock(get_collection_lock_path(local=False))
 
     if show_all:
         # Show all collections from resolver
@@ -191,7 +207,7 @@ def list(show_all: bool):
 
     else:
         # Show only installed (in lock file)
-        installed = lock.list_installed()
+        installed = lock.list_entries()
         if not installed:
             click.echo("No collections installed.")
             click.echo("\nInstall a collection with:")
@@ -235,7 +251,7 @@ def show(name: str):
         amplifier collection show developer-expertise
     """
     # Resolve collection
-    resolver = CollectionResolver()
+    resolver = create_collection_resolver()
     path = resolver.resolve(name)
 
     if path is None:
@@ -352,17 +368,24 @@ def remove(name: str, local: bool):
         amplifier collection remove dev-tools --local
     """
     try:
-        # Check if installed
-        if not is_collection_installed(name, local=local):
-            click.echo(f"✗ Collection '{name}' is not installed.", err=True)
+        # Determine collections directory based on scope (app policy)
+        if local:
+            collections_dir = Path.cwd() / ".amplifier" / "collections"
+            lock_path = Path.cwd() / ".amplifier" / "collections.lock"
+        else:
+            collections_dir = Path.home() / ".amplifier" / "collections"
+            lock_path = Path.home() / ".amplifier" / "collections.lock"
+
+        # Create lock manager
+        lock = CollectionLock(lock_path=lock_path)
+
+        # Check if collection is tracked as installed
+        if not lock.is_installed(name):
+            click.echo(f"✗ Collection '{name}' is not tracked as installed.", err=True)
             raise click.Abort()
 
-        # Uninstall
-        uninstall_collection(name, local=local)
-
-        # Update lock file
-        lock = CollectionLock()
-        lock.remove(name)
+        # Uninstall using protocol API (library handles lock updates)
+        asyncio.run(uninstall_collection(collection_name=name, collections_dir=collections_dir, lock=lock))
 
         click.echo(f"✓ Removed collection '{name}'")
 

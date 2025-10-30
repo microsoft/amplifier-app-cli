@@ -5,6 +5,7 @@
 This guide shows how to package standalone amplifier tools for distribution via `uvx` and PyPI. Standalone tools are self-contained Python packages that use amplifier-core for AI orchestration.
 
 **What you'll learn**:
+
 - Project structure for standalone tools
 - `pyproject.toml` configuration
 - Entry points setup
@@ -101,6 +102,7 @@ amplifier-core = { git = "https://github.com/microsoft/amplifier-core", branch =
 ```
 
 **Why git URLs?** They work for both local development and GitHub installation via uvx:
+
 ```bash
 uvx --from git+https://github.com/you/my-tool@main my-tool input.md
 ```
@@ -190,6 +192,7 @@ ANALYZER_CONFIG = {
 ```
 
 **On first run**, amplifier-core will:
+
 1. Clone module from git URL
 2. Install module in isolated environment
 3. Load via entry points
@@ -201,7 +204,7 @@ ANALYZER_CONFIG = {
 
 In your README.md:
 
-```markdown
+````markdown
 ## Installation
 
 Install my-tool with amplifier modules:
@@ -216,9 +219,11 @@ uv tool install my-tool
 # Then run
 my-tool input.md
 ```
+````
 
 On first run, amplifier will automatically install required modules from git sources specified in the tool's configuration.
-```
+
+````
 
 ### Optional: Pre-bundle Modules
 
@@ -230,9 +235,10 @@ amplifier = [
     "amplifier-module-provider-anthropic @ git+https://github.com/...",
     # Pre-install modules
 ]
-```
+````
 
 Install with:
+
 ```bash
 uv tool install my-tool[amplifier]
 ```
@@ -279,6 +285,7 @@ MY_TOOL_DEBUG=1 uv run my-tool input.md
 ### Preparation
 
 1. **Build the package**:
+
 ```bash
 uv build
 ```
@@ -286,6 +293,7 @@ uv build
 This creates `dist/my_tool-0.1.0-py3-none-any.whl` and `.tar.gz`.
 
 2. **Test the distribution**:
+
 ```bash
 # Install locally and test
 uv tool install ./dist/my_tool-0.1.0-py3-none-any.whl
@@ -311,6 +319,7 @@ uv publish
 ### After Publishing
 
 Users can install via:
+
 ```bash
 # Via uvx (ephemeral)
 uvx my-tool input.md
@@ -329,16 +338,19 @@ my-tool input.md
 ### For Users
 
 **Ephemeral execution** (no install):
+
 ```bash
 uvx my-tool input.md
 ```
 
 **From specific version**:
+
 ```bash
 uvx my-tool==0.2.0 input.md
 ```
 
 **From git repository**:
+
 ```bash
 uvx --from git+https://github.com/you/my-tool@main my-tool input.md
 ```
@@ -346,6 +358,7 @@ uvx --from git+https://github.com/you/my-tool@main my-tool input.md
 ### For Development
 
 **Test unreleased versions**:
+
 ```bash
 # From local wheel
 uvx ./dist/my_tool-0.1.0-py3-none-any.whl input.md
@@ -440,6 +453,7 @@ uv publish
 ### 1. Keep It Self-Contained
 
 **Good**: All code in package
+
 ```
 src/my_tool/
   main.py
@@ -448,6 +462,7 @@ src/my_tool/
 ```
 
 **Bad**: External dependencies on local files
+
 ```python
 # Don't do this
 from amplifier_app_cli.some_module import helper  # Not packaged!
@@ -483,6 +498,7 @@ amplifier-core = { git = "https://github.com/microsoft/amplifier-core", branch =
 ### 4. Test the Distribution
 
 Before publishing:
+
 ```bash
 # Build
 uv build
@@ -497,6 +513,7 @@ MY_TOOL_DEBUG=1 uvx ./dist/my_tool-*.whl test_input
 ### 5. Semantic Versioning
 
 Follow semver for versions:
+
 - `0.1.0` - Initial development
 - `0.2.0` - Added features (backward compatible)
 - `1.0.0` - Stable public API
@@ -510,6 +527,7 @@ Follow semver for versions:
 **Cause**: Module source missing or incorrect in config.
 
 **Solution**: Ensure every module reference has `source`:
+
 ```python
 "providers": [{
     "module": "provider-anthropic",
@@ -523,6 +541,7 @@ Follow semver for versions:
 **Cause**: Tool depends on amplifier-app-cli code (not packaged).
 
 **Solution**: Move code into your package:
+
 ```bash
 # Don't do this
 from amplifier_app_cli.utils import helper  # Not available!
@@ -536,6 +555,7 @@ from my_tool.utils import helper  # In your package
 **Cause**: Wrong git URL or branch doesn't exist.
 
 **Solution**: Test git URLs:
+
 ```bash
 # Test if URL works
 git ls-remote https://github.com/microsoft/amplifier-core
@@ -549,6 +569,7 @@ git ls-remote https://github.com/microsoft/amplifier-core | grep main
 **Cause**: Modules not in `[project.optional-dependencies]` or sources not configured.
 
 **Solution**: Add to pyproject.toml:
+
 ```toml
 [project.optional-dependencies]
 amplifier = [
@@ -629,6 +650,7 @@ src/my_tool/
 ```
 
 **In each core.py**:
+
 ```python
 """Stage N: Description of cognitive task."""
 
@@ -640,7 +662,7 @@ STAGE_N_CONFIG = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/...",
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.3,  # Optimized for this stage
             "system_prompt": "Stage-specific instructions..."
         }
@@ -655,6 +677,7 @@ async def process_stage_n(input_data: str) -> dict:
 ```
 
 **In main.py**:
+
 ```python
 """Main orchestration across stages."""
 
@@ -760,6 +783,7 @@ typeCheckingMode = "basic"
 7. **Use**: `uvx my-tool` (ephemeral) or `uv tool install my-tool` (persistent)
 
 **Key principles**:
+
 - Self-contained (all code in package)
 - Git URLs for dependencies (not paths)
 - Module sources in configs (runtime loading)
@@ -767,6 +791,7 @@ typeCheckingMode = "basic"
 - Test distribution before publishing
 
 **For multi-config tools**:
+
 - Organize by cognitive stage
 - Each stage = module with specialized config
 - Main orchestrates across stages
@@ -775,6 +800,7 @@ typeCheckingMode = "basic"
 See `toolkit/examples/tutorial_analyzer/` for complete working example ready for packaging.
 
 **Next steps**:
+
 1. Copy `tutorial_analyzer` structure as starting point
 2. Customize for your use case
 3. Follow this packaging guide

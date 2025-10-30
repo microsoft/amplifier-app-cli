@@ -52,9 +52,11 @@ class MentionResolver:
         self.relative_to = relative_to
 
         # NEW: Collection resolver (APP LAYER POLICY)
-        from ...collections import CollectionResolver
+        from amplifier_collections import CollectionResolver
 
-        self.collection_resolver = CollectionResolver()
+        from ...paths import get_collection_search_paths
+
+        self.collection_resolver = CollectionResolver(search_paths=get_collection_search_paths())
 
     def _get_bundled_data_dir(self) -> Path:
         """Get path to bundled data directory."""

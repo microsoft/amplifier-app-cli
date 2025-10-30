@@ -29,6 +29,18 @@ class MentionLoader:
         """
         self.resolver = resolver or MentionResolver()
 
+    def has_mentions(self, text: str) -> bool:
+        """Check if text contains @mention patterns.
+
+        Args:
+            text: Text to check for @mentions
+
+        Returns:
+            True if @mentions found, False otherwise
+        """
+        mentions = parse_mentions(text)
+        return len(mentions) > 0
+
     def load_mentions(self, text: str, relative_to: Path | None = None) -> list[Message]:
         """Load all @mentioned files recursively.
 

@@ -9,8 +9,8 @@ from rich.prompt import Confirm
 from rich.prompt import Prompt
 
 from ..key_manager import KeyManager
+from ..paths import create_config_manager
 from ..provider_manager import ProviderManager
-from ..settings import SettingsManager
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -70,8 +70,8 @@ def init_cmd():
     console.print()
 
     key_manager = KeyManager()
-    settings = SettingsManager()
-    provider_mgr = ProviderManager(settings)
+    config = create_config_manager()
+    provider_mgr = ProviderManager(config)
 
     # Step 1: Provider selection
     console.print("[bold]Step 1: Provider[/bold]")
@@ -88,13 +88,13 @@ def init_cmd():
 
     # Step 2: Provider-specific configuration
     if provider_id == "anthropic":
-        config = configure_anthropic(key_manager)
+        provider_config = configure_anthropic(key_manager)
     elif provider_id == "openai":
-        config = configure_openai(key_manager)
+        provider_config = configure_openai(key_manager)
     elif provider_id == "azure-openai":
-        config = configure_azure_openai(key_manager)
+        provider_config = configure_azure_openai(key_manager)
     else:  # ollama
-        config = configure_ollama()
+        provider_config = configure_ollama()
 
     # Step 3: Profile selection
     console.print()
@@ -108,18 +108,13 @@ def init_cmd():
     profile_map = {"1": "dev", "2": "base", "3": "full"}
     profile_id = profile_map[profile_choice]
 
-    # Get canonical source for provider
-    from ..module_resolution.registry import get_canonical_module_source
-
-    try:
-        provider_source = get_canonical_module_source(f"provider-{provider_id}")
-    except ValueError as e:
-        console.print(f"[yellow]Warning: Could not get canonical source for provider: {e}[/yellow]")
-        provider_source = None
+    # Source will come from profile (no canonical registry - YAGNI cleanup)
+    # Profiles specify sources for all modules
+    provider_source = None
 
     # Save configuration
-    settings.set_active_profile(profile_id)
-    provider_mgr.use_provider(f"provider-{provider_id}", scope="local", config=config, source=provider_source)
+    config.set_active_profile(profile_id)
+    provider_mgr.use_provider(f"provider-{provider_id}", scope="local", config=provider_config, source=provider_source)
 
     console.print()
     console.print(

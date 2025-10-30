@@ -19,7 +19,7 @@ ANALYZER_CONFIG = {
         "module": "provider-anthropic",
         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.3,  # Analytical precision
             "system_prompt": "You are an expert content analyzer."
         }
@@ -73,11 +73,12 @@ cp amplifier-app-cli/toolkit/templates/standalone_tool.py my_tool.py
 Think about the cognitive roles needed for your tool:
 
 **Analytical tasks** (temp=0.2-0.3):
+
 ```python
 ANALYZER_CONFIG = {
     "providers": [{
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.3,
             "system_prompt": "You are an expert analyzer."
         }
@@ -87,6 +88,7 @@ ANALYZER_CONFIG = {
 ```
 
 **Creative tasks** (temp=0.6-0.8):
+
 ```python
 CREATOR_CONFIG = {
     "providers": [{
@@ -101,11 +103,12 @@ CREATOR_CONFIG = {
 ```
 
 **Evaluative tasks** (temp=0.1-0.2):
+
 ```python
 EVALUATOR_CONFIG = {
     "providers": [{
         "config": {
-            "model": "claude-sonnet-4",
+            "model": "claude-sonnet-4-5",
             "temperature": 0.2,
             "system_prompt": "You are a quality evaluator."
         }
@@ -117,6 +120,7 @@ EVALUATOR_CONFIG = {
 ### 3. Write Orchestration Logic
 
 Code decides:
+
 - Which config to use when
 - How to combine results across stages
 - When to loop or iterate
@@ -174,21 +178,25 @@ async def process_with_resumability():
 ### ✅ Correct Patterns
 
 **Multi-config orchestration**:
+
 - Multiple specialized configs (not one!)
 - Each optimized for its cognitive role
 - Code orchestrates between configs
 
 **State management**:
+
 - Tool-specific state structure
 - Checkpoint after each stage
 - Resumability on failure
 
 **Error handling**:
+
 - Graceful failures per stage
 - Continue processing when possible
 - Return partial results
 
 **Toolkit utilities**:
+
 - File discovery with `discover_files`
 - Progress reporting with `ProgressReporter`
 - Validation with `validate_input_path`, `require_minimum_files`
@@ -196,6 +204,7 @@ async def process_with_resumability():
 ### ❌ Anti-Patterns to Avoid
 
 **Don't use single config**:
+
 ```python
 # WRONG: One config trying to do everything
 ONE_CONFIG = {"temperature": 0.5}  # Compromise
@@ -208,6 +217,7 @@ async with AmplifierSession(config=ONE_CONFIG) as session:
 ```
 
 **Don't wrap AmplifierSession**:
+
 ```python
 # WRONG: Wrapping kernel mechanism
 class Helper:
@@ -216,6 +226,7 @@ class Helper:
 ```
 
 **Don't create state frameworks**:
+
 ```python
 # WRONG: Generalizing state management
 class StateManager:
@@ -223,6 +234,7 @@ class StateManager:
 ```
 
 **Don't bypass amplifier-core**:
+
 ```python
 # WRONG: Direct LLM calls
 import anthropic
@@ -232,6 +244,7 @@ response = anthropic.Client().messages.create(...)  # Violation!
 ## Complete Example
 
 See `toolkit/examples/tutorial_analyzer/` for a complete working exemplar:
+
 - 6 specialized configs (analyzer, learner_simulator, diagnostician, improver, critic, synthesizer)
 - Multi-stage orchestration with code managing flow
 - Human-in-loop at strategic decision points

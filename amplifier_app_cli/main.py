@@ -16,6 +16,8 @@ from typing import cast
 
 import click
 from amplifier_core import AmplifierSession
+from amplifier_profiles import compile_profile_to_mount_plan
+from amplifier_profiles.utils import parse_markdown_body
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
@@ -35,9 +37,9 @@ from .commands.provider import provider as provider_group
 from .commands.setup import setup_cmd
 from .data.profiles import get_system_default_profile
 from .key_manager import KeyManager
-from .profile_system import AgentManager
-from .profile_system import ProfileLoader
-from .profile_system import ProfileManager
+from .paths import create_config_manager
+from .paths import create_module_resolver
+from .paths import create_profile_loader
 from .session_store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -433,12 +435,30 @@ class CommandProcessor:
         return "\n".join(lines)
 
     async def _list_agents(self) -> str:
-        """List available agents using AgentManager."""
-        from .profile_system import AgentManager
+        """List available agents from current configuration.
 
-        manager = AgentManager()
-        manager.list_agents()
-        return ""  # Table prints directly via console
+        Agents are pre-loaded into session.config["agents"] during session initialization
+        by _load_agents_into_session(), so this just formats and displays them.
+        """
+        # Get pre-loaded agents from session config
+        all_agents = self.session.config.get("agents", {})
+
+        if not all_agents:
+            return "No agents available (check profile's agents configuration)"
+
+        # Format output
+        lines = ["Available Agents:"]
+        for name, config in sorted(all_agents.items()):
+            meta = config.get("meta", {})
+            description = meta.get("description", "No description")
+            # Handle multi-line descriptions - take first line only
+            first_line = description.split("\n")[0]
+            # Truncate if too long
+            if len(first_line) > 50:
+                first_line = first_line[:47] + "..."
+            lines.append(f"  {name:<25} - {first_line}")
+
+        return "\n".join(lines)
 
 
 def resolve_app_config(
@@ -466,10 +486,6 @@ def resolve_app_config(
     Returns:
         Resolved configuration dictionary
     """
-    from amplifier_app_cli.profile_system import ProfileLoader
-    from amplifier_app_cli.profile_system import ProfileManager
-    from amplifier_app_cli.profile_system import compile_profile_to_mount_plan
-
     # 1. Start with minimal default mount plan
     config = {
         "session": {
@@ -483,45 +499,29 @@ def resolve_app_config(
     }
 
     # 2. Apply active profile (if set)
-    manager = ProfileManager()
-    loader = ProfileLoader()
+    config_manager = create_config_manager()
+    loader = create_profile_loader()
 
     # Use profile override if provided, otherwise check for active profile
-    active_profile_name = profile_override or manager.get_active_profile()
+    active_profile_name = profile_override or config_manager.get_active_profile()
 
     if active_profile_name:
         try:
-            # Load base profile
-            base_profile = loader.load_profile(active_profile_name)
+            # Load profile (library handles inheritance automatically)
+            profile = loader.load_profile(active_profile_name)
 
-            # Resolve inheritance chain
-            inheritance_chain = loader.resolve_inheritance(base_profile)
+            # Compile to mount plan (library handles merging)
+            profile_config = compile_profile_to_mount_plan(profile)
 
-            # Start with the base (bottom of chain)
-            if inheritance_chain:
-                profile_config = compile_profile_to_mount_plan(inheritance_chain[0], [])
-
-                # Merge each parent in the chain
-                for parent_profile in inheritance_chain[1:]:
-                    profile_config = deep_merge(profile_config, compile_profile_to_mount_plan(parent_profile, []))
-
-                # Load and apply overlays for the final profile
-                overlays = loader.load_overlays(active_profile_name)
-                if overlays:
-                    for overlay in overlays:
-                        overlay_config = compile_profile_to_mount_plan(overlay, [])
-                        profile_config = deep_merge(profile_config, overlay_config)
-
-                config = deep_merge(config, profile_config)
+            # Merge into base config
+            config = deep_merge(config, profile_config)
 
         except Exception as e:
             console.print(f"[yellow]Warning: Could not load profile '{active_profile_name}': {e}[/yellow]")
 
     # 3. Apply settings.yaml overrides (user → project → local)
-    from .settings import SettingsManager
 
-    settings_mgr = SettingsManager()
-    merged_settings = settings_mgr.get_merged_settings()
+    merged_settings = config_manager.get_merged_settings()
 
     # Provider override REPLACES profile providers (policy override)
     if "config" in merged_settings and "providers" in merged_settings["config"]:
@@ -777,13 +777,13 @@ def run(
         cli_overrides.setdefault("provider", {})["model"] = model
 
     # Determine active profile name (including fallback)
-    manager = ProfileManager()
-    active_profile_name = profile or manager.get_active_profile() or get_system_default_profile()
+    config_manager = create_config_manager()
+    active_profile_name = profile or config_manager.get_active_profile() or get_system_default_profile()
 
     # Check for first run (no API keys) and offer init
     if check_first_run() and not profile and not config and prompt_first_run_init(console):
         # Init was run, reload active profile
-        active_profile_name = manager.get_active_profile() or get_system_default_profile()
+        active_profile_name = config_manager.get_active_profile() or get_system_default_profile()
 
     # Resolve full configuration with proper precedence
     config_data = resolve_app_config(cli_config=cli_overrides, config_file=config, profile_override=active_profile_name)
@@ -817,11 +817,11 @@ def profile(ctx):
 @profile.command(name="list")
 def profile_list():
     """List all available profiles."""
-    loader = ProfileLoader()
-    manager = ProfileManager()
+    loader = create_profile_loader()
+    config_manager = create_config_manager()
     profiles = loader.list_profiles()
-    active_profile = manager.get_active_profile()
-    project_default = manager.get_project_default()
+    active_profile = config_manager.get_active_profile()
+    project_default = config_manager.get_project_default()
 
     if not profiles:
         console.print("[yellow]No profiles found.[/yellow]")
@@ -854,8 +854,29 @@ def profile_list():
 @profile.command(name="current")
 def profile_current():
     """Show the currently active profile and its source."""
-    manager = ProfileManager()
-    profile_name, source = manager.get_profile_source()
+    config_manager = create_config_manager()
+
+    # Determine active profile and source (inline - ruthless simplicity)
+    # Check local first (highest priority)
+    local = config_manager._read_yaml(config_manager.paths.local)
+    if local and "profile" in local and "active" in local["profile"]:
+        profile_name = local["profile"]["active"]
+        source = "local"
+    else:
+        # Check project default
+        project_default = config_manager.get_project_default()
+        if project_default:
+            profile_name = project_default
+            source = "default"
+        else:
+            # Check user settings
+            user = config_manager._read_yaml(config_manager.paths.user)
+            if user and "profile" in user and "active" in user["profile"]:
+                profile_name = user["profile"]["active"]
+                source = "user"
+            else:
+                profile_name = None
+                source = None
 
     if profile_name:
         if source == "local":
@@ -1085,7 +1106,7 @@ def render_effective_config(chain, detailed):
 @click.option("--detailed", "-d", is_flag=True, help="Show detailed configuration values")
 def profile_show(name: str, detailed: bool):
     """Show details of a specific profile with inheritance chain."""
-    loader = ProfileLoader()
+    loader = create_profile_loader()
 
     try:
         profile_obj = loader.load_profile(name)
@@ -1101,8 +1122,8 @@ def profile_show(name: str, detailed: bool):
     console.print(f"[bold]Version:[/bold] {profile_obj.profile.version}")
     console.print(f"[bold]Description:[/bold] {profile_obj.profile.description}")
 
-    # Get inheritance chain
-    chain = loader.resolve_inheritance(profile_obj)
+    # Profile already has resolved inheritance - create chain with just this profile
+    chain = [profile_obj]
 
     # Show effective configuration
     render_effective_config(chain, detailed)
@@ -1125,8 +1146,8 @@ def profile_use(name: str, scope_flag: str | None):
       amplifier profile use production --project
       amplifier profile use base --global
     """
-    loader = ProfileLoader()
-    manager = ProfileManager()
+    loader = create_profile_loader()
+    config_manager = create_config_manager()
 
     # Verify profile exists
     try:
@@ -1142,20 +1163,19 @@ def profile_use(name: str, scope_flag: str | None):
     scope = scope_flag or "local"
 
     if scope == "local":
-        manager.set_active_profile(name)
+        config_manager.set_active_profile(name)
         console.print(f"[green]✓ Using '{name}' profile locally[/green]")
         console.print("  File: .amplifier/settings.local.yaml")
     elif scope == "project":
-        manager.set_project_default(name)
+        config_manager.set_project_default(name)
         console.print(f"[green]✓ Set '{name}' as project default[/green]")
         console.print("  File: .amplifier/settings.yaml")
         console.print("  [yellow]Remember to commit .amplifier/settings.yaml[/yellow]")
     elif scope == "global":
         # Set in user settings
-        from .settings import SettingsManager
+        from amplifier_config import Scope
 
-        settings = SettingsManager()
-        settings._update_settings(settings.user_settings_file, {"profile": {"active": name}})
+        config_manager.update_settings({"profile": {"active": name}}, scope=Scope.USER)
         console.print(f"[green]✓ Set '{name}' globally[/green]")
         console.print("  File: ~/.amplifier/settings.yaml")
 
@@ -1167,8 +1187,8 @@ def profile_apply(name: str):
 
     DEPRECATED: Use 'amplifier profile use <name>' instead.
     """
-    loader = ProfileLoader()
-    manager = ProfileManager()
+    loader = create_profile_loader()
+    config_manager = create_config_manager()
 
     # Verify profile exists
     try:
@@ -1181,7 +1201,7 @@ def profile_apply(name: str):
         sys.exit(1)
 
     # Set active profile
-    manager.set_active_profile(name)
+    config_manager.set_active_profile(name)
     console.print(f"[green]✓[/green] Activated profile: {name}")
     console.print("[dim]Note: 'profile apply' is deprecated, use 'profile use' instead[/dim]")
 
@@ -1189,11 +1209,13 @@ def profile_apply(name: str):
 @profile.command(name="reset")
 def profile_reset():
     """Clear the local profile choice (falls back to project default if set)."""
-    manager = ProfileManager()
-    manager.clear_active_profile()
+    from amplifier_config import Scope
+
+    config_manager = create_config_manager()
+    config_manager.clear_active_profile(scope=Scope.LOCAL)
 
     # Check if there's a project default to fall back to
-    project_default = manager.get_project_default()
+    project_default = config_manager.get_project_default()
     if project_default:
         console.print("[green]✓[/green] Cleared local profile")
         console.print(f"Now using project default: [bold]{project_default}[/bold]")
@@ -1215,16 +1237,16 @@ def profile_default(set_default: str | None, clear: bool):
     Note: The project default (.amplifier/settings.yaml profile.default) is intended
     to be checked into version control.
     """
-    manager = ProfileManager()
+    config_manager = create_config_manager()
 
     if clear:
-        manager.clear_project_default()
+        config_manager.clear_project_default()
         console.print("[green]✓[/green] Cleared project default profile")
         return
 
     if set_default:
         # Verify profile exists
-        loader = ProfileLoader()
+        loader = create_profile_loader()
         try:
             loader.load_profile(set_default)
         except FileNotFoundError:
@@ -1235,13 +1257,13 @@ def profile_default(set_default: str | None, clear: bool):
             sys.exit(1)
 
         # Set project default
-        manager.set_project_default(set_default)
+        config_manager.set_project_default(set_default)
         console.print(f"[green]✓[/green] Set project default: {set_default}")
         console.print("\n[yellow]Note:[/yellow] Remember to commit .amplifier/settings.yaml")
         return
 
     # Show current project default
-    project_default = manager.get_project_default()
+    project_default = config_manager.get_project_default()
     if project_default:
         console.print(f"[bold green]Project default:[/bold green] {project_default}")
         console.print("Source: [cyan].amplifier/settings.yaml[/cyan]")
@@ -1250,6 +1272,59 @@ def profile_default(set_default: str | None, clear: bool):
         console.print(f"System default: [bold]{get_system_default_profile()}[/bold]")
         console.print("\nSet a project default with:")
         console.print("  [cyan]amplifier profile default --set <name>[/cyan]")
+
+
+def _load_agents_into_session(session: AmplifierSession) -> None:
+    """Load agents from agents_config dirs into session.config["agents"] dict.
+
+    The task tool expects agents to be available as a dict in session.config["agents"],
+    but agents_config only specifies where to load them from (dirs field).
+    This function loads agents from those directories and populates the dict.
+
+    Search order (later overrides earlier):
+    1. Bundled agents (amplifier_app_cli/data/agents) - always loaded as fallback
+    2. User-specified dirs from agents_config - override bundled
+
+    Args:
+        session: AmplifierSession to populate with agents
+    """
+    from pathlib import Path
+
+    from amplifier_app_cli.agent_config import load_agent_configs_from_directory
+
+    # Start with bundled agents as fallback
+    # __file__ is in amplifier_app_cli/ so parent / "data" / "agents" points to bundled agents
+    bundled_agents_dir = Path(__file__).parent / "data" / "agents"
+    all_agents = {}
+    if bundled_agents_dir.exists():
+        all_agents = load_agent_configs_from_directory(bundled_agents_dir)
+        logger.debug(f"Loaded {len(all_agents)} bundled agents from {bundled_agents_dir}")
+
+    # Get agents_config from session
+    agents_config = session.config.get("agents_config", {})
+
+    # Load from user-specified directories (if any) - these override bundled
+    if agents_config and agents_config.get("dirs"):
+        for agent_dir_str in agents_config.get("dirs", []):
+            # Handle relative paths by resolving from current directory
+            agent_dir = Path(agent_dir_str).expanduser()
+            if not agent_dir.is_absolute():
+                agent_dir = Path.cwd() / agent_dir
+
+            if agent_dir.exists():
+                agents = load_agent_configs_from_directory(agent_dir)
+                all_agents.update(agents)  # Override bundled with user agents
+                logger.debug(f"Loaded {len(agents)} agents from {agent_dir}")
+
+    # Apply include filter if specified
+    include_filter = agents_config.get("include") if agents_config else None
+    if include_filter:
+        all_agents = {name: config for name, config in all_agents.items() if name in include_filter}
+
+    # Store loaded agents in session.config["agents"] for task tool access
+    session.config["agents"] = all_agents
+
+    logger.info(f"Loaded {len(all_agents)} agents into session config")
 
 
 async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> None:
@@ -1303,14 +1378,12 @@ async def _process_profile_mentions(session: AmplifierSession, profile_name: str
     from amplifier_core.message_models import Message
 
     from .lib.mention_loading import MentionLoader
-    from .profile_system.loader import ProfileLoader
-    from .profile_system.utils import parse_markdown_body
     from .utils.mentions import has_mentions
 
     logger = logging.getLogger(__name__)
 
     # Load profile and extract markdown body
-    profile_loader = ProfileLoader()
+    profile_loader = create_profile_loader()
     try:
         logger.info(f"Processing @mentions for profile: {profile_name}")
 
@@ -1321,7 +1394,7 @@ async def _process_profile_mentions(session: AmplifierSession, profile_name: str
 
         logger.debug(f"Found profile file: {profile_file}")
 
-        markdown_body = parse_markdown_body(profile_file)
+        markdown_body = parse_markdown_body(profile_file.read_text())
         if not markdown_body:
             logger.debug(f"No markdown body in profile: {profile_name}")
             return
@@ -1434,14 +1507,16 @@ async def interactive_chat(
     session = AmplifierSession(config, session_id=session_id)
 
     # Mount module source resolver (app-layer policy)
-    from .module_resolution import StandardModuleSourceResolver
 
-    resolver = StandardModuleSourceResolver()
+    resolver = create_module_resolver()
     await session.coordinator.mount("module-source-resolver", resolver)
 
     # Show loading indicator during initialization (modules loading, etc.)
     with console.status("[dim]Loading...[/dim]", spinner="dots"):
         await session.initialize()
+
+    # Load agents from agents_config into session.config["agents"] for task tool
+    _load_agents_into_session(session)
 
     # Process profile @mentions if profile has markdown body
     await _process_profile_mentions(session, profile_name)
@@ -1608,9 +1683,8 @@ async def execute_single(
 
     try:
         # Mount module source resolver (app-layer policy)
-        from .module_resolution import StandardModuleSourceResolver
 
-        resolver = StandardModuleSourceResolver()
+        resolver = create_module_resolver()
         await session.coordinator.mount("module-source-resolver", resolver)
         await session.initialize()
 
@@ -1684,10 +1758,9 @@ def _get_profile_modules(profile_name: str) -> list[dict[str, Any]]:
     Returns:
         List of module dicts with: id, type, source, description
     """
-    from .profile_system import ProfileLoader
 
     try:
-        loader = ProfileLoader()
+        loader = create_profile_loader()
         profile = loader.load_profile(profile_name)
 
         modules = []
@@ -1761,13 +1834,11 @@ def list_modules(type: str):
     from amplifier_core.loader import ModuleLoader
 
     from .data.profiles import get_system_default_profile
-    from .module_resolution import StandardModuleSourceResolver
-    from .profile_system import ProfileManager
 
     # Get installed modules
     loader = ModuleLoader()
     modules_info = asyncio.run(loader.discover())
-    resolver = StandardModuleSourceResolver()
+    resolver = create_module_resolver()
 
     # Display installed modules
     if modules_info:
@@ -1801,14 +1872,14 @@ def list_modules(type: str):
 
     # Get active profile with proper fallback chain
     # Priority: explicit active → project default → system default
-    manager = ProfileManager()
-    active_profile = manager.get_active_profile() or get_system_default_profile()
+    config_manager = create_config_manager()
+    active_profile = config_manager.get_active_profile() or get_system_default_profile()
 
-    # Determine profile source for display
-    profile_source, source_type = manager.get_profile_source()
-    if source_type == "local":
+    # Determine profile source for display (inline - ruthless simplicity)
+    local = config_manager._read_yaml(config_manager.paths.local)
+    if local and "profile" in local and "active" in local["profile"]:
         source_label = "active"
-    elif source_type == "default":
+    elif config_manager.get_project_default():
         source_label = "project default"
     else:
         source_label = "system default"
@@ -1850,11 +1921,10 @@ def module_show(module_name: str):
     from amplifier_core.loader import ModuleLoader
 
     from .data.profiles import get_system_default_profile
-    from .profile_system import ProfileManager
 
     # Get active profile with proper fallback chain
-    manager = ProfileManager()
-    active_profile = manager.get_active_profile() or get_system_default_profile()
+    config_manager = create_config_manager()
+    active_profile = config_manager.get_active_profile() or get_system_default_profile()
 
     # Check profile modules first
     profile_modules = _get_profile_modules(active_profile)
@@ -1868,11 +1938,12 @@ def module_show(module_name: str):
         # Display profile module info
         source_str = str(found_in_profile["source"])
 
-        # Determine profile source for display
-        profile_source, source_type = manager.get_profile_source()
-        if source_type == "local":
+        # Determine profile source for display (inline - ruthless simplicity)
+        config_manager = create_config_manager()
+        local = config_manager._read_yaml(config_manager.paths.local)
+        if local and "profile" in local and "active" in local["profile"]:
             origin_label = f"Profile '{active_profile}' (active)"
-        elif source_type == "default":
+        elif config_manager.get_project_default():
             origin_label = f"Profile '{active_profile}' (project default)"
         else:
             origin_label = f"Profile '{active_profile}' (system default)"
@@ -1928,7 +1999,6 @@ def module_add(module_id: str, scope_flag: str | None):
     from typing import Literal
 
     from .module_manager import ModuleManager
-    from .settings import SettingsManager
 
     # Determine module type from ID
     if module_id.startswith("tool-"):
@@ -1958,8 +2028,8 @@ def module_add(module_id: str, scope_flag: str | None):
         scope = cast(Literal["local", "project", "global"], scope_flag)
 
     # Add module
-    settings = SettingsManager()
-    module_mgr = ModuleManager(settings)
+    config_manager = create_config_manager()
+    module_mgr = ModuleManager(config_manager)
 
     result = module_mgr.add_module(module_id, module_type, scope)  # type: ignore[arg-type]
 
@@ -1982,7 +2052,6 @@ def module_remove(module_id: str, scope_flag: str | None):
     from typing import Literal
 
     from .module_manager import ModuleManager
-    from .settings import SettingsManager
 
     # Prompt for scope if not provided
     if not scope_flag:
@@ -1996,8 +2065,8 @@ def module_remove(module_id: str, scope_flag: str | None):
     else:
         scope = cast(Literal["local", "project", "global"], scope_flag)
 
-    settings = SettingsManager()
-    module_mgr = ModuleManager(settings)
+    config_manager = create_config_manager()
+    module_mgr = ModuleManager(config_manager)
 
     module_mgr.remove_module(module_id, scope)  # type: ignore[arg-type]
 
@@ -2008,10 +2077,9 @@ def module_remove(module_id: str, scope_flag: str | None):
 def module_current():
     """Show currently configured modules from settings."""
     from .module_manager import ModuleManager
-    from .settings import SettingsManager
 
-    settings = SettingsManager()
-    module_mgr = ModuleManager(settings)
+    config_manager = create_config_manager()
+    module_mgr = ModuleManager(config_manager)
 
     modules = module_mgr.get_current_modules()
 
@@ -2041,37 +2109,8 @@ cli.add_command(init_cmd)
 cli.add_command(provider_group)
 cli.add_command(setup_cmd)  # Keep for backward compat, deprecated
 
-
-@cli.group(invoke_without_command=True)
-@click.pass_context
-def agent(ctx):
-    """Manage Amplifier agents."""
-    if ctx.invoked_subcommand is None:
-        click.echo("\n" + ctx.get_help())
-        ctx.exit()
-
-
-@agent.command(name="list")
-def agents_list():
-    """List all available agents."""
-    manager = AgentManager()
-    manager.list_agents()
-
-
-@agent.command(name="show")
-@click.argument("name")
-def agents_show(name: str):
-    """Show details of a specific agent."""
-    manager = AgentManager()
-    manager.show_agent(name)
-
-
-@agent.command(name="validate")
-@click.argument("file_path", type=click.Path(exists=True))
-def agents_validate(file_path: str):
-    """Validate an agent file."""
-    manager = AgentManager()
-    manager.validate_agent(file_path)
+# Note: Agent commands removed (YAGNI - not implemented, agents managed via profiles)
+# Agent configuration happens in profiles, agent loading via amplifier-profiles library
 
 
 @cli.group(invoke_without_command=True)
@@ -2377,16 +2416,17 @@ def source_add(module_id: str, source_uri: str, is_global: bool):
       amplifier source add tool-bash ~/dev/amplifier-module-tool-bash
       amplifier source add provider-openai git+https://github.com/me/fork@main --global
     """
-    from .settings import SettingsManager
 
-    manager = SettingsManager()
-    scope = "user" if is_global else "project"
-    manager.add_source_override(module_id, source_uri, scope=scope)
+    from amplifier_config import Scope
+
+    config_manager = create_config_manager()
+    scope_enum = Scope.USER if is_global else Scope.PROJECT
+    config_manager.add_source_override(module_id, source_uri, scope=scope_enum)
 
     scope_label = "user" if is_global else "project"
     console.print(f"[green]✓[/green] Added {scope_label} override for '{module_id}'")
     console.print(f"  Source: {source_uri}")
-    console.print(f"  File: {manager.user_settings_file if is_global else manager.project_settings_file}")
+    console.print(f"  File: {config_manager.scope_to_path(scope_enum)}")
 
 
 @source.command("remove")
@@ -2394,11 +2434,11 @@ def source_add(module_id: str, source_uri: str, is_global: bool):
 @click.option("--global", "-g", "is_global", is_flag=True, help="Remove from user settings")
 def source_remove(module_id: str, is_global: bool):
     """Remove module source override."""
-    from .settings import SettingsManager
+    from amplifier_config import Scope
 
-    manager = SettingsManager()
-    scope = "user" if is_global else "project"
-    removed = manager.remove_source_override(module_id, scope=scope)
+    config_manager = create_config_manager()
+    scope_enum = Scope.USER if is_global else Scope.PROJECT
+    removed = config_manager.remove_source_override(module_id, scope=scope_enum)
 
     if removed:
         scope_label = "user" if is_global else "project"
@@ -2410,10 +2450,9 @@ def source_remove(module_id: str, is_global: bool):
 @source.command("list")
 def source_list():
     """List all module source overrides."""
-    from .settings import SettingsManager
 
-    manager = SettingsManager()
-    sources = manager.get_module_sources()
+    config_manager = create_config_manager()
+    sources = config_manager.get_module_sources()
 
     if not sources:
         console.print("[yellow]No source overrides configured[/yellow]")
@@ -2441,9 +2480,8 @@ def source_show(module_id: str):
 
     Displays all 6 resolution layers and which one resolved the module.
     """
-    from .module_resolution import StandardModuleSourceResolver
 
-    resolver = StandardModuleSourceResolver()
+    resolver = create_module_resolver()
 
     console.print(f"[bold]Module:[/bold] {module_id}\n")
     console.print("[bold]Resolution Path:[/bold]")
@@ -2463,10 +2501,9 @@ def source_show(module_id: str):
     )
 
     # Check project settings
-    from .settings import SettingsManager
 
-    manager = SettingsManager()
-    merged_sources = manager.get_module_sources()
+    config_manager = create_config_manager()
+    merged_sources = config_manager.get_module_sources()
     project_source = merged_sources.get(module_id) if module_id in merged_sources else None
 
     console.print(
@@ -2501,12 +2538,14 @@ async def interactive_chat_with_session(
     session = AmplifierSession(config, session_id=session_id)
 
     # Mount module source resolver (app-layer policy)
-    from .module_resolution import StandardModuleSourceResolver
 
-    resolver = StandardModuleSourceResolver()
+    resolver = create_module_resolver()
     await session.coordinator.mount("module-source-resolver", resolver)
 
     await session.initialize()
+
+    # Load agents from agents_config into session.config["agents"] for task tool
+    _load_agents_into_session(session)
 
     # Register CLI approval provider if approval hook is active (app-layer policy)
     from .approval_provider import CLIApprovalProvider
