@@ -136,6 +136,19 @@ def add(source_uri: str, local: bool):
             commit_sha = getattr(source, "commit_sha", None)
             lock.add_entry(name=metadata.name, source=source_uri_for_lock, commit=commit_sha, path=target_dir)
 
+        # Fix: Ensure pyproject.toml exists at collection root (APP LAYER POLICY)
+        # uv pip install may place it in package subdirectory, but CollectionResolver
+        # expects it at root level to identify valid collections
+        if not (target_dir / "pyproject.toml").exists():
+            # Search for pyproject.toml in package subdirectories
+            for item in target_dir.iterdir():
+                if item.is_dir() and not item.name.endswith(".dist-info") and not item.name.startswith("."):
+                    pkg_toml = item / "pyproject.toml"
+                    if pkg_toml.exists():
+                        shutil.copy2(pkg_toml, target_dir / "pyproject.toml")
+                        logger.debug(f"Copied pyproject.toml from {item.name}/ to collection root")
+                        break
+
         path = target_dir
         click.echo(f"✓ Installed {metadata.name} v{metadata.version}")
         click.echo(f"  Location: {path}")
