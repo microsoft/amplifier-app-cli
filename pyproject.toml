@@ -42,7 +42,7 @@ dev = [
 
 [tool.uv.sources]
 amplifier-core = { git = "https://github.com/microsoft/amplifier-core", branch = "main" }
-amplifier-config = { path = "../amplifier-config", editable = true }
-amplifier-collections = { path = "../amplifier-collections", editable = true }
-amplifier-module-resolution = { path = "../amplifier-module-resolution", editable = true }
-amplifier-profiles = { path = "../amplifier-profiles", editable = true }
+amplifier-config = { git = "https://github.com/microsoft/amplifier-config", branch = "main" }
+amplifier-collections = { git = "https://github.com/microsoft/amplifier-collections", branch = "main" }
+amplifier-module-resolution = { git = "https://github.com/microsoft/amplifier-module-resolution", branch = "main" }
+amplifier-profiles = { git = "https://github.com/microsoft/amplifier-profiles", branch = "main" }
