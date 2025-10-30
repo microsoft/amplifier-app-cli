@@ -136,18 +136,45 @@ def add(source_uri: str, local: bool):
             commit_sha = getattr(source, "commit_sha", None)
             lock.add_entry(name=metadata.name, source=source_uri_for_lock, commit=commit_sha, path=target_dir)
 
-        # Fix: Ensure pyproject.toml exists at collection root (APP LAYER POLICY)
-        # uv pip install may place it in package subdirectory, but CollectionResolver
-        # expects it at root level to identify valid collections
+        # Fix: Normalize collection structure to root level (APP LAYER POLICY)
+        # uv pip install creates: target_dir/package_name/[pyproject.toml, profiles/, agents/, ...]
+        # We need: target_dir/[pyproject.toml, profiles/, agents/, ...]
+        #
+        # This ensures:
+        # - CollectionResolver can find collection (pyproject.toml at root)
+        # - Profile search paths find profiles/ at root
+        # - Agent search paths find agents/ at root
+        # - Consistent structure regardless of installation method
         if not (target_dir / "pyproject.toml").exists():
-            # Search for pyproject.toml in package subdirectories
+            # Find package subdirectory
+            package_subdir = None
             for item in target_dir.iterdir():
-                if item.is_dir() and not item.name.endswith(".dist-info") and not item.name.startswith("."):
-                    pkg_toml = item / "pyproject.toml"
-                    if pkg_toml.exists():
-                        shutil.copy2(pkg_toml, target_dir / "pyproject.toml")
-                        logger.debug(f"Copied pyproject.toml from {item.name}/ to collection root")
-                        break
+                if (
+                    item.is_dir()
+                    and not item.name.endswith(".dist-info")
+                    and not item.name.startswith(".")
+                    and (item / "pyproject.toml").exists()
+                ):
+                    package_subdir = item
+                    logger.debug(f"Found package subdirectory: {item.name}")
+                    break
+
+            if package_subdir:
+                # Move all contents from package subdir to collection root
+                for item in package_subdir.iterdir():
+                    dest = target_dir / item.name
+                    if dest.exists():
+                        # Remove existing to avoid conflicts
+                        if dest.is_dir():
+                            shutil.rmtree(dest)
+                        else:
+                            dest.unlink()
+                    shutil.move(str(item), str(target_dir))
+                    logger.debug(f"Moved {item.name} to collection root")
+
+                # Remove now-empty package subdirectory
+                package_subdir.rmdir()
+                logger.debug(f"Removed empty package subdirectory: {package_subdir.name}")
 
         path = target_dir
         click.echo(f"✓ Installed {metadata.name} v{metadata.version}")
