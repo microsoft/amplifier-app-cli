@@ -438,8 +438,7 @@ class CommandProcessor:
     async def _list_agents(self) -> str:
         """List available agents from current configuration.
 
-        Agents are pre-loaded into session.config["agents"] during session initialization
-        by _load_agents_into_session(), so this just formats and displays them.
+        Agents are loaded into session.config["agents"] via mount plan (compiler).
         """
         # Get pre-loaded agents from session config
         all_agents = self.session.config.get("agents", {})
@@ -1277,59 +1276,6 @@ def profile_default(set_default: str | None, clear: bool):
         console.print("  [cyan]amplifier profile default --set <name>[/cyan]")
 
 
-def _load_agents_into_session(session: AmplifierSession) -> None:
-    """Load agents from agents_config dirs into session.config["agents"] dict.
-
-    The task tool expects agents to be available as a dict in session.config["agents"],
-    but agents_config only specifies where to load them from (dirs field).
-    This function loads agents from those directories and populates the dict.
-
-    Search order (later overrides earlier):
-    1. Bundled agents (amplifier_app_cli/data/agents) - always loaded as fallback
-    2. User-specified dirs from agents_config - override bundled
-
-    Args:
-        session: AmplifierSession to populate with agents
-    """
-    from pathlib import Path
-
-    from amplifier_app_cli.agent_config import load_agent_configs_from_directory
-
-    # Start with bundled agents as fallback
-    # __file__ is in amplifier_app_cli/ so parent / "data" / "agents" points to bundled agents
-    bundled_agents_dir = Path(__file__).parent / "data" / "agents"
-    all_agents = {}
-    if bundled_agents_dir.exists():
-        all_agents = load_agent_configs_from_directory(bundled_agents_dir)
-        logger.debug(f"Loaded {len(all_agents)} bundled agents from {bundled_agents_dir}")
-
-    # Get agents_config from session
-    agents_config = session.config.get("agents_config", {})
-
-    # Load from user-specified directories (if any) - these override bundled
-    if agents_config and agents_config.get("dirs"):
-        for agent_dir_str in agents_config.get("dirs", []):
-            # Handle relative paths by resolving from current directory
-            agent_dir = Path(agent_dir_str).expanduser()
-            if not agent_dir.is_absolute():
-                agent_dir = Path.cwd() / agent_dir
-
-            if agent_dir.exists():
-                agents = load_agent_configs_from_directory(agent_dir)
-                all_agents.update(agents)  # Override bundled with user agents
-                logger.debug(f"Loaded {len(agents)} agents from {agent_dir}")
-
-    # Apply include filter if specified
-    include_filter = agents_config.get("include") if agents_config else None
-    if include_filter:
-        all_agents = {name: config for name, config in all_agents.items() if name in include_filter}
-
-    # Store loaded agents in session.config["agents"] for task tool access
-    session.config["agents"] = all_agents
-
-    logger.info(f"Loaded {len(all_agents)} agents into session config")
-
-
 async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> None:
     """Process @mentions in user input at runtime.
 
@@ -1518,9 +1464,6 @@ async def interactive_chat(
     with console.status("[dim]Loading...[/dim]", spinner="dots"):
         await session.initialize()
 
-    # Load agents from agents_config into session.config["agents"] for task tool
-    _load_agents_into_session(session)
-
     # Process profile @mentions if profile has markdown body
     await _process_profile_mentions(session, profile_name)
 
@@ -1534,20 +1477,12 @@ async def interactive_chat(
         logger.info("Registered CLIApprovalProvider for interactive approvals")
 
     # Register session spawning capability for agent delegation (app-layer policy)
-    from .agent_config import load_agent_configs_from_directory
-
     async def spawn_with_agent_wrapper(agent_name: str, instruction: str, sub_session_id: str):
         """Wrapper for session spawning using coordinator infrastructure."""
         from .session_spawner import spawn_sub_session
 
-        # Get agents from session config
+        # Get agents from session config (loaded via mount plan)
         agents = session.config.get("agents", {})
-
-        # Also try loading from directory if configured
-        agent_dir = Path(__file__).parent / "agents" / "core"
-        if agent_dir.exists():
-            file_agents = load_agent_configs_from_directory(agent_dir)
-            agents = {**file_agents, **agents}  # Profile agents override file agents
 
         return await spawn_sub_session(agent_name, instruction, session, agents, sub_session_id)
 
@@ -2546,9 +2481,6 @@ async def interactive_chat_with_session(
     await session.coordinator.mount("module-source-resolver", resolver)
 
     await session.initialize()
-
-    # Load agents from agents_config into session.config["agents"] for task tool
-    _load_agents_into_session(session)
 
     # Register CLI approval provider if approval hook is active (app-layer policy)
     from .approval_provider import CLIApprovalProvider
