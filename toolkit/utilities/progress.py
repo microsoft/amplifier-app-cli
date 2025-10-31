@@ -40,7 +40,7 @@ class ProgressReporter:
         ...         response = await session.execute(f"Analyze: {file.read_text()}")
         ...         save_result(file, response)
         ...         progress.update()
-        ...     progress.finish()
+        ...     progress.complete()
     """
 
     def __init__(
