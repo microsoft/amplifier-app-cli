@@ -192,11 +192,11 @@ No one else decides for you. **This is correct.**
 
 The center stays still so the edges can move fast. **This is correct.**
 
-## Why NOT Use ProfileManager?
+## Build-Time vs Runtime Configuration
 
-### ProfileManager is App-Layer Policy
+### Standalone Tools Make Build-Time Decisions
 
-**ProfileManager** is designed for `amplifier` CLI where users customize behavior at runtime:
+**CLI applications** (like `amplifier`) allow users to choose behavior at runtime:
 
 ```bash
 # User chooses profile at runtime
@@ -204,13 +204,18 @@ amplifier run --profile dev "research AI safety"
 amplifier run --profile production "research AI safety"
 ```
 
-**Standalone tools** make policy decisions at **build time**, not runtime:
+**Standalone tools** make policy decisions at **build time**:
 
 ```python
 # Tool author decides configs when building tool
-ANALYZER_CONFIG = {"temperature": 0.3}  # Build-time decision
-
-# No user choice at runtime - tool is opinionated
+ANALYZER_CONFIG = {
+    "session": {"orchestrator": "loop-basic"},
+    "providers": [{
+        "module": "provider-anthropic",
+        "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
+        "config": {"model": "claude-sonnet-4-5", "temperature": 0.3}
+    }]
+}  # Build-time decision - no runtime user choice
 ```
 
 ### Standalone Tools Are Opinionated
@@ -218,7 +223,7 @@ ANALYZER_CONFIG = {"temperature": 0.3}  # Build-time decision
 Each standalone tool is a **specific solution** to a **specific problem** with **specific choices**:
 
 ```python
-# Tutorial evolver's choices:
+# Tutorial evolver's build-time choices:
 # - Use claude-sonnet-4-5 for analysis (not opus, not haiku)
 # - Use temperature 0.3 for analysis (not 0.5, not 0.1)
 # - Use 6 configs (not 3, not 10)
@@ -249,9 +254,7 @@ amplifier = [
 ]
 ```
 
-Modules discovered automatically via entry points. No dynamic resolution needed.
-
-**ProfileManager adds complexity without value** for standalone tools.
+Modules discovered automatically via entry points. No profile loading or dynamic resolution needed.
 
 ## Configuration Sophistication Spectrum
 
@@ -631,16 +634,21 @@ EVALUATOR_CONFIG = {"temperature": 0.2}
 # Complexity in orchestration (which is code, which is easier)
 ```
 
-### Misconception 2: "I need ProfileManager for multiple configs"
+### Misconception 2: "I need complex loading for multiple configs"
 
 **Reality**: Multiple configs are just multiple dicts
 
 ```python
-# No ProfileManager needed
+# Define all configs directly
 CONFIGS = {
-    "analyzer": {"temperature": 0.3},
-    "creator": {"temperature": 0.7},
-    "evaluator": {"temperature": 0.2},
+    "analyzer": {
+        "session": {"orchestrator": "loop-basic"},
+        "providers": [{"module": "provider-anthropic", "source": "git+...", "config": {"temperature": 0.3}}]
+    },
+    "creator": {
+        "session": {"orchestrator": "loop-basic"},
+        "providers": [{"module": "provider-anthropic", "source": "git+...", "config": {"temperature": 0.7}}]
+    },
 }
 
 # Code decides which config when
@@ -649,7 +657,7 @@ async with AmplifierSession(config=config) as session:
     result = await session.execute(...)
 ```
 
-ProfileManager is for dynamic user choice. Standalone tools make build-time choices.
+CLI apps use profiles for dynamic user choice. Standalone tools make build-time choices.
 
 ### Misconception 3: "Multi-config violates simplicity"
 

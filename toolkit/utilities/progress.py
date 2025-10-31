@@ -22,16 +22,25 @@ class ProgressReporter:
 
     Example:
         >>> from amplifier_core import AmplifierSession
-        >>> from amplifier_app_cli.profile_system import ProfileManager
-        >>> mount_plan = ProfileManager().get_profile_as_mount_plan("dev")
+        >>> from toolkit.utilities.progress import ProgressReporter
         >>>
-        >>> async with AmplifierSession(config=mount_plan) as session:
+        >>> # Define config directly (toolkit pattern)
+        >>> config = {
+        ...     "session": {"orchestrator": "loop-basic"},
+        ...     "providers": [{
+        ...         "module": "provider-anthropic",
+        ...         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
+        ...         "config": {"model": "claude-sonnet-4-5"}
+        ...     }]
+        ... }
+        >>>
+        >>> async with AmplifierSession(config=config) as session:
         ...     progress = ProgressReporter(len(files), "Analyzing")
         ...     for file in files:
         ...         response = await session.execute(f"Analyze: {file.read_text()}")
         ...         save_result(file, response)
         ...         progress.update()
-        ...     progress.complete()
+        ...     progress.finish()
     """
 
     def __init__(

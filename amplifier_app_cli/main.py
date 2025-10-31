@@ -1182,32 +1182,6 @@ def profile_use(name: str, scope_flag: str | None):
         console.print("  File: ~/.amplifier/settings.yaml")
 
 
-@profile.command(name="apply")
-@click.argument("name")
-def profile_apply(name: str):
-    """Set the active profile (alias for 'profile use').
-
-    DEPRECATED: Use 'amplifier profile use <name>' instead.
-    """
-    loader = create_profile_loader()
-    config_manager = create_config_manager()
-
-    # Verify profile exists
-    try:
-        loader.load_profile(name)
-    except FileNotFoundError:
-        console.print(f"[red]Error:[/red] Profile '{name}' not found")
-        sys.exit(1)
-    except ValueError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        sys.exit(1)
-
-    # Set active profile
-    config_manager.set_active_profile(name)
-    console.print(f"[green]✓[/green] Activated profile: {name}")
-    console.print("[dim]Note: 'profile apply' is deprecated, use 'profile use' instead[/dim]")
-
-
 @profile.command(name="reset")
 def profile_reset():
     """Clear the local profile choice (falls back to project default if set)."""

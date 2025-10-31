@@ -48,10 +48,11 @@ amplifier provider reset [--scope]
 
 # Profile management
 amplifier profile use <name> [--local|--project|--global]
-amplifier profile create <name> --extend <parent>
 amplifier profile current
 amplifier profile list
 amplifier profile show <name>
+amplifier profile default [--set <name>|--clear]
+amplifier profile reset
 
 # Collection management
 amplifier collection add <git-url> [--local]
@@ -81,6 +82,8 @@ amplifier                            # Interactive chat
 amplifier session list               # Recent sessions
 amplifier session show <id>          # Session details
 amplifier session resume <id>        # Continue session
+amplifier session delete <id>        # Delete session
+amplifier session cleanup [--days N] # Clean up old sessions
 ```
 
 ### Utility Commands
@@ -144,9 +147,10 @@ amplifier run --<TAB>      # Shows all options
 
 This CLI is built on top of amplifier-core and provides:
 
-- **Profile system** - Reusable, composable configuration bundles
-- **Settings management** - Three-scope configuration (local/project/global)
-- **Module resolution** - Six-layer module source resolution
+- **Profile system** - Reusable, composable configuration bundles (via amplifier-profiles)
+- **Settings management** - Three-scope configuration (local/project/global via amplifier-config)
+- **Module resolution** - Five-layer module source resolution (via amplifier-module-resolution)
+- **Collection system** - Shareable expertise bundles (via amplifier-collections)
 - **Session storage** - Project-scoped session persistence
 - **Interactive mode** - REPL with slash commands
 - **Key management** - Secure API key storage
@@ -177,20 +181,35 @@ uv run pytest
 
 ```
 amplifier_app_cli/
-├── commands/          # CLI command implementations
-├── collections/       # Collection system (installation, resolution)
+├── commands/          # CLI command implementations (provider, collection, init, logs, setup)
 ├── data/
 │   ├── collections/   # Bundled collections (foundation, developer-expertise)
-│   ├── profiles/      # Bundled profiles (inside collections)
 │   ├── agents/        # Bundled agents (inside collections)
+│   ├── profiles/      # Profile defaults and metadata
 │   └── context/       # Bundled context files
-├── profile_system/    # Profile loading and compilation
-├── session_storage/   # Session persistence
-├── toolkit/           # Utilities for building scenario tools
-├── settings.py        # Settings management
+├── lib/               # Shared libraries
+│   └── mention_loading/ # @mention expansion system
+├── utils/             # Utility functions
+├── banners/           # Banner art
+├── paths.py           # Path configuration and factory functions
 ├── key_manager.py     # API key management
+├── provider_manager.py # Provider configuration
+├── module_manager.py  # Module management
+├── session_store.py   # Session persistence
+├── agent_config.py    # Agent configuration utilities
 └── main.py            # CLI entry point
+
+toolkit/               # Standalone scenario tool utilities (at repo root)
+├── utilities/         # Structural utilities (file ops, progress, validation)
+├── examples/          # Example tools (tutorial_analyzer)
+└── templates/         # Tool templates
 ```
+
+**Note**: Core functionality provided by libraries:
+- `amplifier-profiles` - Profile loading and compilation
+- `amplifier-config` - Settings management
+- `amplifier-module-resolution` - Module source resolution
+- `amplifier-collections` - Collection installation and discovery
 
 ## Related Documentation
 

@@ -37,11 +37,19 @@ def discover_files(base_path: Path | str, pattern: str = "**/*.md", max_items: i
         >>> files = discover_files(Path("docs"), "**/*.md")
         >>> print(f"Found {len(files)} markdown files")
         >>>
-        >>> # AI operations: use AmplifierSession
+        >>> # AI operations: use AmplifierSession directly with defined config
         >>> from amplifier_core import AmplifierSession
-        >>> from amplifier_app_cli.profile_system import ProfileManager
-        >>> mount_plan = ProfileManager().get_profile_as_mount_plan("dev")
-        >>> async with AmplifierSession(config=mount_plan) as session:
+        >>>
+        >>> config = {
+        ...     "session": {"orchestrator": "loop-basic"},
+        ...     "providers": [{
+        ...         "module": "provider-anthropic",
+        ...         "source": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
+        ...         "config": {"model": "claude-sonnet-4-5"}
+        ...     }]
+        ... }
+        >>>
+        >>> async with AmplifierSession(config=config) as session:
         ...     for file in files:
         ...         response = await session.execute(f"Analyze: {file.read_text()}")
     """
