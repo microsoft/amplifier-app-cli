@@ -164,7 +164,7 @@ This CLI is built on top of amplifier-core and provides:
 
 ### Provider sources
 
-`amplifier provider use …` now pins the canonical module source for each
+`amplifier provider use …` pins the canonical module source for each
 first-party provider (for example, the OpenAI provider resolves to
 `git+https://github.com/microsoft/amplifier-module-provider-openai@main`).
 Existing installations inherit these canonical URIs at runtime as well, so
