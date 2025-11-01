@@ -1,1 +1,0 @@
-"""Toolkit examples - reference implementations."""
