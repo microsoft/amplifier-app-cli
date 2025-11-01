@@ -375,7 +375,14 @@ def show(name: str):
             click.echo(f"\n  Context files ({len(resources.context)}):")
             # Show relative paths
             for ctx_file in resources.context[:10]:  # Show first 10
-                rel_path = ctx_file.relative_to(path)
+                rel_path = None
+                try:
+                    rel_path = ctx_file.relative_to(path)
+                except ValueError:
+                    try:
+                        rel_path = ctx_file.relative_to(path.parent)
+                    except ValueError:
+                        rel_path = ctx_file
                 click.echo(f"    • {rel_path}")
             if len(resources.context) > 10:
                 click.echo(f"    ... and {len(resources.context) - 10} more")

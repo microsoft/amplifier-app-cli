@@ -162,6 +162,15 @@ This CLI is built on top of amplifier-core and provides:
 - **Azure OpenAI** - Enterprise users with Azure subscriptions
 - **Ollama** - Local, free, no API key needed
 
+### Provider sources
+
+`amplifier provider use …` pins the canonical module source for each
+first-party provider (for example, the OpenAI provider resolves to
+`git+https://github.com/microsoft/amplifier-module-provider-openai@main`).
+Existing installations inherit these canonical URIs at runtime as well, so
+fresh environments download the provider code via **uv** automatically. No
+manual source overrides are required for the built-in providers.
+
 ## Development
 
 ### Prerequisites

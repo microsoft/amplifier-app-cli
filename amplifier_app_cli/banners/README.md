@@ -55,9 +55,11 @@ amplifier run --mode chat
 
 ### Command Line
 
+When you need a one-off style, export the environment variable inline:
+
 ```bash
-# Use specific banner
-amplifier run --mode chat --config <(echo "banner_style: matrix")
+# Use specific banner for a single run
+AMPLIFIER_BANNER_STYLE=matrix amplifier run --mode chat
 ```
 
 ## How It Works
@@ -155,7 +157,7 @@ cp COOL-ART.ANS amplifier-app-cli/amplifier_app_cli/banners/art/epic.ans
 # Add "epic" to the list
 
 # Use it
-amplifier run --config <(echo "banner_style: epic")
+AMPLIFIER_BANNER_STYLE=epic amplifier run --mode chat
 ```
 
 ## Testing

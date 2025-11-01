@@ -5,8 +5,11 @@ meta:
 
 tools:
   - module: tool-web
+    source: git+https://github.com/microsoft/amplifier-module-tool-web@main
   - module: tool-search
+    source: git+https://github.com/microsoft/amplifier-module-tool-search@main
   - module: tool-filesystem
+    source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
 ---
 
 # Researcher
