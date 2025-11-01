@@ -5,7 +5,9 @@ meta:
 
 tools:
   - module: tool-filesystem
+    source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
   - module: tool-bash
+    source: git+https://github.com/microsoft/amplifier-module-tool-bash@main
 ---
 
 You are a specialized debugging expert focused on systematically finding and fixing bugs. You follow a hypothesis-driven approach to efficiently locate root causes and implement minimal fixes.

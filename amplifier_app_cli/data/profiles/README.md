@@ -273,9 +273,8 @@ When using profiles, configuration is merged in this order (later overrides earl
 3. User settings (`~/.amplifier/settings.yaml`)
 4. Project settings (`.amplifier/settings.yaml`)
 5. Local settings (`.amplifier/settings.local.yaml`)
-6. `--config` file flag
-7. CLI flags (`--profile`, `--provider`, `--model`, etc.)
-8. Environment variables (`${VAR_NAME}` expansion)
+6. CLI flags (`--profile`, `--provider`, `--model`, etc.)
+7. Environment variables (`${VAR_NAME}` expansion)
 
 ## Agent Configuration
 
