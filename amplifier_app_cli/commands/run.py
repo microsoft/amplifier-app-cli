@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import sys
 import uuid
-from typing import Callable
+from collections.abc import Callable
+from collections.abc import Coroutine
+from typing import Any
 
 import click
 
@@ -17,8 +19,8 @@ from ..paths import create_config_manager
 from ..paths import create_profile_loader
 from ..runtime.config import resolve_app_config
 
-InteractiveChat = Callable[[dict, list, bool, str | None, str], None]
-ExecuteSingle = Callable[[str, dict, list, bool, str | None, str], None]
+InteractiveChat = Callable[[dict, list, bool, str | None, str], Coroutine[Any, Any, None]]
+ExecuteSingle = Callable[[str, dict, list, bool, str | None, str], Coroutine[Any, Any, None]]
 SearchPathProvider = Callable[[], list]
 
 
@@ -29,7 +31,7 @@ def register_run_command(
     execute_single: ExecuteSingle,
     get_module_search_paths: SearchPathProvider,
     check_first_run: Callable[[], bool],
-    prompt_first_run_init: Callable[[any], bool],
+    prompt_first_run_init: Callable[[Any], bool],
 ):
     """Register the run command on the root CLI group."""
 

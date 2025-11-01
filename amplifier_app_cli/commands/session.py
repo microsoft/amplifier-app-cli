@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime, timedelta
+import sys
+from collections.abc import Callable
+from collections.abc import Coroutine
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
-from typing import Callable
+from typing import Any
 
 import click
 from rich.panel import Panel
@@ -21,8 +26,7 @@ from ..project_utils import get_project_slug
 from ..runtime.config import resolve_app_config
 from ..session_store import SessionStore
 
-
-InteractiveResume = Callable[[dict, list[Path], bool, str, list[dict], str], None]
+InteractiveResume = Callable[[dict, list[Path], bool, str, list[dict], str], Coroutine[Any, Any, None]]
 SearchPathProvider = Callable[[], list[Path]]
 
 

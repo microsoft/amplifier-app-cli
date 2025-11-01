@@ -7,7 +7,8 @@ before extracting them into a dedicated library for other front ends.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
+from typing import Literal
 
 from amplifier_config import ConfigManager
 from amplifier_config import Scope

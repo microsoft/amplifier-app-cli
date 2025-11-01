@@ -104,7 +104,9 @@ def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _merge_module_lists(base_modules: list[dict[str, Any]], overlay_modules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _merge_module_lists(
+    base_modules: list[dict[str, Any]], overlay_modules: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Merge module lists on module ID, overlay taking precedence."""
     base_by_id = {m.get("module"): m for m in base_modules if isinstance(m, dict) and "module" in m}
     overlay_by_id = {m.get("module"): m for m in overlay_modules if isinstance(m, dict) and "module" in m}

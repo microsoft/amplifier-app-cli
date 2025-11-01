@@ -1,5 +1,4 @@
 import yaml
-
 from amplifier_app_cli.lib.app_settings import AppSettings
 from amplifier_app_cli.paths import create_agent_loader
 from amplifier_app_cli.paths import create_config_manager
@@ -26,9 +25,7 @@ def test_provider_override_persists_under_config_section(tmp_path, monkeypatch):
     file_contents = yaml.safe_load(settings_path.read_text())
     provider_entry = file_contents["config"]["providers"][0]
     assert provider_entry["module"] == "provider-anthropic"
-    assert provider_entry["source"].startswith(
-        "git+https://github.com/microsoft/amplifier-module-provider-anthropic"
-    )
+    assert provider_entry["source"].startswith("git+https://github.com/microsoft/amplifier-module-provider-anthropic")
 
     profile_loader = create_profile_loader()
     agent_loader = create_agent_loader()

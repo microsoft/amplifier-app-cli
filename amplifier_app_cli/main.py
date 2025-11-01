@@ -7,10 +7,11 @@ import os
 import signal
 import sys
 import uuid
+from collections.abc import Callable
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import click
 from amplifier_core import AmplifierSession
@@ -35,15 +36,10 @@ from .commands.run import register_run_command
 from .commands.session import register_session_commands
 from .commands.setup import setup_cmd
 from .commands.source import source as source_group
-from .data.profiles import get_system_default_profile
-from .key_manager import KeyManager
-from .lib.app_settings import AppSettings
 from .console import console
-from .paths import create_agent_loader
-from .paths import create_config_manager
+from .key_manager import KeyManager
 from .paths import create_module_resolver
 from .paths import create_profile_loader
-from .runtime.config import resolve_app_config
 from .session_store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -463,8 +459,6 @@ class CommandProcessor:
             lines.append(f"  {name:<25} - {first_line}")
 
         return "\n".join(lines)
-
-
 
 
 def get_module_search_paths() -> list[Path]:

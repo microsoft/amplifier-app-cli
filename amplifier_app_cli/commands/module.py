@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Literal, cast
+from typing import Any
+from typing import Literal
+from typing import cast
 
 import click
 from rich.panel import Panel
@@ -122,7 +124,7 @@ def module_show(module_name: str):
         mount_point = found_in_profile.get("mount_point", "unknown")
 
         panel_content = f"""[bold]Name:[/bold] {module_name}
-[bold]Type:[/bold] {found_in_profile['type']}
+[bold]Type:[/bold] {found_in_profile["type"]}
 [bold]Source:[/bold] {source}
 [bold]Description:[/bold] {description}
 [bold]Mount Point:[/bold] {mount_point}"""

@@ -192,7 +192,7 @@ def render_effective_config(chain: list[Any], detailed: bool):
     def format_source(source: Any) -> str:
         from rich.markup import escape
 
-        if isinstance(source, (list, tuple)) and len(source) == 2:
+        if isinstance(source, list | tuple) and len(source) == 2:
             current, previous = source
             current_escaped = escape(str(current))
             previous_escaped = escape(str(previous))
