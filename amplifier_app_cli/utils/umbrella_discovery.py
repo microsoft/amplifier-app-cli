@@ -149,8 +149,8 @@ def extract_github_org(git_url: str) -> str | None:
     Returns:
         Organization/owner name, or None if can't parse
     """
-    # Remove .git suffix
-    git_url = git_url.rstrip(".git")
+    # Remove .git suffix properly (not with rstrip!)
+    git_url = git_url[:-4] if git_url.endswith(".git") else git_url
 
     # Handle HTTPS URLs
     if "github.com/" in git_url:

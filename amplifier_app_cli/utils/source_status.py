@@ -475,8 +475,9 @@ async def _get_github_commit_sha(repo_url: str, ref: str) -> str:
     """Get SHA for ref using GitHub API (no git required)."""
     import httpx
 
-    url_without_git = repo_url.rstrip(".git")
-    parts = url_without_git.split("github.com/")[-1].split("/")
+    # Remove .git suffix properly (not with rstrip - it removes any char in '.git'!)
+    url_clean = repo_url[:-4] if repo_url.endswith(".git") else repo_url
+    parts = url_clean.split("github.com/")[-1].split("/")
     if len(parts) < 2:
         raise ValueError(f"Could not parse GitHub URL: {repo_url}")
 
@@ -495,8 +496,9 @@ async def _get_commit_details(repo_url: str, sha: str) -> dict:
     """Get commit details for better UX."""
     import httpx
 
-    url_without_git = repo_url.rstrip(".git")
-    parts = url_without_git.split("github.com/")[-1].split("/")
+    # Remove .git suffix properly
+    url_clean = repo_url[:-4] if repo_url.endswith(".git") else repo_url
+    parts = url_clean.split("github.com/")[-1].split("/")
     if len(parts) < 2:
         return {}
 
