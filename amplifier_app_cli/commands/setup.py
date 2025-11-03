@@ -44,7 +44,7 @@ PROVIDER_INFO = {
         "name": "Ollama (Local)",
         "key_var": None,
         "key_url": "https://ollama.ai",
-        "model": "llama3.2",
+        "model": "llama3.2:3b",
         "module": "provider-ollama",
         "notes": "Free, runs locally, no API key needed",
     },
@@ -152,7 +152,7 @@ def setup_cmd(provider: str | None, api_key: str | None):
         console.print("\n[green]ℹ[/green] Ollama runs locally - no API key needed")
         console.print("Make sure Ollama is installed and running:")
         console.print("  1. Install: [link]https://ollama.ai[/link]")
-        console.print("  2. Pull model: [cyan]ollama pull llama3.2[/cyan]")
+        console.print("  2. Pull model: [cyan]ollama pull llama3.2:3b[/cyan]")
         console.print("  3. Verify: [cyan]ollama list[/cyan]\n")
 
     # Step 3: Get model/deployment name
@@ -165,7 +165,7 @@ def setup_cmd(provider: str | None, api_key: str | None):
         )
     elif provider == "ollama":
         model_or_deployment = Prompt.ask(
-            "Ollama model name (e.g., llama3.2, codellama, mistral)", default=provider_info["model"]
+            "Ollama model name (e.g., llama3.2:3b, codellama, mistral)", default=provider_info["model"]
         )
     else:
         model_or_deployment = Prompt.ask(f"{provider_info['name']} model", default=provider_info["model"])
