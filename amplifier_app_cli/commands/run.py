@@ -30,42 +30,47 @@ async def _check_updates_background():
     Runs automatically on startup. Shows notifications if updates available.
     Failures are silent (logged only, don't disrupt user).
     """
-    from ..utils.update_check import check_amplifier_updates_background
-    from ..utils.update_check import check_module_updates_background
+    from ..utils.update_check import check_updates_background
 
     try:
-        # Check Amplifier libraries
-        amplifier_result = await check_amplifier_updates_background()
+        # Check all sources (unified)
+        report = await check_updates_background()
 
-        if amplifier_result and amplifier_result.has_updates:
+        if not report:
+            return  # Skipped (cached)
+
+        # Show cached git updates
+        if report.cached_git_sources:
             console.print()
-            console.print("[green]✨ Amplifier updates available![/green]")
+            console.print("[yellow]⚠ Updates available:[/yellow]")
 
-            for update in amplifier_result.updates_available[:3]:  # Show max 3
-                console.print(f"   • {update.library}: {update.installed_sha} → {update.remote_sha}")
+            for status in report.cached_git_sources[:3]:  # Show max 3
+                console.print(f"   • {status.name}@{status.ref}")
+                console.print(f"     {status.cached_sha} → {status.remote_sha} ({status.age_days}d old)")
 
-            if len(amplifier_result.updates_available) > 3:
-                console.print(f"   ... and {len(amplifier_result.updates_available) - 3} more")
-
-            console.print()
-            console.print("   Run [cyan]amplifier update[/cyan] to upgrade")
-            console.print()
-
-        # Check modules
-        module_updates = await check_module_updates_background()
-
-        if module_updates and len(module_updates) > 0:
-            console.print()
-            console.print("[yellow]⚠ Module updates available:[/yellow]")
-
-            for mod in module_updates[:3]:  # Show max 3
-                console.print(f"   • {mod['module_id']}@{mod['ref']} ({mod['age_days']}d old)")
-
-            if len(module_updates) > 3:
-                console.print(f"   ... and {len(module_updates) - 3} more")
+            if len(report.cached_git_sources) > 3:
+                console.print(f"   ... and {len(report.cached_git_sources) - 3} more")
 
             console.print()
             console.print("   Run [cyan]amplifier module refresh[/cyan] to update")
+            console.print()
+
+        # Show local source info (remote ahead)
+        local_with_remote_ahead = [
+            s for s in report.local_file_sources if s.has_remote and s.remote_sha and s.remote_sha != s.local_sha
+        ]
+
+        if local_with_remote_ahead:
+            console.print()
+            console.print("[cyan]ℹ Local sources behind remote:[/cyan]")
+
+            for status in local_with_remote_ahead[:3]:
+                console.print(f"   • {status.name}: {status.local_sha} → {status.remote_sha}")
+                if status.commits_behind > 0:
+                    console.print(f"     {status.commits_behind} commits behind")
+
+            console.print()
+            console.print("   [dim]Use git pull in local directories to update[/dim]")
             console.print()
 
     except Exception as e:

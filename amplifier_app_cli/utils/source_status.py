@@ -133,8 +133,8 @@ async def _get_all_sources_to_check() -> dict[str, dict]:
     from ..paths import create_config_manager
     from ..paths import create_module_resolver
     from ..paths import create_profile_loader
-    from ..umbrella_discovery import discover_umbrella_source
-    from ..umbrella_discovery import fetch_umbrella_dependencies
+    from .umbrella_discovery import discover_umbrella_source
+    from .umbrella_discovery import fetch_umbrella_dependencies
 
     sources = {}
 
@@ -233,9 +233,7 @@ async def _check_file_source(source, name: str, layer: str) -> LocalFileStatus:
             # Get current branch
             current_branch = _get_current_branch(local_path)
             if current_branch:
-                from ..update_check import get_github_commit_sha
-
-                remote_sha = await get_github_commit_sha(remote_url, current_branch)
+                remote_sha = await _get_github_commit_sha(remote_url, current_branch)
 
                 if remote_sha != local_sha:
                     status.remote_sha = remote_sha[:7]
@@ -277,9 +275,7 @@ async def _check_git_source(source, name: str, layer: str) -> CachedGitStatus | 
             return None
 
         # Check remote
-        from ..update_check import get_github_commit_sha
-
-        remote_sha = await get_github_commit_sha(source.url, source.ref)
+        remote_sha = await _get_github_commit_sha(source.url, source.ref)
 
         if remote_sha == cached_sha:
             return None  # No update
@@ -390,3 +386,74 @@ def _cache_age_days(metadata: dict) -> int:
         return age.days
     except Exception:
         return 0
+
+
+# GitHub API helpers (exposed for update_check.py)
+
+
+async def _get_github_commit_sha(repo_url: str, ref: str) -> str:
+    """Get SHA for ref using GitHub API (no git required)."""
+    import httpx
+
+    url_without_git = repo_url.rstrip(".git")
+    parts = url_without_git.split("github.com/")[-1].split("/")
+    if len(parts) < 2:
+        raise ValueError(f"Could not parse GitHub URL: {repo_url}")
+
+    owner, repo = parts[0], parts[1]
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        response = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/commits/{ref}",
+            headers={"Accept": "application/vnd.github.v3+json", **_get_github_auth_headers()},
+        )
+        response.raise_for_status()
+        return response.json()["sha"]
+
+
+async def _get_commit_details(repo_url: str, sha: str) -> dict:
+    """Get commit details for better UX."""
+    import httpx
+
+    url_without_git = repo_url.rstrip(".git")
+    parts = url_without_git.split("github.com/")[-1].split("/")
+    if len(parts) < 2:
+        return {}
+
+    owner, repo = parts[0], parts[1]
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        response = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}",
+            headers={"Accept": "application/vnd.github.v3+json", **_get_github_auth_headers()},
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        return {
+            "message": data["commit"]["message"].split("\n")[0],
+            "date": data["commit"]["author"]["date"],
+            "author": data["commit"]["author"]["name"],
+        }
+
+
+def _get_github_auth_headers() -> dict:
+    """Get GitHub auth headers if token available."""
+    import os
+
+    token = os.getenv("GITHUB_TOKEN")
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+
+    gh_config = Path.home() / ".config" / "gh" / "hosts.yml"
+    if gh_config.exists():
+        try:
+            import yaml
+
+            config = yaml.safe_load(gh_config.read_text())
+            if token := config.get("github.com", {}).get("oauth_token"):
+                return {"Authorization": f"Bearer {token}"}
+        except Exception:
+            pass
+
+    return {}

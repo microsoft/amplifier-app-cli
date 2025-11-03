@@ -380,27 +380,44 @@ def module_refresh(module_id: str | None, mutable_only: bool):
 def module_check_updates():
     """Check for module updates.
 
-    Checks if cached git modules have newer versions available.
+    Checks all sources (local files and cached git) for updates.
     """
-    from ..utils.update_check import check_stale_modules
+    from ..utils.update_check import check_updates
 
-    console.print("Checking for module updates...")
+    console.print("Checking for updates...")
 
-    stale = asyncio.run(check_stale_modules(timeout=15.0))
+    report = asyncio.run(check_updates())
 
-    if not stale:
-        console.print("[green]✓ All modules up to date[/green]")
-        return
+    # Show git cache updates
+    if report.cached_git_sources:
+        console.print()
+        console.print("[yellow]Cached Git Sources (updates available):[/yellow]")
+        for status in report.cached_git_sources:
+            console.print(f"  • {status.name}@{status.ref} ({status.layer})")
+            console.print(f"    {status.cached_sha} → {status.remote_sha} ({status.age_days}d old)")
+        console.print()
+        console.print("Run [cyan]amplifier module refresh[/cyan] to update")
 
-    console.print()
-    console.print("[yellow]Updates available:[/yellow]")
+    # Show local file statuses
+    if report.local_file_sources:
+        console.print()
+        console.print("[cyan]Local Sources:[/cyan]")
+        for status in report.local_file_sources:
+            console.print(f"  • {status.name} ({status.layer})")
+            console.print(f"    Path: {status.path}")
 
-    for mod in stale:
-        console.print(f"  • {mod['module_id']}@{mod['ref']}")
-        console.print(f"    {mod['cached_sha']} → {mod['remote_sha']} ({mod['age_days']}d old)")
+            if status.uncommitted_changes:
+                console.print("    ⚠ Uncommitted changes")
+            if status.unpushed_commits:
+                console.print("    ⚠ Unpushed commits")
 
-    console.print()
-    console.print("Run [cyan]amplifier module refresh[/cyan] to update")
+            if status.has_remote and status.remote_sha and status.remote_sha != status.local_sha:
+                console.print(f"    ℹ Remote ahead: {status.local_sha} → {status.remote_sha}")
+                if status.commits_behind > 0:
+                    console.print(f"      {status.commits_behind} commits behind")
+
+    if not report.has_updates and not report.has_local_changes:
+        console.print("[green]✓ All sources up to date[/green]")
 
 
 __all__ = ["module"]

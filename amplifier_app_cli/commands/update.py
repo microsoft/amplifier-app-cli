@@ -1,13 +1,12 @@
 """Update command for Amplifier CLI."""
 
 import asyncio
-import subprocess
 
 import click
 from rich.console import Console
 
 from ..utils.umbrella_discovery import discover_umbrella_source
-from ..utils.update_check import check_amplifier_updates
+from ..utils.update_check import check_updates
 
 console = Console()
 
@@ -18,120 +17,64 @@ console = Console()
 def update(check_only: bool, force: bool):
     """Update Amplifier to latest version.
 
-    Updates all Amplifier libraries to the latest commit on the tracking branch.
+    Checks all sources (local files and cached git) and provides appropriate guidance.
     """
     # Check for updates
-    console.print("Checking for Amplifier updates...")
+    console.print("Checking for updates...")
 
-    result = asyncio.run(check_amplifier_updates())
+    report = asyncio.run(check_updates())
 
-    # Handle local dev mode
-    if result.mode == "local_dev":
+    # Show local file sources
+    if report.local_file_sources:
         console.print()
-        console.print("[yellow]Local development mode detected[/yellow]")
-        console.print()
-        console.print("You're running editable installs from amplifier-dev/")
-        console.print("To update:")
-        console.print("  1. cd amplifier-dev")
-        console.print("  2. git pull  (in each library repo)")
-        console.print("  3. Restart amplifier")
-        console.print()
+        console.print("[cyan]Local Sources:[/cyan]")
+        for status in report.local_file_sources:
+            console.print(f"  • {status.name} ({status.layer})")
+            console.print(f"    Path: {status.path}")
 
-        # Show current git status (items are LocalDevStatus objects)
-        if result.has_updates:
-            console.print("[yellow]Git status issues:[/yellow]")
-            for status_item in result.updates_available:
-                # In local dev mode, these are LocalDevStatus objects
-                console.print(f"  • {status_item.library}")  # type: ignore
+            if status.uncommitted_changes:
+                console.print("    ⚠ Uncommitted changes")
+            if status.unpushed_commits:
+                console.print("    ⚠ Unpushed commits")
 
-                if status_item.uncommitted_changes:  # type: ignore
-                    console.print("    ⚠ Uncommitted changes")
-                if status_item.behind_remote:  # type: ignore
-                    console.print(f"    ⚠ Behind remote by {status_item.remote_commits} commits")  # type: ignore
-                if status_item.unpushed_commits:  # type: ignore
-                    console.print("    ⚠ Unpushed commits")
-        return
+            if status.has_remote and status.remote_sha and status.remote_sha != status.local_sha:
+                console.print(f"    ℹ Remote ahead: {status.local_sha} → {status.remote_sha}")
+                if status.commits_behind > 0:
+                    console.print(f"      {status.commits_behind} commits behind")
+                console.print(f"      To update: git pull in {status.path}")
 
-    # Handle errors
-    if result.error:
-        console.print(f"[red]✗ Could not check for updates: {result.error}[/red]")
         console.print()
-        console.print("Try reinstalling:")
-        console.print("  uv tool install git+https://github.com/microsoft/amplifier@next")
-        return
+        console.print("[dim]For local sources: Use git to manage updates manually[/dim]")
+
+    # Show cached git sources with updates
+    if report.cached_git_sources:
+        console.print()
+        console.print("[yellow]Cached Git Sources (updates available):[/yellow]")
+        for status in report.cached_git_sources:
+            console.print(f"  • {status.name}@{status.ref} ({status.layer})")
+            console.print(f"    {status.cached_sha} → {status.remote_sha} ({status.age_days}d old)")
+
+        if not check_only:
+            console.print()
+            console.print("Run [cyan]amplifier module refresh[/cyan] to update cached modules")
 
     # Check-only mode
     if check_only:
-        if result.has_updates:
-            console.print()
-            console.print("[green]Updates available:[/green]")
-            for update in result.updates_available:
-                console.print(f"  • {update.library}: {update.installed_sha} → {update.remote_sha}")
-                if update.commit_message:
-                    console.print(f"    {update.commit_message}")
-            console.print()
-            console.print("Run [cyan]amplifier update[/cyan] to install")
-        else:
-            console.print("✓ All libraries up to date")
+        if not report.has_updates and not report.has_local_changes:
+            console.print("[green]✓ All sources up to date[/green]")
         return
 
-    # No updates available
-    if not result.has_updates and not force:
-        console.print("✓ All libraries already up to date")
-        return
+    # Can't auto-update file sources (only cached git)
+    if report.cached_git_sources:
+        console.print()
+        console.print("[dim]To update cached git sources, run:[/dim]")
+        console.print("  [cyan]amplifier module refresh[/cyan]")
 
-    # Perform update
-    if result.has_updates:
-        console.print()
-        console.print("[yellow]Updating Amplifier...[/yellow]")
-        for update in result.updates_available:
-            console.print(f"  • {update.library}: {update.installed_sha} → {update.remote_sha}")
-        console.print()
-    else:
-        console.print()
-        console.print("[yellow]Force updating Amplifier...[/yellow]")
-        console.print()
-
-    # Discover umbrella source
+    # Note about umbrella updates (if applicable)
     umbrella_info = discover_umbrella_source()
-
-    if not umbrella_info:
-        console.print("[red]✗ Could not determine installation source[/red]")
+    if umbrella_info and not report.local_file_sources:
+        # All from umbrella, can suggest full update
         console.print()
-        console.print("Try reinstalling:")
-        console.print("  uv tool install git+https://github.com/microsoft/amplifier@next")
-        return
-
-    # Update using discovered umbrella URL (no hardcoding!)
-    update_url = f"git+{umbrella_info.url}@{umbrella_info.ref}"
-
-    console.print(f"Installing from: {update_url}")
-
-    try:
-        result = subprocess.run(
-            ["uv", "tool", "install", "--force", update_url], capture_output=True, text=True, timeout=120
-        )
-
-        if result.returncode == 0:
-            console.print("[green]✓ Successfully updated Amplifier[/green]")
-            console.print()
-            console.print("Restart amplifier to use new version")
-        else:
-            console.print("[red]✗ Update failed[/red]")
-            console.print()
-            console.print("Error output:")
-            console.print(result.stderr)
-            console.print()
-            console.print("Try manually:")
-            console.print(f"  uv tool install --force {update_url}")
-            return
-
-    except subprocess.TimeoutExpired:
-        console.print("[red]✗ Update timed out[/red]")
-        console.print()
-        console.print("This might be due to slow network. Try again later or:")
-        console.print(f"  uv tool install --force {update_url}")
-        return
-    except Exception as e:
-        console.print(f"[red]✗ Update failed: {e}[/red]")
-        return
+        console.print("[dim]To update Amplifier installation:[/dim]")
+        update_url = f"git+{umbrella_info.url}@{umbrella_info.ref}"
+        console.print(f"  [cyan]uv tool install --force {update_url}[/cyan]")
