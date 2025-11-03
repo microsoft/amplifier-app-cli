@@ -280,4 +280,127 @@ def _get_profile_modules(profile_name: str) -> list[dict[str, Any]]:
     return modules
 
 
+@module.command("refresh")
+@click.argument("module_id", required=False)
+@click.option("--mutable-only", is_flag=True, help="Only refresh mutable refs (branches, not tags/SHAs)")
+def module_refresh(module_id: str | None, mutable_only: bool):
+    """Refresh module cache.
+
+    Clears cached git modules so they re-download on next use.
+    Useful for updating modules pinned to branches (e.g., @main).
+    """
+    from pathlib import Path
+
+    cache_dir = Path.home() / ".amplifier" / "module-cache"
+
+    if not cache_dir.exists():
+        console.print("[yellow]No module cache found[/yellow]")
+        console.print("Modules will download on next use")
+        return
+
+    if module_id:
+        # Refresh specific module - find matching cache dirs
+        import json
+
+        refreshed = 0
+        for cache_hash in cache_dir.iterdir():
+            if not cache_hash.is_dir():
+                continue
+
+            for ref_dir in cache_hash.iterdir():
+                if not ref_dir.is_dir():
+                    continue
+
+                # Check metadata
+                metadata_file = ref_dir / ".amplifier_cache_metadata.json"
+                if not metadata_file.exists():
+                    continue
+
+                try:
+                    metadata = json.loads(metadata_file.read_text())
+
+                    # Skip if wrong module
+                    if metadata.get("url", "").split("/")[-1] != f"amplifier-module-{module_id}":
+                        continue
+
+                    # Skip if mutable-only and this is immutable
+                    if mutable_only and not metadata.get("is_mutable", True):
+                        continue
+
+                    # Delete cache dir
+                    import shutil
+
+                    shutil.rmtree(ref_dir)
+                    console.print(f"[green]✓ Cleared cache for {module_id}@{metadata['ref']}[/green]")
+                    refreshed += 1
+                except Exception as e:
+                    console.print(f"[yellow]⚠ Could not clear {ref_dir}: {e}[/yellow]")
+
+        if refreshed == 0:
+            console.print(f"[yellow]No cached modules found for '{module_id}'[/yellow]")
+    else:
+        # Refresh all modules
+        import json
+        import shutil
+
+        refreshed = 0
+        skipped = 0
+
+        for cache_hash in cache_dir.iterdir():
+            if not cache_hash.is_dir():
+                continue
+
+            for ref_dir in cache_hash.iterdir():
+                if not ref_dir.is_dir():
+                    continue
+
+                # Check if we should skip immutable refs
+                if mutable_only:
+                    metadata_file = ref_dir / ".amplifier_cache_metadata.json"
+                    if metadata_file.exists():
+                        try:
+                            metadata = json.loads(metadata_file.read_text())
+                            if not metadata.get("is_mutable", True):
+                                skipped += 1
+                                continue
+                        except Exception:
+                            pass
+
+                # Delete cache dir
+                shutil.rmtree(ref_dir)
+                refreshed += 1
+
+        console.print(f"[green]✓ Cleared {refreshed} cached modules[/green]")
+        if skipped > 0:
+            console.print(f"[dim]Skipped {skipped} immutable refs (tags/SHAs)[/dim]")
+        console.print("Modules will re-download on next use")
+
+
+@module.command("check-updates")
+def module_check_updates():
+    """Check for module updates.
+
+    Checks if cached git modules have newer versions available.
+    """
+    from ..utils.update_check import check_stale_modules
+
+    console.print("Checking for module updates...")
+
+    stale = asyncio.run(check_stale_modules(timeout=15.0))
+
+    if not stale:
+        console.print("[green]✓ All modules up to date[/green]")
+        return
+
+    console.print()
+    console.print("[yellow]Updates available:[/yellow]")
+
+    for mod in stale:
+        console.print(f"  • {mod['module_id']}@{mod['ref']}")
+        console.print(f"    {mod['cached_sha']} → {mod['remote_sha']} ({mod['age_days']}d old)")
+
+    console.print()
+    console.print("Run [cyan]amplifier module refresh[/cyan] to update")
+
+
 __all__ = ["module"]

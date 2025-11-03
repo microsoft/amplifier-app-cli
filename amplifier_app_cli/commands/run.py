@@ -24,6 +24,57 @@ ExecuteSingle = Callable[[str, dict, list, bool, str | None, str], Coroutine[Any
 SearchPathProvider = Callable[[], list]
 
 
+async def _check_updates_background():
+    """Check for updates in background (non-blocking).
+
+    Runs automatically on startup. Shows notifications if updates available.
+    Failures are silent (logged only, don't disrupt user).
+    """
+    from ..utils.update_check import check_amplifier_updates_background
+    from ..utils.update_check import check_module_updates_background
+
+    try:
+        # Check Amplifier libraries
+        amplifier_result = await check_amplifier_updates_background()
+
+        if amplifier_result and amplifier_result.has_updates:
+            console.print()
+            console.print("[green]✨ Amplifier updates available![/green]")
+
+            for update in amplifier_result.updates_available[:3]:  # Show max 3
+                console.print(f"   • {update.library}: {update.installed_sha} → {update.remote_sha}")
+
+            if len(amplifier_result.updates_available) > 3:
+                console.print(f"   ... and {len(amplifier_result.updates_available) - 3} more")
+
+            console.print()
+            console.print("   Run [cyan]amplifier update[/cyan] to upgrade")
+            console.print()
+
+        # Check modules
+        module_updates = await check_module_updates_background()
+
+        if module_updates and len(module_updates) > 0:
+            console.print()
+            console.print("[yellow]⚠ Module updates available:[/yellow]")
+
+            for mod in module_updates[:3]:  # Show max 3
+                console.print(f"   • {mod['module_id']}@{mod['ref']} ({mod['age_days']}d old)")
+
+            if len(module_updates) > 3:
+                console.print(f"   ... and {len(module_updates) - 3} more")
+
+            console.print()
+            console.print("   Run [cyan]amplifier module refresh[/cyan] to update")
+            console.print()
+
+    except Exception as e:
+        # Silent failure - don't disrupt user
+        import logging
+
+        logging.getLogger(__name__).debug(f"Background update check failed: {e}")
+
+
 def register_run_command(
     cli: click.Group,
     *,
@@ -81,6 +132,9 @@ def register_run_command(
         )
 
         search_paths = get_module_search_paths()
+
+        # Run background update check
+        asyncio.run(_check_updates_background())
 
         if mode == "chat":
             if not session_id:

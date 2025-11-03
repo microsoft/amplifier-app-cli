@@ -1,0 +1,392 @@
+"""Source-granular status checking for updates.
+
+Checks each library/module source independently (file, git cache, package).
+Uses existing StandardModuleSourceResolver infrastructure.
+"""
+
+import json
+import logging
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LocalFileStatus:
+    """Status of a local file source."""
+
+    name: str
+    source_type: str = "file"
+    path: Path | None = None
+    layer: str | None = None  # env, workspace, settings, etc.
+
+    # Local git info
+    local_sha: str | None = None
+    remote_url: str | None = None
+
+    # Comparison with remote (if traceable)
+    has_remote: bool = False
+    remote_sha: str | None = None
+    commits_behind: int = 0
+
+    # Local state
+    uncommitted_changes: bool = False
+    unpushed_commits: bool = False
+
+
+@dataclass
+class CachedGitStatus:
+    """Status of a cached git source."""
+
+    name: str
+    source_type: str = "git"
+    url: str | None = None
+    ref: str | None = None
+    layer: str | None = None
+
+    # SHA comparison
+    cached_sha: str | None = None
+    remote_sha: str | None = None
+    has_update: bool = False
+    age_days: int = 0
+
+
+@dataclass
+class UpdateReport:
+    """Comprehensive update status for all sources."""
+
+    local_file_sources: list[LocalFileStatus]
+    cached_git_sources: list[CachedGitStatus]
+
+    @property
+    def has_updates(self) -> bool:
+        """Check if any updates available (remote or local changes)."""
+        # Local files with remote ahead
+        local_updates = any(
+            s.has_remote and s.remote_sha and s.remote_sha != s.local_sha for s in self.local_file_sources
+        )
+
+        # Cached git with updates
+        git_updates = len(self.cached_git_sources) > 0
+
+        return local_updates or git_updates
+
+    @property
+    def has_local_changes(self) -> bool:
+        """Check if any local uncommitted/unpushed changes."""
+        return any(s.uncommitted_changes or s.unpushed_commits for s in self.local_file_sources)
+
+
+async def check_all_sources() -> UpdateReport:
+    """Check all libraries and modules for updates.
+
+    Uses source-granular approach - checks each entity independently.
+    Uses existing StandardModuleSourceResolver infrastructure.
+
+    Returns:
+        UpdateReport with all source statuses
+    """
+    from amplifier_module_resolution import FileSource
+    from amplifier_module_resolution import GitSource
+
+    # Get all sources to check
+    all_sources = await _get_all_sources_to_check()
+
+    local_statuses = []
+    git_statuses = []
+
+    # Resolve each source independently
+    for name, source_info in all_sources.items():
+        source = source_info["source"]
+        layer = source_info["layer"]
+
+        try:
+            if isinstance(source, FileSource):
+                status = await _check_file_source(source, name, layer)
+                local_statuses.append(status)
+
+            elif isinstance(source, GitSource):
+                status = await _check_git_source(source, name, layer)
+                if status and status.has_update:  # Only add if update available
+                    git_statuses.append(status)
+
+            # PackageSource: skip (can't check for updates)
+
+        except Exception as e:
+            logger.debug(f"Failed to check {name}: {e}")
+            continue
+
+    return UpdateReport(local_file_sources=local_statuses, cached_git_sources=git_statuses)
+
+
+async def _get_all_sources_to_check() -> dict[str, dict]:
+    """Get all libraries and modules with their resolved sources.
+
+    Uses existing StandardModuleSourceResolver!
+
+    Returns:
+        Dict of name -> {source, layer, entity_type}
+    """
+    from ..data.profiles import get_system_default_profile
+    from ..paths import create_config_manager
+    from ..paths import create_module_resolver
+    from ..paths import create_profile_loader
+    from ..umbrella_discovery import discover_umbrella_source
+    from ..umbrella_discovery import fetch_umbrella_dependencies
+
+    sources = {}
+
+    # Get resolver (uses existing infrastructure!)
+    resolver = create_module_resolver()
+    config_manager = create_config_manager()
+
+    # 1. Get libraries from umbrella
+    umbrella_info = discover_umbrella_source()
+    if umbrella_info:
+        try:
+            umbrella_deps = await fetch_umbrella_dependencies(umbrella_info)
+
+            for lib_name in umbrella_deps:
+                try:
+                    source, layer = resolver.resolve_with_layer(lib_name)
+                    sources[lib_name] = {"source": source, "layer": layer, "entity_type": "library"}
+                except Exception:
+                    # Can't resolve - skip
+                    pass
+        except Exception as e:
+            logger.debug(f"Could not fetch umbrella dependencies: {e}")
+
+    # 2. Get active modules from profile
+    active_profile = config_manager.get_active_profile() or get_system_default_profile()
+    profile_loader = create_profile_loader()
+
+    try:
+        profile = profile_loader.load_profile(active_profile)
+
+        # Get all module IDs from profile
+        module_ids = set()
+
+        if profile.providers:
+            for p in profile.providers:
+                if hasattr(p, "module"):
+                    module_ids.add(p.module)
+
+        if profile.tools:
+            for t in profile.tools:
+                if hasattr(t, "module"):
+                    module_ids.add(t.module)
+
+        if profile.hooks:
+            for h in profile.hooks:
+                if hasattr(h, "module"):
+                    module_ids.add(h.module)
+
+        # Resolve each module
+        for module_id in module_ids:
+            if module_id in sources:  # Already added as library
+                continue
+
+            try:
+                source, layer = resolver.resolve_with_layer(module_id)
+                sources[module_id] = {"source": source, "layer": layer, "entity_type": "module"}
+            except Exception:
+                pass
+
+    except Exception as e:
+        logger.debug(f"Could not load profile modules: {e}")
+
+    return sources
+
+
+async def _check_file_source(source, name: str, layer: str) -> LocalFileStatus:
+    """Check local file source for updates.
+
+    Checks:
+    - Local git status (uncommitted, unpushed)
+    - Remote comparison (if has remote URL)
+    """
+
+    local_path = source.path
+
+    # Get local git info
+    local_sha = _get_local_sha(local_path)
+    remote_url = _get_remote_url(local_path)
+    uncommitted = _has_uncommitted_changes(local_path)
+    unpushed = _has_unpushed_commits(local_path)
+
+    status = LocalFileStatus(
+        name=name,
+        path=local_path,
+        layer=layer,
+        local_sha=local_sha[:7] if local_sha else None,
+        remote_url=remote_url,
+        has_remote=remote_url is not None,
+        uncommitted_changes=uncommitted,
+        unpushed_commits=unpushed,
+    )
+
+    # If has remote, compare SHAs
+    if remote_url and local_sha:
+        try:
+            # Get current branch
+            current_branch = _get_current_branch(local_path)
+            if current_branch:
+                from ..update_check import get_github_commit_sha
+
+                remote_sha = await get_github_commit_sha(remote_url, current_branch)
+
+                if remote_sha != local_sha:
+                    status.remote_sha = remote_sha[:7]
+                    status.commits_behind = _count_commits_behind(local_path)
+        except Exception as e:
+            logger.debug(f"Could not check remote for {name}: {e}")
+
+    return status
+
+
+async def _check_git_source(source, name: str, layer: str) -> CachedGitStatus | None:
+    """Check cached git source for updates.
+
+    Compares cached SHA with remote SHA.
+    """
+
+    # Get cache path
+    cache_key = source._get_cache_key() if hasattr(source, "_get_cache_key") else None
+    cache_path = source.cache_dir / cache_key / source.ref if cache_key else None
+
+    if not cache_path or not cache_path.exists():
+        return None  # Not cached yet
+
+    # Read cache metadata
+    metadata_file = cache_path / ".amplifier_cache_metadata.json"
+
+    if not metadata_file.exists():
+        return None  # No metadata
+
+    try:
+        metadata = json.loads(metadata_file.read_text())
+
+        # Skip immutable refs
+        if not metadata.get("is_mutable", True):
+            return None
+
+        cached_sha = metadata.get("sha")
+        if not cached_sha:
+            return None
+
+        # Check remote
+        from ..update_check import get_github_commit_sha
+
+        remote_sha = await get_github_commit_sha(source.url, source.ref)
+
+        if remote_sha == cached_sha:
+            return None  # No update
+
+        return CachedGitStatus(
+            name=name,
+            url=source.url,
+            ref=source.ref,
+            layer=layer,
+            cached_sha=cached_sha[:7],
+            remote_sha=remote_sha[:7],
+            has_update=True,
+            age_days=_cache_age_days(metadata),
+        )
+
+    except Exception as e:
+        logger.debug(f"Failed to check cached git source {name}: {e}")
+        return None
+
+
+# Helper functions for git operations
+
+
+def _get_local_sha(repo_path: Path) -> str | None:
+    """Get current commit SHA of local git repo."""
+    try:
+        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True, timeout=2)
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception as e:
+        logger.debug(f"Could not get local SHA for {repo_path}: {e}")
+    return None
+
+
+def _get_remote_url(repo_path: Path) -> str | None:
+    """Get remote URL of local git repo."""
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"], cwd=repo_path, capture_output=True, text=True, timeout=2
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception as e:
+        logger.debug(f"Could not get remote URL for {repo_path}: {e}")
+    return None
+
+
+def _get_current_branch(repo_path: Path) -> str | None:
+    """Get current branch of local git repo."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_path, capture_output=True, text=True, timeout=2
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip()
+            if branch != "HEAD":  # Not detached HEAD
+                return branch
+    except Exception as e:
+        logger.debug(f"Could not get current branch for {repo_path}: {e}")
+    return None
+
+
+def _has_uncommitted_changes(repo_path: Path) -> bool:
+    """Check if repo has uncommitted changes."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=repo_path, capture_output=True, text=True, timeout=2
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except Exception:
+        return False
+
+
+def _has_unpushed_commits(repo_path: Path) -> bool:
+    """Check if repo has unpushed commits."""
+    try:
+        result = subprocess.run(
+            ["git", "log", "@{u}..", "--oneline"], cwd=repo_path, capture_output=True, text=True, timeout=2
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except Exception:
+        return False
+
+
+def _count_commits_behind(repo_path: Path) -> int:
+    """Count how many commits behind remote."""
+    try:
+        # Fetch first
+        subprocess.run(["git", "fetch"], cwd=repo_path, capture_output=True, timeout=5)
+
+        result = subprocess.run(
+            ["git", "log", "..@{u}", "--oneline"], cwd=repo_path, capture_output=True, text=True, timeout=2
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return len(result.stdout.strip().split("\n"))
+    except Exception:
+        pass
+    return 0
+
+
+def _cache_age_days(metadata: dict) -> int:
+    """Calculate cache age in days from metadata."""
+    try:
+        from datetime import datetime
+
+        cached_at = datetime.fromisoformat(metadata["cached_at"])
+        age = datetime.now() - cached_at
+        return age.days
+    except Exception:
+        return 0

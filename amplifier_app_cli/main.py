@@ -36,6 +36,7 @@ from .commands.run import register_run_command
 from .commands.session import register_session_commands
 from .commands.setup import setup_cmd
 from .commands.source import source as source_group
+from .commands.update import update as update_cmd
 from .console import console
 from .key_manager import KeyManager
 from .paths import create_module_resolver
@@ -982,6 +983,7 @@ cli.add_command(module_group)
 cli.add_command(provider_group)
 cli.add_command(source_group)
 cli.add_command(setup_cmd)  # Keep for backward compat, deprecated
+cli.add_command(update_cmd)
 
 # Note: Agent commands removed (YAGNI - not implemented, agents managed via profiles)
 # Agent configuration happens in profiles, agent loading via amplifier-profiles library
