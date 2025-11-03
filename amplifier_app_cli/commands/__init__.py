@@ -1,14 +1,29 @@
-"""CLI command groups for amplifier-app-cli."""
+"""CLI command exports for amplifier-app-cli."""
+
+from .collection import collection
+from .init import check_first_run
+from .init import init_cmd
+from .init import prompt_first_run_init
+from .logs import logs_cmd
+from .module import module
+from .profile import profile
+from .provider import provider
+from .run import register_run_command
+from .session import register_session_commands
+from .setup import setup_cmd
+from .source import source
 
 __all__ = [
     "collection",
-    "init",
-    "logs",
+    "check_first_run",
+    "init_cmd",
+    "logs_cmd",
     "module",
     "profile",
+    "prompt_first_run_init",
     "provider",
-    "run",
-    "session",
-    "setup",
+    "register_run_command",
+    "register_session_commands",
+    "setup_cmd",
     "source",
 ]
