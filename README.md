@@ -28,6 +28,9 @@ amplifier --install-completion
 # Single command
 amplifier run "Create a Python function to calculate fibonacci numbers"
 
+# Single command via stdin (useful for scripts/pipelines)
+echo "Summarize this spec" | amplifier run
+
 # Interactive chat mode
 amplifier
 

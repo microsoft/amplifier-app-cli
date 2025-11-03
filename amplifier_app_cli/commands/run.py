@@ -88,9 +88,16 @@ def register_run_command(
                 console.print(f"\n[dim]Session ID: {session_id}[/dim]")
             asyncio.run(interactive_chat(config_data, search_paths, verbose, session_id, active_profile_name))
         else:
-            if not prompt:
-                console.print("[red]Error:[/red] Prompt required in single mode")
-                sys.exit(1)
+            if prompt is None:
+                # Allow piping prompt content via stdin when no positional argument provided.
+                if not sys.stdin.isatty():
+                    prompt = sys.stdin.read()
+                    if prompt is not None and not prompt.strip():
+                        prompt = None
+                if prompt is None:
+                    console.print("[red]Error:[/red] Prompt required in single mode")
+                    sys.exit(1)
+
             asyncio.run(execute_single(prompt, config_data, search_paths, verbose, session_id, active_profile_name))
 
     return run
