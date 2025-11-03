@@ -79,7 +79,7 @@ class UpdateReport:
         return any(s.uncommitted_changes or s.unpushed_commits for s in self.local_file_sources)
 
 
-async def check_all_sources() -> UpdateReport:
+async def check_all_sources(include_all_cached: bool = False) -> UpdateReport:
     """Check all libraries and modules for updates.
 
     Uses source-granular approach - checks each entity independently.
@@ -117,6 +117,15 @@ async def check_all_sources() -> UpdateReport:
         except Exception as e:
             logger.debug(f"Failed to check {name}: {e}")
             continue
+
+    # If include_all_cached, also scan ALL cached modules (not just active)
+    if include_all_cached:
+        cached_statuses = await _check_all_cached_modules()
+        # Add any not already in git_statuses
+        existing_names = {s.name for s in git_statuses}
+        for status in cached_statuses:
+            if status.name not in existing_names:
+                git_statuses.append(status)
 
     return UpdateReport(local_file_sources=local_statuses, cached_git_sources=git_statuses)
 
@@ -374,6 +383,77 @@ def _count_commits_behind(repo_path: Path) -> int:
     except Exception:
         pass
     return 0
+
+
+async def _check_all_cached_modules() -> list[CachedGitStatus]:
+    """Check ALL cached modules for updates (not just active ones).
+
+    Scans ~/.amplifier/module-cache/ for all cached modules.
+
+    Returns:
+        List of CachedGitStatus for modules with updates
+    """
+    cache_dir = Path.home() / ".amplifier" / "module-cache"
+    if not cache_dir.exists():
+        return []
+
+    statuses = []
+
+    for cache_hash_dir in cache_dir.iterdir():
+        if not cache_hash_dir.is_dir():
+            continue
+
+        for ref_dir in cache_hash_dir.iterdir():
+            if not ref_dir.is_dir():
+                continue
+
+            # Read metadata
+            metadata_file = ref_dir / ".amplifier_cache_metadata.json"
+            if not metadata_file.exists():
+                continue
+
+            try:
+                metadata = json.loads(metadata_file.read_text())
+
+                # Skip immutable refs
+                if not metadata.get("is_mutable", True):
+                    continue
+
+                cached_sha = metadata.get("sha")
+                if not cached_sha:
+                    continue
+
+                url = metadata.get("url")
+                ref = metadata.get("ref")
+
+                if not url or not ref:
+                    continue
+
+                # Check remote
+                remote_sha = await _get_github_commit_sha(url, ref)
+
+                if remote_sha != cached_sha:
+                    # Extract module name from URL
+                    module_name = url.split("/")[-1].replace("amplifier-module-", "")
+
+                    statuses.append(
+                        CachedGitStatus(
+                            name=module_name,
+                            url=url,
+                            ref=ref,
+                            layer="cache",
+                            cached_sha=cached_sha[:7],
+                            remote_sha=remote_sha[:7],
+                            has_update=True,
+                            age_days=_cache_age_days(metadata),
+                        )
+                    )
+
+            except Exception as e:
+                logger.debug(f"Failed to check cached module in {ref_dir}: {e}")
+                continue
+
+    return statuses
 
 
 def _cache_age_days(metadata: dict) -> int:

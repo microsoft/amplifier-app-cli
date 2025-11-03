@@ -382,11 +382,13 @@ def module_check_updates():
 
     Checks all sources (local files and cached git) for updates.
     """
-    from ..utils.update_check import check_updates
 
     console.print("Checking for updates...")
 
-    report = asyncio.run(check_updates())
+    # For module check-updates, include ALL cached modules (not just active)
+    from ..utils.source_status import check_all_sources
+
+    report = asyncio.run(check_all_sources(include_all_cached=True))
 
     # Show git cache updates
     if report.cached_git_sources:
