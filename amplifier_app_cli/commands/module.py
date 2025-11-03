@@ -419,7 +419,11 @@ def module_check_updates():
                     console.print(f"      {status.commits_behind} commits behind")
 
     if not report.has_updates and not report.has_local_changes:
-        console.print("[green]✓ All sources up to date[/green]")
+        if report.cached_modules_checked == 0:
+            console.print("[dim]No cached modules to check[/dim]")
+            console.print("[dim]Modules will be cached when first used[/dim]")
+        else:
+            console.print(f"[green]✓ Checked {report.cached_modules_checked} cached modules - all up to date[/green]")
 
 
 __all__ = ["module"]

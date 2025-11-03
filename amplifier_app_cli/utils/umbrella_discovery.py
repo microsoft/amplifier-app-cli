@@ -7,8 +7,11 @@ Works for standard installs, forks, and different branches.
 import importlib.metadata
 import json
 import logging
+import tomllib
 from collections import Counter
 from dataclasses import dataclass
+
+import httpx  # Fail fast if missing - required for fetching umbrella dependencies
 
 logger = logging.getLogger(__name__)
 
@@ -176,9 +179,6 @@ async def fetch_umbrella_dependencies(umbrella_info: UmbrellaInfo) -> dict[str, 
     Returns:
         Dict of library name -> {url, branch}
     """
-    import tomllib
-
-    import httpx
 
     # Construct raw GitHub URL for pyproject.toml
     github_org = extract_github_org(umbrella_info.url)

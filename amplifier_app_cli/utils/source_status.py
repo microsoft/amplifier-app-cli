@@ -10,6 +10,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx  # Fail fast if missing - required for GitHub API
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,6 +61,7 @@ class UpdateReport:
 
     local_file_sources: list[LocalFileStatus]
     cached_git_sources: list[CachedGitStatus]
+    cached_modules_checked: int = 0  # How many cache entries were examined
 
     @property
     def has_updates(self) -> bool:
@@ -119,15 +122,20 @@ async def check_all_sources(include_all_cached: bool = False) -> UpdateReport:
             continue
 
     # If include_all_cached, also scan ALL cached modules (not just active)
+    cached_modules_checked = 0
     if include_all_cached:
-        cached_statuses = await _check_all_cached_modules()
+        cached_statuses, cached_modules_checked = await _check_all_cached_modules()
         # Add any not already in git_statuses
         existing_names = {s.name for s in git_statuses}
         for status in cached_statuses:
             if status.name not in existing_names:
                 git_statuses.append(status)
 
-    return UpdateReport(local_file_sources=local_statuses, cached_git_sources=git_statuses)
+    return UpdateReport(
+        local_file_sources=local_statuses,
+        cached_git_sources=git_statuses,
+        cached_modules_checked=cached_modules_checked,
+    )
 
 
 async def _get_all_sources_to_check() -> dict[str, dict]:
@@ -385,19 +393,20 @@ def _count_commits_behind(repo_path: Path) -> int:
     return 0
 
 
-async def _check_all_cached_modules() -> list[CachedGitStatus]:
+async def _check_all_cached_modules() -> tuple[list[CachedGitStatus], int]:
     """Check ALL cached modules for updates (not just active ones).
 
     Scans ~/.amplifier/module-cache/ for all cached modules.
 
     Returns:
-        List of CachedGitStatus for modules with updates
+        Tuple of (list of CachedGitStatus for modules with updates, total modules checked)
     """
     cache_dir = Path.home() / ".amplifier" / "module-cache"
     if not cache_dir.exists():
-        return []
+        return [], 0
 
     statuses = []
+    modules_checked = 0
 
     for cache_hash_dir in cache_dir.iterdir():
         if not cache_hash_dir.is_dir():
@@ -411,6 +420,8 @@ async def _check_all_cached_modules() -> list[CachedGitStatus]:
             metadata_file = ref_dir / ".amplifier_cache_metadata.json"
             if not metadata_file.exists():
                 continue
+
+            modules_checked += 1  # Count every module we examine
 
             try:
                 metadata = json.loads(metadata_file.read_text())
@@ -449,11 +460,20 @@ async def _check_all_cached_modules() -> list[CachedGitStatus]:
                         )
                     )
 
+            except (httpx.HTTPError, httpx.TimeoutException) as e:
+                # Network/API errors - log but continue checking other modules
+                logger.warning(f"Could not check {ref_dir.parent.name}: {e}")
+                continue
+            except json.JSONDecodeError as e:
+                # Corrupt metadata - log but continue
+                logger.warning(f"Corrupt metadata in {ref_dir}: {e}")
+                continue
             except Exception as e:
-                logger.debug(f"Failed to check cached module in {ref_dir}: {e}")
+                # Unexpected errors - log at ERROR and continue
+                logger.error(f"Unexpected error checking {ref_dir}: {type(e).__name__}: {e}")
                 continue
 
-    return statuses
+    return statuses, modules_checked
 
 
 def _cache_age_days(metadata: dict) -> int:
@@ -473,8 +493,6 @@ def _cache_age_days(metadata: dict) -> int:
 
 async def _get_github_commit_sha(repo_url: str, ref: str) -> str:
     """Get SHA for ref using GitHub API (no git required)."""
-    import httpx
-
     # Remove .git suffix properly (not with rstrip - it removes any char in '.git'!)
     url_clean = repo_url[:-4] if repo_url.endswith(".git") else repo_url
     parts = url_clean.split("github.com/")[-1].split("/")
@@ -494,8 +512,6 @@ async def _get_github_commit_sha(repo_url: str, ref: str) -> str:
 
 async def _get_commit_details(repo_url: str, sha: str) -> dict:
     """Get commit details for better UX."""
-    import httpx
-
     # Remove .git suffix properly
     url_clean = repo_url[:-4] if repo_url.endswith(".git") else repo_url
     parts = url_clean.split("github.com/")[-1].split("/")
