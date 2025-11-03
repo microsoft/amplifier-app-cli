@@ -24,15 +24,18 @@ UPDATE_CHECK_FILE = Path.home() / ".amplifier" / ".last_update_check"
 UPDATE_CACHE_FILE = Path.home() / ".amplifier" / ".update_cache.json"
 
 
-async def check_updates() -> UpdateReport:
+async def check_updates(include_all_cached: bool = False) -> UpdateReport:
     """Check all sources for updates.
 
     Main entry point. Uses source-granular approach.
 
+    Args:
+        include_all_cached: If True, check ALL cached modules (not just active)
+
     Returns:
         UpdateReport with all source statuses
     """
-    return await check_all_sources()
+    return await check_all_sources(include_all_cached=include_all_cached)
 
 
 async def check_updates_background() -> UpdateReport | None:
