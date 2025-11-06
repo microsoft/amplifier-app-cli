@@ -3,14 +3,14 @@
 
 # Default profile when no profile is active
 # This is the ONLY place to change the system default
-default_profile: dev
+default_profile: developer-expertise:dev
 
-# Rationale for "dev" as default:
-# - foundation: Too minimal (no tools, no hooks) - not practical
-# - base: Good foundation but dev adds developer experience
-# - dev: Best starting point (streaming, web/search tools, zen-architect agent)
-# - production: Too restrictive for general use (persistent context not always wanted)
-# - full: Too heavy (loads everything, slower startup, overwhelming)
+# Rationale for "developer-expertise:dev" as default:
+# - foundation:foundation: Too minimal (no tools, no hooks) - not practical
+# - foundation:base: Good foundation but dev adds developer experience
+# - developer-expertise:dev: Best starting point (streaming, web/search tools, agents)
+# - foundation:production: Too restrictive for general use (persistent context not always wanted)
+# - developer-expertise:full: Too heavy (loads everything, slower startup, overwhelming)
 #
 # When to change:
 # - If we create a better general-purpose profile

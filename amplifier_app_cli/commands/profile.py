@@ -183,10 +183,6 @@ def render_effective_config(chain: list[Any], detailed: bool):
     """Render the effective configuration with source annotations."""
     config, sources = build_effective_config_with_sources(chain)
 
-    console.print("\n[bold]Inheritance:[/bold]", end=" ")
-    chain_names = " → ".join([p.profile.name for p in chain])
-    console.print(chain_names)
-
     console.print("\n[bold]Effective Configuration:[/bold]\n")
 
     def format_source(source: Any) -> str:
@@ -266,6 +262,9 @@ def profile_show(name: str, detailed: bool):
 
     try:
         profile_obj = loader.load_profile(name)
+        chain_names = loader.get_inheritance_chain(name)
+        # Load full chain for source tracking
+        chain_profiles = loader.load_inheritance_chain_profiles(name)
     except FileNotFoundError:
         console.print(f"[red]Error:[/red] Profile '{name}' not found")
         sys.exit(1)
@@ -277,8 +276,12 @@ def profile_show(name: str, detailed: bool):
     console.print(f"[bold]Version:[/bold] {profile_obj.profile.version}")
     console.print(f"[bold]Description:[/bold] {profile_obj.profile.description}")
 
-    chain = [profile_obj]
-    render_effective_config(chain, detailed)
+    # Display real inheritance chain
+    console.print("\n[bold]Inheritance:[/bold]", end=" ")
+    console.print(" → ".join(chain_names))
+
+    # Display effective configuration with proper source tracking
+    render_effective_config(chain_profiles, detailed)
 
 
 @profile.command(name="use")
