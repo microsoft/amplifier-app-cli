@@ -8,17 +8,6 @@ Context files are markdown documents that provide additional context to AI sessi
 
 ---
 
-## Files in This Directory
-
-**Project Anchors**:
-- `AGENTS.md` - Project guidelines for AI assistants (from root, symlinked)
-
-**Concept Overviews** (for AI agents):
-- `collections-overview.md` - Collections system quick reference
-- `scenario-tools-overview.md` - Scenario tools concept and patterns
-
----
-
 ## Collections-Based Context
 
 Most context files are now organized in **collections** rather than this flat directory. Collections provide better organization and shareability.
@@ -54,34 +43,39 @@ Reference context files using @mention syntax:
 ```
 
 **Examples**:
+
 ```markdown
 # Foundation collection context
+
 @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
 @foundation:context/shared/common-agent-base.md
 
 # Other collection context
+
 @memory-solution:context/patterns.md
 ```
 
 ### Shortcuts
 
 ```markdown
-@user:path         →  ~/.amplifier/path
-@project:path      →  .amplifier/path
-@path              →  Direct path (CWD or relative)
+@user:path → ~/.amplifier/path
+@project:path → .amplifier/path
+@path → Direct path (CWD or relative)
 ```
 
 ### Examples in Profiles
 
 ```markdown
 # profiles/custom.md
+
 ---
-name: custom
----
+
+## name: custom
 
 You are a specialized assistant.
 
 Core context:
+
 - @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
 - @user:context/my-standards.md
 - @project:context/project-specific.md
@@ -96,11 +90,13 @@ Work according to these principles.
 When resolving @mentions, Amplifier searches in precedence order:
 
 **For collection references** (`@collection:path`):
+
 1. Project collections (`.amplifier/collections/`)
 2. User collections (`~/.amplifier/collections/`)
 3. Bundled collections (`<package>/data/collections/`)
 
 **For direct paths** (`@path`):
+
 1. Relative to profile file (if `./`)
 2. Project context (`.amplifier/context/`)
 3. User context (`~/.amplifier/context/`)
@@ -158,14 +154,3 @@ EOF
 Reference with `@user:context/my-preferences.md` or `@user:my-preferences.md`
 
 ---
-
-## Related Documentation
-
-- [COLLECTIONS_GUIDE.md](../../../docs/COLLECTIONS_GUIDE.md) - Complete collections guide
-- [CONTEXT_LOADING.md](../../../docs/CONTEXT_LOADING.md) - @mention syntax details
-- [PROFILE_AUTHORING.md](../../../docs/PROFILE_AUTHORING.md) - Using context in profiles
-- [AGENT_AUTHORING.md](../../../docs/AGENT_AUTHORING.md) - Using context in agents
-
----
-
-**Last Updated**: 2025-10-26

@@ -11,6 +11,44 @@ from .models import ContextFile
 from .resolver import MentionResolver
 
 
+def prepend_context_to_markdown(context_messages: list[Message], markdown_body: str) -> str:
+    """Extract content from context messages and prepend to markdown body.
+
+    This utility prevents duplication of the content extraction logic across
+    ProfileLoader and _process_profile_mentions().
+
+    Args:
+        context_messages: Messages with loaded @mention content
+        markdown_body: Original markdown with @mention references
+
+    Returns:
+        Markdown with content prepended: "[content]\n\n[original markdown with @mentions as references]"
+    """
+    context_parts = []
+    for msg in context_messages:
+        if isinstance(msg.content, str):
+            context_parts.append(msg.content)
+        elif isinstance(msg.content, list):
+            # Handle structured content (ContentBlocks) - extract text from TextBlock types
+            text_parts = []
+            for block in msg.content:
+                # Only TextBlock has .text attribute
+                if block.type == "text":
+                    text_parts.append(block.text)
+                else:
+                    # For other block types, use string representation
+                    text_parts.append(str(block))
+            context_parts.append("".join(text_parts))
+        else:
+            context_parts.append(str(msg.content))
+
+    if context_parts:
+        context_content = "\n\n".join(context_parts)
+        return f"{context_content}\n\n{markdown_body}"
+
+    return markdown_body
+
+
 class MentionLoader:
     """Loads files referenced by @mentions with deduplication and cycle detection.
 

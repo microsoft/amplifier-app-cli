@@ -3,9 +3,10 @@
 import re
 from re import Pattern
 
-# @mention pattern: matches @FILENAME or @path/to/file
+# @mention pattern: matches @FILENAME or @path/to/file or @collection:path
 # Negative lookbehind to exclude email addresses (no alphanumeric before @)
-MENTION_PATTERN: Pattern = re.compile(r"(?<![a-zA-Z0-9])@([a-zA-Z0-9_\-/\.]+)")
+# Supports: @file.md, @path/to/file.md, @collection:path/file.md, @user:path, @project:path
+MENTION_PATTERN: Pattern = re.compile(r"(?<![a-zA-Z0-9])@([a-zA-Z0-9_\-/\.:]+)")
 
 # @~/ pattern: matches @~/path/to/file (optional path after ~/)
 HOME_PATTERN: Pattern = re.compile(r"@~/([a-zA-Z0-9_\-/\.]*)")

@@ -666,9 +666,34 @@ async def _process_profile_mentions(session: AmplifierSession, profile_name: str
             )
             await context.add_message(msg_dict)
 
-        # Add system instruction with @mentions preserved as references
+        # Prepend loaded @mention content to markdown body
+        # This ensures system message contains actual content, not just @mention references
+        context_parts = []
+        for msg in context_messages:
+            if isinstance(msg.content, str):
+                context_parts.append(msg.content)
+            elif isinstance(msg.content, list):
+                # Handle structured content (ContentBlocks) - extract text from TextBlock types
+                text_parts = []
+                for block in msg.content:
+                    # Only TextBlock has .text attribute
+                    if block.type == "text":
+                        text_parts.append(block.text)
+                    else:
+                        # For other block types, use string representation
+                        text_parts.append(str(block))
+                context_parts.append("".join(text_parts))
+            else:
+                context_parts.append(str(msg.content))
+
+        if context_parts:
+            context_content = "\n\n".join(context_parts)
+            markdown_body = f"{context_content}\n\n{markdown_body}"
+            logger.debug(f"Prepended {len(context_parts)} context parts (final length={len(markdown_body)})")
+
+        # Add system instruction with resolved @mention content prepended
         system_msg = Message(role="system", content=markdown_body)
-        logger.debug(f"Adding system instruction with @mentions preserved (length={len(markdown_body)})")
+        logger.debug(f"Adding system instruction with resolved @mentions (length={len(markdown_body)})")
         await context.add_message(system_msg.model_dump())
 
         # Verify messages were added
