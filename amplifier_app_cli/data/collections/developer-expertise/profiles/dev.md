@@ -7,8 +7,8 @@ profile:
 
 session:
   orchestrator:
-    module: loop-streaming
-    source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main
+    module: loop-basic
+    source: git+https://github.com/microsoft/amplifier-module-loop-basic@main
     config:
       extended_thinking: true
   context:
@@ -36,6 +36,16 @@ tools:
     source: git+https://github.com/microsoft/amplifier-module-tool-task@main
 
 hooks:
+  - module: hooks-status-context
+    source: git+https://github.com/microsoft/amplifier-module-hooks-status-context@main
+    config:
+      include_git: true
+      git_include_status: true
+      git_include_commits: 3
+      git_include_branch: true
+      git_include_main_branch: true
+      include_datetime: true
+      datetime_include_timezone: false
   - module: hooks-streaming-ui
     source: git+https://github.com/microsoft/amplifier-module-hooks-streaming-ui@main
 
