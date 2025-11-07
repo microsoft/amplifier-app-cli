@@ -22,6 +22,10 @@ uv tool install git+https://github.com/microsoft/amplifier@next
 # First-time setup (auto-runs if no config)
 amplifier init
 
+# Tip: Set environment variables for faster setup
+# export ANTHROPIC_API_KEY="your-key"
+# The wizard detects env vars and shows them as defaults
+
 # Install shell completion (optional, one-time setup)
 amplifier --install-completion
 
@@ -37,6 +41,8 @@ amplifier
 # Use specific profile
 amplifier run --profile dev "Your prompt"
 ```
+
+**Environment variables**: See [supported variables](../docs/USER_ONBOARDING.md#environment-variables) for automatic configuration.
 
 ## Commands
 
