@@ -27,19 +27,28 @@ def configure_anthropic(key_manager: KeyManager) -> dict:
     """
     console.print()
 
-    # Check for existing env var
-    existing_key_in_env = os.environ.get("ANTHROPIC_API_KEY")
+    # Check for existing key (keyring or environment)
+    has_keyring_key = key_manager.has_key("ANTHROPIC_API_KEY")
+    has_env_key = os.environ.get("ANTHROPIC_API_KEY") is not None
 
-    # API key
-    if not key_manager.has_key("ANTHROPIC_API_KEY"):
-        console.print("API key: Get one at https://console.anthropic.com/settings/keys")
-        if existing_key_in_env:
-            console.print("  [dim](Found in environment - will use if you don't configure)[/dim]")
-        api_key = Prompt.ask("API key", password=True)
+    # API key - always prompt, but show what exists
+    console.print("API key: Get one at https://console.anthropic.com/settings/keys")
+    if has_keyring_key or has_env_key:
+        console.print("  [dim](Found in environment - will use if you don't configure)[/dim]")
+
+    api_key = Prompt.ask("API key (press Enter to keep existing)", password=True, default="")
+
+    if api_key:
+        # User provided new key - save it
         key_manager.save_key("ANTHROPIC_API_KEY", api_key)
-        console.print("[green]✓ Saved[/green]")
-    else:
+        console.print("[green]✓ Saved new API key[/green]")
+    elif has_keyring_key or has_env_key:
+        # User pressed Enter with existing key - keep it
         console.print("[green]✓ Using existing API key[/green]")
+    else:
+        # No key provided and none exists - this is an error state
+        console.print("[red]Error: API key required[/red]")
+        raise ValueError("Anthropic API key is required")
 
     # Model
     console.print()
@@ -73,19 +82,28 @@ def configure_openai(key_manager: KeyManager) -> dict:
     """
     console.print()
 
-    # Check for existing env var
-    existing_key_in_env = os.environ.get("OPENAI_API_KEY")
+    # Check for existing key (keyring or environment)
+    has_keyring_key = key_manager.has_key("OPENAI_API_KEY")
+    has_env_key = os.environ.get("OPENAI_API_KEY") is not None
 
-    # API key
-    if not key_manager.has_key("OPENAI_API_KEY"):
-        console.print("API key: Get one at https://platform.openai.com/api-keys")
-        if existing_key_in_env:
-            console.print("  [dim](Found in environment - will use if you don't configure)[/dim]")
-        api_key = Prompt.ask("API key", password=True)
+    # API key - always prompt, but show what exists
+    console.print("API key: Get one at https://platform.openai.com/api-keys")
+    if has_keyring_key or has_env_key:
+        console.print("  [dim](Found in environment - will use if you don't configure)[/dim]")
+
+    api_key = Prompt.ask("API key (press Enter to keep existing)", password=True, default="")
+
+    if api_key:
+        # User provided new key - save it
         key_manager.save_key("OPENAI_API_KEY", api_key)
-        console.print("[green]✓ Saved[/green]")
-    else:
+        console.print("[green]✓ Saved new API key[/green]")
+    elif has_keyring_key or has_env_key:
+        # User pressed Enter with existing key - keep it
         console.print("[green]✓ Using existing API key[/green]")
+    else:
+        # No key provided and none exists - this is an error state
+        console.print("[red]Error: API key required[/red]")
+        raise ValueError("OpenAI API key is required")
 
     # Model
     console.print()
