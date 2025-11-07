@@ -154,7 +154,8 @@ This CLI is built on top of amplifier-core and provides:
 - **Settings management** - Three-scope configuration (local/project/global via amplifier-config)
 - **Module resolution** - Five-layer module source resolution (via amplifier-module-resolution)
 - **Collection system** - Shareable expertise bundles (via amplifier-collections)
-- **Session storage** - Project-scoped session persistence
+- **Session storage** - Project-scoped session persistence with multi-turn sub-session resumption
+- **Agent delegation** - Spawn and resume sub-sessions for iterative collaboration with specialized agents
 - **Interactive mode** - REPL with slash commands
 - **Key management** - Secure API key storage
 
@@ -207,7 +208,8 @@ amplifier_app_cli/
 ├── key_manager.py     # API key management
 ├── provider_manager.py # Provider configuration
 ├── module_manager.py  # Module management
-├── session_store.py   # Session persistence
+├── session_store.py   # Session persistence (transcript, metadata, state)
+├── session_spawner.py # Agent delegation (spawn and resume sub-sessions)
 ├── agent_config.py    # Agent configuration utilities
 └── main.py            # CLI entry point
 
