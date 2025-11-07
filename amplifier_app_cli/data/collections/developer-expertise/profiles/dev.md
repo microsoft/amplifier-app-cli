@@ -37,7 +37,6 @@ tools:
 
 hooks:
   - module: hooks-status-context
-    source: git+https://github.com/microsoft/amplifier-module-hooks-status-context@main
     config:
       include_git: true
       git_include_status: true
