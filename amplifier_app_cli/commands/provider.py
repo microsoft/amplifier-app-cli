@@ -11,6 +11,10 @@ from rich.table import Table
 
 from ..key_manager import KeyManager
 from ..paths import create_config_manager
+from ..provider_config_utils import configure_anthropic
+from ..provider_config_utils import configure_azure_openai
+from ..provider_config_utils import configure_ollama
+from ..provider_config_utils import configure_openai
 from ..provider_manager import ProviderManager
 from ..provider_manager import ScopeType
 
@@ -63,90 +67,40 @@ def provider_use(
             console.print(f"  • {pid.replace('provider-', '')} ({name})")
         return
 
-    # Collect provider-specific configuration
+    # Collect provider-specific configuration using shared functions
     key_manager = KeyManager()
 
     config: dict[str, Any]
 
-    if provider_id in ["anthropic", "openai", "ollama"]:
-        # These providers need model
-        if not model:
-            model = prompt_model_for_provider(provider_id)
+    if provider_id == "anthropic":
+        # Use shared configuration function
+        config = configure_anthropic(key_manager)
+        # Override model if provided via CLI flag
+        if model:
+            config["default_model"] = model
 
-        config = {"default_model": model}
+    elif provider_id == "openai":
+        # Use shared configuration function
+        config = configure_openai(key_manager)
+        # Override model if provided via CLI flag
+        if model:
+            config["default_model"] = model
 
-        # Add API key reference
-        if provider_id == "anthropic":
-            # Check for existing key
-            if not key_manager.has_key("ANTHROPIC_API_KEY"):
-                console.print("\n[yellow]No API key found for Anthropic.[/yellow]")
-                console.print("Get one at: https://console.anthropic.com/settings/keys")
-                api_key = Prompt.ask("API key", password=True)
-                key_manager.save_key("ANTHROPIC_API_KEY", api_key)
-                console.print("[green]✓ Saved[/green]")
-            config["api_key"] = "${ANTHROPIC_API_KEY}"
-
-        elif provider_id == "openai":
-            if not key_manager.has_key("OPENAI_API_KEY"):
-                console.print("\n[yellow]No API key found for OpenAI.[/yellow]")
-                console.print("Get one at: https://platform.openai.com/api-keys")
-                api_key = Prompt.ask("API key", password=True)
-                key_manager.save_key("OPENAI_API_KEY", api_key)
-                console.print("[green]✓ Saved[/green]")
-            config["api_key"] = "${OPENAI_API_KEY}"
-
-        elif provider_id == "ollama":
-            config["base_url"] = "http://localhost:11434"
-            console.print("\n[dim]Make sure Ollama is running:[/dim]")
-            console.print("  ollama serve")
-            console.print(f"  ollama pull {model}")
+    elif provider_id == "ollama":
+        # Use shared configuration function
+        config = configure_ollama()
+        # Override model if provided via CLI flag
+        if model:
+            config["default_model"] = model
 
     elif provider_id == "azure-openai":
-        # Azure OpenAI needs endpoint, deployment, and auth
-        if not endpoint:
-            endpoint = Prompt.ask("Azure endpoint", default="https://my-resource.openai.azure.com/")
-            key_manager.save_key("AZURE_OPENAI_ENDPOINT", endpoint)
-
-        if not deployment:
-            console.print("\n[dim]Note: Use your Azure deployment name, not model name[/dim]")
-            deployment = Prompt.ask("Deployment name", default="gpt-5-codex")
-
-        config = {
-            "azure_endpoint": "${AZURE_OPENAI_ENDPOINT}",
-            "default_deployment": deployment,
-            "api_version": "2024-10-01-preview",
-        }
-
-        # Determine auth method (interactive if not specified via flag)
-        if use_azure_cli:
-            # Explicitly requested Azure CLI auth via flag
-            console.print("\n[green]✓ Will use DefaultAzureCredential[/green]")
-            console.print("  (Works with 'az login' locally or managed identity in Azure)")
-            key_manager.save_key("AZURE_USE_DEFAULT_CREDENTIAL", "true")
-            config["use_default_credential"] = "true"  # type: ignore[assignment]
-        else:
-            # Interactive auth method selection
-            console.print("\nAuthentication?")
-            console.print("  [1] API key")
-            console.print("  [2] Azure CLI (az login)")
-
-            auth_choice = Prompt.ask("Choice", choices=["1", "2"], default="2")
-
-            if auth_choice == "1":
-                # API key auth
-                if not key_manager.has_key("AZURE_OPENAI_API_KEY"):
-                    api_key = Prompt.ask("Azure OpenAI API key", password=True)
-                    key_manager.save_key("AZURE_OPENAI_API_KEY", api_key)
-                    console.print("[green]✓ Saved[/green]")
-                else:
-                    console.print("[green]✓ Using existing API key[/green]")
-                config["api_key"] = "${AZURE_OPENAI_API_KEY}"
-            else:
-                # Azure CLI auth
-                console.print("[green]✓ Will use DefaultAzureCredential[/green]")
-                console.print("  (Works with 'az login' locally or managed identity in Azure)")
-                key_manager.save_key("AZURE_USE_DEFAULT_CREDENTIAL", "true")
-                config["use_default_credential"] = "true"  # type: ignore[assignment]
+        # Use shared configuration function with CLI flags
+        config = configure_azure_openai(
+            key_manager,
+            endpoint=endpoint,
+            deployment=deployment,
+            use_azure_cli=use_azure_cli if use_azure_cli else None,
+        )
 
     else:
         console.print(f"[red]Error:[/red] Unsupported provider: {provider_id}")
