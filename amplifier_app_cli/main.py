@@ -37,6 +37,7 @@ from .commands.session import register_session_commands
 from .commands.setup import setup_cmd
 from .commands.source import source as source_group
 from .commands.update import update as update_cmd
+from .console import Markdown
 from .console import console
 from .key_manager import KeyManager
 from .paths import create_module_resolver
@@ -868,7 +869,8 @@ async def interactive_chat(
                             # Handle result or cancellation
                             try:
                                 response = await execute_task
-                                console.print("\n" + response)
+                                console.print()  # Blank line before response
+                                console.print(Markdown(response))
 
                                 # Save session after each interaction
                                 context = session.coordinator.get("context")
@@ -964,7 +966,7 @@ async def execute_single(
         response = await session.execute(prompt)
         if verbose:
             console.print(f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]")
-        console.print(response)
+        console.print(Markdown(response))
         console.print()  # Add blank line after output to prevent running into shell prompt
 
         # Always save session (for debugging/archival)
@@ -1117,7 +1119,8 @@ async def interactive_chat_with_session(
                             # Handle result or cancellation
                             try:
                                 response = await execute_task
-                                console.print("\n" + response)
+                                console.print()  # Blank line before response
+                                console.print(Markdown(response))
 
                                 # Save session after each interaction
                                 if context and hasattr(context, "get_messages"):
