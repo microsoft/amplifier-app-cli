@@ -7,7 +7,6 @@ profile:
 
 providers:
   - module: provider-anthropic
-    source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
     config:
       debug: true
 
@@ -26,7 +25,7 @@ hooks:
     config:
       include_git: true
       git_include_status: true
-      git_include_commits: 3
+      git_include_commits: 5
       git_include_branch: true
       git_include_main_branch: true
 ---

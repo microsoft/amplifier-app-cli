@@ -18,11 +18,6 @@ session:
       max_tokens: 100000
       compact_threshold: 0.8
       auto_compact: true
-      inject_git_context: true
-      git_include_status: true
-      git_include_commits: 5
-      git_include_branch: true
-      git_include_main_branch: true
 
 task:
   max_recursion_depth: 1

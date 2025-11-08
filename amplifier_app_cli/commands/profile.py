@@ -100,8 +100,22 @@ def profile_current():
         console.print("  Global:  [cyan]amplifier profile use <name> --global[/cyan]")
 
 
-def build_effective_config_with_sources(chain: list[Any]):
-    """Build effective configuration with source tracking."""
+def build_effective_config_with_sources(chain_dicts: list[dict[str, Any]], chain_names: list[str]):
+    """
+    Build effective configuration with accurate source tracking.
+
+    Merges the inheritance chain while tracking which profile contributed which values.
+    This enables accurate "[from X]" annotations showing true provenance.
+
+    Args:
+        chain_dicts: List of raw profile dictionaries from root to leaf
+        chain_names: List of profile names corresponding to chain_dicts
+
+    Returns:
+        Tuple of (effective_config, sources) where sources tracks provenance
+    """
+    from amplifier_profiles.merger import merge_profile_dicts
+
     effective_config: dict[str, Any] = {
         "session": {},
         "providers": {},
@@ -116,93 +130,213 @@ def build_effective_config_with_sources(chain: list[Any]):
         "tools": {},
         "hooks": {},
         "agents": {},
+        "config_fields": {},  # Track individual config field sources
     }
 
-    for profile in chain:
-        profile_name = profile.profile.name
+    # Track merged state incrementally to identify where each value comes from
+    merged_so_far = {}
 
-        if profile.session:
-            for field in ["orchestrator", "context", "max_tokens", "compact_threshold", "auto_compact"]:
-                value = getattr(profile.session, field, None)
-                if value is not None:
-                    if field in effective_config["session"] and field in sources["session"]:
+    for _i, (profile_dict, profile_name) in enumerate(zip(chain_dicts, chain_names, strict=False)):
+        # Track what this profile adds/modifies
+
+        # Session fields
+        if "session" in profile_dict:
+            session = profile_dict["session"]
+            if isinstance(session, dict):
+                for field, _value in session.items():
+                    if field not in merged_so_far.get("session", {}):
+                        # New field from this profile
+                        sources["session"][field] = profile_name
+                    else:
+                        # Overriding previous value
                         old_source = sources["session"][field]
                         if isinstance(old_source, tuple):
                             old_source = old_source[0]
                         sources["session"][field] = (profile_name, old_source)
-                    else:
-                        sources["session"][field] = profile_name
-                    effective_config["session"][field] = value
 
-        if profile.providers:
-            for provider in profile.providers:
-                module_name = provider.module
-                if module_name in effective_config["providers"]:
-                    old_source = sources["providers"][module_name]
-                    if isinstance(old_source, tuple):
-                        old_source = old_source[0]
-                    sources["providers"][module_name] = (profile_name, old_source)
-                else:
-                    sources["providers"][module_name] = profile_name
-                effective_config["providers"][module_name] = provider
+        # Module lists (providers, tools, hooks)
+        for section in ["providers", "tools", "hooks"]:
+            if section in profile_dict:
+                items = profile_dict[section]
+                if isinstance(items, list):
+                    for item in items:
+                        if isinstance(item, dict) and "module" in item:
+                            module_id = item["module"]
 
-        if profile.tools:
-            for tool in profile.tools:
-                module_name = tool.module
-                if module_name in effective_config["tools"]:
-                    old_source = sources["tools"][module_name]
-                    if isinstance(old_source, tuple):
-                        old_source = old_source[0]
-                    sources["tools"][module_name] = (profile_name, old_source)
-                else:
-                    sources["tools"][module_name] = profile_name
-                effective_config["tools"][module_name] = tool
+                            # Check if module exists in merged state
+                            merged_section = merged_so_far.get(section, [])
+                            existing_module = next(
+                                (m for m in merged_section if isinstance(m, dict) and m.get("module") == module_id),
+                                None,
+                            )
 
-        if profile.hooks:
-            for hook in profile.hooks:
-                module_name = hook.module
-                if module_name in effective_config["hooks"]:
-                    old_source = sources["hooks"][module_name]
-                    if isinstance(old_source, tuple):
-                        old_source = old_source[0]
-                    sources["hooks"][module_name] = (profile_name, old_source)
-                else:
-                    sources["hooks"][module_name] = profile_name
-                effective_config["hooks"][module_name] = hook
+                            if existing_module is None:
+                                # New module from this profile
+                                sources[section][module_id] = profile_name
+                                sources["config_fields"][f"{section}.{module_id}"] = {}
+                            else:
+                                # Module exists - check what this profile is actually changing
+                                old_source = sources[section][module_id]
+                                if isinstance(old_source, tuple):
+                                    old_source = old_source[0]
 
-        if profile.agents:
-            if "agents_config" not in effective_config:
-                effective_config["agents_config"] = {}
-            effective_config["agents_config"] = profile.agents.model_dump()
-            sources["agents_config"] = profile_name
+                                # If child provides source, it's redefining the module
+                                if "source" in item:
+                                    sources[section][module_id] = (profile_name, old_source)
+                                elif "config" in item:
+                                    # Only config provided - module itself is from parent
+                                    # Keep parent as module source, track config modifications separately
+                                    sources[section][module_id] = old_source
+                                    # Mark that config was modified
+                                    if section not in sources.get("config_modified_by", {}):
+                                        sources.setdefault("config_modified_by", {})[section] = {}
+                                    sources["config_modified_by"][section][module_id] = profile_name
+
+                                # Track config field provenance
+                                if "config" in item and isinstance(item["config"], dict):
+                                    config_key = f"{section}.{module_id}"
+                                    if config_key not in sources["config_fields"]:
+                                        sources["config_fields"][config_key] = {}
+
+                                    for cfg_field, _cfg_value in item["config"].items():
+                                        existing_config = existing_module.get("config", {})
+                                        if cfg_field not in existing_config:
+                                            sources["config_fields"][config_key][cfg_field] = profile_name
+                                        else:
+                                            old_cfg_source = sources["config_fields"][config_key].get(
+                                                cfg_field, old_source
+                                            )
+                                            sources["config_fields"][config_key][cfg_field] = (
+                                                profile_name,
+                                                old_cfg_source,
+                                            )
+
+        # Agents
+        if "agents" in profile_dict:
+            if "agents" not in merged_so_far:
+                sources["agents"] = profile_name
+            else:
+                old_source = sources.get("agents", "")
+                if isinstance(old_source, tuple):
+                    old_source = old_source[0]
+                sources["agents"] = (profile_name, old_source)
+
+        # Merge this profile into the running total
+        merged_so_far = merge_profile_dicts(merged_so_far, profile_dict)
+
+    # Build final effective config from merged result
+    effective_config["session"] = merged_so_far.get("session", {})
+    effective_config["providers"] = {
+        item["module"]: item
+        for item in merged_so_far.get("providers", [])
+        if isinstance(item, dict) and "module" in item
+    }
+    effective_config["tools"] = {
+        item["module"]: item for item in merged_so_far.get("tools", []) if isinstance(item, dict) and "module" in item
+    }
+    effective_config["hooks"] = {
+        item["module"]: item for item in merged_so_far.get("hooks", []) if isinstance(item, dict) and "module" in item
+    }
+    effective_config["agents"] = merged_so_far.get("agents", {})
 
     return effective_config, sources
 
 
-def render_effective_config(chain: list[Any], detailed: bool):
-    """Render the effective configuration with source annotations."""
-    config, sources = build_effective_config_with_sources(chain)
+def render_effective_config(
+    chain_dicts: list[dict[str, Any]], chain_names: list[str], source_overrides: dict[str, str], detailed: bool
+):
+    """Render the effective configuration with source annotations and override indicators."""
+    config, sources = build_effective_config_with_sources(chain_dicts, chain_names)
 
     console.print("\n[bold]Effective Configuration:[/bold]\n")
 
     def format_source(source: Any) -> str:
+        """Format source attribution (concise, no 'from' prefix)."""
         from rich.markup import escape
 
         if isinstance(source, list | tuple) and len(source) == 2:
             current, previous = source
             current_escaped = escape(str(current))
             previous_escaped = escape(str(previous))
-            return f" [yellow]\\[from {current_escaped}, overrides {previous_escaped}][/yellow]"
+            return f" [yellow]\\[{current_escaped}, overrides {previous_escaped}][/yellow]"
         if source:
             source_escaped = escape(str(source))
-            return f" [cyan]\\[from {source_escaped}][/cyan]"
+            return f" [cyan]\\[{source_escaped}][/cyan]"
         return ""
 
+    def format_config_field_source(section: str, module_id: str, field_name: str) -> str:
+        """Get provenance for a specific config field."""
+        config_key = f"{section}.{module_id}"
+        field_source = sources.get("config_fields", {}).get(config_key, {}).get(field_name)
+        return format_source(field_source)
+
+    def render_source_line(module_id: str, profile_source: str | None):
+        """
+        Render source line with override annotation if applicable.
+
+        Shows effective source value with [settings override] annotation when override is active.
+        Pattern matches config field provenance: value [source-annotation]
+
+        Args:
+            module_id: Module identifier to check for overrides
+            profile_source: Source URL from profile
+        """
+        if not profile_source:
+            return
+
+        override_source = source_overrides.get(module_id)
+
+        if override_source and override_source != profile_source:
+            # Override is active - show effective source with annotation
+            if len(override_source) > 60:
+                display_source = override_source[:57] + "..."
+            else:
+                display_source = override_source
+            console.print(f"    source: {display_source} [yellow](settings override)[/yellow]")
+        else:
+            # No override - show profile source
+            if len(profile_source) > 60:
+                display_source = profile_source[:57] + "..."
+            else:
+                display_source = profile_source
+            console.print(f"    source: {display_source}")
+
+    # Session
     if config["session"]:
         console.print("[bold]Session:[/bold]")
-        for field, value in config["session"].items():
-            source = sources["session"].get(field, "")
-            console.print(f"  {field}: {value}{format_source(source)}")
+
+        for field in ["orchestrator", "context"]:
+            if field in config["session"]:
+                value = config["session"][field]
+                source = sources["session"].get(field, "")
+
+                if isinstance(value, dict) and "module" in value:
+                    module_id = value.get("module", "")
+
+                    if detailed:
+                        # Detailed: Show everything with DRY helper
+                        console.print(f"  {field}:{format_source(source)}")
+                        console.print(f"    module: {module_id}")
+                        # Use DRY helper for source display
+                        render_source_line(module_id, value.get("source"))
+                        if "config" in value and value["config"]:
+                            console.print("    config:")
+                            for cfg_key, cfg_value in value["config"].items():
+                                field_src = format_config_field_source("session", field, cfg_key)
+                                console.print(f"      {cfg_key}: {cfg_value}{field_src}")
+                    else:
+                        # Non-detailed: Just module name and provenance
+                        console.print(f"  {field}: {module_id}{format_source(source)}")
+
+        # Other session fields (max_tokens, etc.) - only in detailed mode
+        if detailed:
+            other_fields = [k for k in config["session"] if k not in ["orchestrator", "context"]]
+            if other_fields:
+                for field in other_fields:
+                    value = config["session"][field]
+                    source = sources["session"].get(field, "")
+                    console.print(f"  {field}: {value}{format_source(source)}")
+
         console.print()
 
     if config["providers"]:
@@ -210,9 +344,17 @@ def render_effective_config(chain: list[Any], detailed: bool):
         for module_name, provider in config["providers"].items():
             source = sources["providers"].get(module_name, "")
             console.print(f"  {module_name}{format_source(source)}")
-            if detailed and provider.config:
-                for key, value in provider.config.items():
-                    console.print(f"    {key}: {value}")
+
+            if detailed:
+                # Use DRY helper for source display with overrides
+                render_source_line(module_name, provider.get("source"))
+
+                # Show config with per-field provenance
+                if provider.get("config"):
+                    console.print("    config:")
+                    for key, value in provider["config"].items():
+                        field_src = format_config_field_source("providers", module_name, key)
+                        console.print(f"      {key}: {value}{field_src}")
         console.print()
 
     if config["tools"]:
@@ -220,9 +362,17 @@ def render_effective_config(chain: list[Any], detailed: bool):
         for module_name, tool in config["tools"].items():
             source = sources["tools"].get(module_name, "")
             console.print(f"  {module_name}{format_source(source)}")
-            if detailed and tool.config:
-                for key, value in tool.config.items():
-                    console.print(f"    {key}: {value}")
+
+            if detailed:
+                # Use DRY helper for source display with overrides
+                render_source_line(module_name, tool.get("source"))
+
+                # Show config with per-field provenance
+                if tool.get("config"):
+                    console.print("    config:")
+                    for key, value in tool["config"].items():
+                        field_src = format_config_field_source("tools", module_name, key)
+                        console.print(f"      {key}: {value}{field_src}")
         console.print()
 
     if config["hooks"]:
@@ -230,9 +380,17 @@ def render_effective_config(chain: list[Any], detailed: bool):
         for module_name, hook in config["hooks"].items():
             source = sources["hooks"].get(module_name, "")
             console.print(f"  {module_name}{format_source(source)}")
-            if detailed and hook.config:
-                for key, value in hook.config.items():
-                    console.print(f"    {key}: {value}")
+
+            if detailed:
+                # Use DRY helper for source display with overrides
+                render_source_line(module_name, hook.get("source"))
+
+                # Show config with per-field provenance
+                if hook.get("config"):
+                    console.print("    config:")
+                    for key, value in hook["config"].items():
+                        field_src = format_config_field_source("hooks", module_name, key)
+                        console.print(f"      {key}: {value}{field_src}")
         console.print()
 
     if config.get("agents_config"):
@@ -259,12 +417,15 @@ def render_effective_config(chain: list[Any], detailed: bool):
 def profile_show(name: str, detailed: bool):
     """Show details of a specific profile with inheritance chain."""
     loader = create_profile_loader()
+    config_manager = create_config_manager()
 
     try:
         profile_obj = loader.load_profile(name)
         chain_names = loader.get_inheritance_chain(name)
-        # Load full chain for source tracking
-        chain_profiles = loader.load_inheritance_chain_profiles(name)
+        # Load raw dicts for accurate provenance tracking
+        chain_dicts = loader.load_inheritance_chain_dicts(name)
+        # Get source overrides for transparency
+        source_overrides = config_manager.get_module_sources()
     except FileNotFoundError:
         console.print(f"[red]Error:[/red] Profile '{name}' not found")
         sys.exit(1)
@@ -280,8 +441,8 @@ def profile_show(name: str, detailed: bool):
     console.print("\n[bold]Inheritance:[/bold]", end=" ")
     console.print(" → ".join(chain_names))
 
-    # Display effective configuration with proper source tracking
-    render_effective_config(chain_profiles, detailed)
+    # Display effective configuration with source overrides
+    render_effective_config(chain_dicts, chain_names, source_overrides, detailed)
 
 
 @profile.command(name="use")
