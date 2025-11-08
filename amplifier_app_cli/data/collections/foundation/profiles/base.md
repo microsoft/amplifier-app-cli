@@ -7,8 +7,10 @@ profile:
 
 session:
   orchestrator:
-    module: loop-basic
-    source: git+https://github.com/microsoft/amplifier-module-loop-basic@main
+    module: loop-streaming
+    source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main
+    config:
+      extended_thinking: true
   context:
     module: context-simple
     source: git+https://github.com/microsoft/amplifier-module-context-simple@main
@@ -22,13 +24,25 @@ session:
       git_include_branch: true
       git_include_main_branch: true
 
+task:
+  max_recursion_depth: 1
+
 tools:
-  - module: tool-filesystem
-    source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
-  - module: tool-bash
-    source: git+https://github.com/microsoft/amplifier-module-tool-bash@main
+  - module: tool-web
+    source: git+https://github.com/microsoft/amplifier-module-tool-web@main
+  - module: tool-search
+    source: git+https://github.com/microsoft/amplifier-module-tool-search@main
+  - module: tool-task
+    source: git+https://github.com/microsoft/amplifier-module-tool-task@main
+  - module: tool-todo
+    source: git+https://github.com/microsoft/amplifier-module-tool-todo@main
 
 hooks:
+  - module: hooks-status-context
+    source: git+https://github.com/microsoft/amplifier-module-hooks-status-context@main
+    config:
+      include_datetime: true
+      datetime_include_timezone: false
   - module: hooks-redaction
     source: git+https://github.com/microsoft/amplifier-module-hooks-redaction@main
     config:
@@ -42,12 +56,17 @@ hooks:
     config:
       mode: session-only
       session_log_template: ~/.amplifier/projects/{project}/sessions/{session_id}/events.jsonl
+  - module: hooks-todo-reminder
+    source: git+https://github.com/microsoft/amplifier-module-hooks-todo-reminder@main
+    config:
+      inject_role: user
+      priority: 10
+  - module: hooks-streaming-ui
+    source: git+https://github.com/microsoft/amplifier-module-hooks-streaming-ui@main
+
+agents:
+  dirs:
+    - ./agents
 ---
 
 @foundation:context/shared/common-agent-base.md
-
-Project context:
-
-- @AGENTS.md
-
-Base configuration provides core development tools (filesystem, bash) and essential hooks (logging, redaction). Follow project conventions and coding standards.
