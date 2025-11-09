@@ -51,7 +51,7 @@ def discover_umbrella_source() -> UmbrellaInfo | None:
                     logger.info(f"Discovered umbrella from package: {direct_url['url']}")
                     return UmbrellaInfo(
                         url=direct_url["url"],
-                        ref=direct_url["vcs_info"].get("requested_revision", "main"),
+                        ref=direct_url["vcs_info"].get("requested_revision", "next"),
                         commit_id=direct_url["vcs_info"].get("commit_id"),
                     )
             except Exception as e:
