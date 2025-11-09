@@ -8,6 +8,7 @@ import json
 import logging
 import subprocess
 from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 
 import httpx  # Fail fast if missing - required for GitHub API
@@ -56,11 +57,28 @@ class CachedGitStatus:
 
 
 @dataclass
+class CollectionStatus:
+    """Status of an installed collection."""
+
+    name: str
+    source_type: str = "collection"
+    source: str | None = None
+    layer: str = "user"
+
+    # SHA comparison
+    installed_sha: str | None = None
+    remote_sha: str | None = None
+    has_update: bool = False
+    installed_at: str | None = None
+
+
+@dataclass
 class UpdateReport:
     """Comprehensive update status for all sources."""
 
     local_file_sources: list[LocalFileStatus]
     cached_git_sources: list[CachedGitStatus]
+    collection_sources: list[CollectionStatus] = field(default_factory=list)
     cached_modules_checked: int = 0  # How many cache entries were examined
 
     @property
@@ -74,7 +92,10 @@ class UpdateReport:
         # Cached git with updates
         git_updates = len(self.cached_git_sources) > 0
 
-        return local_updates or git_updates
+        # Collections with updates
+        collection_updates = len(self.collection_sources) > 0
+
+        return local_updates or git_updates or collection_updates
 
     @property
     def has_local_changes(self) -> bool:
@@ -131,9 +152,13 @@ async def check_all_sources(include_all_cached: bool = False) -> UpdateReport:
             if status.name not in existing_names:
                 git_statuses.append(status)
 
+    # Check installed collections
+    collection_statuses = await _check_collection_sources()
+
     return UpdateReport(
         local_file_sources=local_statuses,
         cached_git_sources=git_statuses,
+        collection_sources=collection_statuses,
         cached_modules_checked=cached_modules_checked,
     )
 
@@ -486,6 +511,67 @@ def _cache_age_days(metadata: dict) -> int:
         return age.days
     except Exception:
         return 0
+
+
+async def _check_collection_sources() -> list[CollectionStatus]:
+    """Check installed collections for updates.
+
+    Reads collection lock file, compares installed SHAs with remote SHAs.
+
+    Returns:
+        List of CollectionStatus for collections with updates available
+    """
+    from amplifier_collections import CollectionLock
+    from amplifier_module_resolution import GitSource
+
+    from ..paths import get_collection_lock_path
+
+    # Load collection lock (user-global only for now)
+    try:
+        lock = CollectionLock(get_collection_lock_path(local=False))
+        entries = lock.list_entries()
+    except Exception as e:
+        logger.debug(f"Could not load collection lock: {e}")
+        return []
+
+    if not entries:
+        return []
+
+    statuses = []
+    for entry in entries:
+        # Skip non-git sources
+        if not entry.source or not entry.source.startswith("git+"):
+            continue
+
+        if not entry.commit:
+            continue  # No SHA tracked
+
+        try:
+            # Parse source
+            source = GitSource.from_uri(entry.source)
+
+            # Check remote SHA
+            remote_sha = await _get_github_commit_sha(source.url, source.ref)
+
+            # Compare SHAs
+            if remote_sha != entry.commit:
+                statuses.append(
+                    CollectionStatus(
+                        name=entry.name,
+                        source=entry.source,
+                        layer="user",
+                        installed_sha=entry.commit[:7],
+                        remote_sha=remote_sha[:7],
+                        has_update=True,
+                        installed_at=entry.installed_at,
+                    )
+                )
+
+        except Exception as e:
+            logger.debug(f"Could not check collection {entry.name}: {e}")
+            continue
+
+    return statuses
 
 
 # GitHub API helpers (exposed for update_check.py)

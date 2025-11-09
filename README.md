@@ -68,6 +68,7 @@ amplifier collection add <git-url> [--local]
 amplifier collection list
 amplifier collection show <name>
 amplifier collection remove <name> [--local]
+amplifier collection refresh [<name>] [--mutable-only]
 
 # Module management
 amplifier module add <name> [--local|--project|--global]
@@ -75,6 +76,8 @@ amplifier module remove <name> [--scope]
 amplifier module current
 amplifier module list
 amplifier module show <name>
+amplifier module refresh [<name>] [--mutable-only]
+amplifier module check-updates
 
 # Source management
 amplifier source add <id> <uri> [--local|--project|--global]
@@ -99,6 +102,7 @@ amplifier session cleanup [--days N] # Clean up old sessions
 
 ```bash
 amplifier init                       # First-time setup
+amplifier update [--check-only]      # Update Amplifier, modules, and collections
 amplifier logs                       # Watch activity log
 amplifier --install-completion       # Set up tab completion
 amplifier --version                  # Show version
