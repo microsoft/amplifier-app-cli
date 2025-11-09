@@ -455,3 +455,98 @@ def remove(name: str, local: bool):
         click.echo(f"✗ Unexpected error: {e}", err=True)
         logger.exception("Collection removal failed")
         raise click.Abort()
+
+
+@collection.command()
+@click.argument("collection_name", required=False)
+@click.option("--mutable-only", is_flag=True, help="Only refresh mutable refs (branches, not tags/SHAs)")
+def refresh(collection_name: str | None, mutable_only: bool):
+    """Refresh installed collections.
+
+    Re-pulls collections from git to get latest commits.
+    Useful for collections pinned to branches (e.g., @main).
+
+    Examples:
+
+        \b
+        # Refresh all collections
+        amplifier collection refresh
+
+        \b
+        # Refresh specific collection
+        amplifier collection refresh foundation
+
+        \b
+        # Only refresh branches (not tags/SHAs)
+        amplifier collection refresh --mutable-only
+    """
+    # Load collection lock
+    lock = CollectionLock(get_collection_lock_path(local=False))
+    entries = lock.list_entries()
+
+    if not entries:
+        click.echo("No collections installed.")
+        return
+
+    # Filter entries based on criteria
+    to_refresh = []
+    for entry in entries:
+        # Filter by collection name if specified
+        if collection_name and entry.name != collection_name:
+            continue
+
+        # Skip non-git sources
+        if not entry.source.startswith("git+"):
+            continue
+
+        # Filter by mutability if requested
+        if mutable_only:
+            try:
+                source = GitSource.from_uri(entry.source)
+                # Immutable: tags starting with 'v', or 40-char SHAs
+                if source.ref.startswith("v") or len(source.ref) == 40:
+                    continue
+            except Exception:
+                continue
+
+        to_refresh.append(entry)
+
+    if not to_refresh:
+        if collection_name:
+            click.echo(f"Collection '{collection_name}' not found or not refreshable.")
+        else:
+            click.echo("No refreshable collections found.")
+        return
+
+    # Refresh each collection
+    refreshed = 0
+    failed = 0
+
+    for entry in to_refresh:
+        try:
+            click.echo(f"Refreshing {entry.name}...")
+
+            # Parse source
+            source = GitSource.from_uri(entry.source)
+            target_dir = Path(entry.path)
+
+            # Remove existing installation
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+
+            # Re-install using existing install_collection function
+            metadata = asyncio.run(install_collection(source=source, target_dir=target_dir, lock=lock))
+
+            click.echo(f"✓ Refreshed {entry.name} to {metadata.version}")
+            refreshed += 1
+
+        except Exception as e:
+            click.echo(f"✗ Failed to refresh {entry.name}: {e}", err=True)
+            logger.exception(f"Collection refresh failed for {entry.name}")
+            failed += 1
+
+    # Summary
+    if refreshed > 0:
+        click.echo(f"\n✓ Refreshed {refreshed} collection(s)")
+    if failed > 0:
+        click.echo(f"✗ Failed to refresh {failed} collection(s)", err=True)
