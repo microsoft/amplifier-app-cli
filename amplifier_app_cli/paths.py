@@ -200,7 +200,6 @@ def get_agent_search_paths() -> list[Path]:
     """
     from amplifier_collections import discover_collection_resources
 
-    package_dir = Path(__file__).parent
     paths = []
 
     # Project (highest precedence)
