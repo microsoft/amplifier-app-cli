@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from amplifier_profiles import compile_profile_to_mount_plan
+from amplifier_profiles import merge_module_items
 from rich.console import Console
 
 from ..lib.app_settings import AppSettings
@@ -107,21 +108,40 @@ def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
 def _merge_module_lists(
     base_modules: list[dict[str, Any]], overlay_modules: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Merge module lists on module ID, overlay taking precedence."""
-    base_by_id = {m.get("module"): m for m in base_modules if isinstance(m, dict) and "module" in m}
-    overlay_by_id = {m.get("module"): m for m in overlay_modules if isinstance(m, dict) and "module" in m}
+    """
+    Merge module lists on module ID, with deep merging.
 
-    merged_by_id = base_by_id.copy()
-    merged_by_id.update(overlay_by_id)
+    Delegates to canonical merger.merge_module_items for DRY compliance.
+    See amplifier_profiles.merger for complete merge strategy documentation.
+    """
+    # Build dict by ID for efficient lookup
+    result_dict: dict[str, dict[str, Any]] = {}
 
+    # Add all base modules
+    for module in base_modules:
+        if isinstance(module, dict) and "module" in module:
+            result_dict[module["module"]] = module
+
+    # Merge or add overlay modules
+    for module in overlay_modules:
+        if isinstance(module, dict) and "module" in module:
+            module_id = module["module"]
+            if module_id in result_dict:
+                # Module exists in base - deep merge using canonical function
+                result_dict[module_id] = merge_module_items(result_dict[module_id], module)
+            else:
+                # New module in overlay - add it
+                result_dict[module_id] = module
+
+    # Return as list, preserving base order + new overlays
     result = []
-    seen_ids: set[str | None] = set()
+    seen_ids: set[str] = set()
 
     for module in base_modules:
         if isinstance(module, dict) and "module" in module:
             module_id = module["module"]
             if module_id not in seen_ids:
-                result.append(merged_by_id[module_id])
+                result.append(result_dict[module_id])
                 seen_ids.add(module_id)
 
     for module in overlay_modules:
