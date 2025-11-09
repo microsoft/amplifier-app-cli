@@ -60,6 +60,19 @@ def update(check_only: bool, yes: bool, force: bool):
             console.print()
             console.print("Run [cyan]amplifier module refresh[/cyan] to update cached modules")
 
+    # Show collections with updates
+    if report.collection_sources:
+        console.print()
+        console.print("[yellow]Collections (updates available):[/yellow]")
+        for status in report.collection_sources:
+            console.print(f"  • {status.name}")
+            console.print(f"    {status.installed_sha} → {status.remote_sha}")
+            console.print(f"    Installed: {status.installed_at}")
+
+        if not check_only:
+            console.print()
+            console.print("Run [cyan]amplifier collection refresh[/cyan] to update")
+
     # Check-only mode
     if check_only:
         if not report.has_updates and not report.has_local_changes:
@@ -80,6 +93,9 @@ def update(check_only: bool, yes: bool, force: bool):
         if report.cached_git_sources:
             count = len(report.cached_git_sources)
             console.print(f"  • Refresh {count} cached module{'s' if count != 1 else ''}")
+        if report.collection_sources:
+            count = len(report.collection_sources)
+            console.print(f"  • Refresh {count} collection{'s' if count != 1 else ''}")
         if report.has_updates:
             console.print("  • Update Amplifier to latest version")
 

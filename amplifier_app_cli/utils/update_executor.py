@@ -68,6 +68,49 @@ async def execute_module_refresh() -> ExecutionResult:
         )
 
 
+async def execute_collection_refresh() -> ExecutionResult:
+    """Delegate to 'amplifier collection refresh'.
+
+    Philosophy: Orchestrate, don't reimplement. Collection refresh already works.
+    """
+    try:
+        result = subprocess.run(
+            ["amplifier", "collection", "refresh"],
+            capture_output=True,
+            text=True,
+            timeout=120,  # Collections can be large, use longer timeout
+        )
+
+        if result.returncode == 0:
+            return ExecutionResult(
+                success=True,
+                updated=["collections"],
+                messages=["Collections refreshed successfully"],
+            )
+        error_msg = result.stderr.strip() or "Unknown error"
+        return ExecutionResult(
+            success=False,
+            failed=["collections"],
+            errors={"collections": error_msg},
+            messages=[f"Collection refresh failed: {error_msg}"],
+        )
+
+    except subprocess.TimeoutExpired:
+        return ExecutionResult(
+            success=False,
+            failed=["collections"],
+            errors={"collections": "Timeout after 120 seconds"},
+            messages=["Collection refresh timed out"],
+        )
+    except Exception as e:
+        return ExecutionResult(
+            success=False,
+            failed=["collections"],
+            errors={"collections": str(e)},
+            messages=[f"Collection refresh error: {e}"],
+        )
+
+
 async def execute_self_update(umbrella_info: UmbrellaInfo) -> ExecutionResult:
     """Delegate to 'uv tool install --force'.
 
@@ -144,7 +187,20 @@ async def execute_updates(report: UpdateReport) -> ExecutionResult:
         if not result.success:
             overall_success = False
 
-    # 2. Execute self-update if needed (check for umbrella with updates)
+    # 2. Execute collection refresh if needed
+    if report.collection_sources:
+        logger.info("Refreshing collections...")
+        result = await execute_collection_refresh()
+
+        all_updated.extend(result.updated)
+        all_failed.extend(result.failed)
+        all_messages.extend(result.messages)
+        all_errors.update(result.errors)
+
+        if not result.success:
+            overall_success = False
+
+    # 3. Execute self-update if needed (check for umbrella with updates)
     from .umbrella_discovery import discover_umbrella_source
 
     umbrella_info = discover_umbrella_source()
@@ -164,7 +220,7 @@ async def execute_updates(report: UpdateReport) -> ExecutionResult:
         if not result.success:
             overall_success = False
 
-    # 3. Compile final result
+    # 4. Compile final result
     return ExecutionResult(
         success=overall_success and len(all_failed) == 0,
         updated=all_updated,
