@@ -207,7 +207,7 @@ amplifier_app_cli/
 ├── commands/          # CLI command implementations (provider, collection, init, logs, setup)
 ├── data/
 │   ├── collections/   # Bundled collections (foundation, developer-expertise)
-│   ├── agents/        # Bundled agents (inside collections)
+│   │   └── developer-expertise/agents/  # Default agents
 │   ├── profiles/      # Profile defaults and metadata
 │   └── context/       # Bundled context files
 ├── lib/               # Shared libraries

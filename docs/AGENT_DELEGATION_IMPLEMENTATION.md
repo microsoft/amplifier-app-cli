@@ -64,17 +64,17 @@ amplifier run "design auth system"  # Uses ~/test-zen-architect.md
 
 **Use case**: Project-specific agents, committed to version control
 
-### 4. Bundled Agents (Lowest Priority)
+### 4. Collection Agents (Lowest Priority)
 
 ```
-amplifier_app_cli/data/agents/
+amplifier_app_cli/data/collections/developer-expertise/agents/
 ├── zen-architect.md
 ├── bug-hunter.md
 ├── modular-builder.md
 └── researcher.md
 ```
 
-**Use case**: Default agents shipped with CLI
+**Use case**: Agents provided by installed collections
 
 ---
 
@@ -88,10 +88,12 @@ from pathlib import Path
 import os
 
 # Build search paths (CLI-specific)
+# Collection agents discovered via collection system
+# Then project and user directories
 search_paths = [
-    Path(__file__).parent / "data" / "agents",       # Bundled (lowest)
     Path(".amplifier/agents"),                        # Project
-    Path.home() / ".amplifier" / "agents",           # User (highest)
+    Path.home() / ".amplifier" / "agents",           # User
+    # Collection agents added via collection discovery
 ]
 
 # Create resolver
@@ -293,8 +295,8 @@ except RuntimeError as e:
 amplifier agent list
 
 # Example output:
-# zen-architect                           bundled
-# bug-hunter                              bundled
+# zen-architect                           developer-expertise
+# bug-hunter                              developer-expertise
 # design-intelligence:art-director        user-collection
 # project-reviewer                        project
 ```
@@ -352,10 +354,10 @@ unset AMPLIFIER_AGENT_SPECIAL_ANALYZER
 amplifier-app-cli uses amplifier-profiles library for ALL agent functionality:
 
 **What CLI provides** (policy):
-- CLI-specific search paths (bundled, user, project directories)
+- CLI-specific search paths (user, project, collection directories)
 - Environment variable override mechanism
 - CLI commands for listing/showing agents
-- Integration with profile system
+- Integration with profile and collection systems
 
 **What library provides** (mechanism):
 - Agent file format parsing (markdown + YAML frontmatter)

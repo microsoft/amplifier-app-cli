@@ -223,11 +223,6 @@ def get_agent_search_paths() -> list[Path]:
             if agent_dir not in paths:
                 paths.append(agent_dir)
 
-    # Bundled agents
-    bundled_agents = package_dir / "data" / "agents"
-    if bundled_agents.exists():
-        paths.append(bundled_agents)
-
     return paths
 
 
