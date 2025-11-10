@@ -872,6 +872,13 @@ async def interactive_chat(
                                 console.print()  # Blank line before response
                                 console.print(Markdown(response))
 
+                                # Emit prompt:complete (canonical kernel event) after displaying response
+                                hooks = session.coordinator.get("hooks")
+                                if hooks:
+                                    from amplifier_core.events import PROMPT_COMPLETE
+
+                                    await hooks.emit(PROMPT_COMPLETE, {"prompt": data["text"], "response": response})
+
                                 # Save session after each interaction
                                 context = session.coordinator.get("context")
                                 if context and hasattr(context, "get_messages"):
@@ -969,10 +976,12 @@ async def execute_single(
         console.print(Markdown(response))
         console.print()  # Add blank line after output to prevent running into shell prompt
 
-        # Emit response:displayed event for hooks (e.g., token usage display after content)
+        # Emit prompt:complete (canonical kernel event) after displaying response
         hooks = session.coordinator.get("hooks")
         if hooks:
-            await hooks.emit("response:displayed", {"response": response})
+            from amplifier_core.events import PROMPT_COMPLETE
+
+            await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt, "response": response})
 
         # Always save session (for debugging/archival)
         context = session.coordinator.get("context")
