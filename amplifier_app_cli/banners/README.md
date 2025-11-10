@@ -89,7 +89,7 @@ banners/
 
 ## The ansiterm Library
 
-Amplifier uses the **ansiterm** library (located at `amplifier-dev/ansiterm/`) for all ANSI art rendering.
+Amplifier uses the **ansiterm** library for all ANSI art rendering.
 
 **Why a separate library?**
 - Reusable across projects
@@ -106,7 +106,7 @@ Amplifier uses the **ansiterm** library (located at `amplifier-dev/ansiterm/`) f
 - `ansi-view` CLI - View .ANS files
 - `ansify` CLI - Generate simple banners
 
-See `amplifier-dev/ansiterm/README.md` for complete documentation.
+See the ansiterm library README for complete documentation.
 
 ## Creating New Banners
 
