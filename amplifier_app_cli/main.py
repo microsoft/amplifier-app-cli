@@ -969,6 +969,11 @@ async def execute_single(
         console.print(Markdown(response))
         console.print()  # Add blank line after output to prevent running into shell prompt
 
+        # Emit response:displayed event for hooks (e.g., token usage display after content)
+        hooks = session.coordinator.get("hooks")
+        if hooks:
+            await hooks.emit("response:displayed", {"response": response})
+
         # Always save session (for debugging/archival)
         context = session.coordinator.get("context")
         messages = getattr(context, "messages", [])
