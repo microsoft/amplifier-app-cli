@@ -79,10 +79,17 @@ class MentionResolver:
 
         Mention types (APP LAYER POLICY):
         1. @collection:path - Collection resources (e.g., @foundation:context/file.md)
+           - Tries collection_path / path first (package subdirectory)
+           - Falls back to collection_path.parent / path (hybrid packaging)
         2. @user:path - Shortcut to ~/.amplifier/{path}
         3. @project:path - Shortcut to .amplifier/{path}
         4. @~/path - User home directory
         5. @path - Relative to CWD or relative_to
+
+        Hybrid packaging: Collections installed via pip/uv create nested structure
+        where resources (docs/, agents/) are at collection root, while package
+        subdirectory contains pyproject.toml for metadata. Resolver uses parent
+        fallback to find resources at root when not found in package subdir.
 
         Args:
             mention: @mention string with prefix
@@ -119,8 +126,20 @@ class MentionResolver:
             collection_path = self.collection_resolver.resolve(prefix)
             if collection_path:
                 resource_path = collection_path / path
+
+                # Try at collection path first (package subdirectory)
                 if resource_path.exists() and resource_path.is_file():
                     return resource_path.resolve()
+
+                # Hybrid packaging fallback: If collection_path has pyproject.toml,
+                # try parent directory (resources may be at collection root, not package subdir).
+                # Mirrors discovery.py pattern for resource discovery.
+                if (collection_path / "pyproject.toml").exists():
+                    parent_resource_path = collection_path.parent / path
+                    if parent_resource_path.exists() and parent_resource_path.is_file():
+                        logger.debug(f"Collection resource found at parent: {parent_resource_path}")
+                        return parent_resource_path.resolve()
+
                 logger.debug(f"Collection resource not found: {resource_path}")
                 return None
 
