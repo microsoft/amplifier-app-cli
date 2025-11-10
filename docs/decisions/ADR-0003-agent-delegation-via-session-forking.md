@@ -8,7 +8,7 @@
 
 ## Context
 
-Amplifier enables delegating specialized tasks to focused execution environments (agents). The system needed a clean, minimal approach for creating these specialized sub-sessions without adding complexity to the kernel.
+Need clean approach for delegating specialized tasks to focused execution environments (agents) without kernel complexity.
 
 ---
 
@@ -76,16 +76,18 @@ No arbitrary restrictions:
 
 ### Ruthless Simplicity
 
-**Eliminates**:
-- Agent protocol (~100 lines from kernel)
-- Agent mount point handling (~50 lines from kernel)
-- Agent-specific abstractions (~1000 lines from modules)
+```
+Eliminated:
+  - Agent protocol (~100 lines from kernel)
+  - Agent mount point (~50 lines from kernel)
+  - Agent abstractions (~1000 lines from modules)
 
-**Adds**:
-- parent_id tracking (~15 lines in kernel)
-- Config merging (~200 lines in app layer)
+Added:
+  + parent_id tracking (~15 lines in kernel)
+  + Config merging (~200 lines in app layer)
 
-**Net**: ~1000 lines removed, philosophy score 10/10.
+Net: -1000 lines, philosophy score 10/10
+```
 
 ---
 
@@ -230,10 +232,9 @@ await child.initialize()
 
 ## References
 
-- `amplifier-core/docs/SESSION_FORK_SPECIFICATION.md` - Kernel mechanism
-- **[Agent Delegation Implementation](https://github.com/microsoft/amplifier-app-cli/blob/main/docs/AGENT_DELEGATION_IMPLEMENTATION.md)** - App layer policy
-- **[Agent Concepts](https://github.com/microsoft/amplifier-profiles/blob/main/docs/AGENT_AUTHORING.md)** - Agent system design
-- `docs/context/KERNEL_PHILOSOPHY.md` - Guiding principles
+- **→ [SESSION_FORK_SPECIFICATION.md](https://github.com/microsoft/amplifier-core/blob/main/docs/SESSION_FORK_SPECIFICATION.md)** - Kernel mechanism
+- **→ [Agent Delegation Implementation](https://github.com/microsoft/amplifier-app-cli/blob/main/docs/AGENT_DELEGATION_IMPLEMENTATION.md)** - App layer policy
+- **→ [Agent Authoring](https://github.com/microsoft/amplifier-profiles/blob/main/docs/AGENT_AUTHORING.md)** - Agent concepts
 
 ---
 

@@ -1,6 +1,6 @@
 # Context Loading System
 
-Amplifier's general-purpose @mention system loads context files anywhere you reference them - in profiles, user input, or any message. The @mention stays as a reference while content loads at the top of the message stack.
+**@mention system**: Load files anywhere (profiles, runtime input, nested files). Content loads at message stack top, @mention stays as reference.
 
 ## Quick Start
 
@@ -56,22 +56,29 @@ The @mentioned files load automatically and are added as context.
 @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
 ```
 
-See [amplifier-collections](https://github.com/microsoft/amplifier-collections) for complete documentation on collections.
+**→ [amplifier-collections](https://github.com/microsoft/amplifier-collections)** for complete collection documentation.
 
 ## How @Mention Loading Works
 
-@mentions work anywhere - profiles, user input, any message:
+```
+User input contains "@FILE.md"
+    ↓
+App layer detects @mention → MentionLoader
+    ↓
+File loaded recursively (nested @mentions followed)
+    ↓
+Content deduplicated (same content = one copy, all paths credited)
+    ↓
+Wrapped in <context_file paths="...">content</context_file>
+    ↓
+Added via context.add_message() BEFORE user message
+    ↓
+Message stack: [Context files] [User message with @mention as reference]
+    ↓
+@mention preserved as semantic reference marker
+```
 
-1. **App layer** detects @mentions in text (using kernel `parse_mentions()` util)
-2. **MentionLoader** (shared library) loads referenced files recursively
-3. **Content deduplicated** (same content from multiple paths = one copy, all paths credited)
-4. **Context messages created** (role=developer) with XML-wrapped content
-5. **Added to session** using existing `context.add_message()` API
-6. **Original @mention preserved** as reference in the source text
-7. **Providers convert** developer → XML-wrapped user (if needed)
-8. **Message stack**: Context at TOP, then conversation with @mentions as references
-
-**Key**: @mention stays in original text as contextual reference marker
+**Key insight**: @mention appears in TWO places - content at stack top (full text), reference in original message (semantic marker).
 
 ## @Mention Syntax
 
@@ -127,22 +134,23 @@ Relative to profile file location:
 ./guidelines/coding-standards.md
 ```
 
-## @Mention Resolution Rules
+## @Mention Resolution
 
-**Four @mention patterns with clear resolution:**
+```
+┌──────────────────────────────────────────────────────────┐
+│ @mention Syntax Resolution Table                         │
+├──────────────────────────────────────────────────────────┤
+│ @collection:path  → Collection paths (project/user/pkg)  │
+│ @user:path        → ~/.amplifier/{path}                  │
+│ @project:path     → .amplifier/{path}                    │
+│ @~/path           → User home: ~/{path}                  │
+│ @path             → CWD-relative or search paths         │
+│ ./path            → Relative to source file              │
+└──────────────────────────────────────────────────────────┘
+```
 
-| Syntax | Resolves To | Used For | Example |
-|--------|-------------|----------|---------|
-| `@collection:path` | Collection search paths (project/user/bundled) | Collection resources | `@foundation:context/shared/common-agent-base.md` |
-| `@user:path` | `~/.amplifier/{path}` | User directory shortcut | `@user:context/my-guidelines.md` |
-| `@project:path` | `.amplifier/{path}` | Project directory shortcut | `@project:context/standards.md` |
-| `@~/path` | User home directory | User global files | `@~/.amplifier/my-context.md` |
-| `@path` | CWD or relative_to parameter | Project files | `@AGENTS.md`, `@ai_context/FILE.md` |
-| `./path` | Relative to profile/agent file | File-local references | `./context/local.md` |
-
-**Missing files**: Skipped gracefully (no error, omitted from context).
-
-**Security**: Path traversal blocked in collection references (`..` not allowed).
+**Missing files**: Skipped gracefully (no error).
+**Path traversal**: Blocked (`..` rejected in collection refs).
 
 ## Recursive Loading
 
@@ -485,61 +493,40 @@ Follow team standards strictly. All code changes must align with documented arch
 
 ## Related Documentation
 
-- **[Profile Authoring Guide](https://github.com/microsoft/amplifier-profiles/blob/main/docs/PROFILE_AUTHORING.md)** - Creating profiles
-- [REQUEST_ENVELOPE_V1 Models](REQUEST_ENVELOPE_MODELS.md) - Message model details
-- [Provider Module Protocol](specs/provider/PROVIDER_MODULE_PROTOCOL.md) - How providers handle context
+- **→ [Profile Authoring](https://github.com/microsoft/amplifier-profiles/blob/main/docs/PROFILE_AUTHORING.md)** - Creating profiles with @mentions
+- **→ [Collections Guide](https://github.com/microsoft/amplifier-collections)** - Collection system and resources
 
 ## Using @Mentions at Runtime
 
 @mentions aren't just for profiles - use them in chat anytime:
 
-### Example: Reference a doc while chatting
+### Runtime @Mention Example
 
 ```
-You: "Explain the kernel architecture in @docs/AMPLIFIER_AS_LINUX_KERNEL.md"
-
-Message stack:
-[1] <context_file paths="docs/AMPLIFIER_AS_LINUX_KERNEL.md">[full content]</context_file>
-[2] "Explain the kernel architecture in @docs/AMPLIFIER_AS_LINUX_KERNEL.md"  ← reference stays
-
-Model response: "The @docs/AMPLIFIER_AS_LINUX_KERNEL.md describes..."
+User: "Explain @docs/KERNEL.md"
+  ↓
+Message Stack:
+  [1] <context_file paths="docs/KERNEL.md">[full content]</context_file>
+  [2] "Explain @docs/KERNEL.md"  ← @mention as reference
+  ↓
+Model: "The @docs/KERNEL.md describes..." (can reference by name)
 ```
 
-The model can reference "@docs/AMPLIFIER_AS_LINUX_KERNEL.md" naturally because:
-- Content is loaded (at top of stack)
-- @mention stays as reference marker
-- Natural semantic link
-
-### Example: Compare multiple files
-
-```
-You: "Compare @file1.md and @file2.md"
-
-Message stack:
-[1] <context_file paths="file1.md">[content1]</context_file>
-[2] <context_file paths="file2.md">[content2]</context_file>
-[3] "Compare @file1.md and @file2.md"
-
-Model: "@file1.md uses X, while @file2.md uses Y"
-```
+**Why this works**: Content loaded at top, @mention preserved as semantic marker for referencing.
 
 ## Architecture
 
-### Component Layers
+```
+┌─────────────────────────────────────────────────────────┐
+│ Kernel (amplifier-core)                                 │
+│ • utils/mentions.py - Text parsing only (no file I/O)  │
+│ • context.add_message() - API for adding messages      │
+├─────────────────────────────────────────────────────────┤
+│ App Layer (amplifier-app-cli)                           │
+│ • lib/mention_loading/ - File loading, deduplication   │
+│ • Calls add_message() to inject loaded context         │
+│ • Policy: When to process @mentions (init + runtime)   │
+└─────────────────────────────────────────────────────────┘
+```
 
-**Kernel** (amplifier-core):
-- `utils/mentions.py` - Pure text parsing (no file I/O)
-- Uses existing `context.add_message()` API
-
-**Shared Library** (amplifier-lib):
-- MentionLoader - File loading and deduplication
-- MentionResolver - Search path resolution
-
-**App Layer** (amplifier-app-cli):
-- Processes @mentions (policy decision)
-- Calls MentionLoader
-- Uses existing kernel API to add context
-
-**No orchestrator changes** - Orchestrators don't know about @mentions
-
-See [MENTION_PROCESSING.md](MENTION_PROCESSING.md) for developer guide.
+**Orchestrators unchanged**: Don't know about @mentions (app-layer feature).

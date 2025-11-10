@@ -2,16 +2,14 @@
 
 **Status**: Implemented
 **Date**: 2025-10-14
-**Authors**: Brian Krabach, Claude Code
+**Authors**: Brian Krabach
 **Deciders**: Amplifier Core Team
 
 ---
 
-## Context and Problem Statement
+## Context
 
-Amplifier sessions need persistent storage that aligns with how users think about their work. Users work in projects, not globally across their entire filesystem. When a user asks "what sessions do I have?", they mean "what sessions for the project I'm currently working on?"
-
-Additionally, debugging and archival require that all session data be self-contained in a single location, making it easy to inspect, share, or clean up a complete session trace.
+Users work in **projects**, not globally. When asking "what sessions do I have?", they mean "sessions for THIS project". Debugging requires all session data self-contained in one location for easy inspection, sharing, and cleanup.
 
 ---
 
@@ -47,11 +45,13 @@ Users work in project contexts. When they run `amplifier sessions list`, they wa
 ### CWD-Based Project Slug
 
 Using the current working directory provides:
+
 - **Deterministic**: Same CWD always produces same slug
 - **Simple**: No git dependency, works everywhere
 - **Clear**: Users understand "where I am" = "my project"
 
 Slug format: Replace path separators with hyphens
+
 - `/home/user/repos/myapp` → `-home-user-repos-myapp`
 - `/tmp` → `-tmp`
 - `C:\projects\web-app` → `-C-projects-web-app` (Windows)
@@ -59,6 +59,7 @@ Slug format: Replace path separators with hyphens
 ### Self-Contained Sessions
 
 Every debugging session benefits from having all data in one place:
+
 - **Debugging**: No need to correlate transcript with separate log files
 - **Archival**: Copy session directory = complete backup
 - **Sharing**: Tar up session for bug reports
@@ -67,6 +68,7 @@ Every debugging session benefits from having all data in one place:
 ### Per-Session Event Logs
 
 Events are written to `sessions/<id>/events.jsonl` instead of a global log file in the working directory. This:
+
 - **Avoids clutter**: No log files dropped in project working directories
 - **Enables correlation**: Events and transcript naturally paired
 - **Simplifies debugging**: One location to inspect
@@ -147,27 +149,24 @@ $ amplifier sessions list --project /path/to/other/project
 
 ## Consequences
 
-### Positive
+### Consequences
 
-- ✅ **Better UX**: Session list shows only relevant sessions for current work
-- ✅ **Self-contained**: Complete session data in one directory
-- ✅ **Easier debugging**: Single location for transcript + events
-- ✅ **Simpler cleanup**: Delete project directory = delete all sessions
-- ✅ **Archival-friendly**: Copy session directory = complete backup
-- ✅ **Project context**: Sessions naturally tied to their origin
-- ✅ **Scalability**: Doesn't degrade as total session count grows
-- ✅ **No working dir clutter**: All user data in `~/.amplifier/`
+**✅ Positive**:
 
-### Negative
+- Session list shows only relevant sessions
+- Self-contained (one directory = complete session)
+- Easy debugging (single location for all data)
+- Simple cleanup (delete directory = remove session)
+- Archival-friendly (copy directory = full backup)
+- Scales with session count (project-scoped lists)
+- No clutter in working directories
 
-- ⚠️ **Project detection**: Relies on CWD which might not match user's mental model in edge cases
-- ⚠️ **Cross-project analysis**: Requires iterating multiple project directories
-- ⚠️ **Disk organization**: More nested directory structure
+**⚠️ Negative**:
 
-### Neutral
+- CWD detection may not match mental model in edge cases
+- Cross-project analysis requires multiple directory iteration
 
-- 🔄 **Configuration**: Project-specific settings via `.amplifier/` in working dir (separate from session storage)
-- 🔄 **Implementation time**: Straightforward, ~1 week
+**Note**: Project settings (`.amplifier/` in CWD) separate from session storage (`~/.amplifier/projects/`).
 
 ---
 
@@ -191,7 +190,7 @@ session_store = SessionStore()  # Auto-detects project from CWD
 hooks:
   - module: hooks-logging
     config:
-      mode: session-only  # Write only to per-session logs
+      mode: session-only # Write only to per-session logs
       session_log_template: ~/.amplifier/projects/{project}/sessions/{session_id}/events.jsonl
 ```
 
@@ -199,15 +198,13 @@ hooks:
 
 ## Philosophy Alignment
 
-**✅ Mechanism not Policy**: Zero kernel changes. Pure app-layer policy decision.
-
-**✅ Ruthless Simplicity**: CWD-based detection is straightforward, no complex algorithms.
-
-**✅ Text-First**: All files are human-readable JSONL or JSON.
-
-**✅ Modular**: SessionStore and LoggingHook are independent modules that compose.
-
-**✅ Clear Boundaries**: Session storage (user data) separate from project config (`.amplifier/` in working dir).
+| Principle                | Alignment                                            |
+| ------------------------ | ---------------------------------------------------- |
+| **Mechanism not Policy** | ✅ Zero kernel changes (pure app-layer)              |
+| **Ruthless Simplicity**  | ✅ CWD-based, no complex algorithms                  |
+| **Text-First**           | ✅ All files JSONL/JSON (human-readable)             |
+| **Modular**              | ✅ SessionStore + LoggingHook compose independently  |
+| **Clear Boundaries**     | ✅ User data (`~/`) ≠ Project config (`.amplifier/`) |
 
 ---
 
@@ -231,13 +228,13 @@ hooks:
 
 - KERNEL_PHILOSOPHY.md: Policy at edges (this is pure app-layer)
 - IMPLEMENTATION_PHILOSOPHY.md: Ruthless simplicity (favor clear boundaries)
-- Claude Code: Successful pattern for project-scoped session management
 
 ---
 
 ## Review Triggers
 
 This decision should be revisited if:
+
 - Users report project detection doesn't match their workflow
 - Performance issues with nested directory structure
 - New session storage backend considered (database, cloud sync)

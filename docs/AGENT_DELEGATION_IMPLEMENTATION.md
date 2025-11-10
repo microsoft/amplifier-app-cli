@@ -7,11 +7,10 @@ layer: App-Layer Implementation
 
 # Agent Delegation - amplifier-app-cli Implementation
 
-This document describes how **amplifier-app-cli** implements agent delegation using the amplifier-profiles library.
+How the CLI implements agent delegation using amplifier-profiles library and amplifier-core session forking.
 
-**For agent concepts and authoring**: See [amplifier-profiles](https://github.com/microsoft/amplifier-profiles)
-
-**For kernel mechanism**: See amplifier-core SESSION_FORK_SPECIFICATION.md
+**Agent concepts & authoring**: **→ [amplifier-profiles](https://github.com/microsoft/amplifier-profiles/blob/main/docs/AGENT_AUTHORING.md)**
+**Kernel mechanism**: **→ [SESSION_FORK_SPECIFICATION.md](https://github.com/microsoft/amplifier-core/blob/main/docs/SESSION_FORK_SPECIFICATION.md)**
 
 ---
 
@@ -29,52 +28,35 @@ amplifier-app-cli implements agent delegation by:
 
 ## CLI-Specific Search Paths
 
-Agent files are resolved using **first-match-wins** strategy (highest priority first):
+**First-match-wins resolution** (highest → lowest priority):
 
-### 1. Environment Variables (Highest Priority)
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 1. Environment Variables                                     │
+│    AMPLIFIER_AGENT_ZEN_ARCHITECT=~/test-zen.md             │
+│    → For testing changes before committing                  │
+├─────────────────────────────────────────────────────────────┤
+│ 2. User Directory                                            │
+│    ~/.amplifier/agents/zen-architect.md                     │
+│    → Personal overrides and custom agents                   │
+├─────────────────────────────────────────────────────────────┤
+│ 3. Project Directory                                         │
+│    .amplifier/agents/project-reviewer.md                    │
+│    → Project-specific agents (committed to git)             │
+├─────────────────────────────────────────────────────────────┤
+│ 4. Collection Agents                                         │
+│    collections/developer-expertise/agents/zen-architect.md  │
+│    → Agents bundled with collections                        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Environment variable format**: `AMPLIFIER_AGENT_<NAME>` (uppercase, dashes → underscores)
 
 ```bash
-# Format: AMPLIFIER_AGENT_<NAME> (uppercase, dashes → underscores)
-export AMPLIFIER_AGENT_ZEN_ARCHITECT=~/test-zen-architect.md
-export AMPLIFIER_AGENT_BUG_HUNTER=/tmp/debug-hunter.md
-
-# Use in session
-amplifier run "design auth system"  # Uses ~/test-zen-architect.md
+# Testing agent changes
+export AMPLIFIER_AGENT_ZEN_ARCHITECT=~/test-zen.md
+amplifier run "design system"  # Uses test version
 ```
-
-**Use case**: Testing agent changes before committing
-
-### 2. User Directory
-
-```
-~/.amplifier/agents/
-├── zen-architect.md       # Personal zen-architect override
-└── custom-analyzer.md     # Personal agent
-```
-
-**Use case**: Personal agent customizations
-
-### 3. Project Directory
-
-```
-.amplifier/agents/
-├── project-reviewer.md    # Project-specific agent
-└── zen-architect.md       # Project zen-architect override
-```
-
-**Use case**: Project-specific agents, committed to version control
-
-### 4. Collection Agents (Lowest Priority)
-
-```
-amplifier_app_cli/data/collections/developer-expertise/agents/
-├── zen-architect.md
-├── bug-hunter.md
-├── modular-builder.md
-└── researcher.md
-```
-
-**Use case**: Agents provided by installed collections
 
 ---
 
@@ -373,14 +355,11 @@ amplifier-app-cli uses amplifier-profiles library for ALL agent functionality:
 ## Related Documentation
 
 **Agent Concepts**:
-- [amplifier-profiles](https://github.com/microsoft/amplifier-profiles) - Agent system design and API
-- [Agent Authoring Guide](https://github.com/microsoft/amplifier-profiles/blob/main/docs/AGENT_AUTHORING.md) - How to create agents
+- **→ [amplifier-profiles](https://github.com/microsoft/amplifier-profiles)** - Agent system design and API
+- **→ [Agent Authoring Guide](https://github.com/microsoft/amplifier-profiles/blob/main/docs/AGENT_AUTHORING.md)** - How to create agents
 
 **Kernel Mechanism**:
-- amplifier-core SESSION_FORK_SPECIFICATION.md - Session forking contract
-
-**CLI Integration**:
-- [Profile Management](../README.md#profile-management) - How profiles load agents
+- **→ [SESSION_FORK_SPECIFICATION.md](https://github.com/microsoft/amplifier-core/blob/main/docs/SESSION_FORK_SPECIFICATION.md)** - Session forking contract
 
 ---
 

@@ -2,17 +2,15 @@
 
 **Status**: Implemented
 **Date**: 2025-10-14
-**Authors**: Brian Krabach, Claude Code
+**Authors**: Brian Krabach
 **Deciders**: Amplifier Core Team
 **Relates to**: ADR-0001 (Project-Scoped Sessions)
 
 ---
 
-## Context and Problem Statement
+## Context
 
-Session debugging and analysis require complete visibility into what happened during a session—not just the message transcript, but all events: tool calls, approvals, errors, timing, token usage, etc.
-
-Previously, splitting events across multiple files (transcript in one location, events in another) made correlation difficult and prevented sessions from being truly self-contained.
+Session debugging requires complete visibility: transcript + events (tool calls, approvals, errors, timing, tokens). Splitting across files makes correlation hard and prevents self-contained sessions.
 
 ---
 
@@ -222,15 +220,13 @@ Not implemented initially—add only if users request it.
 
 ## Philosophy Alignment
 
-**✅ Mechanism not Policy**: Logging hook is a module at the edge, not kernel code.
-
-**✅ Ruthless Simplicity**: One logging path (session-only), no dual-mode complexity.
-
-**✅ Text-First**: JSONL format, human-readable and tool-friendly.
-
-**✅ Fail Gracefully**: Logging failures don't crash sessions (non-interference).
-
-**✅ No Working Dir Clutter**: All user data centralized in `~/.amplifier/`.
+| Principle                | Alignment                            |
+| ------------------------ | ------------------------------------ |
+| **Mechanism not Policy** | ✅ Hook module (edge), not kernel    |
+| **Ruthless Simplicity**  | ✅ Session-only (no dual-mode)       |
+| **Text-First**           | ✅ JSONL (human + tool readable)     |
+| **Non-Interference**     | ✅ Log failures don't crash sessions |
+| **Clear Boundaries**     | ✅ User data (`~/`) ≠ Working dir    |
 
 ---
 
@@ -261,6 +257,7 @@ Not implemented initially—add only if users request it.
 ## Review Triggers
 
 This decision should be revisited if:
+
 - Users request cross-session analysis features
 - Performance issues with per-session event writing
 - Alternative storage backends considered (database, streaming)

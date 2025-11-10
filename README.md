@@ -42,7 +42,7 @@ amplifier
 amplifier run --profile dev "Your prompt"
 ```
 
-**Environment variables**: See [supported variables](../docs/USER_ONBOARDING.md#environment-variables) for automatic configuration.
+**Environment variables**: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY` detected automatically during `amplifier init`.
 
 ## Commands
 
@@ -235,16 +235,21 @@ toolkit/               # Standalone scenario tool utilities (at repo root)
 - `amplifier-module-resolution` - Module source resolution
 - `amplifier-collections` - Collection installation and discovery
 
-## Related Documentation
+## Documentation
 
-- [Complete user guide](../docs/USER_ONBOARDING.md)
-- [Configuration reference](../docs/USER_ONBOARDING.md#quick-reference)
-- [Collections guide](../docs/COLLECTIONS_GUIDE.md)
-- [Scenario tools guide](../docs/SCENARIO_TOOLS_GUIDE.md)
-- [Profile authoring](../docs/PROFILE_AUTHORING.md)
-- [Agent authoring](../docs/AGENT_AUTHORING.md)
-- [Module development](../docs/MODULE_DEVELOPMENT.md)
-- [Toolkit guide](../docs/TOOLKIT_GUIDE.md)
+**CLI-Specific Docs** (in this repo):
+- [Agent Delegation](docs/AGENT_DELEGATION_IMPLEMENTATION.md) - Sub-session spawning and resumption
+- [Context Loading](docs/CONTEXT_LOADING.md) - @mention system implementation
+- [Interactive Mode](docs/INTERACTIVE_MODE.md) - REPL and slash commands
+- [Architectural Decisions](docs/decisions/) - ADRs for major design choices
+
+**Authoritative Guides** (external, maintained in library repos):
+- **→ [Profile Authoring](https://github.com/microsoft/amplifier-profiles/blob/main/docs/PROFILE_AUTHORING.md)** - Creating and managing profiles
+- **→ [Agent Authoring](https://github.com/microsoft/amplifier-profiles/blob/main/docs/AGENT_AUTHORING.md)** - Creating specialized agents
+- **→ [User Onboarding](https://github.com/microsoft/amplifier/blob/next/docs/USER_ONBOARDING.md)** - Complete user guide and reference
+
+**Toolkit** (for building sophisticated tools):
+- **→ [Toolkit Guide](https://github.com/microsoft/amplifier-collection-toolkit/blob/main/docs/TOOLKIT_GUIDE.md)** - Multi-config metacognitive recipes
 
 ## Contributing
 

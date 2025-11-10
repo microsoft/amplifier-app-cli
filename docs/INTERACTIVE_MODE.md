@@ -1,144 +1,81 @@
 # Interactive Mode Guide
 
-This guide covers the powerful interactive features available in Amplifier's chat mode.
+Interactive chat mode with slash commands for controlling execution, saving work, and managing sessions.
 
-## Overview
+## Two Execution Modes
 
-Interactive mode (`amplifier run --mode chat`) provides a conversational interface with the AI, enhanced by slash commands that control execution, save work, and manage sessions.
+```
+┌─────────────────────────────────────────────────────────┐
+│ Normal Mode (default)                                    │
+│ • AI reads and modifies files                           │
+│ • All tools enabled (write, edit, bash)                 │
+│ • Active development                                    │
+├─────────────────────────────────────────────────────────┤
+│ Plan Mode (/think)                                       │
+│ • Read-only - write operations blocked                  │
+│ • Analysis and planning without changes                 │
+│ • Toggle: /think (enter) | /do (exit)                   │
+└─────────────────────────────────────────────────────────┘
+```
 
-### Two Execution Modes
+## Slash Commands
 
-**Normal Mode** (default):
-- AI can read and modify files
-- Tools like `write`, `edit`, `bash` are enabled
-- Best for active development
+| Command | Purpose | Notes |
+|---------|---------|-------|
+| `/think` | Enter plan mode | Read-only, blocks writes |
+| `/do` | Exit plan mode | Re-enables modifications |
+| `/save [file]` | Save transcript | To `.amplifier/transcripts/` |
+| `/clear` | Clear history | Keeps session active |
+| `/status` | Show session info | Mode, messages, tools count |
+| `/tools` | List tools | Shows loaded capabilities |
+| `/config` | Show configuration | Full mount plan |
+| `/help` | List commands | Quick reference |
+| `/stop` | Interrupt execution | Or use Ctrl+C |
 
-**Plan Mode** (`/think`):
-- AI can only read files and plan
-- Write operations are blocked
-- Best for analysis and planning without changes
+### Command Details
 
-## Slash Commands Reference
-
-### Planning Commands
-
-#### `/think` - Enter Plan Mode
-Enables read-only mode for thoughtful analysis without modifications.
-
-**When to use:**
-- Reviewing a complex codebase before changes
-- Getting AI analysis of architecture
-- Planning multi-step refactoring
-- Exploring unfamiliar code safely
-
-**Example:**
+**/think - Plan Mode** (read-only analysis):
 ```bash
 > /think
-✓ Plan Mode enabled - all modifications disabled
+✓ Plan Mode enabled
 
-> Analyze the authentication system and suggest improvements
-[AI provides analysis without making changes]
+> Analyze auth system and suggest improvements
+[AI analyzes without changes]
 
 > /do
-✓ Plan Mode disabled - modifications enabled
+✓ Plan Mode disabled
 
-> Implement the authentication improvements
-[AI now makes the suggested changes]
+> Implement the improvements
+[AI now makes changes]
 ```
 
-#### `/do` - Exit Plan Mode
-Returns to normal mode where AI can make modifications.
+**Use for**: Code review, architecture analysis, refactoring planning, security audits.
 
-### Session Management Commands
-
-#### `/save [filename]` - Save Transcript
-Saves your conversation history to `.amplifier/transcripts/`.
-
-**Arguments:**
-- `filename` (optional): Custom filename. If omitted, uses timestamp.
-
-**Example:**
+**/save - Persist Transcript**:
 ```bash
 > /save auth_refactor.json
-✓ Transcript saved to .amplifier/transcripts/auth_refactor.json
+✓ Saved to .amplifier/transcripts/auth_refactor.json
 ```
 
-**What's saved:**
-- All messages (user and AI)
-- Session configuration
-- Timestamp
+**Saves**: All messages, session config, timestamp. **Location**: `.amplifier/transcripts/` (gitignored).
 
-#### `/clear` - Clear Context
-Clears conversation history to start fresh while keeping the session active.
+**/clear - Reset Context**:
+Clears conversation history, session stays active. Use when switching topics or context grows too large.
 
-**When to use:**
-- Starting a completely different task
-- Context getting too large
-- Want to reset the AI's memory
-
-**Note:** This does NOT end the session, just clears the history.
-
-#### `/status` - Show Session Info
-Displays current session information.
-
-**Shows:**
-- Plan mode status (ON/OFF)
-- Number of messages in context
-- Active providers
-- Number of available tools
-
-**Example:**
+**/status - Session Information**:
 ```bash
 > /status
-Session Status:
-  Plan Mode: OFF
-  Messages: 42
-  Providers: anthropic
-  Tools: 8
+Plan Mode: OFF | Messages: 42 | Providers: anthropic | Tools: 8
 ```
 
-### Discovery Commands
-
-#### `/tools` - List Available Tools
-Shows all tools currently loaded in the session.
-
-**Output includes:**
-- Tool name
-- Tool description
-- Whether tool is available
-
-**Example:**
+**/tools - Capability Discovery**:
 ```bash
 > /tools
-Available Tools:
-  filesystem           - File operations (read, write, edit)
-  bash                 - Execute shell commands
-  web                  - Web search and fetch
-  task                 - Delegate to sub-agents
+filesystem - File operations
+bash       - Shell commands
+web        - Web search/fetch
+task       - Agent delegation
 ```
-
-#### `/config` - Show Configuration
-Displays the complete session configuration including providers, modules, and settings.
-
-**When to use:**
-- Verifying which provider/model is active
-- Checking context limits
-- Debugging module loading issues
-
-#### `/help` - Show Commands
-Displays a quick reference of all available slash commands.
-
-### Control Commands
-
-#### `/stop` - Stop Execution
-Interrupts the current AI operation.
-
-**When to use:**
-- AI is taking too long
-- Realized the task needs different approach
-- Emergency stop
-
-**Note:** You can also use Ctrl+C for the same effect.
 
 ## Usage Patterns
 
@@ -302,7 +239,7 @@ amplifier run --profile dev --mode chat
 amplifier run --profile production --mode chat
 ```
 
-See [profiles/README.md](../profiles/README.md) for more on profiles.
+**→ [Profile Authoring](https://github.com/microsoft/amplifier-profiles/blob/main/docs/PROFILE_AUTHORING.md)** for profile details.
 
 ## Troubleshooting
 
