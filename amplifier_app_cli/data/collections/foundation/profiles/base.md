@@ -15,9 +15,10 @@ session:
     module: context-simple
     source: git+https://github.com/microsoft/amplifier-module-context-simple@main
     config:
-      max_tokens: 100000
+      max_tokens: 400000
       compact_threshold: 0.8
       auto_compact: true
+  injection_budget_per_turn: 200000
 
 task:
   max_recursion_depth: 1
