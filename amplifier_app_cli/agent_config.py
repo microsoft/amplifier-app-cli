@@ -5,8 +5,9 @@ Agents are loaded via profiles library (amplifier-profiles).
 """
 
 import logging
-from copy import deepcopy
 from typing import Any
+
+from amplifier_profiles.merger import merge_profile_dicts
 
 logger = logging.getLogger(__name__)
 
@@ -15,11 +16,13 @@ def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
     """
     Deep merge parent config with agent overlay.
 
-    Rules:
-    - Overlay values replace parent values (override)
-    - Omitted keys inherited from parent
-    - Dicts merged recursively
-    - Arrays replaced entirely (not appended)
+    Uses the same merge logic as profile inheritance:
+    - Module lists (providers, tools, hooks) merge by module ID
+    - Config dicts merge recursively (child keys override parent keys)
+    - Sources inherit (agent doesn't need to repeat parent's source)
+    - Scalar values override (child replaces parent)
+
+    This ensures consistent merge behavior throughout the system.
 
     Args:
         parent: Parent session's complete mount plan
@@ -27,23 +30,12 @@ def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
 
     Returns:
         Merged mount plan for child session
+
+    See Also:
+        amplifier_profiles.merger.merge_profile_dicts - The underlying implementation
+        amplifier-profiles/docs/AGENT_AUTHORING.md - Merge behavior documentation
     """
-    result = deepcopy(parent)
-
-    for key, value in overlay.items():
-        if key not in result:
-            # New key from overlay
-            result[key] = deepcopy(value)
-
-        elif isinstance(value, dict) and isinstance(result[key], dict):
-            # Both dicts → recursive merge
-            result[key] = merge_configs(result[key], value)
-
-        else:
-            # Scalar or array → overlay replaces parent
-            result[key] = deepcopy(value)
-
-    return result
+    return merge_profile_dicts(parent, overlay)
 
 
 def validate_agent_config(config: dict[str, Any]) -> bool:
