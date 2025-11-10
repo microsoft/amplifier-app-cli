@@ -170,6 +170,14 @@ class SessionStore:
             temp_path = Path(tmp_file.name)
             try:
                 for message in transcript:
+                    # Skip system and developer role messages from transcript
+                    # Keep only user/assistant conversation (the actual interaction)
+                    # - system: Internal instructions merged by providers
+                    # - developer: Context files merged by providers
+                    msg_dict = message if isinstance(message, dict) else message.model_dump()
+                    if msg_dict.get("role") in ("system", "developer"):
+                        continue
+
                     # Sanitize message to ensure it's JSON-serializable
                     sanitized_message = self._sanitize_message(message)
                     json.dump(sanitized_message, tmp_file, ensure_ascii=False)
