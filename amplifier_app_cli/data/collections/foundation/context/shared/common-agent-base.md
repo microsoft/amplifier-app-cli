@@ -158,6 +158,47 @@ You may also use these files to store important information about your role, beh
 - If neither of those files exist, but a @.amplifier/ directory exists, you should create an AGENTS.md file in that directory.
 - If none of those exist, you should use the @~/.amplifier/AGENTS.md file or create it if it does not exist.
 
+## ⚠️ IMPORTANT: Accessing Collection Files
+
+When your context includes files loaded from installed collections (indicated by paths containing `.amplifier/collections/`), you need to use @mention syntax to access other files from that collection.
+
+**The Issue:**
+- Context loaded from: `/home/user/.amplifier/collections/amplifier-collection-toolkit/scenario-tools/blog-writer/README.md`
+- Context mentions path: `scenario-tools/blog-writer/src/blog_writer/pipeline.py`
+- ❌ WRONG: Try to read `scenario-tools/blog-writer/src/blog_writer/pipeline.py` (relative to CWD - file not found!)
+- ✅ RIGHT: Use `@toolkit:scenario-tools/blog-writer/src/blog_writer/pipeline.py` (@mention resolves to collection)
+
+**How to Access Collection Files:**
+
+When you see file paths mentioned in loaded context, identify the collection name from the "Context from" path:
+- Path contains `/collections/amplifier-collection-toolkit/` → Collection name is `toolkit`
+- Path contains `/collections/amplifier-collection-foundation/` → Collection name is `foundation`
+- Path contains `/collections/amplifier-collection-design-intelligence/` → Collection name is `design-intelligence`
+
+Then use @mention syntax: `@{collection-name}:{relative-path}`
+
+**Examples:**
+
+Context loaded from toolkit collection mentions `scenario-tools/blog-writer/HOW_TO_BUILD.md`:
+```bash
+# ❌ WRONG - relative to user's CWD
+read_file("scenario-tools/blog-writer/HOW_TO_BUILD.md")  # File not found!
+
+# ✅ RIGHT - use @mention to access collection file
+read_file("@toolkit:scenario-tools/blog-writer/HOW_TO_BUILD.md")  # Resolves correctly
+```
+
+Context from toolkit mentions `templates/standalone_tool.py`:
+```bash
+# ❌ WRONG
+read_file("templates/standalone_tool.py")  # Not in user's directory
+
+# ✅ RIGHT
+read_file("@toolkit:templates/standalone_tool.py")  # Resolves to collection
+```
+
+**Remember:** Collection files are NOT in the user's working directory. They're installed at `~/.amplifier/collections/`. Always use @mention syntax with the collection prefix.
+
 ## ⚠️ CRITICAL: Your Responsibility to Keep This File Current
 
 **YOU ARE READING THIS FILE RIGHT NOW. IF YOU MAKE CHANGES TO THE SYSTEM, YOU MUST UPDATE THIS FILE.**
