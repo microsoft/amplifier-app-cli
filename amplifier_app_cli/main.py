@@ -53,6 +53,15 @@ _key_manager = KeyManager()
 # Abort flag for ESC-based cancellation
 _abort_requested = False
 
+
+def _create_cli_ux_systems():
+    """Create CLI UX systems for session injection (app-layer policy)."""
+    from .ui import CLIApprovalSystem
+    from .ui import CLIDisplaySystem
+
+    return CLIApprovalSystem(), CLIDisplaySystem()
+
+
 # Placeholder for the run command; assigned after registration below
 _run_command: Callable | None = None
 
@@ -765,9 +774,13 @@ async def interactive_chat(
     if not session_id:
         session_id = str(uuid.uuid4())
 
-    # Create session with resolved config and session_id
-    # Session creates its own loader with coordinator (so it can see mounted resolver)
-    session = AmplifierSession(config, session_id=session_id)
+    # Create CLI UX systems (app-layer policy)
+    approval_system, display_system = _create_cli_ux_systems()
+
+    # Create session with resolved config, session_id, and injected UX systems
+    session = AmplifierSession(
+        config, session_id=session_id, approval_system=approval_system, display_system=display_system
+    )
 
     # Mount module source resolver (app-layer policy)
 
@@ -958,8 +971,13 @@ async def execute_single(
         original_stdout = None
         original_console_file = None
 
-    # Create session with resolved config and session_id
-    session = AmplifierSession(config, session_id=session_id)
+    # Create CLI UX systems (app-layer policy)
+    approval_system, display_system = _create_cli_ux_systems()
+
+    # Create session with resolved config, session_id, and injected UX systems
+    session = AmplifierSession(
+        config, session_id=session_id, approval_system=approval_system, display_system=display_system
+    )
 
     # For JSON output, store response data to output after cleanup
     json_output_data: dict[str, Any] | None = None
@@ -1121,8 +1139,13 @@ async def execute_single_with_session(
         original_stdout = None
         original_console_file = None
 
-    # Create session with session_id
-    session = AmplifierSession(config, session_id=session_id)
+    # Create CLI UX systems (app-layer policy)
+    approval_system, display_system = _create_cli_ux_systems()
+
+    # Create session with session_id and injected UX systems
+    session = AmplifierSession(
+        config, session_id=session_id, approval_system=approval_system, display_system=display_system
+    )
 
     # For JSON output, store response data to output after cleanup
     json_output_data: dict[str, Any] | None = None
@@ -1289,9 +1312,13 @@ async def interactive_chat_with_session(
     profile_name: str = "unknown",
 ):
     """Run an interactive chat session with restored context."""
-    # Create session with resolved config and session_id
-    # Session creates its own loader with coordinator (so it can see mounted resolver)
-    session = AmplifierSession(config, session_id=session_id)
+    # Create CLI UX systems (app-layer policy)
+    approval_system, display_system = _create_cli_ux_systems()
+
+    # Create session with resolved config, session_id, and injected UX systems
+    session = AmplifierSession(
+        config, session_id=session_id, approval_system=approval_system, display_system=display_system
+    )
 
     # Mount module source resolver (app-layer policy)
 
