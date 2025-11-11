@@ -140,7 +140,7 @@ def test_loader_no_mentions(temp_test_files):
 
 
 def test_loader_message_format(temp_test_files):
-    """Test message format includes context wrapper."""
+    """Test message format includes context wrapper with system-reminder tags."""
     resolver = MentionResolver(
         bundled_data_dir=temp_test_files,
         project_context_dir=temp_test_files,
@@ -155,6 +155,7 @@ def test_loader_message_format(temp_test_files):
     # Content is always str for loaded files, but need type guard for pyright
     content = messages[0].content
     assert isinstance(content, str)
-    assert content.startswith("[Context from ")
+    assert content.startswith("<system-reminder>\n[Context from ")
     assert "simple.md]" in content
     assert "\n\n" in content
+    assert content.endswith("</system-reminder>")

@@ -136,7 +136,7 @@ class MentionLoader:
         messages = []
         for ctx_file in context_files:
             paths_str = ", ".join(str(p) for p in ctx_file.paths)
-            content = f"[Context from {paths_str}]\n\n{ctx_file.content}"
+            content = f"<system-reminder>\n[Context from {paths_str}]\n\n{ctx_file.content}\n</system-reminder>"
             messages.append(Message(role="developer", content=content))
 
         return messages
