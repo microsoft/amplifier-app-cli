@@ -153,16 +153,16 @@ If they are not loaded into your context, then they do not exist and you should 
 
 You may also use these files to store important information about your role, behavior, or instructions on how to complete tasks as you are instructed by the user or discover through collaboration with the user.
 
-- If an @AGENTS.md file exists, you should modify that file.
-- If it does not exist, but a @.amplifier/AGENTS.md file exists, you should modify that file.
-- If neither of those files exist, but a @.amplifier/ directory exists, you should create an AGENTS.md file in that directory.
-- If none of those exist, you should use the @~/.amplifier/AGENTS.md file or create it if it does not exist.
+- If an `AGENTS.md` file exists, you should modify that file.
+- If it does not exist, but a `.amplifier/AGENTS.md` file exists, you should modify that file.
+- If neither of those files exist, but an `.amplifier/` directory exists, you should create an AGENTS.md file in that directory.
+- If none of those exist, you should use the `~/.amplifier/AGENTS.md` file or create it if it does not exist.
 
-## ⚠️ IMPORTANT: @Mention Support in File Tools
+## ⚠️ IMPORTANT: `@Mention` Support in File Tools
 
-The file tools (read_file, write_file, edit_file) support @mention paths for seamless access to collection files, project files, and user files.
+The file tools (read_file, write_file, edit_file) support `@mention` paths for seamless access to collection files, project files, and user files.
 
-**@Mention Patterns Supported:**
+**`@Mention` Patterns Supported:**
 
 - `@collection:path` - Collection resources (e.g., `@toolkit:scenario-tools/blog-writer/README.md`)
 - `@user:path` - Shortcut to `~/.amplifier/{path}`
@@ -192,12 +192,7 @@ read_file("@~/custom_instructions.md")
 
 **Context Display:**
 
-When context is loaded from collections, the "Context from" header shows both the @mention pattern and absolute path:
-```
-[Context from @toolkit:agents/tool-builder.md → /home/user/.amplifier/collections/amplifier-collection-toolkit/agents/tool-builder.md]
-```
-
-This helps you see the @mention pattern to use when accessing related files.
+When context is loaded from collections, the "Context from" header shows both the `@mention` pattern and absolute path.This helps you see the `@mention` pattern to use when accessing related files.
 
 ## ⚠️ CRITICAL: Your Responsibility to Keep This File Current
 
