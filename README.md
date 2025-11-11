@@ -89,14 +89,76 @@ amplifier source show <id>
 ### Session Commands
 
 ```bash
-amplifier run "prompt"               # Single interaction
-amplifier                            # Interactive chat
-amplifier continue                   # Resume most recent session
-amplifier session list               # Recent sessions
-amplifier session show <id>          # Session details
-amplifier session resume <id>        # Resume specific session
-amplifier session delete <id>        # Delete session
-amplifier session cleanup [--days N] # Clean up old sessions
+# New sessions
+amplifier run "prompt"                    # Single-shot (auto-persists, shows ID)
+amplifier                                 # Interactive (auto-generates ID)
+
+# Resume workflows
+amplifier continue                        # Resume most recent (interactive)
+amplifier continue "new prompt"           # Resume most recent (single-shot)
+amplifier run --resume <id> "prompt"      # Resume specific session
+echo "prompt" | amplifier continue        # Resume via Unix pipe
+
+# Session management
+amplifier session list                    # Recent sessions
+amplifier session show <id>               # Session details
+amplifier session resume <id>             # Resume specific (interactive)
+amplifier session delete <id>             # Delete session
+amplifier session cleanup [--days N]      # Clean up old sessions
+```
+
+### Conversational Single-Shot Workflows
+
+**Build context across multiple commands:**
+
+```bash
+# Question 1: Start conversation
+$ amplifier run "What's the weather in Seattle?"
+Session ID: a1b2c3d4
+[Response about Seattle weather]
+
+# Question 2: Follow-up with context
+$ amplifier continue "And what about tomorrow?"
+✓ Resuming most recent session: a1b2c3d4
+  Messages: 2
+[Response with context from previous question]
+
+# Question 3: Continue the thread
+$ amplifier continue "Should I bring an umbrella?"
+✓ Resuming most recent session: a1b2c3d4
+  Messages: 4
+[Response informed by entire weather conversation]
+```
+
+**Unix piping with context:**
+
+```bash
+# Initial question
+$ amplifier run "Analyze this log file structure"
+Session ID: e5f6g7h8
+[Analysis]
+
+# Follow-up via pipe
+$ cat errors.log | amplifier continue
+✓ Resuming most recent session: e5f6g7h8
+  Messages: 2
+[Analysis of errors with context from previous conversation]
+```
+
+**Resume specific conversation:**
+
+```bash
+# List your sessions
+$ amplifier session list
+Recent Sessions:
+  a1b2c3d4  2024-11-10 14:30  6 messages  # Weather conversation
+  e5f6g7h8  2024-11-10 12:15  4 messages  # Log analysis
+
+# Resume the weather conversation specifically
+$ amplifier run --resume a1b2c3d4 "What about next week?"
+✓ Resuming session: a1b2c3d4
+  Messages: 6
+[Response with full weather conversation context]
 ```
 
 ### Utility Commands
