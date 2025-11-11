@@ -79,12 +79,15 @@ class MentionLoader:
         mentions = parse_mentions(text)
         return len(mentions) > 0
 
-    def load_mentions(self, text: str, relative_to: Path | None = None) -> list[Message]:
-        """Load all @mentioned files recursively.
+    def load_mentions(
+        self, text: str, relative_to: Path | None = None, deduplicator: ContentDeduplicator | None = None
+    ) -> list[Message]:
+        """Load all @mentioned files recursively with optional session-wide deduplication.
 
         Args:
             text: Text containing @mentions
             relative_to: Base path for relative mentions (updates resolver)
+            deduplicator: Optional session-wide ContentDeduplicator for cross-call deduplication
 
         Returns:
             List of Message objects with role=developer containing loaded context
@@ -92,7 +95,10 @@ class MentionLoader:
         if relative_to is not None:
             self.resolver.relative_to = relative_to
 
-        deduplicator = ContentDeduplicator()
+        # Use provided deduplicator for session-wide deduplication, or create per-call instance
+        if deduplicator is None:
+            deduplicator = ContentDeduplicator()
+
         visited_paths: set[Path] = set()
         path_to_mention: dict[Path, str] = {}  # Track original @mention for each path
         to_process: list[str] = parse_mentions(text)

@@ -593,15 +593,16 @@ async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> N
     from pathlib import Path
 
     loader = MentionLoader()
-    context_messages = loader.load_mentions(prompt, relative_to=Path.cwd())
+    deduplicator = session.coordinator.get_capability("mention_deduplicator")
+    context_messages = loader.load_mentions(prompt, relative_to=Path.cwd(), deduplicator=deduplicator)
 
     if not context_messages:
-        logger.debug("No files found for runtime @mentions")
+        logger.debug("No files found for runtime @mentions (or all already loaded)")
         return
 
-    logger.info(f"Loaded {len(context_messages)} context files from runtime @mentions")
+    logger.info(f"Loaded {len(context_messages)} unique context files from runtime @mentions")
 
-    # Add context messages to session (before user message)
+    # Add context messages to session as developer messages (before user message)
     context = session.coordinator.get("context")
     for i, msg in enumerate(context_messages):
         msg_dict = msg.model_dump()
@@ -650,24 +651,17 @@ async def _process_profile_mentions(session: AmplifierSession, profile_name: str
 
         logger.info("Profile contains @mentions, loading context files...")
 
-        # Load @mentioned files
+        # Load @mentioned files with session-wide deduplicator
         loader = MentionLoader()
-        context_messages = loader.load_mentions(markdown_body, relative_to=profile_file.parent)
+        deduplicator = session.coordinator.get_capability("mention_deduplicator")
+        context_messages = loader.load_mentions(
+            markdown_body, relative_to=profile_file.parent, deduplicator=deduplicator
+        )
 
-        logger.info(f"Loaded {len(context_messages)} context messages from profile @mentions")
-
-        # Add context messages to session
-        context = session.coordinator.get("context")
-        logger.debug(f"Got context object: {type(context)}")
-
-        for i, msg in enumerate(context_messages):
-            msg_dict = msg.model_dump()
-            logger.debug(
-                f"Adding context message {i + 1}/{len(context_messages)}: role={msg.role}, content_length={len(msg.content)}"
-            )
-            await context.add_message(msg_dict)
+        logger.info(f"Loaded {len(context_messages)} unique context files from profile @mentions")
 
         # Prepend loaded @mention content to markdown body
+        # Note: NOT adding as separate developer messages - only in system instruction
         # This ensures system message contains actual content, not just @mention references
         context_parts = []
         for msg in context_messages:
@@ -780,10 +774,15 @@ async def interactive_chat(
     await session.coordinator.mount("module-source-resolver", resolver)
 
     # Register MentionResolver capability for tools (app-layer policy)
+    from amplifier_app_cli.lib.mention_loading.deduplicator import ContentDeduplicator
     from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
 
     mention_resolver = MentionResolver()
     session.coordinator.register_capability("mention_resolver", mention_resolver)
+
+    # Register session-wide ContentDeduplicator for @mention deduplication (app-layer policy)
+    mention_deduplicator = ContentDeduplicator()
+    session.coordinator.register_capability("mention_deduplicator", mention_deduplicator)
 
     # Show loading indicator during initialization (modules loading, etc.)
     with console.status("[dim]Loading...[/dim]", spinner="dots"):
