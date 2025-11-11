@@ -91,9 +91,10 @@ amplifier source show <id>
 ```bash
 amplifier run "prompt"               # Single interaction
 amplifier                            # Interactive chat
+amplifier continue                   # Resume most recent session
 amplifier session list               # Recent sessions
 amplifier session show <id>          # Session details
-amplifier session resume <id>        # Continue session
+amplifier session resume <id>        # Resume specific session
 amplifier session delete <id>        # Delete session
 amplifier session cleanup [--days N] # Clean up old sessions
 ```

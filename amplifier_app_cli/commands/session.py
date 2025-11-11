@@ -38,6 +38,57 @@ def register_session_commands(
 ):
     """Register session commands on the root CLI group."""
 
+    @cli.command(name="continue")
+    @click.option("--profile", "-P", help="Profile to use for resumed session")
+    def continue_session(profile: str | None):
+        """Resume the most recent session for this project."""
+        store = SessionStore()
+
+        # Get most recent session
+        session_ids = store.list_sessions()
+        if not session_ids:
+            console.print("[yellow]No sessions found to resume.[/yellow]")
+            console.print("\nStart a new session with: [cyan]amplifier[/cyan]")
+            sys.exit(1)
+
+        # Resume most recent
+        session_id = session_ids[0]
+
+        try:
+            transcript, metadata = store.load(session_id)
+
+            console.print(f"[green]✓[/green] Resuming most recent session: {session_id}")
+            console.print(f"  Messages: {len(transcript)}")
+
+            saved_profile = metadata.get("profile", "unknown")
+            if not profile and saved_profile and saved_profile != "unknown":
+                profile = saved_profile
+                console.print(f"  Using saved profile: {profile}")
+
+            config_manager = create_config_manager()
+            profile_loader = create_profile_loader()
+            agent_loader = create_agent_loader()
+            app_settings = AppSettings(config_manager)
+
+            config_data = resolve_app_config(
+                config_manager=config_manager,
+                profile_loader=profile_loader,
+                agent_loader=agent_loader,
+                app_settings=app_settings,
+                profile_override=profile,
+                console=console,
+            )
+
+            search_paths = get_module_search_paths()
+            active_profile = profile if profile else saved_profile
+
+            asyncio.run(
+                interactive_chat_with_session(config_data, search_paths, False, session_id, transcript, active_profile)
+            )
+        except Exception as exc:
+            console.print(f"[red]Error resuming session:[/red] {exc}")
+            sys.exit(1)
+
     @cli.group(invoke_without_command=True)
     @click.pass_context
     def session(ctx: click.Context):

@@ -132,13 +132,28 @@ Session Status:
 > exit
 ```
 
-**Session 2: Implementation**
+**Session 2: Resume and Implement**
 ```bash
-# Load the saved plan externally, then:
+# Resume the planning session
+$ amplifier continue
+Resuming session: a1b2c3d4
+Messages: 5
+
 > Implement step 1 of the migration plan
-[AI implements]
+[AI implements with full context]
 
 > /save api_migration_progress.json
+```
+
+**Alternative: Resume specific session**
+```bash
+$ amplifier session list
+Recent Sessions:
+  a1b2c3d4  2024-10-15 14:30  5 messages
+  e5f6g7h8  2024-10-14 09:15  12 messages
+
+$ amplifier session resume a1b2c3d4
+# Or use: amplifier continue
 ```
 
 ### Pattern 4: Tool Discovery

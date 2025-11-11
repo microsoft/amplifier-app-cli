@@ -97,7 +97,6 @@ def register_run_command(
     @click.option("--provider", "-p", default=None, help="LLM provider to use")
     @click.option("--model", "-m", help="Model to use (provider-specific)")
     @click.option("--mode", type=click.Choice(["chat", "single"]), default="single", help="Execution mode")
-    @click.option("--session-id", help="Session ID for persistence (generates UUID if not provided)")
     @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
     def run(
         prompt: str | None,
@@ -105,7 +104,6 @@ def register_run_command(
         provider: str,
         model: str | None,
         mode: str,
-        session_id: str | None,
         verbose: bool,
     ):
         """Execute a prompt or start an interactive session."""
@@ -142,9 +140,9 @@ def register_run_command(
         asyncio.run(_check_updates_background())
 
         if mode == "chat":
-            if not session_id:
-                session_id = str(uuid.uuid4())
-                console.print(f"\n[dim]Session ID: {session_id}[/dim]")
+            # Generate new session ID for interactive mode
+            session_id = str(uuid.uuid4())
+            console.print(f"\n[dim]Session ID: {session_id}[/dim]")
             asyncio.run(interactive_chat(config_data, search_paths, verbose, session_id, active_profile_name))
         else:
             if prompt is None:
@@ -157,7 +155,8 @@ def register_run_command(
                     console.print("[red]Error:[/red] Prompt required in single mode")
                     sys.exit(1)
 
-            asyncio.run(execute_single(prompt, config_data, search_paths, verbose, session_id, active_profile_name))
+            # Single mode doesn't need session persistence
+            asyncio.run(execute_single(prompt, config_data, search_paths, verbose, None, active_profile_name))
 
     return run
 
