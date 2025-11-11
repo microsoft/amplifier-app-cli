@@ -94,6 +94,7 @@ class MentionLoader:
 
         deduplicator = ContentDeduplicator()
         visited_paths: set[Path] = set()
+        path_to_mention: dict[Path, str] = {}  # Track original @mention for each path
         to_process: list[str] = parse_mentions(text)
 
         while to_process:
@@ -108,6 +109,7 @@ class MentionLoader:
                 continue
 
             visited_paths.add(resolved_path)
+            path_to_mention[resolved_path] = mention  # Remember original @mention
 
             try:
                 content = resolved_path.read_text(encoding="utf-8")
@@ -122,79 +124,32 @@ class MentionLoader:
                 if nested_path not in [extract_mention_path(m) for m in to_process]:
                     to_process.append(nested)
 
-        return self._create_messages(deduplicator.get_unique_files())
+        return self._create_messages(deduplicator.get_unique_files(), path_to_mention)
 
-    def _create_messages(self, context_files: list[ContextFile]) -> list[Message]:
+    def _create_messages(self, context_files: list[ContextFile], path_to_mention: dict[Path, str]) -> list[Message]:
         """Create Message objects from loaded context files.
 
         Args:
             context_files: List of deduplicated context files
+            path_to_mention: Mapping of resolved paths to original @mention strings
 
         Returns:
             List of Message objects with role=developer
         """
         messages = []
         for ctx_file in context_files:
-            # Format paths with @mention representation where possible
+            # Format paths with original @mention and absolute path
             path_displays = []
             for p in ctx_file.paths:
-                mention = self._path_to_mention(p)
-                if mention:
-                    path_displays.append(f"{mention} → {p}")
+                original_mention = path_to_mention.get(p)
+                if original_mention:
+                    path_displays.append(f"{original_mention} → {p}")
                 else:
                     path_displays.append(str(p))
 
             paths_str = ", ".join(path_displays)
-            content = f"<system-reminder>\n[Context from {paths_str}]\n\n{ctx_file.content}\n</system-reminder>"
+            # Provider will wrap in <context_file>, so just prepend header to content
+            content = f"[Context from {paths_str}]\n\n{ctx_file.content}"
             messages.append(Message(role="developer", content=content))
 
         return messages
-
-    def _path_to_mention(self, path: Path) -> str | None:
-        """Convert absolute path to @mention syntax if from a collection.
-
-        Args:
-            path: Absolute path to convert
-
-        Returns:
-            @mention string if path is from a collection, None otherwise
-        """
-        path_str = str(path)
-
-        # Check if path is from a collection
-        collections_marker = "/.amplifier/collections/"
-        if collections_marker in path_str:
-            # Extract collection name and relative path
-            # Example: /home/user/.amplifier/collections/amplifier-collection-toolkit/scenario-tools/blog-writer/README.md
-            # → @toolkit:scenario-tools/blog-writer/README.md
-            parts = path_str.split(collections_marker, 1)
-            if len(parts) == 2:
-                after_collections = parts[1]
-                # Collection dir format: amplifier-collection-{name}/path
-                if after_collections.startswith("amplifier-collection-"):
-                    # Find first / to separate collection name from path
-                    slash_idx = after_collections.find("/")
-                    if slash_idx > 0:
-                        collection_dir = after_collections[:slash_idx]
-                        # Extract short name: amplifier-collection-toolkit → toolkit
-                        collection_name = collection_dir.replace("amplifier-collection-", "")
-                        relative_path = after_collections[slash_idx + 1 :]
-                        return f"@{collection_name}:{relative_path}"
-
-        # Check for user home directory
-        try:
-            relative = path.relative_to(Path.home())
-            return f"@~/{relative}"
-        except ValueError:
-            pass
-
-        # Check for project .amplifier directory
-        try:
-            amplifier_dir = Path.cwd() / ".amplifier"
-            if path.is_relative_to(amplifier_dir):
-                relative = path.relative_to(amplifier_dir)
-                return f"@project:{relative}"
-        except (ValueError, AttributeError):
-            pass
-
-        return None
