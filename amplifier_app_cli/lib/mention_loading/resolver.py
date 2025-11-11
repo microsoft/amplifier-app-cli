@@ -110,16 +110,18 @@ class MentionResolver:
             # Handle shortcuts first
             if prefix == "user":
                 user_path = Path.home() / ".amplifier" / path
-                if user_path.exists() and user_path.is_file():
+                # Support both files AND directories
+                if user_path.exists():
                     return user_path.resolve()
-                logger.debug(f"User shortcut file not found: {user_path}")
+                logger.debug(f"User shortcut path not found: {user_path}")
                 return None
 
             if prefix == "project":
                 project_path = Path.cwd() / ".amplifier" / path
-                if project_path.exists() and project_path.is_file():
+                # Support both files AND directories
+                if project_path.exists():
                     return project_path.resolve()
-                logger.debug(f"Project shortcut file not found: {project_path}")
+                logger.debug(f"Project shortcut path not found: {project_path}")
                 return None
 
             # Otherwise: Collection reference
@@ -128,7 +130,8 @@ class MentionResolver:
                 resource_path = collection_path / path
 
                 # Try at collection path first (package subdirectory)
-                if resource_path.exists() and resource_path.is_file():
+                # Support both files AND directories
+                if resource_path.exists():
                     return resource_path.resolve()
 
                 # Hybrid packaging fallback: If collection_path has pyproject.toml,
@@ -136,7 +139,8 @@ class MentionResolver:
                 # Mirrors discovery.py pattern for resource discovery.
                 if (collection_path / "pyproject.toml").exists():
                     parent_resource_path = collection_path.parent / path
-                    if parent_resource_path.exists() and parent_resource_path.is_file():
+                    # Support both files AND directories
+                    if parent_resource_path.exists():
                         logger.debug(f"Collection resource found at parent: {parent_resource_path}")
                         return parent_resource_path.resolve()
 
@@ -147,16 +151,18 @@ class MentionResolver:
             logger.debug(f"Collection '{prefix}' not found")
             return None
 
-        # EXISTING PATTERN: @~/ - user home directory ONLY
+        # EXISTING PATTERN: @~/ - user home directory
+        # Support both files AND directories
         if mention.startswith("@~/"):
             path_str = mention[3:]  # Remove '@~/'
             home_path = Path.home() / path_str
 
-            if home_path.exists() and home_path.is_file():
+            # Allow both files and directories
+            if home_path.exists():
                 return home_path.resolve()
 
-            # Graceful skip - user file doesn't exist (expected - optional files)
-            logger.debug(f"User home file not found: {home_path}")
+            # Graceful skip - path doesn't exist (expected - optional files)
+            logger.debug(f"User home path not found: {home_path}")
             return None
 
         # Type 3: Regular @ - CWD or relative_to
@@ -167,18 +173,20 @@ class MentionResolver:
             return self._resolve_relative(path_str)
 
         # If relative_to set (agent/profile loading), try that first
+        # Support both files AND directories
         if self.relative_to:
             candidate = self.relative_to / path_str
-            if candidate.exists() and candidate.is_file():
+            if candidate.exists():
                 return candidate.resolve()
 
         # Try CWD (for user prompts)
+        # Support both files AND directories
         candidate = Path.cwd() / path_str
-        if candidate.exists() and candidate.is_file():
+        if candidate.exists():
             return candidate.resolve()
 
         # Not found - graceful skip
-        logger.debug(f"Project file not found: {path_str} (tried relative_to and CWD)")
+        logger.debug(f"Project path not found: {path_str} (tried relative_to and CWD)")
         return None
 
     def _resolve_relative(self, path: str) -> Path | None:

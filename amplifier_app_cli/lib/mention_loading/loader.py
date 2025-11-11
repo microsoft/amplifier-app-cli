@@ -135,8 +135,66 @@ class MentionLoader:
         """
         messages = []
         for ctx_file in context_files:
-            paths_str = ", ".join(str(p) for p in ctx_file.paths)
+            # Format paths with @mention representation where possible
+            path_displays = []
+            for p in ctx_file.paths:
+                mention = self._path_to_mention(p)
+                if mention:
+                    path_displays.append(f"{mention} → {p}")
+                else:
+                    path_displays.append(str(p))
+
+            paths_str = ", ".join(path_displays)
             content = f"<system-reminder>\n[Context from {paths_str}]\n\n{ctx_file.content}\n</system-reminder>"
             messages.append(Message(role="developer", content=content))
 
         return messages
+
+    def _path_to_mention(self, path: Path) -> str | None:
+        """Convert absolute path to @mention syntax if from a collection.
+
+        Args:
+            path: Absolute path to convert
+
+        Returns:
+            @mention string if path is from a collection, None otherwise
+        """
+        path_str = str(path)
+
+        # Check if path is from a collection
+        collections_marker = "/.amplifier/collections/"
+        if collections_marker in path_str:
+            # Extract collection name and relative path
+            # Example: /home/user/.amplifier/collections/amplifier-collection-toolkit/scenario-tools/blog-writer/README.md
+            # → @toolkit:scenario-tools/blog-writer/README.md
+            parts = path_str.split(collections_marker, 1)
+            if len(parts) == 2:
+                after_collections = parts[1]
+                # Collection dir format: amplifier-collection-{name}/path
+                if after_collections.startswith("amplifier-collection-"):
+                    # Find first / to separate collection name from path
+                    slash_idx = after_collections.find("/")
+                    if slash_idx > 0:
+                        collection_dir = after_collections[:slash_idx]
+                        # Extract short name: amplifier-collection-toolkit → toolkit
+                        collection_name = collection_dir.replace("amplifier-collection-", "")
+                        relative_path = after_collections[slash_idx + 1 :]
+                        return f"@{collection_name}:{relative_path}"
+
+        # Check for user home directory
+        try:
+            relative = path.relative_to(Path.home())
+            return f"@~/{relative}"
+        except ValueError:
+            pass
+
+        # Check for project .amplifier directory
+        try:
+            amplifier_dir = Path.cwd() / ".amplifier"
+            if path.is_relative_to(amplifier_dir):
+                relative = path.relative_to(amplifier_dir)
+                return f"@project:{relative}"
+        except (ValueError, AttributeError):
+            pass
+
+        return None

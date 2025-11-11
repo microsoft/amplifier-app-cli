@@ -779,6 +779,12 @@ async def interactive_chat(
     resolver = create_module_resolver()
     await session.coordinator.mount("module-source-resolver", resolver)
 
+    # Register MentionResolver capability for tools (app-layer policy)
+    from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
+
+    mention_resolver = MentionResolver()
+    session.coordinator.register_capability("mention_resolver", mention_resolver)
+
     # Show loading indicator during initialization (modules loading, etc.)
     with console.status("[dim]Loading...[/dim]", spinner="dots"):
         await session.initialize()
