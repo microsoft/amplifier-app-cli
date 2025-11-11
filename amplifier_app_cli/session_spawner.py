@@ -49,16 +49,47 @@ async def spawn_sub_session(
     if not sub_session_id:
         sub_session_id = f"{parent_session.session_id}-{agent_name}-{uuid.uuid4().hex[:8]}"
 
-    # Create child session with parent_id (kernel mechanism)
+    # Create child session with parent_id and inherited UX systems (kernel mechanism)
     child_session = AmplifierSession(
         config=merged_config,
         loader=parent_session.loader,
         session_id=sub_session_id,
         parent_id=parent_session.session_id,  # Links to parent
+        approval_system=parent_session.coordinator.approval_system,  # Inherit from parent
+        display_system=parent_session.coordinator.display_system,  # Inherit from parent
     )
 
     # Initialize child session (mounts modules per merged config)
     await child_session.initialize()
+
+    # Register app-layer capabilities for child session (same as parent gets)
+    from amplifier_app_cli.lib.mention_loading.deduplicator import ContentDeduplicator
+    from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
+    from amplifier_app_cli.paths import create_module_resolver
+
+    # Module source resolver
+    resolver = create_module_resolver()
+    await child_session.coordinator.mount("module-source-resolver", resolver)
+
+    # Mention resolver (for @mention path resolution in tools)
+    mention_resolver = MentionResolver()
+    child_session.coordinator.register_capability("mention_resolver", mention_resolver)
+
+    # Mention deduplicator (for @mention content deduplication)
+    mention_deduplicator = ContentDeduplicator()
+    child_session.coordinator.register_capability("mention_deduplicator", mention_deduplicator)
+
+    # Approval provider (for hooks-approval module, if active)
+    register_provider_fn = child_session.coordinator.get_capability("approval.register_provider")
+    if register_provider_fn:
+        from rich.console import Console
+
+        from amplifier_app_cli.approval_provider import CLIApprovalProvider
+
+        console = Console()
+        approval_provider = CLIApprovalProvider(console)
+        register_provider_fn(approval_provider)
+        logger.debug(f"Registered approval provider for child session {sub_session_id}")
 
     # Inject agent's system instruction
     system_instruction = agent_config.get("system", {}).get("instruction")
@@ -147,16 +178,53 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     agent_name = metadata.get("agent_name", "unknown")
 
     # Recreate child session with same ID and loaded config
-    # loader=None uses default loader (fetches modules from config)
+    # Note: We don't have parent session ref here, so create fresh UX systems
+    from amplifier_app_cli.ui import CLIApprovalSystem
+    from amplifier_app_cli.ui import CLIDisplaySystem
+
+    approval_system = CLIApprovalSystem()
+    display_system = CLIDisplaySystem()
+
     child_session = AmplifierSession(
         config=merged_config,
         loader=None,  # Use default loader
         session_id=sub_session_id,  # REUSE same ID
         parent_id=parent_id,
+        approval_system=approval_system,
+        display_system=display_system,
     )
 
     # Initialize session (mounts modules per config)
     await child_session.initialize()
+
+    # Register app-layer capabilities for resumed child session
+    from amplifier_app_cli.lib.mention_loading.deduplicator import ContentDeduplicator
+    from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
+    from amplifier_app_cli.paths import create_module_resolver
+
+    # Module source resolver
+    resolver = create_module_resolver()
+    await child_session.coordinator.mount("module-source-resolver", resolver)
+
+    # Mention resolver (for @mention path resolution in tools)
+    mention_resolver = MentionResolver()
+    child_session.coordinator.register_capability("mention_resolver", mention_resolver)
+
+    # Mention deduplicator (for @mention content deduplication)
+    mention_deduplicator = ContentDeduplicator()
+    child_session.coordinator.register_capability("mention_deduplicator", mention_deduplicator)
+
+    # Approval provider (for hooks-approval module, if active)
+    register_provider_fn = child_session.coordinator.get_capability("approval.register_provider")
+    if register_provider_fn:
+        from rich.console import Console
+
+        from amplifier_app_cli.approval_provider import CLIApprovalProvider
+
+        console = Console()
+        approval_provider = CLIApprovalProvider(console)
+        register_provider_fn(approval_provider)
+        logger.debug(f"Registered approval provider for resumed child session {sub_session_id}")
 
     # Emit session:resume event for observability
     hooks = child_session.coordinator.get("hooks")
