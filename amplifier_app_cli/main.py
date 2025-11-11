@@ -1284,6 +1284,7 @@ _run_command = register_run_command(
     interactive_chat=interactive_chat,
     interactive_chat_with_session=interactive_chat_with_session,
     execute_single=execute_single,
+    execute_single_with_session=execute_single_with_session,
     get_module_search_paths=get_module_search_paths,
     check_first_run=check_first_run,
     prompt_first_run_init=prompt_first_run_init,

@@ -22,6 +22,7 @@ from ..runtime.config import resolve_app_config
 InteractiveChat = Callable[[dict, list, bool, str | None, str], Coroutine[Any, Any, None]]
 InteractiveResume = Callable[[dict, list, bool, str, list[dict], str], Coroutine[Any, Any, None]]
 ExecuteSingle = Callable[[str, dict, list, bool, str | None, str], Coroutine[Any, Any, None]]
+ExecuteSingleWithSession = Callable[[str, dict, list, bool, str, list[dict], str], Coroutine[Any, Any, None]]
 SearchPathProvider = Callable[[], list]
 
 
@@ -87,6 +88,7 @@ def register_run_command(
     interactive_chat: InteractiveChat,
     interactive_chat_with_session: InteractiveResume,
     execute_single: ExecuteSingle,
+    execute_single_with_session: ExecuteSingleWithSession,
     get_module_search_paths: SearchPathProvider,
     check_first_run: Callable[[], bool],
     prompt_first_run_init: Callable[[Any], bool],
@@ -211,14 +213,20 @@ def register_run_command(
 
             # Always persist single-shot sessions
             if resume:
-                # Continue existing session
-                session_id = resume
+                # Resume existing session with context
+                if transcript is None:
+                    console.print("[red]Error:[/red] Failed to load session transcript")
+                    sys.exit(1)
+                asyncio.run(
+                    execute_single_with_session(
+                        prompt, config_data, search_paths, verbose, resume, transcript, active_profile_name
+                    )
+                )
             else:
                 # Create new session
                 session_id = str(uuid.uuid4())
                 console.print(f"\n[dim]Session ID: {session_id}[/dim]")
-
-            asyncio.run(execute_single(prompt, config_data, search_paths, verbose, session_id, active_profile_name))
+                asyncio.run(execute_single(prompt, config_data, search_paths, verbose, session_id, active_profile_name))
 
     return run
 
