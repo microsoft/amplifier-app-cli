@@ -21,8 +21,8 @@ from ..runtime.config import resolve_app_config
 
 InteractiveChat = Callable[[dict, list, bool, str | None, str], Coroutine[Any, Any, None]]
 InteractiveResume = Callable[[dict, list, bool, str, list[dict], str], Coroutine[Any, Any, None]]
-ExecuteSingle = Callable[[str, dict, list, bool, str | None, str], Coroutine[Any, Any, None]]
-ExecuteSingleWithSession = Callable[[str, dict, list, bool, str, list[dict], str], Coroutine[Any, Any, None]]
+ExecuteSingle = Callable[[str, dict, list, bool, str | None, str, str], Coroutine[Any, Any, None]]
+ExecuteSingleWithSession = Callable[[str, dict, list, bool, str, list[dict], str, str], Coroutine[Any, Any, None]]
 SearchPathProvider = Callable[[], list]
 
 
@@ -103,6 +103,12 @@ def register_run_command(
     @click.option("--mode", type=click.Choice(["chat", "single"]), default="single", help="Execution mode")
     @click.option("--resume", help="Resume specific session with new prompt")
     @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
+    @click.option(
+        "--output-format",
+        type=click.Choice(["text", "json", "json-trace"]),
+        default="text",
+        help="Output format: text (markdown), json (response only), json-trace (full execution detail)",
+    )
     def run(
         prompt: str | None,
         profile: str | None,
@@ -111,6 +117,7 @@ def register_run_command(
         mode: str,
         resume: str | None,
         verbose: bool,
+        output_format: str,
     ):
         """Execute a prompt or start an interactive session."""
         from ..session_store import SessionStore
@@ -219,14 +226,26 @@ def register_run_command(
                     sys.exit(1)
                 asyncio.run(
                     execute_single_with_session(
-                        prompt, config_data, search_paths, verbose, resume, transcript, active_profile_name
+                        prompt,
+                        config_data,
+                        search_paths,
+                        verbose,
+                        resume,
+                        transcript,
+                        active_profile_name,
+                        output_format,
                     )
                 )
             else:
                 # Create new session
                 session_id = str(uuid.uuid4())
-                console.print(f"\n[dim]Session ID: {session_id}[/dim]")
-                asyncio.run(execute_single(prompt, config_data, search_paths, verbose, session_id, active_profile_name))
+                if output_format == "text":
+                    console.print(f"\n[dim]Session ID: {session_id}[/dim]")
+                asyncio.run(
+                    execute_single(
+                        prompt, config_data, search_paths, verbose, session_id, active_profile_name, output_format
+                    )
+                )
 
     return run
 

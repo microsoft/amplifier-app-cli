@@ -936,22 +936,47 @@ async def execute_single(
     verbose: bool,
     session_id: str | None = None,
     profile_name: str = "unknown",
+    output_format: str = "text",
 ):
     """Execute a single prompt and exit."""
-    # Immediate feedback that something is happening
-    console.print("[dim]Initializing session...[/dim]", end="")
-    console.print("\r", end="")  # Clear the line after initialization
+    # In JSON mode, redirect all output to stderr so only JSON goes to stdout
+    if output_format in ["json", "json-trace"]:
+        original_stdout = sys.stdout
+        original_console_file = console.file
+        sys.stdout = sys.stderr
+        console.file = sys.stderr
+    else:
+        # Show initialization feedback in text mode
+        console.print("[dim]Initializing session...[/dim]", end="")
+        console.print("\r", end="")  # Clear the line after initialization
+        original_stdout = None
+        original_console_file = None
 
     # Create session with resolved config and session_id
-    # Session creates its own loader with coordinator
     session = AmplifierSession(config, session_id=session_id)
+
+    # For JSON output, store response data to output after cleanup
+    json_output_data: dict[str, Any] | None = None
+
+    # For json-trace, create trace collector
+    trace_collector = None
+    if output_format == "json-trace":
+        from .trace_collector import TraceCollector
+
+        trace_collector = TraceCollector()
 
     try:
         # Mount module source resolver (app-layer policy)
-
         resolver = create_module_resolver()
         await session.coordinator.mount("module-source-resolver", resolver)
         await session.initialize()
+
+        # Register trace collector hooks if in json-trace mode
+        if trace_collector:
+            hooks = session.coordinator.get("hooks")
+            if hooks:
+                hooks.register("tool:pre", trace_collector.on_tool_pre, priority=1000, name="trace_collector_pre")
+                hooks.register("tool:post", trace_collector.on_tool_post, priority=1000, name="trace_collector_post")
 
         # Process profile @mentions if profile has markdown body
         await _process_profile_mentions(session, profile_name)
@@ -971,36 +996,53 @@ async def execute_single(
             console.print(f"[dim]Executing: {prompt}[/dim]")
 
         response = await session.execute(prompt)
-        if verbose:
-            console.print(f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]")
-        console.print(Markdown(response))
-        console.print()  # Add blank line after output to prevent running into shell prompt
 
-        # Emit prompt:complete (canonical kernel event) after displaying response
+        # Get metadata for output
+        actual_session_id = session.session_id
+        providers = session.coordinator.get("providers") or {}
+        model_name = "unknown"
+        for prov_name, prov in providers.items():
+            if hasattr(prov, "model"):
+                model_name = f"{prov_name}/{prov.model}"
+                break
+            if hasattr(prov, "default_model"):
+                model_name = f"{prov_name}/{prov.default_model}"
+                break
+
+        # Emit prompt:complete (canonical kernel event) BEFORE formatting output
+        # This ensures hook output goes to stderr in JSON mode
         hooks = session.coordinator.get("hooks")
         if hooks:
             from amplifier_core.events import PROMPT_COMPLETE
 
             await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt, "response": response})
 
+        # Output response based on format
+        if output_format in ["json", "json-trace"]:
+            # Store data for JSON output in finally block (after all hooks fired)
+            json_output_data = {
+                "status": "success",
+                "response": response,
+                "session_id": actual_session_id,
+                "profile": profile_name,
+                "model": model_name,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            # Add trace data if collecting
+            if trace_collector:
+                json_output_data["execution_trace"] = trace_collector.get_trace()
+                json_output_data["metadata"] = trace_collector.get_metadata()
+        else:
+            # Text output for humans
+            if verbose:
+                console.print(f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]")
+            console.print(Markdown(response))
+            console.print()  # Add blank line after output to prevent running into shell prompt
+
         # Always save session (for debugging/archival)
         context = session.coordinator.get("context")
         messages = getattr(context, "messages", [])
         if messages:
-            # Get actual session_id from session (may be auto-generated)
-            actual_session_id = session.session_id
-
-            # Get model name from provider
-            providers = session.coordinator.get("providers") or {}
-            model_name = "unknown"
-            for prov_name, prov in providers.items():
-                if hasattr(prov, "model"):
-                    model_name = f"{prov_name}/{prov.model}"
-                    break
-                if hasattr(prov, "default_model"):
-                    model_name = f"{prov_name}/{prov.default_model}"
-                    break
-
             store = SessionStore()
             metadata = {
                 "created_at": datetime.now(UTC).isoformat(),
@@ -1009,16 +1051,44 @@ async def execute_single(
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
             }
             store.save(actual_session_id, messages, metadata)
-            if verbose:
+            if verbose and output_format == "text":
                 console.print(f"[dim]Session {actual_session_id[:8]}... saved[/dim]")
 
     except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        if verbose:
-            console.print_exception()
+        if output_format in ["json", "json-trace"]:
+            # Restore stdout before writing error JSON
+            if original_stdout is not None:
+                sys.stdout = original_stdout
+            # JSON error output
+            error_output = {
+                "status": "error",
+                "error": str(e),
+                "session_id": getattr(session, "session_id", None) if "session" in locals() else None,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            print(json.dumps(error_output, indent=2))
+        else:
+            # Text error output
+            console.print(f"[red]Error:[/red] {e}")
+            if verbose:
+                console.print_exception()
         sys.exit(1)
     finally:
         await session.cleanup()
+        # Allow async tasks to complete before output
+        if output_format in ["json", "json-trace"]:
+            await asyncio.sleep(0.1)  # Brief pause for any deferred hook output
+        # Flush stderr to ensure all hook output is written
+        sys.stderr.flush()
+        # Restore stdout and print JSON
+        if json_output_data is not None and original_stdout is not None:
+            sys.stdout = original_stdout
+            print(json.dumps(json_output_data, indent=2))
+            sys.stdout.flush()
+        elif original_stdout is not None:
+            sys.stdout = original_stdout
+        if original_console_file is not None:
+            console.file = original_console_file
 
 
 async def execute_single_with_session(
@@ -1029,20 +1099,47 @@ async def execute_single_with_session(
     session_id: str,
     initial_transcript: list[dict],
     profile_name: str = "unknown",
+    output_format: str = "text",
 ):
     """Execute a single prompt with restored session context."""
-    # Immediate feedback
-    console.print("[dim]Initializing session...[/dim]", end="")
-    console.print("\r", end="")  # Clear the line
+    # In JSON mode, redirect all output to stderr
+    if output_format in ["json", "json-trace"]:
+        original_stdout = sys.stdout
+        original_console_file = console.file
+        sys.stdout = sys.stderr
+        console.file = sys.stderr
+    else:
+        # Show initialization feedback in text mode
+        console.print("[dim]Initializing session...[/dim]", end="")
+        console.print("\r", end="")  # Clear the line
+        original_stdout = None
+        original_console_file = None
 
     # Create session with session_id
     session = AmplifierSession(config, session_id=session_id)
+
+    # For JSON output, store response data to output after cleanup
+    json_output_data: dict[str, Any] | None = None
+
+    # For json-trace, create trace collector
+    trace_collector = None
+    if output_format == "json-trace":
+        from .trace_collector import TraceCollector
+
+        trace_collector = TraceCollector()
 
     try:
         # Mount module source resolver
         resolver = create_module_resolver()
         await session.coordinator.mount("module-source-resolver", resolver)
         await session.initialize()
+
+        # Register trace collector hooks if in json-trace mode
+        if trace_collector:
+            hooks = session.coordinator.get("hooks")
+            if hooks:
+                hooks.register("tool:pre", trace_collector.on_tool_pre, priority=1000, name="trace_collector_pre")
+                hooks.register("tool:post", trace_collector.on_tool_post, priority=1000, name="trace_collector_post")
 
         # Restore context from transcript
         context = session.coordinator.get("context")
@@ -1069,32 +1166,51 @@ async def execute_single_with_session(
             console.print(f"[dim]Executing: {prompt}[/dim]")
 
         response = await session.execute(prompt)
-        if verbose:
-            console.print(f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]")
-        console.print(Markdown(response))
-        console.print()  # Blank line after output
 
-        # Emit prompt:complete event
+        # Get model name from provider
+        providers = session.coordinator.get("providers") or {}
+        model_name = "unknown"
+        for prov_name, prov in providers.items():
+            if hasattr(prov, "model"):
+                model_name = f"{prov_name}/{prov.model}"
+                break
+            if hasattr(prov, "default_model"):
+                model_name = f"{prov_name}/{prov.default_model}"
+                break
+
+        # Emit prompt:complete event BEFORE formatting output
+        # This ensures hook output goes to stderr in JSON mode
         hooks = session.coordinator.get("hooks")
         if hooks:
             from amplifier_core.events import PROMPT_COMPLETE
 
             await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt, "response": response})
 
+        # Output response based on format
+        if output_format in ["json", "json-trace"]:
+            # Store data for JSON output in finally block (after all hooks fired)
+            json_output_data = {
+                "status": "success",
+                "response": response,
+                "session_id": session_id,
+                "profile": profile_name,
+                "model": model_name,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            # Add trace data if collecting
+            if trace_collector:
+                json_output_data["execution_trace"] = trace_collector.get_trace()
+                json_output_data["metadata"] = trace_collector.get_metadata()
+        else:
+            # Text output for humans
+            if verbose:
+                console.print(f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]")
+            console.print(Markdown(response))
+            console.print()  # Blank line after output
+
         # Save updated session
         messages = getattr(context, "messages", [])
         if messages:
-            # Get model name from provider
-            providers = session.coordinator.get("providers") or {}
-            model_name = "unknown"
-            for prov_name, prov in providers.items():
-                if hasattr(prov, "model"):
-                    model_name = f"{prov_name}/{prov.model}"
-                    break
-                if hasattr(prov, "default_model"):
-                    model_name = f"{prov_name}/{prov.default_model}"
-                    break
-
             store = SessionStore()
             metadata = {
                 "created_at": datetime.now(UTC).isoformat(),
@@ -1103,16 +1219,44 @@ async def execute_single_with_session(
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
             }
             store.save(session_id, messages, metadata)
-            if verbose:
+            if verbose and output_format == "text":
                 console.print(f"[dim]Session {session_id[:8]}... saved[/dim]")
 
     except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        if verbose:
-            console.print_exception()
+        if output_format in ["json", "json-trace"]:
+            # Restore stdout before writing error JSON
+            if original_stdout is not None:
+                sys.stdout = original_stdout
+            # JSON error output
+            error_output = {
+                "status": "error",
+                "error": str(e),
+                "session_id": session_id if "session_id" in locals() else None,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            print(json.dumps(error_output, indent=2))
+        else:
+            # Text error output
+            console.print(f"[red]Error:[/red] {e}")
+            if verbose:
+                console.print_exception()
         sys.exit(1)
     finally:
         await session.cleanup()
+        # Allow async tasks to complete before output
+        if output_format in ["json", "json-trace"]:
+            await asyncio.sleep(0.1)  # Brief pause for any deferred hook output
+        # Flush stderr to ensure all hook output is written
+        sys.stderr.flush()
+        # Restore stdout and print JSON
+        if json_output_data is not None and original_stdout is not None:
+            sys.stdout = original_stdout
+            print(json.dumps(json_output_data, indent=2))
+            sys.stdout.flush()
+        elif original_stdout is not None:
+            sys.stdout = original_stdout
+        if original_console_file is not None:
+            console.file = original_console_file
 
 
 # Register standalone commands
