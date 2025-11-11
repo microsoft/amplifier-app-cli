@@ -14,9 +14,16 @@ HOME_PATTERN: Pattern = re.compile(r"@~/([a-zA-Z0-9_\-/\.]*)")
 
 def parse_mentions(text: str) -> list[str]:
     """
-    Extract all @mentions from text, supporting two types:
+    Extract all @mentions from text, excluding examples in code/quotes.
+
+    Supports two types:
     - @~/path - User home directory files
     - @path - Project/CWD files or collection references
+
+    Excludes @mentions within:
+    - Inline code: `@mention`
+    - Double quotes: "@mention"
+    - Single quotes: '@mention'
 
     Returns @mentions WITH prefix (e.g., ['@~/.amplifier/custom.md', '@AGENTS.md', '@foundation:context/file.md'])
 
@@ -29,26 +36,41 @@ def parse_mentions(text: str) -> list[str]:
     Examples:
         >>> parse_mentions("@foundation:context/file.md and @AGENTS.md")
         ['@foundation:context/file.md', '@AGENTS.md']
-        >>> parse_mentions("@~/.amplifier/custom.md")
-        ['@~/.amplifier/custom.md']
-        >>> parse_mentions("No mentions here")
+        >>> parse_mentions("Example: `@foundation:file.md`")
+        []
+        >>> parse_mentions('read_file("@toolkit:path")')
         []
     """
+    # Filter out examples in inline code and quotes
+    # Remove inline code (`...`) on same line
+    text_filtered = re.sub(r"`[^`\n]+`", "", text)
+
+    # Remove double-quoted strings on same line
+    text_filtered = re.sub(r'"[^"\n]*"', "", text_filtered)
+
+    # Remove single-quoted strings on same line
+    text_filtered = re.sub(r"'[^'\n]*'", "", text_filtered)
+
     # Extract each type separately to preserve prefixes
-    homes = [f"@~/{m}" if m else "@~/" for m in HOME_PATTERN.findall(text)]
+    homes = [f"@~/{m}" if m else "@~/" for m in HOME_PATTERN.findall(text_filtered)]
 
     # Regular mentions - exclude those that are part of ~/
-    all_at_mentions = MENTION_PATTERN.findall(text)
+    all_at_mentions = MENTION_PATTERN.findall(text_filtered)
     regulars = []
     for m in all_at_mentions:
         # Check if this @ is part of @~/
-        # Look at what precedes it in text
-        idx = text.find(f"@{m}")
+        # Look at what precedes it in text_filtered
+        idx = text_filtered.find(f"@{m}")
         if idx > 0:
             # Check if preceded by "~/"
-            before = text[max(0, idx - 2) : idx]
+            before = text_filtered[max(0, idx - 2) : idx]
             if before.endswith("~/"):
                 continue  # Skip - it's part of ~/
+
+        # Skip generic "@mention" keyword used in documentation
+        if m == "mention":
+            continue
+
         regulars.append(f"@{m}")
 
     return homes + regulars
