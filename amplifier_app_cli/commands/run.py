@@ -20,6 +20,7 @@ from ..paths import create_profile_loader
 from ..runtime.config import resolve_app_config
 
 InteractiveChat = Callable[[dict, list, bool, str | None, str], Coroutine[Any, Any, None]]
+InteractiveResume = Callable[[dict, list, bool, str, list[dict], str], Coroutine[Any, Any, None]]
 ExecuteSingle = Callable[[str, dict, list, bool, str | None, str], Coroutine[Any, Any, None]]
 SearchPathProvider = Callable[[], list]
 
@@ -84,6 +85,7 @@ def register_run_command(
     cli: click.Group,
     *,
     interactive_chat: InteractiveChat,
+    interactive_chat_with_session: InteractiveResume,
     execute_single: ExecuteSingle,
     get_module_search_paths: SearchPathProvider,
     check_first_run: Callable[[], bool],
@@ -97,6 +99,7 @@ def register_run_command(
     @click.option("--provider", "-p", default=None, help="LLM provider to use")
     @click.option("--model", "-m", help="Model to use (provider-specific)")
     @click.option("--mode", type=click.Choice(["chat", "single"]), default="single", help="Execution mode")
+    @click.option("--resume", help="Resume specific session with new prompt")
     @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
     def run(
         prompt: str | None,
@@ -104,9 +107,47 @@ def register_run_command(
         provider: str,
         model: str | None,
         mode: str,
+        resume: str | None,
         verbose: bool,
     ):
         """Execute a prompt or start an interactive session."""
+        from ..session_store import SessionStore
+
+        # Handle --resume flag
+        if resume:
+            store = SessionStore()
+            if not store.exists(resume):
+                console.print(f"[red]Error:[/red] Session '{resume}' not found")
+                sys.exit(1)
+
+            try:
+                transcript, metadata = store.load(resume)
+                console.print(f"[green]✓[/green] Resuming session: {resume}")
+                console.print(f"  Messages: {len(transcript)}")
+
+                saved_profile = metadata.get("profile", "unknown")
+                if not profile and saved_profile and saved_profile != "unknown":
+                    profile = saved_profile
+                    console.print(f"  Using saved profile: {profile}")
+
+            except Exception as exc:
+                console.print(f"[red]Error loading session:[/red] {exc}")
+                sys.exit(1)
+
+            # Determine mode based on prompt presence
+            if prompt is None and sys.stdin.isatty():
+                # No prompt, no pipe → interactive mode
+                mode = "chat"
+            else:
+                # Has prompt or piped input → single-shot mode
+                if prompt is None:
+                    prompt = sys.stdin.read()
+                    if not prompt or not prompt.strip():
+                        console.print("[red]Error:[/red] Prompt required when resuming in single mode")
+                        sys.exit(1)
+                mode = "single"
+        else:
+            transcript = None
 
         cli_overrides = {}
         if provider:
@@ -140,13 +181,26 @@ def register_run_command(
         asyncio.run(_check_updates_background())
 
         if mode == "chat":
-            # Generate new session ID for interactive mode
-            session_id = str(uuid.uuid4())
-            console.print(f"\n[dim]Session ID: {session_id}[/dim]")
-            asyncio.run(interactive_chat(config_data, search_paths, verbose, session_id, active_profile_name))
+            # Interactive mode
+            if resume:
+                # Resume existing session (transcript loaded earlier)
+                if transcript is None:
+                    console.print("[red]Error:[/red] Failed to load session transcript")
+                    sys.exit(1)
+                asyncio.run(
+                    interactive_chat_with_session(
+                        config_data, search_paths, verbose, resume, transcript, active_profile_name
+                    )
+                )
+            else:
+                # New session
+                session_id = str(uuid.uuid4())
+                console.print(f"\n[dim]Session ID: {session_id}[/dim]")
+                asyncio.run(interactive_chat(config_data, search_paths, verbose, session_id, active_profile_name))
         else:
+            # Single-shot mode
             if prompt is None:
-                # Allow piping prompt content via stdin when no positional argument provided.
+                # Allow piping prompt content via stdin
                 if not sys.stdin.isatty():
                     prompt = sys.stdin.read()
                     if prompt is not None and not prompt.strip():
@@ -155,8 +209,16 @@ def register_run_command(
                     console.print("[red]Error:[/red] Prompt required in single mode")
                     sys.exit(1)
 
-            # Single mode doesn't need session persistence
-            asyncio.run(execute_single(prompt, config_data, search_paths, verbose, None, active_profile_name))
+            # Always persist single-shot sessions
+            if resume:
+                # Continue existing session
+                session_id = resume
+            else:
+                # Create new session
+                session_id = str(uuid.uuid4())
+                console.print(f"\n[dim]Session ID: {session_id}[/dim]")
+
+            asyncio.run(execute_single(prompt, config_data, search_paths, verbose, session_id, active_profile_name))
 
     return run
 

@@ -1021,6 +1021,100 @@ async def execute_single(
         await session.cleanup()
 
 
+async def execute_single_with_session(
+    prompt: str,
+    config: dict,
+    search_paths: list[Path],
+    verbose: bool,
+    session_id: str,
+    initial_transcript: list[dict],
+    profile_name: str = "unknown",
+):
+    """Execute a single prompt with restored session context."""
+    # Immediate feedback
+    console.print("[dim]Initializing session...[/dim]", end="")
+    console.print("\r", end="")  # Clear the line
+
+    # Create session with session_id
+    session = AmplifierSession(config, session_id=session_id)
+
+    try:
+        # Mount module source resolver
+        resolver = create_module_resolver()
+        await session.coordinator.mount("module-source-resolver", resolver)
+        await session.initialize()
+
+        # Restore context from transcript
+        context = session.coordinator.get("context")
+        if context and hasattr(context, "set_messages") and initial_transcript:
+            await context.set_messages(initial_transcript)
+            if verbose:
+                console.print(f"[dim]Restored {len(initial_transcript)} messages[/dim]")
+
+        # Register CLI approval provider if needed
+        from .approval_provider import CLIApprovalProvider
+
+        register_provider = session.coordinator.get_capability("approval.register_provider")
+        if register_provider:
+            approval_provider = CLIApprovalProvider(console)
+            register_provider(approval_provider)
+
+        # Process profile @mentions
+        await _process_profile_mentions(session, profile_name)
+
+        # Process runtime @mentions in user input
+        await _process_runtime_mentions(session, prompt)
+
+        if verbose:
+            console.print(f"[dim]Executing: {prompt}[/dim]")
+
+        response = await session.execute(prompt)
+        if verbose:
+            console.print(f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]")
+        console.print(Markdown(response))
+        console.print()  # Blank line after output
+
+        # Emit prompt:complete event
+        hooks = session.coordinator.get("hooks")
+        if hooks:
+            from amplifier_core.events import PROMPT_COMPLETE
+
+            await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt, "response": response})
+
+        # Save updated session
+        messages = getattr(context, "messages", [])
+        if messages:
+            # Get model name from provider
+            providers = session.coordinator.get("providers") or {}
+            model_name = "unknown"
+            for prov_name, prov in providers.items():
+                if hasattr(prov, "model"):
+                    model_name = f"{prov_name}/{prov.model}"
+                    break
+                if hasattr(prov, "default_model"):
+                    model_name = f"{prov_name}/{prov.default_model}"
+                    break
+
+            store = SessionStore()
+            metadata = {
+                "created_at": datetime.now(UTC).isoformat(),
+                "profile": profile_name,
+                "model": model_name,
+                "turn_count": len([m for m in messages if m.get("role") == "user"]),
+            }
+            store.save(session_id, messages, metadata)
+            if verbose:
+                console.print(f"[dim]Session {session_id[:8]}... saved[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        if verbose:
+            console.print_exception()
+        sys.exit(1)
+    finally:
+        await session.cleanup()
+
+
 # Register standalone commands
 cli.add_command(collection_group)
 cli.add_command(logs_cmd)
@@ -1188,6 +1282,7 @@ async def interactive_chat_with_session(
 _run_command = register_run_command(
     cli,
     interactive_chat=interactive_chat,
+    interactive_chat_with_session=interactive_chat_with_session,
     execute_single=execute_single,
     get_module_search_paths=get_module_search_paths,
     check_first_run=check_first_run,
@@ -1197,6 +1292,7 @@ _run_command = register_run_command(
 register_session_commands(
     cli,
     interactive_chat_with_session=interactive_chat_with_session,
+    execute_single_with_session=execute_single_with_session,
     get_module_search_paths=get_module_search_paths,
 )
 

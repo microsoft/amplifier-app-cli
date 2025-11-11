@@ -27,6 +27,7 @@ from ..runtime.config import resolve_app_config
 from ..session_store import SessionStore
 
 InteractiveResume = Callable[[dict, list[Path], bool, str, list[dict], str], Coroutine[Any, Any, None]]
+ExecuteSingleWithSession = Callable[[str, dict, list[Path], bool, str, list[dict], str], Coroutine[Any, Any, None]]
 SearchPathProvider = Callable[[], list[Path]]
 
 
@@ -34,14 +35,20 @@ def register_session_commands(
     cli: click.Group,
     *,
     interactive_chat_with_session: InteractiveResume,
+    execute_single_with_session: ExecuteSingleWithSession,
     get_module_search_paths: SearchPathProvider,
 ):
     """Register session commands on the root CLI group."""
 
     @cli.command(name="continue")
+    @click.argument("prompt", required=False)
     @click.option("--profile", "-P", help="Profile to use for resumed session")
-    def continue_session(profile: str | None):
-        """Resume the most recent session for this project."""
+    def continue_session(prompt: str | None, profile: str | None):
+        """Resume the most recent session.
+
+        With no prompt: Resume in interactive mode.
+        With prompt: Execute prompt in single-shot mode with session context.
+        """
         store = SessionStore()
 
         # Get most recent session
@@ -82,9 +89,29 @@ def register_session_commands(
             search_paths = get_module_search_paths()
             active_profile = profile if profile else saved_profile
 
-            asyncio.run(
-                interactive_chat_with_session(config_data, search_paths, False, session_id, transcript, active_profile)
-            )
+            # Determine mode based on prompt presence
+            if prompt is None and sys.stdin.isatty():
+                # No prompt, no pipe → interactive mode
+                asyncio.run(
+                    interactive_chat_with_session(
+                        config_data, search_paths, False, session_id, transcript, active_profile
+                    )
+                )
+            else:
+                # Has prompt or piped input → single-shot mode with context
+                if prompt is None:
+                    prompt = sys.stdin.read()
+                    if not prompt or not prompt.strip():
+                        console.print("[red]Error:[/red] Prompt required when using piped input")
+                        sys.exit(1)
+
+                # Execute single prompt with session context
+                asyncio.run(
+                    execute_single_with_session(
+                        prompt, config_data, search_paths, False, session_id, transcript, active_profile
+                    )
+                )
+
         except Exception as exc:
             console.print(f"[red]Error resuming session:[/red] {exc}")
             sys.exit(1)
