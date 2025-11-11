@@ -687,6 +687,7 @@ async def _process_profile_mentions(session: AmplifierSession, profile_name: str
             logger.debug(f"Prepended {len(context_parts)} context parts (final length={len(markdown_body)})")
 
         # Add system instruction with resolved @mention content prepended
+        context = session.coordinator.get("context")
         system_msg = Message(role="system", content=markdown_body)
         logger.debug(f"Adding system instruction with resolved @mentions (length={len(markdown_body)})")
         await context.add_message(system_msg.model_dump())
