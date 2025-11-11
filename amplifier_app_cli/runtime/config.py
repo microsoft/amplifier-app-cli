@@ -8,7 +8,7 @@ import re
 from typing import Any
 
 from amplifier_profiles import compile_profile_to_mount_plan
-from amplifier_profiles import merge_module_items
+from amplifier_profiles.merger import merge_module_items
 from rich.console import Console
 
 from ..lib.app_settings import AppSettings

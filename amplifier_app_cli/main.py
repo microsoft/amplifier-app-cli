@@ -565,7 +565,7 @@ def cli(ctx, install_completion):
             provider=None,
             model=None,
             mode="chat",
-            session_id=None,
+            resume=None,
             verbose=False,
         )
 
