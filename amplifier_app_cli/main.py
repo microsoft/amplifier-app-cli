@@ -858,6 +858,8 @@ async def interactive_chat(
 
                     if action == "prompt":
                         # Normal prompt execution
+                        # Note: Don't echo user input here - prompt already shows it with ">"
+                        # History/replay will show "You:" labels via render_message()
                         console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
 
                         # Process runtime @mentions in user input
@@ -888,8 +890,10 @@ async def interactive_chat(
                             # Handle result or cancellation
                             try:
                                 response = await execute_task
-                                console.print()  # Blank line before response
-                                console.print(Markdown(response))
+                                # Use shared message renderer (single source of truth)
+                                from .ui import render_message
+
+                                render_message({"role": "assistant", "content": response}, console)
 
                                 # Emit prompt:complete (canonical kernel event) after displaying response
                                 hooks = session.coordinator.get("hooks")
@@ -914,6 +918,7 @@ async def interactive_chat(
                                             )
 
                                     metadata = {
+                                        "session_id": session_id,
                                         "created": datetime.now(UTC).isoformat(),
                                         "profile": profile_name,
                                         "model": model_name,
@@ -1069,7 +1074,8 @@ async def execute_single(
         if messages:
             store = SessionStore()
             metadata = {
-                "created_at": datetime.now(UTC).isoformat(),
+                "session_id": actual_session_id,
+                "created": datetime.now(UTC).isoformat(),
                 "profile": profile_name,
                 "model": model_name,
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
@@ -1242,7 +1248,8 @@ async def execute_single_with_session(
         if messages:
             store = SessionStore()
             metadata = {
-                "created_at": datetime.now(UTC).isoformat(),
+                "session_id": session_id,
+                "created": datetime.now(UTC).isoformat(),
                 "profile": profile_name,
                 "model": model_name,
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
@@ -1339,18 +1346,12 @@ async def interactive_chat_with_session(
     context = session.coordinator.get("context")
     if context and hasattr(context, "set_messages") and initial_transcript:
         await context.set_messages(initial_transcript)
-        console.print(f"[dim]Restored {len(initial_transcript)} messages[/dim]")
 
     # Create command processor
     command_processor = CommandProcessor(session)
 
-    console.print(
-        Panel.fit(
-            "[bold cyan]Amplifier Interactive Session (Resumed)[/bold cyan]\n"
-            "Commands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D",
-            border_style="cyan",
-        )
-    )
+    # Note: Banner already shown by history display function in commands/session.py
+    # No need to show duplicate banner here for resumed sessions
 
     # Create session store for saving
     store = SessionStore()
@@ -1374,6 +1375,8 @@ async def interactive_chat_with_session(
 
                     if action == "prompt":
                         # Normal prompt execution
+                        # Note: Don't echo user input here - prompt already shows it with ">"
+                        # History/replay will show "You:" labels via render_message()
                         console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
 
                         # Process runtime @mentions in user input
@@ -1404,8 +1407,10 @@ async def interactive_chat_with_session(
                             # Handle result or cancellation
                             try:
                                 response = await execute_task
-                                console.print()  # Blank line before response
-                                console.print(Markdown(response))
+                                # Use shared message renderer (single source of truth)
+                                from .ui import render_message
+
+                                render_message({"role": "assistant", "content": response}, console)
 
                                 # Save session after each interaction
                                 if context and hasattr(context, "get_messages"):
@@ -1422,6 +1427,7 @@ async def interactive_chat_with_session(
                                             )
 
                                     metadata = {
+                                        "session_id": session_id,
                                         "created": datetime.now(UTC).isoformat(),
                                         "profile": profile_name,
                                         "model": model_name,

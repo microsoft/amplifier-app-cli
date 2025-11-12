@@ -31,6 +31,179 @@ ExecuteSingleWithSession = Callable[[str, dict, list[Path], bool, str, list[dict
 SearchPathProvider = Callable[[], list[Path]]
 
 
+def _display_session_history(transcript: list[dict], metadata: dict, *, show_thinking: bool = False) -> None:
+    """Display conversation history for resumed session.
+
+    Uses shared message renderer for consistency with live chat.
+
+    Args:
+        transcript: List of message dictionaries from SessionStore
+        metadata: Session metadata (session_id, created, profile, etc.)
+        show_thinking: Whether to show thinking blocks
+    """
+    from ..ui import render_message
+
+    # Build banner with session info
+    session_id = metadata.get("session_id", "unknown")
+    created = metadata.get("created", "unknown")
+    profile = metadata.get("profile", "unknown")
+    model = metadata.get("model", "unknown")
+
+    # Calculate time since creation
+    try:
+        created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        now = datetime.now(UTC)
+        elapsed = now - created_dt
+        hours = int(elapsed.total_seconds() // 3600)
+        minutes = int((elapsed.total_seconds() % 3600) // 60)
+        time_ago = f"{hours}h {minutes}m ago" if hours > 0 else f"{minutes}m ago"
+    except Exception:
+        time_ago = "unknown"
+
+    # Show banner at top with session info
+    banner_text = (
+        f"[bold cyan]Amplifier Interactive Session (Resumed)[/bold cyan]\n"
+        f"Session: {session_id[:8]}... | Started: {time_ago} | Profile: {profile} | Model: {model.split('/')[-1] if '/' in model else model}\n"
+        f"Commands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D"
+    )
+
+    console.print()
+    console.print(Panel.fit(banner_text, border_style="cyan"))
+    console.print()
+
+    # Render conversation history
+    for message in transcript:
+        role = message.get("role")
+        if role in ("user", "assistant"):
+            render_message(message, console, show_thinking=show_thinking)
+
+    console.print()  # Spacing before prompt
+
+
+async def _replay_session_history(
+    transcript: list[dict], metadata: dict, *, speed: float = 2.0, show_thinking: bool = False
+) -> None:
+    """Replay conversation history with simulated timing.
+
+    Uses shared message renderer for consistency with live chat.
+
+    Args:
+        transcript: List of message dictionaries with timestamps
+        metadata: Session metadata
+        speed: Speed multiplier (2.0 = twice as fast)
+        show_thinking: Whether to show thinking blocks
+    """
+    from ..ui import render_message
+
+    # Build banner with session info and replay status
+    session_id = metadata.get("session_id", "unknown")
+    created = metadata.get("created", "unknown")
+    profile = metadata.get("profile", "unknown")
+    model = metadata.get("model", "unknown")
+
+    # Calculate time since creation
+    try:
+        created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        now = datetime.now(UTC)
+        elapsed = now - created_dt
+        hours = int(elapsed.total_seconds() // 3600)
+        minutes = int((elapsed.total_seconds() % 3600) // 60)
+        time_ago = f"{hours}h {minutes}m ago" if hours > 0 else f"{minutes}m ago"
+    except Exception:
+        time_ago = "unknown"
+
+    # Show banner at top with replay info
+    banner_text = (
+        f"[bold cyan]Amplifier Interactive Session (Replaying at {speed}x)[/bold cyan]\n"
+        f"Session: {session_id[:8]}... | Started: {time_ago} | Profile: {profile} | Model: {model.split('/')[-1] if '/' in model else model}\n"
+        f"[dim]Ctrl-C to skip replay[/dim] | Commands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D"
+    )
+
+    console.print()
+    console.print(Panel.fit(banner_text, border_style="cyan"))
+    console.print()
+
+    prev_timestamp = None
+    interrupted = False
+    interrupt_index = 0
+
+    for idx, message in enumerate(transcript):
+        try:
+            role = message.get("role")
+
+            # Skip system/developer messages
+            if role not in ("user", "assistant"):
+                continue
+
+            # Calculate delay (uses timestamps if available, else content-based)
+            curr_timestamp = message.get("timestamp")
+            content = message.get("content", "")
+            content_str = content if isinstance(content, str) else str(content)
+
+            delay = _calculate_replay_delay(prev_timestamp, curr_timestamp, speed, content_str)
+            await asyncio.sleep(delay)
+
+            # Render using shared renderer
+            render_message(message, console, show_thinking=show_thinking)
+
+            prev_timestamp = curr_timestamp
+
+        except KeyboardInterrupt:
+            # User interrupted - show remaining messages instantly
+            console.print("\n[yellow]⚡ Skipped to end[/yellow]\n")
+            interrupted = True
+            interrupt_index = idx
+            break
+
+    # Show remaining messages if interrupted
+    if interrupted:
+        for remaining_message in transcript[interrupt_index + 1 :]:
+            if remaining_message.get("role") in ("user", "assistant"):
+                render_message(remaining_message, console, show_thinking=show_thinking)
+
+
+def _calculate_replay_delay(
+    prev_timestamp: str | None, curr_timestamp: str | None, speed: float, message_content: str = ""
+) -> float:
+    """Calculate delay between messages for replay.
+
+    Args:
+        prev_timestamp: ISO8601 timestamp of previous message (None if not available)
+        curr_timestamp: ISO8601 timestamp of current message (None if not available)
+        speed: Speed multiplier (2.0 = twice as fast)
+        message_content: Message content for length-based timing fallback
+
+    Returns:
+        Delay in seconds (adjusted for speed and clamped to reasonable range)
+    """
+    # If we have timestamps, use them
+    if prev_timestamp and curr_timestamp:
+        try:
+            prev_dt = datetime.fromisoformat(prev_timestamp.replace("Z", "+00:00"))
+            curr_dt = datetime.fromisoformat(curr_timestamp.replace("Z", "+00:00"))
+
+            actual_delay = (curr_dt - prev_dt).total_seconds()
+            replay_delay = actual_delay / speed
+
+            # Clamp to reasonable range
+            min_delay = 0.5  # Don't go faster than 500ms between messages
+            max_delay = 10.0  # Don't wait more than 10s even if original was longer
+
+            return max(min_delay, min(replay_delay, max_delay))
+        except Exception:
+            pass  # Fall through to content-based timing
+
+    # Fallback: Content-length based timing (simulates reading/typing time)
+    # Base delay: 1.5 seconds
+    # Add 0.5 seconds per 100 characters (scaled by speed)
+    base_delay = 1.5
+    char_delay = (len(message_content) / 100) * 0.5
+    total_delay = (base_delay + char_delay) / speed
+
+    # Clamp to reasonable range
+    return max(0.5, min(total_delay, 10.0))
+
+
 def register_session_commands(
     cli: click.Group,
     *,
@@ -43,7 +216,18 @@ def register_session_commands(
     @cli.command(name="continue")
     @click.argument("prompt", required=False)
     @click.option("--profile", "-P", help="Profile to use for resumed session")
-    def continue_session(prompt: str | None, profile: str | None):
+    @click.option("--no-history", is_flag=True, help="Skip displaying conversation history")
+    @click.option("--replay", is_flag=True, help="Replay conversation with timing simulation")
+    @click.option("--replay-speed", "-s", type=float, default=2.0, help="Replay speed multiplier (default: 2.0)")
+    @click.option("--show-thinking", is_flag=True, help="Show thinking blocks in history")
+    def continue_session(
+        prompt: str | None,
+        profile: str | None,
+        no_history: bool,
+        replay: bool,
+        replay_speed: float,
+        show_thinking: bool,
+    ):
         """Resume the most recent session.
 
         With no prompt: Resume in interactive mode.
@@ -88,6 +272,15 @@ def register_session_commands(
 
             search_paths = get_module_search_paths()
             active_profile = profile if profile else saved_profile
+
+            # Display history or replay (when resuming without prompt)
+            if prompt is None and not no_history:
+                if replay:
+                    asyncio.run(
+                        _replay_session_history(transcript, metadata, speed=replay_speed, show_thinking=show_thinking)
+                    )
+                else:
+                    _display_session_history(transcript, metadata, show_thinking=show_thinking)
 
             # Determine mode based on prompt presence
             if prompt is None and sys.stdin.isatty():
@@ -263,7 +456,18 @@ def register_session_commands(
     @session.command(name="resume")
     @click.argument("session_id")
     @click.option("--profile", "-P", help="Profile to use for resumed session")
-    def sessions_resume(session_id: str, profile: str | None):
+    @click.option("--no-history", is_flag=True, help="Skip displaying conversation history")
+    @click.option("--replay", is_flag=True, help="Replay conversation with timing simulation")
+    @click.option("--replay-speed", "-s", type=float, default=2.0, help="Replay speed multiplier (default: 2.0)")
+    @click.option("--show-thinking", is_flag=True, help="Show thinking blocks in history")
+    def sessions_resume(
+        session_id: str,
+        profile: str | None,
+        no_history: bool,
+        replay: bool,
+        replay_speed: float,
+        show_thinking: bool,
+    ):
         """Resume a stored interactive session."""
         store = SessionStore()
 
@@ -298,6 +502,15 @@ def register_session_commands(
 
             search_paths = get_module_search_paths()
             active_profile = profile if profile else saved_profile
+
+            # Display history or replay before entering interactive mode
+            if not no_history:
+                if replay:
+                    asyncio.run(
+                        _replay_session_history(transcript, metadata, speed=replay_speed, show_thinking=show_thinking)
+                    )
+                else:
+                    _display_session_history(transcript, metadata, show_thinking=show_thinking)
 
             asyncio.run(
                 interactive_chat_with_session(config_data, search_paths, False, session_id, transcript, active_profile)
