@@ -45,9 +45,10 @@ async def spawn_sub_session(
     # Merge parent config with agent overlay
     merged_config = merge_configs(parent_session.config, agent_config)
 
-    # Generate child session ID
+    # Generate child session ID using W3C Trace Context span_id pattern
+    # Use 16 hex chars (8 bytes) for fixed-length, filesystem-safe IDs
     if not sub_session_id:
-        sub_session_id = f"{parent_session.session_id}-{agent_name}-{uuid.uuid4().hex[:8]}"
+        sub_session_id = uuid.uuid4().hex[:16]  # 16 hex chars = 8 bytes
 
     # Create child session with parent_id and inherited UX systems (kernel mechanism)
     child_session = AmplifierSession(
@@ -110,9 +111,14 @@ async def spawn_sub_session(
     context = child_session.coordinator.get("context")
     transcript = await context.get_messages() if context else []
 
+    # Extract or generate trace_id for W3C Trace Context pattern
+    # Root session ID is the trace_id, propagate it to all children
+    parent_trace_id = getattr(parent_session, 'trace_id', parent_session.session_id)
+
     metadata = {
         "session_id": sub_session_id,
         "parent_id": parent_session.session_id,
+        "trace_id": parent_trace_id,  # W3C Trace Context: trace entire conversation
         "agent_name": agent_name,
         "created": datetime.now(UTC).isoformat(),
         "config": merged_config,
