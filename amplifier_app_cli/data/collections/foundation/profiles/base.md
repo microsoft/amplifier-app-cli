@@ -18,7 +18,8 @@ session:
       max_tokens: 400000
       compact_threshold: 0.8
       auto_compact: true
-  injection_budget_per_turn: 200000
+  injection_budget_per_turn: null
+  injection_size_limit: null
 
 task:
   max_recursion_depth: 1
