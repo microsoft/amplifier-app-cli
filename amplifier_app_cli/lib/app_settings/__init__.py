@@ -89,14 +89,31 @@ class AppSettings:
         if not provider_overrides:
             return profile
 
-        normalized_overrides: list[dict[str, Any]] = []
+        normalized_overrides: dict[str, dict[str, Any]] = {}
         for entry in provider_overrides:
             module_id = entry.get("module")
             if module_id and "source" not in entry:
                 canonical = DEFAULT_PROVIDER_SOURCES.get(module_id)
                 if canonical:
                     entry = {**entry, "source": canonical}
-            normalized_overrides.append(entry)
+            if module_id:
+                normalized_overrides[module_id] = entry
 
-        module_configs = [ModuleConfig.model_validate(entry) for entry in normalized_overrides]
-        return profile.model_copy(update={"providers": module_configs})
+        providers: list[ModuleConfig] = []
+
+        for provider in profile.providers or []:
+            override_entry = normalized_overrides.pop(provider.module, None)
+            if override_entry:
+                merged_config = {**(provider.config or {}), **(override_entry.get("config") or {})}
+                provider = ModuleConfig(
+                    module=provider.module,
+                    source=override_entry.get("source", provider.source),
+                    config=merged_config or None,
+                )
+            providers.append(provider)
+
+        # Append any additional providers specified only in overrides
+        for _module_id, entry in normalized_overrides.items():
+            providers.append(ModuleConfig.model_validate(entry))
+
+        return profile.model_copy(update={"providers": providers})

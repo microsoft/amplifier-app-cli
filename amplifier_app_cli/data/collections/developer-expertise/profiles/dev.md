@@ -5,10 +5,27 @@ profile:
   description: Development configuration with full toolset
   extends: foundation:profiles/base.md
 
+session:
+  orchestrator:
+    module: loop-streaming
+    config:
+      extended_thinking: true
+      default_provider: provider-openai
+
 providers:
+  - module: provider-openai
+    config:
+      debug: true
+      raw_debug: true
+      default_model: gpt-5-codex
+      priority: 50
+      reasoning: high
+      thinking_budget_tokens: 6000
+      thinking_budget_buffer: 1024
   - module: provider-anthropic
     config:
       debug: true
+      priority: 200
 
 ui:
   show_thinking_stream: true
@@ -30,7 +47,9 @@ hooks:
       git_include_main_branch: true
 ---
 
-@foundation:context/shared/common-agent-base.md
+# Core Instructions
+
+@foundation:context/shared/common-profile-base.md
 
 ---
 
@@ -56,7 +75,7 @@ Additional specialized agents available based on task needs, based upon availabi
 
 ## Tool Usage Policy
 
-- IMPORTANT: Always use the todo tool to plan and track tasks throughout the conversation.
+- IMPORTANT: For anything more than trivial tasks, make sure to use the todo tool to plan and track tasks throughout the conversation.
 
 ## Agent Orchestration Strategies
 

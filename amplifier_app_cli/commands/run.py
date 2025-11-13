@@ -159,10 +159,6 @@ def register_run_command(
             transcript = None
 
         cli_overrides = {}
-        if provider:
-            cli_overrides.setdefault("provider", {})["name"] = provider
-        if model:
-            cli_overrides.setdefault("provider", {})["model"] = model
 
         config_manager = create_config_manager()
         active_profile_name = profile or config_manager.get_active_profile() or get_system_default_profile()
@@ -185,6 +181,68 @@ def register_run_command(
         )
 
         search_paths = get_module_search_paths()
+
+        # If a specific provider was requested, filter providers to that entry
+        if provider:
+            provider_module = provider if provider.startswith("provider-") else f"provider-{provider}"
+            providers_list = config_data.get("providers", [])
+
+            matching = [
+                entry for entry in providers_list if isinstance(entry, dict) and entry.get("module") == provider_module
+            ]
+
+            if not matching:
+                console.print(f"[red]Error:[/red] Provider '{provider}' not available in active profile")
+                sys.exit(1)
+
+            selected_provider = {**matching[0]}
+            selected_config = dict(selected_provider.get("config") or {})
+
+            if model:
+                selected_config["default_model"] = model
+
+            selected_provider["config"] = selected_config
+            config_data["providers"] = [selected_provider]
+
+            # Hint orchestrator if it supports default provider configuration
+            session_cfg = config_data.setdefault("session", {})
+            orchestrator_cfg = session_cfg.get("orchestrator")
+            if isinstance(orchestrator_cfg, dict):
+                orchestrator_config = dict(orchestrator_cfg.get("config") or {})
+                orchestrator_config["default_provider"] = provider_module
+                orchestrator_cfg["config"] = orchestrator_config
+            elif isinstance(orchestrator_cfg, str):
+                # Convert shorthand into dict form with default provider hint
+                session_cfg["orchestrator"] = {
+                    "module": orchestrator_cfg,
+                    "config": {"default_provider": provider_module},
+                }
+
+            orchestrator_meta = config_data.setdefault("orchestrator", {})
+            if isinstance(orchestrator_meta, dict):
+                meta_config = dict(orchestrator_meta.get("config") or {})
+                meta_config["default_provider"] = provider_module
+                orchestrator_meta["config"] = meta_config
+        elif model:
+            providers_list = config_data.get("providers", [])
+            if not providers_list:
+                console.print("[yellow]Warning:[/yellow] No providers configured; ignoring --model override")
+            else:
+                updated_providers: list[dict[str, Any]] = []
+                override_applied = False
+
+                for entry in providers_list:
+                    if not override_applied and isinstance(entry, dict) and entry.get("module"):
+                        new_entry = {**entry}
+                        merged_config = dict(new_entry.get("config") or {})
+                        merged_config["default_model"] = model
+                        new_entry["config"] = merged_config
+                        updated_providers.append(new_entry)
+                        override_applied = True
+                    else:
+                        updated_providers.append(entry)
+
+                config_data["providers"] = updated_providers
 
         # Run background update check
         asyncio.run(_check_updates_background())

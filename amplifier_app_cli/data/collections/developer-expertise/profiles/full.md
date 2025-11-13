@@ -72,7 +72,11 @@ hooks:
       batch_size: 10
 ---
 
-@foundation:context/shared/common-agent-base.md
+# Core Instructions
+
+@foundation:context/shared/common-profile-base.md
+
+---
 
 Full capability configuration with comprehensive context:
 

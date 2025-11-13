@@ -39,7 +39,11 @@ agents:
         instruction: "You are a test agent. Respond with 'Test successful' to any query."
 ---
 
-@foundation:context/shared/common-agent-base.md
+# Core Instructions
+
+@foundation:context/shared/common-profile-base.md
+
+---
 
 Testing configuration with mock provider for deterministic testing scenarios.
 
