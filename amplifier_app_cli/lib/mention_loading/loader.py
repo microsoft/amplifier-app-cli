@@ -99,6 +99,7 @@ class MentionLoader:
         if deduplicator is None:
             deduplicator = ContentDeduplicator()
 
+        existing_hashes = deduplicator.get_known_hashes()
         visited_paths: set[Path] = set()
         path_to_mention: dict[Path, str] = {}  # Track original @mention for each path
         to_process: list[str] = parse_mentions(text)
@@ -130,7 +131,10 @@ class MentionLoader:
                 if nested_path not in [extract_mention_path(m) for m in to_process]:
                     to_process.append(nested)
 
-        return self._create_messages(deduplicator.get_unique_files(), path_to_mention)
+        context_files = deduplicator.get_unique_files()
+        new_context_files = [ctx for ctx in context_files if ctx.hash not in existing_hashes]
+
+        return self._create_messages(new_context_files, path_to_mention)
 
     def _create_messages(self, context_files: list[ContextFile], path_to_mention: dict[Path, str]) -> list[Message]:
         """Create Message objects from loaded context files.

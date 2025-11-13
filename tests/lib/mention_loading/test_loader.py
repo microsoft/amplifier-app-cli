@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from amplifier_app_cli.lib.mention_loading.deduplicator import ContentDeduplicator
 from amplifier_app_cli.lib.mention_loading.loader import MentionLoader
 from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
 
@@ -123,6 +124,24 @@ def test_loader_deduplication(temp_test_files):
     assert "Shared content" in messages[0].content
     assert "duplicate1.md" in messages[0].content
     assert "duplicate2.md" in messages[0].content
+
+
+def test_loader_shared_deduplicator_prevents_duplicates(temp_test_files):
+    """Ensure session-wide deduplicator only returns new files across calls."""
+    resolver = MentionResolver(
+        bundled_data_dir=temp_test_files,
+        project_context_dir=temp_test_files,
+        user_context_dir=temp_test_files,
+        relative_to=temp_test_files,
+    )
+    loader = MentionLoader(resolver)
+    deduplicator = ContentDeduplicator()
+
+    first_messages = loader.load_mentions("@simple.md", relative_to=temp_test_files, deduplicator=deduplicator)
+    assert len(first_messages) == 1
+
+    second_messages = loader.load_mentions("@simple.md", relative_to=temp_test_files, deduplicator=deduplicator)
+    assert len(second_messages) == 0
 
 
 def test_loader_no_mentions(temp_test_files):

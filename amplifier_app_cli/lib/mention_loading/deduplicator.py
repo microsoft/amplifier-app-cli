@@ -45,6 +45,10 @@ class ContentDeduplicator:
             for content_hash, content in self._content_by_hash.items()
         ]
 
+    def get_known_hashes(self) -> set[str]:
+        """Return hashes currently tracked by the deduplicator."""
+        return set(self._content_by_hash.keys())
+
     @staticmethod
     def _hash_content(content: str) -> str:
         """Compute SHA-256 hash of content.
