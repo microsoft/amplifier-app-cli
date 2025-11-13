@@ -13,15 +13,6 @@ session:
       default_provider: provider-openai
 
 providers:
-  - module: provider-openai
-    config:
-      debug: true
-      raw_debug: true
-      default_model: gpt-5-codex
-      priority: 50
-      reasoning: high
-      thinking_budget_tokens: 6000
-      thinking_budget_buffer: 1024
   - module: provider-anthropic
     config:
       debug: true
