@@ -103,7 +103,7 @@ class AmplifierSession:
 
     async def initialize(self):
         if self.parent_id:
-            await self.hooks.emit("session:fork", {"data": {"parent": self.parent_id}})
+            await self.hooks.emit("session:fork", {"parent": self.parent_id})
         await self.hooks.emit("session:start", {...})
 
 # amplifier-core/events.py
