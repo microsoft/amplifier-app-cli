@@ -4,6 +4,7 @@ Implements sub-session creation with configuration inheritance and overlays.
 """
 
 import logging
+import re
 import uuid
 
 from amplifier_core import AmplifierSession
@@ -11,6 +12,69 @@ from amplifier_core import AmplifierSession
 from .agent_config import merge_configs
 
 logger = logging.getLogger(__name__)
+
+SPAN_HEX_LEN = 16
+DEFAULT_PARENT_SPAN = "0" * SPAN_HEX_LEN
+PARENT_SPAN_PATTERN = re.compile(r"^([0-9a-f]{16})-([0-9a-f]{16})_")
+TRACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _generate_sub_session_id(
+    agent_name: str | None,
+    parent_session_id: str | None,
+    parent_trace_id: str | None,
+) -> str:
+    """Generate sanitized sub-session ID using agent suffix and trace lineage.
+    
+    Follows W3C Trace Context principles:
+    - Parent span ID (16 hex chars) extracted from parent session or trace
+    - New child span ID (16 hex chars) for this session
+    - Agent name suffix for readability (sanitized for filesystem safety)
+    
+    Format: {parent-span}-{child-span}_{agent-name}
+    Example: 1234567890abcdef-fedcba0987654321_zen-architect
+    
+    This maintains hierarchy tracking while keeping IDs readable and filesystem-safe.
+    Agent name is placed at the end for better readability when listing sessions.
+    """
+    # Sanitize agent name for filesystem safety
+    raw_name = (agent_name or "").lower()
+    
+    # Replace any non-alphanumeric characters with hyphens
+    sanitized = re.sub(r"[^a-z0-9]+", "-", raw_name)
+    # Collapse multiple hyphens
+    sanitized = re.sub(r"-{2,}", "-", sanitized)
+    # Remove leading/trailing hyphens and dots
+    sanitized = sanitized.strip("-")
+    sanitized = sanitized.lstrip(".")
+    
+    # Default to "agent" if empty after sanitization
+    if not sanitized:
+        sanitized = "agent"
+
+    # Extract parent span ID following W3C Trace Context principles
+    parent_span = DEFAULT_PARENT_SPAN
+    if parent_session_id:
+        # If parent has our format, extract its child span (becomes our parent span)
+        match = PARENT_SPAN_PATTERN.match(parent_session_id)
+        if match:
+            # Extract the child span from parent (second group)
+            parent_span = match.group(2)
+
+    # If no parent span found and we have a trace ID, derive parent span from trace
+    # Extract middle 16 chars (positions 8-24) from 32-char trace ID
+    # This creates a stable parent span ID from the trace without using the full length
+    if (
+        parent_span == DEFAULT_PARENT_SPAN
+        and parent_trace_id
+        and TRACE_ID_PATTERN.fullmatch(parent_trace_id)
+    ):
+        # Take middle 16 characters (8-24) of the 32-char trace ID
+        parent_span = parent_trace_id[8:24]
+
+    # Generate new span ID for this child session
+    child_span = uuid.uuid4().hex[:SPAN_HEX_LEN]
+    return f"{parent_span}-{child_span}_{sanitized}"
 
 
 async def spawn_sub_session(
@@ -45,9 +109,14 @@ async def spawn_sub_session(
     # Merge parent config with agent overlay
     merged_config = merge_configs(parent_session.config, agent_config)
 
-    # Generate child session ID
+    # Generate child session ID using W3C Trace Context span_id pattern
+    # Use 16 hex chars (8 bytes) for fixed-length, filesystem-safe IDs
     if not sub_session_id:
-        sub_session_id = f"{parent_session.session_id}-{agent_name}-{uuid.uuid4().hex[:8]}"
+        sub_session_id = _generate_sub_session_id(
+            agent_name,
+            parent_session.session_id,
+            getattr(parent_session, "trace_id", None),
+        )
 
     # Create child session with parent_id and inherited UX systems (kernel mechanism)
     child_session = AmplifierSession(
@@ -110,9 +179,14 @@ async def spawn_sub_session(
     context = child_session.coordinator.get("context")
     transcript = await context.get_messages() if context else []
 
+    # Extract or generate trace_id for W3C Trace Context pattern
+    # Root session ID is the trace_id, propagate it to all children
+    parent_trace_id = getattr(parent_session, 'trace_id', parent_session.session_id)
+
     metadata = {
         "session_id": sub_session_id,
         "parent_id": parent_session.session_id,
+        "trace_id": parent_trace_id,  # W3C Trace Context: trace entire conversation
         "agent_name": agent_name,
         "created": datetime.now(UTC).isoformat(),
         "config": merged_config,
