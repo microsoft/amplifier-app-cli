@@ -9,7 +9,6 @@ import re
 import pytest
 from amplifier_app_cli.session_spawner import (
     DEFAULT_PARENT_SPAN,
-    MAX_PREFIX_LEN,
     SPAN_HEX_LEN,
     _generate_sub_session_id,
     resume_sub_session,
@@ -38,11 +37,12 @@ def anyio_backend():
 
 
 class TestGenerateSubSessionId:
-    def _assert_format(self, result: str, expected_prefix: str, expected_parent: str, expected_child: str) -> None:
-        prefix, lineage = result.split("@", 1)
-        parent_span, child_span = lineage.split("-", 1)
+    def _assert_format(self, result: str, expected_suffix: str, expected_parent: str, expected_child: str) -> None:
+        # Format: {parent-span}-{child-span}_{agent-name}
+        spans_part, suffix = result.rsplit("_", 1)
+        parent_span, child_span = spans_part.split("-", 1)
 
-        assert prefix == expected_prefix
+        assert suffix == expected_suffix
         assert parent_span == expected_parent
         assert re.fullmatch(r"[0-9a-f]{16}", parent_span)
         assert re.fullmatch(r"[0-9a-f]{16}", child_span)
@@ -52,7 +52,7 @@ class TestGenerateSubSessionId:
         hex_value = "a" * 32
         _mock_uuid(monkeypatch, hex_value)
 
-        parent_session_id = "zen-architect@1111111111111111-2222222222222222"
+        parent_session_id = "1111111111111111-2222222222222222_zen-architect"
         result = _generate_sub_session_id(
             "zen-architect",
             parent_session_id,
@@ -61,7 +61,7 @@ class TestGenerateSubSessionId:
 
         self._assert_format(
             result,
-            expected_prefix="zen-architect",
+            expected_suffix="zen-architect",
             expected_parent="2222222222222222",
             expected_child=hex_value[:SPAN_HEX_LEN],
         )
@@ -78,7 +78,7 @@ class TestGenerateSubSessionId:
 
         self._assert_format(
             result,
-            expected_prefix="zen-architect",
+            expected_suffix="zen-architect",
             expected_parent="90abcdef12345678",
             expected_child=hex_value[:SPAN_HEX_LEN],
         )
@@ -95,7 +95,7 @@ class TestGenerateSubSessionId:
 
         self._assert_format(
             result,
-            expected_prefix="hidden-agent",
+            expected_suffix="hidden-agent",
             expected_parent=DEFAULT_PARENT_SPAN,
             expected_child=hex_value[:SPAN_HEX_LEN],
         )
@@ -112,7 +112,7 @@ class TestGenerateSubSessionId:
 
         self._assert_format(
             result,
-            expected_prefix="agent-core",
+            expected_suffix="agent-core",
             expected_parent=DEFAULT_PARENT_SPAN,
             expected_child=hex_value[:SPAN_HEX_LEN],
         )
@@ -126,25 +126,25 @@ class TestGenerateSubSessionId:
 
         self._assert_format(
             result,
-            expected_prefix="agent",
+            expected_suffix="agent",
             expected_parent=DEFAULT_PARENT_SPAN,
             expected_child=hex_value[:SPAN_HEX_LEN],
         )
 
-    def test_truncates_long_names(self, monkeypatch):
+    def test_preserves_long_names(self, monkeypatch):
         hex_value = "f" * 32
         _mock_uuid(monkeypatch, hex_value)
 
         long_name = "VeryVeryLongAgentNameWith123Numbers"
-        parent_session_id = "builder@aaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb"
+        parent_session_id = "aaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb_builder"
         result = _generate_sub_session_id(long_name, parent_session_id, None)
 
-        expected_prefix = "veryverylongagentnamewit"
-        assert len(expected_prefix) == MAX_PREFIX_LEN
+        # Agent name should be fully preserved (just lowercased)
+        expected_suffix = "veryverylongagentnamewith123numbers"
 
         self._assert_format(
             result,
-            expected_prefix=expected_prefix,
+            expected_suffix=expected_suffix,
             expected_parent="bbbbbbbbbbbbbbbb",
             expected_child=hex_value[:SPAN_HEX_LEN],
         )
@@ -158,7 +158,7 @@ class TestGenerateSubSessionId:
 
         self._assert_format(
             result,
-            expected_prefix="observer",
+            expected_suffix="observer",
             expected_parent="89abcdef01234567",
             expected_child=hex_value[:SPAN_HEX_LEN],
         )
@@ -171,7 +171,7 @@ class TestGenerateSubSessionId:
 
         self._assert_format(
             result,
-            expected_prefix="inspector",
+            expected_suffix="inspector",
             expected_parent=DEFAULT_PARENT_SPAN,
             expected_child=hex_value[:SPAN_HEX_LEN],
         )

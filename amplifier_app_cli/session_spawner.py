@@ -13,10 +13,9 @@ from .agent_config import merge_configs
 
 logger = logging.getLogger(__name__)
 
-MAX_PREFIX_LEN = 24
 SPAN_HEX_LEN = 16
 DEFAULT_PARENT_SPAN = "0" * SPAN_HEX_LEN
-PARENT_SPAN_SUFFIX_PATTERN = re.compile(r"-([0-9a-f]{16})$")
+PARENT_SPAN_PATTERN = re.compile(r"^([0-9a-f]{16})-([0-9a-f]{16})_")
 TRACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -25,28 +24,31 @@ def _generate_sub_session_id(
     parent_session_id: str | None,
     parent_trace_id: str | None,
 ) -> str:
-    """Generate sanitized sub-session ID using agent prefix and trace lineage.
+    """Generate sanitized sub-session ID using agent suffix and trace lineage.
     
     Follows W3C Trace Context principles:
-    - Agent name prefix for readability (max 24 chars)
     - Parent span ID (16 hex chars) extracted from parent session or trace
     - New child span ID (16 hex chars) for this session
+    - Agent name suffix for readability (sanitized for filesystem safety)
     
-    Format: {agent-name}@{parent-span}-{child-span}
-    Example: zen-architect@1234567890abcdef-fedcba0987654321
+    Format: {parent-span}-{child-span}_{agent-name}
+    Example: 1234567890abcdef-fedcba0987654321_zen-architect
     
-    This maintains hierarchy tracking while keeping IDs fixed-length and readable.
+    This maintains hierarchy tracking while keeping IDs readable and filesystem-safe.
+    Agent name is placed at the end for better readability when listing sessions.
     """
+    # Sanitize agent name for filesystem safety
     raw_name = (agent_name or "").lower()
-
+    
+    # Replace any non-alphanumeric characters with hyphens
     sanitized = re.sub(r"[^a-z0-9]+", "-", raw_name)
+    # Collapse multiple hyphens
     sanitized = re.sub(r"-{2,}", "-", sanitized)
+    # Remove leading/trailing hyphens and dots
     sanitized = sanitized.strip("-")
     sanitized = sanitized.lstrip(".")
-
-    if len(sanitized) > MAX_PREFIX_LEN:
-        sanitized = sanitized[:MAX_PREFIX_LEN]
-
+    
+    # Default to "agent" if empty after sanitization
     if not sanitized:
         sanitized = "agent"
 
@@ -54,9 +56,10 @@ def _generate_sub_session_id(
     parent_span = DEFAULT_PARENT_SPAN
     if parent_session_id:
         # If parent has our format, extract its child span (becomes our parent span)
-        match = PARENT_SPAN_SUFFIX_PATTERN.search(parent_session_id)
+        match = PARENT_SPAN_PATTERN.match(parent_session_id)
         if match:
-            parent_span = match.group(1)
+            # Extract the child span from parent (second group)
+            parent_span = match.group(2)
 
     # If no parent span found and we have a trace ID, derive parent span from trace
     # Extract middle 16 chars (positions 8-24) from 32-char trace ID
@@ -71,7 +74,7 @@ def _generate_sub_session_id(
 
     # Generate new span ID for this child session
     child_span = uuid.uuid4().hex[:SPAN_HEX_LEN]
-    return f"{sanitized}@{parent_span}-{child_span}"
+    return f"{parent_span}-{child_span}_{sanitized}"
 
 
 async def spawn_sub_session(
