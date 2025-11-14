@@ -4,18 +4,177 @@ Focus on testing error handling and persistence logic.
 Full end-to-end integration testing done manually (see test report).
 """
 
+import re
+
 import pytest
-from amplifier_app_cli.session_spawner import resume_sub_session
+from amplifier_app_cli.session_spawner import (
+    DEFAULT_PARENT_SPAN,
+    MAX_PREFIX_LEN,
+    SPAN_HEX_LEN,
+    _generate_sub_session_id,
+    resume_sub_session,
+)
 from amplifier_app_cli.session_store import SessionStore
 
 # Configure anyio for async tests (asyncio backend only)
 pytestmark = pytest.mark.anyio
 
 
+def _mock_uuid(monkeypatch, hex_value: str = "f" * 32) -> None:
+    class _FakeUUID:
+        def __init__(self, value: str):
+            self.hex = value
+
+    monkeypatch.setattr(
+        "amplifier_app_cli.session_spawner.uuid.uuid4",
+        lambda: _FakeUUID(hex_value),
+    )
+
+
 @pytest.fixture(scope="module")
 def anyio_backend():
     """Configure anyio to use asyncio backend only."""
     return "asyncio"
+
+
+class TestGenerateSubSessionId:
+    def _assert_format(self, result: str, expected_prefix: str, expected_parent: str, expected_child: str) -> None:
+        prefix, lineage = result.split("@", 1)
+        parent_span, child_span = lineage.split("-", 1)
+
+        assert prefix == expected_prefix
+        assert parent_span == expected_parent
+        assert re.fullmatch(r"[0-9a-f]{16}", parent_span)
+        assert re.fullmatch(r"[0-9a-f]{16}", child_span)
+        assert child_span == expected_child
+
+    def test_preserves_clean_prefix_with_parent_suffix(self, monkeypatch):
+        hex_value = "a" * 32
+        _mock_uuid(monkeypatch, hex_value)
+
+        parent_session_id = "zen-architect@1111111111111111-2222222222222222"
+        result = _generate_sub_session_id(
+            "zen-architect",
+            parent_session_id,
+            None,
+        )
+
+        self._assert_format(
+            result,
+            expected_prefix="zen-architect",
+            expected_parent="2222222222222222",
+            expected_child=hex_value[:SPAN_HEX_LEN],
+        )
+
+    def test_sanitizes_spaces_and_punctuation(self, monkeypatch):
+        hex_value = "b" * 32
+        _mock_uuid(monkeypatch, hex_value)
+
+        result = _generate_sub_session_id(
+            "Zen Architect!",
+            "root-session",
+            "1234567890abcdef1234567890abcdef",
+        )
+
+        self._assert_format(
+            result,
+            expected_prefix="zen-architect",
+            expected_parent="90abcdef12345678",
+            expected_child=hex_value[:SPAN_HEX_LEN],
+        )
+
+    def test_removes_leading_dots(self, monkeypatch):
+        hex_value = "c" * 32
+        _mock_uuid(monkeypatch, hex_value)
+
+        result = _generate_sub_session_id(
+            ".hidden.agent",
+            None,
+            None,
+        )
+
+        self._assert_format(
+            result,
+            expected_prefix="hidden-agent",
+            expected_parent=DEFAULT_PARENT_SPAN,
+            expected_child=hex_value[:SPAN_HEX_LEN],
+        )
+
+    def test_collapses_multiple_invalid_sequences(self, monkeypatch):
+        hex_value = "d" * 32
+        _mock_uuid(monkeypatch, hex_value)
+
+        result = _generate_sub_session_id(
+            "agent__###__core",
+            None,
+            None,
+        )
+
+        self._assert_format(
+            result,
+            expected_prefix="agent-core",
+            expected_parent=DEFAULT_PARENT_SPAN,
+            expected_child=hex_value[:SPAN_HEX_LEN],
+        )
+
+    @pytest.mark.parametrize("raw_name", ["", "   ", None])
+    def test_defaults_to_agent_when_empty(self, raw_name, monkeypatch):
+        hex_value = "e" * 32
+        _mock_uuid(monkeypatch, hex_value)
+
+        result = _generate_sub_session_id(raw_name, None, None)
+
+        self._assert_format(
+            result,
+            expected_prefix="agent",
+            expected_parent=DEFAULT_PARENT_SPAN,
+            expected_child=hex_value[:SPAN_HEX_LEN],
+        )
+
+    def test_truncates_long_names(self, monkeypatch):
+        hex_value = "f" * 32
+        _mock_uuid(monkeypatch, hex_value)
+
+        long_name = "VeryVeryLongAgentNameWith123Numbers"
+        parent_session_id = "builder@aaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb"
+        result = _generate_sub_session_id(long_name, parent_session_id, None)
+
+        expected_prefix = "veryverylongagentnamewit"
+        assert len(expected_prefix) == MAX_PREFIX_LEN
+
+        self._assert_format(
+            result,
+            expected_prefix=expected_prefix,
+            expected_parent="bbbbbbbbbbbbbbbb",
+            expected_child=hex_value[:SPAN_HEX_LEN],
+        )
+
+    def test_uses_trace_id_when_parent_suffix_missing(self, monkeypatch):
+        hex_value = "1" * 32
+        _mock_uuid(monkeypatch, hex_value)
+
+        trace_id = "0123456789abcdef0123456789abcdef"
+        result = _generate_sub_session_id("observer", "root", trace_id)
+
+        self._assert_format(
+            result,
+            expected_prefix="observer",
+            expected_parent="89abcdef01234567",
+            expected_child=hex_value[:SPAN_HEX_LEN],
+        )
+
+    def test_falls_back_when_no_parent_info(self, monkeypatch):
+        hex_value = "2" * 32
+        _mock_uuid(monkeypatch, hex_value)
+
+        result = _generate_sub_session_id("inspector", None, "invalid-trace")
+
+        self._assert_format(
+            result,
+            expected_prefix="inspector",
+            expected_parent=DEFAULT_PARENT_SPAN,
+            expected_child=hex_value[:SPAN_HEX_LEN],
+        )
 
 
 class TestResumeErrorHandling:

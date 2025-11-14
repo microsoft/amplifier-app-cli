@@ -4,6 +4,7 @@ Implements sub-session creation with configuration inheritance and overlays.
 """
 
 import logging
+import re
 import uuid
 
 from amplifier_core import AmplifierSession
@@ -11,6 +12,66 @@ from amplifier_core import AmplifierSession
 from .agent_config import merge_configs
 
 logger = logging.getLogger(__name__)
+
+MAX_PREFIX_LEN = 24
+SPAN_HEX_LEN = 16
+DEFAULT_PARENT_SPAN = "0" * SPAN_HEX_LEN
+PARENT_SPAN_SUFFIX_PATTERN = re.compile(r"-([0-9a-f]{16})$")
+TRACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _generate_sub_session_id(
+    agent_name: str | None,
+    parent_session_id: str | None,
+    parent_trace_id: str | None,
+) -> str:
+    """Generate sanitized sub-session ID using agent prefix and trace lineage.
+    
+    Follows W3C Trace Context principles:
+    - Agent name prefix for readability (max 24 chars)
+    - Parent span ID (16 hex chars) extracted from parent session or trace
+    - New child span ID (16 hex chars) for this session
+    
+    Format: {agent-name}@{parent-span}-{child-span}
+    Example: zen-architect@1234567890abcdef-fedcba0987654321
+    
+    This maintains hierarchy tracking while keeping IDs fixed-length and readable.
+    """
+    raw_name = (agent_name or "").lower()
+
+    sanitized = re.sub(r"[^a-z0-9]+", "-", raw_name)
+    sanitized = re.sub(r"-{2,}", "-", sanitized)
+    sanitized = sanitized.strip("-")
+    sanitized = sanitized.lstrip(".")
+
+    if len(sanitized) > MAX_PREFIX_LEN:
+        sanitized = sanitized[:MAX_PREFIX_LEN]
+
+    if not sanitized:
+        sanitized = "agent"
+
+    # Extract parent span ID following W3C Trace Context principles
+    parent_span = DEFAULT_PARENT_SPAN
+    if parent_session_id:
+        # If parent has our format, extract its child span (becomes our parent span)
+        match = PARENT_SPAN_SUFFIX_PATTERN.search(parent_session_id)
+        if match:
+            parent_span = match.group(1)
+
+    # If no parent span found and we have a trace ID, derive parent span from trace
+    # Extract middle 16 chars (positions 8-24) from 32-char trace ID
+    # This creates a stable parent span ID from the trace without using the full length
+    if (
+        parent_span == DEFAULT_PARENT_SPAN
+        and parent_trace_id
+        and TRACE_ID_PATTERN.fullmatch(parent_trace_id)
+    ):
+        # Take middle 16 characters (8-24) of the 32-char trace ID
+        parent_span = parent_trace_id[8:24]
+
+    # Generate new span ID for this child session
+    child_span = uuid.uuid4().hex[:SPAN_HEX_LEN]
+    return f"{sanitized}@{parent_span}-{child_span}"
 
 
 async def spawn_sub_session(
@@ -48,7 +109,11 @@ async def spawn_sub_session(
     # Generate child session ID using W3C Trace Context span_id pattern
     # Use 16 hex chars (8 bytes) for fixed-length, filesystem-safe IDs
     if not sub_session_id:
-        sub_session_id = uuid.uuid4().hex[:16]  # 16 hex chars = 8 bytes
+        sub_session_id = _generate_sub_session_id(
+            agent_name,
+            parent_session.session_id,
+            getattr(parent_session, "trace_id", None),
+        )
 
     # Create child session with parent_id and inherited UX systems (kernel mechanism)
     child_session = AmplifierSession(
