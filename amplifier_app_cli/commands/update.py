@@ -26,6 +26,17 @@ def update(check_only: bool, yes: bool, force: bool):
 
     report = asyncio.run(check_all_sources(include_all_cached=True))
 
+    # Check umbrella dependencies for updates
+    from ..utils.umbrella_discovery import discover_umbrella_source
+    from ..utils.update_executor import check_umbrella_dependencies_for_updates
+
+    umbrella_info = discover_umbrella_source()
+    has_umbrella_updates = False
+
+    if umbrella_info:
+        console.print("Checking umbrella dependencies...")
+        has_umbrella_updates = asyncio.run(check_umbrella_dependencies_for_updates(umbrella_info))
+
     # Show local file sources
     if report.local_file_sources:
         console.print()
@@ -75,12 +86,16 @@ def update(check_only: bool, yes: bool, force: bool):
 
     # Check-only mode
     if check_only:
-        if not report.has_updates and not report.has_local_changes:
+        if not report.has_updates and not report.has_local_changes and not has_umbrella_updates:
             console.print("[green]✓ All sources up to date[/green]")
+        elif has_umbrella_updates:
+            console.print("\n[yellow]Updates available:[/yellow]")
+            console.print("  • Amplifier (umbrella dependencies have updates)")
+            console.print("\nRun [cyan]amplifier update[/cyan] to install")
         return
 
     # No updates available
-    if not report.has_updates and not force:
+    if not report.has_updates and not has_umbrella_updates and not force:
         console.print("[green]✓ All sources up to date[/green]")
         return
 
@@ -96,8 +111,8 @@ def update(check_only: bool, yes: bool, force: bool):
         if report.collection_sources:
             count = len(report.collection_sources)
             console.print(f"  • Refresh {count} collection{'s' if count != 1 else ''}")
-        if report.has_updates:
-            console.print("  • Update Amplifier to latest version")
+        if has_umbrella_updates:
+            console.print("  • Update Amplifier to latest version (dependencies have updates)")
 
         console.print()
         response = input("Proceed with update? [Y/n]: ").strip().lower()
@@ -109,7 +124,7 @@ def update(check_only: bool, yes: bool, force: bool):
     console.print()
     console.print("Updating...")
 
-    result = asyncio.run(execute_updates(report))
+    result = asyncio.run(execute_updates(report, umbrella_info=umbrella_info if has_umbrella_updates else None))
 
     # Show results
     console.print()

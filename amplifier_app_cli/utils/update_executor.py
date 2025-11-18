@@ -298,10 +298,14 @@ async def execute_self_update(umbrella_info: UmbrellaInfo) -> ExecutionResult:
         )
 
 
-async def execute_updates(report: UpdateReport) -> ExecutionResult:
+async def execute_updates(report: UpdateReport, umbrella_info: UmbrellaInfo | None = None) -> ExecutionResult:
     """Orchestrate all updates based on report.
 
     Philosophy: Sequential execution (modules first, then self) for safety.
+
+    Args:
+        report: Update status report from check_all_sources
+        umbrella_info: Optional umbrella info if already checked for updates
     """
     all_updated = []
     all_failed = []
@@ -335,26 +339,18 @@ async def execute_updates(report: UpdateReport) -> ExecutionResult:
         if not result.success:
             overall_success = False
 
-    # 3. Execute self-update if needed (check umbrella dependencies for updates)
-    from .umbrella_discovery import discover_umbrella_source
-
-    umbrella_info = discover_umbrella_source()
-
-    # Check if any umbrella dependencies (amplifier-app-cli, amplifier-core, etc.) have updates
+    # 3. Execute self-update if umbrella_info provided (already checked by caller)
     if umbrella_info:
-        has_dependency_updates = await check_umbrella_dependencies_for_updates(umbrella_info)
+        logger.info("Updating Amplifier (umbrella dependencies have updates)...")
+        result = await execute_self_update(umbrella_info)
 
-        if has_dependency_updates:
-            logger.info("Updating Amplifier (umbrella dependencies have updates)...")
-            result = await execute_self_update(umbrella_info)
+        all_updated.extend(result.updated)
+        all_failed.extend(result.failed)
+        all_messages.extend(result.messages)
+        all_errors.update(result.errors)
 
-            all_updated.extend(result.updated)
-            all_failed.extend(result.failed)
-            all_messages.extend(result.messages)
-            all_errors.update(result.errors)
-
-            if not result.success:
-                overall_success = False
+        if not result.success:
+            overall_success = False
 
     # 4. Compile final result
     return ExecutionResult(
