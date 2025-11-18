@@ -6,6 +6,7 @@ Uses existing StandardModuleSourceResolver infrastructure.
 
 import json
 import logging
+import re
 import subprocess
 from dataclasses import dataclass
 from dataclasses import field
@@ -578,7 +579,11 @@ async def _check_collection_sources() -> list[CollectionStatus]:
 
 
 async def _get_github_commit_sha(repo_url: str, ref: str) -> str:
-    """Get SHA for ref using GitHub API (no git required)."""
+    """Get SHA for ref using GitHub Atom feed (no API, no auth, no rate limits).
+
+    Uses public Atom feed: https://github.com/{owner}/{repo}/commits/{ref}.atom
+    This avoids GitHub API rate limiting (60 req/hr unauthenticated).
+    """
     # Remove .git suffix properly (not with rstrip - it removes any char in '.git'!)
     url_clean = repo_url[:-4] if repo_url.endswith(".git") else repo_url
     parts = url_clean.split("github.com/")[-1].split("/")
@@ -587,13 +592,20 @@ async def _get_github_commit_sha(repo_url: str, ref: str) -> str:
 
     owner, repo = parts[0], parts[1]
 
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        response = await client.get(
-            f"https://api.github.com/repos/{owner}/{repo}/commits/{ref}",
-            headers={"Accept": "application/vnd.github.v3+json", **_get_github_auth_headers()},
-        )
+    # Fetch Atom feed (public, no auth, no rate limits)
+    atom_url = f"https://github.com/{owner}/{repo}/commits/{ref}.atom"
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(atom_url)
         response.raise_for_status()
-        return response.json()["sha"]
+
+        # Parse XML for first commit SHA
+        # Format: <id>tag:github.com,2008:Grit::Commit/{SHA}</id>
+        match = re.search(r"<id>tag:github\.com,2008:Grit::Commit/([a-f0-9]{40})</id>", response.text)
+        if not match:
+            raise ValueError(f"Could not extract commit SHA from Atom feed: {atom_url}")
+
+        return match.group(1)
 
 
 async def _get_commit_details(repo_url: str, sha: str) -> dict:

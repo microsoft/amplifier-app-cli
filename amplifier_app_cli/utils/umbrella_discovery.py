@@ -183,7 +183,7 @@ async def fetch_umbrella_dependencies(umbrella_info: UmbrellaInfo) -> dict[str, 
     # Construct raw GitHub URL for pyproject.toml
     github_org = extract_github_org(umbrella_info.url)
 
-    raw_url = f"https://raw.githubusercontent.com/{github_org}/amplifier/{umbrella_info.ref}/amplifier/pyproject.toml"
+    raw_url = f"https://raw.githubusercontent.com/{github_org}/amplifier/{umbrella_info.ref}/pyproject.toml"
 
     logger.debug(f"Fetching umbrella pyproject.toml from: {raw_url}")
 

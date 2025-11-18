@@ -25,21 +25,21 @@ def _generate_sub_session_id(
     parent_trace_id: str | None,
 ) -> str:
     """Generate sanitized sub-session ID using agent suffix and trace lineage.
-    
+
     Follows W3C Trace Context principles:
     - Parent span ID (16 hex chars) extracted from parent session or trace
     - New child span ID (16 hex chars) for this session
     - Agent name suffix for readability (sanitized for filesystem safety)
-    
+
     Format: {parent-span}-{child-span}_{agent-name}
     Example: 1234567890abcdef-fedcba0987654321_zen-architect
-    
+
     This maintains hierarchy tracking while keeping IDs readable and filesystem-safe.
     Agent name is placed at the end for better readability when listing sessions.
     """
     # Sanitize agent name for filesystem safety
     raw_name = (agent_name or "").lower()
-    
+
     # Replace any non-alphanumeric characters with hyphens
     sanitized = re.sub(r"[^a-z0-9]+", "-", raw_name)
     # Collapse multiple hyphens
@@ -47,7 +47,7 @@ def _generate_sub_session_id(
     # Remove leading/trailing hyphens and dots
     sanitized = sanitized.strip("-")
     sanitized = sanitized.lstrip(".")
-    
+
     # Default to "agent" if empty after sanitization
     if not sanitized:
         sanitized = "agent"
@@ -64,11 +64,7 @@ def _generate_sub_session_id(
     # If no parent span found and we have a trace ID, derive parent span from trace
     # Extract middle 16 chars (positions 8-24) from 32-char trace ID
     # This creates a stable parent span ID from the trace without using the full length
-    if (
-        parent_span == DEFAULT_PARENT_SPAN
-        and parent_trace_id
-        and TRACE_ID_PATTERN.fullmatch(parent_trace_id)
-    ):
+    if parent_span == DEFAULT_PARENT_SPAN and parent_trace_id and TRACE_ID_PATTERN.fullmatch(parent_trace_id):
         # Take middle 16 characters (8-24) of the 32-char trace ID
         parent_span = parent_trace_id[8:24]
 
@@ -181,7 +177,7 @@ async def spawn_sub_session(
 
     # Extract or generate trace_id for W3C Trace Context pattern
     # Root session ID is the trace_id, propagate it to all children
-    parent_trace_id = getattr(parent_session, 'trace_id', parent_session.session_id)
+    parent_trace_id = getattr(parent_session, "trace_id", parent_session.session_id)
 
     metadata = {
         "session_id": sub_session_id,

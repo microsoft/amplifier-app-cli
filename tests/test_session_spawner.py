@@ -7,12 +7,10 @@ Full end-to-end integration testing done manually (see test report).
 import re
 
 import pytest
-from amplifier_app_cli.session_spawner import (
-    DEFAULT_PARENT_SPAN,
-    SPAN_HEX_LEN,
-    _generate_sub_session_id,
-    resume_sub_session,
-)
+from amplifier_app_cli.session_spawner import DEFAULT_PARENT_SPAN
+from amplifier_app_cli.session_spawner import SPAN_HEX_LEN
+from amplifier_app_cli.session_spawner import _generate_sub_session_id
+from amplifier_app_cli.session_spawner import resume_sub_session
 from amplifier_app_cli.session_store import SessionStore
 
 # Configure anyio for async tests (asyncio backend only)

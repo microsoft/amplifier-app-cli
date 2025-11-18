@@ -111,6 +111,73 @@ async def execute_collection_refresh() -> ExecutionResult:
         )
 
 
+async def check_umbrella_dependencies_for_updates(umbrella_info: UmbrellaInfo) -> bool:
+    """Check if any dependencies declared in umbrella's pyproject.toml have updates.
+
+    Args:
+        umbrella_info: Discovered umbrella source info
+
+    Returns:
+        True if any dependency has updates, False otherwise
+    """
+    import importlib.metadata
+    import json
+
+    from .source_status import _get_github_commit_sha
+    from .umbrella_discovery import fetch_umbrella_dependencies
+
+    try:
+        # Fetch umbrella's dependencies
+        umbrella_deps = await fetch_umbrella_dependencies(umbrella_info)
+
+        logger.debug(f"Checking {len(umbrella_deps)} umbrella dependencies for updates")
+
+        # Check each dependency
+        for dep_name, dep_info in umbrella_deps.items():
+            try:
+                # Get installed SHA (from direct_url.json)
+                dist = importlib.metadata.distribution(dep_name)
+                if not hasattr(dist, "read_text"):
+                    continue
+
+                direct_url_text = dist.read_text("direct_url.json")
+                if not direct_url_text:
+                    continue
+
+                direct_url = json.loads(direct_url_text)
+
+                # Skip editable/local installs
+                if "dir_info" in direct_url:
+                    continue
+
+                # Get installed commit SHA
+                if "vcs_info" not in direct_url:
+                    continue
+
+                installed_sha = direct_url["vcs_info"].get("commit_id")
+                if not installed_sha:
+                    continue
+
+                # Get remote SHA
+                remote_sha = await _get_github_commit_sha(dep_info["url"], dep_info["branch"])
+
+                # Compare
+                if installed_sha != remote_sha:
+                    logger.info(f"Dependency {dep_name} has updates: {installed_sha[:7]} → {remote_sha[:7]}")
+                    return True
+
+            except Exception as e:
+                logger.debug(f"Could not check dependency {dep_name}: {e}")
+                continue
+
+        logger.debug("All umbrella dependencies up to date")
+        return False
+
+    except Exception as e:
+        logger.warning(f"Could not check umbrella dependencies: {e}")
+        return False
+
+
 async def execute_self_update(umbrella_info: UmbrellaInfo) -> ExecutionResult:
     """Delegate to 'uv tool install --force'.
 
@@ -200,25 +267,26 @@ async def execute_updates(report: UpdateReport) -> ExecutionResult:
         if not result.success:
             overall_success = False
 
-    # 3. Execute self-update if needed (check for umbrella with updates)
+    # 3. Execute self-update if needed (check umbrella dependencies for updates)
     from .umbrella_discovery import discover_umbrella_source
 
     umbrella_info = discover_umbrella_source()
 
-    # Check if umbrella itself has updates
-    # (For simplicity, we check if ANY sources have updates, we suggest self-update)
-    # More precise: compare umbrella SHA, but that requires fetching umbrella deps
-    if umbrella_info and report.has_updates:
-        logger.info("Updating Amplifier...")
-        result = await execute_self_update(umbrella_info)
+    # Check if any umbrella dependencies (amplifier-app-cli, amplifier-core, etc.) have updates
+    if umbrella_info:
+        has_dependency_updates = await check_umbrella_dependencies_for_updates(umbrella_info)
 
-        all_updated.extend(result.updated)
-        all_failed.extend(result.failed)
-        all_messages.extend(result.messages)
-        all_errors.update(result.errors)
+        if has_dependency_updates:
+            logger.info("Updating Amplifier (umbrella dependencies have updates)...")
+            result = await execute_self_update(umbrella_info)
 
-        if not result.success:
-            overall_success = False
+            all_updated.extend(result.updated)
+            all_failed.extend(result.failed)
+            all_messages.extend(result.messages)
+            all_errors.update(result.errors)
+
+            if not result.success:
+                overall_success = False
 
     # 4. Compile final result
     return ExecutionResult(
