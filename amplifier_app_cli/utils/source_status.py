@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
 
-import httpx  # Fail fast if missing - required for GitHub API
+import httpx  # Fail fast if missing - required for GitHub Atom feeds
 
 logger = logging.getLogger(__name__)
 
