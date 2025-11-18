@@ -111,14 +111,65 @@ async def execute_collection_refresh() -> ExecutionResult:
         )
 
 
+async def fetch_library_git_dependencies(repo_url: str, ref: str) -> dict[str, dict]:
+    """Fetch git dependencies from a library's pyproject.toml.
+
+    Args:
+        repo_url: GitHub repository URL
+        ref: Branch/tag to fetch from
+
+    Returns:
+        Dict of library name -> {url, branch}
+    """
+    import tomllib
+
+    import httpx
+
+    from .umbrella_discovery import extract_github_org
+
+    try:
+        # Construct raw GitHub URL for pyproject.toml
+        github_org = extract_github_org(repo_url)
+        repo_name = repo_url.split("/")[-1].replace(".git", "")
+
+        raw_url = f"https://raw.githubusercontent.com/{github_org}/{repo_name}/{ref}/pyproject.toml"
+
+        logger.debug(f"Fetching library dependencies from: {raw_url}")
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(raw_url)
+            response.raise_for_status()
+
+            # Parse TOML
+            config = tomllib.loads(response.text)
+
+            # Extract git sources
+            sources = config.get("tool", {}).get("uv", {}).get("sources", {})
+
+            deps = {}
+            for name, source_info in sources.items():
+                if isinstance(source_info, dict) and "git" in source_info:
+                    deps[name] = {"url": source_info["git"], "branch": source_info.get("branch", "main")}
+
+            logger.debug(f"Found {len(deps)} git dependencies in {repo_name}")
+            return deps
+
+    except Exception as e:
+        logger.debug(f"Could not fetch dependencies for {repo_url}: {e}")
+        return {}
+
+
 async def check_umbrella_dependencies_for_updates(umbrella_info: UmbrellaInfo) -> bool:
-    """Check if any dependencies declared in umbrella's pyproject.toml have updates.
+    """Check if any dependencies (recursively) have updates.
+
+    Checks umbrella dependencies AND their transitive git dependencies.
+    For example: umbrella → amplifier-app-cli → amplifier-profiles
 
     Args:
         umbrella_info: Discovered umbrella source info
 
     Returns:
-        True if any dependency has updates, False otherwise
+        True if any dependency (at any level) has updates, False otherwise
     """
     import importlib.metadata
     import json
@@ -127,13 +178,30 @@ async def check_umbrella_dependencies_for_updates(umbrella_info: UmbrellaInfo) -
     from .umbrella_discovery import fetch_umbrella_dependencies
 
     try:
-        # Fetch umbrella's dependencies
+        # Step 1: Fetch umbrella's direct dependencies
         umbrella_deps = await fetch_umbrella_dependencies(umbrella_info)
 
-        logger.debug(f"Checking {len(umbrella_deps)} umbrella dependencies for updates")
+        # Step 2: Recursively fetch transitive git dependencies
+        all_deps = dict(umbrella_deps)  # Start with umbrella deps
+        checked = set()  # Track what we've already checked to avoid cycles
 
-        # Check each dependency
-        for dep_name, dep_info in umbrella_deps.items():
+        for dep_name, dep_info in list(umbrella_deps.items()):
+            if dep_name in checked:
+                continue
+            checked.add(dep_name)
+
+            # Fetch this dependency's git dependencies
+            transitive_deps = await fetch_library_git_dependencies(dep_info["url"], dep_info["branch"])
+
+            for trans_name, trans_info in transitive_deps.items():
+                if trans_name not in all_deps:
+                    all_deps[trans_name] = trans_info
+                    logger.debug(f"Found transitive dependency: {trans_name} (via {dep_name})")
+
+        logger.debug(f"Checking {len(all_deps)} dependencies (including transitive) for updates")
+
+        # Step 3: Check each dependency for updates
+        for dep_name, dep_info in all_deps.items():
             try:
                 # Get installed SHA (from direct_url.json)
                 dist = importlib.metadata.distribution(dep_name)
@@ -170,7 +238,7 @@ async def check_umbrella_dependencies_for_updates(umbrella_info: UmbrellaInfo) -
                 logger.debug(f"Could not check dependency {dep_name}: {e}")
                 continue
 
-        logger.debug("All umbrella dependencies up to date")
+        logger.debug("All dependencies up to date")
         return False
 
     except Exception as e:
