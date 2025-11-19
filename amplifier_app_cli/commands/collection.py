@@ -115,46 +115,10 @@ def add(source_uri: str, local: bool):
         # Install using protocol API (library handles lock updates)
         metadata = asyncio.run(install_collection(source=source, target_dir=target_dir, lock=lock))
 
-        # ============================================================================
-        # APP LAYER POLICY: Normalize directory name to match metadata name
-        # ============================================================================
-        #
-        # Invariant: directory_name == metadata_name
-        #
-        # Why this is necessary:
-        # - ProfileLoader/AgentResolver extract collection name from directory path
-        # - They use extract_collection_name_from_path() which reads metadata
-        # - But for performance, we normalize so directory name = metadata name
-        # - This is APP POLICY, not library mechanism (libraries stay simple)
-        #
-        # Why this isn't "fighting Python packaging":
-        # - uv controls package INTERNALS (nested structure, file locations)
-        # - We control parent directory NAME (our local organization policy)
-        # - Renaming parent directory doesn't affect Python packaging
-        #
-        # Handles repos like:
-        # - Repo: "amplifier-collection-design-intelligence"
-        # - Metadata: "design-intelligence"
-        # - Result: Directory named "design-intelligence/"
-        #
-        # Per KERNEL_PHILOSOPHY: App enforces policy, libraries use simple mechanism.
-        # ============================================================================
-
-        if target_dir.name != metadata.name:
-            logger.info(f"Normalizing collection directory: {target_dir.name} → {metadata.name}")
-            final_dir = target_dir.parent / metadata.name
-
-            # Remove existing if present (avoid conflicts)
-            if final_dir.exists():
-                logger.warning(f"Removing existing collection at {final_dir}")
-                shutil.rmtree(final_dir)
-
-            # Rename to metadata name (enforces invariant)
-            target_dir.rename(final_dir)
-            target_dir = final_dir
-
         # Discover collection using flexible resolver (handles both flat and nested structures)
-        # After normalization, directory name = metadata name
+        # Directory name = repository name (from git URL)
+        # Collection namespace = metadata name (from pyproject.toml)
+        # These may differ (e.g., amplifier-collection-recipes/ with namespace recipes:)
         resolver = create_collection_resolver()
         collection_path = resolver.resolve(metadata.name)
 
