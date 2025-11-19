@@ -20,38 +20,41 @@ def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool) -
     """
     console.print()
 
-    # === AMPLIFIER (Always show) ===
+    # === AMPLIFIER (Always show with status) ===
     if has_umbrella_updates:
-        console.print("Amplifier:            [update available]")
+        console.print("Amplifier:            (update available)")
     else:
-        console.print("Amplifier:            [up to date]")
+        console.print("Amplifier:            (up to date)")
 
     # === LIBRARIES (Local file sources - amplifier-core, amplifier-app-cli, etc.) ===
     libraries = [s for s in report.local_file_sources if "amplifier-" in s.name or "amplifier_" in s.name]
     if libraries:
         console.print()
+        console.print("[cyan]Libraries:[/cyan]")
         for status in libraries:
             sha = status.local_sha or "unknown"
             if status.uncommitted_changes or status.unpushed_commits:
-                console.print(f"{status.name:20s}  local  [uncommitted]")
+                console.print(f"  {status.name:20s}  local  (uncommitted)")
             elif status.has_remote and status.remote_sha and status.remote_sha != status.local_sha:
-                console.print(f"{status.name:20s}  {sha}  →  {status.remote_sha}")
+                console.print(f"  {status.name:20s}  {sha}  →  {status.remote_sha}")
             else:
-                console.print(f"{status.name:20s}  {sha}  →  {sha}")
+                console.print(f"  {status.name:20s}  {sha}  →  {sha}")
 
     # === MODULES (Cached git sources - providers, tools, hooks, etc.) ===
     if report.cached_git_sources:
         console.print()
+        console.print("[cyan]Modules:[/cyan]")
         for status in report.cached_git_sources:
             age_str = f" ({status.age_days}d old)" if status.age_days > 0 else ""
-            console.print(f"{status.name:20s}  {status.cached_sha}  →  {status.remote_sha}{age_str}")
+            console.print(f"  {status.name:20s}  {status.cached_sha}  →  {status.remote_sha}{age_str}")
 
     # === COLLECTIONS ===
     if report.collection_sources:
         console.print()
+        console.print("[cyan]Collections:[/cyan]")
         for status in report.collection_sources:
             installed = status.installed_sha or "<none>"
-            console.print(f"{status.name:20s}  {installed}  →  {status.remote_sha}")
+            console.print(f"  {status.name:20s}  {installed}  →  {status.remote_sha}")
 
     console.print()
     if not check_only and (report.has_updates or has_umbrella_updates):
@@ -82,30 +85,22 @@ def _show_verbose_report(report, check_only: bool) -> None:
         console.print()
         console.print("[dim]For local sources: Use git to manage updates manually[/dim]")
 
-    # Show cached git sources with updates
+    # Show cached modules
     if report.cached_git_sources:
         console.print()
-        console.print("[yellow]Cached Git Sources (updates available):[/yellow]")
+        console.print("[cyan]Modules:[/cyan]")
         for status in report.cached_git_sources:
-            console.print(f"  • {status.name}@{status.ref} ({status.layer})")
+            console.print(f"  • {status.name}@{status.ref}")
             console.print(f"    {status.cached_sha} → {status.remote_sha} ({status.age_days}d old)")
 
-        if not check_only:
-            console.print()
-            console.print("Run [cyan]amplifier module refresh[/cyan] to update cached modules")
-
-    # Show collections with updates
+    # Show collections
     if report.collection_sources:
         console.print()
-        console.print("[yellow]Collections (updates available):[/yellow]")
+        console.print("[cyan]Collections:[/cyan]")
         for status in report.collection_sources:
             console.print(f"  • {status.name}")
-            console.print(f"    {status.installed_sha} → {status.remote_sha}")
+            console.print(f"    {status.installed_sha or '<none>'}  →  {status.remote_sha}")
             console.print(f"    Installed: {status.installed_at}")
-
-        if not check_only:
-            console.print()
-            console.print("Run [cyan]amplifier collection refresh[/cyan] to update")
 
 
 @click.command()
@@ -118,15 +113,13 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
 
     Checks all sources (local files and cached git) and executes updates.
     """
-    # Check for updates
+    # Check for updates with status messages
     if force:
         console.print("Force update mode - skipping update detection...")
     else:
         console.print("Checking for updates...")
 
-    report = asyncio.run(check_all_sources(include_all_cached=True, force=force))
-
-    # Check umbrella dependencies for updates
+    # Check umbrella first
     from ..utils.umbrella_discovery import discover_umbrella_source
     from ..utils.update_executor import check_umbrella_dependencies_for_updates
 
@@ -137,8 +130,15 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         if force:
             has_umbrella_updates = True  # Force update umbrella
         else:
-            console.print("Checking umbrella dependencies...")
+            console.print("  Checking Amplifier dependencies...")
             has_umbrella_updates = asyncio.run(check_umbrella_dependencies_for_updates(umbrella_info))
+
+    # Check modules and collections
+    if not force:
+        console.print("  Checking modules...")
+        console.print("  Checking collections...")
+
+    report = asyncio.run(check_all_sources(include_all_cached=True, force=force))
 
     # Display results based on verbosity
     if verbose:
