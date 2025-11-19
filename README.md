@@ -178,41 +178,6 @@ amplifier --help                                   # Show help
 - `-y, --yes`: Skip confirmation prompts
 - `--verbose`: Show detailed multi-line output per source (default: concise one-line format)
 
-**Example output** (concise format - default):
-```
-Checking for updates...
-
-Amplifier:            [update available]
-amplifier-app-cli:    local  [uncommitted]
-amplifier-profiles:   ghi9012  →  ghi9012
-provider-anthropic:   jkl3456  →  mno7890  (12d old)
-recipes:              d4c2d82  →  e5f3a91
-
-Run 'amplifier update' to install
-```
-
-**Example output** (`--verbose` flag):
-```
-Checking for updates...
-
-Amplifier (umbrella):
-  Source: git+https://github.com/microsoft/amplifier@next
-  Current: abc1234
-  Remote:  def5678
-  Status:  Update available
-
-amplifier-app-cli:
-  Source: file:///path/to/amplifier-app-cli
-  Current: local (main branch)
-  Status:  Uncommitted changes, unpushed commits
-
-provider-anthropic:
-  Source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
-  Current: jkl3456 (cached 12 days ago)
-  Remote:  mno7890
-  Status:  Update available
-```
-
 ## Shell Completion
 
 Enable tab completion with one command. Amplifier automatically installs completion for standard shell setups.
