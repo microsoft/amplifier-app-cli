@@ -138,7 +138,7 @@ async def check_all_sources(include_all_cached: bool = False, force: bool = Fals
 
             elif isinstance(source, GitSource):
                 status = await _check_git_source(source, name, layer, force=force)
-                if status and (status.has_update or force):  # Add if update available OR force mode
+                if status:  # Add ALL cached sources (with has_update flag)
                     git_statuses.append(status)
 
             # PackageSource: skip (can't check for updates)
@@ -333,9 +333,8 @@ async def _check_git_source(source, name: str, layer: str, force: bool = False) 
         # Check remote
         remote_sha = await _get_github_commit_sha(source.url, source.ref)
 
-        if remote_sha == cached_sha and not force:
-            return None  # No update (unless force mode)
-
+        # Return ALL cached sources (not just those with updates)
+        has_update = (remote_sha != cached_sha) or force
         return CachedGitStatus(
             name=name,
             url=source.url,
@@ -343,7 +342,7 @@ async def _check_git_source(source, name: str, layer: str, force: bool = False) 
             layer=layer,
             cached_sha=cached_sha[:7],
             remote_sha=remote_sha[:7],
-            has_update=True,  # True even if SHAs match in force mode
+            has_update=has_update,
             age_days=_cache_age_days(metadata),
         )
 
@@ -485,22 +484,22 @@ async def _check_all_cached_modules(force: bool = False) -> tuple[list[CachedGit
                 # Check remote
                 remote_sha = await _get_github_commit_sha(url, ref)
 
-                if remote_sha != cached_sha or force:
-                    # Extract module name from URL
-                    module_name = url.split("/")[-1].replace("amplifier-module-", "")
+                # Add ALL cached modules (with has_update flag)
+                has_update = (remote_sha != cached_sha) or force
+                module_name = url.split("/")[-1].replace("amplifier-module-", "")
 
-                    statuses.append(
-                        CachedGitStatus(
-                            name=module_name,
-                            url=url,
-                            ref=ref,
-                            layer="cache",
-                            cached_sha=cached_sha[:7],
-                            remote_sha=remote_sha[:7],
-                            has_update=True,  # True even if SHAs match in force mode
-                            age_days=_cache_age_days(metadata),
-                        )
+                statuses.append(
+                    CachedGitStatus(
+                        name=module_name,
+                        url=url,
+                        ref=ref,
+                        layer="cache",
+                        cached_sha=cached_sha[:7],
+                        remote_sha=remote_sha[:7],
+                        has_update=has_update,
+                        age_days=_cache_age_days(metadata),
                     )
+                )
 
             except (httpx.HTTPError, httpx.TimeoutException) as e:
                 # Network/API errors - log but continue checking other modules
@@ -536,10 +535,10 @@ async def _check_collection_sources(force: bool = False) -> list[CollectionStatu
     Reads collection lock file, compares installed SHAs with remote SHAs.
 
     Args:
-        force: When True, include all collections even if up to date
+        force: When True, mark all collections as needing update
 
     Returns:
-        List of CollectionStatus for collections with updates available
+        List of CollectionStatus for ALL collections (with has_update flag)
     """
     from amplifier_collections import CollectionLock
     from amplifier_module_resolution import GitSource
@@ -573,19 +572,19 @@ async def _check_collection_sources(force: bool = False) -> list[CollectionStatu
             # Check remote SHA
             remote_sha = await _get_github_commit_sha(source.url, source.ref)
 
-            # Compare SHAs (or force update)
-            if remote_sha != entry.commit or force:
-                statuses.append(
-                    CollectionStatus(
-                        name=entry.name,
-                        source=entry.source,
-                        layer="user",
-                        installed_sha=entry.commit[:7] if entry.commit else None,
-                        remote_sha=remote_sha[:7],
-                        has_update=True,  # True even if SHAs match in force mode
-                        installed_at=entry.installed_at,
-                    )
+            # Add ALL collections to report (not just those with updates)
+            has_update = (remote_sha != entry.commit) or force
+            statuses.append(
+                CollectionStatus(
+                    name=entry.name,
+                    source=entry.source,
+                    layer="user",
+                    installed_sha=entry.commit[:7] if entry.commit else None,
+                    remote_sha=remote_sha[:7],
+                    has_update=has_update,
+                    installed_at=entry.installed_at,
                 )
+            )
 
         except Exception as e:
             logger.debug(f"Could not check collection {entry.name}: {e}")

@@ -13,41 +13,42 @@ console = Console()
 
 
 def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool) -> None:
-    """Show concise one-line format for each source.
+    """Show concise one-line format for all sources.
 
-    Shows ALL sources in simple format: name SHA → SHA
-    Clean, scannable, consistent across all modes.
+    Organized by type: Amplifier → Libraries → Modules → Collections
+    Simple format: name SHA → SHA (age if relevant)
     """
     console.print()
 
-    # Umbrella/app
+    # === AMPLIFIER (Umbrella + Dependencies) ===
     if has_umbrella_updates:
         console.print("Amplifier:            [update available]")
 
-    # Local file sources
-    for status in report.local_file_sources:
-        sha = status.local_sha or "unknown"
-        if status.uncommitted_changes or status.unpushed_commits:
-            console.print(f"{status.name:20s}  local  [uncommitted]")
-        elif status.has_remote and status.remote_sha and status.remote_sha != status.local_sha:
-            console.print(f"{status.name:20s}  {sha}  →  {status.remote_sha}")
-        else:
-            console.print(f"{status.name:20s}  {sha}  →  {sha}")
+    # === LIBRARIES (Local file sources - amplifier-core, amplifier-app-cli, etc.) ===
+    libraries = [s for s in report.local_file_sources if "amplifier-" in s.name]
+    if libraries:
+        console.print()
+        for status in libraries:
+            sha = status.local_sha or "unknown"
+            if status.uncommitted_changes or status.unpushed_commits:
+                console.print(f"{status.name:20s}  local  [uncommitted]")
+            elif status.has_remote and status.remote_sha and status.remote_sha != status.local_sha:
+                console.print(f"{status.name:20s}  {sha}  →  {status.remote_sha}")
+            else:
+                console.print(f"{status.name:20s}  {sha}  →  {sha}")
 
-    # Cached git sources
-    for status in report.cached_git_sources:
-        age_str = f" ({status.age_days}d old)" if status.age_days > 0 else ""
-        if status.has_update and status.remote_sha != status.cached_sha:
+    # === MODULES (Cached git sources - providers, tools, hooks, etc.) ===
+    if report.cached_git_sources:
+        console.print()
+        for status in report.cached_git_sources:
+            age_str = f" ({status.age_days}d old)" if status.age_days > 0 else ""
             console.print(f"{status.name:20s}  {status.cached_sha}  →  {status.remote_sha}{age_str}")
-        else:
-            console.print(f"{status.name:20s}  {status.cached_sha}  →  {status.cached_sha}{age_str}")
 
-    # Collections
-    for status in report.collection_sources:
-        installed = status.installed_sha or "<none>"
-        if status.has_update and status.remote_sha != status.installed_sha:
-            console.print(f"{status.name:20s}  {installed}  →  {status.remote_sha}")
-        else:
+    # === COLLECTIONS ===
+    if report.collection_sources:
+        console.print()
+        for status in report.collection_sources:
+            installed = status.installed_sha or "<none>"
             console.print(f"{status.name:20s}  {installed}  →  {status.remote_sha}")
 
     console.print()
