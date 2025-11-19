@@ -13,41 +13,42 @@ console = Console()
 
 
 def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool) -> None:
-    """Show concise one-line format for each source."""
+    """Show concise one-line format for each source.
+
+    Shows ALL sources in simple format: name SHA → SHA
+    Clean, scannable, consistent across all modes.
+    """
     console.print()
 
-    # Umbrella
+    # Umbrella/app
     if has_umbrella_updates:
-        console.print("[yellow]Amplifier:  <checking>  →  <update>  [update available][/yellow]")
+        console.print("Amplifier:            [update available]")
 
     # Local file sources
     for status in report.local_file_sources:
         sha = status.local_sha or "unknown"
-        changes = []
-        if status.uncommitted_changes:
-            changes.append("uncommitted")
-        if status.unpushed_commits:
-            changes.append("unpushed")
-
-        if status.has_remote and status.remote_sha and status.remote_sha != status.local_sha:
-            console.print(f"[yellow]{status.name:20s}  {sha}  →  {status.remote_sha}  [update available][/yellow]")
-        elif changes:
-            change_str = ", ".join(changes)
-            console.print(f"[cyan]{status.name:20s}  local ({status.path})  [{change_str}][/cyan]")
+        if status.uncommitted_changes or status.unpushed_commits:
+            console.print(f"{status.name:20s}  local  [uncommitted]")
+        elif status.has_remote and status.remote_sha and status.remote_sha != status.local_sha:
+            console.print(f"{status.name:20s}  {sha}  →  {status.remote_sha}")
         else:
-            console.print(f"[dim]{status.name:20s}  {sha}  →  {sha}  [up to date][/dim]")
+            console.print(f"{status.name:20s}  {sha}  →  {sha}")
 
-    # Cached git sources with updates
+    # Cached git sources
     for status in report.cached_git_sources:
-        age_note = f"({status.age_days}d old)" if status.age_days > 0 else ""
-        console.print(
-            f"[yellow]{status.name:20s}  {status.cached_sha}  →  {status.remote_sha}  [update available] {age_note}[/yellow]"
-        )
+        age_str = f" ({status.age_days}d old)" if status.age_days > 0 else ""
+        if status.has_update and status.remote_sha != status.cached_sha:
+            console.print(f"{status.name:20s}  {status.cached_sha}  →  {status.remote_sha}{age_str}")
+        else:
+            console.print(f"{status.name:20s}  {status.cached_sha}  →  {status.cached_sha}{age_str}")
 
     # Collections
     for status in report.collection_sources:
         installed = status.installed_sha or "<none>"
-        console.print(f"[yellow]{status.name:20s}  {installed}  →  {status.remote_sha}  [update available][/yellow]")
+        if status.has_update and status.remote_sha != status.installed_sha:
+            console.print(f"{status.name:20s}  {installed}  →  {status.remote_sha}")
+        else:
+            console.print(f"{status.name:20s}  {installed}  →  {status.remote_sha}")
 
     console.print()
     if not check_only and (report.has_updates or has_umbrella_updates):

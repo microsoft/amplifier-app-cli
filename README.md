@@ -178,15 +178,15 @@ amplifier --help                                   # Show help
 - `-y, --yes`: Skip confirmation prompts
 - `--verbose`: Show detailed multi-line output per source (default: concise one-line format)
 
-**Example output** (concise format):
+**Example output** (concise format - default):
 ```
 Checking for updates...
 
-Amplifier:            abc1234 → def5678  [update available]
-amplifier-app-cli:    local (/path/to/amplifier-app-cli)  [uncommitted changes]
-amplifier-profiles:   ghi9012 → ghi9012  [up to date]
-provider-anthropic:   jkl3456 → mno7890  [update available] (12 days old)
-recipes:              <none>  → pqr1234  [update available]
+Amplifier:            [update available]
+amplifier-app-cli:    local  [uncommitted]
+amplifier-profiles:   ghi9012  →  ghi9012
+provider-anthropic:   jkl3456  →  mno7890  (12d old)
+recipes:              d4c2d82  →  e5f3a91
 
 Run 'amplifier update' to install
 ```
