@@ -20,12 +20,14 @@ def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool) -
     """
     console.print()
 
-    # === AMPLIFIER (Umbrella + Dependencies) ===
+    # === AMPLIFIER (Always show) ===
     if has_umbrella_updates:
         console.print("Amplifier:            [update available]")
+    else:
+        console.print("Amplifier:            [up to date]")
 
     # === LIBRARIES (Local file sources - amplifier-core, amplifier-app-cli, etc.) ===
-    libraries = [s for s in report.local_file_sources if "amplifier-" in s.name]
+    libraries = [s for s in report.local_file_sources if "amplifier-" in s.name or "amplifier_" in s.name]
     if libraries:
         console.print()
         for status in libraries:
