@@ -256,10 +256,10 @@ def create_agent_loader(
 
 
 def create_module_resolver() -> StandardModuleSourceResolver:
-    """Create CLI-configured module resolver with settings provider.
+    """Create CLI-configured module resolver with settings and collection providers.
 
     Returns:
-        StandardModuleSourceResolver with CLI settings provider injected
+        StandardModuleSourceResolver with CLI providers injected
     """
     config = create_config_manager()
 
@@ -275,7 +275,31 @@ def create_module_resolver() -> StandardModuleSourceResolver:
             """Get module source from CLI settings."""
             return config.get_module_sources().get(module_id)
 
+    # CLI implements CollectionModuleProviderProtocol
+    class CLICollectionModuleProvider:
+        """CLI implementation of CollectionModuleProviderProtocol."""
+
+        def get_collection_modules(self) -> dict[str, str]:
+            """Get module_id -> absolute_path from installed collections."""
+            from amplifier_collections import CollectionLock
+
+            lock_path = Path.home() / ".amplifier" / "collections.lock"
+            if not lock_path.exists():
+                return {}
+
+            lock = CollectionLock(lock_path=lock_path)
+            modules = {}
+
+            for entry in lock.list_entries():
+                for module_name, module_info in entry.modules.items():
+                    collection_path = Path(entry.path)
+                    module_path = collection_path / module_info["path"]
+                    modules[module_name] = str(module_path)
+
+            return modules
+
     return StandardModuleSourceResolver(
         settings_provider=CLISettingsProvider(),
+        collection_provider=CLICollectionModuleProvider(),
         workspace_dir=get_workspace_dir(),
     )
