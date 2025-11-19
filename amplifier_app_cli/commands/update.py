@@ -12,31 +12,50 @@ from ..utils.update_executor import execute_updates
 console = Console()
 
 
-@click.command()
-@click.option("--check-only", is_flag=True, help="Check for updates without installing")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmations")
-@click.option("--force", is_flag=True, help="Force update even if already latest")
-def update(check_only: bool, yes: bool, force: bool):
-    """Update Amplifier to latest version.
+def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool) -> None:
+    """Show concise one-line format for each source."""
+    console.print()
 
-    Checks all sources (local files and cached git) and executes updates.
-    """
-    # Check for updates
-    console.print("Checking for updates...")
+    # Umbrella
+    if has_umbrella_updates:
+        console.print("[yellow]Amplifier:  <checking>  →  <update>  [update available][/yellow]")
 
-    report = asyncio.run(check_all_sources(include_all_cached=True))
+    # Local file sources
+    for status in report.local_file_sources:
+        sha = status.local_sha or "unknown"
+        changes = []
+        if status.uncommitted_changes:
+            changes.append("uncommitted")
+        if status.unpushed_commits:
+            changes.append("unpushed")
 
-    # Check umbrella dependencies for updates
-    from ..utils.umbrella_discovery import discover_umbrella_source
-    from ..utils.update_executor import check_umbrella_dependencies_for_updates
+        if status.has_remote and status.remote_sha and status.remote_sha != status.local_sha:
+            console.print(f"[yellow]{status.name:20s}  {sha}  →  {status.remote_sha}  [update available][/yellow]")
+        elif changes:
+            change_str = ", ".join(changes)
+            console.print(f"[cyan]{status.name:20s}  local ({status.path})  [{change_str}][/cyan]")
+        else:
+            console.print(f"[dim]{status.name:20s}  {sha}  →  {sha}  [up to date][/dim]")
 
-    umbrella_info = discover_umbrella_source()
-    has_umbrella_updates = False
+    # Cached git sources with updates
+    for status in report.cached_git_sources:
+        age_note = f"({status.age_days}d old)" if status.age_days > 0 else ""
+        console.print(
+            f"[yellow]{status.name:20s}  {status.cached_sha}  →  {status.remote_sha}  [update available] {age_note}[/yellow]"
+        )
 
-    if umbrella_info:
-        console.print("Checking umbrella dependencies...")
-        has_umbrella_updates = asyncio.run(check_umbrella_dependencies_for_updates(umbrella_info))
+    # Collections
+    for status in report.collection_sources:
+        installed = status.installed_sha or "<none>"
+        console.print(f"[yellow]{status.name:20s}  {installed}  →  {status.remote_sha}  [update available][/yellow]")
 
+    console.print()
+    if not check_only and (report.has_updates or has_umbrella_updates):
+        console.print("Run [cyan]amplifier update[/cyan] to install")
+
+
+def _show_verbose_report(report, check_only: bool) -> None:
+    """Show detailed multi-line format for each source."""
     # Show local file sources
     if report.local_file_sources:
         console.print()
@@ -83,6 +102,45 @@ def update(check_only: bool, yes: bool, force: bool):
         if not check_only:
             console.print()
             console.print("Run [cyan]amplifier collection refresh[/cyan] to update")
+
+
+@click.command()
+@click.option("--check-only", is_flag=True, help="Check for updates without installing")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmations")
+@click.option("--force", is_flag=True, help="Force update even if already latest")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed multi-line output per source")
+def update(check_only: bool, yes: bool, force: bool, verbose: bool):
+    """Update Amplifier to latest version.
+
+    Checks all sources (local files and cached git) and executes updates.
+    """
+    # Check for updates
+    if force:
+        console.print("Force update mode - skipping update detection...")
+    else:
+        console.print("Checking for updates...")
+
+    report = asyncio.run(check_all_sources(include_all_cached=True, force=force))
+
+    # Check umbrella dependencies for updates
+    from ..utils.umbrella_discovery import discover_umbrella_source
+    from ..utils.update_executor import check_umbrella_dependencies_for_updates
+
+    umbrella_info = discover_umbrella_source()
+    has_umbrella_updates = False
+
+    if umbrella_info:
+        if force:
+            has_umbrella_updates = True  # Force update umbrella
+        else:
+            console.print("Checking umbrella dependencies...")
+            has_umbrella_updates = asyncio.run(check_umbrella_dependencies_for_updates(umbrella_info))
+
+    # Display results based on verbosity
+    if verbose:
+        _show_verbose_report(report, check_only)
+    else:
+        _show_concise_report(report, check_only, has_umbrella_updates)
 
     # Check-only mode
     if check_only:
