@@ -12,7 +12,64 @@ from ..utils.update_executor import execute_updates
 console = Console()
 
 
-def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool) -> None:
+async def _get_umbrella_dependency_details(umbrella_info) -> list[dict]:
+    """Get details of Amplifier dependencies (libs with their SHAs).
+
+    Returns:
+        List of dicts with {name, current_sha, remote_sha, source_url}
+    """
+    import importlib.metadata
+    import json
+
+    from ..utils.umbrella_discovery import fetch_umbrella_dependencies
+
+    if not umbrella_info:
+        return []
+
+    try:
+        # Get dependency definitions from umbrella
+        umbrella_deps = await fetch_umbrella_dependencies(umbrella_info)
+
+        details = []
+        for lib_name, dep_info in umbrella_deps.items():
+            # Get current installed SHA
+            current_sha = None
+            try:
+                dist = importlib.metadata.distribution(lib_name)
+                if hasattr(dist, "read_text"):
+                    direct_url_text = dist.read_text("direct_url.json")
+                    if direct_url_text:
+                        direct_url = json.loads(direct_url_text)
+                        if "vcs_info" in direct_url:
+                            current_sha = direct_url["vcs_info"].get("commit_id", "")[:7]
+            except Exception:
+                current_sha = "unknown"
+
+            # Get remote SHA
+            from ..utils.source_status import _get_github_commit_sha
+
+            try:
+                remote_sha_full = await _get_github_commit_sha(dep_info["url"], dep_info["branch"])
+                remote_sha = remote_sha_full[:7]
+            except Exception:
+                remote_sha = "unknown"
+
+            details.append(
+                {
+                    "name": lib_name,
+                    "current_sha": current_sha,
+                    "remote_sha": remote_sha,
+                    "source_url": dep_info["url"],
+                    "has_update": current_sha != remote_sha,
+                }
+            )
+
+        return details
+    except Exception:
+        return []
+
+
+def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool, umbrella_deps=None) -> None:
     """Show concise one-line format for all sources.
 
     Organized by type: Amplifier → Libraries → Modules → Collections
@@ -20,11 +77,19 @@ def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool) -
     """
     console.print()
 
-    # === AMPLIFIER (Always show with status) ===
+    # === AMPLIFIER (Always show with status and dependency details) ===
     if has_umbrella_updates:
         console.print("Amplifier:            (update available)")
     else:
         console.print("Amplifier:            (up to date)")
+
+    # Show Amplifier dependencies if available
+    if umbrella_deps:
+        console.print()
+        console.print("[cyan]Amplifier Dependencies:[/cyan]")
+        for dep in umbrella_deps:
+            sha_display = f"{dep['current_sha']}  →  {dep['remote_sha']}"
+            console.print(f"  {dep['name']:20s}  {sha_display}")
 
     # === LIBRARIES (Local file sources - amplifier-core, amplifier-app-cli, etc.) ===
     libraries = [s for s in report.local_file_sources if "amplifier-" in s.name or "amplifier_" in s.name]
@@ -61,8 +126,18 @@ def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool) -
         console.print("Run [cyan]amplifier update[/cyan] to install")
 
 
-def _show_verbose_report(report, check_only: bool) -> None:
-    """Show detailed multi-line format for each source."""
+def _show_verbose_report(report, check_only: bool, umbrella_deps=None) -> None:
+    """Show detailed multi-line format for each source (unified format)."""
+
+    # Show Amplifier dependencies if available
+    if umbrella_deps:
+        console.print()
+        console.print("[cyan]Amplifier Dependencies:[/cyan]")
+        for dep in umbrella_deps:
+            console.print(f"  • {dep['name']}")
+            console.print(f"    {dep['current_sha']} → {dep['remote_sha']}")
+            console.print(f"    Source: {dep['source_url']}")
+
     # Show local file sources
     if report.local_file_sources:
         console.print()
@@ -85,22 +160,23 @@ def _show_verbose_report(report, check_only: bool) -> None:
         console.print()
         console.print("[dim]For local sources: Use git to manage updates manually[/dim]")
 
-    # Show cached modules
+    # Show cached modules (unified format with source URL)
     if report.cached_git_sources:
         console.print()
         console.print("[cyan]Modules:[/cyan]")
         for status in report.cached_git_sources:
             console.print(f"  • {status.name}@{status.ref}")
             console.print(f"    {status.cached_sha} → {status.remote_sha} ({status.age_days}d old)")
+            console.print(f"    Source: {status.url}")
 
-    # Show collections
+    # Show collections (unified format with source URL and days instead of timestamp)
     if report.collection_sources:
         console.print()
         console.print("[cyan]Collections:[/cyan]")
         for status in report.collection_sources:
             console.print(f"  • {status.name}")
-            console.print(f"    {status.installed_sha or '<none>'}  →  {status.remote_sha}")
-            console.print(f"    Installed: {status.installed_at}")
+            console.print(f"    {status.installed_sha or '<none>'} → {status.remote_sha}")
+            console.print(f"    Source: {status.source}")
 
 
 @click.command()
@@ -140,25 +216,31 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
 
     report = asyncio.run(check_all_sources(include_all_cached=True, force=force))
 
+    # Get Amplifier dependency details
+    umbrella_deps = asyncio.run(_get_umbrella_dependency_details(umbrella_info)) if umbrella_info else []
+
     # Display results based on verbosity
     if verbose:
-        _show_verbose_report(report, check_only)
+        _show_verbose_report(report, check_only, umbrella_deps=umbrella_deps)
     else:
-        _show_concise_report(report, check_only, has_umbrella_updates)
+        _show_concise_report(report, check_only, has_umbrella_updates, umbrella_deps=umbrella_deps)
 
-    # Check-only mode
-    if check_only:
-        if not report.has_updates and not report.has_local_changes and not has_umbrella_updates:
-            console.print("[green]✓ All sources up to date[/green]")
-        elif has_umbrella_updates:
-            console.print("\n[yellow]Updates available:[/yellow]")
-            console.print("  • Amplifier (umbrella dependencies have updates)")
-            console.print("\nRun [cyan]amplifier update[/cyan] to install")
+    # Check if anything actually needs updating
+    nothing_to_update = not report.has_updates and not has_umbrella_updates and not force
+
+    # Exit early if nothing to update
+    if nothing_to_update:
+        console.print("[green]✓ All sources up to date[/green]")
         return
 
-    # No updates available
-    if not report.has_updates and not has_umbrella_updates and not force:
-        console.print("[green]✓ All sources up to date[/green]")
+    # Check-only mode (we know there ARE updates if we got here)
+    if check_only:
+        console.print("\n[yellow]Updates available:[/yellow]")
+        if has_umbrella_updates:
+            console.print("  • Amplifier (umbrella dependencies have updates)")
+        if report.has_updates:
+            console.print("  • Modules and/or collections")
+        console.print("\nRun [cyan]amplifier update[/cyan] to install")
         return
 
     # Execute updates

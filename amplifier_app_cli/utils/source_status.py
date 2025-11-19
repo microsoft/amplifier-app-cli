@@ -84,17 +84,17 @@ class UpdateReport:
 
     @property
     def has_updates(self) -> bool:
-        """Check if any updates available (remote or local changes)."""
+        """Check if any updates available (uses has_update flags)."""
         # Local files with remote ahead
         local_updates = any(
             s.has_remote and s.remote_sha and s.remote_sha != s.local_sha for s in self.local_file_sources
         )
 
-        # Cached git with updates
-        git_updates = len(self.cached_git_sources) > 0
+        # Cached git sources with updates (check has_update flag)
+        git_updates = any(s.has_update for s in self.cached_git_sources)
 
-        # Collections with updates
-        collection_updates = len(self.collection_sources) > 0
+        # Collections with updates (check has_update flag)
+        collection_updates = any(s.has_update for s in self.collection_sources)
 
         return local_updates or git_updates or collection_updates
 
