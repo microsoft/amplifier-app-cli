@@ -17,6 +17,10 @@ providers:
     source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
     config:
       default_model: claude-sonnet-4-5
+  - module: provider-openai
+    source: git+https://github.com/microsoft/amplifier-module-provider-openai@main
+    config:
+      default_model: gpt-5.1-codex
 ---
 
 You are an AI assistant powered by Amplifier.

@@ -16,6 +16,12 @@ providers:
   - module: provider-anthropic
     config:
       debug: true
+      raw_debug: true
+      priority: 100
+  - module: provider-openai
+    config:
+      debug: true
+      raw_debug: true
       priority: 200
 
 ui:
