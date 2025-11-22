@@ -23,11 +23,11 @@ providers:
   - module: provider-openai
     source: git+https://github.com/microsoft/amplifier-module-provider-openai@main
     config:
-      default_model: gpt-5.1-mini
+      default_model: gpt-5-mini
   - module: provider-azure-openai
     source: git+https://github.com/microsoft/amplifier-module-provider-azure-openai@main
     config:
-      default_model: gpt-5.1-mini
+      default_model: gpt-5-mini
   - module: provider-ollama
     source: git+https://github.com/microsoft/amplifier-module-provider-ollama@main
     config:

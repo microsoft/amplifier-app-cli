@@ -108,13 +108,13 @@ def configure_openai(key_manager: KeyManager) -> dict:
     # Model
     console.print()
     console.print("Model?")
-    console.print("  [1] gpt-5.1-mini (recommended)")
+    console.print("  [1] gpt-5-mini (recommended)")
     console.print("  [2] gpt-5.1-codex (code-focused)")
     console.print("  [3] gpt-5.1 (most capable)")
     console.print("  [4] custom")
 
     model_choice = Prompt.ask("Choice", choices=["1", "2", "3", "4"], default="1")
-    model_map = {"1": "gpt-5.1-mini", "2": "gpt-5.1-codex", "3": "gpt-5.1", "4": None}
+    model_map = {"1": "gpt-5-mini", "2": "gpt-5.1-codex", "3": "gpt-5.1", "4": None}
 
     if model_choice == "4":
         model = Prompt.ask("Model name")
