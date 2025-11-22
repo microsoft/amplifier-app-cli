@@ -17,7 +17,7 @@ dependencies = [
     "amplifier-profiles",
     "pyyaml>=6.0.3",
     "prompt-toolkit>=3.0.52",
-    "httpx>=0.28.1",
+    "httpx[socks]>=0.28.1",
 ]
 
 [project.scripts]
