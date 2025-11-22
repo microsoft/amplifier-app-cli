@@ -10,8 +10,7 @@ import json
 import logging
 import shutil
 import tempfile
-from datetime import UTC
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from amplifier_app_cli.project_utils import get_project_slug
@@ -165,7 +164,7 @@ class SessionStore:
 
         # Write to temp file first (atomic write pattern)
         with tempfile.NamedTemporaryFile(
-            mode="w", dir=session_dir, prefix="transcript_", suffix=".tmp", delete=False
+            mode="w", encoding="utf-8", dir=session_dir, prefix="transcript_", suffix=".tmp", delete=False
         ) as tmp_file:
             temp_path = Path(tmp_file.name)
             try:

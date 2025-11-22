@@ -24,7 +24,7 @@ def get_system_default_profile() -> str:
 
     if defaults_file.exists():
         try:
-            with open(defaults_file) as f:
+            with open(defaults_file, encoding="utf-8") as f:
                 defaults = yaml.safe_load(f)
                 if defaults and "default_profile" in defaults:
                     return defaults["default_profile"]
