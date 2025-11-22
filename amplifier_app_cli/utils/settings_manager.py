@@ -32,13 +32,13 @@ def load_settings() -> dict:
         SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
         # Write defaults
-        with open(SETTINGS_FILE, "w") as f:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             yaml.safe_dump(DEFAULT_SETTINGS, f, default_flow_style=False, sort_keys=False)
 
         return DEFAULT_SETTINGS.copy()
 
     try:
-        with open(SETTINGS_FILE) as f:
+        with open(SETTINGS_FILE, encoding="utf-8") as f:
             settings = yaml.safe_load(f) or {}
 
         # Ensure updates section exists (backwards compat)
@@ -56,7 +56,7 @@ def save_settings(settings: dict):
     try:
         SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(SETTINGS_FILE, "w") as f:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             yaml.safe_dump(settings, f, default_flow_style=False, sort_keys=False)
     except Exception as e:
         logger.error(f"Could not save settings to {SETTINGS_FILE}: {e}")

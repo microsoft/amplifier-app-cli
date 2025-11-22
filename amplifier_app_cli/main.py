@@ -196,7 +196,7 @@ def _install_completion_to_config(config_file: Path, shell: str) -> bool:
             return False
 
         # For bash/zsh, append eval line
-        with open(config_file, "a") as f:
+        with open(config_file, "a", encoding="utf-8") as f:
             f.write("\n# Amplifier shell completion\n")
             f.write(f'eval "$(_AMPLIFIER_COMPLETE={shell}_source amplifier)"\n')
 
@@ -369,7 +369,7 @@ class CommandProcessor:
             path = Path(".amplifier/transcripts") / filename
             path.parent.mkdir(parents=True, exist_ok=True)
 
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(
                     {
                         "timestamp": datetime.now().isoformat(),

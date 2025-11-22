@@ -254,7 +254,7 @@ To add tools, hooks, or agents, extend from this profile or copy/modify it.
 """
 
     # Write profile
-    with open(profile_path, "w") as f:
+    with open(profile_path, "w", encoding="utf-8") as f:
         f.write(provider_config)
 
     console.print(f"[green]✓[/green] Created profile: [cyan]{profile_name}[/cyan]")
