@@ -48,8 +48,8 @@ def provider_use(
 
     Examples:
       amplifier provider use anthropic --model claude-opus-4-1 --local
-      amplifier provider use openai --model gpt-5 --project
-      amplifier provider use azure-openai --endpoint https://... --deployment gpt-5-codex --use-azure-cli
+      amplifier provider use openai --model gpt-5.1 --project
+      amplifier provider use azure-openai --endpoint https://... --deployment gpt-5.1-codex --use-azure-cli
       amplifier provider use ollama --model llama3
     """
     # Build module ID
@@ -231,10 +231,10 @@ def prompt_model_for_provider(provider_id: str) -> str:
         choices = ["1", "2", "3", "4"]
 
     elif provider_id == "openai":
-        models = {"1": "gpt-5-mini", "2": "gpt-5-codex", "3": "gpt-5", "4": None}
-        console.print("  [1] gpt-5-mini (recommended)")
-        console.print("  [2] gpt-5-codex (code-focused)")
-        console.print("  [3] gpt-5 (most capable)")
+        models = {"1": "gpt-5.1-mini", "2": "gpt-5.1-codex", "3": "gpt-5.1", "4": None}
+        console.print("  [1] gpt-5.1-mini (recommended)")
+        console.print("  [2] gpt-5.1-codex (code-focused)")
+        console.print("  [3] gpt-5.1 (most capable)")
         console.print("  [4] custom")
         choices = ["1", "2", "3", "4"]
 

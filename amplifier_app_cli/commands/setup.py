@@ -27,15 +27,15 @@ PROVIDER_INFO = {
         "name": "OpenAI",
         "key_var": "OPENAI_API_KEY",
         "key_url": "https://platform.openai.com/api-keys",
-        "model": "gpt-5-mini",
+        "model": "gpt-5.1-mini",
         "module": "provider-openai",
-        "notes": "Good alternative, gpt-5-mini is cost-effective",
+        "notes": "Good alternative, gpt-5.1-mini is cost-effective",
     },
     "azure": {
         "name": "Azure OpenAI",
         "key_var": "AZURE_OPENAI_API_KEY",
         "key_url": "https://portal.azure.com",
-        "model": "gpt-5-chat",
+        "model": "gpt-5.1-chat",
         "module": "provider-azure-openai",
         "notes": "Enterprise users with Azure subscriptions",
         "extra_vars": ["AZURE_OPENAI_ENDPOINT"],
@@ -160,7 +160,7 @@ def setup_cmd(provider: str | None, api_key: str | None):
 
     if provider == "azure":
         model_or_deployment = Prompt.ask(
-            "Azure deployment name (chat models only: gpt-5, gpt-5-mini, gpt-5-codex, etc.)",
+            "Azure deployment name (chat models only: gpt-5.1, gpt-5.1-mini, gpt-5.1-codex, etc.)",
             default=provider_info["model"],
         )
     elif provider == "ollama":

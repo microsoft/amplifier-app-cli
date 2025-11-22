@@ -73,8 +73,10 @@ class ProviderManager:
         canonical_source = DEFAULT_PROVIDER_SOURCES.get(provider_id)
         provider_source = source or canonical_source
 
-        # Build provider config entry
-        provider_entry = {"module": provider_id, "config": config}
+        # Build provider config entry with high priority (lower = higher priority)
+        # Priority 1 ensures explicitly configured provider wins over profile defaults (100)
+        config_with_priority = {**config, "priority": 1}
+        provider_entry = {"module": provider_id, "config": config_with_priority}
 
         if provider_source:
             provider_entry["source"] = provider_source
