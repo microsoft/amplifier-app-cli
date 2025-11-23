@@ -8,8 +8,7 @@ import json
 import logging
 import re
 import subprocess
-from dataclasses import dataclass
-from dataclasses import field
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx  # Fail fast if missing - required for GitHub Atom feeds
@@ -117,8 +116,7 @@ async def check_all_sources(include_all_cached: bool = False, force: bool = Fals
     Returns:
         UpdateReport with all source statuses
     """
-    from amplifier_module_resolution import FileSource
-    from amplifier_module_resolution import GitSource
+    from amplifier_module_resolution import FileSource, GitSource
 
     # Get all sources to check
     all_sources = await _get_all_sources_to_check()
@@ -177,11 +175,15 @@ async def _get_all_sources_to_check() -> dict[str, dict]:
         Dict of name -> {source, layer, entity_type}
     """
     from ..data.profiles import get_system_default_profile
-    from ..paths import create_config_manager
-    from ..paths import create_module_resolver
-    from ..paths import create_profile_loader
-    from .umbrella_discovery import discover_umbrella_source
-    from .umbrella_discovery import fetch_umbrella_dependencies
+    from ..paths import (
+        create_config_manager,
+        create_module_resolver,
+        create_profile_loader,
+    )
+    from .umbrella_discovery import (
+        discover_umbrella_source,
+        fetch_umbrella_dependencies,
+    )
 
     sources = {}
 
@@ -320,7 +322,7 @@ async def _check_git_source(source, name: str, layer: str, force: bool = False) 
         return None  # No metadata
 
     try:
-        metadata = json.loads(metadata_file.read_text())
+        metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
 
         # Skip immutable refs
         if not metadata.get("is_mutable", True):
@@ -465,7 +467,7 @@ async def _check_all_cached_modules(force: bool = False) -> tuple[list[CachedGit
             modules_checked += 1  # Count every module we examine
 
             try:
-                metadata = json.loads(metadata_file.read_text())
+                metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
 
                 # Skip immutable refs
                 if not metadata.get("is_mutable", True):
@@ -664,7 +666,7 @@ def _get_github_auth_headers() -> dict:
         try:
             import yaml
 
-            config = yaml.safe_load(gh_config.read_text())
+            config = yaml.safe_load(gh_config.read_text(encoding="utf-8"))
             if token := config.get("github.com", {}).get("oauth_token"):
                 return {"Authorization": f"Bearer {token}"}
         except Exception:

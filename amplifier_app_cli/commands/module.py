@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
-from typing import Literal
-from typing import cast
+from typing import Any, Literal, cast
 
 import click
 from rich.panel import Panel
@@ -14,9 +12,7 @@ from rich.table import Table
 from ..console import console
 from ..data.profiles import get_system_default_profile
 from ..module_manager import ModuleManager
-from ..paths import create_config_manager
-from ..paths import create_module_resolver
-from ..paths import create_profile_loader
+from ..paths import create_config_manager, create_module_resolver, create_profile_loader
 
 
 @click.group(invoke_without_command=True)
@@ -317,7 +313,7 @@ def module_refresh(module_id: str | None, mutable_only: bool):
                     continue
 
                 try:
-                    metadata = json.loads(metadata_file.read_text())
+                    metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
 
                     # Skip if wrong module
                     if metadata.get("url", "").split("/")[-1] != f"amplifier-module-{module_id}":
@@ -359,7 +355,7 @@ def module_refresh(module_id: str | None, mutable_only: bool):
                     metadata_file = ref_dir / ".amplifier_cache_metadata.json"
                     if metadata_file.exists():
                         try:
-                            metadata = json.loads(metadata_file.read_text())
+                            metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
                             if not metadata.get("is_mutable", True):
                                 skipped += 1
                                 continue

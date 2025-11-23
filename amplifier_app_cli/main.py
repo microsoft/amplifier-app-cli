@@ -8,8 +8,7 @@ import signal
 import sys
 import uuid
 from collections.abc import Callable
-from datetime import UTC
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,16 +17,13 @@ from amplifier_core import AmplifierSession
 from amplifier_profiles.utils import parse_markdown_body
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.history import FileHistory, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.panel import Panel
 
 from .commands.collection import collection as collection_group
-from .commands.init import check_first_run
-from .commands.init import init_cmd
-from .commands.init import prompt_first_run_init
+from .commands.init import check_first_run, init_cmd, prompt_first_run_init
 from .commands.logs import logs_cmd
 from .commands.module import module as module_group
 from .commands.profile import profile as profile_group
@@ -37,11 +33,9 @@ from .commands.session import register_session_commands
 from .commands.setup import setup_cmd
 from .commands.source import source as source_group
 from .commands.update import update as update_cmd
-from .console import Markdown
-from .console import console
+from .console import Markdown, console
 from .key_manager import KeyManager
-from .paths import create_module_resolver
-from .paths import create_profile_loader
+from .paths import create_module_resolver, create_profile_loader
 from .session_store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -56,8 +50,7 @@ _abort_requested = False
 
 def _create_cli_ux_systems():
     """Create CLI UX systems for session injection (app-layer policy)."""
-    from .ui import CLIApprovalSystem
-    from .ui import CLIDisplaySystem
+    from .ui import CLIApprovalSystem, CLIDisplaySystem
 
     return CLIApprovalSystem(), CLIDisplaySystem()
 
@@ -132,7 +125,7 @@ def _completion_already_installed(config_file: Path, shell: str) -> bool:
         return False
 
     try:
-        content = config_file.read_text()
+        content = config_file.read_text(encoding="utf-8")
         completion_marker = f"_AMPLIFIER_COMPLETE={shell}_source"
         return completion_marker in content
     except Exception:
@@ -191,7 +184,7 @@ def _install_completion_to_config(config_file: Path, shell: str) -> bool:
                 text=True,
             )
             if result.returncode == 0:
-                config_file.write_text(result.stdout)
+                config_file.write_text(result.stdout, encoding="utf-8")
                 return True
             return False
 
@@ -647,7 +640,7 @@ async def _process_profile_mentions(session: AmplifierSession, profile_name: str
 
         logger.debug(f"Found profile file: {profile_file}")
 
-        markdown_body = parse_markdown_body(profile_file.read_text())
+        markdown_body = parse_markdown_body(profile_file.read_text(encoding="utf-8"))
         if not markdown_body:
             logger.debug(f"No markdown body in profile: {profile_name}")
             return
