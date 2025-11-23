@@ -66,7 +66,10 @@ def test_resolve_user_shortcut(temp_user_project_dirs):
     path = resolver.resolve("@user:custom/file.md")
     assert path is not None
     assert path.name == "file.md"
-    assert ".amplifier/custom" in str(path)
+    # Verify path structure: should be under user/.amplifier/custom/
+    user_dir = temp_user_project_dirs["user"]
+    expected_parent = user_dir / ".amplifier" / "custom"
+    assert path.is_relative_to(expected_parent), f"Expected {path} to be under {expected_parent}"
 
 
 def test_resolve_project_shortcut(temp_user_project_dirs):
@@ -77,7 +80,10 @@ def test_resolve_project_shortcut(temp_user_project_dirs):
     path = resolver.resolve("@project:notes/note.md")
     assert path is not None
     assert path.name == "note.md"
-    assert ".amplifier/notes" in str(path)
+    # Verify path structure: should be under project/.amplifier/notes/
+    project_dir = temp_user_project_dirs["project"]
+    expected_parent = project_dir / ".amplifier" / "notes"
+    assert path.is_relative_to(expected_parent), f"Expected {path} to be under {expected_parent}"
 
 
 def test_resolve_collection_not_found():
