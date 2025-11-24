@@ -41,14 +41,57 @@ def _render_user_message(message: dict, console: Console) -> None:
 
 def _render_assistant_message(message: dict, console: Console, show_thinking: bool) -> None:
     """Render assistant message with green prefix and markdown."""
-    content = _extract_content(message, show_thinking=show_thinking)
+    text_blocks, thinking_blocks = _extract_content_blocks(message, show_thinking=show_thinking)
 
     # Skip rendering if message is empty (tool-only messages)
-    if not content or not content.strip():
+    if not text_blocks and not thinking_blocks:
         return
 
     console.print("\n[bold green]Amplifier:[/bold green]")
-    console.print(Markdown(content))
+
+    # Render text blocks with default styling
+    if text_blocks:
+        console.print(Markdown("\n".join(text_blocks)))
+
+    # Render thinking blocks with dim styling
+    for thinking in thinking_blocks:
+        console.print(Markdown(f"\n💭 **Thinking:**\n{thinking}", style="dim"))
+
+
+def _extract_content_blocks(message: dict, *, show_thinking: bool = False) -> tuple[list[str], list[str]]:
+    """Extract text and thinking blocks separately from message content.
+
+    Handles multiple content formats:
+    - String content (simple case)
+    - Structured content (ContentBlocks from API)
+
+    Args:
+        message: Message dictionary
+        show_thinking: Include thinking blocks in output
+
+    Returns:
+        Tuple of (text_blocks, thinking_blocks)
+    """
+    content = message.get("content", "")
+    text_blocks = []
+    thinking_blocks = []
+
+    # String content (simple case)
+    if isinstance(content, str):
+        text_blocks.append(content)
+        return text_blocks, thinking_blocks
+
+    # Structured content (ContentBlocks)
+    if isinstance(content, list):
+        for block in content:
+            if block.get("type") == "text":
+                text_blocks.append(block.get("text", ""))
+            elif block.get("type") == "thinking" and show_thinking:
+                thinking_blocks.append(block.get("thinking", ""))
+        return text_blocks, thinking_blocks
+
+    # Fallback for unexpected formats
+    return [str(content)], []
 
 
 def _extract_content(message: dict, *, show_thinking: bool = False) -> str:
