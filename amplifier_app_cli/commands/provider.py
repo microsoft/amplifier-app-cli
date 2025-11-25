@@ -13,6 +13,7 @@ from ..key_manager import KeyManager
 from ..paths import create_config_manager
 from ..provider_config_utils import configure_anthropic
 from ..provider_config_utils import configure_azure_openai
+from ..provider_config_utils import configure_generic_provider
 from ..provider_config_utils import configure_ollama
 from ..provider_config_utils import configure_openai
 from ..provider_manager import ProviderManager
@@ -103,8 +104,11 @@ def provider_use(
         )
 
     else:
-        console.print(f"[red]Error:[/red] Unsupported provider: {provider_id}")
-        return
+        # Generic configuration for dynamically discovered providers
+        generic_config = configure_generic_provider(provider_id, model, endpoint)
+        if generic_config is None:
+            return
+        config = generic_config
 
     # Source will come from profile (no canonical registry - YAGNI cleanup)
     # Profiles specify sources for all modules

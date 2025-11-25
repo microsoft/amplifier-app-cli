@@ -271,3 +271,58 @@ def configure_ollama() -> dict:
     console.print(f"[green]✓ Using {model}[/green]")
 
     return {"default_model": model, "base_url": base_url}
+
+
+def configure_generic_provider(provider_id: str, model: str | None = None, endpoint: str | None = None) -> dict | None:
+    """Generic configuration for dynamically discovered providers.
+
+    Used for providers that don't have special configuration functions.
+
+    Args:
+        provider_id: Provider identifier (e.g., "vllm", "mock")
+        model: Optional model name from CLI flag
+        endpoint: Optional endpoint URL from CLI flag
+
+    Returns:
+        Provider configuration dict, or None if user cancelled
+    """
+    import os
+
+    config: dict = {}
+
+    # Check if this is a server-based provider (vllm, etc.)
+    env_var_name = f"{provider_id.upper().replace('-', '_')}_BASE_URL"
+    existing_url = os.environ.get(env_var_name)
+
+    # Prompt for endpoint if not provided
+    if endpoint:
+        config["base_url"] = endpoint
+        console.print(f"Endpoint: {endpoint}")
+    elif existing_url:
+        console.print(f"  [dim](Using {env_var_name}: {existing_url})[/dim]")
+        config["base_url"] = existing_url
+    else:
+        # Ask if user wants to configure an endpoint
+        console.print()
+        console.print(f"Configure endpoint for {provider_id}?")
+        console.print("  [1] Use default (localhost or env var)")
+        console.print("  [2] Specify endpoint URL")
+
+        choice = Prompt.ask("Choice", choices=["1", "2"], default="1")
+        if choice == "2":
+            url = Prompt.ask("Endpoint URL", default="http://localhost:8000/v1")
+            config["base_url"] = url
+
+    # Prompt for model if not provided
+    if model:
+        config["default_model"] = model
+        console.print(f"Model: {model}")
+    else:
+        console.print()
+        model_input = Prompt.ask("Model name (press Enter to use provider default)", default="")
+        if model_input:
+            config["default_model"] = model_input
+
+    console.print(f"[green]✓ Configured {provider_id}[/green]")
+
+    return config

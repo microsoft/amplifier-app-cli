@@ -111,17 +111,32 @@ class ProviderManager:
         return None
 
     def list_providers(self) -> list[tuple[str, str, str]]:
-        """List available provider module IDs.
+        """List available provider module IDs via dynamic discovery.
+
+        Discovers providers from:
+        1. Installed modules (entry points)
+        2. Profile-configured modules
+        3. Settings-configured modules
 
         Returns:
             List of (module_id, display_name, description) tuples
         """
-        return [
-            ("provider-anthropic", "Anthropic Claude", "Recommended, most tested"),
-            ("provider-openai", "OpenAI", "Good alternative"),
-            ("provider-azure-openai", "Azure OpenAI", "Enterprise with Azure"),
-            ("provider-ollama", "Ollama", "Local, free, no API key"),
-        ]
+        import asyncio
+
+        from amplifier_core.loader import ModuleLoader
+
+        providers: dict[str, tuple[str, str, str]] = {}
+
+        # Discover installed providers via entry points
+        loader = ModuleLoader()
+        modules = asyncio.run(loader.discover())
+
+        for module in modules:
+            if module.type == "provider":
+                # Use module's name and description
+                providers[module.id] = (module.id, module.name, module.description)
+
+        return list(providers.values())
 
     def reset_provider(self, scope: ScopeType) -> ResetResult:
         """Remove provider override at scope.

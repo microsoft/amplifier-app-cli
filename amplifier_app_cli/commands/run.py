@@ -100,6 +100,7 @@ def register_run_command(
     @click.option("--profile", "-P", help="Profile to use for this session")
     @click.option("--provider", "-p", default=None, help="LLM provider to use")
     @click.option("--model", "-m", help="Model to use (provider-specific)")
+    @click.option("--max-tokens", type=int, help="Maximum output tokens")
     @click.option("--mode", type=click.Choice(["chat", "single"]), default="single", help="Execution mode")
     @click.option("--resume", help="Resume specific session with new prompt")
     @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
@@ -114,6 +115,7 @@ def register_run_command(
         profile: str | None,
         provider: str,
         model: str | None,
+        max_tokens: int | None,
         mode: str,
         resume: str | None,
         verbose: bool,
@@ -200,6 +202,8 @@ def register_run_command(
 
             if model:
                 selected_config["default_model"] = model
+            if max_tokens:
+                selected_config["max_tokens"] = max_tokens
 
             selected_provider["config"] = selected_config
             config_data["providers"] = [selected_provider]
@@ -223,10 +227,10 @@ def register_run_command(
                 meta_config = dict(orchestrator_meta.get("config") or {})
                 meta_config["default_provider"] = provider_module
                 orchestrator_meta["config"] = meta_config
-        elif model:
+        elif model or max_tokens:
             providers_list = config_data.get("providers", [])
             if not providers_list:
-                console.print("[yellow]Warning:[/yellow] No providers configured; ignoring --model override")
+                console.print("[yellow]Warning:[/yellow] No providers configured; ignoring CLI overrides")
             else:
                 updated_providers: list[dict[str, Any]] = []
                 override_applied = False
@@ -235,7 +239,10 @@ def register_run_command(
                     if not override_applied and isinstance(entry, dict) and entry.get("module"):
                         new_entry = {**entry}
                         merged_config = dict(new_entry.get("config") or {})
-                        merged_config["default_model"] = model
+                        if model:
+                            merged_config["default_model"] = model
+                        if max_tokens:
+                            merged_config["max_tokens"] = max_tokens
                         new_entry["config"] = merged_config
                         updated_providers.append(new_entry)
                         override_applied = True

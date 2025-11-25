@@ -93,6 +93,12 @@ amplifier source show <id>
 amplifier run "prompt"                    # Single-shot (auto-persists, shows ID)
 amplifier                                 # Interactive (auto-generates ID)
 
+# Runtime overrides (highest priority, override all config levels)
+amplifier run -p anthropic "prompt"              # Use specific provider
+amplifier run -m claude-sonnet-4-5 "prompt"      # Use specific model
+amplifier run --max-tokens 500 "prompt"          # Limit output tokens
+amplifier run -p openai -m gpt-4o --max-tokens 1000 "prompt"  # Combine flags
+
 # Resume workflows
 amplifier continue                        # Resume most recent (interactive)
 amplifier continue "new prompt"           # Resume most recent (single-shot)
