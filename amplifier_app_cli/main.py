@@ -419,6 +419,16 @@ class CommandProcessor:
             if hasattr(context, "get_messages"):
                 messages = await context.get_messages()
                 lines.append(f"  Messages: {len(messages)}")
+            
+            # Show context configuration (max_tokens, compact_threshold, etc.)
+            context_config = self.session.config.get("context", {}).get("config", {})
+            if context_config:
+                if "max_tokens" in context_config:
+                    lines.append(f"    Max Tokens: {context_config['max_tokens']}")
+                if "compact_threshold" in context_config:
+                    lines.append(f"    Compact Threshold: {context_config['compact_threshold']}")
+                if "auto_compact" in context_config:
+                    lines.append(f"    Auto Compact: {context_config['auto_compact']}")
 
         # Provider Details
         lines.append("\n[Providers]")
