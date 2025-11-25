@@ -10,7 +10,6 @@ from .profile import profile
 from .provider import provider
 from .run import register_run_command
 from .session import register_session_commands
-from .setup import setup_cmd
 from .source import source
 
 __all__ = [
@@ -24,6 +23,5 @@ __all__ = [
     "provider",
     "register_run_command",
     "register_session_commands",
-    "setup_cmd",
     "source",
 ]

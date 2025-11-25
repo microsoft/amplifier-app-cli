@@ -34,7 +34,6 @@ from .commands.profile import profile as profile_group
 from .commands.provider import provider as provider_group
 from .commands.run import register_run_command
 from .commands.session import register_session_commands
-from .commands.setup import setup_cmd
 from .commands.source import source as source_group
 from .commands.update import update as update_cmd
 from .console import Markdown
@@ -47,7 +46,7 @@ from .session_store import SessionStore
 logger = logging.getLogger(__name__)
 
 # Load API keys from ~/.amplifier/keys.env on startup
-# This allows keys saved by 'amplifier setup' to be available
+# This allows keys saved by 'amplifier init' or 'amplifier provider use' to be available
 _key_manager = KeyManager()
 
 # Abort flag for ESC-based cancellation
@@ -1303,7 +1302,6 @@ cli.add_command(profile_group)
 cli.add_command(module_group)
 cli.add_command(provider_group)
 cli.add_command(source_group)
-cli.add_command(setup_cmd)  # Keep for backward compat, deprecated
 cli.add_command(update_cmd)
 
 # Note: Agent commands removed (YAGNI - not implemented, agents managed via profiles)
