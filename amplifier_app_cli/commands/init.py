@@ -93,14 +93,21 @@ def init_cmd():
 
     # Build dynamic menu from discovered providers
     provider_map: dict[str, str] = {}
+    reverse_map: dict[str, str] = {}  # module_id -> menu number
     for idx, (module_id, name, _desc) in enumerate(providers, 1):
         provider_map[str(idx)] = module_id
+        reverse_map[module_id] = str(idx)
         console.print(f"  [{idx}] {name}")
 
     console.print()
 
     choices = list(provider_map.keys())
-    default = "1"  # First provider is default
+
+    # Determine default based on currently configured provider
+    default = "1"  # Fallback to first provider
+    current_provider = provider_mgr.get_current_provider()
+    if current_provider and current_provider.module_id in reverse_map:
+        default = reverse_map[current_provider.module_id]
 
     provider_choice = Prompt.ask("Which provider?", choices=choices, default=default)
     module_id = provider_map[provider_choice]
