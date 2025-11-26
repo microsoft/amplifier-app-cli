@@ -32,7 +32,7 @@ def _prompt_model_selection(
 
     Args:
         provider_id: Provider ID (e.g., "anthropic", "openai")
-        default_model: Optional default model to use
+        default_model: Optional default model from existing config (NOT hard-coded provider default)
         collected_config: Optional config values collected from user (base_url, host, etc.)
             Passed to provider for dynamic model discovery from real servers.
 
@@ -55,6 +55,10 @@ def _prompt_model_selection(
         model = Prompt.ask("Model name", default=default_model or "")
         return model
 
+    # Check if default_model is in the provider's model list
+    model_ids = [m.id for m in models]
+    default_in_list = default_model and default_model in model_ids
+
     # Build selection menu from available models
     model_map: dict[str, str] = {}
 
@@ -68,20 +72,32 @@ def _prompt_model_selection(
                 caps = f" ({', '.join(key_caps)})"
         console.print(f"  [{idx}] {model_info.display_name}{caps}")
 
-    # Add custom option
-    custom_idx = str(len(models) + 1)
-    model_map[custom_idx] = "__custom__"
-    console.print(f"  [{custom_idx}] custom")
+    next_idx = len(models) + 1
+
+    # If default_model exists but not in list, add it as "keep current" option
+    if default_model and not default_in_list:
+        model_map[str(next_idx)] = default_model
+        console.print(f"  [{next_idx}] {default_model} [dim](current)[/dim]")
+        next_idx += 1
+
+    # Add "custom" option for entering a different model
+    model_map[str(next_idx)] = "__custom__"
+    console.print(f"  [{next_idx}] custom")
 
     # Determine default choice
-    default_choice = "1"
+    # Only use a default if there's an existing model from config
+    # No hard-coded defaults - user must choose for new configs
+    default_choice: str | None = None
     if default_model:
         for idx, model_id in model_map.items():
             if model_id == default_model:
                 default_choice = idx
                 break
 
-    choice = Prompt.ask("Choice", choices=list(model_map.keys()), default=default_choice)
+    if default_choice:
+        choice = Prompt.ask("Choice", choices=list(model_map.keys()), default=default_choice)
+    else:
+        choice = Prompt.ask("Choice", choices=list(model_map.keys()))
 
     if model_map[choice] == "__custom__":
         return Prompt.ask("Model name", default=default_model or "")
@@ -111,10 +127,29 @@ def _should_show_field(field: dict[str, Any], collected_config: dict[str, Any]) 
     return True
 
 
+def _resolve_config_value(value: Any) -> Any:
+    """Resolve ${VAR} references in config values to actual environment values.
+
+    Config values like "${OPENAI_BASE_URL}" are placeholders stored in config files.
+    For prompting with existing values as defaults, we need the actual values.
+
+    Args:
+        value: Value that may contain ${VAR} placeholder
+
+    Returns:
+        Resolved value from environment, or original value if not a placeholder
+    """
+    if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+        env_var = value[2:-1]
+        return os.environ.get(env_var)
+    return value
+
+
 def _prompt_for_field(
     field: dict[str, Any],
     key_manager: KeyManager,
     collected_config: dict[str, Any],
+    existing_config: dict[str, Any] | None = None,
 ) -> tuple[str, Any]:
     """Prompt user for a single config field value.
 
@@ -122,6 +157,7 @@ def _prompt_for_field(
         field: ConfigField as dict
         key_manager: Key manager for secrets
         collected_config: Config values collected so far
+        existing_config: Optional existing config for defaults when re-configuring
 
     Returns:
         Tuple of (field_id, value)
@@ -134,9 +170,20 @@ def _prompt_for_field(
     required = field.get("required", True)
 
     # Check for existing value in environment (KeyManager loads keys into env)
-    existing_value = None
+    existing_env_value = None
     if env_var:
-        existing_value = os.environ.get(env_var)
+        existing_env_value = os.environ.get(env_var)
+
+    # Check for value from existing config (for re-configuration)
+    # Resolve ${VAR} references to actual values
+    existing_config_value = None
+    if existing_config and field_type != "secret":
+        raw_value = existing_config.get(field_id)
+        if raw_value:
+            existing_config_value = _resolve_config_value(raw_value)
+
+    # Combined existing value: env var takes precedence over config value
+    existing_value = existing_env_value or existing_config_value
 
     # Show field info
     console.print()
@@ -164,9 +211,11 @@ def _prompt_for_field(
             for idx, choice in enumerate(choices, 1):
                 console.print(f"  [{idx}] {choice}")
 
+            # Use existing value first, then field default
+            effective_value = existing_value or default
             default_choice = "1"
-            if default and default in choices:
-                default_choice = str(choices.index(default) + 1)
+            if effective_value and effective_value in choices:
+                default_choice = str(choices.index(effective_value) + 1)
 
             choice_map = {str(i): c for i, c in enumerate(choices, 1)}
             selected = Prompt.ask("Choice", choices=list(choice_map.keys()), default=default_choice)
@@ -219,11 +268,15 @@ def configure_provider(
     endpoint: str | None = None,
     deployment: str | None = None,
     use_azure_cli: bool | None = None,
+    existing_config: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Configure a provider using its self-declared config_fields.
 
     Reads config_fields from the provider's get_info() method and prompts accordingly.
     Also prompts for model selection using the provider's list_models().
+
+    When existing_config is provided (re-configuring), existing values are used as
+    defaults so users can press Enter to keep their previous choices.
 
     Args:
         provider_id: Provider identifier (e.g., "anthropic", "openai", "azure-openai")
@@ -232,6 +285,7 @@ def configure_provider(
         endpoint: Optional endpoint URL (for CLI flag override)
         deployment: Optional deployment name (Azure OpenAI only)
         use_azure_cli: Optional Azure CLI auth flag (Azure OpenAI only)
+        existing_config: Optional existing config for defaults when re-configuring
 
     Returns:
         Provider configuration dict, or None if configuration failed
@@ -265,9 +319,15 @@ def configure_provider(
 
     collected_config: dict[str, Any] = {}
 
-    # Process config_fields if any
+    # Split config_fields into pre-model and post-model phases
+    # Pre-model fields are processed first (credentials, endpoints, etc.)
+    # Post-model fields are processed after model selection (model-dependent options)
     config_fields = info.get("config_fields", [])
-    for field in config_fields:
+    pre_model_fields = [f for f in config_fields if not f.get("requires_model", False)]
+    post_model_fields = [f for f in config_fields if f.get("requires_model", False)]
+
+    # Phase 1: Process pre-model config_fields (credentials, base_url, etc.)
+    for field in pre_model_fields:
         field_id = field["id"]
 
         # Check show_when conditions
@@ -280,12 +340,12 @@ def configure_provider(
             console.print(f"\n[bold]{field['display_name']}[/bold]: {cli_overrides[field_id]}")
             continue
 
-        # Prompt for the field
-        field_id, value = _prompt_for_field(field, key_manager, collected_config)
+        # Prompt for the field (pass existing_config for defaults)
+        field_id, value = _prompt_for_field(field, key_manager, collected_config, existing_config)
         if value is not None:
             collected_config[field_id] = value
 
-    # Model selection step
+    # Phase 2: Model selection step
     # Check if model was provided via CLI override
     if "default_model" in cli_overrides:
         collected_config["default_model"] = cli_overrides["default_model"]
@@ -295,9 +355,9 @@ def configure_provider(
         collected_config["default_model"] = collected_config["deployment_name"]
         console.print(f"\n[bold]Default Model[/bold]: {collected_config['default_model']} (from deployment)")
     else:
-        # Get default model from provider's defaults if available
-        defaults = info.get("defaults", {})
-        default_model = defaults.get("model")
+        # Get default model from existing config ONLY (no hard-coded provider defaults)
+        # This ensures fresh configs require user to choose, while re-configs default to previous choice
+        default_model = existing_config.get("default_model") if existing_config else None
 
         # Prompt for model selection
         # Pass collected_config so providers can connect to real servers for dynamic discovery
@@ -306,6 +366,26 @@ def configure_provider(
         selected_model = _prompt_model_selection(provider_id, default_model, collected_config)
         if selected_model:
             collected_config["default_model"] = selected_model
+
+    # Phase 3: Process post-model config_fields (model-dependent options)
+    # These fields can use show_when to reference the selected model
+    for field in post_model_fields:
+        field_id = field["id"]
+
+        # Check show_when conditions (now model is in collected_config)
+        if not _should_show_field(field, collected_config):
+            continue
+
+        # Check if value provided via CLI override
+        if field_id in cli_overrides and cli_overrides[field_id] is not None:
+            collected_config[field_id] = cli_overrides[field_id]
+            console.print(f"\n[bold]{field['display_name']}[/bold]: {cli_overrides[field_id]}")
+            continue
+
+        # Prompt for the field (pass existing_config for defaults)
+        field_id, value = _prompt_for_field(field, key_manager, collected_config, existing_config)
+        if value is not None:
+            collected_config[field_id] = value
 
     console.print(f"\n[green]✓ {display_name} configured[/green]")
 

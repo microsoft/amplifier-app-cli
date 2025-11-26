@@ -104,8 +104,12 @@ def init_cmd():
     provider_choice = Prompt.ask("Which provider?", choices=choices, default=default)
     module_id = provider_map[provider_choice]
 
+    # Get existing config for this provider (if re-configuring)
+    # This allows previous values to be used as defaults
+    existing_config = provider_mgr.get_provider_config(module_id)
+
     # Step 2: Provider-specific configuration using unified dispatcher
-    provider_config = configure_provider(module_id, key_manager)
+    provider_config = configure_provider(module_id, key_manager, existing_config=existing_config)
     if provider_config is None:
         console.print("[red]Configuration cancelled.[/red]")
         return

@@ -2,11 +2,13 @@
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from amplifier_config import ConfigManager
 
 from .lib.app_settings import AppSettings
 from .lib.app_settings import ScopeType
+from .provider_loader import get_provider_info
 from .provider_sources import DEFAULT_PROVIDER_SOURCES
 
 logger = logging.getLogger(__name__)
@@ -110,6 +112,25 @@ class ProviderManager:
 
         return None
 
+    def get_provider_config(self, provider_id: str) -> dict[str, Any] | None:
+        """Get configuration for a specific provider by module ID.
+
+        Looks through all provider overrides (merged across scopes) to find
+        configuration for the specified provider. Useful for getting existing
+        config values as defaults when re-configuring a provider.
+
+        Args:
+            provider_id: Provider module ID (e.g., "provider-anthropic", "provider-openai")
+
+        Returns:
+            Provider config dict if found, None otherwise
+        """
+        providers = self._settings.get_provider_overrides()
+        for provider in providers:
+            if provider.get("module") == provider_id:
+                return provider.get("config", {})
+        return None
+
     def list_providers(self) -> list[tuple[str, str, str]]:
         """List available provider module IDs via dynamic discovery.
 
@@ -133,8 +154,14 @@ class ProviderManager:
 
         for module in modules:
             if module.type == "provider":
-                # Use module's name and description
-                providers[module.id] = (module.id, module.name, module.description)
+                # Try to get proper display_name from provider's get_info()
+                info = get_provider_info(module.id)
+                if info and "display_name" in info:
+                    display_name = info["display_name"]
+                else:
+                    # Fallback to module's name from entry point
+                    display_name = module.name
+                providers[module.id] = (module.id, display_name, module.description)
 
         return list(providers.values())
 
