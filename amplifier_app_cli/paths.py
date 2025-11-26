@@ -291,15 +291,17 @@ def create_module_resolver() -> StandardModuleSourceResolver:
             modules = {}
 
             for entry in lock.list_entries():
-                for module_name, module_info in entry.modules.items():
+                # pyright: ignore[reportAttributeAccessIssue] - modules attr exists, pyright can't resolve from editable install
+                for module_name, module_info in entry.modules.items():  # type: ignore[attr-defined]
                     collection_path = Path(entry.path)
                     module_path = collection_path / module_info["path"]
                     modules[module_name] = str(module_path)
 
             return modules
 
+    # pyright: ignore[reportCallIssue] - collection_provider param exists, pyright can't resolve from editable install
     return StandardModuleSourceResolver(
         settings_provider=CLISettingsProvider(),
-        collection_provider=CLICollectionModuleProvider(),
+        collection_provider=CLICollectionModuleProvider(),  # type: ignore[call-arg]
         workspace_dir=get_workspace_dir(),
     )

@@ -3,6 +3,7 @@
 import logging
 
 import click
+from amplifier_config import Scope
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm
@@ -126,9 +127,10 @@ def init_cmd():
     profile_map = {"1": "dev", "2": "base", "3": "full"}
     profile_id = profile_map[profile_choice]
 
-    # Save configuration
-    config.set_active_profile(profile_id)
-    provider_mgr.use_provider(module_id, scope="local", config=provider_config, source=None)
+    # Save configuration to user's global settings (~/.amplifier/settings.yaml)
+    # This is first-time setup, so it should be available across all projects
+    config.set_active_profile(profile_id, scope=Scope.USER)
+    provider_mgr.use_provider(module_id, scope="global", config=provider_config, source=None)
 
     console.print()
     console.print(

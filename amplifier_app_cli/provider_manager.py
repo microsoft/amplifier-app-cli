@@ -10,6 +10,7 @@ from .lib.app_settings import AppSettings
 from .lib.app_settings import ScopeType
 from .provider_loader import get_provider_info
 from .provider_sources import DEFAULT_PROVIDER_SOURCES
+from .provider_sources import get_effective_provider_sources
 
 logger = logging.getLogger(__name__)
 
@@ -171,10 +172,14 @@ class ProviderManager:
         return list(providers.values())
 
     def _discover_providers_from_sources(self) -> dict[str, tuple[str, str, str]]:
-        """Discover providers by resolving known sources.
+        """Discover providers by resolving effective sources.
 
         Uses GitSource.resolve() to get cached module paths (same mechanism
         as runtime module loading), then imports modules directly.
+
+        Effective sources include:
+        1. DEFAULT_PROVIDER_SOURCES (known providers)
+        2. User-added provider modules from settings
 
         Returns:
             Dict mapping module_id to (module_id, display_name, description) tuples
@@ -186,7 +191,9 @@ class ProviderManager:
 
         providers: dict[str, tuple[str, str, str]] = {}
 
-        for module_id, source_uri in DEFAULT_PROVIDER_SOURCES.items():
+        # Use effective sources (includes both default and user-added providers)
+        effective_sources = get_effective_provider_sources(self.config)
+        for module_id, source_uri in effective_sources.items():
             try:
                 # Resolve source to cached path (uses same caching as runtime)
                 git_source = GitSource.from_uri(source_uri)

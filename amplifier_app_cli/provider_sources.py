@@ -20,13 +20,17 @@ DEFAULT_PROVIDER_SOURCES = {
 
 
 def get_effective_provider_sources(config_manager: "ConfigManager | None" = None) -> dict[str, str]:
-    """Get provider sources with overrides applied.
+    """Get provider sources with settings modules and overrides applied.
 
-    Merges DEFAULT_PROVIDER_SOURCES with any user-configured source overrides.
-    User overrides take precedence over defaults.
+    Merges:
+    1. DEFAULT_PROVIDER_SOURCES (known providers)
+    2. User-configured source overrides (for known providers)
+    3. User-added provider modules from settings (for additional providers)
+
+    User overrides and additions take precedence over defaults.
 
     Args:
-        config_manager: Optional config manager for source overrides
+        config_manager: Optional config manager for source overrides and settings
 
     Returns:
         Dict mapping module_id to source URI
@@ -34,12 +38,29 @@ def get_effective_provider_sources(config_manager: "ConfigManager | None" = None
     sources = dict(DEFAULT_PROVIDER_SOURCES)
 
     if config_manager:
-        # Get user-configured source overrides
+        # 1. Apply source overrides for known providers
         overrides = config_manager.get_module_sources()
-        for module_id in sources:
+        for module_id in list(sources.keys()):
             if module_id in overrides:
                 sources[module_id] = overrides[module_id]
                 logger.debug(f"Using override source for {module_id}: {overrides[module_id]}")
+
+        # 2. Add user-added provider modules from settings
+        # These are providers added via `amplifier module add provider-X --source ...`
+        merged = config_manager.get_merged_settings()
+        settings_providers = merged.get("modules", {}).get("providers", [])
+        for provider in settings_providers:
+            if isinstance(provider, dict):
+                module_id = provider.get("module")
+                source = provider.get("source")
+                if module_id and source:
+                    if module_id not in sources:
+                        sources[module_id] = source
+                        logger.debug(f"Added settings provider {module_id}: {source}")
+                    elif sources[module_id] != source:
+                        # Settings source overrides default (user's explicit choice)
+                        sources[module_id] = source
+                        logger.debug(f"Using settings source for {module_id}: {source}")
 
     return sources
 

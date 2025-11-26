@@ -231,6 +231,20 @@ def module_add(module_id: str, source: str | None, scope_flag: str | None):
     result = module_mgr.add_module(module_id, module_type, scope, source=source)  # type: ignore[arg-type]
 
     console.print(f"[green]✓ Added {module_id}[/green]")
+
+    # Download the module if it's a git source
+    if source and source.startswith("git+"):
+        from amplifier_module_resolution.sources import GitSource
+
+        console.print("  Downloading module...", end="")
+        try:
+            git_source = GitSource.from_uri(source)
+            git_source.resolve()  # Downloads to cache
+            console.print(" [green]✓[/green]")
+        except Exception as e:
+            console.print(" [yellow]⚠[/yellow]")
+            console.print(f"  [yellow]Warning: Could not download module: {e}[/yellow]")
+            console.print("  [dim]Module will be downloaded on first use.[/dim]")
     console.print(f"  Type: {module_type}")
     console.print(f"  Scope: {scope}")
     if source:

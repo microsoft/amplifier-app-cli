@@ -245,6 +245,7 @@ class TestSessionStore:
         # Read and verify YAML frontmatter content
         import yaml
 
+        loaded_profile = None
         with open(profile_file, encoding="utf-8") as f:
             content = f.read()
             # Extract YAML frontmatter between --- markers
@@ -255,6 +256,7 @@ class TestSessionStore:
                     yaml_content = content[4:end_marker]
                     loaded_profile = yaml.safe_load(yaml_content)
 
+        assert loaded_profile is not None, "Failed to parse YAML frontmatter"
         assert loaded_profile == profile
 
     def test_cleanup_old_sessions(self, store, sample_transcript, sample_metadata):
