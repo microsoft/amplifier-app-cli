@@ -268,12 +268,41 @@ def create_module_resolver() -> StandardModuleSourceResolver:
         """CLI implementation of SettingsProviderProtocol."""
 
         def get_module_sources(self) -> dict[str, str]:
-            """Get all module sources from CLI settings."""
-            return config.get_module_sources()
+            """Get all module sources from CLI settings.
+
+            Merges sources from multiple locations:
+            1. settings.sources (explicit source overrides)
+            2. settings.modules.providers[] (registered provider modules)
+            3. settings.modules.tools[] (registered tool modules)
+            4. settings.modules.hooks[] (registered hook modules)
+
+            Module-specific sources take precedence over explicit overrides
+            to ensure user-added modules are properly resolved.
+            """
+            # Start with explicit source overrides
+            sources = dict(config.get_module_sources())
+
+            # Extract sources from registered modules (modules.providers[], modules.tools[], etc.)
+            merged = config.get_merged_settings()
+            modules_section = merged.get("modules", {})
+
+            # Check each module type category
+            for category in ["providers", "tools", "hooks", "orchestrators", "contexts"]:
+                module_list = modules_section.get(category, [])
+                if isinstance(module_list, list):
+                    for entry in module_list:
+                        if isinstance(entry, dict):
+                            module_id = entry.get("module")
+                            source = entry.get("source")
+                            if module_id and source:
+                                # Module-specific sources override explicit overrides
+                                sources[module_id] = source
+
+            return sources
 
         def get_module_source(self, module_id: str) -> str | None:
             """Get module source from CLI settings."""
-            return config.get_module_sources().get(module_id)
+            return self.get_module_sources().get(module_id)
 
     # CLI implements CollectionModuleProviderProtocol
     class CLICollectionModuleProvider:
