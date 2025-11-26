@@ -10,11 +10,9 @@ from rich.prompt import Prompt
 
 from ..key_manager import KeyManager
 from ..paths import create_config_manager
-from ..provider_config_utils import configure_anthropic
-from ..provider_config_utils import configure_azure_openai
-from ..provider_config_utils import configure_ollama
-from ..provider_config_utils import configure_openai
+from ..provider_config_utils import configure_provider
 from ..provider_manager import ProviderManager
+from ..provider_sources import install_known_providers
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -77,28 +75,40 @@ def init_cmd():
     config = create_config_manager()
     provider_mgr = ProviderManager(config)
 
-    # Step 1: Provider selection
-    console.print("[bold]Step 1: Provider[/bold]")
-    console.print("  [1] Anthropic Claude (recommended)")
-    console.print("  [2] OpenAI")
-    console.print("  [3] Azure OpenAI")
-    console.print("  [4] Ollama (local, free)")
+    # Step 0: Install known providers (downloads if not cached)
+    console.print("[bold]Installing providers...[/bold]")
+    install_known_providers(config_manager=config, console=console, verbose=True)
     console.print()
 
-    provider_choice = Prompt.ask("Which provider?", choices=["1", "2", "3", "4"], default="1")
+    # Step 1: Provider selection - discover installed providers dynamically
+    console.print("[bold]Step 1: Provider[/bold]")
 
-    provider_map = {"1": "anthropic", "2": "openai", "3": "azure-openai", "4": "ollama"}
-    provider_id = provider_map[provider_choice]
+    # Get discovered providers
+    providers = provider_mgr.list_providers()
 
-    # Step 2: Provider-specific configuration
-    if provider_id == "anthropic":
-        provider_config = configure_anthropic(key_manager)
-    elif provider_id == "openai":
-        provider_config = configure_openai(key_manager)
-    elif provider_id == "azure-openai":
-        provider_config = configure_azure_openai(key_manager)
-    else:  # ollama
-        provider_config = configure_ollama()
+    if not providers:
+        console.print("[red]Error: No providers available. Installation may have failed.[/red]")
+        return
+
+    # Build dynamic menu from discovered providers
+    provider_map: dict[str, str] = {}
+    for idx, (module_id, name, _desc) in enumerate(providers, 1):
+        provider_map[str(idx)] = module_id
+        console.print(f"  [{idx}] {name}")
+
+    console.print()
+
+    choices = list(provider_map.keys())
+    default = "1"  # First provider is default
+
+    provider_choice = Prompt.ask("Which provider?", choices=choices, default=default)
+    module_id = provider_map[provider_choice]
+
+    # Step 2: Provider-specific configuration using unified dispatcher
+    provider_config = configure_provider(module_id, key_manager)
+    if provider_config is None:
+        console.print("[red]Configuration cancelled.[/red]")
+        return
 
     # Step 3: Profile selection
     console.print()
@@ -112,13 +122,9 @@ def init_cmd():
     profile_map = {"1": "dev", "2": "base", "3": "full"}
     profile_id = profile_map[profile_choice]
 
-    # Source will come from profile (no canonical registry - YAGNI cleanup)
-    # Profiles specify sources for all modules
-    provider_source = None
-
     # Save configuration
     config.set_active_profile(profile_id)
-    provider_mgr.use_provider(f"provider-{provider_id}", scope="local", config=provider_config, source=provider_source)
+    provider_mgr.use_provider(module_id, scope="local", config=provider_config, source=None)
 
     console.print()
     console.print(

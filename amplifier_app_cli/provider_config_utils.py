@@ -1,328 +1,312 @@
 """Shared provider configuration collection functions.
 
-Eliminates duplication between init.py and provider.py commands.
-Provides environment variable detection for smoother user experience.
+Provides generic configuration based on provider-declared config_fields.
+Queries provider modules dynamically for model lists and config fields.
 """
 
 import logging
 import os
+from typing import Any
 
 from rich.console import Console
+from rich.prompt import Confirm
 from rich.prompt import Prompt
 
 from .key_manager import KeyManager
+from .provider_loader import get_provider_info
+from .provider_loader import get_provider_models
 
 console = Console()
 logger = logging.getLogger(__name__)
 
 
-def configure_anthropic(key_manager: KeyManager) -> dict:
-    """Collect Anthropic configuration with env var detection.
+def _prompt_model_selection(
+    provider_id: str,
+    default_model: str | None = None,
+    collected_config: dict[str, Any] | None = None,
+) -> str:
+    """Prompt user to select a model from provider's available models.
+
+    Queries the provider module for available models and presents a selection menu.
+    Falls back to custom input if no models available.
 
     Args:
-        key_manager: Key manager instance
+        provider_id: Provider ID (e.g., "anthropic", "openai")
+        default_model: Optional default model to use
+        collected_config: Optional config values collected from user (base_url, host, etc.)
+            Passed to provider for dynamic model discovery from real servers.
 
     Returns:
-        Provider configuration dict
+        Selected model name
     """
-    console.print()
+    models = get_provider_models(provider_id, collected_config=collected_config)
 
-    # Check for existing key (keyring or environment)
-    has_keyring_key = key_manager.has_key("ANTHROPIC_API_KEY")
-    has_env_key = os.environ.get("ANTHROPIC_API_KEY") is not None
+    if not models:
+        # No models available - show helpful message and prompt for custom input
+        # Provider-specific hints for common local providers
+        if provider_id in ("ollama", "provider-ollama"):
+            console.print(
+                "  [dim](No models found on Ollama server. Run 'ollama pull <model>' to install models.)[/dim]"
+            )
+        elif provider_id in ("vllm", "provider-vllm"):
+            console.print("  [dim](Could not connect to vLLM server or no models available.)[/dim]")
+        else:
+            console.print("  [dim](No models discovered from server.)[/dim]")
+        model = Prompt.ask("Model name", default=default_model or "")
+        return model
 
-    # API key - always prompt, but show what exists
-    console.print("API key: Get one at https://console.anthropic.com/settings/keys")
-    if has_keyring_key or has_env_key:
-        console.print("  [dim](Found in environment - will use if you don't configure)[/dim]")
+    # Build selection menu from available models
+    model_map: dict[str, str] = {}
 
-    api_key = Prompt.ask("API key (press Enter to keep existing)", password=True, default="")
+    for idx, model_info in enumerate(models, 1):
+        model_map[str(idx)] = model_info.id
+        # Show display name and capabilities if available
+        caps = ""
+        if hasattr(model_info, "capabilities") and model_info.capabilities:
+            key_caps = [c for c in model_info.capabilities if c in ("fast", "thinking", "vision")]
+            if key_caps:
+                caps = f" ({', '.join(key_caps)})"
+        console.print(f"  [{idx}] {model_info.display_name}{caps}")
 
-    if api_key:
-        # User provided new key - save it
-        key_manager.save_key("ANTHROPIC_API_KEY", api_key)
-        console.print("[green]✓ Saved new API key[/green]")
-    elif has_keyring_key or has_env_key:
-        # User pressed Enter with existing key - keep it
-        console.print("[green]✓ Using existing API key[/green]")
-    else:
-        # No key provided and none exists - this is an error state
-        console.print("[red]Error: API key required[/red]")
-        raise ValueError("Anthropic API key is required")
+    # Add custom option
+    custom_idx = str(len(models) + 1)
+    model_map[custom_idx] = "__custom__"
+    console.print(f"  [{custom_idx}] custom")
 
-    # Model
-    console.print()
-    console.print("Model?")
-    console.print("  [1] claude-sonnet-4-5 (recommended)")
-    console.print("  [2] claude-opus-4-1 (most capable)")
-    console.print("  [3] claude-haiku-4-5 (fastest, cheapest)")
-    console.print("  [4] custom")
+    # Determine default choice
+    default_choice = "1"
+    if default_model:
+        for idx, model_id in model_map.items():
+            if model_id == default_model:
+                default_choice = idx
+                break
 
-    model_choice = Prompt.ask("Choice", choices=["1", "2", "3", "4"], default="1")
-    model_map = {"1": "claude-sonnet-4-5", "2": "claude-opus-4-1", "3": "claude-haiku-4-5", "4": None}
+    choice = Prompt.ask("Choice", choices=list(model_map.keys()), default=default_choice)
 
-    if model_choice == "4":
-        model = Prompt.ask("Model name")
-    else:
-        model = model_map[model_choice]
+    if model_map[choice] == "__custom__":
+        return Prompt.ask("Model name", default=default_model or "")
 
-    console.print(f"[green]✓ Using {model}[/green]")
-
-    return {"default_model": model, "api_key": "${ANTHROPIC_API_KEY}"}
+    return model_map[choice]
 
 
-def configure_openai(key_manager: KeyManager) -> dict:
-    """Collect OpenAI configuration with env var detection.
+def _should_show_field(field: dict[str, Any], collected_config: dict[str, Any]) -> bool:
+    """Check if a field should be shown based on show_when conditions.
 
     Args:
-        key_manager: Key manager instance
+        field: ConfigField as dict
+        collected_config: Config values collected so far
 
     Returns:
-        Provider configuration dict
+        True if field should be shown
     """
-    console.print()
+    show_when = field.get("show_when")
+    if not show_when:
+        return True
 
-    # Check for existing key (keyring or environment)
-    has_keyring_key = key_manager.has_key("OPENAI_API_KEY")
-    has_env_key = os.environ.get("OPENAI_API_KEY") is not None
-
-    # API key - always prompt, but show what exists
-    console.print("API key: Get one at https://platform.openai.com/api-keys")
-    if has_keyring_key or has_env_key:
-        console.print("  [dim](Found in environment - will use if you don't configure)[/dim]")
-
-    api_key = Prompt.ask("API key (press Enter to keep existing)", password=True, default="")
-
-    if api_key:
-        # User provided new key - save it
-        key_manager.save_key("OPENAI_API_KEY", api_key)
-        console.print("[green]✓ Saved new API key[/green]")
-    elif has_keyring_key or has_env_key:
-        # User pressed Enter with existing key - keep it
-        console.print("[green]✓ Using existing API key[/green]")
-    else:
-        # No key provided and none exists - this is an error state
-        console.print("[red]Error: API key required[/red]")
-        raise ValueError("OpenAI API key is required")
-
-    # Model
-    console.print()
-    console.print("Model?")
-    console.print("  [1] gpt-5-mini (recommended)")
-    console.print("  [2] gpt-5.1-codex (code-focused)")
-    console.print("  [3] gpt-5.1 (most capable)")
-    console.print("  [4] custom")
-
-    model_choice = Prompt.ask("Choice", choices=["1", "2", "3", "4"], default="1")
-    model_map = {"1": "gpt-5-mini", "2": "gpt-5.1-codex", "3": "gpt-5.1", "4": None}
-
-    if model_choice == "4":
-        model = Prompt.ask("Model name")
-    else:
-        model = model_map[model_choice]
-
-    console.print(f"[green]✓ Using {model}[/green]")
-
-    return {"default_model": model, "api_key": "${OPENAI_API_KEY}"}
+    # show_when is a dict like {"model": "claude-sonnet-4-5-20250929"}
+    for key, expected_value in show_when.items():
+        actual_value = collected_config.get(key, "")
+        if str(actual_value).lower() != str(expected_value).lower():
+            return False
+    return True
 
 
-def configure_azure_openai(
+def _prompt_for_field(
+    field: dict[str, Any],
     key_manager: KeyManager,
+    collected_config: dict[str, Any],
+) -> tuple[str, Any]:
+    """Prompt user for a single config field value.
+
+    Args:
+        field: ConfigField as dict
+        key_manager: Key manager for secrets
+        collected_config: Config values collected so far
+
+    Returns:
+        Tuple of (field_id, value)
+    """
+    field_id = field["id"]
+    field_type = field.get("field_type", "text")
+    prompt_text = field["prompt"]
+    env_var = field.get("env_var")
+    default = field.get("default")
+    required = field.get("required", True)
+
+    # Check for existing value in environment (KeyManager loads keys into env)
+    existing_value = None
+    if env_var:
+        existing_value = os.environ.get(env_var)
+
+    # Show field info
+    console.print()
+    console.print(f"[bold]{field['display_name']}[/bold]")
+    if existing_value:
+        if field_type == "secret":
+            console.print("  [dim](Found in environment/keyring - will use if you don't configure)[/dim]")
+        else:
+            console.print(f"  [dim](Found: {existing_value})[/dim]")
+
+    # Handle different field types
+    if field_type == "boolean":
+        if existing_value:
+            default_bool = existing_value.lower() in ("true", "1", "yes")
+        else:
+            default_bool = default and default.lower() in ("true", "1", "yes")
+
+        value = Confirm.ask(prompt_text, default=default_bool)
+        return field_id, str(value).lower()
+
+    if field_type == "choice":
+        choices = field.get("choices", [])
+        if choices:
+            console.print(f"{prompt_text}")
+            for idx, choice in enumerate(choices, 1):
+                console.print(f"  [{idx}] {choice}")
+
+            default_choice = "1"
+            if default and default in choices:
+                default_choice = str(choices.index(default) + 1)
+
+            choice_map = {str(i): c for i, c in enumerate(choices, 1)}
+            selected = Prompt.ask("Choice", choices=list(choice_map.keys()), default=default_choice)
+            return field_id, choice_map[selected]
+        # No choices defined, fall through to text
+
+    if field_type == "secret":
+        prompt_suffix = " (press Enter to keep existing)" if existing_value else ""
+        value = Prompt.ask(f"{prompt_text}{prompt_suffix}", password=True, default="")
+
+        if value:
+            # User provided new value - save it
+            if env_var:
+                key_manager.save_key(env_var, value)
+                # Also set env var so it's immediately available for model discovery
+                os.environ[env_var] = value
+                console.print("[green]✓ Saved[/green]")
+            return field_id, f"${{{env_var}}}" if env_var else value
+        if existing_value:
+            console.print("[green]✓ Using existing[/green]")
+            return field_id, f"${{{env_var}}}" if env_var else existing_value
+        if required:
+            console.print("[red]Error: Required field[/red]")
+            raise ValueError(f"{field['display_name']} is required")
+        return field_id, None
+
+    # Default: text field
+    effective_default = existing_value or default or ""
+    value = Prompt.ask(prompt_text, default=effective_default)
+
+    if not value and required:
+        console.print("[red]Error: Required field[/red]")
+        raise ValueError(f"{field['display_name']} is required")
+
+    # Save to keyring if it has an env_var
+    if value and env_var:
+        key_manager.save_key(env_var, value)
+        # Also set env var so it's immediately available for model discovery
+        os.environ[env_var] = value
+        console.print("[green]✓ Saved[/green]")
+        return field_id, f"${{{env_var}}}"
+
+    return field_id, value if value else None
+
+
+def configure_provider(
+    provider_id: str,
+    key_manager: KeyManager,
+    model: str | None = None,
     endpoint: str | None = None,
     deployment: str | None = None,
     use_azure_cli: bool | None = None,
-) -> dict:
-    """Collect Azure OpenAI configuration with env var detection.
+) -> dict[str, Any] | None:
+    """Configure a provider using its self-declared config_fields.
+
+    Reads config_fields from the provider's get_info() method and prompts accordingly.
+    Also prompts for model selection using the provider's list_models().
 
     Args:
-        key_manager: Key manager instance
-        endpoint: Optional endpoint (if provided via CLI flag, skips prompt)
-        deployment: Optional deployment (if provided via CLI flag, skips prompt)
-        use_azure_cli: Optional auth method (if provided via CLI flag, skips prompt)
+        provider_id: Provider identifier (e.g., "anthropic", "openai", "azure-openai")
+        key_manager: Key manager instance for API key storage
+        model: Optional model name (for CLI flag override)
+        endpoint: Optional endpoint URL (for CLI flag override)
+        deployment: Optional deployment name (Azure OpenAI only)
+        use_azure_cli: Optional Azure CLI auth flag (Azure OpenAI only)
 
     Returns:
-        Provider configuration dict
+        Provider configuration dict, or None if configuration failed
     """
-    console.print()
+    # Remove "provider-" prefix if present
+    if provider_id.startswith("provider-"):
+        provider_id = provider_id[9:]
 
-    # Endpoint - use provided, env var, or prompt
-    if endpoint:
-        # Provided via CLI flag - use directly
-        key_manager.save_key("AZURE_OPENAI_ENDPOINT", endpoint)
-        console.print(f"Azure endpoint: {endpoint}")
-        console.print("[green]✓ Saved[/green]")
-    else:
-        # Prompt with env var as default if available
-        console.print("Azure endpoint:")
-        existing_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-        if existing_endpoint:
-            console.print(f"  [dim](Found in environment: {existing_endpoint})[/dim]")
-            endpoint = Prompt.ask("Endpoint URL", default=existing_endpoint)
-        else:
-            endpoint = Prompt.ask("Endpoint URL", default="https://my-resource.openai.azure.com/")
-        key_manager.save_key("AZURE_OPENAI_ENDPOINT", endpoint)
-        console.print("[green]✓ Saved[/green]")
-
-    # Auth method - use provided, detect env vars, or prompt
-    if use_azure_cli is not None:
-        # Provided via CLI flag - use directly
-        if use_azure_cli:
-            console.print("[green]✓ Will use DefaultAzureCredential[/green]")
-            console.print("  (Works with 'az login' locally or managed identity in Azure)")
-            key_manager.save_key("AZURE_USE_DEFAULT_CREDENTIAL", "true")
-            auth_choice = "2"
-        else:
-            # Flag was False, meaning use API key
-            auth_choice = "1"
-    else:
-        # Prompt with smart default based on env vars
-        console.print()
-        console.print("Authentication?")
-        console.print("  [1] API key")
-        console.print("  [2] Azure CLI (az login)")
-
-        # Determine default based on what's already configured
-        existing_use_default_cred = os.environ.get("AZURE_USE_DEFAULT_CREDENTIAL", "").lower() in ("true", "1", "yes")
-        existing_api_key = os.environ.get("AZURE_OPENAI_API_KEY")
-
-        if existing_use_default_cred:
-            console.print("  [dim](Detected AZURE_USE_DEFAULT_CREDENTIAL=true in environment)[/dim]")
-            default_auth = "2"
-        elif existing_api_key:
-            console.print("  [dim](Detected AZURE_OPENAI_API_KEY in environment)[/dim]")
-            default_auth = "1"
-        else:
-            default_auth = "2"
-
-        auth_choice = Prompt.ask("Choice", choices=["1", "2"], default=default_auth)
-
-    # Deployment - use provided, env var, or prompt
-    if deployment:
-        # Provided via CLI flag - use directly
-        console.print(f"Deployment: {deployment}")
-    else:
-        # Prompt with env var as default if available
-        console.print()
-        console.print("Deployment name:")
-        console.print("  Note: Use your Azure deployment name, not model name")
-        existing_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
-        if existing_deployment:
-            console.print(f"  [dim](Found in environment: {existing_deployment})[/dim]")
-            deployment = Prompt.ask("Deployment", default=existing_deployment)
-        else:
-            deployment = Prompt.ask("Deployment", default="gpt-5.1-codex")
-
-    # Build complete config
-    config: dict = {
-        "azure_endpoint": "${AZURE_OPENAI_ENDPOINT}",
-        "default_deployment": deployment,
-        "api_version": "2024-10-01-preview",
-    }
-
-    if auth_choice == "1":
-        api_key = Prompt.ask("Azure OpenAI API key", password=True)
-        key_manager.save_key("AZURE_OPENAI_API_KEY", api_key)
-        config["api_key"] = "${AZURE_OPENAI_API_KEY}"
-        console.print("[green]✓ Saved[/green]")
-    else:
-        console.print("[green]✓ Will use DefaultAzureCredential[/green]")
-        console.print("  (Works with 'az login' locally or managed identity in Azure)")
-        key_manager.save_key("AZURE_USE_DEFAULT_CREDENTIAL", "true")
-        config["use_default_credential"] = True
-
-    console.print("[green]✓ Configured[/green]")
-
-    return config
-
-
-def configure_ollama() -> dict:
-    """Collect Ollama configuration with env var detection.
-
-    Returns:
-        Provider configuration dict
-    """
-    console.print()
-    console.print("Model?")
-    console.print("  [1] llama3 (recommended)")
-    console.print("  [2] codellama (code-focused)")
-    console.print("  [3] mistral")
-    console.print("  [4] custom")
-
-    model_choice = Prompt.ask("Choice", choices=["1", "2", "3", "4"], default="1")
-    model_map = {"1": "llama3", "2": "codellama", "3": "mistral", "4": None}
-
-    if model_choice == "4":
-        model = Prompt.ask("Model name")
-    else:
-        model = model_map[model_choice]
-
-    # Base URL - use env var if set
-    existing_host = os.environ.get("OLLAMA_HOST")
-    if existing_host:
-        console.print(f"  [dim](Using OLLAMA_HOST: {existing_host})[/dim]")
-        base_url = existing_host
-    else:
-        base_url = "http://localhost:11434"
-
-    console.print()
-    console.print("Make sure Ollama is running:")
-    console.print("  ollama serve")
-    console.print(f"  ollama pull {model}")
-    console.print(f"[green]✓ Using {model}[/green]")
-
-    return {"default_model": model, "base_url": base_url}
-
-
-def configure_generic_provider(provider_id: str, model: str | None = None, endpoint: str | None = None) -> dict | None:
-    """Generic configuration for dynamically discovered providers.
-
-    Used for providers that don't have special configuration functions.
-
-    Args:
-        provider_id: Provider identifier (e.g., "vllm", "mock")
-        model: Optional model name from CLI flag
-        endpoint: Optional endpoint URL from CLI flag
-
-    Returns:
-        Provider configuration dict, or None if user cancelled
-    """
-    import os
-
-    config: dict = {}
-
-    # Check if this is a server-based provider (vllm, etc.)
-    env_var_name = f"{provider_id.upper().replace('-', '_')}_BASE_URL"
-    existing_url = os.environ.get(env_var_name)
-
-    # Prompt for endpoint if not provided
-    if endpoint:
-        config["base_url"] = endpoint
-        console.print(f"Endpoint: {endpoint}")
-    elif existing_url:
-        console.print(f"  [dim](Using {env_var_name}: {existing_url})[/dim]")
-        config["base_url"] = existing_url
-    else:
-        # Ask if user wants to configure an endpoint
-        console.print()
-        console.print(f"Configure endpoint for {provider_id}?")
-        console.print("  [1] Use default (localhost or env var)")
-        console.print("  [2] Specify endpoint URL")
-
-        choice = Prompt.ask("Choice", choices=["1", "2"], default="1")
-        if choice == "2":
-            url = Prompt.ask("Endpoint URL", default="http://localhost:8000/v1")
-            config["base_url"] = url
-
-    # Prompt for model if not provided
+    # Build CLI overrides dict
+    cli_overrides: dict[str, Any] = {}
     if model:
-        config["default_model"] = model
-        console.print(f"Model: {model}")
+        cli_overrides["default_model"] = model
+    if endpoint:
+        cli_overrides["azure_endpoint"] = endpoint
+        cli_overrides["base_url"] = endpoint
+        cli_overrides["host"] = endpoint
+    if deployment:
+        cli_overrides["deployment_name"] = deployment
+    if use_azure_cli is not None:
+        cli_overrides["use_default_credential"] = str(use_azure_cli).lower()
+        cli_overrides["use_managed_identity"] = str(use_azure_cli).lower()
+
+    # Get provider info with config_fields
+    info = get_provider_info(provider_id)
+    if not info:
+        console.print(f"[red]Error: Could not load provider '{provider_id}'[/red]")
+        return None
+
+    display_name = info.get("display_name", provider_id)
+    console.print(f"\n[bold]Configuring {display_name}[/bold]")
+
+    collected_config: dict[str, Any] = {}
+
+    # Process config_fields if any
+    config_fields = info.get("config_fields", [])
+    for field in config_fields:
+        field_id = field["id"]
+
+        # Check show_when conditions
+        if not _should_show_field(field, collected_config):
+            continue
+
+        # Check if value provided via CLI override
+        if field_id in cli_overrides and cli_overrides[field_id] is not None:
+            collected_config[field_id] = cli_overrides[field_id]
+            console.print(f"\n[bold]{field['display_name']}[/bold]: {cli_overrides[field_id]}")
+            continue
+
+        # Prompt for the field
+        field_id, value = _prompt_for_field(field, key_manager, collected_config)
+        if value is not None:
+            collected_config[field_id] = value
+
+    # Model selection step
+    # Check if model was provided via CLI override
+    if "default_model" in cli_overrides:
+        collected_config["default_model"] = cli_overrides["default_model"]
+        console.print(f"\n[bold]Default Model[/bold]: {cli_overrides['default_model']}")
+    elif "deployment_name" in collected_config:
+        # Azure OpenAI: deployment_name IS the model
+        collected_config["default_model"] = collected_config["deployment_name"]
+        console.print(f"\n[bold]Default Model[/bold]: {collected_config['default_model']} (from deployment)")
     else:
+        # Get default model from provider's defaults if available
+        defaults = info.get("defaults", {})
+        default_model = defaults.get("model")
+
+        # Prompt for model selection
+        # Pass collected_config so providers can connect to real servers for dynamic discovery
         console.print()
-        model_input = Prompt.ask("Model name (press Enter to use provider default)", default="")
-        if model_input:
-            config["default_model"] = model_input
+        console.print("[bold]Default Model[/bold]")
+        selected_model = _prompt_model_selection(provider_id, default_model, collected_config)
+        if selected_model:
+            collected_config["default_model"] = selected_model
 
-    console.print(f"[green]✓ Configured {provider_id}[/green]")
+    console.print(f"\n[green]✓ {display_name} configured[/green]")
 
-    return config
+    return collected_config
