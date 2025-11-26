@@ -38,6 +38,7 @@ from .commands.source import source as source_group
 from .commands.update import update as update_cmd
 from .console import Markdown
 from .console import console
+from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
 from .paths import create_module_resolver
 from .paths import create_profile_loader
@@ -831,9 +832,15 @@ async def interactive_chat(
     # Create session store for saving
     store = SessionStore()
 
+    # Get effective config summary for banner display
+    config_summary = get_effective_config_summary(config, profile_name)
+
     console.print(
         Panel.fit(
-            "[bold cyan]Amplifier Interactive Session[/bold cyan]\nCommands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D",
+            f"[bold cyan]Amplifier Interactive Session[/bold cyan]\n"
+            f"[dim]Session ID: [/dim][dim bright_yellow]{session_id}[/dim bright_yellow]\n"
+            f"[dim]{config_summary.format_banner_line()}[/dim]\n"
+            f"Commands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D",
             border_style="cyan",
         )
     )

@@ -61,9 +61,11 @@ def _display_session_history(transcript: list[dict], metadata: dict, *, show_thi
         time_ago = "unknown"
 
     # Show banner at top with session info
+    model_display = model.split("/")[-1] if "/" in model else model
     banner_text = (
         f"[bold cyan]Amplifier Interactive Session (Resumed)[/bold cyan]\n"
-        f"Session: {session_id[:8]}... | Started: {time_ago} | Profile: {profile} | Model: {model.split('/')[-1] if '/' in model else model}\n"
+        f"Session: {session_id[:8]}... | Started: {time_ago}\n"
+        f"Profile: {profile} | Model: {model_display}\n"
         f"Commands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D"
     )
 
@@ -113,9 +115,11 @@ async def _replay_session_history(
         time_ago = "unknown"
 
     # Show banner at top with replay info
+    model_display = model.split("/")[-1] if "/" in model else model
     banner_text = (
         f"[bold cyan]Amplifier Interactive Session (Replaying at {speed}x)[/bold cyan]\n"
-        f"Session: {session_id[:8]}... | Started: {time_ago} | Profile: {profile} | Model: {model.split('/')[-1] if '/' in model else model}\n"
+        f"Session: {session_id[:8]}... | Started: {time_ago}\n"
+        f"Profile: {profile} | Model: {model_display}\n"
         f"[dim]Ctrl-C to skip replay[/dim] | Commands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D"
     )
 

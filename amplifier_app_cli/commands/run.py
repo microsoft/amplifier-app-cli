@@ -13,6 +13,7 @@ import click
 
 from ..console import console
 from ..data.profiles import get_system_default_profile
+from ..effective_config import get_effective_config_summary
 from ..lib.app_settings import AppSettings
 from ..paths import create_agent_loader
 from ..paths import create_config_manager
@@ -267,9 +268,8 @@ def register_run_command(
                     )
                 )
             else:
-                # New session
+                # New session - banner displayed by interactive_chat
                 session_id = str(uuid.uuid4())
-                console.print(f"\n[dim]Session ID: {session_id}[/dim]")
                 asyncio.run(interactive_chat(config_data, search_paths, verbose, session_id, active_profile_name))
         else:
             # Single-shot mode
@@ -305,7 +305,9 @@ def register_run_command(
                 # Create new session
                 session_id = str(uuid.uuid4())
                 if output_format == "text":
+                    config_summary = get_effective_config_summary(config_data, active_profile_name)
                     console.print(f"\n[dim]Session ID: {session_id}[/dim]")
+                    console.print(f"[dim]{config_summary.format_banner_line()}[/dim]")
                 asyncio.run(
                     execute_single(
                         prompt, config_data, search_paths, verbose, session_id, active_profile_name, output_format
