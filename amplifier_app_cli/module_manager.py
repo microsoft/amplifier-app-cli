@@ -12,7 +12,7 @@ from .paths import create_config_manager
 logger = logging.getLogger(__name__)
 
 ScopeType = Literal["local", "project", "global"]
-ModuleType = Literal["tool", "hook", "agent"]
+ModuleType = Literal["tool", "hook", "agent", "provider", "orchestrator", "context"]
 
 
 @dataclass
@@ -59,24 +59,35 @@ class ModuleManager:
         module_type: ModuleType,
         scope: ScopeType,
         config: dict | None = None,
+        source: str | None = None,
     ) -> AddModuleResult:
         """Add module to configuration at scope.
 
         Args:
             module_id: Module identifier
-            module_type: Type of module (tool/hook/agent)
+            module_type: Type of module (tool/hook/agent/provider/orchestrator/context)
             scope: Where to save (local/project/global)
             config: Optional module configuration
+            source: Optional source URI (git+https://... or file path)
 
         Returns:
             AddModuleResult with details
         """
         module_entry: dict[str, Any] = {"module": module_id}
+        if source:
+            module_entry["source"] = source
         if config:
             module_entry["config"] = config
 
-        # Map module type to settings key (tools/hooks/agents)
-        type_to_key = {"tool": "tools", "hook": "hooks", "agent": "agents"}
+        # Map module type to settings key (tools/hooks/agents/providers/orchestrators/contexts)
+        type_to_key = {
+            "tool": "tools",
+            "hook": "hooks",
+            "agent": "agents",
+            "provider": "providers",
+            "orchestrator": "orchestrators",
+            "context": "contexts",
+        }
         module_list_key = type_to_key[module_type]
 
         # Get current modules list
@@ -124,9 +135,9 @@ class ModuleManager:
             logger.warning(f"No modules configured at {scope} scope")
             return RemoveModuleResult(module_id=module_id, scope=scope)
 
-        # Remove from all module types (tools/hooks/agents)
+        # Remove from all module types
         removed = False
-        for module_type in ["tools", "hooks", "agents"]:
+        for module_type in ["tools", "hooks", "agents", "providers", "orchestrators", "contexts"]:
             if module_type in settings["modules"]:
                 original_len = len(settings["modules"][module_type])
                 settings["modules"][module_type] = [
@@ -163,23 +174,24 @@ class ModuleManager:
         if "modules" in merged:
             module_config = merged["modules"]
 
-            # Collect tools
-            if "tools" in module_config:
-                for tool in module_config["tools"]:
-                    if isinstance(tool, dict) and "module" in tool:
-                        modules.append(ModuleInfo(module_id=tool["module"], module_type="tool", source="settings"))
+            # Map settings keys to module types
+            key_to_type = {
+                "tools": "tool",
+                "hooks": "hook",
+                "agents": "agent",
+                "providers": "provider",
+                "orchestrators": "orchestrator",
+                "contexts": "context",
+            }
 
-            # Collect hooks
-            if "hooks" in module_config:
-                for hook in module_config["hooks"]:
-                    if isinstance(hook, dict) and "module" in hook:
-                        modules.append(ModuleInfo(module_id=hook["module"], module_type="hook", source="settings"))
-
-            # Collect agents
-            if "agents" in module_config:
-                for agent in module_config["agents"]:
-                    if isinstance(agent, dict) and "module" in agent:
-                        modules.append(ModuleInfo(module_id=agent["module"], module_type="agent", source="settings"))
+            # Collect all module types
+            for settings_key, module_type in key_to_type.items():
+                if settings_key in module_config:
+                    for item in module_config[settings_key]:
+                        if isinstance(item, dict) and "module" in item:
+                            modules.append(
+                                ModuleInfo(module_id=item["module"], module_type=module_type, source="settings")
+                            )
 
         return modules
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import Any
 from typing import Literal
 from typing import cast
@@ -105,6 +107,30 @@ def list_modules(type: str):
 
             console.print(table)
 
+    # Show cached modules (downloaded from git)
+    cached_modules = _get_cached_modules(type)
+    if cached_modules:
+        console.print()
+        table = Table(
+            title="Cached Modules (downloaded from git)",
+            show_header=True,
+            header_style="bold magenta",
+        )
+        table.add_column("Name", style="green")
+        table.add_column("Type", style="yellow")
+        table.add_column("Ref", style="cyan")
+        table.add_column("SHA", style="dim")
+        table.add_column("Mutable", style="magenta")
+
+        for mod in cached_modules:
+            mutable_str = "yes" if mod["is_mutable"] else "no"
+            table.add_row(mod["id"], mod["type"], mod["ref"], mod["sha"], mutable_str)
+
+        console.print(table)
+        console.print()
+        console.print("[dim]Note: Cached modules are downloaded on-demand when used.[/dim]")
+        console.print("[dim]Use 'amplifier module refresh' to update cached modules.[/dim]")
+
 
 @module.command("show")
 @click.argument("module_name")
@@ -151,24 +177,42 @@ def module_show(module_name: str):
 
 @module.command("add")
 @click.argument("module_id")
+@click.option("--source", "-s", help="Source URI (git+https://... or file path)")
 @click.option("--local", "scope_flag", flag_value="local", help="Add locally (just you)")
 @click.option("--project", "scope_flag", flag_value="project", help="Add for project (team)")
 @click.option("--global", "scope_flag", flag_value="global", help="Add globally (all projects)")
-def module_add(module_id: str, scope_flag: str | None):
-    """Add a module override to settings."""
+def module_add(module_id: str, source: str | None, scope_flag: str | None):
+    """Add a module override to settings.
 
+    MODULE_ID should follow naming convention: provider-*, tool-*, hooks-*, etc.
+    Use --source to specify where to load the module from.
+    """
+    # Infer module type from ID prefix
+    module_type: Literal["tool", "hook", "agent", "provider", "orchestrator", "context"] | None = None
     if module_id.startswith("tool-"):
-        module_type: Literal["tool", "hook", "agent"] = "tool"
+        module_type = "tool"
     elif module_id.startswith("hooks-"):
         module_type = "hook"
     elif module_id.startswith("agent-"):
         module_type = "agent"
+    elif module_id.startswith("provider-"):
+        module_type = "provider"
+    elif module_id.startswith("loop-"):
+        module_type = "orchestrator"
+    elif module_id.startswith("context-"):
+        module_type = "context"
     else:
-        console.print("[red]Error:[/red] Module ID must start with tool-, hooks-, or agent-")
+        console.print("[red]Error:[/red] Module ID must start with a known prefix")
+        console.print("\nSupported prefixes:")
+        console.print("  provider-*     (LLM providers: provider-anthropic, provider-openai)")
+        console.print("  tool-*         (Tools: tool-filesystem, tool-bash)")
+        console.print("  hooks-*        (Hooks: hooks-logging, hooks-approval)")
+        console.print("  agent-*        (Agent configs: agent-custom)")
+        console.print("  loop-*         (Orchestrators: loop-basic, loop-streaming)")
+        console.print("  context-*      (Context managers: context-simple, context-persistent)")
         console.print("\nExamples:")
+        console.print("  amplifier module add provider-anthropic --source git+https://github.com/org/repo@main")
         console.print("  amplifier module add tool-jupyter")
-        console.print("  amplifier module add hooks-logging")
-        console.print("  amplifier module add agent-custom")
         return
 
     if not scope_flag:
@@ -184,10 +228,13 @@ def module_add(module_id: str, scope_flag: str | None):
 
     config_manager = create_config_manager()
     module_mgr = ModuleManager(config_manager)
-    result = module_mgr.add_module(module_id, module_type, scope)  # type: ignore[arg-type]
+    result = module_mgr.add_module(module_id, module_type, scope, source=source)  # type: ignore[arg-type]
 
     console.print(f"[green]✓ Added {module_id}[/green]")
+    console.print(f"  Type: {module_type}")
     console.print(f"  Scope: {scope}")
+    if source:
+        console.print(f"  Source: {source}")
     console.print(f"  File: {result.file}")
 
 
@@ -277,6 +324,81 @@ def _get_profile_modules(profile_name: str) -> list[dict[str, Any]]:
         add_module(profile.session.orchestrator, "orchestrator")
         add_module(profile.session.context, "context")
 
+    return modules
+
+
+def _get_cached_modules(type_filter: str = "all") -> list[dict[str, Any]]:
+    """Return metadata for all cached modules.
+
+    Scans ~/.amplifier/module-cache/ for cached git modules and extracts
+    their metadata from .amplifier_cache_metadata.json files.
+    """
+    cache_dir = Path.home() / ".amplifier" / "module-cache"
+
+    if not cache_dir.exists():
+        return []
+
+    modules: list[dict[str, Any]] = []
+
+    for cache_hash in cache_dir.iterdir():
+        if not cache_hash.is_dir():
+            continue
+
+        for ref_dir in cache_hash.iterdir():
+            if not ref_dir.is_dir():
+                continue
+
+            metadata_file = ref_dir / ".amplifier_cache_metadata.json"
+            if not metadata_file.exists():
+                continue
+
+            try:
+                metadata = json.loads(metadata_file.read_text())
+                url = metadata.get("url", "")
+                repo_name = url.split("/")[-1] if url else ""
+
+                # Extract module ID from repo name (e.g., amplifier-module-tool-filesystem -> tool-filesystem)
+                if repo_name.startswith("amplifier-module-"):
+                    module_id = repo_name[len("amplifier-module-") :]
+                else:
+                    module_id = repo_name
+
+                # Infer module type from ID prefix
+                module_type = "unknown"
+                if module_id.startswith("tool-"):
+                    module_type = "tool"
+                elif module_id.startswith("hooks-"):
+                    module_type = "hook"
+                elif module_id.startswith("provider-"):
+                    module_type = "provider"
+                elif module_id.startswith("loop-"):
+                    module_type = "orchestrator"
+                elif module_id.startswith("context-"):
+                    module_type = "context"
+                elif module_id.startswith("agent-"):
+                    module_type = "agent"
+
+                # Apply type filter
+                if type_filter != "all" and type_filter != module_type:
+                    continue
+
+                modules.append(
+                    {
+                        "id": module_id,
+                        "type": module_type,
+                        "ref": metadata.get("ref", "unknown"),
+                        "sha": metadata.get("sha", "")[:8],
+                        "cached_at": metadata.get("cached_at", ""),
+                        "is_mutable": metadata.get("is_mutable", True),
+                        "url": url,
+                    }
+                )
+            except Exception:
+                # Skip invalid metadata files
+                continue
+
+    # Sort by module ID for consistent output
+    modules.sort(key=lambda m: m["id"])
     return modules
 
 
