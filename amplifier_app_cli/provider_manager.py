@@ -113,23 +113,41 @@ class ProviderManager:
 
         return None
 
-    def get_provider_config(self, provider_id: str) -> dict[str, Any] | None:
+    def get_provider_config(self, provider_id: str, scope: ScopeType | None = None) -> dict[str, Any] | None:
         """Get configuration for a specific provider by module ID.
 
-        Looks through all provider overrides (merged across scopes) to find
-        configuration for the specified provider. Useful for getting existing
-        config values as defaults when re-configuring a provider.
+        Looks through provider overrides to find configuration for the specified
+        provider. Useful for getting existing config values as defaults when
+        re-configuring a provider.
 
         Args:
             provider_id: Provider module ID (e.g., "provider-anthropic", "provider-openai")
+            scope: Optional scope to read from. If None, reads from merged settings
+                   (LOCAL > PROJECT > USER). If specified, reads from that scope only.
+                   Use "global" for USER scope to find prior global configs.
 
         Returns:
             Provider config dict if found, None otherwise
         """
-        providers = self._settings.get_provider_overrides()
+        if scope is not None:
+            # Read from specific scope only
+            providers = self._settings.get_scope_provider_overrides(scope)
+            scope_path = self._settings.scope_path(scope)
+            logger.debug(f"get_provider_config: reading from {scope} scope at {scope_path}")
+        else:
+            # Read from merged settings (default behavior)
+            providers = self._settings.get_provider_overrides()
+            logger.debug("get_provider_config: reading from merged settings")
+
+        logger.debug(f"get_provider_config: found {len(providers)} providers")
         for provider in providers:
-            if provider.get("module") == provider_id:
-                return provider.get("config", {})
+            module = provider.get("module")
+            logger.debug(f"get_provider_config: checking module '{module}' against '{provider_id}'")
+            if module == provider_id:
+                config = provider.get("config", {})
+                logger.debug(f"get_provider_config: found matching config with keys: {list(config.keys())}")
+                return config
+        logger.debug(f"get_provider_config: no matching provider found for '{provider_id}'")
         return None
 
     def list_providers(self) -> list[tuple[str, str, str]]:

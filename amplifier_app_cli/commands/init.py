@@ -107,7 +107,8 @@ def init_cmd():
 
     # Get existing config for this provider (if re-configuring)
     # This allows previous values to be used as defaults
-    existing_config = provider_mgr.get_provider_config(module_id)
+    # Read from global (USER) scope since init is for global first-time setup
+    existing_config = provider_mgr.get_provider_config(module_id, scope="global")
 
     # Step 2: Provider-specific configuration using unified dispatcher
     provider_config = configure_provider(module_id, key_manager, existing_config=existing_config)
