@@ -46,12 +46,14 @@ def get_effective_config_summary(
     Returns:
         EffectiveConfigSummary with display-friendly information
     """
-    # Extract provider info
+    # Extract provider info - select by priority (lowest number wins)
+    # This matches the orchestrator's _select_provider() logic
     providers = config.get("providers", [])
-    if providers and isinstance(providers[0], dict):
-        first_provider = providers[0]
-        provider_module = first_provider.get("module", "unknown")
-        provider_config = first_provider.get("config", {})
+    selected_provider = _select_provider_by_priority(providers)
+
+    if selected_provider:
+        provider_module = selected_provider.get("module", "unknown")
+        provider_config = selected_provider.get("config", {})
         model = provider_config.get("default_model", "default")
 
         # Try to get friendly provider name
@@ -80,6 +82,39 @@ def get_effective_config_summary(
         tool_count=tool_count,
         hook_count=hook_count,
     )
+
+
+def _select_provider_by_priority(providers: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Select provider with lowest priority number (highest precedence).
+
+    This matches the orchestrator's _select_provider() logic where lower
+    priority numbers mean higher precedence (priority 1 beats priority 100).
+
+    Args:
+        providers: List of provider configuration dicts
+
+    Returns:
+        Provider dict with lowest priority, or None if list is empty
+    """
+    if not providers:
+        return None
+
+    # Build list of (priority, provider) tuples
+    provider_list: list[tuple[int, dict[str, Any]]] = []
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        # Get priority from config, default to 100
+        config = provider.get("config", {})
+        priority = config.get("priority", 100) if isinstance(config, dict) else 100
+        provider_list.append((priority, provider))
+
+    if not provider_list:
+        return None
+
+    # Sort by priority (lowest first) and return the winner
+    provider_list.sort(key=lambda x: x[0])
+    return provider_list[0][1]
 
 
 def _get_provider_display_name(provider_module: str) -> str:
