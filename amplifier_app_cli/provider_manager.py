@@ -136,8 +136,7 @@ class ProviderManager:
 
         Discovers providers from:
         1. Installed modules (entry points)
-        2. Profile-configured modules
-        3. Settings-configured modules
+        2. Known provider sources (resolved via GitSource, uses cache)
 
         Returns:
             List of (module_id, display_name, description) tuples
@@ -163,7 +162,65 @@ class ProviderManager:
                     display_name = module.name
                 providers[module.id] = (module.id, display_name, module.description)
 
+        # If no providers found via entry points, resolve from known sources
+        # This handles the case where modules were downloaded with `--target` flag
+        # (uv pip install --target) which doesn't register entry points
+        if not providers:
+            providers = self._discover_providers_from_sources()
+
         return list(providers.values())
+
+    def _discover_providers_from_sources(self) -> dict[str, tuple[str, str, str]]:
+        """Discover providers by resolving known sources.
+
+        Uses GitSource.resolve() to get cached module paths (same mechanism
+        as runtime module loading), then imports modules directly.
+
+        Returns:
+            Dict mapping module_id to (module_id, display_name, description) tuples
+        """
+        import importlib
+        import sys
+
+        from amplifier_module_resolution.sources import GitSource
+
+        providers: dict[str, tuple[str, str, str]] = {}
+
+        for module_id, source_uri in DEFAULT_PROVIDER_SOURCES.items():
+            try:
+                # Resolve source to cached path (uses same caching as runtime)
+                git_source = GitSource.from_uri(source_uri)
+                module_path = git_source.resolve()
+
+                # Add to sys.path if not already there
+                path_str = str(module_path)
+                if path_str not in sys.path:
+                    sys.path.insert(0, path_str)
+                    logger.debug(f"Added module path to sys.path: {path_str}")
+
+                # Invalidate import caches
+                importlib.invalidate_caches()
+
+                # Try to get provider info via direct import
+                info = get_provider_info(module_id)
+                if info:
+                    display_name = info.get("display_name", module_id.replace("-", " ").title())
+                    description = info.get("description", f"Provider: {module_id}")
+                    providers[module_id] = (module_id, display_name, description)
+                    logger.debug(f"Discovered provider from source: {module_id}")
+                else:
+                    # Even if we can't get info, verify module is importable
+                    provider_name = module_id.replace("provider-", "")
+                    module_name = f"amplifier_module_provider_{provider_name.replace('-', '_')}"
+                    importlib.import_module(module_name)
+                    display_name = module_id.replace("-", " ").title()
+                    providers[module_id] = (module_id, display_name, f"Provider: {module_id}")
+                    logger.debug(f"Discovered provider from source (no info): {module_id}")
+
+            except Exception as e:
+                logger.debug(f"Could not resolve/import provider {module_id}: {e}")
+
+        return providers
 
     def reset_provider(self, scope: ScopeType) -> ResetResult:
         """Remove provider override at scope.
