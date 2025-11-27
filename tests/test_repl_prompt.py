@@ -12,18 +12,18 @@ from prompt_toolkit.output import DummyOutput
 @pytest.fixture(autouse=True)
 def patch_prompt_session_for_testing(monkeypatch):
     """Auto-patch PromptSession to use DummyOutput in all tests.
-    
+
     This avoids Windows console access issues during testing without
     requiring changes to production code.
     """
     original_init = PromptSession.__init__
-    
+
     def patched_init(self, *args, **kwargs):
         # Force output to DummyOutput for testing
-        kwargs['output'] = DummyOutput()
+        kwargs["output"] = DummyOutput()
         return original_init(self, *args, **kwargs)
-    
-    monkeypatch.setattr(PromptSession, '__init__', patched_init)
+
+    monkeypatch.setattr(PromptSession, "__init__", patched_init)
 
 
 class TestPromptSession:

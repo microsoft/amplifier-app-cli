@@ -231,7 +231,6 @@ class CommandProcessor:
             "action": "disable_plan_mode",
             "description": "Exit plan mode and allow modifications",
         },
-        "/stop": {"action": "halt_execution", "description": "Stop current execution"},
         "/save": {"action": "save_transcript", "description": "Save conversation transcript"},
         "/status": {"action": "show_status", "description": "Show session status"},
         "/clear": {"action": "clear_context", "description": "Clear conversation context"},
@@ -241,10 +240,10 @@ class CommandProcessor:
         "/agents": {"action": "list_agents", "description": "List available agents"},
     }
 
-    def __init__(self, session: AmplifierSession):
+    def __init__(self, session: AmplifierSession, profile_name: str = "unknown"):
         self.session = session
+        self.profile_name = profile_name
         self.plan_mode = False
-        self.halted = False
         self.plan_mode_unregister = None  # Store unregister function
 
     def process_input(self, user_input: str) -> tuple[str, dict[str, Any]]:
@@ -280,14 +279,6 @@ class CommandProcessor:
             self.plan_mode = False
             self._configure_plan_mode(False)
             return "✓ Plan Mode disabled - modifications enabled"
-
-        if action == "halt_execution":
-            self.halted = True
-            # Signal orchestrator to stop if it supports halting
-            orchestrator = self.session.coordinator.get("orchestrator")
-            if orchestrator and hasattr(orchestrator, "halt"):
-                await orchestrator.halt()
-            return "✓ Execution halted"
 
         if action == "save_transcript":
             path = await self._save_transcript(data.get("args", ""))
@@ -423,9 +414,37 @@ class CommandProcessor:
         return "\n".join(lines)
 
     async def _get_config_display(self) -> str:
-        """Display current configuration."""
-        config_str = json.dumps(self.session.config, indent=2)
-        return f"Current Configuration:\n{config_str}"
+        """Display current configuration using profile show format."""
+        from .commands.profile import render_effective_config
+        from .console import console
+        from .paths import create_config_manager
+        from .paths import create_profile_loader
+
+        try:
+            loader = create_profile_loader()
+            config_manager = create_config_manager()
+
+            # Load inheritance chain for source tracking
+            chain_names = loader.get_inheritance_chain(self.profile_name)
+            chain_dicts = loader.load_inheritance_chain_dicts(self.profile_name)
+            source_overrides = config_manager.get_module_sources()
+
+            # render_effective_config prints directly to console with rich formatting
+            render_effective_config(chain_dicts, chain_names, source_overrides, detailed=True)
+
+            # Also show loaded agents (available at runtime)
+            loaded_agents = self.session.config.get("agents", {})
+            if loaded_agents:
+                console.print("[bold]Loaded Agents:[/bold]")
+                for name in sorted(loaded_agents.keys()):
+                    console.print(f"  {name}")
+                console.print()
+
+            return ""  # Output already printed
+        except Exception:
+            # Fallback to raw JSON if profile loading fails
+            config_str = json.dumps(self.session.config, indent=2)
+            return f"Current Configuration:\n{config_str}"
 
     async def _list_tools(self) -> str:
         """List available tools."""
@@ -456,19 +475,44 @@ class CommandProcessor:
         if not all_agents:
             return "No agents available (check profile's agents configuration)"
 
-        # Format output
-        lines = ["Available Agents:"]
-        for name, config in sorted(all_agents.items()):
-            meta = config.get("meta", {})
-            description = meta.get("description", "No description")
-            # Handle multi-line descriptions - take first line only
-            first_line = description.split("\n")[0]
-            # Truncate if too long
-            if len(first_line) > 50:
-                first_line = first_line[:47] + "..."
-            lines.append(f"  {name:<25} - {first_line}")
+        # Display each agent with full frontmatter (excluding instruction)
+        console.print(f"\n[bold]Available Agents[/bold] ({len(all_agents)} loaded)\n")
 
-        return "\n".join(lines)
+        for name, config in sorted(all_agents.items()):
+            # Agent name as header
+            console.print(f"[bold cyan]{name}[/bold cyan]")
+
+            # Full description
+            description = config.get("description", "No description")
+            console.print(f"  [dim]Description:[/dim] {description}")
+
+            # Providers
+            providers = config.get("providers", [])
+            if providers:
+                provider_names = [p.get("module", "unknown") for p in providers]
+                console.print(f"  [dim]Providers:[/dim] {', '.join(provider_names)}")
+
+            # Tools
+            tools = config.get("tools", [])
+            if tools:
+                tool_names = [t.get("module", "unknown") for t in tools]
+                console.print(f"  [dim]Tools:[/dim] {', '.join(tool_names)}")
+
+            # Hooks
+            hooks = config.get("hooks", [])
+            if hooks:
+                hook_names = [h.get("module", "unknown") for h in hooks]
+                console.print(f"  [dim]Hooks:[/dim] {', '.join(hook_names)}")
+
+            # Session overrides
+            session = config.get("session", {})
+            if session:
+                session_items = [f"{k}={v}" for k, v in session.items()]
+                console.print(f"  [dim]Session:[/dim] {', '.join(session_items)}")
+
+            console.print()  # Blank line between agents
+
+        return ""  # Output already printed
 
 
 def get_module_search_paths() -> list[Path]:
@@ -826,7 +870,7 @@ async def interactive_chat(
     session.coordinator.register_capability("session.spawn_with_agent", spawn_with_agent_wrapper)
 
     # Create command processor
-    command_processor = CommandProcessor(session)
+    command_processor = CommandProcessor(session, profile_name)
 
     # Create session store for saving
     store = SessionStore()
@@ -933,8 +977,6 @@ async def interactive_chat(
                             except asyncio.CancelledError:
                                 # Ctrl-C pressed during processing
                                 console.print("\n[yellow]Aborted (Ctrl-C)[/yellow]")
-                                if command_processor.halted:
-                                    command_processor.halted = False
                         finally:
                             # Always restore original signal handler
                             signal.signal(signal.SIGINT, original_handler)
@@ -1351,7 +1393,7 @@ async def interactive_chat_with_session(
         await context.set_messages(initial_transcript)
 
     # Create command processor
-    command_processor = CommandProcessor(session)
+    command_processor = CommandProcessor(session, profile_name)
 
     # Note: Banner already shown by history display function in commands/session.py
     # No need to show duplicate banner here for resumed sessions
@@ -1440,8 +1482,6 @@ async def interactive_chat_with_session(
                             except asyncio.CancelledError:
                                 # Ctrl-C pressed during processing
                                 console.print("\n[yellow]Aborted (Ctrl-C)[/yellow]")
-                                if command_processor.halted:
-                                    command_processor.halted = False
                         finally:
                             # Always restore original signal handler
                             signal.signal(signal.SIGINT, original_handler)

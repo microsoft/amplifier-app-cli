@@ -393,10 +393,10 @@ def render_effective_config(
                         console.print(f"      {key}: {value}{field_src}")
         console.print()
 
-    if config.get("agents_config"):
+    if config.get("agents"):
         console.print("[bold]Agents:[/bold]")
-        agents_cfg = config["agents_config"]
-        source = sources.get("agents_config", "")
+        agents_cfg = config["agents"]
+        source = sources.get("agents", "")
         source_str = format_source(source)
 
         if agents_cfg.get("dirs"):
