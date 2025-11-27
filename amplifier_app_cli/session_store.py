@@ -10,13 +10,47 @@ import json
 import logging
 import shutil
 import tempfile
-from datetime import UTC
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from amplifier_app_cli.project_utils import get_project_slug
 
 logger = logging.getLogger(__name__)
+
+
+def _atomic_write(
+    target_file: Path, write_func, prefix: str = "temp_", error_msg: str = "Failed to write file"
+) -> None:
+    """Write file atomically with Windows-safe file handle management.
+
+    Args:
+        target_file: Final destination file path
+        write_func: Callable that takes file handle and writes content
+        prefix: Prefix for temporary file name
+        error_msg: Error message prefix for exceptions
+
+    Raises:
+        OSError: If file write or rename fails
+    """
+    session_dir = target_file.parent
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=session_dir, prefix=prefix, suffix=".tmp", delete=False
+        ) as tmp_file:
+            temp_path = Path(tmp_file.name)
+            write_func(tmp_file)
+            tmp_file.flush()
+        # File is now closed, safe to rename on Windows
+        # Atomic rename
+        temp_path.replace(target_file)
+
+    except Exception as e:
+        # Clean up temp file on failure
+        if temp_path:
+            with contextlib.suppress(Exception):
+                temp_path.unlink()
+        raise OSError(f"{error_msg}: {e}") from e
 
 
 class SessionStore:
@@ -163,35 +197,22 @@ class SessionStore:
             except Exception as e:
                 logger.warning(f"Failed to create backup: {e}")
 
-        # Write to temp file first (atomic write pattern)
-        with tempfile.NamedTemporaryFile(
-            mode="w", dir=session_dir, prefix="transcript_", suffix=".tmp", delete=False
-        ) as tmp_file:
-            temp_path = Path(tmp_file.name)
-            try:
-                for message in transcript:
-                    # Skip system and developer role messages from transcript
-                    # Keep only user/assistant conversation (the actual interaction)
-                    # - system: Internal instructions merged by providers
-                    # - developer: Context files merged by providers
-                    msg_dict = message if isinstance(message, dict) else message.model_dump()
-                    if msg_dict.get("role") in ("system", "developer"):
-                        continue
+        def write_transcript(tmp_file):
+            for message in transcript:
+                # Skip system and developer role messages from transcript
+                # Keep only user/assistant conversation (the actual interaction)
+                # - system: Internal instructions merged by providers
+                # - developer: Context files merged by providers
+                msg_dict = message if isinstance(message, dict) else message.model_dump()
+                if msg_dict.get("role") in ("system", "developer"):
+                    continue
 
-                    # Sanitize message to ensure it's JSON-serializable
-                    sanitized_message = self._sanitize_message(message)
-                    json.dump(sanitized_message, tmp_file, ensure_ascii=False)
-                    tmp_file.write("\n")
-                tmp_file.flush()
+                # Sanitize message to ensure it's JSON-serializable
+                sanitized_message = self._sanitize_message(message)
+                json.dump(sanitized_message, tmp_file, ensure_ascii=False)
+                tmp_file.write("\n")
 
-                # Atomic rename
-                temp_path.replace(transcript_file)
-
-            except Exception as e:
-                # Clean up temp file on failure
-                with contextlib.suppress(Exception):
-                    temp_path.unlink()
-                raise OSError(f"Failed to save transcript: {e}") from e
+        _atomic_write(transcript_file, write_transcript, prefix="transcript_", error_msg="Failed to save transcript")
 
     def _save_metadata(self, session_dir: Path, metadata: dict) -> None:
         """Save metadata with atomic write and backup.
@@ -210,23 +231,10 @@ class SessionStore:
             except Exception as e:
                 logger.warning(f"Failed to create backup: {e}")
 
-        # Write to temp file first (atomic write pattern)
-        with tempfile.NamedTemporaryFile(
-            mode="w", dir=session_dir, prefix="metadata_", suffix=".tmp", delete=False
-        ) as tmp_file:
-            temp_path = Path(tmp_file.name)
-            try:
-                json.dump(metadata, tmp_file, indent=2, ensure_ascii=False)
-                tmp_file.flush()
+        def write_metadata(tmp_file):
+            json.dump(metadata, tmp_file, indent=2, ensure_ascii=False)
 
-                # Atomic rename
-                temp_path.replace(metadata_file)
-
-            except Exception as e:
-                # Clean up temp file on failure
-                with contextlib.suppress(Exception):
-                    temp_path.unlink()
-                raise OSError(f"Failed to save metadata: {e}") from e
+        _atomic_write(metadata_file, write_metadata, prefix="metadata_", error_msg="Failed to save metadata")
 
     def load(self, session_id: str) -> tuple[list, dict]:
         """Load session state with corruption recovery.
@@ -412,29 +420,16 @@ class SessionStore:
         # Convert profile dict to Markdown+YAML frontmatter
         import yaml
 
-        # Write to temp file first (atomic write pattern)
-        with tempfile.NamedTemporaryFile(
-            mode="w", dir=session_dir, prefix="profile_", suffix=".tmp", delete=False
-        ) as tmp_file:
-            temp_path = Path(tmp_file.name)
-            try:
-                # Write YAML frontmatter
-                tmp_file.write("---\n")
-                yaml_content = yaml.dump(profile, default_flow_style=False, sort_keys=False)
-                tmp_file.write(yaml_content)
-                tmp_file.write("---\n\n")
-                # Add a description
-                tmp_file.write(f"Profile snapshot for session {session_id}\n")
-                tmp_file.flush()
+        def write_profile(tmp_file):
+            # Write YAML frontmatter
+            tmp_file.write("---\n")
+            yaml_content = yaml.dump(profile, default_flow_style=False, sort_keys=False)
+            tmp_file.write(yaml_content)
+            tmp_file.write("---\n\n")
+            # Add a description
+            tmp_file.write(f"Profile snapshot for session {session_id}\n")
 
-                # Atomic rename
-                temp_path.replace(profile_file)
-
-            except Exception as e:
-                # Clean up temp file on failure
-                with contextlib.suppress(Exception):
-                    temp_path.unlink()
-                raise OSError(f"Failed to save profile: {e}") from e
+        _atomic_write(profile_file, write_profile, prefix="profile_", error_msg="Failed to save profile")
 
         logger.debug(f"Profile saved for session {session_id}")
 
