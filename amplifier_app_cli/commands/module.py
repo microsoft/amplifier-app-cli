@@ -367,7 +367,7 @@ def _get_cached_modules(type_filter: str = "all") -> list[dict[str, Any]]:
                 continue
 
             try:
-                metadata = json.loads(metadata_file.read_text())
+                metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
                 url = metadata.get("url", "")
                 repo_name = url.split("/")[-1] if url else ""
 
@@ -453,7 +453,7 @@ def module_refresh(module_id: str | None, mutable_only: bool):
                     continue
 
                 try:
-                    metadata = json.loads(metadata_file.read_text())
+                    metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
 
                     # Skip if wrong module
                     if metadata.get("url", "").split("/")[-1] != f"amplifier-module-{module_id}":
@@ -495,7 +495,7 @@ def module_refresh(module_id: str | None, mutable_only: bool):
                     metadata_file = ref_dir / ".amplifier_cache_metadata.json"
                     if metadata_file.exists():
                         try:
-                            metadata = json.loads(metadata_file.read_text())
+                            metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
                             if not metadata.get("is_mutable", True):
                                 skipped += 1
                                 continue

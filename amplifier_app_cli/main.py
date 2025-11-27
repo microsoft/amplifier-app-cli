@@ -131,7 +131,7 @@ def _completion_already_installed(config_file: Path, shell: str) -> bool:
         return False
 
     try:
-        content = config_file.read_text()
+        content = config_file.read_text(encoding="utf-8")
         completion_marker = f"_AMPLIFIER_COMPLETE={shell}_source"
         return completion_marker in content
     except Exception:
@@ -190,12 +190,12 @@ def _install_completion_to_config(config_file: Path, shell: str) -> bool:
                 text=True,
             )
             if result.returncode == 0:
-                config_file.write_text(result.stdout)
+                config_file.write_text(result.stdout, encoding="utf-8")
                 return True
             return False
 
         # For bash/zsh, append eval line
-        with open(config_file, "a") as f:
+        with open(config_file, "a", encoding="utf-8") as f:
             f.write("\n# Amplifier shell completion\n")
             f.write(f'eval "$(_AMPLIFIER_COMPLETE={shell}_source amplifier)"\n')
 
@@ -368,7 +368,7 @@ class CommandProcessor:
             path = Path(".amplifier/transcripts") / filename
             path.parent.mkdir(parents=True, exist_ok=True)
 
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(
                     {
                         "timestamp": datetime.now().isoformat(),
@@ -646,7 +646,7 @@ async def _process_profile_mentions(session: AmplifierSession, profile_name: str
 
         logger.debug(f"Found profile file: {profile_file}")
 
-        markdown_body = parse_markdown_body(profile_file.read_text())
+        markdown_body = parse_markdown_body(profile_file.read_text(encoding="utf-8"))
         if not markdown_body:
             logger.debug(f"No markdown body in profile: {profile_name}")
             return

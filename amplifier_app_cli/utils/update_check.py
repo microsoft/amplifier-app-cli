@@ -94,7 +94,7 @@ def _should_check_update() -> bool:
         return True
 
     try:
-        last_check = float(UPDATE_CHECK_FILE.read_text())
+        last_check = float(UPDATE_CHECK_FILE.read_text(encoding="utf-8"))
         return (time.time() - last_check) > UPDATE_CHECK_INTERVAL
     except Exception:
         return True
@@ -103,7 +103,7 @@ def _should_check_update() -> bool:
 def _mark_checked():
     """Record that we checked for updates."""
     UPDATE_CHECK_FILE.parent.mkdir(parents=True, exist_ok=True)
-    UPDATE_CHECK_FILE.write_text(str(time.time()))
+    UPDATE_CHECK_FILE.write_text(str(time.time()), encoding="utf-8")
 
 
 def _save_cached_result(report: UpdateReport):
@@ -118,7 +118,7 @@ def _save_cached_result(report: UpdateReport):
             "cached_git_sources": [asdict(s) for s in report.cached_git_sources],
         },
     }
-    UPDATE_CACHE_FILE.write_text(json.dumps(cache, indent=2, default=str))
+    UPDATE_CACHE_FILE.write_text(json.dumps(cache, indent=2, default=str), encoding="utf-8")
 
 
 def _load_cached_result() -> UpdateReport | None:
@@ -130,7 +130,7 @@ def _load_cached_result() -> UpdateReport | None:
         return None
 
     try:
-        cache = json.loads(UPDATE_CACHE_FILE.read_text())
+        cache = json.loads(UPDATE_CACHE_FILE.read_text(encoding="utf-8"))
         cache_age = time.time() - cache["cached_at"]
 
         if cache_age < UPDATE_CACHE_TTL:

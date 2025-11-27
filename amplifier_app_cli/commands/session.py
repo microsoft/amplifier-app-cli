@@ -369,7 +369,7 @@ def register_session_commands(
                 message_count = "?"
                 if transcript_file.exists():
                     try:
-                        with open(transcript_file) as f:
+                        with open(transcript_file, encoding="utf-8") as f:
                             message_count = str(sum(1 for _ in f))
                     except Exception:
                         pass
