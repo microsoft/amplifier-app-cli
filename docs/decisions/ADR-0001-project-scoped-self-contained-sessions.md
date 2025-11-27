@@ -219,7 +219,6 @@ hooks:
 
 ## Related Decisions
 
-- **ADR-0002**: Event Logging (defines what goes in events.jsonl)
 - **Kernel ADRs**: Unified JSONL logging, event taxonomy
 
 ---

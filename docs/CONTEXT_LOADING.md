@@ -452,7 +452,7 @@ If files reference each other in a loop, cycle detection prevents infinite recur
 
 **Check message logs**: Context files appear as user messages with XML wrappers at the top of the conversation.
 
-**Verify**: Use `amplifier logs` to see actual messages sent to provider.
+**Verify**: Check session logs at `~/.amplifier/projects/<project>/sessions/<session-id>/events.jsonl` to see actual messages sent to provider.
 
 ## Examples
 

@@ -172,7 +172,6 @@ $ amplifier run --resume a1b2c3d4 "What about next week?"
 ```bash
 amplifier init                                     # First-time setup
 amplifier update [--check-only] [--force] [-y]    # Update Amplifier, modules, and collections
-amplifier logs                                     # Watch activity log
 amplifier --install-completion                     # Set up tab completion
 amplifier --version                                # Show version
 amplifier --help                                   # Show help

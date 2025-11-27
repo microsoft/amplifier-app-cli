@@ -4,7 +4,6 @@ from .collection import collection
 from .init import check_first_run
 from .init import init_cmd
 from .init import prompt_first_run_init
-from .logs import logs_cmd
 from .module import module
 from .profile import profile
 from .provider import provider
@@ -16,7 +15,6 @@ __all__ = [
     "collection",
     "check_first_run",
     "init_cmd",
-    "logs_cmd",
     "module",
     "profile",
     "prompt_first_run_init",
