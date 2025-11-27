@@ -320,7 +320,7 @@ async def _check_git_source(source, name: str, layer: str, force: bool = False) 
         return None  # No metadata
 
     try:
-        metadata = json.loads(metadata_file.read_text())
+        metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
 
         # Skip immutable refs
         if not metadata.get("is_mutable", True):
@@ -465,7 +465,7 @@ async def _check_all_cached_modules(force: bool = False) -> tuple[list[CachedGit
             modules_checked += 1  # Count every module we examine
 
             try:
-                metadata = json.loads(metadata_file.read_text())
+                metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
 
                 # Skip immutable refs
                 if not metadata.get("is_mutable", True):

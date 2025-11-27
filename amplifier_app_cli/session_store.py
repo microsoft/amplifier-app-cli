@@ -10,7 +10,8 @@ import json
 import logging
 import shutil
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC
+from datetime import datetime
 from pathlib import Path
 
 from amplifier_app_cli.project_utils import get_project_slug
