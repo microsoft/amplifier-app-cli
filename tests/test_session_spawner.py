@@ -22,10 +22,11 @@ def _mock_uuid(monkeypatch, hex_value: str = "f" * 32) -> None:
         def __init__(self, value: str):
             self.hex = value
 
-    monkeypatch.setattr(
-        "amplifier_app_cli.session_spawner.uuid.uuid4",
-        lambda: _FakeUUID(hex_value),
-    )
+    # Patch uuid.uuid4 directly on the uuid module imported by session_spawner
+    # String path "module.uuid.uuid4" doesn't work reliably with monkeypatch
+    import uuid
+
+    monkeypatch.setattr(uuid, "uuid4", lambda: _FakeUUID(hex_value))
 
 
 @pytest.fixture(scope="module")
