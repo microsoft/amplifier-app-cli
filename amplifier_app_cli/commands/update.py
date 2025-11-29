@@ -4,12 +4,167 @@ import asyncio
 
 import click
 from rich.console import Console
+from rich.table import Table
+from rich.text import Text
 
 from ..utils.settings_manager import save_update_last_check
 from ..utils.source_status import check_all_sources
 from ..utils.update_executor import execute_updates
 
 console = Console()
+
+
+def _create_status_symbol(local_sha: str | None, remote_sha: str | None, has_local_changes: bool = False) -> Text:
+    """Create styled status symbol based on update state.
+
+    Returns:
+        ● (yellow) - update available
+        ◦ (cyan) - local changes
+        ✓ (green) - up to date
+    """
+    if has_local_changes:
+        return Text("◦", style="cyan")
+    if local_sha and remote_sha and local_sha != remote_sha:
+        return Text("●", style="yellow")
+    return Text("✓", style="green")
+
+
+def _create_sha_text(sha: str | None, style: str = "dim") -> Text:
+    """Create styled SHA text (always dim to prevent hex color interpretation)."""
+    return Text(sha[:7] if sha else "unknown", style=style)
+
+
+def _print_legend() -> None:
+    """Print status symbol legend at the bottom of reports."""
+    console.print(
+        "[dim]Legend: [green]✓[/green] up to date  [yellow]●[/yellow] update available  [cyan]◦[/cyan] local changes[/dim]"
+    )
+
+
+def _get_installed_amplifier_packages() -> list[dict]:
+    """Get details of installed Amplifier packages.
+
+    Returns list of dicts with:
+        - name: package name
+        - version: installed version
+        - sha: git SHA if available
+        - is_local: True if installed from local path (editable or file://)
+        - is_git: True if path is a git repository
+        - has_changes: True if git repo has uncommitted changes
+        - path: local path if applicable
+        - category: 'core', 'app', or 'library'
+    """
+    import importlib.metadata
+    import json
+    import subprocess
+
+    # Package categorization
+    core_packages = {"amplifier-core"}
+    app_packages = {"amplifier-app-cli"}
+    # Libraries are everything else
+
+    # Core amplifier packages to check
+    package_names = [
+        "amplifier-core",
+        "amplifier-app-cli",
+        "amplifier-profiles",
+        "amplifier-collections",
+        "amplifier-config",
+        "amplifier-module-resolution",
+    ]
+
+    packages = []
+    for name in package_names:
+        try:
+            dist = importlib.metadata.distribution(name)
+            version = dist.version
+
+            # Check installation type and get SHA
+            sha = None
+            is_local = False
+            is_git = False
+            has_changes = False
+            path = None
+
+            if hasattr(dist, "read_text"):
+                try:
+                    direct_url_text = dist.read_text("direct_url.json")
+                    if direct_url_text:
+                        direct_url = json.loads(direct_url_text)
+
+                        if "dir_info" in direct_url:
+                            # Local install (editable or file://)
+                            is_local = True
+                            path = direct_url.get("url", "").replace("file://", "")
+
+                            # Check if it's a git repo and get status
+                            if path:
+                                try:
+                                    # Check if git repo
+                                    result = subprocess.run(
+                                        ["git", "rev-parse", "--git-dir"],
+                                        cwd=path,
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=5,
+                                    )
+                                    if result.returncode == 0:
+                                        is_git = True
+
+                                        # Get HEAD SHA
+                                        result = subprocess.run(
+                                            ["git", "rev-parse", "HEAD"],
+                                            cwd=path,
+                                            capture_output=True,
+                                            text=True,
+                                            timeout=5,
+                                        )
+                                        if result.returncode == 0:
+                                            sha = result.stdout.strip()[:7]
+
+                                        # Check for uncommitted changes
+                                        result = subprocess.run(
+                                            ["git", "status", "--porcelain"],
+                                            cwd=path,
+                                            capture_output=True,
+                                            text=True,
+                                            timeout=5,
+                                        )
+                                        if result.returncode == 0:
+                                            has_changes = bool(result.stdout.strip())
+                                except Exception:
+                                    pass
+
+                        elif "vcs_info" in direct_url:
+                            # Git install from URL
+                            sha = direct_url["vcs_info"].get("commit_id", "")[:7]
+                except Exception:
+                    pass
+
+            # Determine category
+            if name in core_packages:
+                category = "core"
+            elif name in app_packages:
+                category = "app"
+            else:
+                category = "library"
+
+            packages.append(
+                {
+                    "name": name,
+                    "version": version,
+                    "sha": sha,
+                    "is_local": is_local,
+                    "is_git": is_git,
+                    "has_changes": has_changes,
+                    "path": path,
+                    "category": category,
+                }
+            )
+        except importlib.metadata.PackageNotFoundError:
+            continue
+
+    return packages
 
 
 async def _get_umbrella_dependency_details(umbrella_info) -> list[dict]:
@@ -69,114 +224,338 @@ async def _get_umbrella_dependency_details(umbrella_info) -> list[dict]:
         return []
 
 
-def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool, umbrella_deps=None) -> None:
-    """Show concise one-line format for all sources.
+def _create_local_package_table(packages: list[dict], title: str) -> Table | None:
+    """Create a table for local packages (core, app, or libraries).
 
-    Organized by type: Amplifier → Libraries → Modules → Collections
-    Simple format: name SHA → SHA (age if relevant)
+    Returns None if no packages to display.
+    """
+    if not packages:
+        return None
+
+    table = Table(title=title, show_header=True, header_style="bold cyan")
+    table.add_column("Package", style="green")
+    table.add_column("Version", style="dim", justify="right")
+    table.add_column("SHA", style="dim", justify="right")
+    table.add_column("", width=1, justify="center")
+
+    for pkg in packages:
+        # Status: ◦ only if actual uncommitted changes, otherwise ✓
+        if pkg["has_changes"]:
+            status_symbol = Text("◦", style="cyan")
+        else:
+            status_symbol = Text("✓", style="green")
+
+        # SHA display: show SHA if available, "local" if local but no git, "-" otherwise
+        if pkg["sha"]:
+            sha_display = _create_sha_text(pkg["sha"])
+        elif pkg["is_local"] and not pkg["is_git"]:
+            sha_display = Text("local", style="dim")
+        else:
+            sha_display = Text("-", style="dim")
+
+        table.add_row(
+            pkg["name"],
+            Text(pkg["version"], style="dim"),
+            sha_display,
+            status_symbol,
+        )
+
+    return table
+
+
+def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool, umbrella_deps=None) -> None:
+    """Show concise table format for all sources.
+
+    Organized by type: Core → Application → Libraries → Modules → Collections
+    Uses Rich Tables with status symbols: ✓ (up to date), ● (update available), ◦ (local changes)
     """
     console.print()
 
-    # === AMPLIFIER (Always show with status and dependency details) ===
-    if has_umbrella_updates:
-        console.print("Amplifier:            (update available)")
-    else:
-        console.print("Amplifier:            (up to date)")
-
-    # Show Amplifier dependencies if available
+    # === AMPLIFIER PACKAGES ===
     if umbrella_deps:
-        console.print()
-        console.print("[cyan]Amplifier Dependencies:[/cyan]")
-        for dep in umbrella_deps:
-            sha_display = f"{dep['current_sha']}  →  {dep['remote_sha']}"
-            console.print(f"  {dep['name']:20s}  {sha_display}")
+        # Production install - show dependencies with remote comparison
+        table = Table(title="Amplifier", show_header=True, header_style="bold cyan")
+        table.add_column("Package", style="green")
+        table.add_column("Local", style="dim", justify="right")
+        table.add_column("Remote", style="dim", justify="right")
+        table.add_column("", width=1, justify="center")
 
-    # === LIBRARIES (Local file sources - amplifier-core, amplifier-app-cli, etc.) ===
-    libraries = [s for s in report.local_file_sources if "amplifier-" in s.name or "amplifier_" in s.name]
-    if libraries:
-        console.print()
-        console.print("[cyan]Libraries:[/cyan]")
-        for status in libraries:
-            sha = status.local_sha or "unknown"
-            if status.uncommitted_changes or status.unpushed_commits:
-                console.print(f"  {status.name:20s}  local  (uncommitted)")
-            elif status.has_remote and status.remote_sha and status.remote_sha != status.local_sha:
-                console.print(f"  {status.name:20s}  {sha}  →  {status.remote_sha}")
-            else:
-                console.print(f"  {status.name:20s}  {sha}  →  {sha}")
+        for dep in sorted(umbrella_deps, key=lambda x: x["name"]):
+            status_symbol = _create_status_symbol(dep["current_sha"], dep["remote_sha"])
+            table.add_row(
+                dep["name"],
+                _create_sha_text(dep["current_sha"]),
+                _create_sha_text(dep["remote_sha"]),
+                status_symbol,
+            )
 
-    # === MODULES (Cached git sources - providers, tools, hooks, etc.) ===
+        console.print(table)
+    else:
+        # Local install - show packages by category
+        installed = _get_installed_amplifier_packages()
+        if installed:
+            # Separate and sort by category
+            core_pkgs = sorted([p for p in installed if p["category"] == "core"], key=lambda x: x["name"])
+            app_pkgs = sorted([p for p in installed if p["category"] == "app"], key=lambda x: x["name"])
+            lib_pkgs = sorted([p for p in installed if p["category"] == "library"], key=lambda x: x["name"])
+
+            # Core section
+            core_table = _create_local_package_table(core_pkgs, "Core")
+            if core_table:
+                console.print(core_table)
+
+            # Application section
+            app_table = _create_local_package_table(app_pkgs, "Application")
+            if app_table:
+                console.print()
+                console.print(app_table)
+
+            # Libraries section
+            lib_table = _create_local_package_table(lib_pkgs, "Libraries")
+            if lib_table:
+                console.print()
+                console.print(lib_table)
+
+    # === MODULES (Cached git sources) ===
     if report.cached_git_sources:
         console.print()
-        console.print("[cyan]Modules:[/cyan]")
-        for status in report.cached_git_sources:
-            age_str = f" ({status.age_days}d old)" if status.age_days > 0 else ""
-            console.print(f"  {status.name:20s}  {status.cached_sha}  →  {status.remote_sha}{age_str}")
+        table = Table(title="Modules", show_header=True, header_style="bold cyan")
+        table.add_column("Name", style="green")
+        table.add_column("Cached", style="dim", justify="right")
+        table.add_column("Remote", style="dim", justify="right")
+        table.add_column("", width=1, justify="center")
+
+        for status in sorted(report.cached_git_sources, key=lambda x: x.name):
+            status_symbol = _create_status_symbol(status.cached_sha, status.remote_sha)
+
+            table.add_row(
+                status.name,
+                _create_sha_text(status.cached_sha),
+                _create_sha_text(status.remote_sha),
+                status_symbol,
+            )
+
+        console.print(table)
 
     # === COLLECTIONS ===
     if report.collection_sources:
         console.print()
-        console.print("[cyan]Collections:[/cyan]")
-        for status in report.collection_sources:
-            installed = status.installed_sha or "<none>"
-            console.print(f"  {status.name:20s}  {installed}  →  {status.remote_sha}")
+        table = Table(title="Collections", show_header=True, header_style="bold cyan")
+        table.add_column("Name", style="green")
+        table.add_column("Installed", style="dim", justify="right")
+        table.add_column("Remote", style="dim", justify="right")
+        table.add_column("", width=1, justify="center")
+
+        for status in sorted(report.collection_sources, key=lambda x: x.name):
+            status_symbol = _create_status_symbol(status.installed_sha, status.remote_sha)
+
+            table.add_row(
+                status.name,
+                _create_sha_text(status.installed_sha),
+                _create_sha_text(status.remote_sha),
+                status_symbol,
+            )
+
+        console.print(table)
 
     console.print()
+    _print_legend()
     if not check_only and (report.has_updates or has_umbrella_updates):
+        console.print()
         console.print("Run [cyan]amplifier update[/cyan] to install")
 
 
+def _print_verbose_item(
+    name: str,
+    status_symbol: Text,
+    local_sha: str | None = None,
+    remote_sha: str | None = None,
+    version: str | None = None,
+    local_path: str | None = None,
+    remote_url: str | None = None,
+    ref: str | None = None,
+) -> None:
+    """Print a single item in verbose multi-line format."""
+    # Header line: name + status
+    header = Text()
+    header.append(name, style="green bold")
+    header.append(" ")
+    header.append(status_symbol)
+    if version:
+        header.append(f"  v{version}", style="dim")
+    console.print(header)
+
+    # Local info line
+    if local_sha or local_path:
+        local_line = Text("  Local:  ", style="dim")
+        if local_sha:
+            local_line.append(local_sha[:7], style="cyan")
+        if local_path:
+            if local_sha:
+                local_line.append("  ", style="dim")
+            local_line.append(local_path, style="dim")
+        console.print(local_line)
+
+    # Remote info line
+    if remote_sha or remote_url:
+        remote_line = Text("  Remote: ", style="dim")
+        if remote_sha:
+            remote_line.append(remote_sha[:7], style="cyan")
+        if ref:
+            remote_line.append(f" ({ref})", style="dim")
+        if remote_url:
+            if remote_sha:
+                remote_line.append("  ", style="dim")
+            remote_line.append(remote_url, style="dim magenta")
+        console.print(remote_line)
+
+
 def _show_verbose_report(report, check_only: bool, umbrella_deps=None) -> None:
-    """Show detailed multi-line format for each source (unified format)."""
+    """Show detailed multi-line format for each source (no truncation)."""
 
-    # Show Amplifier dependencies if available
+    # === AMPLIFIER PACKAGES ===
     if umbrella_deps:
+        # Production install - show dependencies with remote comparison
         console.print()
-        console.print("[cyan]Amplifier Dependencies:[/cyan]")
-        for dep in umbrella_deps:
-            console.print(f"  • {dep['name']}")
-            console.print(f"    {dep['current_sha']} → {dep['remote_sha']}")
-            console.print(f"    Source: {dep['source_url']}")
-
-    # Show local file sources
-    if report.local_file_sources:
+        console.print("[bold cyan]Amplifier[/bold cyan]")
         console.print()
-        console.print("[cyan]Local Sources:[/cyan]")
-        for status in report.local_file_sources:
-            console.print(f"  • {status.name} ({status.layer})")
-            console.print(f"    Path: {status.path}")
 
-            if status.uncommitted_changes:
-                console.print("    ⚠ Uncommitted changes")
-            if status.unpushed_commits:
-                console.print("    ⚠ Unpushed commits")
+        for dep in sorted(umbrella_deps, key=lambda x: x["name"]):
+            status_symbol = _create_status_symbol(dep["current_sha"], dep["remote_sha"])
+            _print_verbose_item(
+                name=dep["name"],
+                status_symbol=status_symbol,
+                local_sha=dep["current_sha"],
+                remote_sha=dep["remote_sha"],
+                remote_url=dep.get("source_url", ""),
+            )
+            console.print()
+    else:
+        # Local install - show packages by category
+        installed = _get_installed_amplifier_packages()
+        if installed:
+            # Separate and sort by category
+            core_pkgs = sorted([p for p in installed if p["category"] == "core"], key=lambda x: x["name"])
+            app_pkgs = sorted([p for p in installed if p["category"] == "app"], key=lambda x: x["name"])
+            lib_pkgs = sorted([p for p in installed if p["category"] == "library"], key=lambda x: x["name"])
 
-            if status.has_remote and status.remote_sha and status.remote_sha != status.local_sha:
-                console.print(f"    ℹ Remote ahead: {status.local_sha} → {status.remote_sha}")
-                if status.commits_behind > 0:
-                    console.print(f"      {status.commits_behind} commits behind")
-                console.print(f"      To update: git pull in {status.path}")
+            # Core section
+            if core_pkgs:
+                console.print()
+                console.print("[bold cyan]Core[/bold cyan]")
+                console.print()
+                for pkg in core_pkgs:
+                    status_symbol = Text("◦", style="cyan") if pkg["has_changes"] else Text("✓", style="green")
+                    _print_verbose_item(
+                        name=pkg["name"],
+                        status_symbol=status_symbol,
+                        local_sha=pkg["sha"],
+                        version=pkg["version"],
+                        local_path=pkg["path"],
+                    )
+                    console.print()
 
+            # Application section
+            if app_pkgs:
+                console.print("[bold cyan]Application[/bold cyan]")
+                console.print()
+                for pkg in app_pkgs:
+                    status_symbol = Text("◦", style="cyan") if pkg["has_changes"] else Text("✓", style="green")
+                    _print_verbose_item(
+                        name=pkg["name"],
+                        status_symbol=status_symbol,
+                        local_sha=pkg["sha"],
+                        version=pkg["version"],
+                        local_path=pkg["path"],
+                    )
+                    console.print()
+
+            # Libraries section
+            if lib_pkgs:
+                console.print("[bold cyan]Libraries[/bold cyan]")
+                console.print()
+                for pkg in lib_pkgs:
+                    status_symbol = Text("◦", style="cyan") if pkg["has_changes"] else Text("✓", style="green")
+                    _print_verbose_item(
+                        name=pkg["name"],
+                        status_symbol=status_symbol,
+                        local_sha=pkg["sha"],
+                        version=pkg["version"],
+                        local_path=pkg["path"],
+                    )
+                    console.print()
+
+    # === MODULES ===
+    # Merge local file sources and cached git sources by module name
+    modules_by_name: dict[str, dict] = {}
+
+    # Add local file sources
+    for status in report.local_file_sources:
+        has_local_changes = status.uncommitted_changes or status.unpushed_commits
+        modules_by_name[status.name] = {
+            "name": status.name,
+            "local_sha": status.local_sha,
+            "local_path": str(status.path) if status.path else None,
+            "has_local_changes": has_local_changes,
+            "remote_sha": status.remote_sha if status.has_remote else None,
+            "remote_url": None,
+            "ref": None,
+        }
+
+    # Merge/add cached git sources
+    for status in report.cached_git_sources:
+        if status.name in modules_by_name:
+            # Merge remote info into existing entry
+            modules_by_name[status.name]["remote_sha"] = status.remote_sha
+            modules_by_name[status.name]["remote_url"] = status.url if hasattr(status, "url") else None
+            modules_by_name[status.name]["ref"] = status.ref
+        else:
+            # Add new entry
+            modules_by_name[status.name] = {
+                "name": status.name,
+                "local_sha": status.cached_sha,
+                "local_path": None,
+                "has_local_changes": False,
+                "remote_sha": status.remote_sha,
+                "remote_url": status.url if hasattr(status, "url") else None,
+                "ref": status.ref,
+            }
+
+    if modules_by_name:
+        console.print("[bold cyan]Modules[/bold cyan]")
         console.print()
-        console.print("[dim]For local sources: Use git to manage updates manually[/dim]")
 
-    # Show cached modules (unified format with source URL)
-    if report.cached_git_sources:
-        console.print()
-        console.print("[cyan]Modules:[/cyan]")
-        for status in report.cached_git_sources:
-            console.print(f"  • {status.name}@{status.ref}")
-            console.print(f"    {status.cached_sha} → {status.remote_sha} ({status.age_days}d old)")
-            console.print(f"    Source: {status.url}")
+        for mod in sorted(modules_by_name.values(), key=lambda x: x["name"]):
+            status_symbol = _create_status_symbol(mod["local_sha"], mod["remote_sha"], mod["has_local_changes"])
+            _print_verbose_item(
+                name=mod["name"],
+                status_symbol=status_symbol,
+                local_sha=mod["local_sha"],
+                remote_sha=mod["remote_sha"],
+                local_path=mod["local_path"],
+                remote_url=mod["remote_url"],
+                ref=mod["ref"],
+            )
+            console.print()
 
-    # Show collections (unified format with source URL and days instead of timestamp)
+    # === COLLECTIONS ===
     if report.collection_sources:
+        console.print("[bold cyan]Collections[/bold cyan]")
         console.print()
-        console.print("[cyan]Collections:[/cyan]")
-        for status in report.collection_sources:
-            console.print(f"  • {status.name}")
-            console.print(f"    {status.installed_sha or '<none>'} → {status.remote_sha}")
-            console.print(f"    Source: {status.source}")
+
+        for status in sorted(report.collection_sources, key=lambda x: x.name):
+            status_symbol = _create_status_symbol(status.installed_sha, status.remote_sha)
+            source_url = status.source if hasattr(status, "source") else None
+            _print_verbose_item(
+                name=status.name,
+                status_symbol=status_symbol,
+                local_sha=status.installed_sha,
+                remote_sha=status.remote_sha,
+                remote_url=source_url,
+            )
+            console.print()
+
+    _print_legend()
 
 
 @click.command()
