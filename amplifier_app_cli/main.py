@@ -35,6 +35,7 @@ from .commands.provider import provider as provider_group
 from .commands.run import register_run_command
 from .commands.session import register_session_commands
 from .commands.source import source as source_group
+from .commands.tool import tool as tool_group
 from .commands.update import update as update_cmd
 from .console import Markdown
 from .console import console
@@ -1351,6 +1352,7 @@ cli.add_command(profile_group)
 cli.add_command(module_group)
 cli.add_command(provider_group)
 cli.add_command(source_group)
+cli.add_command(tool_group)
 cli.add_command(update_cmd)
 
 

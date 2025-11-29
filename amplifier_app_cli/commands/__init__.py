@@ -10,6 +10,7 @@ from .provider import provider
 from .run import register_run_command
 from .session import register_session_commands
 from .source import source
+from .tool import tool
 
 __all__ = [
     "collection",
@@ -22,4 +23,5 @@ __all__ = [
     "register_run_command",
     "register_session_commands",
     "source",
+    "tool",
 ]
