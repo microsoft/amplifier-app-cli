@@ -306,24 +306,29 @@ def create_module_resolver() -> StandardModuleSourceResolver:
 
     # CLI implements CollectionModuleProviderProtocol
     class CLICollectionModuleProvider:
-        """CLI implementation of CollectionModuleProviderProtocol."""
+        """CLI implementation of CollectionModuleProviderProtocol.
+
+        Uses filesystem discovery (same as profiles/agents) for consistency.
+        Lock file tracks metadata (source URLs, SHAs) for updates, not existence.
+        """
 
         def get_collection_modules(self) -> dict[str, str]:
-            """Get module_id -> absolute_path from installed collections."""
-            from amplifier_collections import CollectionLock
+            """Get module_id -> absolute_path from installed collections.
 
-            lock_path = Path.home() / ".amplifier" / "collections.lock"
-            if not lock_path.exists():
-                return {}
+            Uses filesystem discovery via CollectionResolver - same pattern as
+            profile/agent discovery for consistency across all resource types.
+            """
+            from amplifier_collections import discover_collection_resources
 
-            lock = CollectionLock(lock_path=lock_path)
+            resolver = create_collection_resolver()
             modules = {}
 
-            for entry in lock.list_entries():
-                # pyright: ignore[reportAttributeAccessIssue] - modules attr exists, pyright can't resolve from editable install
-                for module_name, module_info in entry.modules.items():  # type: ignore[attr-defined]
-                    collection_path = Path(entry.path)
-                    module_path = collection_path / module_info["path"]
+            for _metadata_name, collection_path in resolver.list_collections():
+                resources = discover_collection_resources(collection_path)
+
+                for module_path in resources.modules:
+                    # Module name is the directory name
+                    module_name = module_path.name
                     modules[module_name] = str(module_path)
 
             return modules
