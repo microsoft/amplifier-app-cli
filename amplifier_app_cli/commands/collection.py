@@ -27,7 +27,9 @@ from amplifier_collections import list_agents
 from amplifier_collections import list_profiles
 from amplifier_collections import uninstall_collection
 from amplifier_module_resolution import GitSource
+from rich.table import Table
 
+from ..console import console
 from ..paths import create_collection_resolver
 from ..paths import get_collection_lock_path
 
@@ -196,15 +198,24 @@ def list(show_all: bool):
         # Show all collections from resolver
         collections = resolver.list_collections()
         if not collections:
-            click.echo("No collections found.")
+            console.print("[yellow]No collections found.[/yellow]")
             return
 
-        click.echo(f"Found {len(collections)} collections:\n")
+        # Build table for all collections
+        table = Table(
+            title=f"All Collections ({len(collections)})",
+            show_header=True,
+            header_style="bold cyan",
+        )
+        table.add_column("", width=2)  # Install marker
+        table.add_column("Name", style="green")
+        table.add_column("Version", style="yellow")
+        table.add_column("Description")
 
         for name, path in collections:
             # Check if it's installed (in lock file)
             is_installed_flag = lock.is_installed(name)
-            marker = "✓" if is_installed_flag else " "
+            marker = "✓" if is_installed_flag else ""
 
             # Load metadata
             try:
@@ -216,37 +227,55 @@ def list(show_all: bool):
                 version = "unknown"
                 desc = "Unable to load metadata"
 
-            click.echo(f"{marker} {name} ({version})")
-            click.echo(f"    {desc}")
-            click.echo(f"    Location: {path}")
-            click.echo()
+            # Truncate description if too long
+            if len(desc) > 50:
+                desc = desc[:47] + "..."
+
+            table.add_row(marker, name, version, desc)
+
+        console.print(table)
+        console.print("\n[dim]✓ = Installed. Use 'amplifier collection add <source>' to install others.[/dim]")
 
     else:
         # Show only installed (in lock file)
         installed = lock.list_entries()
         if not installed:
-            click.echo("No collections installed.")
-            click.echo("\nInstall a collection with:")
-            click.echo("  amplifier collection add git+https://github.com/org/collection@main")
+            console.print("[yellow]No collections installed.[/yellow]")
+            console.print("\nInstall a collection with:")
+            console.print("  [cyan]amplifier collection add git+https://github.com/org/collection@main[/cyan]")
             return
 
-        click.echo(f"Installed collections ({len(installed)}):\n")
+        # Build table for installed collections
+        table = Table(
+            title=f"Installed Collections ({len(installed)})",
+            show_header=True,
+            header_style="bold cyan",
+        )
+        table.add_column("Name", style="green")
+        table.add_column("Version", style="yellow")
+        table.add_column("Source", style="magenta")
 
         for entry in installed:
-            # Load metadata
+            # Load metadata for version
+            # Use resolver to get current path (lock file path may be stale for local installs)
             try:
-                path = Path(entry.path)
+                resolved_path = resolver.resolve(entry.name)
+                path = resolved_path if resolved_path else Path(entry.path)
                 metadata_path = path / "pyproject.toml"
                 metadata = CollectionMetadata.from_pyproject(metadata_path)
-                desc = metadata.description or "No description"
+                version = f"v{metadata.version}"
             except Exception:
-                desc = "Unable to load metadata"
+                version = "unknown"
 
-            click.echo(f"✓ {entry.name}")
-            click.echo(f"    {desc}")
-            click.echo(f"    Source: {entry.source}")
-            click.echo(f"    Installed: {entry.installed_at}")
-            click.echo()
+            # Truncate source if too long
+            source = entry.source
+            if len(source) > 50:
+                source = source[:47] + "..."
+
+            table.add_row(entry.name, version, source)
+
+        console.print(table)
+        console.print("\n[dim]Use 'amplifier collection show <name>' for details[/dim]")
 
 
 @collection.command()
