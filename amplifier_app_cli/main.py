@@ -15,6 +15,7 @@ from typing import Any
 
 import click
 from amplifier_core import AmplifierSession
+from amplifier_core import ModuleValidationError
 from amplifier_profiles.utils import parse_markdown_body
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
@@ -44,6 +45,7 @@ from .key_manager import KeyManager
 from .paths import create_module_resolver
 from .paths import create_profile_loader
 from .session_store import SessionStore
+from .ui.error_display import display_validation_error
 
 logger = logging.getLogger(__name__)
 
@@ -844,8 +846,27 @@ async def interactive_chat(
     session.coordinator.register_capability("mention_deduplicator", mention_deduplicator)
 
     # Show loading indicator during initialization (modules loading, etc.)
-    with console.status("[dim]Loading...[/dim]", spinner="dots"):
-        await session.initialize()
+    # Temporarily suppress amplifier_core error logs during init - we'll show clean error panel if it fails
+    core_logger = logging.getLogger("amplifier_core")
+    original_level = core_logger.level
+    if not verbose:
+        core_logger.setLevel(logging.CRITICAL)
+    try:
+        with console.status("[dim]Loading...[/dim]", spinner="dots"):
+            await session.initialize()
+    except (ModuleValidationError, RuntimeError) as e:
+        # Restore log level before showing error
+        core_logger.setLevel(original_level)
+        # Try clean error display for module validation errors
+        if not display_validation_error(console, e, verbose=verbose):
+            # Fall back to generic error display
+            console.print(f"[red]Error:[/red] {e}")
+            if verbose:
+                console.print_exception()
+        sys.exit(1)
+    finally:
+        # Restore log level on success path
+        core_logger.setLevel(original_level)
 
     # Process profile @mentions if profile has markdown body
     await _process_profile_mentions(session, profile_name)
@@ -993,6 +1014,10 @@ async def interactive_chat(
                 console.print("\n[dim]Exiting...[/dim]")
                 break
 
+            except ModuleValidationError as e:
+                # Clean display for module validation errors
+                display_validation_error(console, e, verbose=verbose)
+
             except Exception as e:
                 console.print(f"[red]Error:[/red] {e}")
                 if verbose:
@@ -1133,6 +1158,24 @@ async def execute_single(
             if verbose and output_format == "text":
                 console.print(f"[dim]Session {actual_session_id[:8]}... saved[/dim]")
 
+    except ModuleValidationError as e:
+        if output_format in ["json", "json-trace"]:
+            # Restore stdout before writing error JSON
+            if original_stdout is not None:
+                sys.stdout = original_stdout
+            error_output = {
+                "status": "error",
+                "error": str(e),
+                "error_type": "ModuleValidationError",
+                "session_id": getattr(session, "session_id", None) if "session" in locals() else None,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            print(json.dumps(error_output, indent=2))
+        else:
+            # Clean display for module validation errors
+            display_validation_error(console, e, verbose=verbose)
+        sys.exit(1)
+
     except Exception as e:
         if output_format in ["json", "json-trace"]:
             # Restore stdout before writing error JSON
@@ -1147,10 +1190,12 @@ async def execute_single(
             }
             print(json.dumps(error_output, indent=2))
         else:
-            # Text error output
-            console.print(f"[red]Error:[/red] {e}")
-            if verbose:
-                console.print_exception()
+            # Try clean display for module validation errors (including wrapped ones)
+            if not display_validation_error(console, e, verbose=verbose):
+                # Fall back to generic error output
+                console.print(f"[red]Error:[/red] {e}")
+                if verbose:
+                    console.print_exception()
         sys.exit(1)
     finally:
         await session.cleanup()
@@ -1307,6 +1352,24 @@ async def execute_single_with_session(
             if verbose and output_format == "text":
                 console.print(f"[dim]Session {session_id[:8]}... saved[/dim]")
 
+    except ModuleValidationError as e:
+        if output_format in ["json", "json-trace"]:
+            # Restore stdout before writing error JSON
+            if original_stdout is not None:
+                sys.stdout = original_stdout
+            error_output = {
+                "status": "error",
+                "error": str(e),
+                "error_type": "ModuleValidationError",
+                "session_id": session_id if "session_id" in locals() else None,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            print(json.dumps(error_output, indent=2))
+        else:
+            # Clean display for module validation errors
+            display_validation_error(console, e, verbose=verbose)
+        sys.exit(1)
+
     except Exception as e:
         if output_format in ["json", "json-trace"]:
             # Restore stdout before writing error JSON
@@ -1321,10 +1384,12 @@ async def execute_single_with_session(
             }
             print(json.dumps(error_output, indent=2))
         else:
-            # Text error output
-            console.print(f"[red]Error:[/red] {e}")
-            if verbose:
-                console.print_exception()
+            # Try clean display for module validation errors (including wrapped ones)
+            if not display_validation_error(console, e, verbose=verbose):
+                # Fall back to generic error output
+                console.print(f"[red]Error:[/red] {e}")
+                if verbose:
+                    console.print_exception()
         sys.exit(1)
     finally:
         await session.cleanup()
