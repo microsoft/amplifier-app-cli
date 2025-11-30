@@ -41,9 +41,7 @@ tools:
   - module: tool-task
     source: git+https://github.com/microsoft/amplifier-module-tool-task@main
 
-agents:
-  dirs:
-    - ./agents
+agents: all
 
 hooks:
   - module: hooks-approval

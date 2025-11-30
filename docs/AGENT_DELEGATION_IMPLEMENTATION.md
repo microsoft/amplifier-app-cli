@@ -297,10 +297,10 @@ amplifier agent show zen-architect
 Agents are loaded automatically when profiles specify them:
 
 ```yaml
-# In profile.md
-agents:
-  dirs: ["./agents"]
-  include: ["zen-architect", "bug-hunter"]
+# In profile.md (Smart Single Value format)
+agents: all   # Load all discovered agents
+# Or: agents: [zen-architect, bug-hunter]  # Load specific agents
+# Or: agents: none                          # Disable agents
 ```
 
 Then use via task tool delegation within sessions (see amplifier-profiles docs for details).

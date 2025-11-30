@@ -1,8 +1,8 @@
 ---
 profile:
-  name: production
+  name: general
   version: 1.1.0
-  description: Production configuration optimized for reliability
+  description: General-purpose configuration optimized for reliability
   extends: foundation:profiles/base.md
 
 session:
@@ -23,13 +23,10 @@ tools:
   - module: tool-web
     source: git+https://github.com/microsoft/amplifier-module-tool-web@main
 
-# Example: Selective agent loading for production
+# Example: Selective agent loading
 # Only researcher (no bug-hunter, modular-builder, zen-architect)
 agents:
-  dirs:
-    - ./agents
-  include:
-    - researcher
+  - researcher
 ---
 
 # Core Instructions
@@ -38,4 +35,4 @@ agents:
 
 ---
 
-Production configuration optimized for reliability and auditability. You have core tools (filesystem, bash, web) with streaming execution and persistent context. Extended thinking is enabled for critical decisions. Only the researcher agent is available for focused analysis. Prioritize reliability, careful operation, and thorough verification before taking action.
+General-purpose configuration optimized for reliability and auditability. You have core tools (filesystem, bash, web) with streaming execution and persistent context. Extended thinking is enabled for critical decisions. Only the researcher agent is available for focused analysis. Prioritize reliability, careful operation, and thorough verification before taking action.

@@ -250,8 +250,8 @@ You can start interactive sessions with specific profiles:
 # Use development profile (includes more tools)
 amplifier run --profile dev --mode chat
 
-# Use production profile (includes logging hooks)
-amplifier run --profile production --mode chat
+# Use general profile (includes logging hooks)
+amplifier run --profile general --mode chat
 ```
 
 **→ [Profile Authoring](https://github.com/microsoft/amplifier-profiles/blob/main/docs/PROFILE_AUTHORING.md)** for profile details.

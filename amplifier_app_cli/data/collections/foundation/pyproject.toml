@@ -9,7 +9,7 @@ repository = "https://github.com/microsoft/amplifier"
 [tool.amplifier.collection]
 author = "Amplifier Team"
 capabilities = [
-    "Base profiles (foundation, base, production, test)",
+    "Base profiles (foundation, base, general, test)",
     "Shared philosophy context (IMPLEMENTATION_PHILOSOPHY, MODULAR_DESIGN_PHILOSOPHY)"
 ]
 requires = {}

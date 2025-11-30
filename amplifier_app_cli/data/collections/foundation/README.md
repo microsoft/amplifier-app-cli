@@ -8,7 +8,7 @@
 
 The `foundation` collection is the base layer bundled with Amplifier. It provides:
 
-- **Core profiles**: `foundation`, `base`, `production`, `test`
+- **Core profiles**: `foundation`, `base`, `general`, `test`
 - **Shared context**: Implementation and modular design philosophy documents
 - **Common agent patterns**: Shared agent instruction components
 
@@ -24,7 +24,7 @@ Other collections build on foundation by depending on it in their `pyproject.tom
 |---------|---------|-------------|
 | `foundation` | Minimal baseline | Starting point, learning |
 | `base` | Standard features | Daily development work |
-| `production` | Production-ready | Deployed systems |
+| `general` | General-purpose | Reliable, focused work |
 | `test` | Testing-focused | CI/CD, test automation |
 
 **Usage**:
@@ -32,7 +32,7 @@ Other collections build on foundation by depending on it in their `pyproject.tom
 # Use profiles (natural syntax)
 amplifier profile use foundation:base
 amplifier profile use foundation:foundation
-amplifier profile use foundation:production
+amplifier profile use foundation:general
 
 # Full path also works
 amplifier profile use foundation:profiles/base.md

@@ -61,9 +61,7 @@ hooks:
   - module: hooks-streaming-ui
     source: git+https://github.com/microsoft/amplifier-module-hooks-streaming-ui@main
 
-agents:
-  dirs:
-    - ./agents
+agents: all
 ---
 
 @foundation:context/shared/common-agent-base.md
