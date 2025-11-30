@@ -9,8 +9,10 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
+from pathlib import Path
 
 from .source_status import CachedGitStatus
+from .source_status import CollectionStatus
 from .source_status import UpdateReport
 from .umbrella_discovery import UmbrellaInfo
 
@@ -98,47 +100,88 @@ async def execute_selective_module_update(
     )
 
 
-async def execute_collection_update() -> ExecutionResult:
-    """Delegate to 'amplifier collection update'.
+async def execute_selective_collection_update(
+    collections_to_update: list[CollectionStatus],
+    progress_callback: Callable[[str, str], None] | None = None,
+) -> ExecutionResult:
+    """Selectively update only collections that have updates.
 
-    Philosophy: Orchestrate, don't reimplement. Collection update already works.
+    Philosophy: Only update what needs updating, consistent with module behavior.
+    Uses amplifier_collections directly for DRY compliance.
+
+    Args:
+        collections_to_update: List of CollectionStatus with has_update=True
+        progress_callback: Optional callback(collection_name, status) for progress reporting
+
+    Returns:
+        ExecutionResult with per-collection success/failure
     """
-    try:
-        result = subprocess.run(
-            ["amplifier", "collection", "update"],
-            capture_output=True,
-            text=True,
-            timeout=120,  # Collections can be large, use longer timeout
+    import shutil
+
+    from amplifier_collections import CollectionLock
+    from amplifier_collections import install_collection
+    from amplifier_module_resolution import GitSource
+
+    from ..paths import get_collection_lock_path
+
+    if not collections_to_update:
+        return ExecutionResult(
+            success=True,
+            messages=["No collections need updating"],
         )
 
-        if result.returncode == 0:
-            return ExecutionResult(
-                success=True,
-                updated=["collections"],
-                messages=["Collections updated successfully"],
-            )
-        error_msg = result.stderr.strip() or "Unknown error"
-        return ExecutionResult(
-            success=False,
-            failed=["collections"],
-            errors={"collections": error_msg},
-            messages=[f"Collection update failed: {error_msg}"],
-        )
+    # Load collection lock to find installation paths
+    lock = CollectionLock(get_collection_lock_path(local=False))
+    entries = {e.name: e for e in lock.list_entries()}
 
-    except subprocess.TimeoutExpired:
-        return ExecutionResult(
-            success=False,
-            failed=["collections"],
-            errors={"collections": "Timeout after 120 seconds"},
-            messages=["Collection update timed out"],
-        )
-    except Exception as e:
-        return ExecutionResult(
-            success=False,
-            failed=["collections"],
-            errors={"collections": str(e)},
-            messages=[f"Collection update error: {e}"],
-        )
+    updated = []
+    failed = []
+    errors = {}
+
+    for status in collections_to_update:
+        collection_name = status.name
+        if progress_callback:
+            progress_callback(collection_name, "updating")
+
+        try:
+            # Find entry in lock file
+            entry = entries.get(collection_name)
+            if not entry:
+                failed.append(collection_name)
+                errors[collection_name] = "Not found in collection lock"
+                if progress_callback:
+                    progress_callback(collection_name, "failed")
+                continue
+
+            # Parse source and re-install
+            source = GitSource.from_uri(entry.source)
+            target_dir = Path(entry.path)
+
+            # Remove existing installation
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+
+            # Re-install
+            metadata = await install_collection(source=source, target_dir=target_dir, lock=lock)
+
+            updated.append(f"{collection_name}@{metadata.version}")
+            if progress_callback:
+                progress_callback(collection_name, "done")
+
+        except Exception as e:
+            logger.warning(f"Failed to update collection {collection_name}: {e}")
+            failed.append(collection_name)
+            errors[collection_name] = str(e)
+            if progress_callback:
+                progress_callback(collection_name, "failed")
+
+    return ExecutionResult(
+        success=len(failed) == 0,
+        updated=updated,
+        failed=failed,
+        errors=errors,
+        messages=[f"Updated {len(updated)} collection(s)"] if updated else [],
+    )
 
 
 async def fetch_library_git_dependencies(repo_url: str, ref: str) -> dict[str, dict]:
@@ -357,10 +400,11 @@ async def execute_updates(report: UpdateReport, umbrella_info: UmbrellaInfo | No
         if not result.success:
             overall_success = False
 
-    # 2. Execute collection update if needed
-    if report.collection_sources:
-        logger.info("Updating collections...")
-        result = await execute_collection_update()
+    # 2. Execute selective collection update (only collections with updates)
+    collections_needing_update = [s for s in report.collection_sources if s.has_update]
+    if collections_needing_update:
+        logger.info(f"Selectively updating {len(collections_needing_update)} collection(s)...")
+        result = await execute_selective_collection_update(collections_needing_update)
 
         all_updated.extend(result.updated)
         all_failed.extend(result.failed)
