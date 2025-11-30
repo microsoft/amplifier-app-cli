@@ -7,38 +7,14 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from ..utils.display import create_sha_text
+from ..utils.display import create_status_symbol
+from ..utils.display import print_legend
 from ..utils.settings_manager import save_update_last_check
 from ..utils.source_status import check_all_sources
 from ..utils.update_executor import execute_updates
 
 console = Console()
-
-
-def _create_status_symbol(local_sha: str | None, remote_sha: str | None, has_local_changes: bool = False) -> Text:
-    """Create styled status symbol based on update state.
-
-    Returns:
-        ● (yellow) - update available
-        ◦ (cyan) - local changes
-        ✓ (green) - up to date
-    """
-    if has_local_changes:
-        return Text("◦", style="cyan")
-    if local_sha and remote_sha and local_sha != remote_sha:
-        return Text("●", style="yellow")
-    return Text("✓", style="green")
-
-
-def _create_sha_text(sha: str | None, style: str = "dim") -> Text:
-    """Create styled SHA text (always dim to prevent hex color interpretation)."""
-    return Text(sha[:7] if sha else "unknown", style=style)
-
-
-def _print_legend() -> None:
-    """Print status symbol legend at the bottom of reports."""
-    console.print(
-        "[dim]Legend: [green]✓[/green] up to date  [yellow]●[/yellow] update available  [cyan]◦[/cyan] local changes[/dim]"
-    )
 
 
 def _get_installed_amplifier_packages() -> list[dict]:
@@ -247,7 +223,7 @@ def _create_local_package_table(packages: list[dict], title: str) -> Table | Non
 
         # SHA display: show SHA if available, "local" if local but no git, "-" otherwise
         if pkg["sha"]:
-            sha_display = _create_sha_text(pkg["sha"])
+            sha_display = create_sha_text(pkg["sha"])
         elif pkg["is_local"] and not pkg["is_git"]:
             sha_display = Text("local", style="dim")
         else:
@@ -281,11 +257,11 @@ def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool, u
         table.add_column("", width=1, justify="center")
 
         for dep in sorted(umbrella_deps, key=lambda x: x["name"]):
-            status_symbol = _create_status_symbol(dep["current_sha"], dep["remote_sha"])
+            status_symbol = create_status_symbol(dep["current_sha"], dep["remote_sha"])
             table.add_row(
                 dep["name"],
-                _create_sha_text(dep["current_sha"]),
-                _create_sha_text(dep["remote_sha"]),
+                create_sha_text(dep["current_sha"]),
+                create_sha_text(dep["remote_sha"]),
                 status_symbol,
             )
 
@@ -316,22 +292,50 @@ def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool, u
                 console.print()
                 console.print(lib_table)
 
-    # === MODULES (Cached git sources) ===
+    # === MODULES (Local overrides and/or Cached git sources) ===
+    # Show local overrides first (if any)
+    if report.local_file_sources:
+        console.print()
+        table = Table(title="Modules (Local Overrides)", show_header=True, header_style="bold cyan")
+        table.add_column("Name", style="green")
+        table.add_column("SHA", style="dim", justify="right")
+        table.add_column("Path", style="dim")
+        table.add_column("", width=1, justify="center")
+
+        for status in sorted(report.local_file_sources, key=lambda x: x.name):
+            has_local_changes = status.uncommitted_changes or status.unpushed_commits
+            status_symbol = create_status_symbol(status.local_sha, status.local_sha, has_local_changes)
+
+            # Truncate path for display
+            path_str = str(status.path) if status.path else "-"
+            if len(path_str) > 40:
+                path_str = "..." + path_str[-37:]
+
+            table.add_row(
+                status.name,
+                create_sha_text(status.local_sha),
+                Text(path_str, style="dim"),
+                status_symbol,
+            )
+
+        console.print(table)
+
+    # Show cached git sources (if any)
     if report.cached_git_sources:
         console.print()
-        table = Table(title="Modules", show_header=True, header_style="bold cyan")
+        table = Table(title="Modules (Cached)", show_header=True, header_style="bold cyan")
         table.add_column("Name", style="green")
         table.add_column("Cached", style="dim", justify="right")
         table.add_column("Remote", style="dim", justify="right")
         table.add_column("", width=1, justify="center")
 
         for status in sorted(report.cached_git_sources, key=lambda x: x.name):
-            status_symbol = _create_status_symbol(status.cached_sha, status.remote_sha)
+            status_symbol = create_status_symbol(status.cached_sha, status.remote_sha)
 
             table.add_row(
                 status.name,
-                _create_sha_text(status.cached_sha),
-                _create_sha_text(status.remote_sha),
+                create_sha_text(status.cached_sha),
+                create_sha_text(status.remote_sha),
                 status_symbol,
             )
 
@@ -347,19 +351,19 @@ def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool, u
         table.add_column("", width=1, justify="center")
 
         for status in sorted(report.collection_sources, key=lambda x: x.name):
-            status_symbol = _create_status_symbol(status.installed_sha, status.remote_sha)
+            status_symbol = create_status_symbol(status.installed_sha, status.remote_sha)
 
             table.add_row(
                 status.name,
-                _create_sha_text(status.installed_sha),
-                _create_sha_text(status.remote_sha),
+                create_sha_text(status.installed_sha),
+                create_sha_text(status.remote_sha),
                 status_symbol,
             )
 
         console.print(table)
 
     console.print()
-    _print_legend()
+    print_legend()
     if not check_only and (report.has_updates or has_umbrella_updates):
         console.print()
         console.print("Run [cyan]amplifier update[/cyan] to install")
@@ -421,7 +425,7 @@ def _show_verbose_report(report, check_only: bool, umbrella_deps=None) -> None:
         console.print()
 
         for dep in sorted(umbrella_deps, key=lambda x: x["name"]):
-            status_symbol = _create_status_symbol(dep["current_sha"], dep["remote_sha"])
+            status_symbol = create_status_symbol(dep["current_sha"], dep["remote_sha"])
             _print_verbose_item(
                 name=dep["name"],
                 status_symbol=status_symbol,
@@ -526,7 +530,7 @@ def _show_verbose_report(report, check_only: bool, umbrella_deps=None) -> None:
         console.print()
 
         for mod in sorted(modules_by_name.values(), key=lambda x: x["name"]):
-            status_symbol = _create_status_symbol(mod["local_sha"], mod["remote_sha"], mod["has_local_changes"])
+            status_symbol = create_status_symbol(mod["local_sha"], mod["remote_sha"], mod["has_local_changes"])
             _print_verbose_item(
                 name=mod["name"],
                 status_symbol=status_symbol,
@@ -544,7 +548,7 @@ def _show_verbose_report(report, check_only: bool, umbrella_deps=None) -> None:
         console.print()
 
         for status in sorted(report.collection_sources, key=lambda x: x.name):
-            status_symbol = _create_status_symbol(status.installed_sha, status.remote_sha)
+            status_symbol = create_status_symbol(status.installed_sha, status.remote_sha)
             source_url = status.source if hasattr(status, "source") else None
             _print_verbose_item(
                 name=status.name,
@@ -555,7 +559,7 @@ def _show_verbose_report(report, check_only: bool, umbrella_deps=None) -> None:
             )
             console.print()
 
-    _print_legend()
+    print_legend()
 
 
 @click.command()

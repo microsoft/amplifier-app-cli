@@ -151,11 +151,15 @@ async def check_all_sources(include_all_cached: bool = False, force: bool = Fals
     cached_modules_checked = 0
     if include_all_cached:
         cached_statuses, cached_modules_checked = await _check_all_cached_modules(force=force)
-        # Add any not already in git_statuses
+        # Add any not already in git_statuses (avoid duplicates from active profile)
         existing_names = {s.name for s in git_statuses}
         for status in cached_statuses:
             if status.name not in existing_names:
                 git_statuses.append(status)
+
+    # Filter out cached sources that have local overrides (local takes precedence)
+    local_override_names = {s.name for s in local_statuses}
+    git_statuses = [s for s in git_statuses if s.name not in local_override_names]
 
     # Check installed collections
     collection_statuses = await _check_collection_sources(force=force)
@@ -229,6 +233,13 @@ async def _get_all_sources_to_check() -> dict[str, dict]:
             for h in profile.hooks:
                 if hasattr(h, "module"):
                     module_ids.add(h.module)
+
+        # Include session orchestrator and context
+        if profile.session:
+            if profile.session.orchestrator and hasattr(profile.session.orchestrator, "module"):
+                module_ids.add(profile.session.orchestrator.module)
+            if profile.session.context and hasattr(profile.session.context, "module"):
+                module_ids.add(profile.session.context.module)
 
         # Resolve each module
         for module_id in module_ids:
@@ -434,7 +445,7 @@ def _count_commits_behind(repo_path: Path) -> int:
 async def _check_all_cached_modules(force: bool = False) -> tuple[list[CachedGitStatus], int]:
     """Check ALL cached modules for updates (not just active ones).
 
-    Scans ~/.amplifier/module-cache/ for all cached modules.
+    Uses centralized scan_cached_modules() utility for DRY compliance.
 
     Args:
         force: When True, include all cached modules even if up to date
@@ -442,88 +453,72 @@ async def _check_all_cached_modules(force: bool = False) -> tuple[list[CachedGit
     Returns:
         Tuple of (list of CachedGitStatus for modules with updates, total modules checked)
     """
-    cache_dir = Path.home() / ".amplifier" / "module-cache"
-    if not cache_dir.exists():
+    from .module_cache import scan_cached_modules
+
+    # Get all cached modules using centralized utility
+    cached_modules = scan_cached_modules()
+
+    if not cached_modules:
         return [], 0
 
     statuses = []
-    modules_checked = 0
+    modules_checked = len(cached_modules)
 
-    for cache_hash_dir in cache_dir.iterdir():
-        if not cache_hash_dir.is_dir():
+    for module in cached_modules:
+        # Skip immutable refs
+        if not module.is_mutable:
             continue
 
-        for ref_dir in cache_hash_dir.iterdir():
-            if not ref_dir.is_dir():
-                continue
+        if not module.sha or not module.url or not module.ref:
+            continue
 
-            # Read metadata
-            metadata_file = ref_dir / ".amplifier_cache_metadata.json"
-            if not metadata_file.exists():
-                continue
+        try:
+            # Check remote SHA
+            remote_sha = await _get_github_commit_sha(module.url, module.ref)
 
-            modules_checked += 1  # Count every module we examine
+            # Add ALL cached modules (with has_update flag)
+            # Note: module.sha is already truncated to 8 chars by scan_cached_modules
+            has_update = (remote_sha[:8] != module.sha) or force
 
-            try:
-                metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
-
-                # Skip immutable refs
-                if not metadata.get("is_mutable", True):
-                    continue
-
-                cached_sha = metadata.get("sha")
-                if not cached_sha:
-                    continue
-
-                url = metadata.get("url")
-                ref = metadata.get("ref")
-
-                if not url or not ref:
-                    continue
-
-                # Check remote
-                remote_sha = await _get_github_commit_sha(url, ref)
-
-                # Add ALL cached modules (with has_update flag)
-                has_update = (remote_sha != cached_sha) or force
-                module_name = url.split("/")[-1].replace("amplifier-module-", "")
-
-                statuses.append(
-                    CachedGitStatus(
-                        name=module_name,
-                        url=url,
-                        ref=ref,
-                        layer="cache",
-                        cached_sha=cached_sha[:7],
-                        remote_sha=remote_sha[:7],
-                        has_update=has_update,
-                        age_days=_cache_age_days(metadata),
-                    )
+            statuses.append(
+                CachedGitStatus(
+                    name=module.module_id,
+                    url=module.url,
+                    ref=module.ref,
+                    layer="cache",
+                    cached_sha=module.sha[:7],  # Consistent 7 chars for display comparison
+                    remote_sha=remote_sha[:7],
+                    has_update=has_update,
+                    age_days=_cache_age_days_from_string(module.cached_at),
                 )
+            )
 
-            except (httpx.HTTPError, httpx.TimeoutException) as e:
-                # Network/API errors - log but continue checking other modules
-                logger.warning(f"Could not check {ref_dir.parent.name}: {e}")
-                continue
-            except json.JSONDecodeError as e:
-                # Corrupt metadata - log but continue
-                logger.warning(f"Corrupt metadata in {ref_dir}: {e}")
-                continue
-            except Exception as e:
-                # Unexpected errors - log at ERROR and continue
-                logger.error(f"Unexpected error checking {ref_dir}: {type(e).__name__}: {e}")
-                continue
+        except (httpx.HTTPError, httpx.TimeoutException) as e:
+            # Network/API errors - log but continue checking other modules
+            logger.warning(f"Could not check {module.module_id}: {e}")
+            continue
+        except Exception as e:
+            # Unexpected errors - log at ERROR and continue
+            logger.error(f"Unexpected error checking {module.module_id}: {type(e).__name__}: {e}")
+            continue
 
     return statuses, modules_checked
 
 
 def _cache_age_days(metadata: dict) -> int:
-    """Calculate cache age in days from metadata."""
+    """Calculate cache age in days from metadata dict."""
+    return _cache_age_days_from_string(metadata.get("cached_at", ""))
+
+
+def _cache_age_days_from_string(cached_at: str) -> int:
+    """Calculate cache age in days from ISO format string."""
     try:
         from datetime import datetime
 
-        cached_at = datetime.fromisoformat(metadata["cached_at"])
-        age = datetime.now() - cached_at
+        if not cached_at:
+            return 0
+        cached_at_dt = datetime.fromisoformat(cached_at)
+        age = datetime.now() - cached_at_dt
         return age.days
     except Exception:
         return 0

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-from pathlib import Path
 from typing import Any
 from typing import Literal
 from typing import cast
@@ -108,7 +106,9 @@ def list_modules(type: str):
             console.print(table)
 
     # Show cached modules (downloaded from git)
-    cached_modules = _get_cached_modules(type)
+    # Filter out modules that have local source overrides (local takes precedence)
+    local_override_names = _get_local_override_names()
+    cached_modules = [m for m in _get_cached_modules(type) if m["id"] not in local_override_names]
     if cached_modules:
         console.print()
         table = Table(
@@ -129,7 +129,7 @@ def list_modules(type: str):
         console.print(table)
         console.print()
         console.print("[dim]Note: Cached modules are downloaded on-demand when used.[/dim]")
-        console.print("[dim]Use 'amplifier module refresh' to update cached modules.[/dim]")
+        console.print("[dim]Use 'amplifier module update' to update cached modules.[/dim]")
 
 
 @module.command("show")
@@ -341,225 +341,119 @@ def _get_profile_modules(profile_name: str) -> list[dict[str, Any]]:
     return modules
 
 
+def _get_local_override_names() -> set[str]:
+    """Get names of modules that have local source overrides.
+
+    These modules use FileSource and should take precedence over cached versions.
+    """
+    from amplifier_module_resolution import FileSource
+
+    resolver = create_module_resolver()
+    local_names: set[str] = set()
+
+    # Check all cached modules to see which have local overrides
+    from ..utils.module_cache import scan_cached_modules
+
+    for module in scan_cached_modules():
+        try:
+            source, _layer = resolver.resolve_with_layer(module.module_id)
+            if isinstance(source, FileSource):
+                local_names.add(module.module_id)
+        except Exception:
+            pass
+
+    return local_names
+
+
 def _get_cached_modules(type_filter: str = "all") -> list[dict[str, Any]]:
     """Return metadata for all cached modules.
 
-    Scans ~/.amplifier/module-cache/ for cached git modules and extracts
-    their metadata from .amplifier_cache_metadata.json files.
+    Uses centralized scan_cached_modules() utility and converts to dict format
+    for backward compatibility with existing display code.
     """
-    cache_dir = Path.home() / ".amplifier" / "module-cache"
+    from ..utils.module_cache import scan_cached_modules
 
-    if not cache_dir.exists():
-        return []
-
-    modules: list[dict[str, Any]] = []
-
-    for cache_hash in cache_dir.iterdir():
-        if not cache_hash.is_dir():
-            continue
-
-        for ref_dir in cache_hash.iterdir():
-            if not ref_dir.is_dir():
-                continue
-
-            metadata_file = ref_dir / ".amplifier_cache_metadata.json"
-            if not metadata_file.exists():
-                continue
-
-            try:
-                metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
-                url = metadata.get("url", "")
-                repo_name = url.split("/")[-1] if url else ""
-
-                # Extract module ID from repo name (e.g., amplifier-module-tool-filesystem -> tool-filesystem)
-                if repo_name.startswith("amplifier-module-"):
-                    module_id = repo_name[len("amplifier-module-") :]
-                else:
-                    module_id = repo_name
-
-                # Infer module type from ID prefix
-                module_type = "unknown"
-                if module_id.startswith("tool-"):
-                    module_type = "tool"
-                elif module_id.startswith("hooks-"):
-                    module_type = "hook"
-                elif module_id.startswith("provider-"):
-                    module_type = "provider"
-                elif module_id.startswith("loop-"):
-                    module_type = "orchestrator"
-                elif module_id.startswith("context-"):
-                    module_type = "context"
-                elif module_id.startswith("agent-"):
-                    module_type = "agent"
-
-                # Apply type filter
-                if type_filter != "all" and type_filter != module_type:
-                    continue
-
-                modules.append(
-                    {
-                        "id": module_id,
-                        "type": module_type,
-                        "ref": metadata.get("ref", "unknown"),
-                        "sha": metadata.get("sha", "")[:8],
-                        "cached_at": metadata.get("cached_at", ""),
-                        "is_mutable": metadata.get("is_mutable", True),
-                        "url": url,
-                    }
-                )
-            except Exception:
-                # Skip invalid metadata files
-                continue
-
-    # Sort by module ID for consistent output
-    modules.sort(key=lambda m: m["id"])
-    return modules
+    modules = scan_cached_modules(type_filter)
+    return [
+        {
+            "id": m.module_id,
+            "type": m.module_type,
+            "ref": m.ref,
+            "sha": m.sha,
+            "cached_at": m.cached_at,
+            "is_mutable": m.is_mutable,
+            "url": m.url,
+        }
+        for m in modules
+    ]
 
 
-@module.command("refresh")
+@module.command("update")
 @click.argument("module_id", required=False)
-@click.option("--mutable-only", is_flag=True, help="Only refresh mutable refs (branches, not tags/SHAs)")
-def module_refresh(module_id: str | None, mutable_only: bool):
-    """Refresh module cache.
+@click.option("--check-only", is_flag=True, help="Check for updates without installing")
+@click.option("--mutable-only", is_flag=True, help="Only update mutable refs (branches, not tags/SHAs)")
+def module_update(module_id: str | None, check_only: bool, mutable_only: bool):
+    """Update module cache.
 
-    Clears cached git modules so they re-download on next use.
+    Clears cached git modules and re-downloads them immediately.
     Useful for updating modules pinned to branches (e.g., @main).
-    """
-    from pathlib import Path
 
-    cache_dir = Path.home() / ".amplifier" / "module-cache"
+    Use --check-only to see available updates without installing.
+    """
+    from ..utils.display import show_modules_report
+    from ..utils.module_cache import clear_module_cache
+    from ..utils.module_cache import find_cached_module
+    from ..utils.module_cache import get_cache_dir
+    from ..utils.module_cache import update_module
+    from ..utils.source_status import check_all_sources
+
+    cache_dir = get_cache_dir()
 
     if not cache_dir.exists():
         console.print("[yellow]No module cache found[/yellow]")
         console.print("Modules will download on next use")
         return
 
+    # Check-only mode: show status using shared display utilities
+    if check_only:
+        console.print("Checking for updates...")
+        report = asyncio.run(check_all_sources(include_all_cached=True))
+        show_modules_report(report.cached_git_sources, report.local_file_sources, check_only=True)
+        return
+
     if module_id:
-        # Refresh specific module - find matching cache dirs
-        import json
+        # Update specific module - find it first to get URL and ref
+        cached_module = find_cached_module(module_id)
 
-        refreshed = 0
-        for cache_hash in cache_dir.iterdir():
-            if not cache_hash.is_dir():
-                continue
+        if not cached_module:
+            console.print(f"[yellow]No cached module found for '{module_id}'[/yellow]")
+            return
 
-            for ref_dir in cache_hash.iterdir():
-                if not ref_dir.is_dir():
-                    continue
+        # Check mutable-only flag
+        if mutable_only and not cached_module.is_mutable:
+            console.print(f"[dim]Skipping {module_id} - immutable ref (tag/SHA)[/dim]")
+            return
 
-                # Check metadata
-                metadata_file = ref_dir / ".amplifier_cache_metadata.json"
-                if not metadata_file.exists():
-                    continue
-
-                try:
-                    metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
-
-                    # Skip if wrong module
-                    if metadata.get("url", "").split("/")[-1] != f"amplifier-module-{module_id}":
-                        continue
-
-                    # Skip if mutable-only and this is immutable
-                    if mutable_only and not metadata.get("is_mutable", True):
-                        continue
-
-                    # Delete cache dir
-                    import shutil
-
-                    shutil.rmtree(ref_dir)
-                    console.print(f"[green]✓ Cleared cache for {module_id}@{metadata['ref']}[/green]")
-                    refreshed += 1
-                except Exception as e:
-                    console.print(f"[yellow]⚠ Could not clear {ref_dir}: {e}[/yellow]")
-
-        if refreshed == 0:
-            console.print(f"[yellow]No cached modules found for '{module_id}'[/yellow]")
+        # Update: clear + immediate re-download
+        console.print(f"Updating {module_id}@{cached_module.ref}...")
+        try:
+            update_module(
+                url=cached_module.url,
+                ref=cached_module.ref,
+                progress_callback=lambda mid, status: console.print(f"  {status}...", end="\r"),
+            )
+            console.print(f"[green]✓ Updated {module_id}@{cached_module.ref}[/green]")
+        except Exception as e:
+            console.print(f"[red]✗ Failed to update {module_id}: {e}[/red]")
     else:
-        # Refresh all modules
-        import json
-        import shutil
+        # Update all modules - clear cache, modules will re-download on next use
+        # For "all modules" case, we just clear (immediate re-download would take too long)
+        cleared, skipped = clear_module_cache(mutable_only=mutable_only)
 
-        refreshed = 0
-        skipped = 0
-
-        for cache_hash in cache_dir.iterdir():
-            if not cache_hash.is_dir():
-                continue
-
-            for ref_dir in cache_hash.iterdir():
-                if not ref_dir.is_dir():
-                    continue
-
-                # Check if we should skip immutable refs
-                if mutable_only:
-                    metadata_file = ref_dir / ".amplifier_cache_metadata.json"
-                    if metadata_file.exists():
-                        try:
-                            metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
-                            if not metadata.get("is_mutable", True):
-                                skipped += 1
-                                continue
-                        except Exception:
-                            pass
-
-                # Delete cache dir
-                shutil.rmtree(ref_dir)
-                refreshed += 1
-
-        console.print(f"[green]✓ Cleared {refreshed} cached modules[/green]")
+        console.print(f"[green]✓ Cleared {cleared} cached modules[/green]")
         if skipped > 0:
             console.print(f"[dim]Skipped {skipped} immutable refs (tags/SHAs)[/dim]")
         console.print("Modules will re-download on next use")
-
-
-@module.command("check-updates")
-def module_check_updates():
-    """Check for module updates.
-
-    Checks all sources (local files and cached git) for updates.
-    """
-
-    console.print("Checking for updates...")
-
-    # For module check-updates, include ALL cached modules (not just active)
-    from ..utils.source_status import check_all_sources
-
-    report = asyncio.run(check_all_sources(include_all_cached=True))
-
-    # Show git cache updates
-    if report.cached_git_sources:
-        console.print()
-        console.print("[yellow]Cached Git Sources (updates available):[/yellow]")
-        for status in report.cached_git_sources:
-            console.print(f"  • {status.name}@{status.ref} ({status.layer})")
-            console.print(f"    {status.cached_sha} → {status.remote_sha} ({status.age_days}d old)")
-        console.print()
-        console.print("Run [cyan]amplifier module refresh[/cyan] to update")
-
-    # Show local file statuses
-    if report.local_file_sources:
-        console.print()
-        console.print("[cyan]Local Sources:[/cyan]")
-        for status in report.local_file_sources:
-            console.print(f"  • {status.name} ({status.layer})")
-            console.print(f"    Path: {status.path}")
-
-            if status.uncommitted_changes:
-                console.print("    ⚠ Uncommitted changes")
-            if status.unpushed_commits:
-                console.print("    ⚠ Unpushed commits")
-
-            if status.has_remote and status.remote_sha and status.remote_sha != status.local_sha:
-                console.print(f"    ℹ Remote ahead: {status.local_sha} → {status.remote_sha}")
-                if status.commits_behind > 0:
-                    console.print(f"      {status.commits_behind} commits behind")
-
-    if not report.has_updates and not report.has_local_changes:
-        if report.cached_modules_checked == 0:
-            console.print("[dim]No cached modules to check[/dim]")
-            console.print("[dim]Modules will be cached when first used[/dim]")
-        else:
-            console.print(f"[green]✓ Checked {report.cached_modules_checked} cached modules - all up to date[/green]")
 
 
 __all__ = ["module"]

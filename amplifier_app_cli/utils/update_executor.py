@@ -1,13 +1,16 @@
 """Execute updates by delegating to external tools.
 
 Philosophy: Orchestrate, don't reimplement. Delegate to uv and existing commands.
+Selective updates: Only update modules that actually have updates, then re-download.
 """
 
 import logging
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
 
+from .source_status import CachedGitStatus
 from .source_status import UpdateReport
 from .umbrella_discovery import UmbrellaInfo
 
@@ -25,47 +28,74 @@ class ExecutionResult:
     errors: dict[str, str] = field(default_factory=dict)
 
 
-async def execute_module_refresh() -> ExecutionResult:
-    """Delegate to 'amplifier module refresh'.
+async def execute_selective_module_update(
+    modules_to_update: list[CachedGitStatus],
+    progress_callback: Callable[[str, str], None] | None = None,
+) -> ExecutionResult:
+    """Selectively update only modules that have updates.
 
-    Philosophy: Don't reimplement - it already exists and works.
+    Philosophy: Only update what needs updating, then re-download immediately.
+    Uses centralized module_cache utilities for DRY compliance.
+
+    Args:
+        modules_to_update: List of CachedGitStatus with has_update=True
+        progress_callback: Optional callback(module_name, status) for progress reporting
+
+    Returns:
+        ExecutionResult with per-module success/failure
     """
-    try:
-        result = subprocess.run(
-            ["amplifier", "module", "refresh"],
-            capture_output=True,
-            text=True,
-            timeout=60,
+    from .module_cache import find_cached_module
+    from .module_cache import update_module
+
+    if not modules_to_update:
+        return ExecutionResult(
+            success=True,
+            messages=["No modules need updating"],
         )
 
-        if result.returncode == 0:
-            return ExecutionResult(
-                success=True,
-                updated=["cached modules"],
-                messages=["Module cache refreshed successfully"],
-            )
-        error_msg = result.stderr.strip() or "Unknown error"
-        return ExecutionResult(
-            success=False,
-            failed=["cached modules"],
-            errors={"cached modules": error_msg},
-            messages=[f"Module refresh failed: {error_msg}"],
-        )
+    updated = []
+    failed = []
+    errors = {}
 
-    except subprocess.TimeoutExpired:
-        return ExecutionResult(
-            success=False,
-            failed=["cached modules"],
-            errors={"cached modules": "Timeout after 60 seconds"},
-            messages=["Module refresh timed out"],
-        )
-    except Exception as e:
-        return ExecutionResult(
-            success=False,
-            failed=["cached modules"],
-            errors={"cached modules": str(e)},
-            messages=[f"Module refresh error: {e}"],
-        )
+    for status in modules_to_update:
+        module_name = status.name
+        if progress_callback:
+            progress_callback(module_name, "updating")
+
+        try:
+            # Use URL and ref from status if available
+            if status.url and status.ref:
+                logger.debug(f"Updating {module_name} from {status.url}@{status.ref}")
+                update_module(url=status.url, ref=status.ref, progress_callback=progress_callback)
+                updated.append(f"{module_name}@{status.ref}")
+                if progress_callback:
+                    progress_callback(module_name, "done")
+            else:
+                # Fallback: find module by name to get URL and ref
+                cached = find_cached_module(module_name)
+                if cached:
+                    update_module(url=cached.url, ref=cached.ref, progress_callback=progress_callback)
+                    updated.append(f"{module_name}@{cached.ref}")
+                    if progress_callback:
+                        progress_callback(module_name, "done")
+                else:
+                    failed.append(module_name)
+                    errors[module_name] = "Could not find cache entry"
+
+        except Exception as e:
+            logger.warning(f"Failed to update {module_name}: {e}")
+            failed.append(module_name)
+            errors[module_name] = str(e)
+            if progress_callback:
+                progress_callback(module_name, "failed")
+
+    return ExecutionResult(
+        success=len(failed) == 0,
+        updated=updated,
+        failed=failed,
+        errors=errors,
+        messages=[f"Updated {len(updated)} module(s)"] if updated else [],
+    )
 
 
 async def execute_collection_refresh() -> ExecutionResult:
@@ -313,10 +343,11 @@ async def execute_updates(report: UpdateReport, umbrella_info: UmbrellaInfo | No
     all_errors = {}
     overall_success = True
 
-    # 1. Execute module refresh if needed
-    if report.cached_git_sources:
-        logger.info("Refreshing cached modules...")
-        result = await execute_module_refresh()
+    # 1. Execute selective module update (only modules with updates)
+    modules_needing_update = [s for s in report.cached_git_sources if s.has_update]
+    if modules_needing_update:
+        logger.info(f"Selectively updating {len(modules_needing_update)} module(s)...")
+        result = await execute_selective_module_update(modules_needing_update)
 
         all_updated.extend(result.updated)
         all_failed.extend(result.failed)
