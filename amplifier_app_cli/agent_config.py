@@ -22,7 +22,10 @@ def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
     - Sources inherit (agent doesn't need to repeat parent's source)
     - Scalar values override (child replaces parent)
 
-    This ensures consistent merge behavior throughout the system.
+    Special handling for agents field (sub-agent access control):
+    - Agent's `agents` field is a Smart Single Value ("all", "none", or list of names)
+    - Parent's `agents` field is already resolved to a dict of agent configs
+    - This function filters parent's agents dict based on agent's Smart Single Value
 
     Args:
         parent: Parent session's complete mount plan
@@ -35,7 +38,24 @@ def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
         amplifier_profiles.merger.merge_profile_dicts - The underlying implementation
         amplifier-profiles/docs/AGENT_AUTHORING.md - Merge behavior documentation
     """
-    return merge_profile_dicts(parent, overlay)
+    # Extract agent filter before merge (prevents overwriting parent's agents dict)
+    overlay_copy = overlay.copy()
+    agent_filter = overlay_copy.pop("agents", None)
+
+    # Standard merge (parent's agents dict preserved since we removed it from overlay)
+    result = merge_profile_dicts(parent, overlay_copy)
+
+    # Apply agent filtering (Smart Single Value → filtered dict)
+    # Note: "all" and None both mean "inherit parent's agents unchanged" (already in result)
+    if agent_filter == "none":
+        # Disable all sub-agent delegation
+        result["agents"] = {}
+    elif isinstance(agent_filter, list):
+        # Filter to only specified agent names
+        parent_agents = parent.get("agents", {})
+        result["agents"] = {k: v for k, v in parent_agents.items() if k in agent_filter}
+
+    return result
 
 
 def validate_agent_config(config: dict[str, Any]) -> bool:
