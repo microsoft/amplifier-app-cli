@@ -379,29 +379,116 @@ class CommandProcessor:
         return "No transcript available"
 
     async def _get_status(self) -> str:
-        """Get session status information."""
-        lines = ["Session Status:"]
+        """Get comprehensive session status information."""
+        lines = ["=" * 60]
+        lines.append("SESSION STATUS")
+        lines.append("=" * 60)
 
-        # Plan mode status
+        # Session Identity
+        lines.append("\n[Identity]")
+        lines.append(f"  Session ID: {self.session.coordinator.session_id}")
+        parent_id = getattr(self.session.coordinator, "parent_id", None)
+        if parent_id:
+            lines.append(f"  Parent ID: {parent_id}")
+        
+        # Get profile name from config
+        profile_name = self.session.config.get("profile", {}).get("name", "unknown")
+        lines.append(f"  Profile: {profile_name}")
+
+        # Mode Status
+        lines.append("\n[Mode]")
         lines.append(f"  Plan Mode: {'ON' if self.plan_mode else 'OFF'}")
 
-        # Context size
+        # Orchestrator & Context
+        lines.append("\n[Core Modules]")
+        orchestrator = self.session.coordinator.get("orchestrator")
+        if orchestrator:
+            orchestrator_name = getattr(orchestrator, "__class__", type(orchestrator)).__name__
+            lines.append(f"  Orchestrator: {orchestrator_name}")
+        
         context = self.session.coordinator.get("context")
-        if context and hasattr(context, "get_messages"):
-            messages = await context.get_messages()
-            lines.append(f"  Messages: {len(messages)}")
+        if context:
+            context_name = getattr(context, "__class__", type(context)).__name__
+            lines.append(f"  Context: {context_name}")
+            if hasattr(context, "get_messages"):
+                messages = await context.get_messages()
+                lines.append(f"  Messages: {len(messages)}")
+            
+            # Show context configuration (max_tokens, compact_threshold, etc.)
+            context_config = self.session.config.get("context", {}).get("config", {})
+            if context_config:
+                if "max_tokens" in context_config:
+                    lines.append(f"    Max Tokens: {context_config['max_tokens']}")
+                if "compact_threshold" in context_config:
+                    lines.append(f"    Compact Threshold: {context_config['compact_threshold']}")
+                if "auto_compact" in context_config:
+                    lines.append(f"    Auto Compact: {context_config['auto_compact']}")
 
-        # Active providers
+        # Provider Details
+        lines.append("\n[Providers]")
         providers = self.session.coordinator.get("providers")
         if providers:
-            provider_names = list(providers.keys())
-            lines.append(f"  Providers: {', '.join(provider_names)}")
+            for name, provider in providers.items():
+                lines.append(f"  {name}:")
+                # Try to get model info
+                if hasattr(provider, "model"):
+                    lines.append(f"    Model: {provider.model}")
+                if hasattr(provider, "temperature"):
+                    lines.append(f"    Temperature: {provider.temperature}")
+                if hasattr(provider, "max_tokens"):
+                    lines.append(f"    Max Tokens: {provider.max_tokens}")
+        else:
+            lines.append("  None")
 
-        # Available tools
+        # Tool Details
+        lines.append("\n[Tools]")
         tools = self.session.coordinator.get("tools")
         if tools:
-            lines.append(f"  Tools: {len(tools)}")
+            lines.append(f"  Count: {len(tools)}")
+            tool_names = list(tools.keys())
+            for tool_name in sorted(tool_names):
+                lines.append(f"    - {tool_name}")
+        else:
+            lines.append("  None")
 
+        # Active Hooks
+        lines.append("\n[Hooks]")
+        hooks_registry = self.session.coordinator.get("hooks")
+        if hooks_registry and hasattr(hooks_registry, "_handlers"):
+            registered_events = set()
+            for event_name in hooks_registry._handlers.keys():
+                registered_events.add(event_name)
+            if registered_events:
+                lines.append(f"  Active Events: {len(registered_events)}")
+                # Show a few key events
+                key_events = [e for e in sorted(registered_events) if any(
+                    prefix in e for prefix in ["session:", "provider:", "tool:", "context:"]
+                )][:5]
+                if key_events:
+                    for event in key_events:
+                        lines.append(f"    - {event}")
+                    if len(registered_events) > 5:
+                        lines.append(f"    ... and {len(registered_events) - 5} more")
+            else:
+                lines.append("  No hooks registered")
+        else:
+            lines.append("  No hooks system")
+
+        # Session Metadata
+        lines.append("\n[Session Metadata]")
+        if hasattr(self.session, "_start_time"):
+            from datetime import datetime, timezone
+            start_time = self.session._start_time
+            if isinstance(start_time, str):
+                lines.append(f"  Start Time: {start_time}")
+            else:
+                lines.append(f"  Start Time: {start_time.isoformat()}")
+                duration = datetime.now(timezone.utc) - start_time
+                minutes = int(duration.total_seconds() / 60)
+                seconds = int(duration.total_seconds() % 60)
+                lines.append(f"  Duration: {minutes}m {seconds}s")
+
+        lines.append("\n" + "=" * 60)
         return "\n".join(lines)
 
     async def _clear_context(self):
