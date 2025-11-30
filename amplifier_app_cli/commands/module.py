@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import Any
 from typing import Literal
 from typing import cast
@@ -454,6 +456,137 @@ def module_update(module_id: str | None, check_only: bool, mutable_only: bool):
         if skipped > 0:
             console.print(f"[dim]Skipped {skipped} immutable refs (tags/SHAs)[/dim]")
         console.print("Modules will re-download on next use")
+
+
+@module.command("validate")
+@click.argument("module_path", type=click.Path(exists=True))
+@click.option(
+    "--type",
+    "-t",
+    "module_type",
+    type=click.Choice(["provider", "tool", "hook", "orchestrator", "context"]),
+    help="Module type (auto-detected from name if not specified)",
+)
+@click.option(
+    "--output",
+    "-o",
+    "output_format",
+    type=click.Choice(["human", "json"]),
+    default="human",
+    help="Output format",
+)
+def module_validate(module_path: str, module_type: str | None, output_format: str):
+    """Validate a module against its contract.
+
+    MODULE_PATH should be a path to a module directory.
+    Module type is auto-detected from directory name (e.g., provider-*, tool-*, hooks-*).
+    """
+    asyncio.run(_module_validate_async(module_path, module_type, output_format))
+
+
+async def _module_validate_async(module_path: str, module_type: str | None, output_format: str):
+    """Async implementation of module validate."""
+    from amplifier_core.validation import ContextValidator
+    from amplifier_core.validation import HookValidator
+    from amplifier_core.validation import OrchestratorValidator
+    from amplifier_core.validation import ProviderValidator
+    from amplifier_core.validation import ToolValidator
+
+    path = Path(module_path).resolve()
+
+    # Auto-detect module type from directory name if not specified
+    if module_type is None:
+        module_type = _infer_module_type_for_validation(path.name)
+        if module_type is None:
+            console.print("[red]Could not auto-detect module type from directory name.[/red]")
+            console.print("Use --type flag to specify: provider, tool, hook, orchestrator, or context")
+            raise SystemExit(1)
+
+    # Select validator
+    validators = {
+        "provider": ProviderValidator,
+        "tool": ToolValidator,
+        "hook": HookValidator,
+        "orchestrator": OrchestratorValidator,
+        "context": ContextValidator,
+    }
+    validator = validators[module_type]()
+
+    # Run validation
+    result = await validator.validate(path)
+
+    # Output
+    if output_format == "json":
+        print(
+            json.dumps(
+                {
+                    "module_type": result.module_type,
+                    "module_path": result.module_path,
+                    "passed": result.passed,
+                    "checks": [
+                        {
+                            "name": c.name,
+                            "passed": c.passed,
+                            "message": c.message,
+                            "severity": c.severity,
+                        }
+                        for c in result.checks
+                    ],
+                },
+                indent=2,
+            )
+        )
+    else:
+        _display_validation_result(result)
+
+    # Exit with error code if validation failed
+    if not result.passed:
+        raise SystemExit(1)
+
+
+def _infer_module_type_for_validation(name: str) -> str | None:
+    """Infer module type from directory/module name for validation."""
+    prefixes = {
+        "provider-": "provider",
+        "tool-": "tool",
+        "hooks-": "hook",
+        "loop-": "orchestrator",
+        "context-": "context",
+    }
+    for prefix, mod_type in prefixes.items():
+        if prefix in name:
+            return mod_type
+    return None
+
+
+def _display_validation_result(result):
+    """Display validation result with Rich formatting."""
+    # Summary header
+    status_color = "green" if result.passed else "red"
+    console.print(
+        Panel(
+            f"[{status_color}]{result.summary()}[/{status_color}]",
+            title=f"Validation: {result.module_type}",
+            subtitle=result.module_path,
+        )
+    )
+
+    # Detailed checks table
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Check")
+    table.add_column("Status")
+    table.add_column("Message")
+
+    for check in result.checks:
+        if check.passed:
+            status = "[green]PASS[/green]"
+        elif check.severity == "warning":
+            status = "[yellow]WARN[/yellow]"
+        else:
+            status = "[red]FAIL[/red]"
+        table.add_row(check.name, status, check.message)
+
+    console.print(table)
 
 
 __all__ = ["module"]
