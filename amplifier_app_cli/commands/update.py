@@ -631,12 +631,15 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
 
     # Confirm unless --yes flag
     if not yes:
-        # Show what will be updated
-        if report.cached_git_sources:
-            count = len(report.cached_git_sources)
+        # Show what will be updated (only count items with actual updates)
+        modules_with_updates = [s for s in report.cached_git_sources if s.has_update]
+        collections_with_updates = [s for s in report.collection_sources if s.has_update]
+
+        if modules_with_updates:
+            count = len(modules_with_updates)
             console.print(f"  • Update {count} cached module{'s' if count != 1 else ''}")
-        if report.collection_sources:
-            count = len(report.collection_sources)
+        if collections_with_updates:
+            count = len(collections_with_updates)
             console.print(f"  • Update {count} collection{'s' if count != 1 else ''}")
         if has_umbrella_updates:
             console.print("  • Update Amplifier to latest version (dependencies have updates)")
