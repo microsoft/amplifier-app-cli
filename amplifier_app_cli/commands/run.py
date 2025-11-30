@@ -55,7 +55,7 @@ async def _check_updates_background():
                 console.print(f"   ... and {len(report.cached_git_sources) - 3} more")
 
             console.print()
-            console.print("   Run [cyan]amplifier module refresh[/cyan] to update")
+            console.print("   Run [cyan]amplifier module update[/cyan] to update")
             console.print()
 
         # Show local source info (remote ahead)

@@ -634,10 +634,10 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         # Show what will be updated
         if report.cached_git_sources:
             count = len(report.cached_git_sources)
-            console.print(f"  • Refresh {count} cached module{'s' if count != 1 else ''}")
+            console.print(f"  • Update {count} cached module{'s' if count != 1 else ''}")
         if report.collection_sources:
             count = len(report.collection_sources)
-            console.print(f"  • Refresh {count} collection{'s' if count != 1 else ''}")
+            console.print(f"  • Update {count} collection{'s' if count != 1 else ''}")
         if has_umbrella_updates:
             console.print("  • Update Amplifier to latest version (dependencies have updates)")
 

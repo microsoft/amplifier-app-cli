@@ -98,14 +98,14 @@ async def execute_selective_module_update(
     )
 
 
-async def execute_collection_refresh() -> ExecutionResult:
-    """Delegate to 'amplifier collection refresh'.
+async def execute_collection_update() -> ExecutionResult:
+    """Delegate to 'amplifier collection update'.
 
-    Philosophy: Orchestrate, don't reimplement. Collection refresh already works.
+    Philosophy: Orchestrate, don't reimplement. Collection update already works.
     """
     try:
         result = subprocess.run(
-            ["amplifier", "collection", "refresh"],
+            ["amplifier", "collection", "update"],
             capture_output=True,
             text=True,
             timeout=120,  # Collections can be large, use longer timeout
@@ -115,14 +115,14 @@ async def execute_collection_refresh() -> ExecutionResult:
             return ExecutionResult(
                 success=True,
                 updated=["collections"],
-                messages=["Collections refreshed successfully"],
+                messages=["Collections updated successfully"],
             )
         error_msg = result.stderr.strip() or "Unknown error"
         return ExecutionResult(
             success=False,
             failed=["collections"],
             errors={"collections": error_msg},
-            messages=[f"Collection refresh failed: {error_msg}"],
+            messages=[f"Collection update failed: {error_msg}"],
         )
 
     except subprocess.TimeoutExpired:
@@ -130,14 +130,14 @@ async def execute_collection_refresh() -> ExecutionResult:
             success=False,
             failed=["collections"],
             errors={"collections": "Timeout after 120 seconds"},
-            messages=["Collection refresh timed out"],
+            messages=["Collection update timed out"],
         )
     except Exception as e:
         return ExecutionResult(
             success=False,
             failed=["collections"],
             errors={"collections": str(e)},
-            messages=[f"Collection refresh error: {e}"],
+            messages=[f"Collection update error: {e}"],
         )
 
 
@@ -357,10 +357,10 @@ async def execute_updates(report: UpdateReport, umbrella_info: UmbrellaInfo | No
         if not result.success:
             overall_success = False
 
-    # 2. Execute collection refresh if needed
+    # 2. Execute collection update if needed
     if report.collection_sources:
-        logger.info("Refreshing collections...")
-        result = await execute_collection_refresh()
+        logger.info("Updating collections...")
+        result = await execute_collection_update()
 
         all_updated.extend(result.updated)
         all_failed.extend(result.failed)
