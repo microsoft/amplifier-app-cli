@@ -475,16 +475,23 @@ def module_update(module_id: str | None, check_only: bool, mutable_only: bool):
     default="human",
     help="Output format",
 )
-def module_validate(module_path: str, module_type: str | None, output_format: str):
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show additional details and actionable tips for failed checks",
+)
+def module_validate(module_path: str, module_type: str | None, output_format: str, verbose: bool):
     """Validate a module against its contract.
 
     MODULE_PATH should be a path to a module directory.
     Module type is auto-detected from directory name (e.g., provider-*, tool-*, hooks-*).
     """
-    asyncio.run(_module_validate_async(module_path, module_type, output_format))
+    asyncio.run(_module_validate_async(module_path, module_type, output_format, verbose))
 
 
-async def _module_validate_async(module_path: str, module_type: str | None, output_format: str):
+async def _module_validate_async(module_path: str, module_type: str | None, output_format: str, verbose: bool):
     """Async implementation of module validate."""
     from amplifier_core.validation import ContextValidator
     from amplifier_core.validation import HookValidator
@@ -537,7 +544,7 @@ async def _module_validate_async(module_path: str, module_type: str | None, outp
             )
         )
     else:
-        _display_validation_result(result)
+        _display_validation_result(result, verbose=verbose)
 
     # Exit with error code if validation failed
     if not result.passed:
@@ -559,8 +566,13 @@ def _infer_module_type_for_validation(name: str) -> str | None:
     return None
 
 
-def _display_validation_result(result):
-    """Display validation result with Rich formatting."""
+def _display_validation_result(result, verbose: bool = False):
+    """Display validation result with Rich formatting.
+
+    Args:
+        result: ValidationResult from the validator
+        verbose: If True, show actionable tips for failed checks
+    """
     # Summary header
     status_color = "green" if result.passed else "red"
     console.print(
@@ -587,6 +599,55 @@ def _display_validation_result(result):
         table.add_row(check.name, status, check.message)
 
     console.print(table)
+
+    # Verbose mode: show actionable tips for failed checks
+    if verbose and not result.passed:
+        console.print()
+        console.print("[dim]─── Actionable Tips ───[/dim]")
+        for check in result.checks:
+            if not check.passed:
+                tip = _get_actionable_tip_for_check(check.name, result.module_type)
+                if tip:
+                    console.print(f"[dim]• {check.name}:[/dim] {tip}")
+
+
+def _get_actionable_tip_for_check(check_name: str, module_type: str) -> str | None:
+    """Generate an actionable tip based on the failed check name and module type."""
+    check_lower = check_name.lower()
+
+    # Common tips based on check patterns
+    if "mount" in check_lower:
+        return "Ensure your module exports an async mount(coordinator, config) function in __init__.py"
+
+    if "package" in check_lower or "structure" in check_lower:
+        return "Check that the module has a valid pyproject.toml and __init__.py"
+
+    if "export" in check_lower:
+        return "Verify that required exports are present in the module's __init__.py"
+
+    if "signature" in check_lower:
+        return f"Check that function signatures match the {module_type} contract"
+
+    if "protocol" in check_lower or "compliance" in check_lower:
+        return f"Ensure your module implements all required methods from the {module_type} protocol"
+
+    if "entry" in check_lower or "entrypoint" in check_lower:
+        return "Verify that pyproject.toml defines the correct entry point under [project.entry-points]"
+
+    if "import" in check_lower:
+        return "Check that the module has a valid __init__.py file in the package directory"
+
+    # Module type specific tips
+    if module_type == "provider" and "model" in check_lower:
+        return "Provider must implement get_info() and list_models() methods"
+
+    if module_type == "tool" and "execute" in check_lower:
+        return "Tool must implement async execute(input) -> ToolResult method"
+
+    if module_type == "hook" and "call" in check_lower:
+        return "Hook must implement __call__(event, data) -> HookResult method"
+
+    return None
 
 
 __all__ = ["module"]
