@@ -150,3 +150,60 @@ def show_modules_report(
     else:
         console.print("[dim]No modules to check[/dim]")
         console.print("[dim]Modules will be cached when first used[/dim]")
+
+
+def create_collections_table(collection_sources: list, title: str = "Collections") -> Table | None:
+    """Create a table for installed collections.
+
+    Args:
+        collection_sources: List of CollectionStatus objects from source_status
+        title: Table title
+
+    Returns:
+        Table if there are collections, None otherwise
+    """
+    if not collection_sources:
+        return None
+
+    table = Table(title=title, show_header=True, header_style="bold cyan")
+    table.add_column("Name", style="green")
+    table.add_column("Installed", style="dim", justify="right")
+    table.add_column("Remote", style="dim", justify="right")
+    table.add_column("", width=1, justify="center")
+
+    for status in sorted(collection_sources, key=lambda x: x.name):
+        status_symbol = create_status_symbol(status.installed_sha, status.remote_sha)
+
+        table.add_row(
+            status.name,
+            create_sha_text(status.installed_sha),
+            create_sha_text(status.remote_sha),
+            status_symbol,
+        )
+
+    return table
+
+
+def show_collections_report(collection_sources: list, check_only: bool = True) -> None:
+    """Display collection status in table format with legend.
+
+    Args:
+        collection_sources: List of CollectionStatus from source_status
+        check_only: If True, show "run amplifier collection update" hint
+    """
+    table = create_collections_table(collection_sources)
+    if table:
+        console.print()
+        console.print(table)
+        console.print()
+        print_legend()
+
+        # Count updates
+        updates_available = sum(1 for s in collection_sources if s.has_update)
+        if check_only and updates_available > 0:
+            console.print()
+            console.print(f"[yellow]{updates_available} update(s) available[/yellow]")
+            console.print("Run [cyan]amplifier collection update[/cyan] to install")
+    else:
+        console.print("[dim]No collections installed[/dim]")
+        console.print("[dim]Install collections with 'amplifier collection add <source>'[/dim]")

@@ -452,37 +452,79 @@ def remove(name: str, local: bool):
 
 @collection.command()
 @click.argument("collection_name", required=False)
-@click.option("--mutable-only", is_flag=True, help="Only refresh mutable refs (branches, not tags/SHAs)")
-def refresh(collection_name: str | None, mutable_only: bool):
-    """Refresh installed collections.
+@click.option("--check-only", is_flag=True, help="Check for updates without installing")
+@click.option("--mutable-only", is_flag=True, help="Only update mutable refs (branches, not tags/SHAs)")
+def update(collection_name: str | None, check_only: bool, mutable_only: bool):
+    """Update installed collections.
 
-    Re-pulls collections from git to get latest commits.
+    Check for and optionally install updates to collections from their git sources.
     Useful for collections pinned to branches (e.g., @main).
 
     Examples:
 
         \b
-        # Refresh all collections
-        amplifier collection refresh
+        # Check for collection updates
+        amplifier collection update --check-only
 
         \b
-        # Refresh specific collection
-        amplifier collection refresh foundation
+        # Update all collections
+        amplifier collection update
 
         \b
-        # Only refresh branches (not tags/SHAs)
-        amplifier collection refresh --mutable-only
+        # Update specific collection
+        amplifier collection update foundation
+
+        \b
+        # Only update branches (not tags/SHAs)
+        amplifier collection update --mutable-only
     """
+    from ..utils.display import show_collections_report
+    from ..utils.source_status import check_all_sources
+
     # Load collection lock
     lock = CollectionLock(get_collection_lock_path(local=False))
     entries = lock.list_entries()
 
     if not entries:
-        click.echo("No collections installed.")
+        console.print("[dim]No collections installed[/dim]")
+        console.print("[dim]Install collections with 'amplifier collection add <source>'[/dim]")
         return
 
-    # Filter entries based on criteria
-    to_refresh = []
+    # Check-only mode: use source_status to get collection status and display
+    if check_only:
+        console.print("Checking collections for updates...")
+        report = asyncio.run(check_all_sources(include_all_cached=False, force=False))
+
+        # Filter collection_sources if specific collection requested
+        collection_sources = report.collection_sources
+        if collection_name:
+            collection_sources = [s for s in collection_sources if s.name == collection_name]
+            if not collection_sources:
+                console.print(f"[yellow]Collection '{collection_name}' not found or not installed[/yellow]")
+                return
+
+        # Filter by mutability if requested
+        if mutable_only:
+            filtered_sources = []
+            for status in collection_sources:
+                # Find matching entry to check ref
+                entry = next((e for e in entries if e.name == status.name), None)
+                if entry and entry.source.startswith("git+"):
+                    try:
+                        source = GitSource.from_uri(entry.source)
+                        # Skip immutable: tags starting with 'v', or 40-char SHAs
+                        if source.ref.startswith("v") or len(source.ref) == 40:
+                            continue
+                    except Exception:
+                        continue
+                filtered_sources.append(status)
+            collection_sources = filtered_sources
+
+        show_collections_report(collection_sources, check_only=True)
+        return
+
+    # Update mode: filter entries based on criteria
+    to_update = []
     for entry in entries:
         # Filter by collection name if specified
         if collection_name and entry.name != collection_name:
@@ -502,22 +544,22 @@ def refresh(collection_name: str | None, mutable_only: bool):
             except Exception:
                 continue
 
-        to_refresh.append(entry)
+        to_update.append(entry)
 
-    if not to_refresh:
+    if not to_update:
         if collection_name:
-            click.echo(f"Collection '{collection_name}' not found or not refreshable.")
+            console.print(f"[yellow]Collection '{collection_name}' not found or not updatable[/yellow]")
         else:
-            click.echo("No refreshable collections found.")
+            console.print("[dim]No updatable collections found[/dim]")
         return
 
-    # Refresh each collection
-    refreshed = 0
+    # Update each collection
+    updated = 0
     failed = 0
 
-    for entry in to_refresh:
+    for entry in to_update:
         try:
-            click.echo(f"Refreshing {entry.name}...")
+            console.print(f"Updating {entry.name}...")
 
             # Parse source
             source = GitSource.from_uri(entry.source)
@@ -530,16 +572,16 @@ def refresh(collection_name: str | None, mutable_only: bool):
             # Re-install using existing install_collection function
             metadata = asyncio.run(install_collection(source=source, target_dir=target_dir, lock=lock))
 
-            click.echo(f"✓ Refreshed {entry.name} to {metadata.version}")
-            refreshed += 1
+            console.print(f"[green]✓[/green] Updated {entry.name} to {metadata.version}")
+            updated += 1
 
         except Exception as e:
-            click.echo(f"✗ Failed to refresh {entry.name}: {e}", err=True)
-            logger.exception(f"Collection refresh failed for {entry.name}")
+            console.print(f"[red]✗[/red] Failed to update {entry.name}: {e}")
+            logger.exception(f"Collection update failed for {entry.name}")
             failed += 1
 
     # Summary
-    if refreshed > 0:
-        click.echo(f"\n✓ Refreshed {refreshed} collection(s)")
+    if updated > 0:
+        console.print(f"\n[green]✓ Updated {updated} collection(s)[/green]")
     if failed > 0:
-        click.echo(f"✗ Failed to refresh {failed} collection(s)", err=True)
+        console.print(f"[red]✗ Failed to update {failed} collection(s)[/red]")
