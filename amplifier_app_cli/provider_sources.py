@@ -65,7 +65,7 @@ def get_effective_provider_sources(config_manager: "ConfigManager | None" = None
     return sources
 
 
-def _is_local_path(source_uri: str) -> bool:
+def is_local_path(source_uri: str) -> bool:
     """Check if source URI is a local file path.
 
     Args:
@@ -121,7 +121,7 @@ def install_known_providers(
                 console.print(f"  Installing {module_id}...", end="")
 
             # Check if local file path or git URL
-            if _is_local_path(source_uri):
+            if is_local_path(source_uri):
                 # Local file source - just validate it exists
                 file_source = FileSource(source_uri)
                 file_source.resolve()
@@ -149,4 +149,4 @@ def install_known_providers(
     return installed
 
 
-__all__ = ["DEFAULT_PROVIDER_SOURCES", "get_effective_provider_sources", "install_known_providers"]
+__all__ = ["DEFAULT_PROVIDER_SOURCES", "get_effective_provider_sources", "install_known_providers", "is_local_path"]
