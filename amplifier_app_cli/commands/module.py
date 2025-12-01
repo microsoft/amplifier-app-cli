@@ -482,16 +482,27 @@ def module_update(module_id: str | None, check_only: bool, mutable_only: bool):
     default=False,
     help="Show additional details and actionable tips for failed checks",
 )
-def module_validate(module_path: str, module_type: str | None, output_format: str, verbose: bool):
+@click.option(
+    "--behavioral",
+    "-b",
+    is_flag=True,
+    default=False,
+    help="Run behavioral tests in addition to structural validation",
+)
+def module_validate(module_path: str, module_type: str | None, output_format: str, verbose: bool, behavioral: bool):
     """Validate a module against its contract.
 
     MODULE_PATH should be a path to a module directory.
     Module type is auto-detected from directory name (e.g., provider-*, tool-*, hooks-*).
+
+    Use --behavioral to run pytest-based behavioral tests after structural validation.
     """
-    asyncio.run(_module_validate_async(module_path, module_type, output_format, verbose))
+    asyncio.run(_module_validate_async(module_path, module_type, output_format, verbose, behavioral))
 
 
-async def _module_validate_async(module_path: str, module_type: str | None, output_format: str, verbose: bool):
+async def _module_validate_async(
+    module_path: str, module_type: str | None, output_format: str, verbose: bool, behavioral: bool
+):
     """Async implementation of module validate."""
     from amplifier_core.validation import ContextValidator
     from amplifier_core.validation import HookValidator
@@ -546,9 +557,70 @@ async def _module_validate_async(module_path: str, module_type: str | None, outp
     else:
         _display_validation_result(result, verbose=verbose)
 
-    # Exit with error code if validation failed
+    # Exit with error code if structural validation failed
     if not result.passed:
         raise SystemExit(1)
+
+    # Run behavioral tests if requested
+    if behavioral:
+        behavioral_result = _run_behavioral_tests(str(path), module_type)
+        if not behavioral_result:
+            raise SystemExit(1)
+
+
+def _run_behavioral_tests(module_path: str, module_type: str) -> bool:
+    """Run pytest behavioral tests for a module.
+
+    Args:
+        module_path: Path to module directory
+        module_type: Type of module (provider, tool, hook, orchestrator, context)
+
+    Returns:
+        True if tests passed, False otherwise
+    """
+    import subprocess
+
+    console.print()
+    console.print("[bold]Running behavioral tests...[/bold]")
+
+    # Find the behavioral test file - look in amplifier-core package
+    try:
+        import amplifier_core
+
+        core_path = Path(amplifier_core.__file__).parent
+        test_file = core_path / "validation" / "behavioral" / f"test_{module_type}.py"
+
+        if not test_file.exists():
+            console.print(f"[yellow]No behavioral tests found for {module_type} modules[/yellow]")
+            return True  # Not a failure - tests just don't exist yet
+
+    except ImportError:
+        console.print("[red]amplifier-core not installed - cannot run behavioral tests[/red]")
+        return False
+
+    # Run pytest with the module path
+    cmd = [
+        "pytest",
+        str(test_file),
+        f"--module-path={module_path}",
+        "-v",
+        "--tb=short",
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode == 0:
+        console.print("[green]✓ Behavioral tests passed[/green]")
+        if result.stdout:
+            console.print(result.stdout)
+        return True
+
+    console.print("[red]✗ Behavioral tests failed[/red]")
+    if result.stdout:
+        console.print(result.stdout)
+    if result.stderr:
+        console.print(f"[red]{result.stderr}[/red]")
+    return False
 
 
 def _infer_module_type_for_validation(name: str) -> str | None:
