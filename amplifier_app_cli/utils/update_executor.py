@@ -338,7 +338,7 @@ async def execute_self_update(umbrella_info: UmbrellaInfo) -> ExecutionResult:
             return ExecutionResult(
                 success=True,
                 updated=["amplifier"],
-                messages=["Amplifier updated successfully", "Restart amplifier to use new version"],
+                messages=["Amplifier updated successfully"],
             )
         error_msg = result.stderr.strip() or "Unknown error"
         return ExecutionResult(
