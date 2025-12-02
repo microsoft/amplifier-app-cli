@@ -15,7 +15,7 @@ SETTINGS_FILE = Path.home() / ".amplifier" / "settings.yaml"
 
 DEFAULT_SETTINGS = {
     "updates": {
-        "check_frequency_hours": 24,
+        "check_frequency_hours": 4,
         "auto_prompt": True,
         "last_check": None,
     }

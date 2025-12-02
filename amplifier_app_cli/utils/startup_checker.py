@@ -8,6 +8,7 @@ from datetime import datetime
 
 from rich.console import Console
 
+from .settings_manager import DEFAULT_SETTINGS
 from .settings_manager import get_update_settings
 from .settings_manager import save_update_last_check
 from .source_status import check_all_sources
@@ -37,7 +38,7 @@ def should_check_on_startup() -> bool:
         last_check_dt = datetime.fromisoformat(last_check)
         hours_since = (datetime.now() - last_check_dt).total_seconds() / 3600
 
-        frequency_hours = settings.get("check_frequency_hours", 24)
+        frequency_hours = settings.get("check_frequency_hours", DEFAULT_SETTINGS["updates"]["check_frequency_hours"])
         return hours_since >= frequency_hours
     except (ValueError, TypeError):
         # Invalid timestamp - treat as never checked
@@ -45,19 +46,24 @@ def should_check_on_startup() -> bool:
 
 
 async def check_and_notify():
-    """Quick check and subtle notification if updates available.
+    """Check for updates and notify user if available.
 
-    Philosophy: Non-blocking, graceful failure, informative but not intrusive.
+    Philosophy: Non-blocking, graceful failure, visible when updates exist.
     """
     if not should_check_on_startup():
         return
 
     try:
-        # Run quick check (don't scan ALL cached for speed)
-        report = await check_all_sources(include_all_cached=False)
+        # Check all sources including cached modules (show progress indicator)
+        with console.status("[dim]Checking for updates...[/dim]", spinner="dots"):
+            report = await check_all_sources(include_all_cached=True)
 
         if report.has_updates:
-            console.print("[dim]ℹ Updates available. Run 'amplifier update' to install.[/dim]")
+            console.print()
+            console.print(
+                "[bold yellow]⚡ Updates available![/bold yellow] Run [cyan]amplifier update[/cyan] to install."
+            )
+            console.print()
 
         # Save check time even if no updates (respect frequency)
         save_update_last_check(datetime.now())

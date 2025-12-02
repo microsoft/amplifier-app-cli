@@ -604,13 +604,8 @@ def cli(ctx, install_completion):
         _show_manual_instructions(shell, config_file)
         ctx.exit(1)
 
-    # Check for updates on startup (if frequency allows)
-    # Non-blocking, graceful failure, subtle notification
-    from .utils.startup_checker import check_and_notify
-
-    asyncio.run(check_and_notify())
-
     # If no command specified, launch chat mode with current profile
+    # Note: Update check happens inside run command (not here, to avoid slowing other commands)
     if ctx.invoked_subcommand is None:
         if _run_command is None:
             raise RuntimeError("Run command not registered")

@@ -27,62 +27,6 @@ ExecuteSingleWithSession = Callable[[str, dict, list, bool, str, list[dict], str
 SearchPathProvider = Callable[[], list]
 
 
-async def _check_updates_background():
-    """Check for updates in background (non-blocking).
-
-    Runs automatically on startup. Shows notifications if updates available.
-    Failures are silent (logged only, don't disrupt user).
-    """
-    from ..utils.update_check import check_updates_background
-
-    try:
-        # Check all sources (unified)
-        report = await check_updates_background()
-
-        if not report:
-            return  # Skipped (cached)
-
-        # Show cached git updates
-        if report.cached_git_sources:
-            console.print()
-            console.print("[yellow]⚠ Updates available:[/yellow]")
-
-            for status in report.cached_git_sources[:3]:  # Show max 3
-                console.print(f"   • {status.name}@{status.ref}")
-                console.print(f"     {status.cached_sha} → {status.remote_sha} ({status.age_days}d old)")
-
-            if len(report.cached_git_sources) > 3:
-                console.print(f"   ... and {len(report.cached_git_sources) - 3} more")
-
-            console.print()
-            console.print("   Run [cyan]amplifier module update[/cyan] to update")
-            console.print()
-
-        # Show local source info (remote ahead)
-        local_with_remote_ahead = [
-            s for s in report.local_file_sources if s.has_remote and s.remote_sha and s.remote_sha != s.local_sha
-        ]
-
-        if local_with_remote_ahead:
-            console.print()
-            console.print("[cyan]ℹ Local sources behind remote:[/cyan]")
-
-            for status in local_with_remote_ahead[:3]:
-                console.print(f"   • {status.name}: {status.local_sha} → {status.remote_sha}")
-                if status.commits_behind > 0:
-                    console.print(f"     {status.commits_behind} commits behind")
-
-            console.print()
-            console.print("   [dim]Use git pull in local directories to update[/dim]")
-            console.print()
-
-    except Exception as e:
-        # Silent failure - don't disrupt user
-        import logging
-
-        logging.getLogger(__name__).debug(f"Background update check failed: {e}")
-
-
 def register_run_command(
     cli: click.Group,
     *,
@@ -256,8 +200,10 @@ def register_run_command(
 
                 config_data["providers"] = updated_providers
 
-        # Run background update check
-        asyncio.run(_check_updates_background())
+        # Run update check (uses unified startup_checker with settings.yaml)
+        from ..utils.startup_checker import check_and_notify
+
+        asyncio.run(check_and_notify())
 
         if mode == "chat":
             # Interactive mode
