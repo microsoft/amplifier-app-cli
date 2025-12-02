@@ -643,7 +643,9 @@ async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> N
     # Load @mentioned files (resolve relative to current working directory)
     from pathlib import Path
 
-    loader = MentionLoader()
+    # Use the same mention_resolver registered for tools (ensures consistency)
+    mention_resolver = session.coordinator.get_capability("mention_resolver")
+    loader = MentionLoader(resolver=mention_resolver)
     deduplicator = session.coordinator.get_capability("mention_deduplicator")
     context_messages = loader.load_mentions(prompt, relative_to=Path.cwd(), deduplicator=deduplicator)
 
@@ -703,7 +705,9 @@ async def _process_profile_mentions(session: AmplifierSession, profile_name: str
         logger.info("Profile contains @mentions, loading context files...")
 
         # Load @mentioned files with session-wide deduplicator
-        loader = MentionLoader()
+        # Use the same mention_resolver registered for tools (ensures consistency)
+        mention_resolver = session.coordinator.get_capability("mention_resolver")
+        loader = MentionLoader(resolver=mention_resolver)
         deduplicator = session.coordinator.get_capability("mention_deduplicator")
         context_messages = loader.load_mentions(
             markdown_body, relative_to=profile_file.parent, deduplicator=deduplicator

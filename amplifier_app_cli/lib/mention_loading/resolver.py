@@ -51,12 +51,10 @@ class MentionResolver:
         self.user_context_dir = user_context_dir
         self.relative_to = relative_to
 
-        # NEW: Collection resolver (APP LAYER POLICY)
-        from amplifier_collections import CollectionResolver
+        # Collection resolver with source override support (APP LAYER POLICY)
+        from ...paths import create_collection_resolver
 
-        from ...paths import get_collection_search_paths
-
-        self.collection_resolver = CollectionResolver(search_paths=get_collection_search_paths())
+        self.collection_resolver = create_collection_resolver()
 
     def _get_bundled_data_dir(self) -> Path:
         """Get path to bundled data directory."""

@@ -153,12 +153,29 @@ def create_config_manager() -> ConfigManager:
 
 
 def create_collection_resolver() -> CollectionResolver:
-    """Create CLI-configured collection resolver.
+    """Create CLI-configured collection resolver with source provider.
 
     Returns:
-        CollectionResolver with CLI search paths injected
+        CollectionResolver with CLI search paths and source provider injected
     """
-    return CollectionResolver(search_paths=get_collection_search_paths())
+    config = create_config_manager()
+
+    # CLI implements CollectionSourceProvider protocol
+    class CLICollectionSourceProvider:
+        """CLI implementation of CollectionSourceProvider.
+
+        Provides collection source overrides from CLI settings (3-scope system).
+        """
+
+        def get_collection_source(self, collection_name: str) -> str | None:
+            """Get collection source override from CLI settings."""
+            return config.get_collection_sources().get(collection_name)
+
+    # pyright: ignore[reportCallIssue] - source_provider param exists, pyright can't resolve from editable install
+    return CollectionResolver(
+        search_paths=get_collection_search_paths(),
+        source_provider=CLICollectionSourceProvider(),  # type: ignore[call-arg]
+    )
 
 
 def create_profile_loader(
