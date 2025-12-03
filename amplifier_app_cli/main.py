@@ -38,6 +38,8 @@ from .commands.session import register_session_commands
 from .commands.source import source as source_group
 from .commands.tool import tool as tool_group
 from .commands.update import update as update_cmd
+from .commands.version import version as version_cmd
+from .utils.version import get_version
 from .console import Markdown
 from .console import console
 from .effective_config import get_effective_config_summary
@@ -542,7 +544,7 @@ def get_module_search_paths() -> list[Path]:
 
 
 @click.group(invoke_without_command=True)
-@click.version_option()
+@click.version_option(version=get_version(), prog_name="amplifier")
 @click.option(
     "--install-completion",
     is_flag=False,
@@ -1418,6 +1420,7 @@ cli.add_command(provider_group)
 cli.add_command(source_group)
 cli.add_command(tool_group)
 cli.add_command(update_cmd)
+cli.add_command(version_cmd)
 
 
 async def interactive_chat_with_session(
