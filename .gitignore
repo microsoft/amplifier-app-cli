@@ -19,6 +19,7 @@ appsettings.*.json
 
 # Dependencies, build, test, and other generated files
 node_modules
+.venv/
 .venv
 venv
 env
@@ -61,13 +62,16 @@ next-steps.md
 *.sqlite
 *.sqlite3
 
+#PyTest cache
+.pytest_cache/
+
 ##############################
 # Amplifier specific ignores #
 ##############################
 
 # Amplifier local state and transcripts
-.amplifier/local
-.amplifier/transcripts
+.amplifier/
+.amplifier
 
 # Working folders
 ai_working/tmp
