@@ -15,12 +15,12 @@ from pathlib import Path
 AVAILABLE_STYLES = ["classic", "cyber", "underground", "matrix", "retro", "amber"]
 
 
-def load_banner(style: str = "classic", version: str = "0.1.0") -> None:
+def load_banner(style: str = "classic", version: str | None = None) -> None:
     """Load and display a BBS-style ANSI art banner.
 
     Args:
         style: Banner style (classic, cyber, underground, matrix, retro)
-        version: Version string (substituted in banner if supported)
+        version: Version string (auto-detected if not provided)
 
     Philosophy:
         - Use ansiterm for rendering (proper BBS art library)
@@ -31,6 +31,10 @@ def load_banner(style: str = "classic", version: str = "0.1.0") -> None:
         The version parameter is preserved for API compatibility but .ANS files
         have the version baked in at generation time.
     """
+    # Auto-detect version if not provided
+    if version is None:
+        from ..utils.version import get_version
+        version = get_version()
     # Validate style
     if style not in AVAILABLE_STYLES:
         style = "classic"
