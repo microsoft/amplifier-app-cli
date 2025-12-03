@@ -46,6 +46,18 @@ NOTIFICATION = "Notification"
 # Stop events
 STOP = "Stop"
 
+# Error events
+ERROR = "Error"
+
+# Checkpoint events  
+CHECKPOINT = "Checkpoint"
+
+# Model switch events
+MODEL_SWITCH = "ModelSwitch"
+
+# Memory update events
+MEMORY_UPDATE = "MemoryUpdate"
+
 
 @dataclass
 class ToolUseEvent:
@@ -149,6 +161,158 @@ class SessionEvent:
         }
 
 
+@dataclass
+class ErrorEvent:
+    """Event data for error events.
+    
+    Fired when exceptions or errors occur during operations.
+    Allows hooks to log, notify, or take action based on errors.
+    
+    Attributes:
+        error_type: Exception type name (e.g., "ValueError")
+        error_message: Error message text
+        tool: Tool that caused error (if applicable)
+        session_id: Current session ID
+        stack_trace: Full stack trace (optional)
+        severity: Error severity level
+        timestamp: When the error occurred
+    """
+    
+    error_type: str
+    error_message: str
+    tool: str | None = None
+    session_id: str | None = None
+    stack_trace: str | None = None
+    severity: Literal["warning", "error", "critical"] = "error"
+    timestamp: datetime = field(default_factory=datetime.now)
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "error_type": self.error_type,
+            "error_message": self.error_message,
+            "tool": self.tool,
+            "session_id": self.session_id,
+            "stack_trace": self.stack_trace,
+            "severity": self.severity,
+            "timestamp": self.timestamp.isoformat(),
+        }
+
+
+@dataclass
+class CheckpointEvent:
+    """Event data for checkpoint events.
+    
+    Fired when session state is checkpointed.
+    Allows hooks to backup, sync, or validate checkpoints.
+    
+    Attributes:
+        checkpoint_id: Unique checkpoint identifier
+        session_id: Session being checkpointed
+        checkpoint_type: Why checkpoint was created
+        message_count: Number of messages since last checkpoint
+        duration_since_last_ms: Time since last checkpoint
+        storage_path: Path where checkpoint is stored
+        timestamp: When checkpoint was created
+    """
+    
+    checkpoint_id: str
+    session_id: str
+    checkpoint_type: Literal["auto", "manual", "periodic"] = "auto"
+    message_count: int = 0
+    duration_since_last_ms: float | None = None
+    storage_path: str | None = None
+    timestamp: datetime = field(default_factory=datetime.now)
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "checkpoint_id": self.checkpoint_id,
+            "session_id": self.session_id,
+            "checkpoint_type": self.checkpoint_type,
+            "message_count": self.message_count,
+            "duration_since_last_ms": self.duration_since_last_ms,
+            "storage_path": self.storage_path,
+            "timestamp": self.timestamp.isoformat(),
+        }
+
+
+@dataclass
+class ModelSwitchEvent:
+    """Event data for model switch events.
+    
+    Fired when the active LLM model changes.
+    Allows hooks to log usage, enforce policies, or notify.
+    
+    Attributes:
+        old_model: Previous model name (None if first model)
+        new_model: New model name
+        reason: Why model was switched
+        session_id: Current session ID
+        profile: Active profile name
+        triggered_by: What triggered the switch
+        timestamp: When switch occurred
+    """
+    
+    old_model: str | None
+    new_model: str
+    reason: str | None = None
+    session_id: str | None = None
+    profile: str | None = None
+    triggered_by: Literal["user", "automatic", "fallback"] = "user"
+    timestamp: datetime = field(default_factory=datetime.now)
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "old_model": self.old_model,
+            "new_model": self.new_model,
+            "reason": self.reason,
+            "session_id": self.session_id,
+            "profile": self.profile,
+            "triggered_by": self.triggered_by,
+            "timestamp": self.timestamp.isoformat(),
+        }
+
+
+@dataclass
+class MemoryUpdateEvent:
+    """Event data for memory update events.
+    
+    Fired when memory files (AGENTS.md, etc.) are modified.
+    Allows hooks to sync, backup, or validate memory changes.
+    
+    Attributes:
+        file_path: Path to memory file
+        update_type: Type of update operation
+        session_id: Session that triggered update
+        content_size: Size of file in bytes
+        previous_hash: Hash before update (for validation)
+        new_hash: Hash after update
+        timestamp: When update occurred
+    """
+    
+    file_path: str
+    update_type: Literal["created", "modified", "deleted"] = "modified"
+    session_id: str | None = None
+    content_size: int | None = None
+    previous_hash: str | None = None
+    new_hash: str | None = None
+    timestamp: datetime = field(default_factory=datetime.now)
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "file_path": self.file_path,
+            "update_type": self.update_type,
+            "session_id": self.session_id,
+            "content_size": self.content_size,
+            "previous_hash": self.previous_hash,
+            "new_hash": self.new_hash,
+            "timestamp": self.timestamp.isoformat(),
+        }
+
+
 # Event type to data class mapping
 EVENT_DATA_TYPES = {
     PRE_TOOL_USE: ToolUseEvent,
@@ -160,6 +324,11 @@ EVENT_DATA_TYPES = {
     SESSION_END: SessionEvent,
     STOP: SessionEvent,
     SUBAGENT_STOP: SessionEvent,
+    # New Phase 2 events
+    ERROR: ErrorEvent,
+    CHECKPOINT: CheckpointEvent,
+    MODEL_SWITCH: ModelSwitchEvent,
+    MEMORY_UPDATE: MemoryUpdateEvent,
 }
 
 

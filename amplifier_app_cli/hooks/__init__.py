@@ -3,9 +3,10 @@
 Provides an extensible event system that integrates with the kernel's hook
 mechanism while adding CLI-specific features:
 
-- Additional event types (session lifecycle, notifications, etc.)
+- Additional event types (session lifecycle, notifications, errors, etc.)
 - External command hooks (shell commands as hook handlers)
-- LLM-based hooks (Claude as hook handler)
+- LLM-based hooks (AI-powered decision making)
+- Inline hooks (pattern-based rules)
 - Hook configuration loading from settings.yaml
 - Session-scoped hook state management
 
@@ -17,11 +18,16 @@ Event Types:
 - SubagentStop: Subagent session termination
 - SessionStart: Session initialization
 - SessionEnd: Session cleanup
+- Error: Error events
+- Checkpoint: Checkpoint events
+- ModelSwitch: Model switch events
+- MemoryUpdate: Memory file updates
 
 Hook Types:
 - Internal: Python async functions
 - Command: External shell commands
 - LLM: AI-powered decision making
+- Inline: Pattern-based rules
 """
 
 from .events import (
@@ -33,6 +39,11 @@ from .events import (
     SUBAGENT_STOP,
     SESSION_START,
     SESSION_END,
+    # Phase 2 events
+    ERROR,
+    CHECKPOINT,
+    MODEL_SWITCH,
+    MEMORY_UPDATE,
     # Kernel events (re-exported)
     PROMPT_START,
     PROMPT_COMPLETE,
@@ -42,6 +53,10 @@ from .events import (
     ToolUseEvent,
     NotificationEvent,
     SessionEvent,
+    ErrorEvent,
+    CheckpointEvent,
+    ModelSwitchEvent,
+    MemoryUpdateEvent,
 )
 from .models import (
     HookType,
@@ -58,6 +73,11 @@ from .config import (
     load_hooks_config,
 )
 from .manager import HooksManager
+from .integration import (
+    ToolExecutionHooks,
+    SessionLifecycleHooks,
+    ToolDeniedError,
+)
 
 __all__ = [
     # Events
@@ -68,6 +88,10 @@ __all__ = [
     "SUBAGENT_STOP",
     "SESSION_START",
     "SESSION_END",
+    "ERROR",
+    "CHECKPOINT",
+    "MODEL_SWITCH",
+    "MEMORY_UPDATE",
     "PROMPT_START",
     "PROMPT_COMPLETE",
     "TOOL_PRE",
@@ -76,6 +100,10 @@ __all__ = [
     "ToolUseEvent",
     "NotificationEvent",
     "SessionEvent",
+    "ErrorEvent",
+    "CheckpointEvent",
+    "ModelSwitchEvent",
+    "MemoryUpdateEvent",
     # Models
     "HookType",
     "HookConfig",
@@ -89,4 +117,8 @@ __all__ = [
     "load_hooks_config",
     # Manager
     "HooksManager",
+    # Integration
+    "ToolExecutionHooks",
+    "SessionLifecycleHooks",
+    "ToolDeniedError",
 ]

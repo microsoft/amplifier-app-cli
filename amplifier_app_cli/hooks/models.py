@@ -21,11 +21,13 @@ class HookType(str, Enum):
     - INTERNAL: Python async function
     - COMMAND: External shell command
     - LLM: AI-powered hook using an LLM
+    - INLINE: Simple pattern-based rules
     """
 
     INTERNAL = "internal"
     COMMAND = "command"
     LLM = "llm"
+    INLINE = "inline"
 
 
 @dataclass
@@ -130,11 +132,12 @@ class HookConfig:
 
     Attributes:
         name: Unique name for the hook
-        type: Type of hook (internal, command, llm)
+        type: Type of hook (internal, command, llm, inline)
         matcher: Conditions for when to fire
         command: Shell command (for command hooks)
         script: Path to script file (for command hooks)
         prompt: LLM prompt template (for llm hooks)
+        inline_rules: List of inline rules (for inline hooks)
         timeout: Timeout in seconds
         priority: Execution priority (lower = earlier)
         enabled: Whether hook is active
@@ -147,6 +150,7 @@ class HookConfig:
     command: str | None = None
     script: str | None = None
     prompt: str | None = None
+    inline_rules: list[dict[str, Any]] = field(default_factory=list)
     timeout: float = 30.0
     priority: int = 100
     enabled: bool = True
@@ -158,6 +162,8 @@ class HookConfig:
             raise ValueError("Command hook requires 'command' or 'script'")
         if self.type == HookType.LLM and not self.prompt:
             raise ValueError("LLM hook requires 'prompt'")
+        if self.type == HookType.INLINE and not self.inline_rules:
+            raise ValueError("Inline hook requires 'inline_rules'")
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
@@ -176,6 +182,8 @@ class HookConfig:
             result["script"] = self.script
         if self.prompt:
             result["prompt"] = self.prompt
+        if self.inline_rules:
+            result["inline_rules"] = self.inline_rules
         if self.description:
             result["description"] = self.description
         return result
@@ -190,6 +198,7 @@ class HookConfig:
             command=data.get("command"),
             script=data.get("script"),
             prompt=data.get("prompt"),
+            inline_rules=data.get("inline_rules", []),
             timeout=data.get("timeout", 30.0),
             priority=data.get("priority", 100),
             enabled=data.get("enabled", True),

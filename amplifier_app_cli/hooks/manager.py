@@ -115,10 +115,36 @@ class HooksManager:
             return None
 
         elif config.type == HookType.LLM:
-            # LLM hooks would need an LLM provider
-            # For now, log a warning
-            logger.warning(f"LLM hooks not yet implemented: {config.name}")
-            return None
+            # LLM hooks - try to create if dependencies available
+            try:
+                from .llm import LLMHookExecutor
+                
+                # Get model from settings or use default
+                model_name = "claude-3-5-haiku-20241022"  # Fast, cheap model
+                if self.config_manager:
+                    settings = self.config_manager.get_merged_settings()
+                    model_name = settings.get("hooks", {}).get("llm_model", model_name)
+                
+                return LLMHookExecutor(config, model_name=model_name)
+            
+            except ImportError:
+                logger.warning(
+                    f"LLM hook {config.name} skipped: pydantic-ai not available. "
+                    f"Install with: uv pip install pydantic-ai"
+                )
+                return None
+            except Exception as e:
+                logger.error(f"Failed to create LLM hook {config.name}: {e}")
+                return None
+
+        elif config.type == HookType.INLINE:
+            # Inline matcher hooks
+            try:
+                from .inline import InlineHookExecutor
+                return InlineHookExecutor(config)
+            except Exception as e:
+                logger.error(f"Failed to create inline hook {config.name}: {e}")
+                return None
 
         return None
 
