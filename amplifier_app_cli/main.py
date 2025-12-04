@@ -383,6 +383,7 @@ class CommandProcessor:
     async def _get_status(self) -> str:
         """Get session status information."""
         lines = ["Session Status:"]
+        lines.append(f"  Session ID: {self.session.coordinator.session_id}")
 
         # Plan mode status
         lines.append(f"  Plan Mode: {'ON' if self.plan_mode else 'OFF'}")
