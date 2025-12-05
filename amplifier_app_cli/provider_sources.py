@@ -1,7 +1,6 @@
 """Canonical sources for provider modules."""
 
 import logging
-import subprocess
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -141,31 +140,10 @@ def install_known_providers(
             # Use helper to create appropriate source type (DRY)
             source = source_from_uri(source_uri)
 
-            if is_local_path(source_uri):
-                # For local sources, resolve to get path then install with deps
-                # FileSource.resolve() only validates - doesn't install dependencies
-                # We need to run uv pip install to get the module's dependencies
-                module_path = source.resolve()
-
-                # Try installing - if no venv, retry with --system flag
-                result = subprocess.run(
-                    ["uv", "pip", "install", "-e", str(module_path)],
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode != 0:
-                    if "No virtual environment found" in result.stderr:
-                        # No venv active - install to system Python
-                        result = subprocess.run(
-                            ["uv", "pip", "install", "-e", str(module_path), "--system"],
-                            capture_output=True,
-                            text=True,
-                        )
-                    if result.returncode != 0:
-                        raise RuntimeError(f"Failed to install dependencies: {result.stderr}")
-            else:
-                # GitSource.resolve() downloads and installs with deps via uv pip install --target
-                source.resolve()
+            # Resolve the source:
+            # - GitSource.resolve() downloads and installs with deps to ~/.amplifier/module-cache/
+            # - FileSource.resolve() validates the path exists (local dev - user manages deps)
+            source.resolve()
 
             if verbose and console:
                 suffix = " (local)" if is_local_path(source_uri) else ""

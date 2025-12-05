@@ -255,14 +255,14 @@ class ProviderManager:
                 if is_local_path(source_uri):
                     logger.warning(f"Could not load local provider {module_id} from {source_uri}: {e}")
                     # Still include in list with basic info - user explicitly configured this source
-                    # The provider may work at runtime after dependencies are installed via module resolution
+                    # Local sources are for development - user is responsible for installing deps
                     # Use provider_name (without "provider-" prefix) as ID to match entry point convention
                     provider_name = module_id.replace("provider-", "")
                     display_name = provider_name.replace("-", " ").title()
                     providers[provider_name] = (
                         provider_name,
                         display_name,
-                        "Local provider (run 'amplifier init' to install dependencies)",
+                        "Local provider (deps not installed - see module pyproject.toml)",
                     )
                 else:
                     logger.debug(f"Could not resolve/import provider {module_id}: {e}")
