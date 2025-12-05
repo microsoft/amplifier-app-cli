@@ -146,13 +146,23 @@ def install_known_providers(
                 # FileSource.resolve() only validates - doesn't install dependencies
                 # We need to run uv pip install to get the module's dependencies
                 module_path = source.resolve()
+
+                # Try installing - if no venv, retry with --system flag
                 result = subprocess.run(
                     ["uv", "pip", "install", "-e", str(module_path)],
                     capture_output=True,
                     text=True,
                 )
                 if result.returncode != 0:
-                    raise RuntimeError(f"Failed to install dependencies: {result.stderr}")
+                    if "No virtual environment found" in result.stderr:
+                        # No venv active - install to system Python
+                        result = subprocess.run(
+                            ["uv", "pip", "install", "-e", str(module_path), "--system"],
+                            capture_output=True,
+                            text=True,
+                        )
+                    if result.returncode != 0:
+                        raise RuntimeError(f"Failed to install dependencies: {result.stderr}")
             else:
                 # GitSource.resolve() downloads and installs with deps via uv pip install --target
                 source.resolve()
