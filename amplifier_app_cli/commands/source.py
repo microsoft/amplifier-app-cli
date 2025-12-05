@@ -14,13 +14,19 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
+from typing import cast
 
 import click
 from rich.table import Table
 
 from ..console import console
+from ..paths import ScopeNotAvailableError
+from ..paths import ScopeType
 from ..paths import create_config_manager
 from ..paths import create_module_resolver
+from ..paths import get_effective_scope
+from ..provider_sources import DEFAULT_PROVIDER_SOURCES
+from ..provider_sources import is_local_path
 
 
 def _is_module_path(path: Path) -> bool:
@@ -145,10 +151,22 @@ def source(ctx: click.Context):
 @source.command("add")
 @click.argument("identifier")
 @click.argument("source_uri")
-@click.option("--global", "is_global", is_flag=True, help="Store override in user (~/.amplifier) settings")
+@click.option(
+    "--local", "scope_flag", flag_value="local", help="Store in local settings (.amplifier/settings.local.yaml)"
+)
+@click.option(
+    "--project", "scope_flag", flag_value="project", help="Store in project settings (.amplifier/settings.yaml)"
+)
+@click.option("--global", "scope_flag", flag_value="global", help="Store in user settings (~/.amplifier/settings.yaml)")
 @click.option("--module", "force_module", is_flag=True, help="Force treating as module (skip auto-detect)")
 @click.option("--collection", "force_collection", is_flag=True, help="Force treating as collection (skip auto-detect)")
-def source_add(identifier: str, source_uri: str, is_global: bool, force_module: bool, force_collection: bool):
+def source_add(
+    identifier: str,
+    source_uri: str,
+    scope_flag: str | None,
+    force_module: bool,
+    force_collection: bool,
+):
     """Add a source override for a module or collection.
 
     IDENTIFIER is the module ID or collection name.
@@ -187,31 +205,67 @@ def source_add(identifier: str, source_uri: str, is_global: bool, force_module: 
         source_type = _detect_source_type(identifier, source_uri)
 
     config_manager = create_config_manager()
-    scope = Scope.USER if is_global else Scope.PROJECT
+
+    # Determine scope with validation (defaults to global when running from home)
+    try:
+        scope, was_fallback = get_effective_scope(
+            cast(ScopeType, scope_flag) if scope_flag else None,
+            config_manager,
+            default_scope="global",
+        )
+        if was_fallback:
+            console.print(
+                "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
+            )
+    except ScopeNotAvailableError as e:
+        console.print(f"[red]Error:[/red] {e.message}")
+        return
+
+    scope_enum = {"local": Scope.LOCAL, "project": Scope.PROJECT, "global": Scope.USER}[scope]
 
     if source_type == "module":
-        config_manager.add_source_override(identifier, source_uri, scope=scope)
+        config_manager.add_source_override(identifier, source_uri, scope=scope_enum)
     else:
-        config_manager.add_collection_source_override(identifier, source_uri, scope=scope)
+        config_manager.add_collection_source_override(identifier, source_uri, scope=scope_enum)  # pyright: ignore[reportAttributeAccessIssue]
 
-    scope_label = "global (~/.amplifier)" if is_global else "project (.amplifier)"
+    scope_labels = {
+        "local": "local (.amplifier/settings.local.yaml)",
+        "project": "project (.amplifier/settings.yaml)",
+        "global": "global (~/.amplifier/settings.yaml)",
+    }
     console.print(f"[green]✓ Added {source_type} source override for {identifier}[/green]")
     console.print(f"  Source: {source_uri}")
-    console.print(f"  Scope: {scope_label}")
+    console.print(f"  Scope: {scope_labels[scope]}")
 
 
 @source.command("remove")
 @click.argument("identifier")
-@click.option("--global", "is_global", is_flag=True, help="Remove from user (~/.amplifier) settings")
+@click.option(
+    "--local", "scope_flag", flag_value="local", help="Remove from local settings (.amplifier/settings.local.yaml)"
+)
+@click.option(
+    "--project", "scope_flag", flag_value="project", help="Remove from project settings (.amplifier/settings.yaml)"
+)
+@click.option(
+    "--global", "scope_flag", flag_value="global", help="Remove from user settings (~/.amplifier/settings.yaml)"
+)
 @click.option("--module", "force_module", is_flag=True, help="Force treating as module (skip auto-detect)")
 @click.option("--collection", "force_collection", is_flag=True, help="Force treating as collection (skip auto-detect)")
-def source_remove(identifier: str, is_global: bool, force_module: bool, force_collection: bool):
+def source_remove(
+    identifier: str,
+    scope_flag: str | None,
+    force_module: bool,
+    force_collection: bool,
+):
     """Remove a source override for a module or collection.
 
     IDENTIFIER is the module ID or collection name to remove.
 
     Tries to remove from both module and collection overrides by default.
     Use --module or --collection flags to target specifically.
+
+    Also cleans up any provider config entries that use a local source path
+    for this module, replacing them with the default git source.
 
     Examples:
 
@@ -231,24 +285,109 @@ def source_remove(identifier: str, is_global: bool, force_module: bool, force_co
         raise click.Abort()
 
     config_manager = create_config_manager()
-    scope = Scope.USER if is_global else Scope.PROJECT
-    scope_label = "global (~/.amplifier)" if is_global else "project (.amplifier)"
+
+    # Determine scope with validation (defaults to global when running from home)
+    try:
+        scope, was_fallback = get_effective_scope(
+            cast(ScopeType, scope_flag) if scope_flag else None,
+            config_manager,
+            default_scope="global",
+        )
+        if was_fallback:
+            console.print(
+                "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
+            )
+    except ScopeNotAvailableError as e:
+        console.print(f"[red]Error:[/red] {e.message}")
+        return
+
+    scope_enum = {"local": Scope.LOCAL, "project": Scope.PROJECT, "global": Scope.USER}[scope]
+    scope_labels = {
+        "local": "local (.amplifier/settings.local.yaml)",
+        "project": "project (.amplifier/settings.yaml)",
+        "global": "global (~/.amplifier/settings.yaml)",
+    }
 
     removed_module = False
     removed_collection = False
 
     # Try to remove based on flags or both
     if force_module or not force_collection:
-        removed_module = config_manager.remove_source_override(identifier, scope=scope)
+        removed_module = config_manager.remove_source_override(identifier, scope=scope_enum)
     if force_collection or not force_module:
-        removed_collection = config_manager.remove_collection_source_override(identifier, scope=scope)
+        removed_collection = config_manager.remove_collection_source_override(identifier, scope=scope_enum)  # pyright: ignore[reportAttributeAccessIssue]
+
+    # Also clean up any provider config entries with local source paths for this module
+    provider_cleaned = False
+    if removed_module or not force_collection:
+        provider_cleaned = _cleanup_provider_config_source(config_manager, identifier, scope_enum)
 
     if removed_module:
-        console.print(f"[green]✓ Removed module source override for {identifier} ({scope_label})[/green]")
+        console.print(f"[green]✓ Removed module source override for {identifier} ({scope_labels[scope]})[/green]")
     if removed_collection:
-        console.print(f"[green]✓ Removed collection source override for {identifier} ({scope_label})[/green]")
-    if not removed_module and not removed_collection:
+        console.print(f"[green]✓ Removed collection source override for {identifier} ({scope_labels[scope]})[/green]")
+    if provider_cleaned:
+        console.print("[green]✓ Updated provider config to use default source[/green]")
+    if not removed_module and not removed_collection and not provider_cleaned:
         console.print(f"[yellow]Source override for {identifier} not found[/yellow]")
+
+
+def _cleanup_provider_config_source(config_manager, module_id: str, scope) -> bool:
+    """Clean up local source paths in provider config entries.
+
+    When a source override is removed, also check if there's a provider config entry
+    (in config.providers[]) that has a local source path for this module. If so,
+    update it to use the default git source.
+
+    Args:
+        config_manager: ConfigManager instance
+        module_id: Module ID to clean up (e.g., "provider-anthropic")
+        scope: Scope enum value
+
+    Returns:
+        True if a provider config was updated, False otherwise
+    """
+    # Read settings at this scope
+    scope_path = config_manager._scope_to_path(scope)
+    if scope_path is None:
+        return False
+
+    settings = config_manager._read_yaml(scope_path) or {}
+    config_section = settings.get("config", {})
+    providers = config_section.get("providers", [])
+
+    if not isinstance(providers, list):
+        return False
+
+    updated = False
+    new_providers = []
+
+    for provider in providers:
+        if not isinstance(provider, dict):
+            new_providers.append(provider)
+            continue
+
+        if provider.get("module") == module_id:
+            source = provider.get("source", "")
+            if is_local_path(source):
+                # Replace with default git source if available
+                default_source = DEFAULT_PROVIDER_SOURCES.get(module_id)
+                if default_source:
+                    provider = {**provider, "source": default_source}
+                    updated = True
+                else:
+                    # No default source, just remove the source field
+                    provider = {k: v for k, v in provider.items() if k != "source"}
+                    updated = True
+
+        new_providers.append(provider)
+
+    if updated:
+        config_section["providers"] = new_providers
+        settings["config"] = config_section
+        config_manager._write_yaml(scope_path, settings)
+
+    return updated
 
 
 @source.command("list")
@@ -265,7 +404,7 @@ def source_list():
     """
     config_manager = create_config_manager()
     module_sources = config_manager.get_module_sources()
-    collection_sources = config_manager.get_collection_sources()
+    collection_sources = config_manager.get_collection_sources()  # pyright: ignore[reportAttributeAccessIssue]
 
     if not module_sources and not collection_sources:
         console.print("[yellow]No source overrides configured[/yellow]")
