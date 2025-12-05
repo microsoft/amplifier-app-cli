@@ -1,6 +1,8 @@
 """Canonical sources for provider modules."""
 
 import logging
+import subprocess
+import sys
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -140,10 +142,21 @@ def install_known_providers(
             # Use helper to create appropriate source type (DRY)
             source = source_from_uri(source_uri)
 
-            # Resolve the source:
-            # - GitSource.resolve() downloads and installs with deps to ~/.amplifier/module-cache/
-            # - FileSource.resolve() validates the path exists (local dev - user manages deps)
-            source.resolve()
+            if is_local_path(source_uri):
+                # For local sources, install with deps to current Python environment
+                # Uses --python to target the running Python (works for uv tool installs,
+                # venvs, and system Python without permission issues)
+                module_path = source.resolve()
+                result = subprocess.run(
+                    ["uv", "pip", "install", "-e", str(module_path), "--python", sys.executable],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(f"Failed to install: {result.stderr}")
+            else:
+                # GitSource.resolve() downloads and installs with deps to ~/.amplifier/module-cache/
+                source.resolve()
 
             if verbose and console:
                 suffix = " (local)" if is_local_path(source_uri) else ""
