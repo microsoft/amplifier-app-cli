@@ -254,6 +254,15 @@ class ProviderManager:
                 # Log at warning level for local sources to help debug issues
                 if is_local_path(source_uri):
                     logger.warning(f"Could not load local provider {module_id} from {source_uri}: {e}")
+                    # Still include in list with basic info - user explicitly configured this source
+                    # The provider may work at runtime after dependencies are installed via module resolution
+                    provider_name = module_id.replace("provider-", "")
+                    display_name = provider_name.replace("-", " ").title()
+                    providers[module_id] = (
+                        module_id,
+                        display_name,
+                        "Local provider (run 'amplifier init' to install dependencies)",
+                    )
                 else:
                     logger.debug(f"Could not resolve/import provider {module_id}: {e}")
 
