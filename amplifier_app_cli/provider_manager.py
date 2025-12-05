@@ -1,6 +1,8 @@
 """Provider configuration management."""
 
 import logging
+import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -213,7 +215,6 @@ class ProviderManager:
             Dict mapping module_id to (module_id, display_name, description) tuples
         """
         import importlib
-        import sys
 
         providers: dict[str, tuple[str, str, str]] = {}
 
@@ -251,19 +252,55 @@ class ProviderManager:
                     logger.debug(f"Discovered provider from source (no info): {module_id}")
 
             except Exception as e:
-                # Log at warning level for local sources to help debug issues
+                # For local sources, try to install with deps (same as install_known_providers)
                 if is_local_path(source_uri):
-                    logger.warning(f"Could not load local provider {module_id} from {source_uri}: {e}")
-                    # Still include in list with basic info - user explicitly configured this source
-                    # Local sources are for development - user is responsible for installing deps
-                    # Use provider_name (without "provider-" prefix) as ID to match entry point convention
-                    provider_name = module_id.replace("provider-", "")
-                    display_name = provider_name.replace("-", " ").title()
-                    providers[provider_name] = (
-                        provider_name,
-                        display_name,
-                        "Local provider (deps not installed - see module pyproject.toml)",
-                    )
+                    logger.debug(f"Local provider {module_id} not importable, attempting install: {e}")
+                    try:
+                        # Resolve source to get path
+                        source = source_from_uri(source_uri)
+                        module_path = source.resolve()
+
+                        # Install with deps to current Python environment
+                        result = subprocess.run(
+                            ["uv", "pip", "install", "-e", str(module_path), "--python", sys.executable],
+                            capture_output=True,
+                            text=True,
+                        )
+                        if result.returncode != 0:
+                            raise RuntimeError(f"Install failed: {result.stderr}")
+
+                        # Invalidate caches and retry import
+                        importlib.invalidate_caches()
+
+                        # Add to sys.path if needed
+                        path_str = str(module_path)
+                        if path_str not in sys.path:
+                            sys.path.insert(0, path_str)
+
+                        # Retry getting provider info
+                        info = get_provider_info(module_id)
+                        if info:
+                            display_name = info.get("display_name", module_id.replace("-", " ").title())
+                            description = info.get("description", f"Provider: {module_id}")
+                            providers[module_id] = (module_id, display_name, description)
+                            logger.debug(f"Discovered local provider after install: {module_id}")
+                        else:
+                            # Use provider_name (without "provider-" prefix) as ID
+                            provider_name = module_id.replace("provider-", "")
+                            display_name = provider_name.replace("-", " ").title()
+                            providers[provider_name] = (provider_name, display_name, f"Provider: {provider_name}")
+                            logger.debug(f"Discovered local provider after install (no info): {module_id}")
+
+                    except Exception as install_error:
+                        # Install failed - show fallback with consistent description
+                        logger.warning(f"Could not install local provider {module_id}: {install_error}")
+                        provider_name = module_id.replace("provider-", "")
+                        display_name = provider_name.replace("-", " ").title()
+                        providers[provider_name] = (
+                            provider_name,
+                            display_name,
+                            f"Provider: {provider_name} (install failed - check pyproject.toml)",
+                        )
                 else:
                     logger.debug(f"Could not resolve/import provider {module_id}: {e}")
 
