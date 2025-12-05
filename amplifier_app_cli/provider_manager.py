@@ -256,10 +256,11 @@ class ProviderManager:
                     logger.warning(f"Could not load local provider {module_id} from {source_uri}: {e}")
                     # Still include in list with basic info - user explicitly configured this source
                     # The provider may work at runtime after dependencies are installed via module resolution
+                    # Use provider_name (without "provider-" prefix) as ID to match entry point convention
                     provider_name = module_id.replace("provider-", "")
                     display_name = provider_name.replace("-", " ").title()
-                    providers[module_id] = (
-                        module_id,
+                    providers[provider_name] = (
+                        provider_name,
                         display_name,
                         "Local provider (run 'amplifier init' to install dependencies)",
                     )
