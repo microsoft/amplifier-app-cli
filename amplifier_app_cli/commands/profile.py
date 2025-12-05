@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import sys
 from typing import Any
+from typing import cast
 
 import click
 from rich.table import Table
 
 from ..console import console
 from ..data.profiles import get_system_default_profile
+from ..paths import ScopeNotAvailableError
+from ..paths import ScopeType
 from ..paths import create_config_manager
 from ..paths import create_profile_loader
+from ..paths import get_effective_scope
 
 
 @click.group(invoke_without_command=True)
@@ -452,6 +456,8 @@ def profile_show(name: str, detailed: bool):
 @click.option("--global", "scope_flag", flag_value="global", help="Set globally (all projects)")
 def profile_use(name: str, scope_flag: str | None):
     """Set the active profile."""
+    from amplifier_config import Scope
+
     loader = create_profile_loader()
     config_manager = create_config_manager()
 
@@ -464,7 +470,20 @@ def profile_use(name: str, scope_flag: str | None):
         console.print(f"[red]Error:[/red] {exc}")
         sys.exit(1)
 
-    scope = scope_flag or "local"
+    # Validate scope availability
+    try:
+        scope, was_fallback = get_effective_scope(
+            cast(ScopeType, scope_flag) if scope_flag else None,
+            config_manager,
+            default_scope="local",
+        )
+        if was_fallback:
+            console.print(
+                "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
+            )
+    except ScopeNotAvailableError as e:
+        console.print(f"[red]Error:[/red] {e.message}")
+        sys.exit(1)
 
     if scope == "local":
         config_manager.set_active_profile(name)
@@ -476,8 +495,6 @@ def profile_use(name: str, scope_flag: str | None):
         console.print("  File: .amplifier/settings.yaml")
         console.print("  [yellow]Remember to commit .amplifier/settings.yaml[/yellow]")
     elif scope == "global":
-        from amplifier_config import Scope
-
         config_manager.update_settings({"profile": {"active": name}}, scope=Scope.USER)
         console.print(f"[green]✓ Set '{name}' globally[/green]")
         console.print("  File: ~/.amplifier/settings.yaml")
@@ -489,6 +506,15 @@ def profile_reset():
     from amplifier_config import Scope
 
     config_manager = create_config_manager()
+
+    # Check if local scope is available
+    if not config_manager.is_scope_available(Scope.LOCAL):
+        console.print(
+            "[yellow]Note:[/yellow] Running from home directory - no local profile to reset.\n"
+            "Use [cyan]amplifier profile use <name> --global[/cyan] to set a global profile."
+        )
+        return
+
     config_manager.clear_active_profile(scope=Scope.LOCAL)
 
     project_default = config_manager.get_project_default()
@@ -505,7 +531,17 @@ def profile_reset():
 @click.option("--clear", is_flag=True, help="Clear project default profile")
 def profile_default(set_default: str | None, clear: bool):
     """Manage the project default profile."""
+    from amplifier_config import Scope
+
     config_manager = create_config_manager()
+
+    # Check if project scope is available for write operations
+    if (clear or set_default) and not config_manager.is_scope_available(Scope.PROJECT):
+        console.print(
+            "[red]Error:[/red] Project default can only be managed from a project directory.\n"
+            "The project scope is not available when running from your home directory."
+        )
+        sys.exit(1)
 
     if clear:
         config_manager.clear_project_default()

@@ -6,15 +6,27 @@ Libraries receive paths via injection; this module provides the CLI's choices.
 
 from pathlib import Path
 from typing import TYPE_CHECKING
+from typing import Literal
 
 from amplifier_collections import CollectionResolver
 from amplifier_config import ConfigManager
 from amplifier_config import ConfigPaths
+from amplifier_config import Scope
 from amplifier_module_resolution import StandardModuleSourceResolver
 from amplifier_profiles import ProfileLoader
 
 if TYPE_CHECKING:
     from amplifier_profiles import AgentLoader
+
+# Type alias for scope names used in CLI
+ScopeType = Literal["local", "project", "global"]
+
+# Map CLI scope names to Scope enum
+_SCOPE_MAP: dict[ScopeType, Scope] = {
+    "local": Scope.LOCAL,
+    "project": Scope.PROJECT,
+    "global": Scope.USER,
+}
 
 # ===== CONFIG PATHS =====
 
@@ -24,15 +36,130 @@ def get_cli_config_paths() -> ConfigPaths:
 
     Returns:
         ConfigPaths with CLI conventions:
-        - User: ~/.amplifier/settings.yaml
-        - Project: .amplifier/settings.yaml
-        - Local: .amplifier/settings.local.yaml
+        - User: ~/.amplifier/settings.yaml (always enabled)
+        - Project: .amplifier/settings.yaml (disabled when cwd is home)
+        - Local: .amplifier/settings.local.yaml (disabled when cwd is home)
+
+    Note:
+        When running from the home directory (~), project and local scopes are
+        disabled (set to None) to prevent confusion. In ~/.amplifier/, there
+        should only ever be settings.yaml (user scope), never settings.local.yaml.
+        This prevents the confusing case where ~/.amplifier/settings.local.yaml
+        would only apply when running from exactly ~ but not from anywhere else.
     """
+    home = Path.home()
+    cwd = Path.cwd()
+
+    # When cwd is home directory, disable project/local scopes
+    # This prevents ~/.amplifier/settings.local.yaml confusion
+    if cwd == home:
+        return ConfigPaths(
+            user=home / ".amplifier" / "settings.yaml",
+            project=None,
+            local=None,
+        )
+
     return ConfigPaths(
-        user=Path.home() / ".amplifier" / "settings.yaml",
+        user=home / ".amplifier" / "settings.yaml",
         project=Path(".amplifier") / "settings.yaml",
         local=Path(".amplifier") / "settings.local.yaml",
     )
+
+
+def is_running_from_home() -> bool:
+    """Check if running from the home directory.
+
+    Returns:
+        True if cwd is the user's home directory
+    """
+    return Path.cwd() == Path.home()
+
+
+class ScopeNotAvailableError(Exception):
+    """Raised when a requested scope is not available."""
+
+    def __init__(self, scope: ScopeType, message: str):
+        self.scope = scope
+        self.message = message
+        super().__init__(message)
+
+
+def validate_scope_for_write(
+    scope: ScopeType,
+    config: ConfigManager,
+    *,
+    allow_fallback: bool = False,
+) -> ScopeType:
+    """Validate that a scope is available for write operations.
+
+    Args:
+        scope: The requested scope ("local", "project", or "global")
+        config: ConfigManager instance to check
+        allow_fallback: If True, fall back to "global" when scope unavailable
+
+    Returns:
+        The validated scope (may be "global" if fallback allowed)
+
+    Raises:
+        ScopeNotAvailableError: If scope is not available and fallback not allowed
+    """
+    scope_enum = _SCOPE_MAP[scope]
+
+    if config.is_scope_available(scope_enum):
+        return scope
+
+    # Scope not available - running from home directory
+    if allow_fallback:
+        # Fall back to global (user) scope
+        return "global"
+
+    # Build helpful error message
+    if is_running_from_home():
+        raise ScopeNotAvailableError(
+            scope,
+            f"The '{scope}' scope is not available when running from your home directory.\n"
+            f"Use --global instead to save to ~/.amplifier/settings.yaml\n\n"
+            f"Tip: Project and local scopes require being in a project directory.",
+        )
+
+    raise ScopeNotAvailableError(
+        scope,
+        f"The '{scope}' scope is not available.\nUse --global instead.",
+    )
+
+
+def get_effective_scope(
+    requested_scope: ScopeType | None,
+    config: ConfigManager,
+    *,
+    default_scope: ScopeType = "local",
+) -> tuple[ScopeType, bool]:
+    """Get the effective scope, handling fallbacks gracefully.
+
+    When no scope is explicitly requested and the default isn't available,
+    falls back to "global" scope with a warning.
+
+    Args:
+        requested_scope: Explicitly requested scope, or None for default
+        config: ConfigManager instance to check
+        default_scope: Default scope when none requested
+
+    Returns:
+        Tuple of (effective_scope, was_fallback_used)
+        - effective_scope: The scope to use
+        - was_fallback_used: True if we fell back from the default
+
+    Raises:
+        ScopeNotAvailableError: If an explicitly requested scope is not available
+    """
+    if requested_scope is not None:
+        # User explicitly requested a scope - validate without fallback
+        return validate_scope_for_write(requested_scope, config, allow_fallback=False), False
+
+    # No explicit request - use default with fallback
+    effective = validate_scope_for_write(default_scope, config, allow_fallback=True)
+    was_fallback = effective != default_scope
+    return effective, was_fallback
 
 
 # ===== COLLECTION PATHS =====

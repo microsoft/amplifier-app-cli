@@ -37,8 +37,8 @@ class AppSettings:
     def _scope_enum(self, scope: ScopeType) -> Scope:
         return _SCOPE_MAP[scope]
 
-    def scope_path(self, scope: ScopeType) -> Path:
-        """Return the filesystem path for a scope."""
+    def scope_path(self, scope: ScopeType) -> Path | None:
+        """Return the filesystem path for a scope, or None if scope is disabled."""
         return self._config.scope_to_path(self._scope_enum(scope))
 
     # ----- Provider overrides -----

@@ -16,9 +16,12 @@ from rich.table import Table
 from ..console import console
 from ..data.profiles import get_system_default_profile
 from ..module_manager import ModuleManager
+from ..paths import ScopeNotAvailableError
+from ..paths import ScopeType
 from ..paths import create_config_manager
 from ..paths import create_module_resolver
 from ..paths import create_profile_loader
+from ..paths import get_effective_scope
 
 
 @click.group(invoke_without_command=True)
@@ -217,18 +220,23 @@ def module_add(module_id: str, source: str | None, scope_flag: str | None):
         console.print("  amplifier module add tool-jupyter")
         return
 
-    if not scope_flag:
-        console.print("\nAdd for:")
-        console.print("  [1] Just you (local)")
-        console.print("  [2] Whole team (project)")
-        console.print("  [3] All your projects (global)")
-        choice = click.prompt("Choice", type=click.Choice(["1", "2", "3"]), default="1")
-        scope_map: dict[str, Literal["local", "project", "global"]] = {"1": "local", "2": "project", "3": "global"}
-        scope = scope_map[choice]
-    else:
-        scope = cast(Literal["local", "project", "global"], scope_flag)
-
     config_manager = create_config_manager()
+
+    # Validate scope availability
+    try:
+        scope, was_fallback = get_effective_scope(
+            cast(ScopeType, scope_flag) if scope_flag else None,
+            config_manager,
+            default_scope="local",
+        )
+        if was_fallback:
+            console.print(
+                "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
+            )
+    except ScopeNotAvailableError as e:
+        console.print(f"[red]Error:[/red] {e.message}")
+        return
+
     module_mgr = ModuleManager(config_manager)
     result = module_mgr.add_module(module_id, module_type, scope, source=source)  # type: ignore[arg-type]
 
@@ -261,19 +269,23 @@ def module_add(module_id: str, source: str | None, scope_flag: str | None):
 @click.option("--global", "scope_flag", flag_value="global", help="Remove from global")
 def module_remove(module_id: str, scope_flag: str | None):
     """Remove a module override from settings."""
-
-    if not scope_flag:
-        console.print("\nRemove from:")
-        console.print("  [1] Just you (local)")
-        console.print("  [2] Whole team (project)")
-        console.print("  [3] All your projects (global)")
-        choice = click.prompt("Choice", type=click.Choice(["1", "2", "3"]), default="1")
-        scope_map: dict[str, Literal["local", "project", "global"]] = {"1": "local", "2": "project", "3": "global"}
-        scope = scope_map[choice]
-    else:
-        scope = cast(Literal["local", "project", "global"], scope_flag)
-
     config_manager = create_config_manager()
+
+    # Validate scope availability
+    try:
+        scope, was_fallback = get_effective_scope(
+            cast(ScopeType, scope_flag) if scope_flag else None,
+            config_manager,
+            default_scope="local",
+        )
+        if was_fallback:
+            console.print(
+                "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
+            )
+    except ScopeNotAvailableError as e:
+        console.print(f"[red]Error:[/red] {e.message}")
+        return
+
     module_mgr = ModuleManager(config_manager)
     module_mgr.remove_module(module_id, scope)  # type: ignore[arg-type]
 

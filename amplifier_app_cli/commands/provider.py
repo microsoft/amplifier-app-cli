@@ -9,7 +9,9 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from ..key_manager import KeyManager
+from ..paths import ScopeNotAvailableError
 from ..paths import create_config_manager
+from ..paths import get_effective_scope
 from ..provider_config_utils import configure_provider
 from ..provider_manager import ProviderManager
 from ..provider_manager import ScopeType
@@ -78,8 +80,20 @@ def provider_use(
         console.print("[red]Configuration cancelled.[/red]")
         return
 
-    # Determine scope
-    scope = scope_flag or prompt_scope()
+    # Determine scope with validation
+    try:
+        scope, was_fallback = get_effective_scope(
+            cast(ScopeType, scope_flag) if scope_flag else None,
+            config_manager,
+            default_scope="local",
+        )
+        if was_fallback:
+            console.print(
+                "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
+            )
+    except ScopeNotAvailableError as e:
+        console.print(f"[red]Error:[/red] {e.message}")
+        return
 
     # Configure provider
     result = provider_mgr.use_provider(module_id, cast(ScopeType, scope), config, source=None)
@@ -149,11 +163,24 @@ def provider_reset(scope_flag: str | None):
 
     Resets to whatever the profile specifies.
     """
-    scope = scope_flag or prompt_scope()
+    config_manager = create_config_manager()
 
-    config = create_config_manager()
-    provider_mgr = ProviderManager(config)
+    # Determine scope with validation
+    try:
+        scope, was_fallback = get_effective_scope(
+            cast(ScopeType, scope_flag) if scope_flag else None,
+            config_manager,
+            default_scope="local",
+        )
+        if was_fallback:
+            console.print(
+                "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
+            )
+    except ScopeNotAvailableError as e:
+        console.print(f"[red]Error:[/red] {e.message}")
+        return
 
+    provider_mgr = ProviderManager(config_manager)
     result = provider_mgr.reset_provider(cast(ScopeType, scope))
 
     if result.removed:
