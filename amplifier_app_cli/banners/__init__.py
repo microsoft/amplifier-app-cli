@@ -34,6 +34,7 @@ def load_banner(style: str = "classic", version: str | None = None) -> None:
     # Auto-detect version if not provided
     if version is None:
         from ..utils.version import get_version
+
         version = get_version()
     # Validate style
     if style not in AVAILABLE_STYLES:

@@ -39,7 +39,6 @@ from .commands.source import source as source_group
 from .commands.tool import tool as tool_group
 from .commands.update import update as update_cmd
 from .commands.version import version as version_cmd
-from .utils.version import get_version
 from .console import Markdown
 from .console import console
 from .effective_config import get_effective_config_summary
@@ -48,6 +47,7 @@ from .paths import create_module_resolver
 from .paths import create_profile_loader
 from .session_store import SessionStore
 from .ui.error_display import display_validation_error
+from .utils.version import get_version
 
 logger = logging.getLogger(__name__)
 

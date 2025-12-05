@@ -65,7 +65,7 @@ def get_effective_provider_sources(config_manager: "ConfigManager | None" = None
     return sources
 
 
-def _is_local_path(source_uri: str) -> bool:
+def is_local_path(source_uri: str) -> bool:
     """Check if source URI is a local file path.
 
     Args:
@@ -80,6 +80,26 @@ def _is_local_path(source_uri: str) -> bool:
         or source_uri.startswith("../")
         or source_uri.startswith("file://")
     )
+
+
+def source_from_uri(source_uri: str):
+    """Create appropriate source from URI (local path or git URL).
+
+    Single source of truth for source type decision - use this instead of
+    manually checking is_local_path() and creating FileSource/GitSource.
+
+    Args:
+        source_uri: Source URI (git+https://... or local path like /path, ./path)
+
+    Returns:
+        FileSource for local paths, GitSource for git URLs
+    """
+    from amplifier_module_resolution.sources import FileSource
+    from amplifier_module_resolution.sources import GitSource
+
+    if is_local_path(source_uri):
+        return FileSource(source_uri)
+    return GitSource.from_uri(source_uri)
 
 
 def install_known_providers(
@@ -106,9 +126,6 @@ def install_known_providers(
     Returns:
         List of successfully installed provider module IDs
     """
-    from amplifier_module_resolution.sources import FileSource
-    from amplifier_module_resolution.sources import GitSource
-
     installed: list[str] = []
     failed: list[tuple[str, str]] = []
 
@@ -120,19 +137,13 @@ def install_known_providers(
             if verbose and console:
                 console.print(f"  Installing {module_id}...", end="")
 
-            # Check if local file path or git URL
-            if _is_local_path(source_uri):
-                # Local file source - just validate it exists
-                file_source = FileSource(source_uri)
-                file_source.resolve()
-                if verbose and console:
-                    console.print(" [green]✓[/green] (local)")
-            else:
-                # Git source - download if not cached
-                git_source = GitSource.from_uri(source_uri)
-                git_source.resolve()
-                if verbose and console:
-                    console.print(" [green]✓[/green]")
+            # Use helper to create appropriate source type (DRY)
+            source = source_from_uri(source_uri)
+            source.resolve()
+
+            if verbose and console:
+                suffix = " (local)" if is_local_path(source_uri) else ""
+                console.print(f" [green]✓[/green]{suffix}")
 
             installed.append(module_id)
 
@@ -149,4 +160,10 @@ def install_known_providers(
     return installed
 
 
-__all__ = ["DEFAULT_PROVIDER_SOURCES", "get_effective_provider_sources", "install_known_providers"]
+__all__ = [
+    "DEFAULT_PROVIDER_SOURCES",
+    "get_effective_provider_sources",
+    "install_known_providers",
+    "is_local_path",
+    "source_from_uri",
+]

@@ -9,8 +9,8 @@ from amplifier_config import ConfigManager
 from .lib.app_settings import AppSettings
 from .lib.app_settings import ScopeType
 from .provider_loader import get_provider_info
-from .provider_sources import DEFAULT_PROVIDER_SOURCES
 from .provider_sources import get_effective_provider_sources
+from .provider_sources import source_from_uri
 
 logger = logging.getLogger(__name__)
 
@@ -67,14 +67,18 @@ class ProviderManager:
             provider_id: Provider module ID (provider-anthropic, provider-openai, etc.)
             scope: Where to save configuration (local/project/global)
             config: Provider-specific configuration (model, api_key, etc.)
-            source: Module source URL (optional, will use canonical if not provided)
+            source: Module source URL (optional, will use effective source if not provided)
 
         Returns:
             ConfigureResult with what changed and where
         """
-        # Determine provider source (explicit or canonical)
-        canonical_source = DEFAULT_PROVIDER_SOURCES.get(provider_id)
-        provider_source = source or canonical_source
+        # Determine provider source (explicit, or from effective sources which includes
+        # user overrides from settings - supports local file paths)
+        if source:
+            provider_source = source
+        else:
+            effective_sources = get_effective_provider_sources(self.config)
+            provider_source = effective_sources.get(provider_id)
 
         # Build provider config entry with high priority (lower = higher priority)
         # Priority 1 ensures explicitly configured provider wins over profile defaults (100)
@@ -181,23 +185,28 @@ class ProviderManager:
                     display_name = module.name
                 providers[module.id] = (module.id, display_name, module.description)
 
-        # If no providers found via entry points, resolve from known sources
-        # This handles the case where modules were downloaded with `--target` flag
-        # (uv pip install --target) which doesn't register entry points
-        if not providers:
-            providers = self._discover_providers_from_sources()
+        # Always merge source-discovered providers (handles local file paths,
+        # user-added providers, and modules installed with --target flag)
+        source_providers = self._discover_providers_from_sources()
+        for module_id, provider_info in source_providers.items():
+            if module_id not in providers:
+                providers[module_id] = provider_info
 
         return list(providers.values())
 
     def _discover_providers_from_sources(self) -> dict[str, tuple[str, str, str]]:
         """Discover providers by resolving effective sources.
 
-        Uses GitSource.resolve() to get cached module paths (same mechanism
-        as runtime module loading), then imports modules directly.
+        Uses source_from_uri() to create appropriate source (FileSource or GitSource),
+        then resolves to get module paths (same mechanism as runtime module loading),
+        then imports modules directly.
 
         Effective sources include:
         1. DEFAULT_PROVIDER_SOURCES (known providers)
         2. User-added provider modules from settings
+
+        Supports both git URLs (git+https://...) and local file paths
+        (./path, ../path, /absolute/path, file://path).
 
         Returns:
             Dict mapping module_id to (module_id, display_name, description) tuples
@@ -205,17 +214,15 @@ class ProviderManager:
         import importlib
         import sys
 
-        from amplifier_module_resolution.sources import GitSource
-
         providers: dict[str, tuple[str, str, str]] = {}
 
         # Use effective sources (includes both default and user-added providers)
         effective_sources = get_effective_provider_sources(self.config)
         for module_id, source_uri in effective_sources.items():
             try:
-                # Resolve source to cached path (uses same caching as runtime)
-                git_source = GitSource.from_uri(source_uri)
-                module_path = git_source.resolve()
+                # Resolve source to path (handles both git URLs and local paths)
+                source = source_from_uri(source_uri)
+                module_path = source.resolve()
 
                 # Add to sys.path if not already there
                 path_str = str(module_path)

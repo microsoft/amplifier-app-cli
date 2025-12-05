@@ -4,7 +4,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from ..utils.version import get_version, get_version_info
+from ..utils.version import get_version_info
 
 console = Console()
 

@@ -13,7 +13,8 @@ import json
 import logging
 import subprocess
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
