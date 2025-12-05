@@ -10,6 +10,7 @@ from .lib.app_settings import AppSettings
 from .lib.app_settings import ScopeType
 from .provider_loader import get_provider_info
 from .provider_sources import get_effective_provider_sources
+from .provider_sources import is_local_path
 from .provider_sources import source_from_uri
 
 logger = logging.getLogger(__name__)
@@ -250,7 +251,11 @@ class ProviderManager:
                     logger.debug(f"Discovered provider from source (no info): {module_id}")
 
             except Exception as e:
-                logger.debug(f"Could not resolve/import provider {module_id}: {e}")
+                # Log at warning level for local sources to help debug issues
+                if is_local_path(source_uri):
+                    logger.warning(f"Could not load local provider {module_id} from {source_uri}: {e}")
+                else:
+                    logger.debug(f"Could not resolve/import provider {module_id}: {e}")
 
         return providers
 
