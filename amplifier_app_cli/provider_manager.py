@@ -9,7 +9,6 @@ from amplifier_config import ConfigManager
 from .lib.app_settings import AppSettings
 from .lib.app_settings import ScopeType
 from .provider_loader import get_provider_info
-from .provider_sources import DEFAULT_PROVIDER_SOURCES
 from .provider_sources import get_effective_provider_sources
 
 logger = logging.getLogger(__name__)
@@ -67,14 +66,18 @@ class ProviderManager:
             provider_id: Provider module ID (provider-anthropic, provider-openai, etc.)
             scope: Where to save configuration (local/project/global)
             config: Provider-specific configuration (model, api_key, etc.)
-            source: Module source URL (optional, will use canonical if not provided)
+            source: Module source URL (optional, will use effective source if not provided)
 
         Returns:
             ConfigureResult with what changed and where
         """
-        # Determine provider source (explicit or canonical)
-        canonical_source = DEFAULT_PROVIDER_SOURCES.get(provider_id)
-        provider_source = source or canonical_source
+        # Determine provider source (explicit, user override, or canonical default)
+        if source:
+            provider_source = source
+        else:
+            # Check effective sources first (includes user overrides from settings)
+            effective_sources = get_effective_provider_sources(self.config)
+            provider_source = effective_sources.get(provider_id)
 
         # Build provider config entry with high priority (lower = higher priority)
         # Priority 1 ensures explicitly configured provider wins over profile defaults (100)
@@ -155,7 +158,10 @@ class ProviderManager:
 
         Discovers providers from:
         1. Installed modules (entry points)
-        2. Known provider sources (resolved via GitSource, uses cache)
+        2. Known provider sources (resolved via GitSource/FileSource)
+
+        Sources are merged with entry points, allowing local overrides
+        to appear alongside installed providers.
 
         Returns:
             List of (module_id, display_name, description) tuples
@@ -181,23 +187,27 @@ class ProviderManager:
                     display_name = module.name
                 providers[module.id] = (module.id, display_name, module.description)
 
-        # If no providers found via entry points, resolve from known sources
-        # This handles the case where modules were downloaded with `--target` flag
-        # (uv pip install --target) which doesn't register entry points
-        if not providers:
-            providers = self._discover_providers_from_sources()
+        # Also discover from effective sources (includes local overrides)
+        # This ensures providers with local file sources appear even when
+        # other providers were found via entry points
+        source_providers = self._discover_providers_from_sources()
+        for module_id, provider_info in source_providers.items():
+            if module_id not in providers:
+                # Add providers not found via entry points (e.g., local overrides)
+                providers[module_id] = provider_info
 
         return list(providers.values())
 
     def _discover_providers_from_sources(self) -> dict[str, tuple[str, str, str]]:
         """Discover providers by resolving effective sources.
 
-        Uses GitSource.resolve() to get cached module paths (same mechanism
-        as runtime module loading), then imports modules directly.
+        Uses GitSource.resolve() or FileSource.resolve() to get module paths
+        (same mechanism as runtime module loading), then imports modules directly.
 
         Effective sources include:
         1. DEFAULT_PROVIDER_SOURCES (known providers)
         2. User-added provider modules from settings
+        3. User-configured source overrides (local file paths or git URLs)
 
         Returns:
             Dict mapping module_id to (module_id, display_name, description) tuples
@@ -205,7 +215,10 @@ class ProviderManager:
         import importlib
         import sys
 
+        from amplifier_module_resolution.sources import FileSource
         from amplifier_module_resolution.sources import GitSource
+
+        from .provider_sources import is_local_path
 
         providers: dict[str, tuple[str, str, str]] = {}
 
@@ -213,9 +226,13 @@ class ProviderManager:
         effective_sources = get_effective_provider_sources(self.config)
         for module_id, source_uri in effective_sources.items():
             try:
-                # Resolve source to cached path (uses same caching as runtime)
-                git_source = GitSource.from_uri(source_uri)
-                module_path = git_source.resolve()
+                # Resolve source to path - handle both local files and git URLs
+                if is_local_path(source_uri):
+                    file_source = FileSource(source_uri)
+                    module_path = file_source.resolve()
+                else:
+                    git_source = GitSource.from_uri(source_uri)
+                    module_path = git_source.resolve()
 
                 # Add to sys.path if not already there
                 path_str = str(module_path)

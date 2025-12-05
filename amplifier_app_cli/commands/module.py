@@ -587,6 +587,9 @@ def _run_behavioral_tests(module_path: str, module_type: str) -> bool:
     try:
         import amplifier_core
 
+        if amplifier_core.__file__ is None:
+            console.print("[red]amplifier-core __file__ not available - cannot locate behavioral tests[/red]")
+            return False
         core_path = Path(amplifier_core.__file__).parent
         test_file = core_path / "validation" / "behavioral" / f"test_{module_type}.py"
 
