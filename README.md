@@ -10,10 +10,10 @@ Command-line interface for the Amplifier AI-powered modular development platform
 
 ```bash
 # Try without installing
-uvx --from git+https://github.com/microsoft/amplifier@next amplifier
+uvx --from git+https://github.com/microsoft/amplifier amplifier
 
 # Install globally
-uv tool install git+https://github.com/microsoft/amplifier@next
+uv tool install git+https://github.com/microsoft/amplifier
 ```
 
 ## Quick Start
