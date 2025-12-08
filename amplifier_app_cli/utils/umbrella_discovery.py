@@ -21,7 +21,7 @@ class UmbrellaInfo:
     """Information about the umbrella package source."""
 
     url: str  # https://github.com/microsoft/amplifier
-    ref: str  # next, main, etc.
+    ref: str  # main, etc.
     commit_id: str | None
 
 
