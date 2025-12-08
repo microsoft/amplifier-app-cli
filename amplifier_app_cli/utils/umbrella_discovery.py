@@ -49,9 +49,13 @@ def discover_umbrella_source() -> UmbrellaInfo | None:
                 # Check if it's a git install
                 if "vcs_info" in direct_url:
                     logger.info(f"Discovered umbrella from package: {direct_url['url']}")
+                    ref = direct_url["vcs_info"].get("requested_revision", "main")
+                    # Migrate legacy @next installations to @main
+                    if ref == "next":
+                        ref = "main"
                     return UmbrellaInfo(
                         url=direct_url["url"],
-                        ref=direct_url["vcs_info"].get("requested_revision", "next"),
+                        ref=ref,
                         commit_id=direct_url["vcs_info"].get("commit_id"),
                     )
             except Exception as e:
