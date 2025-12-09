@@ -104,7 +104,7 @@ class TestSessionStore:
 
         # Corrupt the main transcript file
         transcript_file = temp_dir / session_id / "transcript.jsonl"
-        with open(transcript_file, "w") as f:
+        with open(transcript_file, "w", encoding="utf-8") as f:
             f.write("{ corrupt json }\n")
 
         # Load should recover from backup
@@ -124,7 +124,7 @@ class TestSessionStore:
 
         # Corrupt the main metadata file
         metadata_file = temp_dir / session_id / "metadata.json"
-        with open(metadata_file, "w") as f:
+        with open(metadata_file, "w", encoding="utf-8") as f:
             f.write("{ corrupt json")
 
         # Load should recover from backup
@@ -142,19 +142,19 @@ class TestSessionStore:
         transcript_file = temp_dir / session_id / "transcript.jsonl"
         backup_file = temp_dir / session_id / "transcript.jsonl.backup"
 
-        with open(transcript_file, "w") as f:
+        with open(transcript_file, "w", encoding="utf-8") as f:
             f.write("corrupt")
-        with open(backup_file, "w") as f:
+        with open(backup_file, "w", encoding="utf-8") as f:
             f.write("also corrupt")
 
         # Corrupt both metadata files too
         metadata_file = temp_dir / session_id / "metadata.json"
         metadata_backup = temp_dir / session_id / "metadata.json.backup"
 
-        with open(metadata_file, "w") as f:
+        with open(metadata_file, "w", encoding="utf-8") as f:
             f.write("corrupt")
         if metadata_backup.exists():
-            with open(metadata_backup, "w") as f:
+            with open(metadata_backup, "w", encoding="utf-8") as f:
                 f.write("also corrupt")
 
         # Should return empty transcript but not crash
@@ -355,7 +355,7 @@ class TestSessionStore:
         session_dir.mkdir()
 
         transcript_file = session_dir / "transcript.jsonl"
-        with open(transcript_file, "w") as f:
+        with open(transcript_file, "w", encoding="utf-8") as f:
             f.write('{"role": "user", "content": "line1"}\n')
             f.write("\n")  # Empty line
             f.write('{"role": "assistant", "content": "line2"}\n')
@@ -365,7 +365,7 @@ class TestSessionStore:
 
         # Write metadata
         metadata_file = session_dir / "metadata.json"
-        with open(metadata_file, "w") as f:
+        with open(metadata_file, "w", encoding="utf-8") as f:
             json.dump(sample_metadata, f)
 
         # Load should skip empty lines

@@ -229,7 +229,7 @@ class TestResumeErrorHandling:
         # Corrupt metadata file directly (using store's resolved base_dir)
         metadata_file = store.base_dir / session_id / "metadata.json"
         assert metadata_file.exists(), "Metadata file should exist before corruption"
-        with open(metadata_file, "w") as f:
+        with open(metadata_file, "w", encoding="utf-8") as f:
             f.write("{ corrupt json")
 
         # Try to resume - SessionStore recovers but we detect missing config
