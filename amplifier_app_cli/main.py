@@ -441,12 +441,16 @@ class CommandProcessor:
             render_effective_config(chain_dicts, chain_names, source_overrides, detailed=True)
 
             # Also show loaded agents (available at runtime)
+            # Note: agents can be a dict (resolved agents) or list/other format (profile config)
             loaded_agents = self.session.config.get("agents", {})
-            if loaded_agents:
-                console.print("[bold]Loaded Agents:[/bold]")
-                for name in sorted(loaded_agents.keys()):
-                    console.print(f"  {name}")
-                console.print()
+            if isinstance(loaded_agents, dict) and loaded_agents:
+                # Filter out profile config keys (dirs, include, inline) - only show resolved agent names
+                agent_names = [k for k in loaded_agents.keys() if k not in ("dirs", "include", "inline")]
+                if agent_names:
+                    console.print("[bold]Loaded Agents:[/bold]")
+                    for name in sorted(agent_names):
+                        console.print(f"  {name}")
+                    console.print()
 
             return ""  # Output already printed
         except Exception:
@@ -478,15 +482,22 @@ class CommandProcessor:
         Agents are loaded into session.config["agents"] via mount plan (compiler).
         """
         # Get pre-loaded agents from session config
+        # Note: agents can be a dict (resolved agents) or list/other format (profile config)
         all_agents = self.session.config.get("agents", {})
 
-        if not all_agents:
+        if not isinstance(all_agents, dict):
+            return "No agents available (agents not loaded as dict)"
+
+        # Filter out profile config keys - only show resolved agent entries
+        agent_items = {k: v for k, v in all_agents.items() if k not in ("dirs", "include", "inline") and isinstance(v, dict)}
+
+        if not agent_items:
             return "No agents available (check profile's agents configuration)"
 
         # Display each agent with full frontmatter (excluding instruction)
-        console.print(f"\n[bold]Available Agents[/bold] ({len(all_agents)} loaded)\n")
+        console.print(f"\n[bold]Available Agents[/bold] ({len(agent_items)} loaded)\n")
 
-        for name, config in sorted(all_agents.items()):
+        for name, config in sorted(agent_items.items()):
             # Agent name as header
             console.print(f"[bold cyan]{name}[/bold cyan]")
 
