@@ -428,35 +428,30 @@ class CommandProcessor:
         from .paths import create_config_manager
         from .paths import create_profile_loader
 
-        try:
-            loader = create_profile_loader()
-            config_manager = create_config_manager()
+        loader = create_profile_loader()
+        config_manager = create_config_manager()
 
-            # Load inheritance chain for source tracking
-            chain_names = loader.get_inheritance_chain(self.profile_name)
-            chain_dicts = loader.load_inheritance_chain_dicts(self.profile_name)
-            source_overrides = config_manager.get_module_sources()
+        # Load inheritance chain for source tracking
+        chain_names = loader.get_inheritance_chain(self.profile_name)
+        chain_dicts = loader.load_inheritance_chain_dicts(self.profile_name)
+        source_overrides = config_manager.get_module_sources()
 
-            # render_effective_config prints directly to console with rich formatting
-            render_effective_config(chain_dicts, chain_names, source_overrides, detailed=True)
+        # render_effective_config prints directly to console with rich formatting
+        render_effective_config(chain_dicts, chain_names, source_overrides, detailed=True)
 
-            # Also show loaded agents (available at runtime)
-            # Note: agents can be a dict (resolved agents) or list/other format (profile config)
-            loaded_agents = self.session.config.get("agents", {})
-            if isinstance(loaded_agents, dict) and loaded_agents:
-                # Filter out profile config keys (dirs, include, inline) - only show resolved agent names
-                agent_names = [k for k in loaded_agents.keys() if k not in ("dirs", "include", "inline")]
-                if agent_names:
-                    console.print("[bold]Loaded Agents:[/bold]")
-                    for name in sorted(agent_names):
-                        console.print(f"  {name}")
-                    console.print()
+        # Also show loaded agents (available at runtime)
+        # Note: agents can be a dict (resolved agents) or list/other format (profile config)
+        loaded_agents = self.session.config.get("agents", {})
+        if isinstance(loaded_agents, dict) and loaded_agents:
+            # Filter out profile config keys (dirs, include, inline) - only show resolved agent names
+            agent_names = [k for k in loaded_agents.keys() if k not in ("dirs", "include", "inline")]
+            if agent_names:
+                console.print("[bold]Loaded Agents:[/bold]")
+                for name in sorted(agent_names):
+                    console.print(f"  {name}")
+                console.print()
 
-            return ""  # Output already printed
-        except Exception:
-            # Fallback to raw JSON if profile loading fails
-            config_str = json.dumps(self.session.config, indent=2)
-            return f"Current Configuration:\n{config_str}"
+        return ""  # Output already printed
 
     async def _list_tools(self) -> str:
         """List available tools."""
