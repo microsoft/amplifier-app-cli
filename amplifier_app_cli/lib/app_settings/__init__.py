@@ -84,11 +84,27 @@ class AppSettings:
     def apply_provider_overrides_to_profile(
         self, profile: Profile, overrides: list[dict[str, Any]] | None = None
     ) -> Profile:
-        """Return a copy of `profile` with provider overrides applied."""
+        """Return a copy of `profile` with provider overrides applied.
+
+        This uses a FILTER + MERGE strategy:
+        - FILTER: Only providers that exist in overrides are included (prevents loading
+          providers the user hasn't configured, which would fail without API keys)
+        - MERGE: For providers that exist in both profile and overrides, config values
+          are merged (profile as base, override on top) so profile settings like
+          `debug: true` are preserved even if user only configured `model`
+
+        This ensures:
+        1. User selects Ollama → only Ollama loads (not Anthropic/OpenAI from profile)
+        2. User selects Anthropic → gets profile's debug settings + their model choice
+        """
         provider_overrides = overrides if overrides is not None else self.get_provider_overrides()
         if not provider_overrides:
             return profile
 
+        # Build set of override module IDs for filtering
+        override_ids = {entry.get("module") for entry in provider_overrides if entry.get("module")}
+
+        # Normalize overrides into a dict for merging
         normalized_overrides: dict[str, dict[str, Any]] = {}
         for entry in provider_overrides:
             module_id = entry.get("module")
@@ -101,18 +117,22 @@ class AppSettings:
 
         providers: list[ModuleConfig] = []
 
+        # FILTER: Only include profile providers that match an override
+        # MERGE: Combine profile config (base) with override config (on top)
         for provider in profile.providers or []:
-            override_entry = normalized_overrides.pop(provider.module, None)
-            if override_entry:
-                merged_config = {**(provider.config or {}), **(override_entry.get("config") or {})}
-                provider = ModuleConfig(
-                    module=provider.module,
-                    source=override_entry.get("source", provider.source),
-                    config=merged_config or None,
-                )
-            providers.append(provider)
+            if provider.module in override_ids:
+                override_entry = normalized_overrides.pop(provider.module, None)
+                if override_entry:
+                    # Merge: profile config as base, override config on top
+                    merged_config = {**(provider.config or {}), **(override_entry.get("config") or {})}
+                    provider = ModuleConfig(
+                        module=provider.module,
+                        source=override_entry.get("source", provider.source),
+                        config=merged_config or None,
+                    )
+                providers.append(provider)
 
-        # Append any additional providers specified only in overrides
+        # Add any override providers not in profile (e.g., Ollama when profile only has Anthropic/OpenAI)
         for _module_id, entry in normalized_overrides.items():
             providers.append(ModuleConfig.model_validate(entry))
 
