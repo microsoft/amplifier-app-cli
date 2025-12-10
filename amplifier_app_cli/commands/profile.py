@@ -403,16 +403,21 @@ def render_effective_config(
         source = sources.get("agents", "")
         source_str = format_source(source)
 
-        if agents_cfg.get("dirs"):
-            console.print(f"  dirs: {agents_cfg['dirs']}{source_str}")
-        if agents_cfg.get("include"):
-            console.print(f"  include: {agents_cfg['include']}{source_str}")
-        if agents_cfg.get("inline"):
-            inline_count = len(agents_cfg["inline"])
-            console.print(f"  inline: {inline_count} agent(s){source_str}")
-            if detailed:
-                for agent_name in agents_cfg["inline"]:
-                    console.print(f"    - {agent_name}")
+        # agents_cfg can be a dict (with dirs/include/inline) or other format
+        if isinstance(agents_cfg, dict):
+            if agents_cfg.get("dirs"):
+                console.print(f"  dirs: {agents_cfg['dirs']}{source_str}")
+            if agents_cfg.get("include"):
+                console.print(f"  include: {agents_cfg['include']}{source_str}")
+            if agents_cfg.get("inline"):
+                inline_count = len(agents_cfg["inline"])
+                console.print(f"  inline: {inline_count} agent(s){source_str}")
+                if detailed:
+                    for agent_name in agents_cfg["inline"]:
+                        console.print(f"    - {agent_name}")
+        else:
+            # Handle non-dict agents config (e.g., string reference)
+            console.print(f"  {agents_cfg}{source_str}")
 
 
 @profile.command(name="show")
