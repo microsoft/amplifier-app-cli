@@ -1,0 +1,38 @@
+name: "tool-web"
+description: "Phase 1 feature test: Web tool operations (web_fetch)"
+version: "1.0.0"
+author: "Amplifier Recipes Team"
+tags: ["test", "feature-test", "phase-1", "web-tools"]
+
+context:
+  test_url: "https://httpbin.org/status/200"
+
+steps:
+  - id: "test-fetch"
+    agent: "foundation:explorer"
+    prompt: |
+      Test the web_fetch tool by fetching this URL: {{test_url}}
+      
+      Use the web_fetch tool to retrieve the content. Verify the operation succeeds.
+      
+      Report:
+      - Whether the fetch succeeded
+      - Any content retrieved
+      - Any errors encountered
+    output: "fetch_result"
+    timeout: 45
+
+  - id: "validate"
+    agent: "result-validator"
+    prompt: |
+      Validate the web tool test results from the previous step.
+      
+      Test execution: {{fetch_result}}
+      
+      Verify:
+      1. The web_fetch tool was invoked
+      2. The fetch operation succeeded (no errors)
+      3. Content was returned from {{test_url}}
+      
+      Provide a clear PASS or FAIL verdict with evidence.
+    timeout: 45

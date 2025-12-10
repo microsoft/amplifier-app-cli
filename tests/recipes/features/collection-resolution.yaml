@@ -1,0 +1,36 @@
+name: "collection-resolution"
+description: "Test @mention path resolution for collection files via CLI"
+version: "1.0.0"
+author: "Amplifier Recipes Team"
+created: "2025-12-10T15:48:54Z"
+tags: ["phase1", "feature-test", "collection-resolution", "@mention"]
+
+steps:
+  - id: "read-collection-file"
+    agent: "foundation:explorer"
+    prompt: |
+      Use the read_file tool to read the file at this exact @mention path:
+      @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
+      
+      This tests whether the CLI correctly resolves @collection: style paths.
+      
+      Return the following in your response:
+      1. Whether read_file was successfully invoked with the @mention path
+      2. The first 500 characters of the file content (to verify successful read)
+      3. Whether the content contains expected philosophy keywords like "simplicity"
+    output: "collection_content"
+    timeout: 30
+
+  - id: "validate"
+    agent: "result-validator"
+    prompt: |
+      Validate this collection file resolution test result:
+      {{collection_content}}
+      
+      PASS criteria (ALL must be true):
+      1. read_file tool was invoked with @mention path (@foundation:context/IMPLEMENTATION_PHILOSOPHY.md)
+      2. File content was successfully returned (not an error)
+      3. Content contains philosophy-related terms (e.g., "simplicity", "philosophy", "principles")
+      
+      Provide clear PASS or FAIL verdict with evidence.
+    timeout: 30

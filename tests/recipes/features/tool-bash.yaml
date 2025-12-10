@@ -1,0 +1,33 @@
+name: "tool-bash-test"
+description: "Phase 1 feature test: Validates bash tool execution capability"
+version: "1.0.0"
+author: "Amplifier Recipes Team"
+tags: ["phase1", "feature-test", "bash", "tool-test"]
+
+steps:
+  - id: "execute-bash"
+    agent: "foundation:explorer"
+    prompt: |
+      Execute this bash command and return the output:
+      
+      echo "test-output" | wc -c
+      
+      This should return "12" (11 characters plus newline).
+      Use the bash tool to execute this command and report the exact output.
+    output: "bash_result"
+    timeout: 30
+
+  - id: "validate"
+    agent: "result-validator"
+    prompt: |
+      Validate the bash tool execution from the previous step.
+      
+      Result to validate: {{bash_result}}
+      
+      Check that:
+      1. The bash tool was successfully invoked
+      2. The command executed without errors
+      3. The output contains "12" (indicating 11 chars + newline)
+      
+      Provide a clear PASS or FAIL verdict.
+    timeout: 30
