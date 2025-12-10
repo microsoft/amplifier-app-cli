@@ -1,0 +1,84 @@
+name: "tool-filesystem"
+description: "Phase 1 feature test: Validates filesystem tool operations (read_file, write_file, glob)"
+version: "1.0.0"
+author: "Amplifier Recipes Team"
+created: "2025-12-10T15:55:30Z"
+tags: ["phase1", "feature-test", "filesystem", "tools"]
+
+context:
+  fixture_dir: "tests/recipes/fixtures"
+  fixture_file: "tests/recipes/fixtures/sample.txt"
+  output_file: "tests/recipes/fixtures/test-output.txt"
+  test_content: "Filesystem test output from recipe execution"
+
+steps:
+  - id: "test-read"
+    agent: "foundation:explorer"
+    prompt: |
+      Use the read_file tool to read the file at: {{fixture_file}}
+      
+      Return the complete content of the file exactly as it appears.
+    output: "read_result"
+    timeout: 30
+
+  - id: "test-glob"
+    agent: "foundation:explorer"
+    prompt: |
+      Use the glob tool to find all .txt files in: {{fixture_dir}}
+      
+      Pattern to use: {{fixture_dir}}/*.txt
+      
+      Return the list of matching files found.
+    output: "glob_result"
+    timeout: 30
+
+  - id: "test-write"
+    agent: "foundation:explorer"
+    prompt: |
+      Use the write_file tool to create a new file at: {{output_file}}
+      
+      Write this exact content: {{test_content}}
+      
+      Confirm the write operation completed successfully.
+    output: "write_result"
+    timeout: 30
+
+  - id: "validate"
+    agent: "result-validator"
+    prompt: |
+      Validate the filesystem tool operations completed successfully.
+      
+      **Validation Criteria:**
+      
+      1. READ OPERATION:
+         - read_result should contain content from sample.txt
+         - Must include: "Sample content for filesystem testing"
+         - Must include: "This file tests read_file operations"
+         - Must include: "Line three contains test data"
+      
+      2. GLOB OPERATION:
+         - glob_result should list files matching *.txt pattern
+         - Must include: sample.txt in the results
+         - Results should be from {{fixture_dir}} directory
+      
+      3. WRITE OPERATION:
+         - write_result should confirm successful write
+         - File {{output_file}} should have been created
+         - Content written: "{{test_content}}"
+      
+      **Results to validate:**
+      
+      Read result: {{read_result}}
+      
+      Glob result: {{glob_result}}
+      
+      Write result: {{write_result}}
+      
+      **Verdict Required:**
+      Respond with clear PASS or FAIL verdict.
+      - PASS if all three operations completed successfully
+      - FAIL if any operation failed or returned incorrect results
+      
+      Provide evidence for your verdict.
+    output: "validation_result"
+    timeout: 30
