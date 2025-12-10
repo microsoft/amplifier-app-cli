@@ -446,10 +446,10 @@ class CommandProcessor:
             # Filter out profile config keys (dirs, include, inline) - only show resolved agent names
             agent_names = [k for k in loaded_agents.keys() if k not in ("dirs", "include", "inline")]
             if agent_names:
+                console.print()  # Blank line after Agents: section
                 console.print("[bold]Loaded Agents:[/bold]")
                 for name in sorted(agent_names):
                     console.print(f"  {name}")
-                console.print()
 
         return ""  # Output already printed
 
