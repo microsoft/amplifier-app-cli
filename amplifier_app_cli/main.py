@@ -384,6 +384,7 @@ class CommandProcessor:
         """Get session status information."""
         lines = ["Session Status:"]
         lines.append(f"  Session ID: {self.session.coordinator.session_id}")
+        lines.append(f"  Profile: {self.profile_name}")
 
         # Plan mode status
         lines.append(f"  Plan Mode: {'ON' if self.plan_mode else 'OFF'}")
