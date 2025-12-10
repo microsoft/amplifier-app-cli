@@ -1,0 +1,49 @@
+name: "03-provider-loading"
+description: "Phase 0: Validate CLI provider module loading and model access"
+version: "1.0.0"
+author: "Amplifier Recipes Team"
+created: "2025-12-10T00:00:00Z"
+tags: ["smoke", "phase-0", "provider", "model-access"]
+
+# TEST OBJECTIVE:
+# Validates that the CLI correctly loads provider modules from configuration,
+# mounts them to the session, and enables agent access to AI models.
+#
+# This test verifies the complete provider integration chain:
+# 1. Provider module resolution from config
+# 2. Provider mounting to session
+# 3. Model routing and access through provider
+#
+# WHAT WE'RE TESTING (CLI Integration):
+# - Provider module loading from configuration
+# - Provider session mounting
+# - Model access through provider
+# - Provider routing works correctly
+#
+# SUCCESS CRITERIA:
+# - Agent reports provider name
+# - Agent reports model name
+# - Agent successfully accessed model (evidenced by coherent response)
+
+steps:
+  - id: "check-provider"
+    agent: "foundation:explorer"
+    prompt: |
+      What AI model provider are you using? Include the provider name and model name in your response.
+    output: "provider_info"
+    timeout: 30
+
+  - id: "validate"
+    agent: "result-validator"
+    prompt: |
+      Evaluate if the provider loading test passed based on this information:
+      
+      Provider Information: {{provider_info}}
+      
+      Validation Criteria:
+      - Provider name was reported
+      - Model name was reported
+      - Agent successfully accessed the AI model (evidenced by a coherent response)
+      
+      Provide your assessment with a clear verdict.
+    timeout: 30
