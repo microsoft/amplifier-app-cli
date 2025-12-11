@@ -13,12 +13,12 @@ recursion:
 context:
   # List of feature test recipes to execute
   feature_tests:
-    - "../features/agent-delegation.yaml"
-    - "../features/collection-resolution.yaml"
-    - "../features/tool-bash.yaml"
-    - "../features/tool-filesystem.yaml"
-    - "../features/tool-search.yaml"
-    - "../features/tool-web.yaml"
+    - "features/agent-delegation.yaml"
+    - "features/collection-resolution.yaml"
+    - "features/tool-bash.yaml"
+    - "features/tool-filesystem.yaml"
+    - "features/tool-search.yaml"
+    - "features/tool-web.yaml"
 
 steps:
   # Step 1: Execute all feature tests in parallel

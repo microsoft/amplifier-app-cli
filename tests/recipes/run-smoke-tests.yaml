@@ -13,8 +13,8 @@ recursion:
 context:
   # List of smoke test recipes to execute
   smoke_tests:
-    - "../smoke/agent-spawning.yaml"
-    - "../smoke/tool-loading.yaml"
+    - "smoke/agent-spawning.yaml"
+    - "smoke/tool-loading.yaml"
 
 steps:
   # Step 1: Execute all smoke tests in parallel
