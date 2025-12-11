@@ -1,0 +1,109 @@
+name: "run-feature-tests"
+description: "Execute feature tests in parallel and report results"
+version: "1.0.0"
+author: "Amplifier Testing Team"
+created: "2025-12-10T16:42:00Z"
+tags: ["testing", "feature-tests", "orchestration", "parallel"]
+
+# Recursion limits for orchestration
+recursion:
+  max_depth: 3
+  max_total_steps: 100
+
+context:
+  # List of feature test recipes to execute
+  feature_tests:
+    - "../features/agent-delegation.yaml"
+    - "../features/collection-resolution.yaml"
+    - "../features/tool-bash.yaml"
+    - "../features/tool-filesystem.yaml"
+    - "../features/tool-search.yaml"
+    - "../features/tool-web.yaml"
+
+steps:
+  # Step 1: Execute all feature tests in parallel
+  - id: "run-tests"
+    type: "recipe"
+    foreach: "{{feature_tests}}"
+    as: "test_recipe"
+    parallel: true
+    collect: "test_results"
+    recipe: "{{test_recipe}}"
+    context: {}  # Tests don't require context
+    timeout: 900  # 15 minutes per test
+    retry:
+      max_attempts: 2
+      backoff: "exponential"
+      initial_delay: 5
+    on_error: "continue"  # Continue even if some tests fail
+
+  # Step 2: Synthesize test results and generate summary report
+  - id: "synthesize-results"
+    agent: "developer-expertise:zen-architect"
+    mode: "ANALYZE"
+    prompt: |
+      Analyze these feature test results and generate a comprehensive summary report:
+
+      Test Results:
+      {{test_results}}
+
+      Generate a summary report with:
+      1. **Test Suite**: Feature Tests
+      2. **Total Tests Run**: [count]
+      3. **Tests Passed**: [count]
+      4. **Tests Failed**: [count]
+      5. **Pass Rate**: [percentage]
+      6. **Test Breakdown**: Status for each test:
+         - agent-delegation
+         - collection-resolution
+         - tool-bash
+         - tool-filesystem
+         - tool-search
+         - tool-web
+      7. **Failures Details**: If any tests failed, provide detailed analysis
+      8. **Common Patterns**: Any patterns in failures (e.g., network issues, timing)
+      9. **Overall Status**: PASS or FAIL
+
+      Format the report in clear markdown with sections for easy scanning.
+    output: "summary_report"
+    timeout: 300
+
+  # Step 3: Final validation with clear pass/fail verdict
+  - id: "validate-results"
+    agent: "result-validator"
+    prompt: |
+      Validate the feature test suite results and provide a clear verdict.
+
+      Summary Report:
+      {{summary_report}}
+
+      Validation Criteria:
+      - ALL feature tests must pass
+      - Any single failure means the suite fails
+      - Report must clearly indicate pass/fail status for each test
+
+      Provide your verdict in this exact format:
+
+      VERDICT: [FEATURE_TESTS_PASS or FEATURE_TESTS_FAIL]
+
+      RATIONALE:
+      [Brief explanation of verdict with specific test results]
+
+      FAILED TESTS (if any):
+      [List of failed tests with brief failure reason]
+
+      RECOMMENDATION:
+      [Action items if tests failed, or confirmation if passed]
+    output: "final_verdict"
+    timeout: 180
+
+# Usage:
+#   amplifier recipes execute orchestrators/run-feature-tests.yaml
+#
+# This orchestrator:
+# - Runs 6 feature tests in parallel for speed (~6x speedup)
+# - Collects all results automatically
+# - Generates comprehensive summary report with per-test breakdown
+# - Provides clear PASS/FAIL verdict
+# - Continues execution even if individual tests fail (to get full picture)
+# - Takes ~10-15 minutes total (vs ~60 minutes sequential)
