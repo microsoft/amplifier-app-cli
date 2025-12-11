@@ -36,7 +36,7 @@ steps:
     timeout: 30
 
   - id: "validate"
-    agent: "result-validator"
+    agent: "recipes:result-validator"
     prompt: |
       Evaluate whether the CLI successfully loaded tool modules and made them accessible to the agent.
       

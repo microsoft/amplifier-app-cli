@@ -22,7 +22,7 @@ steps:
     timeout: 30
 
   - id: "validate"
-    agent: "result-validator"
+    agent: "recipes:result-validator"
     prompt: |
       You are a result validator. Review this response and determine if it's valid:
       

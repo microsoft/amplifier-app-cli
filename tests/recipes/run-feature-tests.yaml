@@ -70,7 +70,7 @@ steps:
 
   # Step 3: Final validation with clear pass/fail verdict
   - id: "validate-results"
-    agent: "result-validator"
+    agent: "recipes:result-validator"
     prompt: |
       Validate the feature test suite results and provide a clear verdict.
 

@@ -22,7 +22,7 @@ steps:
     timeout: 30
 
   - id: "validate"
-    agent: "result-validator"
+    agent: "recipes:result-validator"
     prompt: |
       Validate this collection file resolution test result:
       {{collection_content}}

@@ -44,7 +44,7 @@ steps:
     timeout: 30
 
   - id: "validate"
-    agent: "result-validator"
+    agent: "recipes:result-validator"
     prompt: |
       Validate the filesystem tool operations completed successfully.
       

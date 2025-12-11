@@ -36,7 +36,7 @@ steps:
   # Step 2: Validate delegation behavior
   # The result-validator checks that the delegation mechanism worked correctly
   - id: "validate"
-    agent: "result-validator"
+    agent: "recipes:result-validator"
     timeout: 60
     prompt: |
       Validate the agent delegation test results:

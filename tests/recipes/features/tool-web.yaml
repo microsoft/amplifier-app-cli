@@ -23,7 +23,7 @@ steps:
     timeout: 45
 
   - id: "validate"
-    agent: "result-validator"
+    agent: "recipes:result-validator"
     prompt: |
       Validate the web tool test results from the previous step.
       

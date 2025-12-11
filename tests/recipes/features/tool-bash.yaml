@@ -18,7 +18,7 @@ steps:
     timeout: 30
 
   - id: "validate"
-    agent: "result-validator"
+    agent: "recipes:result-validator"
     prompt: |
       Validate the bash tool execution from the previous step.
       
