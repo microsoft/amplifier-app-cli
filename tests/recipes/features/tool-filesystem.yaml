@@ -6,9 +6,9 @@ created: "2025-12-10T15:55:30Z"
 tags: ["phase1", "feature-test", "filesystem", "tools"]
 
 context:
-  fixture_dir: "amplifier-app-cli/tests/recipes/fixtures"
-  fixture_file: "amplifier-app-cli/tests/recipes/fixtures/sample.txt"
-  output_file: "amplifier-app-cli/tests/recipes/fixtures/test-output.txt"
+  fixture_dir: "tests/recipes/fixtures"
+  fixture_file: "tests/recipes/fixtures/sample.txt"
+  output_file: "tests/recipes/fixtures/test-output.txt"
   test_content: "Filesystem test output from recipe execution"
 
 steps:

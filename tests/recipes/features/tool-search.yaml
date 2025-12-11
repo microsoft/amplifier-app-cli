@@ -6,7 +6,7 @@ created: "2025-12-10T15:49:07Z"
 tags: ["phase1", "feature-test", "tools", "grep", "search", "cli"]
 
 context:
-  fixtures_dir: "amplifier-app-cli/tests/recipes/fixtures"
+  fixtures_dir: "tests/recipes/fixtures"
   search_pattern: "def test_function"
   expected_file: "sample-code.py"
 
