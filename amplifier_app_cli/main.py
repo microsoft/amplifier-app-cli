@@ -484,7 +484,9 @@ class CommandProcessor:
             return "No agents available (agents not loaded as dict)"
 
         # Filter out profile config keys - only show resolved agent entries
-        agent_items = {k: v for k, v in all_agents.items() if k not in ("dirs", "include", "inline") and isinstance(v, dict)}
+        agent_items = {
+            k: v for k, v in all_agents.items() if k not in ("dirs", "include", "inline") and isinstance(v, dict)
+        }
 
         if not agent_items:
             return "No agents available (check profile's agents configuration)"

@@ -336,13 +336,16 @@ def get_agent_search_paths() -> list[Path]:
     Search order (highest precedence first):
     1. Project agents (.amplifier/agents/)
     2. User agents (~/.amplifier/agents/)
-    3. Collection agents (via CollectionResolver - DRY!)
-    4. Bundled agents (package data)
+    3. Bundle agents (foundation, etc. via AppBundleDiscovery)
+    4. Collection agents (via CollectionResolver - DRY!)
+    5. Bundled agents (package data)
 
     Returns:
         List of paths to search for agents
     """
     from amplifier_collections import discover_collection_resources
+
+    from .lib.bundle_loader import AppBundleDiscovery
 
     paths = []
 
@@ -355,6 +358,19 @@ def get_agent_search_paths() -> list[Path]:
     user_agents = Path.home() / ".amplifier" / "agents"
     if user_agents.exists():
         paths.append(user_agents)
+
+    # Bundle agents (foundation, etc.) - per BUNDLE_CONVENTIONS: "agents ARE bundles"
+    bundle_discovery = AppBundleDiscovery()
+    for bundle_name in bundle_discovery.list_bundles():
+        bundle_uri = bundle_discovery.find(bundle_name)
+        if bundle_uri and bundle_uri.startswith("file://"):
+            bundle_path = Path(bundle_uri[7:])  # Strip file:// prefix
+            # For file bundles, bundle_path may be the .md/.yaml file, get parent
+            if bundle_path.is_file():
+                bundle_path = bundle_path.parent
+            agents_dir = bundle_path / "agents"
+            if agents_dir.exists() and agents_dir not in paths:
+                paths.append(agents_dir)
 
     # Collection agents (USE LIBRARY MECHANISMS - DRY!)
     resolver = create_collection_resolver()
