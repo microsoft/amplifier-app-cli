@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class EffectiveConfigSummary:
     """Summary of effective configuration for display."""
 
-    profile: str
+    profile: str  # Can be profile name or "bundle:name" format
     provider_name: str  # Friendly name (e.g., "Azure OpenAI")
     provider_module: str  # Module ID (e.g., "provider-azure-openai")
     model: str
@@ -29,8 +29,15 @@ class EffectiveConfigSummary:
 
         Returns:
             Formatted string like "Profile: dev | Provider: Azure OpenAI | gpt-5-codex"
+            or "Bundle: foundation | Provider: Anthropic | claude-sonnet-4-5"
         """
-        return f"Profile: {self.profile} | Provider: {self.provider_name} | {self.model}"
+        # Detect if this is a bundle (format: "bundle:name") or profile
+        if self.profile.startswith("bundle:"):
+            bundle_name = self.profile.replace("bundle:", "")
+            source_label = f"Bundle: {bundle_name}"
+        else:
+            source_label = f"Profile: {self.profile}"
+        return f"{source_label} | Provider: {self.provider_name} | {self.model}"
 
 
 def get_effective_config_summary(

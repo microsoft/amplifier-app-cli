@@ -43,6 +43,8 @@ from .console import Markdown
 from .console import console
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
+from .lib.mention_loading.deduplicator import ContentDeduplicator
+from .lib.mention_loading.resolver import MentionResolver
 from .paths import create_module_resolver
 from .paths import create_profile_loader
 from .session_store import SessionStore
@@ -140,7 +142,7 @@ def _completion_already_installed(config_file: Path, shell: str) -> bool:
         content = config_file.read_text(encoding="utf-8")
         completion_marker = f"_AMPLIFIER_COMPLETE={shell}_source"
         return completion_marker in content
-    except Exception:
+    except OSError:
         return False
 
 
@@ -164,7 +166,7 @@ def _can_safely_modify(config_file: Path) -> bool:
         try:
             parent.mkdir(parents=True, exist_ok=True)
             return True
-        except Exception:
+        except OSError:
             return False
 
     return os.access(parent, os.W_OK)
@@ -207,7 +209,7 @@ def _install_completion_to_config(config_file: Path, shell: str) -> bool:
 
         return True
 
-    except Exception:
+    except OSError:
         return False
 
 
@@ -444,7 +446,7 @@ class CommandProcessor:
         loaded_agents = self.session.config.get("agents", {})
         if isinstance(loaded_agents, dict) and loaded_agents:
             # Filter out profile config keys (dirs, include, inline) - only show resolved agent names
-            agent_names = [k for k in loaded_agents.keys() if k not in ("dirs", "include", "inline")]
+            agent_names = [k for k in loaded_agents if k not in ("dirs", "include", "inline")]
             if agent_names:
                 console.print()  # Blank line after Agents: section
                 console.print("[bold]Loaded Agents:[/bold]")
@@ -766,7 +768,126 @@ async def _process_profile_mentions(session: AmplifierSession, profile_name: str
     except (FileNotFoundError, ValueError) as e:
         # Profile not found or invalid - skip mention processing
         logger.warning(f"Failed to process profile @mentions: {e}")
-        pass
+
+
+async def _process_bundle_mentions(session: AmplifierSession, bundle_name: str) -> None:
+    """Process context files and @mentions from bundle configuration.
+
+    Handles two sources of context:
+    1. context.include section in frontmatter - explicitly listed context files
+    2. @mentions in markdown body - inline file references
+
+    Args:
+        session: Active session to add context messages to
+        bundle_name: Name of the bundle (without "bundle:" prefix)
+    """
+    import logging
+
+    from amplifier_core.message_models import Message
+
+    from .lib.mention_loading import MentionLoader
+    from .paths import create_bundle_resolver
+    from .utils.mentions import has_mentions
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        logger.info(f"Processing context for bundle: {bundle_name}")
+
+        # Load bundle to get instruction and context
+        bundle_resolver = create_bundle_resolver()
+        bundle = await bundle_resolver.load(bundle_name)
+
+        context_parts = []
+
+        # 1. Load context files from frontmatter (context.include section)
+        if bundle.context:
+            logger.info(f"Loading {len(bundle.context)} context files from bundle frontmatter")
+            for context_name, context_path in bundle.context.items():
+                try:
+                    if context_path.exists():
+                        file_content = context_path.read_text(encoding="utf-8")
+                        context_parts.append(f"# Context: {context_name}\n\n{file_content}")
+                        logger.debug(f"Loaded context file: {context_name} ({len(file_content)} chars)")
+                    else:
+                        logger.warning(f"Context file not found: {context_path}")
+                except OSError as e:
+                    logger.warning(f"Failed to load context file {context_name}: {e}")
+
+        # 2. Get markdown body (system instruction) from bundle
+        markdown_body = bundle.get_system_instruction()
+
+        # 3. Process @mentions in markdown body if present
+        if markdown_body and has_mentions(markdown_body):
+            logger.info("Processing @mentions in bundle markdown body...")
+
+            # Load @mentioned files with session-wide deduplicator
+            mention_resolver = session.coordinator.get_capability("mention_resolver")
+            loader = MentionLoader(resolver=mention_resolver)
+            deduplicator = session.coordinator.get_capability("mention_deduplicator")
+
+            # Use bundle base_path as relative_to for resolving @mentions
+            relative_to = bundle.base_path or Path.cwd()
+            mention_messages = loader.load_mentions(markdown_body, relative_to=relative_to, deduplicator=deduplicator)
+
+            logger.info(f"Loaded {len(mention_messages)} files from @mentions")
+
+            # Extract text content from mention messages
+            for msg in mention_messages:
+                if isinstance(msg.content, str):
+                    context_parts.append(msg.content)
+                elif isinstance(msg.content, list):
+                    # Handle structured content (ContentBlocks) - extract text from TextBlock types
+                    text_parts = []
+                    for block in msg.content:
+                        if block.type == "text":
+                            text_parts.append(block.text)
+                        else:
+                            text_parts.append(str(block))
+                    context_parts.append("".join(text_parts))
+                else:
+                    context_parts.append(str(msg.content))
+
+        # 4. Combine all context and add as system message
+        context_manager = session.coordinator.get("context")
+
+        if context_parts or markdown_body:
+            # Build final system message: context files + markdown body
+            final_content_parts = []
+            if context_parts:
+                final_content_parts.append("\n\n".join(context_parts))
+            if markdown_body:
+                final_content_parts.append(markdown_body)
+
+            final_content = "\n\n---\n\n".join(final_content_parts)
+
+            system_msg = Message(role="system", content=final_content)
+            logger.info(
+                f"Adding bundle system message ({len(final_content)} chars, {len(context_parts)} context files)"
+            )
+            await context_manager.add_message(system_msg.model_dump())
+
+        # Verify messages were added
+        all_messages = await context_manager.get_messages()
+        logger.debug(f"Total messages in context after processing: {len(all_messages)}")
+
+    except Exception as e:
+        # Bundle not found or invalid - skip mention processing
+        logger.warning(f"Failed to process bundle context: {e}")
+
+
+async def _process_mentions(session: AmplifierSession, config_source_name: str) -> None:
+    """Process @mentions for either profile or bundle based on config source.
+
+    Args:
+        session: Active session to add context messages to
+        config_source_name: Config source like "bundle:foundation" or "dev"
+    """
+    if config_source_name.startswith("bundle:"):
+        bundle_name = config_source_name[7:]  # Remove "bundle:" prefix
+        await _process_bundle_mentions(session, bundle_name)
+    else:
+        await _process_profile_mentions(session, config_source_name)
 
 
 def _create_prompt_session() -> PromptSession:
@@ -796,7 +917,7 @@ def _create_prompt_session() -> PromptSession:
     # Try to use file history, fallback to in-memory
     try:
         history = FileHistory(str(history_path))
-    except Exception as e:
+    except OSError as e:
         # Fallback if history file is corrupted or inaccessible
         history = InMemoryHistory()
         logger.warning(f"Could not load history from {history_path}: {e}. Using in-memory history for this session.")
@@ -824,10 +945,53 @@ def _create_prompt_session() -> PromptSession:
     )
 
 
+def _register_mention_handling(
+    session: AmplifierSession,
+    profile_name: str,
+    bundle_base_path: Path | None = None,
+) -> None:
+    """Register MentionResolver and ContentDeduplicator capabilities on a session.
+
+    This is app-layer policy for @mention resolution. It handles both profile
+    and bundle modes by detecting the "bundle:" prefix in profile_name.
+
+    Args:
+        session: The AmplifierSession to register capabilities on
+        profile_name: Profile or bundle name (e.g., "dev" or "bundle:foundation")
+        bundle_base_path: Base path of the bundle for @mention resolution (bundle mode only)
+    """
+    # Determine bundle override for @mention resolution
+    bundle_override = None
+    if profile_name.startswith("bundle:") and bundle_base_path:
+        bundle_name = profile_name[7:]  # Remove "bundle:" prefix
+        bundle_override = (bundle_name, bundle_base_path)
+
+    mention_resolver = MentionResolver(bundle_override=bundle_override)
+    session.coordinator.register_capability("mention_resolver", mention_resolver)
+
+    # Register session-wide ContentDeduplicator for @mention deduplication
+    mention_deduplicator = ContentDeduplicator()
+    session.coordinator.register_capability("mention_deduplicator", mention_deduplicator)
+
+
 async def interactive_chat(
-    config: dict, search_paths: list[Path], verbose: bool, session_id: str | None = None, profile_name: str = "default"
+    config: dict,
+    search_paths: list[Path],
+    verbose: bool,
+    session_id: str | None = None,
+    profile_name: str = "unknown",
+    bundle_base_path: Path | None = None,
 ):
-    """Run an interactive chat session."""
+    """Run an interactive chat session.
+
+    Args:
+        config: Resolved mount plan configuration
+        search_paths: Module search paths
+        verbose: Enable verbose output
+        session_id: Optional session ID (generated if not provided)
+        profile_name: Profile or bundle name (e.g., "dev" or "bundle:foundation")
+        bundle_base_path: Base path of the bundle for @mention resolution (bundle mode only)
+    """
     # Generate session ID if not provided
     if not session_id:
         session_id = str(uuid.uuid4())
@@ -845,16 +1009,8 @@ async def interactive_chat(
     resolver = create_module_resolver()
     await session.coordinator.mount("module-source-resolver", resolver)
 
-    # Register MentionResolver capability for tools (app-layer policy)
-    from amplifier_app_cli.lib.mention_loading.deduplicator import ContentDeduplicator
-    from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
-
-    mention_resolver = MentionResolver()
-    session.coordinator.register_capability("mention_resolver", mention_resolver)
-
-    # Register session-wide ContentDeduplicator for @mention deduplication (app-layer policy)
-    mention_deduplicator = ContentDeduplicator()
-    session.coordinator.register_capability("mention_deduplicator", mention_deduplicator)
+    # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
+    _register_mention_handling(session, profile_name, bundle_base_path)
 
     # Show loading indicator during initialization (modules loading, etc.)
     # Temporarily suppress amplifier_core error logs during init - we'll show clean error panel if it fails
@@ -879,8 +1035,8 @@ async def interactive_chat(
         # Restore log level on success path
         core_logger.setLevel(original_level)
 
-    # Process profile @mentions if profile has markdown body
-    await _process_profile_mentions(session, profile_name)
+    # Process @mentions (profile or bundle based on config source name)
+    await _process_mentions(session, profile_name)
 
     # Register CLI approval provider if approval hook is active (app-layer policy)
     from .approval_provider import CLIApprovalProvider
@@ -1046,6 +1202,7 @@ async def execute_single(
     session_id: str | None = None,
     profile_name: str = "unknown",
     output_format: str = "text",
+    bundle_base_path: Path | None = None,
 ):
     """Execute a single prompt and exit."""
     # In JSON mode, redirect all output to stderr so only JSON goes to stdout
@@ -1092,8 +1249,11 @@ async def execute_single(
                 hooks.register("tool:pre", trace_collector.on_tool_pre, priority=1000, name="trace_collector_pre")
                 hooks.register("tool:post", trace_collector.on_tool_post, priority=1000, name="trace_collector_post")
 
-        # Process profile @mentions if profile has markdown body
-        await _process_profile_mentions(session, profile_name)
+        # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
+        _register_mention_handling(session, profile_name, bundle_base_path)
+
+        # Process @mentions (profile or bundle based on config source name)
+        await _process_mentions(session, profile_name)
 
         # Register CLI approval provider if approval hook is active (app-layer policy)
         from .approval_provider import CLIApprovalProvider
@@ -1235,6 +1395,7 @@ async def execute_single_with_session(
     initial_transcript: list[dict],
     profile_name: str = "unknown",
     output_format: str = "text",
+    bundle_base_path: Path | None = None,
 ):
     """Execute a single prompt with restored session context."""
     # In JSON mode, redirect all output to stderr
@@ -1296,8 +1457,11 @@ async def execute_single_with_session(
             approval_provider = CLIApprovalProvider(console)
             register_provider(approval_provider)
 
-        # Process profile @mentions
-        await _process_profile_mentions(session, profile_name)
+        # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
+        _register_mention_handling(session, profile_name, bundle_base_path)
+
+        # Process config @mentions (works for both profiles and bundles)
+        await _process_mentions(session, profile_name)
 
         # Process runtime @mentions in user input
         await _process_runtime_mentions(session, prompt)
@@ -1440,8 +1604,19 @@ async def interactive_chat_with_session(
     session_id: str,
     initial_transcript: list[dict],
     profile_name: str = "unknown",
+    bundle_base_path: Path | None = None,
 ):
-    """Run an interactive chat session with restored context."""
+    """Run an interactive chat session with restored context.
+
+    Args:
+        config: Resolved mount plan configuration
+        search_paths: Module search paths
+        verbose: Enable verbose output
+        session_id: Session ID to resume
+        initial_transcript: Previous conversation messages
+        profile_name: Profile or bundle name (e.g., "dev" or "bundle:foundation")
+        bundle_base_path: Base path of the bundle for @mention resolution (bundle mode only)
+    """
     # Create CLI UX systems (app-layer policy)
     approval_system, display_system = _create_cli_ux_systems()
 
@@ -1451,11 +1626,13 @@ async def interactive_chat_with_session(
     )
 
     # Mount module source resolver (app-layer policy)
-
     resolver = create_module_resolver()
     await session.coordinator.mount("module-source-resolver", resolver)
 
     await session.initialize()
+
+    # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
+    _register_mention_handling(session, profile_name, bundle_base_path)
 
     # Register CLI approval provider if approval hook is active (app-layer policy)
     from .approval_provider import CLIApprovalProvider

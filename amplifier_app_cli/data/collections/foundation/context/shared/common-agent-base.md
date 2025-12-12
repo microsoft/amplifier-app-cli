@@ -1,6 +1,6 @@
 # Agent Core Instructions
 
-Operational guidance: @foundation:context/IMPLEMENTATION_PHILOSOPHY.md and @foudation:context/MODULAR_DESIGN_PHILOSOPHY.md
+Operational guidance: @foundation:context/IMPLEMENTATION_PHILOSOPHY.md and @foundation:context/MODULAR_DESIGN_PHILOSOPHY.md
 
 ## 💎 CRITICAL: Respect User Time - Test Before Presenting
 

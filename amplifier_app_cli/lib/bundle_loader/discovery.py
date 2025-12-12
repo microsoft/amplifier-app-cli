@@ -182,23 +182,25 @@ class AppBundleDiscovery:
             name: Bundle name (may contain / for nested paths).
 
         Returns:
-            file:// URI if found, None otherwise.
+            file:// URI pointing to the bundle directory (for directory bundles)
+            or the bundle file (for single-file bundles). None if not found.
         """
         # Handle nested names (e.g., "foundation/providers/anthropic")
         name_path = Path(name)
         target_dir = base_path / name_path
 
-        # Check directory bundle formats
+        # Check directory bundle formats - return directory URI for consistency
+        # with _find_packaged_bundle() which also returns directory URIs
         if target_dir.is_dir():
             bundle_md = target_dir / "bundle.md"
             if bundle_md.exists():
-                return f"file://{bundle_md.resolve()}"
+                return f"file://{target_dir.resolve()}"
 
             bundle_yaml = target_dir / "bundle.yaml"
             if bundle_yaml.exists():
-                return f"file://{bundle_yaml.resolve()}"
+                return f"file://{target_dir.resolve()}"
 
-        # Check single file formats
+        # Check single file formats - return file URI (no directory exists)
         yaml_file = base_path / f"{name}.yaml"
         if yaml_file.exists():
             return f"file://{yaml_file.resolve()}"
@@ -256,8 +258,8 @@ class AppBundleDiscovery:
         """
         bundles: set[str] = set()
 
-        # Foundation is always available
-        bundles.add("foundation")
+        # Add packaged bundles (foundation, and future bundles)
+        bundles.update(PACKAGED_BUNDLES.keys())
 
         # Add registered bundles
         bundles.update(self._registry.keys())

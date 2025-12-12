@@ -12,6 +12,7 @@ from amplifier_collections import CollectionResolver
 from amplifier_config import ConfigManager
 from amplifier_config import ConfigPaths
 from amplifier_config import Scope
+from amplifier_foundation import BundleResolver
 from amplifier_module_resolution import StandardModuleSourceResolver
 from amplifier_profiles import ProfileLoader
 
@@ -27,6 +28,38 @@ _SCOPE_MAP: dict[ScopeType, Scope] = {
     "project": Scope.PROJECT,
     "global": Scope.USER,
 }
+
+# ===== COMMON PATH HELPERS =====
+
+
+def _get_user_and_project_paths(resource_type: str, *, check_exists: bool = True) -> list[Path]:
+    """Get project and user paths for a resource type.
+
+    This is a DRY helper that extracts the common pattern of:
+    1. Check project .amplifier/<resource_type>/ (highest precedence)
+    2. Check user ~/.amplifier/<resource_type>/
+
+    Args:
+        resource_type: The subdirectory name (e.g., "profiles", "bundles", "agents")
+        check_exists: If True, only include paths that exist. If False, include all.
+
+    Returns:
+        List of paths in precedence order (project first, then user)
+    """
+    paths = []
+
+    # Project (highest precedence)
+    project_path = Path.cwd() / ".amplifier" / resource_type
+    if not check_exists or project_path.exists():
+        paths.append(project_path)
+
+    # User
+    user_path = Path.home() / ".amplifier" / resource_type
+    if not check_exists or user_path.exists():
+        paths.append(user_path)
+
+    return paths
+
 
 # ===== CONFIG PATHS =====
 
@@ -221,17 +254,9 @@ def get_profile_search_paths() -> list[Path]:
     from amplifier_collections import discover_collection_resources
 
     package_dir = Path(__file__).parent
-    paths = []
 
-    # Project (highest precedence)
-    project_profiles = Path.cwd() / ".amplifier" / "profiles"
-    if project_profiles.exists():
-        paths.append(project_profiles)
-
-    # User
-    user_profiles = Path.home() / ".amplifier" / "profiles"
-    if user_profiles.exists():
-        paths.append(user_profiles)
+    # Project and user paths (highest precedence)
+    paths = _get_user_and_project_paths("profiles")
 
     # Collection profiles (USE LIBRARY MECHANISMS - DRY!)
     # This replaces manual iteration with library mechanism
@@ -328,51 +353,126 @@ def create_profile_loader(
     )
 
 
-def get_agent_search_paths() -> list[Path]:
-    """Get CLI-specific agent search paths using library mechanisms (DRY).
+def get_bundle_search_paths() -> list[Path]:
+    """Get CLI-specific bundle search paths (APP LAYER POLICY).
 
-    Identical pattern to get_profile_search_paths() but for agents.
+    Search order (highest precedence first):
+    1. Project bundles (.amplifier/bundles/)
+    2. User bundles (~/.amplifier/bundles/)
+    3. Bundled bundles (package data/bundles/)
+
+    Returns:
+        List of paths to search for bundles
+    """
+    package_dir = Path(__file__).parent
+
+    # Project and user paths (highest precedence)
+    paths = _get_user_and_project_paths("bundles")
+
+    # Bundled (lowest)
+    bundled = package_dir / "data" / "bundles"
+    if bundled.exists():
+        paths.append(bundled)
+
+    return paths
+
+
+def create_bundle_resolver(
+    collection_resolver: CollectionResolver | None = None,
+) -> BundleResolver:
+    """Create CLI-configured bundle resolver with dependencies.
+
+    Args:
+        collection_resolver: Optional collection resolver (creates one if not provided)
+
+    Returns:
+        BundleResolver with CLI-specific discovery injected
+    """
+    if collection_resolver is None:
+        collection_resolver = create_collection_resolver()
+
+    from .lib.bundle_loader import AppBundleDiscovery
+
+    discovery = AppBundleDiscovery(
+        search_paths=get_bundle_search_paths(),
+        collection_resolver=collection_resolver,
+    )
+
+    return BundleResolver(discovery=discovery)
+
+
+def get_agent_search_paths_for_bundle(bundle_name: str | None = None) -> list[Path]:
+    """Get agent search paths when using BUNDLE mode.
+
+    Only includes bundle-specific agents, NOT profile/collection agents.
+    This ensures clean separation: bundles use bundle stuff only.
 
     Search order (highest precedence first):
     1. Project agents (.amplifier/agents/)
     2. User agents (~/.amplifier/agents/)
-    3. Bundle agents (foundation, etc. via AppBundleDiscovery)
-    4. Collection agents (via CollectionResolver - DRY!)
-    5. Bundled agents (package data)
+    3. Specific bundle's agents (if bundle_name provided)
+    4. All discoverable bundle agents (foundation, etc.)
+
+    Args:
+        bundle_name: Optional specific bundle to load agents from
 
     Returns:
-        List of paths to search for agents
+        List of paths to search for agents (bundle sources only)
     """
-    from amplifier_collections import discover_collection_resources
-
     from .lib.bundle_loader import AppBundleDiscovery
 
-    paths = []
+    # Project and user paths (highest precedence) - user's own agents always included
+    paths = _get_user_and_project_paths("agents")
 
-    # Project (highest precedence)
-    project_agents = Path.cwd() / ".amplifier" / "agents"
-    if project_agents.exists():
-        paths.append(project_agents)
-
-    # User
-    user_agents = Path.home() / ".amplifier" / "agents"
-    if user_agents.exists():
-        paths.append(user_agents)
-
-    # Bundle agents (foundation, etc.) - per BUNDLE_CONVENTIONS: "agents ARE bundles"
+    # Bundle agents only (NO collections)
     bundle_discovery = AppBundleDiscovery()
-    for bundle_name in bundle_discovery.list_bundles():
+
+    if bundle_name:
+        # If specific bundle requested, prioritize its agents
         bundle_uri = bundle_discovery.find(bundle_name)
         if bundle_uri and bundle_uri.startswith("file://"):
-            bundle_path = Path(bundle_uri[7:])  # Strip file:// prefix
-            # For file bundles, bundle_path may be the .md/.yaml file, get parent
+            bundle_path = Path(bundle_uri[7:])
             if bundle_path.is_file():
                 bundle_path = bundle_path.parent
             agents_dir = bundle_path / "agents"
             if agents_dir.exists() and agents_dir not in paths:
                 paths.append(agents_dir)
+    else:
+        # Load all discoverable bundle agents
+        for b_name in bundle_discovery.list_bundles():
+            bundle_uri = bundle_discovery.find(b_name)
+            if bundle_uri and bundle_uri.startswith("file://"):
+                bundle_path = Path(bundle_uri[7:])
+                if bundle_path.is_file():
+                    bundle_path = bundle_path.parent
+                agents_dir = bundle_path / "agents"
+                if agents_dir.exists() and agents_dir not in paths:
+                    paths.append(agents_dir)
 
-    # Collection agents (USE LIBRARY MECHANISMS - DRY!)
+    return paths
+
+
+def get_agent_search_paths_for_profile() -> list[Path]:
+    """Get agent search paths when using PROFILE mode.
+
+    Only includes profile/collection agents, NOT bundle agents.
+    This ensures clean separation: profiles use profile/collection stuff only.
+
+    Search order (highest precedence first):
+    1. Project agents (.amplifier/agents/)
+    2. User agents (~/.amplifier/agents/)
+    3. Collection agents (via CollectionResolver)
+    4. Bundled agents (package data)
+
+    Returns:
+        List of paths to search for agents (profile/collection sources only)
+    """
+    from amplifier_collections import discover_collection_resources
+
+    # Project and user paths (highest precedence)
+    paths = _get_user_and_project_paths("agents")
+
+    # Collection agents only (NO bundles)
     resolver = create_collection_resolver()
     for _metadata_name, collection_path in resolver.list_collections():
         resources = discover_collection_resources(collection_path)
@@ -385,13 +485,35 @@ def get_agent_search_paths() -> list[Path]:
     return paths
 
 
+def get_agent_search_paths(use_bundle: bool = False, bundle_name: str | None = None) -> list[Path]:
+    """Get CLI-specific agent search paths based on mode.
+
+    Args:
+        use_bundle: If True, use bundle-only paths. If False, use profile/collection paths.
+        bundle_name: Optional specific bundle name when use_bundle=True
+
+    Returns:
+        List of paths to search for agents
+    """
+    if use_bundle:
+        return get_agent_search_paths_for_bundle(bundle_name)
+    return get_agent_search_paths_for_profile()
+
+
 def create_agent_loader(
     collection_resolver: CollectionResolver | None = None,
+    *,
+    use_bundle: bool = False,
+    bundle_name: str | None = None,
+    bundle_base_path: Path | None = None,
 ) -> "AgentLoader":
     """Create CLI-configured agent loader with dependencies.
 
     Args:
         collection_resolver: Optional collection resolver (creates one if not provided)
+        use_bundle: If True, load only bundle agents (not profile/collection agents)
+        bundle_name: Specific bundle to load agents from (when use_bundle=True)
+        bundle_base_path: Base path of the bundle for resolving @bundle_name:... mentions
 
     Returns:
         AgentLoader with CLI paths and protocols injected
@@ -403,15 +525,23 @@ def create_agent_loader(
     from amplifier_profiles import AgentResolver
 
     from .lib.mention_loading import MentionLoader
+    from .lib.mention_loading import MentionResolver
 
     resolver = AgentResolver(
-        search_paths=get_agent_search_paths(),
+        search_paths=get_agent_search_paths(use_bundle=use_bundle, bundle_name=bundle_name),
         collection_resolver=collection_resolver,
     )
 
+    # Create MentionResolver with bundle override if in bundle mode
+    bundle_override = None
+    if use_bundle and bundle_name and bundle_base_path:
+        bundle_override = (bundle_name, bundle_base_path)
+
+    mention_resolver = MentionResolver(bundle_override=bundle_override)
+
     return AgentLoader(
         resolver=resolver,
-        mention_loader=MentionLoader(),  # CLI mention loader with default resolver
+        mention_loader=MentionLoader(resolver=mention_resolver),
     )
 
 

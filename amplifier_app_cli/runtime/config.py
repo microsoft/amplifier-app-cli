@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
+from typing import TYPE_CHECKING
 from typing import Any
 
 from amplifier_profiles import compile_profile_to_mount_plan
@@ -12,6 +14,9 @@ from amplifier_profiles.merger import merge_module_items
 from rich.console import Console
 
 from ..lib.app_settings import AppSettings
+
+if TYPE_CHECKING:
+    from amplifier_foundation import BundleResolver
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +29,19 @@ def resolve_app_config(
     app_settings: AppSettings,
     cli_config: dict[str, Any] | None = None,
     profile_override: str | None = None,
+    bundle_name: str | None = None,
+    bundle_resolver: BundleResolver | None = None,
     console: Console | None = None,
 ) -> dict[str, Any]:
-    """Resolve configuration with precedence, returning a mount plan dictionary."""
+    """Resolve configuration with precedence, returning a mount plan dictionary.
+
+    Configuration can come from either:
+    - A profile (traditional approach via profile_loader)
+    - A bundle (new approach via bundle_resolver)
+
+    If bundle_name is specified and bundle_resolver is provided, bundles take
+    precedence. Otherwise, falls back to profile-based configuration.
+    """
     # 1. Base mount plan defaults
     config: dict[str, Any] = {
         "session": {
@@ -41,27 +56,67 @@ def resolve_app_config(
 
     provider_overrides = app_settings.get_provider_overrides()
 
-    # 2. Apply active profile (if any)
-    active_profile_name = profile_override or config_manager.get_active_profile()
-    provider_applied_via_profile = False
+    # 2. Apply bundle OR profile (bundle takes precedence if specified)
+    provider_applied_via_config = False
 
-    if active_profile_name:
+    if bundle_name and bundle_resolver:
+        # Use bundle-based configuration
         try:
-            profile = profile_loader.load_profile(active_profile_name)
-            profile = app_settings.apply_provider_overrides_to_profile(profile, provider_overrides)
+            bundle = asyncio.run(bundle_resolver.load(bundle_name))
+            bundle_config = bundle.to_mount_plan()
 
-            profile_config = compile_profile_to_mount_plan(profile, agent_loader=agent_loader)  # type: ignore[call-arg]
-            config = deep_merge(config, profile_config)
-            provider_applied_via_profile = bool(provider_overrides)
+            # Load full agent metadata via agent_loader (for descriptions)
+            if bundle_config.get("agents") and agent_loader:
+                loaded_agents = {}
+                for agent_name in bundle_config["agents"]:
+                    try:
+                        # Try to resolve agent from bundle's base_path first
+                        # This handles namespaced names like "foundation:bug-hunter"
+                        agent_path = bundle.resolve_agent_path(agent_name)
+                        if agent_path:
+                            agent = agent_loader.load_agent_from_path(agent_path, agent_name)
+                        else:
+                            # Fall back to general agent resolution
+                            agent = agent_loader.load_agent(agent_name)
+                        loaded_agents[agent_name] = agent.to_mount_plan_fragment()
+                    except Exception:  # noqa: BLE001
+                        # Keep stub if agent loading fails
+                        loaded_agents[agent_name] = bundle_config["agents"][agent_name]
+                bundle_config["agents"] = loaded_agents
+
+            # Apply provider overrides to bundle config
+            if provider_overrides and bundle_config.get("providers"):
+                bundle_config["providers"] = _apply_provider_overrides(bundle_config["providers"], provider_overrides)
+                provider_applied_via_config = True
+
+            config = deep_merge(config, bundle_config)
         except Exception as exc:  # noqa: BLE001
-            message = f"Warning: Could not load profile '{active_profile_name}': {exc}"
+            message = f"Warning: Could not load bundle '{bundle_name}': {exc}"
             if console:
                 console.print(f"[yellow]{message}[/yellow]")
             else:
                 logger.warning(message)
+    else:
+        # Use profile-based configuration (traditional approach)
+        active_profile_name = profile_override or config_manager.get_active_profile()
 
-    # If we have overrides but no profile applied them (no profile or failure), apply directly
-    if provider_overrides and not provider_applied_via_profile:
+        if active_profile_name:
+            try:
+                profile = profile_loader.load_profile(active_profile_name)
+                profile = app_settings.apply_provider_overrides_to_profile(profile, provider_overrides)
+
+                profile_config = compile_profile_to_mount_plan(profile, agent_loader=agent_loader)  # type: ignore[call-arg]
+                config = deep_merge(config, profile_config)
+                provider_applied_via_config = bool(provider_overrides)
+            except Exception as exc:  # noqa: BLE001
+                message = f"Warning: Could not load profile '{active_profile_name}': {exc}"
+                if console:
+                    console.print(f"[yellow]{message}[/yellow]")
+                else:
+                    logger.warning(message)
+
+    # If we have overrides but no config applied them (no bundle/profile or failure), apply directly
+    if provider_overrides and not provider_applied_via_config:
         config["providers"] = provider_overrides
 
     # 3. Apply merged settings (user → project → local)
@@ -83,6 +138,33 @@ def resolve_app_config(
 
     # 5. Expand environment variables
     return expand_env_vars(config)
+
+
+def _apply_provider_overrides(providers: list[dict[str, Any]], overrides: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply provider overrides to bundle providers.
+
+    Merges override configs into matching providers by module ID.
+    """
+    if not overrides:
+        return providers
+
+    # Build lookup for overrides by module ID
+    override_map = {}
+    for override in overrides:
+        if isinstance(override, dict) and "module" in override:
+            override_map[override["module"]] = override
+
+    # Apply overrides to matching providers
+    result = []
+    for provider in providers:
+        if isinstance(provider, dict) and provider.get("module") in override_map:
+            # Merge override into provider
+            merged = merge_module_items(provider, override_map[provider["module"]])
+            result.append(merged)
+        else:
+            result.append(provider)
+
+    return result
 
 
 def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
@@ -177,4 +259,4 @@ def expand_env_vars(config: dict[str, Any]) -> dict[str, Any]:
     return replace_value(config)
 
 
-__all__ = ["resolve_app_config", "deep_merge", "expand_env_vars"]
+__all__ = ["resolve_app_config", "deep_merge", "expand_env_vars", "_apply_provider_overrides"]

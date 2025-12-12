@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 import uuid
 from collections.abc import Callable
 from collections.abc import Coroutine
+from pathlib import Path
 from typing import Any
 
 import click
@@ -16,14 +18,19 @@ from ..data.profiles import get_system_default_profile
 from ..effective_config import get_effective_config_summary
 from ..lib.app_settings import AppSettings
 from ..paths import create_agent_loader
+from ..paths import create_bundle_resolver
 from ..paths import create_config_manager
 from ..paths import create_profile_loader
 from ..runtime.config import resolve_app_config
 
-InteractiveChat = Callable[[dict, list, bool, str | None, str], Coroutine[Any, Any, None]]
-InteractiveResume = Callable[[dict, list, bool, str, list[dict], str], Coroutine[Any, Any, None]]
-ExecuteSingle = Callable[[str, dict, list, bool, str | None, str, str], Coroutine[Any, Any, None]]
-ExecuteSingleWithSession = Callable[[str, dict, list, bool, str, list[dict], str, str], Coroutine[Any, Any, None]]
+logger = logging.getLogger(__name__)
+
+InteractiveChat = Callable[[dict, list, bool, str | None, str, Path | None], Coroutine[Any, Any, None]]
+InteractiveResume = Callable[[dict, list, bool, str, list[dict], str, Path | None], Coroutine[Any, Any, None]]
+ExecuteSingle = Callable[[str, dict, list, bool, str | None, str, str, Path | None], Coroutine[Any, Any, None]]
+ExecuteSingleWithSession = Callable[
+    [str, dict, list, bool, str, list[dict], str, str, Path | None], Coroutine[Any, Any, None]
+]
 SearchPathProvider = Callable[[], list]
 
 
@@ -43,6 +50,7 @@ def register_run_command(
     @cli.command()
     @click.argument("prompt", required=False)
     @click.option("--profile", "-P", help="Profile to use for this session")
+    @click.option("--bundle", "-B", help="Bundle to use for this session (alternative to profile)")
     @click.option("--provider", "-p", default=None, help="LLM provider to use")
     @click.option("--model", "-m", help="Model to use (provider-specific)")
     @click.option("--max-tokens", type=int, help="Maximum output tokens")
@@ -58,6 +66,7 @@ def register_run_command(
     def run(
         prompt: str | None,
         profile: str | None,
+        bundle: str | None,
         provider: str,
         model: str | None,
         max_tokens: int | None,
@@ -114,8 +123,30 @@ def register_run_command(
             active_profile_name = config_manager.get_active_profile() or get_system_default_profile()
 
         profile_loader = create_profile_loader()
-        agent_loader = create_agent_loader()
+
+        # Create bundle resolver if bundle is specified, and get bundle base_path early
+        # so we can pass it to agent_loader for @mention resolution
+        bundle_resolver = create_bundle_resolver() if bundle else None
+        bundle_base_path = None
+        if bundle and bundle_resolver:
+            try:
+                bundle_obj = asyncio.run(bundle_resolver.load(bundle))
+                bundle_base_path = bundle_obj.base_path
+            except Exception as e:
+                # Log warning; full error will be handled later in resolve_app_config
+                logger.warning("Early bundle load failed for '%s': %s", bundle, e)
+
+        # Create agent loader with appropriate mode:
+        # - Bundle mode: only load bundle agents (not profile/collection agents)
+        # - Profile mode: only load profile/collection agents (not bundle agents)
+        agent_loader = create_agent_loader(
+            use_bundle=bool(bundle), bundle_name=bundle, bundle_base_path=bundle_base_path
+        )
         app_settings = AppSettings(config_manager)
+
+        # Track configuration source for display
+        # When bundle is specified, use bundle name; otherwise use profile name
+        config_source_name = f"bundle:{bundle}" if bundle else active_profile_name
 
         config_data = resolve_app_config(
             config_manager=config_manager,
@@ -123,7 +154,9 @@ def register_run_command(
             agent_loader=agent_loader,
             app_settings=app_settings,
             cli_config=cli_overrides,
-            profile_override=active_profile_name,
+            profile_override=active_profile_name if not bundle else None,
+            bundle_name=bundle,
+            bundle_resolver=bundle_resolver,
             console=console,
         )
 
@@ -214,13 +247,17 @@ def register_run_command(
                     sys.exit(1)
                 asyncio.run(
                     interactive_chat_with_session(
-                        config_data, search_paths, verbose, resume, transcript, active_profile_name
+                        config_data, search_paths, verbose, resume, transcript, config_source_name, bundle_base_path
                     )
                 )
             else:
                 # New session - banner displayed by interactive_chat
                 session_id = str(uuid.uuid4())
-                asyncio.run(interactive_chat(config_data, search_paths, verbose, session_id, active_profile_name))
+                asyncio.run(
+                    interactive_chat(
+                        config_data, search_paths, verbose, session_id, config_source_name, bundle_base_path
+                    )
+                )
         else:
             # Single-shot mode
             if prompt is None:
@@ -247,20 +284,28 @@ def register_run_command(
                         verbose,
                         resume,
                         transcript,
-                        active_profile_name,
+                        config_source_name,
                         output_format,
+                        bundle_base_path,
                     )
                 )
             else:
                 # Create new session
                 session_id = str(uuid.uuid4())
                 if output_format == "text":
-                    config_summary = get_effective_config_summary(config_data, active_profile_name)
+                    config_summary = get_effective_config_summary(config_data, config_source_name)
                     console.print(f"\n[dim]Session ID: {session_id}[/dim]")
                     console.print(f"[dim]{config_summary.format_banner_line()}[/dim]")
                 asyncio.run(
                     execute_single(
-                        prompt, config_data, search_paths, verbose, session_id, active_profile_name, output_format
+                        prompt,
+                        config_data,
+                        search_paths,
+                        verbose,
+                        session_id,
+                        config_source_name,
+                        output_format,
+                        bundle_base_path,
                     )
                 )
 

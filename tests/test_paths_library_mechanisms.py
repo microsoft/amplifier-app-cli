@@ -99,8 +99,10 @@ def test_paths_no_manual_iteration():
     assert "collection_dir.iterdir()" not in source or "# Collection profiles (USE LIBRARY MECHANISMS" in source
     assert 'collection_dir / "profiles"' not in source
 
-    # Same for agents
-    agent_source = inspect.getsource(paths.get_agent_search_paths)
+    # Same for agents (check the profile-mode implementation which uses library mechanisms)
+    # Note: get_agent_search_paths is a dispatcher that routes to get_agent_search_paths_for_profile
+    # or get_agent_search_paths_for_bundle. The profile version uses library mechanisms.
+    agent_source = inspect.getsource(paths.get_agent_search_paths_for_profile)
     assert "resolver.list_collections()" in agent_source
     assert "discover_collection_resources" in agent_source
 

@@ -127,7 +127,8 @@ async def spawn_sub_session(
     # Initialize child session (mounts modules per merged config)
     await child_session.initialize()
 
-    # Register app-layer capabilities for child session (same as parent gets)
+    # Register app-layer capabilities for child session
+    # Inherit from parent session where available to preserve bundle context and deduplication state
     from amplifier_app_cli.lib.mention_loading.deduplicator import ContentDeduplicator
     from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
     from amplifier_app_cli.paths import create_module_resolver
@@ -136,13 +137,21 @@ async def spawn_sub_session(
     resolver = create_module_resolver()
     await child_session.coordinator.mount("module-source-resolver", resolver)
 
-    # Mention resolver (for @mention path resolution in tools)
-    mention_resolver = MentionResolver()
-    child_session.coordinator.register_capability("mention_resolver", mention_resolver)
+    # Mention resolver - inherit from parent to preserve bundle_override context
+    parent_mention_resolver = parent_session.coordinator.get_capability("mention_resolver")
+    if parent_mention_resolver:
+        child_session.coordinator.register_capability("mention_resolver", parent_mention_resolver)
+    else:
+        # Fallback to fresh resolver if parent doesn't have one
+        child_session.coordinator.register_capability("mention_resolver", MentionResolver())
 
-    # Mention deduplicator (for @mention content deduplication)
-    mention_deduplicator = ContentDeduplicator()
-    child_session.coordinator.register_capability("mention_deduplicator", mention_deduplicator)
+    # Mention deduplicator - inherit from parent to preserve session-wide deduplication state
+    parent_deduplicator = parent_session.coordinator.get_capability("mention_deduplicator")
+    if parent_deduplicator:
+        child_session.coordinator.register_capability("mention_deduplicator", parent_deduplicator)
+    else:
+        # Fallback to fresh deduplicator if parent doesn't have one
+        child_session.coordinator.register_capability("mention_deduplicator", ContentDeduplicator())
 
     # Approval provider (for hooks-approval module, if active)
     register_provider_fn = child_session.coordinator.get_capability("approval.register_provider")
@@ -268,6 +277,8 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     await child_session.initialize()
 
     # Register app-layer capabilities for resumed child session
+    # Note: Resumed sessions create fresh instances since parent session is not available.
+    # Bundle context from original session would need to be stored in metadata if needed.
     from amplifier_app_cli.lib.mention_loading.deduplicator import ContentDeduplicator
     from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
     from amplifier_app_cli.paths import create_module_resolver
@@ -276,13 +287,11 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     resolver = create_module_resolver()
     await child_session.coordinator.mount("module-source-resolver", resolver)
 
-    # Mention resolver (for @mention path resolution in tools)
-    mention_resolver = MentionResolver()
-    child_session.coordinator.register_capability("mention_resolver", mention_resolver)
+    # Mention resolver - create fresh (no parent available for resumed sessions)
+    child_session.coordinator.register_capability("mention_resolver", MentionResolver())
 
-    # Mention deduplicator (for @mention content deduplication)
-    mention_deduplicator = ContentDeduplicator()
-    child_session.coordinator.register_capability("mention_deduplicator", mention_deduplicator)
+    # Mention deduplicator - create fresh (deduplication state doesn't persist across resumes)
+    child_session.coordinator.register_capability("mention_deduplicator", ContentDeduplicator())
 
     # Approval provider (for hooks-approval module, if active)
     register_provider_fn = child_session.coordinator.get_capability("approval.register_provider")
