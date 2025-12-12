@@ -127,8 +127,8 @@ def provider_current():
     console.print(f"\n[bold]Active provider:[/bold] {info.module_id.replace('provider-', '')}")
     console.print(f"  Source: {info.source}")
 
-    if "model" in info.config:
-        console.print(f"  Model: {info.config['model']}")
+    if "default_model" in info.config:
+        console.print(f"  Model: {info.config['default_model']}")
     elif "default_deployment" in info.config:
         console.print(f"  Deployment: {info.config['default_deployment']}")
 

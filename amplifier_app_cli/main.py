@@ -1047,6 +1047,49 @@ def _register_mention_handling(
     session.coordinator.register_capability("mention_deduplicator", mention_deduplicator)
 
 
+def _register_session_spawning(session: AmplifierSession) -> None:
+    """Register session spawning capabilities for agent delegation.
+
+    This is app-layer policy that enables kernel modules (like tool-task) to
+    spawn sub-sessions without directly importing from the app layer.
+
+    The capabilities registered:
+    - session.spawn: Create new agent sub-session
+    - session.resume: Resume existing sub-session
+
+    Args:
+        session: The AmplifierSession to register capabilities on
+    """
+    from .session_spawner import resume_sub_session
+    from .session_spawner import spawn_sub_session
+
+    async def spawn_capability(
+        agent_name: str,
+        instruction: str,
+        parent_session: AmplifierSession,
+        agent_configs: dict[str, dict],
+        sub_session_id: str | None = None,
+    ) -> dict:
+        """Capability wrapper for spawn_sub_session."""
+        return await spawn_sub_session(
+            agent_name=agent_name,
+            instruction=instruction,
+            parent_session=parent_session,
+            agent_configs=agent_configs,
+            sub_session_id=sub_session_id,
+        )
+
+    async def resume_capability(sub_session_id: str, instruction: str) -> dict:
+        """Capability wrapper for resume_sub_session."""
+        return await resume_sub_session(
+            sub_session_id=sub_session_id,
+            instruction=instruction,
+        )
+
+    session.coordinator.register_capability("session.spawn", spawn_capability)
+    session.coordinator.register_capability("session.resume", resume_capability)
+
+
 async def interactive_chat(
     config: dict,
     search_paths: list[Path],
@@ -1085,6 +1128,9 @@ async def interactive_chat(
     # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
     _register_mention_handling(session, profile_name, bundle_base_path)
 
+    # Register session spawning capabilities for agent delegation (app-layer policy)
+    _register_session_spawning(session)
+
     # Show loading indicator during initialization (modules loading, etc.)
     # Temporarily suppress amplifier_core error logs during init - we'll show clean error panel if it fails
     core_logger = logging.getLogger("amplifier_core")
@@ -1119,18 +1165,6 @@ async def interactive_chat(
         approval_provider = CLIApprovalProvider(console)
         register_provider(approval_provider)
         logger.info("Registered CLIApprovalProvider for interactive approvals")
-
-    # Register session spawning capability for agent delegation (app-layer policy)
-    async def spawn_with_agent_wrapper(agent_name: str, instruction: str, sub_session_id: str):
-        """Wrapper for session spawning using coordinator infrastructure."""
-        from .session_spawner import spawn_sub_session
-
-        # Get agents from session config (loaded via mount plan)
-        agents = session.config.get("agents", {})
-
-        return await spawn_sub_session(agent_name, instruction, session, agents, sub_session_id)
-
-    session.coordinator.register_capability("session.spawn_with_agent", spawn_with_agent_wrapper)
 
     # Create command processor
     command_processor = CommandProcessor(session, profile_name)
@@ -1324,6 +1358,9 @@ async def execute_single(
 
         # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
         _register_mention_handling(session, profile_name, bundle_base_path)
+
+        # Register session spawning capabilities for agent delegation (app-layer policy)
+        _register_session_spawning(session)
 
         # Process @mentions (profile or bundle based on config source name)
         await _process_mentions(session, profile_name)
@@ -1533,6 +1570,9 @@ async def execute_single_with_session(
         # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
         _register_mention_handling(session, profile_name, bundle_base_path)
 
+        # Register session spawning capabilities for agent delegation (app-layer policy)
+        _register_session_spawning(session)
+
         # Process config @mentions (works for both profiles and bundles)
         await _process_mentions(session, profile_name)
 
@@ -1707,6 +1747,9 @@ async def interactive_chat_with_session(
 
     # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
     _register_mention_handling(session, profile_name, bundle_base_path)
+
+    # Register session spawning capabilities for agent delegation (app-layer policy)
+    _register_session_spawning(session)
 
     # Register CLI approval provider if approval hook is active (app-layer policy)
     from .approval_provider import CLIApprovalProvider
