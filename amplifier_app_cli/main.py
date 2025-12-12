@@ -15,7 +15,7 @@ from typing import Any
 
 import click
 from amplifier_core import AmplifierSession
-from amplifier_core import ModuleValidationError
+from amplifier_core import ModuleValidationError  # pyright: ignore[reportAttributeAccessIssue]
 from amplifier_profiles.utils import parse_markdown_body
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
@@ -26,6 +26,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from rich.panel import Panel
 
 from .commands.agents import agents as agents_group
+from .commands.bundle import bundle as bundle_group
 from .commands.collection import collection as collection_group
 from .commands.init import check_first_run
 from .commands.init import init_cmd
@@ -424,22 +425,29 @@ class CommandProcessor:
         return "\n".join(lines)
 
     async def _get_config_display(self) -> str:
-        """Display current configuration using profile show format."""
-        from .commands.profile import render_effective_config
+        """Display current configuration using profile show format or bundle display."""
         from .console import console
-        from .paths import create_config_manager
-        from .paths import create_profile_loader
 
-        loader = create_profile_loader()
-        config_manager = create_config_manager()
+        # Check if we're in bundle mode (profile_name is "bundle:<name>")
+        if self.profile_name.startswith("bundle:"):
+            bundle_name = self.profile_name.removeprefix("bundle:")
+            await self._render_bundle_config(bundle_name, console)
+        else:
+            # Profile mode: use inheritance chain display
+            from .commands.profile import render_effective_config
+            from .paths import create_config_manager
+            from .paths import create_profile_loader
 
-        # Load inheritance chain for source tracking
-        chain_names = loader.get_inheritance_chain(self.profile_name)
-        chain_dicts = loader.load_inheritance_chain_dicts(self.profile_name)
-        source_overrides = config_manager.get_module_sources()
+            loader = create_profile_loader()
+            config_manager = create_config_manager()
 
-        # render_effective_config prints directly to console with rich formatting
-        render_effective_config(chain_dicts, chain_names, source_overrides, detailed=True)
+            # Load inheritance chain for source tracking
+            chain_names = loader.get_inheritance_chain(self.profile_name)
+            chain_dicts = loader.load_inheritance_chain_dicts(self.profile_name)
+            source_overrides = config_manager.get_module_sources()
+
+            # render_effective_config prints directly to console with rich formatting
+            render_effective_config(chain_dicts, chain_names, source_overrides, detailed=True)
 
         # Also show loaded agents (available at runtime)
         # Note: agents can be a dict (resolved agents) or list/other format (profile config)
@@ -454,6 +462,70 @@ class CommandProcessor:
                     console.print(f"  {name}")
 
         return ""  # Output already printed
+
+    async def _render_bundle_config(self, bundle_name: str, console: Any) -> None:
+        """Render bundle configuration display."""
+        config = self.session.config
+
+        console.print(f"\n[bold]Bundle Configuration:[/bold] {bundle_name}\n")
+
+        # Session section
+        session_config = config.get("session", {})
+        if session_config:
+            console.print("[bold]Session:[/bold]")
+            for field in ["orchestrator", "context"]:
+                if field in session_config:
+                    value = session_config[field]
+                    if isinstance(value, dict) and "module" in value:
+                        console.print(f"  {field}:")
+                        console.print(f"    module: {value.get('module', 'unknown')}")
+                        if value.get("source"):
+                            source = value["source"]
+                            if len(source) > 60:
+                                source = source[:57] + "..."
+                            console.print(f"    source: {source}")
+                    else:
+                        console.print(f"  {field}: {value}")
+
+        # Providers section
+        providers = config.get("providers", [])
+        if providers:
+            console.print("\n[bold]Providers:[/bold]")
+            for provider in providers:
+                if isinstance(provider, dict):
+                    module = provider.get("module", "unknown")
+                    console.print(f"  - {module}")
+                    if provider.get("source"):
+                        source = provider["source"]
+                        if len(source) > 60:
+                            source = source[:57] + "..."
+                        console.print(f"    source: {source}")
+                    if provider.get("config"):
+                        console.print("    config:")
+                        for key, val in provider["config"].items():
+                            console.print(f"      {key}: {val}")
+
+        # Tools section
+        tools = config.get("tools", [])
+        if tools:
+            console.print("\n[bold]Tools:[/bold]")
+            for tool in tools:
+                if isinstance(tool, dict):
+                    module = tool.get("module", "unknown")
+                    console.print(f"  - {module}")
+                elif isinstance(tool, str):
+                    console.print(f"  - {tool}")
+
+        # Hooks section
+        hooks = config.get("hooks", [])
+        if hooks:
+            console.print("\n[bold]Hooks:[/bold]")
+            for hook in hooks:
+                if isinstance(hook, dict):
+                    module = hook.get("module", "unknown")
+                    console.print(f"  - {module}")
+                elif isinstance(hook, str):
+                    console.print(f"  - {hook}")
 
     async def _list_tools(self) -> str:
         """List available tools."""
@@ -627,6 +699,7 @@ def cli(ctx, install_completion):
             _run_command,
             prompt=None,
             profile=None,
+            bundle=None,  # Will check settings for active bundle
             provider=None,
             model=None,
             mode="chat",
@@ -1586,6 +1659,7 @@ async def execute_single_with_session(
 
 # Register standalone commands
 cli.add_command(agents_group)
+cli.add_command(bundle_group)
 cli.add_command(collection_group)
 cli.add_command(init_cmd)
 cli.add_command(profile_group)

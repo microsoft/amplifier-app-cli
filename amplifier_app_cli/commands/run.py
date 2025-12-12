@@ -117,6 +117,14 @@ def register_run_command(
         cli_overrides = {}
 
         config_manager = create_config_manager()
+
+        # Check for active bundle from settings (opt-in via 'amplifier bundle use')
+        # CLI --bundle flag takes precedence over settings
+        if not bundle:
+            bundle_settings = config_manager.get_merged_settings().get("bundle", {})
+            if isinstance(bundle_settings, dict):
+                bundle = bundle_settings.get("active")
+
         active_profile_name = profile or config_manager.get_active_profile() or get_system_default_profile()
 
         if check_first_run() and not profile and prompt_first_run_init(console):
@@ -124,8 +132,8 @@ def register_run_command(
 
         profile_loader = create_profile_loader()
 
-        # Create bundle resolver if bundle is specified, and get bundle base_path early
-        # so we can pass it to agent_loader for @mention resolution
+        # Create bundle resolver if bundle is specified (either from CLI or settings),
+        # and get bundle base_path early so we can pass it to agent_loader for @mention resolution
         bundle_resolver = create_bundle_resolver() if bundle else None
         bundle_base_path = None
         if bundle and bundle_resolver:
