@@ -394,12 +394,15 @@ async def _invoke_tool_async(profile_name: str, tool_name: str, tool_args: dict[
     from amplifier_core import AmplifierSession
     from amplifier_profiles import compile_profile_to_mount_plan
 
+    from ..main import _register_session_spawning
+    from ..paths import create_agent_loader
     from ..paths import create_module_resolver
 
-    # Load profile and compile to mount plan
+    # Load profile and compile to mount plan (with agent loader for agent delegation)
     loader = create_profile_loader()
     profile = loader.load_profile(profile_name)
-    mount_plan = compile_profile_to_mount_plan(profile)
+    agent_loader = create_agent_loader()
+    mount_plan = compile_profile_to_mount_plan(profile, agent_loader=agent_loader)
 
     # Create session with mount plan
     session = AmplifierSession(mount_plan)
@@ -410,6 +413,10 @@ async def _invoke_tool_async(profile_name: str, tool_name: str, tool_args: dict[
 
     # Initialize session (mounts all tools)
     await session.initialize()
+
+    # Register session spawning capabilities (app-layer policy)
+    # This enables tools like recipes to spawn agent sub-sessions
+    _register_session_spawning(session)
 
     try:
         # Get mounted tools
