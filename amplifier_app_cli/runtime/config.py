@@ -92,6 +92,9 @@ async def resolve_bundle_config(
     if console:
         console.print(f"[dim]Bundle '{bundle_name}' prepared successfully[/dim]")
 
+    # Expand environment variables (same as resolve_app_config)
+    bundle_config = expand_env_vars(bundle_config)
+
     return bundle_config, prepared
 
 
