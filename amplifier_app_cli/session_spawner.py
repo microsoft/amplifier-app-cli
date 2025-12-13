@@ -133,9 +133,14 @@ async def spawn_sub_session(
     from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
     from amplifier_app_cli.paths import create_module_resolver
 
-    # Module source resolver
-    resolver = create_module_resolver()
-    await child_session.coordinator.mount("module-source-resolver", resolver)
+    # Module source resolver - inherit from parent to preserve BundleModuleResolver in bundle mode
+    parent_resolver = parent_session.coordinator.get("module-source-resolver")
+    if parent_resolver:
+        await child_session.coordinator.mount("module-source-resolver", parent_resolver)
+    else:
+        # Fallback to fresh resolver if parent doesn't have one (profile mode)
+        resolver = create_module_resolver()
+        await child_session.coordinator.mount("module-source-resolver", resolver)
 
     # Mention resolver - inherit from parent to preserve bundle_override context
     parent_mention_resolver = parent_session.coordinator.get_capability("mention_resolver")
@@ -278,12 +283,14 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
 
     # Register app-layer capabilities for resumed child session
     # Note: Resumed sessions create fresh instances since parent session is not available.
-    # Bundle context from original session would need to be stored in metadata if needed.
+    # Bundle context (including BundleModuleResolver) would need to be serialized to metadata
+    # to preserve bundle mode for resumed sessions - using StandardModuleSourceResolver as fallback.
     from amplifier_app_cli.lib.mention_loading.deduplicator import ContentDeduplicator
     from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
     from amplifier_app_cli.paths import create_module_resolver
 
-    # Module source resolver
+    # Module source resolver - uses StandardModuleSourceResolver for resumed sessions
+    # (BundleModuleResolver inheritance only works for live sub-session spawning)
     resolver = create_module_resolver()
     await child_session.coordinator.mount("module-source-resolver", resolver)
 

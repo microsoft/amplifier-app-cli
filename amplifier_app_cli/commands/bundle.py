@@ -61,7 +61,8 @@ def bundle_list():
     discovery = AppBundleDiscovery()
 
     bundles = discovery.list_bundles()
-    active_bundle = config_manager.get_merged_settings().get("bundle", {}).get("active")
+    settings = config_manager.get_merged_settings() or {}
+    active_bundle = settings.get("bundle", {}).get("active")
 
     if not bundles:
         console.print("[yellow]No bundles found.[/yellow]")

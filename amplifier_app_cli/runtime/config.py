@@ -17,8 +17,82 @@ from ..lib.app_settings import AppSettings
 
 if TYPE_CHECKING:
     from amplifier_foundation import BundleResolver
+    from amplifier_foundation.bundle import PreparedBundle
 
 logger = logging.getLogger(__name__)
+
+
+async def resolve_bundle_config(
+    bundle_name: str,
+    app_settings: AppSettings,
+    agent_loader,
+    console: Console | None = None,
+) -> tuple[dict[str, Any], PreparedBundle]:
+    """Resolve configuration from bundle using foundation's prepare workflow.
+
+    This is the CORRECT way to use bundles with remote modules:
+    1. Discover bundle URI via CLI search paths
+    2. Load bundle via foundation (handles file://, git+, http://, zip+)
+    3. Prepare: download modules from git sources, install deps
+    4. Return mount plan AND PreparedBundle for session creation
+
+    Args:
+        bundle_name: Bundle name to load (e.g., "foundation").
+        app_settings: App settings for provider overrides.
+        agent_loader: Agent loader for resolving agent metadata.
+        console: Optional console for status messages.
+
+    Returns:
+        Tuple of (mount_plan_config, PreparedBundle).
+        - mount_plan_config: Dict ready for merging with settings/CLI overrides
+        - PreparedBundle: Has create_session() and resolver for module resolution
+
+    Raises:
+        FileNotFoundError: If bundle not found.
+        RuntimeError: If preparation fails.
+    """
+    from ..lib.bundle_loader import AppBundleDiscovery
+    from ..lib.bundle_loader.prepare import load_and_prepare_bundle
+    from ..paths import get_bundle_search_paths
+
+    discovery = AppBundleDiscovery(search_paths=get_bundle_search_paths())
+
+    if console:
+        console.print(f"[dim]Preparing bundle '{bundle_name}'...[/dim]")
+
+    # Load and prepare bundle (downloads modules from git sources)
+    prepared = await load_and_prepare_bundle(bundle_name, discovery)
+
+    # Get the mount plan from the prepared bundle
+    bundle_config = prepared.mount_plan
+
+    # Load full agent metadata via agent_loader (for descriptions)
+    if bundle_config.get("agents") and agent_loader:
+        loaded_agents = {}
+        for agent_name in bundle_config["agents"]:
+            try:
+                agent = agent_loader.load_agent(agent_name)
+                loaded_agents[agent_name] = agent.to_mount_plan_fragment()
+            except Exception:  # noqa: BLE001
+                # Keep stub if agent loading fails
+                loaded_agents[agent_name] = bundle_config["agents"][agent_name]
+        bundle_config["agents"] = loaded_agents
+
+    # Apply provider overrides
+    provider_overrides = app_settings.get_provider_overrides()
+    if provider_overrides:
+        if bundle_config.get("providers"):
+            # Bundle has providers - merge overrides with existing
+            bundle_config["providers"] = _apply_provider_overrides(bundle_config["providers"], provider_overrides)
+        else:
+            # Bundle has no providers (e.g., provider-agnostic foundation bundle)
+            # Use overrides directly as the provider configuration
+            bundle_config["providers"] = provider_overrides
+
+    if console:
+        console.print(f"[dim]Bundle '{bundle_name}' prepared successfully[/dim]")
+
+    return bundle_config, prepared
 
 
 def resolve_app_config(
@@ -259,4 +333,10 @@ def expand_env_vars(config: dict[str, Any]) -> dict[str, Any]:
     return replace_value(config)
 
 
-__all__ = ["resolve_app_config", "deep_merge", "expand_env_vars", "_apply_provider_overrides"]
+__all__ = [
+    "resolve_app_config",
+    "resolve_bundle_config",
+    "deep_merge",
+    "expand_env_vars",
+    "_apply_provider_overrides",
+]

@@ -17,6 +17,7 @@ from amplifier_module_resolution import StandardModuleSourceResolver
 from amplifier_profiles import ProfileLoader
 
 if TYPE_CHECKING:
+    from amplifier_core import AmplifierSession
     from amplifier_profiles import AgentLoader
 
 # Type alias for scope names used in CLI
@@ -378,27 +379,110 @@ def get_bundle_search_paths() -> list[Path]:
 
 
 def create_bundle_resolver(
-    collection_resolver: CollectionResolver | None = None,
+    base_path: Path | None = None,
+    cache_dir: Path | None = None,
 ) -> BundleResolver:
-    """Create CLI-configured bundle resolver with dependencies.
+    """Create CLI-configured bundle resolver.
+
+    Uses amplifier-foundation's source handlers directly for all URI types:
+    - file:// and local paths
+    - git+https:// for git repositories
+    - https:// and http:// for direct downloads
+    - zip+https:// and zip+file:// for zip archives
+
+    Per DESIGN PHILOSOPHY: Bundles have independent code paths optimized for
+    their longer term future, with no coupling to profiles/collections.
 
     Args:
-        collection_resolver: Optional collection resolver (creates one if not provided)
+        base_path: Base path for resolving relative paths (default: cwd).
+        cache_dir: Cache directory for remote content (default: ~/.cache/amplifier/bundles).
 
     Returns:
-        BundleResolver with CLI-specific discovery injected
+        BundleResolver with foundation source handlers and disk cache.
     """
-    if collection_resolver is None:
-        collection_resolver = create_collection_resolver()
-
     from .lib.bundle_loader import AppBundleDiscovery
+    from .lib.bundle_loader import create_bundle_cache
+    from .lib.bundle_loader import create_bundle_source_resolver
 
-    discovery = AppBundleDiscovery(
-        search_paths=get_bundle_search_paths(),
-        collection_resolver=collection_resolver,
+    # Use foundation source resolver (supports git, http, zip, file)
+    source_resolver = create_bundle_source_resolver(
+        base_path=base_path,
+        cache_dir=cache_dir,
     )
 
-    return BundleResolver(discovery=discovery)
+    # Use disk cache for loaded bundles (falls back to in-memory if DiskCache unavailable)
+    bundle_cache = create_bundle_cache()
+
+    # Discovery without collection dependency
+    discovery = AppBundleDiscovery(
+        search_paths=get_bundle_search_paths(),
+        collection_resolver=None,  # NO collection dependency
+    )
+
+    return BundleResolver(
+        source_resolver=source_resolver,
+        discovery=discovery,
+        cache=bundle_cache,
+    )
+
+
+async def create_session_from_bundle(
+    bundle_name: str,
+    *,
+    session_id: str | None = None,
+    approval_system: object | None = None,
+    display_system: object | None = None,
+    install_deps: bool = True,
+) -> "AmplifierSession":
+    """Create session from bundle using foundation's prepare workflow.
+
+    This is the CORRECT way to use bundles with remote modules:
+    1. Discover bundle URI via CLI search paths
+    2. Load bundle via foundation (handles file://, git+, http://, zip+)
+    3. Prepare: download modules from git sources, install deps
+    4. Create session with BundleModuleResolver automatically mounted
+
+    Args:
+        bundle_name: Bundle name to load (e.g., "foundation").
+        session_id: Optional explicit session ID.
+        approval_system: Optional approval system for hooks.
+        display_system: Optional display system for hooks.
+        install_deps: Whether to install Python dependencies for modules.
+
+    Returns:
+        Initialized AmplifierSession ready for execute().
+
+    Raises:
+        FileNotFoundError: If bundle not found in any search path.
+        RuntimeError: If preparation fails (download, install errors).
+
+    Example:
+        session = await create_session_from_bundle("foundation")
+        async with session:
+            response = await session.execute("Hello!")
+    """
+    from amplifier_core import AmplifierSession
+
+    from .lib.bundle_loader import AppBundleDiscovery
+    from .lib.bundle_loader.prepare import load_and_prepare_bundle
+
+    discovery = AppBundleDiscovery(search_paths=get_bundle_search_paths())
+
+    # Load and prepare bundle (downloads modules from git sources)
+    prepared = await load_and_prepare_bundle(
+        bundle_name,
+        discovery,
+        install_deps=install_deps,
+    )
+
+    # Create session with BundleModuleResolver automatically mounted
+    session: AmplifierSession = await prepared.create_session(
+        session_id=session_id,
+        approval_system=approval_system,
+        display_system=display_system,
+    )
+
+    return session
 
 
 def get_agent_search_paths_for_bundle(bundle_name: str | None = None) -> list[Path]:

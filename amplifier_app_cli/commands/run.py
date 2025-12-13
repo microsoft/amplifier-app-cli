@@ -9,9 +9,13 @@ import uuid
 from collections.abc import Callable
 from collections.abc import Coroutine
 from pathlib import Path
+from typing import TYPE_CHECKING
 from typing import Any
 
 import click
+
+if TYPE_CHECKING:
+    from amplifier_foundation.bundle import PreparedBundle
 
 from ..console import console
 from ..data.profiles import get_system_default_profile
@@ -22,14 +26,21 @@ from ..paths import create_bundle_resolver
 from ..paths import create_config_manager
 from ..paths import create_profile_loader
 from ..runtime.config import resolve_app_config
+from ..runtime.config import resolve_bundle_config
 
 logger = logging.getLogger(__name__)
 
-InteractiveChat = Callable[[dict, list, bool, str | None, str, Path | None], Coroutine[Any, Any, None]]
-InteractiveResume = Callable[[dict, list, bool, str, list[dict], str, Path | None], Coroutine[Any, Any, None]]
-ExecuteSingle = Callable[[str, dict, list, bool, str | None, str, str, Path | None], Coroutine[Any, Any, None]]
+InteractiveChat = Callable[
+    [dict, list, bool, str | None, str, Path | None, "PreparedBundle | None"], Coroutine[Any, Any, None]
+]
+InteractiveResume = Callable[
+    [dict, list, bool, str, list[dict], str, Path | None, "PreparedBundle | None"], Coroutine[Any, Any, None]
+]
+ExecuteSingle = Callable[
+    [str, dict, list, bool, str | None, str, str, Path | None, "PreparedBundle | None"], Coroutine[Any, Any, None]
+]
 ExecuteSingleWithSession = Callable[
-    [str, dict, list, bool, str, list[dict], str, str, Path | None], Coroutine[Any, Any, None]
+    [str, dict, list, bool, str, list[dict], str, str, Path | None, "PreparedBundle | None"], Coroutine[Any, Any, None]
 ]
 SearchPathProvider = Callable[[], list]
 
@@ -156,17 +167,31 @@ def register_run_command(
         # When bundle is specified, use bundle name; otherwise use profile name
         config_source_name = f"bundle:{bundle}" if bundle else active_profile_name
 
-        config_data = resolve_app_config(
-            config_manager=config_manager,
-            profile_loader=profile_loader,
-            agent_loader=agent_loader,
-            app_settings=app_settings,
-            cli_config=cli_overrides,
-            profile_override=active_profile_name if not bundle else None,
-            bundle_name=bundle,
-            bundle_resolver=bundle_resolver,
-            console=console,
-        )
+        # Resolve configuration - bundle mode uses foundation's prepare workflow
+        prepared_bundle = None
+        if bundle:
+            # Use foundation's prepare workflow for bundles (downloads git modules, installs deps)
+            # This returns both the config AND the PreparedBundle with its resolver
+            config_data, prepared_bundle = asyncio.run(
+                resolve_bundle_config(
+                    bundle_name=bundle,
+                    app_settings=app_settings,
+                    agent_loader=agent_loader,
+                    console=console,
+                )
+            )
+        else:
+            config_data = resolve_app_config(
+                config_manager=config_manager,
+                profile_loader=profile_loader,
+                agent_loader=agent_loader,
+                app_settings=app_settings,
+                cli_config=cli_overrides,
+                profile_override=active_profile_name,
+                bundle_name=None,
+                bundle_resolver=None,
+                console=console,
+            )
 
         search_paths = get_module_search_paths()
 
@@ -255,7 +280,14 @@ def register_run_command(
                     sys.exit(1)
                 asyncio.run(
                     interactive_chat_with_session(
-                        config_data, search_paths, verbose, resume, transcript, config_source_name, bundle_base_path
+                        config_data,
+                        search_paths,
+                        verbose,
+                        resume,
+                        transcript,
+                        config_source_name,
+                        bundle_base_path,
+                        prepared_bundle,
                     )
                 )
             else:
@@ -263,7 +295,13 @@ def register_run_command(
                 session_id = str(uuid.uuid4())
                 asyncio.run(
                     interactive_chat(
-                        config_data, search_paths, verbose, session_id, config_source_name, bundle_base_path
+                        config_data,
+                        search_paths,
+                        verbose,
+                        session_id,
+                        config_source_name,
+                        bundle_base_path,
+                        prepared_bundle,
                     )
                 )
         else:
@@ -295,6 +333,7 @@ def register_run_command(
                         config_source_name,
                         output_format,
                         bundle_base_path,
+                        prepared_bundle,
                     )
                 )
             else:
@@ -314,6 +353,7 @@ def register_run_command(
                         config_source_name,
                         output_format,
                         bundle_base_path,
+                        prepared_bundle,
                     )
                 )
 

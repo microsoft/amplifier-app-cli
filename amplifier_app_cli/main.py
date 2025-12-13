@@ -11,9 +11,13 @@ from collections.abc import Callable
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from typing import Any
 
 import click
+
+if TYPE_CHECKING:
+    from amplifier_foundation.bundle import PreparedBundle
 from amplifier_core import AmplifierSession
 from amplifier_core import ModuleValidationError  # pyright: ignore[reportAttributeAccessIssue]
 from amplifier_profiles.utils import parse_markdown_body
@@ -53,6 +57,68 @@ from .ui.error_display import display_validation_error
 from .utils.version import get_version
 
 logger = logging.getLogger(__name__)
+
+
+class CompositeModuleResolver:
+    """Module resolver that combines bundle and standard resolvers.
+
+    Tries bundle resolver first (for modules downloaded during prepare),
+    then falls back to standard resolver (for provider overrides, etc.).
+
+    This enables provider-agnostic bundles like 'foundation' to work with
+    provider overrides configured via 'amplifier provider use'.
+    """
+
+    def __init__(self, bundle_resolver, standard_resolver):
+        """Initialize with both resolvers.
+
+        Args:
+            bundle_resolver: BundleModuleResolver from PreparedBundle.
+            standard_resolver: StandardModuleSourceResolver for fallback.
+        """
+        self._bundle_resolver = bundle_resolver
+        self._standard_resolver = standard_resolver
+
+    def resolve(self, module_id: str, profile_hint=None):
+        """Resolve module, trying bundle first then standard.
+
+        Args:
+            module_id: Module identifier (e.g., "tool-bash", "provider-anthropic").
+            profile_hint: Optional hint (passed to resolvers).
+
+        Returns:
+            ModuleSource from whichever resolver succeeds.
+
+        Raises:
+            ModuleNotFoundError: If neither resolver can find the module.
+        """
+        # Try bundle resolver first (modules downloaded during prepare)
+        try:
+            return self._bundle_resolver.resolve(module_id, profile_hint)
+        except (ModuleNotFoundError, KeyError):
+            # Not in bundle - try standard resolver (provider overrides, etc.)
+            pass
+
+        # Fall back to standard resolver
+        return self._standard_resolver.resolve(module_id, profile_hint)
+
+    def get_module_source(self, module_id: str) -> str | None:
+        """Get module source path as string.
+
+        Args:
+            module_id: Module identifier.
+
+        Returns:
+            String path to module, or None if not found.
+        """
+        # Try bundle resolver first
+        result = self._bundle_resolver.get_module_source(module_id)
+        if result is not None:
+            return result
+
+        # Fall back to standard resolver
+        return self._standard_resolver.get_module_source(module_id)
+
 
 # Load API keys from ~/.amplifier/keys.env on startup
 # This allows keys saved by 'amplifier init' or 'amplifier provider use' to be available
@@ -1097,6 +1163,7 @@ async def interactive_chat(
     session_id: str | None = None,
     profile_name: str = "unknown",
     bundle_base_path: Path | None = None,
+    prepared_bundle: "PreparedBundle | None" = None,
 ):
     """Run an interactive chat session.
 
@@ -1107,6 +1174,7 @@ async def interactive_chat(
         session_id: Optional session ID (generated if not provided)
         profile_name: Profile or bundle name (e.g., "dev" or "bundle:foundation")
         bundle_base_path: Base path of the bundle for @mention resolution (bundle mode only)
+        prepared_bundle: PreparedBundle from foundation's prepare workflow (bundle mode only)
     """
     # Generate session ID if not provided
     if not session_id:
@@ -1121,8 +1189,17 @@ async def interactive_chat(
     )
 
     # Mount module source resolver (app-layer policy)
-
-    resolver = create_module_resolver()
+    # Bundle mode: Composite resolver (bundle first, standard fallback for provider overrides)
+    # Profile mode: Standard resolver only
+    if prepared_bundle is not None:
+        # Bundle resolver knows about modules downloaded during prepare
+        # Standard resolver handles provider overrides not in the bundle
+        resolver = CompositeModuleResolver(
+            bundle_resolver=prepared_bundle.resolver,
+            standard_resolver=create_module_resolver(),
+        )
+    else:
+        resolver = create_module_resolver()
     await session.coordinator.mount("module-source-resolver", resolver)
 
     # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
@@ -1310,6 +1387,7 @@ async def execute_single(
     profile_name: str = "unknown",
     output_format: str = "text",
     bundle_base_path: Path | None = None,
+    prepared_bundle: "PreparedBundle | None" = None,
 ):
     """Execute a single prompt and exit."""
     # In JSON mode, redirect all output to stderr so only JSON goes to stdout
@@ -1345,7 +1423,17 @@ async def execute_single(
 
     try:
         # Mount module source resolver (app-layer policy)
-        resolver = create_module_resolver()
+        # Bundle mode: Composite resolver (bundle first, standard fallback for provider overrides)
+        # Profile mode: Standard resolver only
+        if prepared_bundle is not None:
+            # Bundle resolver knows about modules downloaded during prepare
+            # Standard resolver handles provider overrides not in the bundle
+            resolver = CompositeModuleResolver(
+                bundle_resolver=prepared_bundle.resolver,
+                standard_resolver=create_module_resolver(),
+            )
+        else:
+            resolver = create_module_resolver()
         await session.coordinator.mount("module-source-resolver", resolver)
         await session.initialize()
 
@@ -1506,6 +1594,7 @@ async def execute_single_with_session(
     profile_name: str = "unknown",
     output_format: str = "text",
     bundle_base_path: Path | None = None,
+    prepared_bundle: "PreparedBundle | None" = None,
 ):
     """Execute a single prompt with restored session context."""
     # In JSON mode, redirect all output to stderr
@@ -1540,8 +1629,18 @@ async def execute_single_with_session(
         trace_collector = TraceCollector()
 
     try:
-        # Mount module source resolver
-        resolver = create_module_resolver()
+        # Mount module source resolver (app-layer policy)
+        # Bundle mode: Composite resolver (bundle first, standard fallback for provider overrides)
+        # Profile mode: Standard resolver only
+        if prepared_bundle is not None:
+            # Bundle resolver knows about modules downloaded during prepare
+            # Standard resolver handles provider overrides not in the bundle
+            resolver = CompositeModuleResolver(
+                bundle_resolver=prepared_bundle.resolver,
+                standard_resolver=create_module_resolver(),
+            )
+        else:
+            resolver = create_module_resolver()
         await session.coordinator.mount("module-source-resolver", resolver)
         await session.initialize()
 
@@ -1719,6 +1818,7 @@ async def interactive_chat_with_session(
     initial_transcript: list[dict],
     profile_name: str = "unknown",
     bundle_base_path: Path | None = None,
+    prepared_bundle: "PreparedBundle | None" = None,
 ):
     """Run an interactive chat session with restored context.
 
@@ -1730,6 +1830,7 @@ async def interactive_chat_with_session(
         initial_transcript: Previous conversation messages
         profile_name: Profile or bundle name (e.g., "dev" or "bundle:foundation")
         bundle_base_path: Base path of the bundle for @mention resolution (bundle mode only)
+        prepared_bundle: PreparedBundle from foundation's prepare workflow (bundle mode only)
     """
     # Create CLI UX systems (app-layer policy)
     approval_system, display_system = _create_cli_ux_systems()
@@ -1740,7 +1841,17 @@ async def interactive_chat_with_session(
     )
 
     # Mount module source resolver (app-layer policy)
-    resolver = create_module_resolver()
+    # Bundle mode: Composite resolver (bundle first, standard fallback for provider overrides)
+    # Profile mode: Standard resolver only
+    if prepared_bundle is not None:
+        # Bundle resolver knows about modules downloaded during prepare
+        # Standard resolver handles provider overrides not in the bundle
+        resolver = CompositeModuleResolver(
+            bundle_resolver=prepared_bundle.resolver,
+            standard_resolver=create_module_resolver(),
+        )
+    else:
+        resolver = create_module_resolver()
     await session.coordinator.mount("module-source-resolver", resolver)
 
     await session.initialize()
