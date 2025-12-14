@@ -22,7 +22,7 @@ from ..data.profiles import get_system_default_profile
 from ..effective_config import get_effective_config_summary
 from ..lib.app_settings import AppSettings
 from ..paths import create_agent_loader
-from ..paths import create_bundle_resolver
+from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..paths import create_profile_loader
 from ..runtime.config import resolve_app_config
@@ -143,13 +143,17 @@ def register_run_command(
 
         profile_loader = create_profile_loader()
 
-        # Create bundle resolver if bundle is specified (either from CLI or settings),
+        # Create bundle registry if bundle is specified (either from CLI or settings),
         # and get bundle base_path early so we can pass it to agent_loader for @mention resolution
-        bundle_resolver = create_bundle_resolver() if bundle else None
+        bundle_registry = create_bundle_registry() if bundle else None
         bundle_base_path = None
-        if bundle and bundle_resolver:
+        if bundle and bundle_registry:
             try:
-                bundle_obj = asyncio.run(bundle_resolver.load(bundle))
+                loaded = asyncio.run(bundle_registry.load(bundle))
+                # registry.load() returns Bundle | dict[str, Bundle]
+                if isinstance(loaded, dict):
+                    raise ValueError(f"Expected single bundle, got dict for '{bundle}'")
+                bundle_obj = loaded
                 bundle_base_path = bundle_obj.base_path
             except Exception as e:
                 # Log warning; full error will be handled later in resolve_app_config
@@ -189,7 +193,7 @@ def register_run_command(
                 cli_config=cli_overrides,
                 profile_override=active_profile_name,
                 bundle_name=None,
-                bundle_resolver=None,
+                bundle_registry=None,
                 console=console,
             )
 

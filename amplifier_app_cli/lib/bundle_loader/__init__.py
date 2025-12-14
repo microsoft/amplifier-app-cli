@@ -8,7 +8,7 @@ with foundation's bundle preparation workflow (load → compose → prepare → 
 
 # Foundation imports (third-party) - sorted alphabetically
 from amplifier_foundation import Bundle
-from amplifier_foundation import BundleResolver
+from amplifier_foundation import BundleRegistry
 from amplifier_foundation import load_bundle
 from amplifier_foundation.bundle import BundleModuleResolver
 from amplifier_foundation.bundle import PreparedBundle
@@ -28,7 +28,7 @@ __all__ = [
     # Foundation re-exports
     "Bundle",
     "BundleModuleResolver",
-    "BundleResolver",
+    "BundleRegistry",
     "PreparedBundle",
     "load_bundle",
 ]

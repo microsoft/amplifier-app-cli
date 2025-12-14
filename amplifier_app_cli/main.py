@@ -925,7 +925,7 @@ async def _process_bundle_mentions(session: AmplifierSession, bundle_name: str) 
     from amplifier_core.message_models import Message
 
     from .lib.mention_loading import MentionLoader
-    from .paths import create_bundle_resolver
+    from .paths import create_bundle_registry
     from .utils.mentions import has_mentions
 
     logger = logging.getLogger(__name__)
@@ -934,8 +934,12 @@ async def _process_bundle_mentions(session: AmplifierSession, bundle_name: str) 
         logger.info(f"Processing context for bundle: {bundle_name}")
 
         # Load bundle to get instruction and context
-        bundle_resolver = create_bundle_resolver()
-        bundle = await bundle_resolver.load(bundle_name)
+        bundle_registry = create_bundle_registry()
+        loaded = await bundle_registry.load(bundle_name)
+        # registry.load() returns Bundle | dict[str, Bundle]
+        if isinstance(loaded, dict):
+            raise ValueError(f"Expected single bundle, got dict for '{bundle_name}'")
+        bundle = loaded
 
         context_parts = []
 

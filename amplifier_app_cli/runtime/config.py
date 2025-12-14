@@ -16,7 +16,7 @@ from rich.console import Console
 from ..lib.app_settings import AppSettings
 
 if TYPE_CHECKING:
-    from amplifier_foundation import BundleResolver
+    from amplifier_foundation import BundleRegistry
     from amplifier_foundation.bundle import PreparedBundle
 
 logger = logging.getLogger(__name__)
@@ -107,16 +107,16 @@ def resolve_app_config(
     cli_config: dict[str, Any] | None = None,
     profile_override: str | None = None,
     bundle_name: str | None = None,
-    bundle_resolver: BundleResolver | None = None,
+    bundle_registry: BundleRegistry | None = None,
     console: Console | None = None,
 ) -> dict[str, Any]:
     """Resolve configuration with precedence, returning a mount plan dictionary.
 
     Configuration can come from either:
     - A profile (traditional approach via profile_loader)
-    - A bundle (new approach via bundle_resolver)
+    - A bundle (new approach via bundle_registry)
 
-    If bundle_name is specified and bundle_resolver is provided, bundles take
+    If bundle_name is specified and bundle_registry is provided, bundles take
     precedence. Otherwise, falls back to profile-based configuration.
     """
     # 1. Base mount plan defaults
@@ -136,10 +136,14 @@ def resolve_app_config(
     # 2. Apply bundle OR profile (bundle takes precedence if specified)
     provider_applied_via_config = False
 
-    if bundle_name and bundle_resolver:
+    if bundle_name and bundle_registry:
         # Use bundle-based configuration
         try:
-            bundle = asyncio.run(bundle_resolver.load(bundle_name))
+            # load() with a name returns a single Bundle (not dict)
+            loaded = asyncio.run(bundle_registry.load(bundle_name))
+            if isinstance(loaded, dict):
+                raise ValueError(f"Expected single bundle, got dict for '{bundle_name}'")
+            bundle = loaded
             bundle_config = bundle.to_mount_plan()
 
             # Load full agent metadata via agent_loader (for descriptions)

@@ -1,10 +1,13 @@
 """App-layer bundle discovery implementing filesystem search paths.
 
-This module implements BundleDiscoveryProtocol with CLI-specific search paths,
+This module implements CLI-specific bundle discovery with search paths,
 following the same pattern as profile/agent discovery.
 
 Per KERNEL_PHILOSOPHY: Search paths are APP LAYER POLICY.
 Per MODULAR_DESIGN_PHILOSOPHY: Bundles are just content - mechanism is generic.
+
+Uses BundleRegistry from amplifier-foundation for central bundle management,
+adding CLI-specific policy (search paths, well-known bundles).
 
 Packaged bundles (foundation, design-intelligence, recipes, etc.) are discovered
 via a general mechanism that finds bundles co-located with Python packages.
@@ -18,29 +21,51 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from amplifier_foundation import BundleRegistry
+
 if TYPE_CHECKING:
     from amplifier_collections import CollectionResolver
 
 logger = logging.getLogger(__name__)
 
-# App-layer policy: mapping bundle names → Python packages that contain them
-# Convention: bundle root is the parent directory of the Python package
-PACKAGED_BUNDLES: dict[str, str] = {
-    "foundation": "amplifier_foundation",
+# ===========================================================================
+# WELL-KNOWN BUNDLES (APP-LAYER POLICY)
+# ===========================================================================
+# Following the foundation-first pattern (see AGENTS.md "Foundation-First
+# Development Strategy"), these are bundles the CLI knows about by default.
+#
+# Each entry maps bundle name → info dict with:
+#   - package: Python package name (for local editable install check)
+#   - remote: Git URL (fallback when package not installed)
+#
+# Local package is checked first for performance (editable installs).
+# Remote URL is used as fallback, ensuring bundles ALWAYS resolve.
+WELL_KNOWN_BUNDLES: dict[str, dict[str, str]] = {
+    "foundation": {
+        "package": "amplifier_foundation",
+        "remote": "git+https://github.com/microsoft/amplifier-foundation@main",
+    },
     # Future bundles follow the same pattern:
-    # "design-intelligence": "amplifier_collection_design_intelligence",
-    # "recipes": "amplifier_collection_recipes",
+    # "design-intelligence": {
+    #     "package": "amplifier_collection_design_intelligence",
+    #     "remote": "git+https://github.com/microsoft/amplifier-collection-design-intelligence@main",
+    # },
 }
 
 
 class AppBundleDiscovery:
     """CLI-specific bundle discovery with filesystem search paths.
 
-    Implements BundleDiscoveryProtocol with search order (highest precedence first):
-    1. Project bundles (.amplifier/bundles/)
-    2. User bundles (~/.amplifier/bundles/)
-    3. Collection bundles (via CollectionResolver)
-    4. Bundled bundles (package data/bundles/)
+    Uses BundleRegistry for central bundle management while adding
+    CLI-specific policy (search paths, well-known bundles).
+
+    Search order (highest precedence first):
+    1. Manual registrations (via register())
+    2. Well-known bundles (foundation, etc. - local package → remote fallback)
+    3. Project bundles (.amplifier/bundles/)
+    4. User bundles (~/.amplifier/bundles/)
+    5. Collection bundles (via CollectionResolver)
+    6. Bundled bundles (package data/bundles/)
 
     Bundle resolution:
     - "name" → looks for name/, name.yaml, name.md in search paths
@@ -51,16 +76,41 @@ class AppBundleDiscovery:
         self,
         search_paths: list[Path] | None = None,
         collection_resolver: CollectionResolver | None = None,
+        registry: BundleRegistry | None = None,
     ) -> None:
         """Initialize discovery with search paths.
 
         Args:
             search_paths: Explicit search paths (default: CLI standard paths).
             collection_resolver: Resolver for collection bundles.
+            registry: Optional BundleRegistry (creates default if not provided).
         """
         self._search_paths = search_paths or self._default_search_paths()
         self._collection_resolver = collection_resolver
-        self._registry: dict[str, str] = {}  # Manual name → URI registrations
+        self._registry = registry or BundleRegistry()
+
+        # Auto-register well-known bundles with resolved URIs
+        self._register_well_known_bundles()
+
+    def _register_well_known_bundles(self) -> None:
+        """Register well-known bundles with the registry.
+
+        For each well-known bundle, resolves the URI (local package → remote fallback)
+        and registers it with the BundleRegistry.
+        """
+        for name, bundle_info in WELL_KNOWN_BUNDLES.items():
+            # Try local package first (faster for editable installs)
+            uri = self._find_packaged_bundle(bundle_info["package"])
+            if not uri:
+                # Fallback to remote URI (always works)
+                uri = bundle_info["remote"]
+            self._registry.register({name: uri})
+            logger.debug(f"Registered well-known bundle '{name}' → {uri}")
+
+    @property
+    def registry(self) -> BundleRegistry:
+        """Get the underlying BundleRegistry for loading bundles."""
+        return self._registry
 
     def _default_search_paths(self) -> list[Path]:
         """Get default CLI search paths for bundles.
@@ -93,33 +143,28 @@ class AppBundleDiscovery:
         """Find a bundle URI by name.
 
         Search order:
-        1. Manual registry (from register())
-        2. Packaged bundles (foundation, design-intelligence, etc.)
-        3. Filesystem search paths
-        4. Collections (if resolver provided)
+        1. BundleRegistry (includes well-known bundles registered on init)
+        2. Filesystem search paths
+        3. Collections (if resolver provided)
 
         Args:
             name: Bundle name (e.g., "foundation", "design-intelligence").
 
         Returns:
-            file:// URI for the bundle, or None if not found.
+            URI for the bundle, or None if not found.
         """
-        # Check manual registry first
-        if name in self._registry:
-            return self._registry[name]
-
-        # Check packaged bundles (app-layer policy defines which bundles come from packages)
-        if name in PACKAGED_BUNDLES:
-            uri = self._find_packaged_bundle(PACKAGED_BUNDLES[name])
-            if uri:
-                logger.debug(f"Found packaged bundle '{name}' at {uri}")
-                return uri
+        # Check registry first (includes well-known bundles)
+        uri = self._registry.find(name)
+        if uri:
+            return uri
 
         # Search filesystem paths
         for base_path in self._search_paths:
             uri = self._find_in_path(base_path, name)
             if uri:
                 logger.debug(f"Found bundle '{name}' at {uri}")
+                # Register for future lookups
+                self._registry.register({name: uri})
                 return uri
 
         # Try collections if resolver available
@@ -127,6 +172,8 @@ class AppBundleDiscovery:
             uri = self._find_in_collections(name)
             if uri:
                 logger.debug(f"Found bundle '{name}' in collection at {uri}")
+                # Register for future lookups
+                self._registry.register({name: uri})
                 return uri
 
         logger.debug(f"Bundle '{name}' not found in any search path")
@@ -247,7 +294,7 @@ class AppBundleDiscovery:
             name: Bundle name.
             uri: URI for the bundle.
         """
-        self._registry[name] = uri
+        self._registry.register({name: uri})
         logger.debug(f"Registered bundle '{name}' → {uri}")
 
     def list_bundles(self) -> list[str]:
@@ -258,11 +305,8 @@ class AppBundleDiscovery:
         """
         bundles: set[str] = set()
 
-        # Add packaged bundles (foundation, and future bundles)
-        bundles.update(PACKAGED_BUNDLES.keys())
-
-        # Add registered bundles
-        bundles.update(self._registry.keys())
+        # Add registered bundles (includes well-known bundles registered on init)
+        bundles.update(self._registry.list_registered())
 
         # Scan filesystem paths
         for base_path in self._search_paths:

@@ -12,7 +12,7 @@ from amplifier_collections import CollectionResolver
 from amplifier_config import ConfigManager
 from amplifier_config import ConfigPaths
 from amplifier_config import Scope
-from amplifier_foundation import BundleResolver
+from amplifier_foundation import BundleRegistry
 from amplifier_module_resolution import StandardModuleSourceResolver
 from amplifier_profiles import ProfileLoader
 
@@ -378,52 +378,40 @@ def get_bundle_search_paths() -> list[Path]:
     return paths
 
 
-def create_bundle_resolver(
-    base_path: Path | None = None,
-    cache_dir: Path | None = None,
-) -> BundleResolver:
-    """Create CLI-configured bundle resolver.
+def create_bundle_registry(
+    home: Path | None = None,
+) -> BundleRegistry:
+    """Create CLI-configured bundle registry with well-known bundles.
 
-    Uses amplifier-foundation's source handlers directly for all URI types:
+    Uses amplifier-foundation's BundleRegistry for all URI types:
     - file:// and local paths
     - git+https:// for git repositories
     - https:// and http:// for direct downloads
     - zip+https:// and zip+file:// for zip archives
 
+    Well-known bundles (e.g., "foundation") are automatically registered,
+    allowing plain names like "foundation" to resolve correctly.
+
     Per DESIGN PHILOSOPHY: Bundles have independent code paths optimized for
     their longer term future, with no coupling to profiles/collections.
 
     Args:
-        base_path: Base path for resolving relative paths (default: cwd).
-        cache_dir: Cache directory for remote content (default: ~/.cache/amplifier/bundles).
+        home: Home directory for registry state and cache (default: AMPLIFIER_HOME).
 
     Returns:
-        BundleResolver with foundation source handlers and disk cache.
+        BundleRegistry with foundation source handlers and well-known bundles registered.
     """
-    from .lib.bundle_loader import AppBundleDiscovery
-    from .lib.bundle_loader import create_bundle_cache
-    from .lib.bundle_loader import create_bundle_source_resolver
+    from .lib.bundle_loader import get_bundle_cache_dir
+    from .lib.bundle_loader.discovery import AppBundleDiscovery
 
-    # Use foundation source resolver (supports git, http, zip, file)
-    source_resolver = create_bundle_source_resolver(
-        base_path=base_path,
-        cache_dir=cache_dir,
-    )
+    # Use default home or derive from cache dir
+    if home is None:
+        home = get_bundle_cache_dir().parent.parent  # cache/bundles -> home
 
-    # Use disk cache for loaded bundles (falls back to in-memory if DiskCache unavailable)
-    bundle_cache = create_bundle_cache()
-
-    # Discovery without collection dependency
-    discovery = AppBundleDiscovery(
-        search_paths=get_bundle_search_paths(),
-        collection_resolver=None,  # NO collection dependency
-    )
-
-    return BundleResolver(
-        source_resolver=source_resolver,
-        discovery=discovery,
-        cache=bundle_cache,
-    )
+    # Use AppBundleDiscovery to get a registry with well-known bundles registered.
+    # This ensures plain bundle names like "foundation" resolve correctly.
+    discovery = AppBundleDiscovery(registry=BundleRegistry(home=home))
+    return discovery.registry
 
 
 async def create_session_from_bundle(

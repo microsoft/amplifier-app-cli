@@ -20,7 +20,7 @@ from ..console import console
 from ..lib.bundle_loader import AppBundleDiscovery
 from ..paths import ScopeNotAvailableError
 from ..paths import ScopeType
-from ..paths import create_bundle_resolver
+from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..paths import get_effective_scope
 
@@ -62,7 +62,8 @@ def bundle_list():
 
     bundles = discovery.list_bundles()
     settings = config_manager.get_merged_settings() or {}
-    active_bundle = settings.get("bundle", {}).get("active")
+    bundle_settings = settings.get("bundle") or {}  # Handle bundle: null case
+    active_bundle = bundle_settings.get("active")
 
     if not bundles:
         console.print("[yellow]No bundles found.[/yellow]")
@@ -117,10 +118,14 @@ def _format_location(uri: str | None) -> str:
 @click.option("--detailed", "-d", is_flag=True, help="Show detailed configuration")
 def bundle_show(name: str, detailed: bool):
     """Show details of a specific bundle."""
-    resolver = create_bundle_resolver()
+    registry = create_bundle_registry()
 
     try:
-        bundle_obj = asyncio.run(resolver.load(name))
+        loaded = asyncio.run(registry.load(name))
+        # registry.load() returns Bundle | dict[str, Bundle]
+        if isinstance(loaded, dict):
+            raise ValueError(f"Expected single bundle, got dict for '{name}'")
+        bundle_obj = loaded
     except FileNotFoundError:
         console.print(f"[red]Error:[/red] Bundle '{name}' not found")
         sys.exit(1)

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from amplifier_foundation import SimpleCache
 from amplifier_foundation import SimpleSourceResolver
+from amplifier_foundation.paths import get_amplifier_home
 
 if TYPE_CHECKING:
     from amplifier_foundation import CacheProviderProtocol
@@ -24,9 +25,9 @@ def get_bundle_cache_dir() -> Path:
     """Get CLI-specific cache directory for remote bundles.
 
     Returns:
-        Path to bundle cache directory (~/.cache/amplifier/bundles/)
+        Path to bundle cache directory under AMPLIFIER_HOME/cache/bundles/
     """
-    cache_dir = Path.home() / ".cache" / "amplifier" / "bundles"
+    cache_dir = get_amplifier_home() / "cache" / "bundles"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
@@ -73,7 +74,7 @@ def create_bundle_cache(cache_dir: Path | None = None) -> CacheProviderProtocol:
         from amplifier_foundation.cache.disk import DiskCache
 
         if cache_dir is None:
-            cache_dir = Path.home() / ".cache" / "amplifier" / "bundle_metadata"
+            cache_dir = get_amplifier_home() / "cache" / "bundle_metadata"
         return DiskCache(cache_dir=cache_dir)
     except ImportError:
         # Fall back to in-memory cache
