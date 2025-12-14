@@ -1439,6 +1439,11 @@ async def execute_single(
         else:
             resolver = create_module_resolver()
         await session.coordinator.mount("module-source-resolver", resolver)
+
+        # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
+        # IMPORTANT: Must be registered BEFORE session.initialize() so tools can access them
+        _register_mention_handling(session, profile_name, bundle_base_path)
+
         await session.initialize()
 
         # Register trace collector hooks if in json-trace mode
@@ -1447,9 +1452,6 @@ async def execute_single(
             if hooks:
                 hooks.register("tool:pre", trace_collector.on_tool_pre, priority=1000, name="trace_collector_pre")
                 hooks.register("tool:post", trace_collector.on_tool_post, priority=1000, name="trace_collector_post")
-
-        # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
-        _register_mention_handling(session, profile_name, bundle_base_path)
 
         # Register session spawning capabilities for agent delegation (app-layer policy)
         _register_session_spawning(session)
