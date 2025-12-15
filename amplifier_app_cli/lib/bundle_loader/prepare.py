@@ -65,7 +65,10 @@ async def load_and_prepare_bundle(
     logger.info(f"Loading bundle '{bundle_name}' from {uri}")
 
     # 2. Load bundle via foundation (handles file://, git+, http://, zip+)
-    bundle = await load_bundle(uri)
+    # CRITICAL: Pass discovery.registry so well-known bundles (foundation, etc.)
+    # are available when resolving includes. Without this, includes fail because
+    # load_bundle() creates an empty registry that doesn't know about well-known bundles.
+    bundle = await load_bundle(uri, registry=discovery.registry)
     logger.debug(f"Loaded bundle: {bundle.name} v{bundle.version}")
 
     # 3. Prepare: download modules from git sources, install deps
@@ -120,7 +123,8 @@ async def compose_and_prepare_bundles(
             raise FileNotFoundError(f"Bundle '{name}' not found")
 
         logger.info(f"Loading bundle '{name}' from {uri}")
-        bundle = await load_bundle(uri)
+        # Pass registry so well-known bundles are available for include resolution
+        bundle = await load_bundle(uri, registry=discovery.registry)
         bundles.append(bundle)
 
     # Compose: first bundle is base, others overlay

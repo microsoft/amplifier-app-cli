@@ -436,4 +436,66 @@ def _get_bundle_source_scope(config_manager) -> str:
     return "unknown"
 
 
+@bundle.command(name="add")
+@click.argument("name")
+@click.argument("uri")
+def bundle_add(name: str, uri: str):
+    """Add a bundle to the registry for discovery.
+
+    NAME is the local name to use for this bundle.
+    URI is the location of the bundle (git+https://, file://, etc.).
+
+    Examples:
+
+        amplifier bundle add recipes git+https://github.com/microsoft/amplifier-bundle-recipes@main
+
+        amplifier bundle add my-local file:///path/to/bundle
+    """
+    from ..lib.bundle_loader import user_registry
+
+    # Check if name already exists
+    existing = user_registry.get_bundle(name)
+    if existing:
+        console.print(f"[yellow]Warning:[/yellow] Bundle '{name}' already registered")
+        console.print(f"  Current URI: {existing['uri']}")
+        console.print(f"  Added: {existing['added_at']}")
+        console.print("\nUpdating to new URI...")
+
+    # Add to registry
+    user_registry.add_bundle(name, uri)
+    console.print(f"[green]✓ Added bundle '{name}'[/green]")
+    console.print(f"  URI: {uri}")
+    console.print("\n[dim]Use 'amplifier bundle list' to see all bundles[/dim]")
+    console.print(f"[dim]Use 'amplifier bundle use {name}' to activate this bundle[/dim]")
+
+
+@bundle.command(name="remove")
+@click.argument("name")
+def bundle_remove(name: str):
+    """Remove a bundle from the user registry.
+
+    This only removes the registry entry, not any cached files.
+    Does not affect well-known bundles like 'foundation'.
+
+    Example:
+
+        amplifier bundle remove recipes
+    """
+    from ..lib.bundle_loader import user_registry
+    from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
+
+    # Check if this is a well-known bundle
+    if name in WELL_KNOWN_BUNDLES:
+        console.print(f"[red]Error:[/red] Cannot remove well-known bundle '{name}'")
+        console.print("  Well-known bundles are built into amplifier")
+        sys.exit(1)
+
+    # Try to remove
+    if user_registry.remove_bundle(name):
+        console.print(f"[green]✓ Removed bundle '{name}' from registry[/green]")
+    else:
+        console.print(f"[yellow]Bundle '{name}' not found in user registry[/yellow]")
+        console.print("\nUser-added bundles can be seen with 'amplifier bundle list'")
+
+
 __all__ = ["bundle"]

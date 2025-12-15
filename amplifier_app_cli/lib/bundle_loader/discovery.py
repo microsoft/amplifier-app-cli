@@ -89,8 +89,26 @@ class AppBundleDiscovery:
         self._collection_resolver = collection_resolver
         self._registry = registry or BundleRegistry()
 
+        # Load user-added bundles from registry file (highest priority after manual)
+        self._load_user_registry()
+
         # Auto-register well-known bundles with resolved URIs
         self._register_well_known_bundles()
+
+    def _load_user_registry(self) -> None:
+        """Load user-added bundles from the registry file.
+
+        User bundles have higher priority than well-known bundles,
+        allowing users to override or shadow built-in bundles.
+        """
+        from amplifier_app_cli.lib.bundle_loader import user_registry
+
+        bundles = user_registry.load_user_registry()
+        for name, info in bundles.items():
+            uri = info.get("uri")
+            if uri:
+                self._registry.register({name: uri})
+                logger.debug(f"Loaded user bundle '{name}' → {uri}")
 
     def _register_well_known_bundles(self) -> None:
         """Register well-known bundles with the registry.
