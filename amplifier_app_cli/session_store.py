@@ -210,6 +210,9 @@ class SessionStore:
 
                 # Sanitize message to ensure it's JSON-serializable
                 sanitized_message = self._sanitize_message(message)
+                # Add timestamp if not present (for accurate replay timing - bd-45)
+                if "timestamp" not in sanitized_message:
+                    sanitized_message["timestamp"] = datetime.now(UTC).isoformat(timespec="milliseconds")
                 json.dump(sanitized_message, tmp_file, ensure_ascii=False)
                 tmp_file.write("\n")
 
