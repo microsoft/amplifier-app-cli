@@ -93,8 +93,9 @@ async def resolve_bundle_config(
             bundle_config["providers"] = _apply_provider_overrides(bundle_config["providers"], provider_overrides)
         else:
             # Bundle has no providers (e.g., provider-agnostic foundation bundle)
-            # Use overrides directly as the provider configuration
-            bundle_config["providers"] = provider_overrides
+            # Use overrides directly, but inject sensible debug defaults
+            # This ensures observability when using provider-agnostic bundles
+            bundle_config["providers"] = _ensure_debug_defaults(provider_overrides)
 
     if console:
         console.print(f"[dim]Bundle '{bundle_name}' prepared successfully[/dim]")
@@ -228,6 +229,44 @@ def resolve_app_config(
     return expand_env_vars(config)
 
 
+def _ensure_debug_defaults(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure debug defaults are present when using provider overrides directly.
+
+    When a provider-agnostic bundle (like foundation) uses provider overrides
+    from user settings, those settings typically lack debug flags since
+    configure_provider() doesn't add them. This function injects sensible
+    defaults for observability:
+    - debug: true (enables INFO-level llm:request/response summaries)
+    - raw_debug: true (enables complete API I/O for llm:request:raw/response:raw)
+
+    Users who explicitly set debug: false will have that respected (we only
+    set defaults, not overrides).
+
+    Args:
+        providers: Provider configurations from user settings.
+
+    Returns:
+        Provider configurations with debug defaults injected.
+    """
+    result = []
+    for provider in providers:
+        if isinstance(provider, dict):
+            provider_copy = provider.copy()
+            config = provider_copy.get("config", {})
+            if isinstance(config, dict):
+                config = config.copy()
+                # Only set defaults if not explicitly configured
+                if "debug" not in config:
+                    config["debug"] = True
+                if "raw_debug" not in config:
+                    config["raw_debug"] = True
+                provider_copy["config"] = config
+            result.append(provider_copy)
+        else:
+            result.append(provider)
+    return result
+
+
 def _apply_provider_overrides(providers: list[dict[str, Any]], overrides: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Apply provider overrides to bundle providers.
 
@@ -353,4 +392,5 @@ __all__ = [
     "deep_merge",
     "expand_env_vars",
     "_apply_provider_overrides",
+    "_ensure_debug_defaults",
 ]
