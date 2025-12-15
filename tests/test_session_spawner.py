@@ -17,6 +17,17 @@ from amplifier_app_cli.session_store import SessionStore
 pytestmark = pytest.mark.anyio
 
 
+def messages_equal_ignoring_timestamp(loaded: list, original: list) -> bool:
+    """Compare message lists ignoring the timestamp field added by SessionStore."""
+    if len(loaded) != len(original):
+        return False
+    for loaded_msg, orig_msg in zip(loaded, original, strict=True):
+        loaded_without_ts = {k: v for k, v in loaded_msg.items() if k != "timestamp"}
+        if loaded_without_ts != orig_msg:
+            return False
+    return True
+
+
 def _mock_uuid(monkeypatch, hex_value: str = "f" * 32) -> None:
     class _FakeUUID:
         def __init__(self, value: str):
@@ -258,9 +269,9 @@ class TestSessionStoreIntegration:
         store.save(session_id, transcript, metadata)
         assert store.exists(session_id)
 
-        # Load and verify
+        # Load and verify (ignoring auto-added timestamps)
         loaded_transcript, loaded_metadata = store.load(session_id)
-        assert loaded_transcript == transcript
+        assert messages_equal_ignoring_timestamp(loaded_transcript, transcript)
         assert loaded_metadata["session_id"] == session_id
         assert loaded_metadata["parent_id"] == "parent-123"
 

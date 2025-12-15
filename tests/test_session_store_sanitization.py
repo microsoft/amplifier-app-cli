@@ -6,6 +6,22 @@ from pathlib import Path
 from amplifier_app_cli.session_store import SessionStore
 
 
+def message_matches_ignoring_timestamp(loaded: dict, original: dict) -> bool:
+    """Compare a message ignoring the auto-added timestamp field."""
+    loaded_without_ts = {k: v for k, v in loaded.items() if k != "timestamp"}
+    return loaded_without_ts == original
+
+
+def messages_equal_ignoring_timestamp(loaded: list, original: list) -> bool:
+    """Compare message lists ignoring the timestamp field added by SessionStore."""
+    if len(loaded) != len(original):
+        return False
+    for loaded_msg, orig_msg in zip(loaded, original, strict=True):
+        if not message_matches_ignoring_timestamp(loaded_msg, orig_msg):
+            return False
+    return True
+
+
 class NonSerializable:
     """A class that can't be JSON serialized."""
 
@@ -42,7 +58,7 @@ def test_sanitize_message_with_thinking_block():
 
         # Check that non-serializable fields were removed
         assert len(loaded_transcript) == 2
-        assert loaded_transcript[0] == {"role": "user", "content": "Hello"}
+        assert message_matches_ignoring_timestamp(loaded_transcript[0], {"role": "user", "content": "Hello"})
         assert loaded_transcript[1]["role"] == "assistant"
         assert loaded_transcript[1]["content"] == "I'll help you with that."
         assert "thinking_block" not in loaded_transcript[1]
@@ -69,10 +85,10 @@ def test_sanitize_message_preserves_serializable():
 
         store.save("test-session", transcript, metadata)
 
-        # Load and verify all fields are preserved
+        # Load and verify all fields are preserved (ignoring auto-added timestamps)
         loaded_transcript, loaded_metadata = store.load("test-session")
 
-        assert loaded_transcript == transcript
+        assert messages_equal_ignoring_timestamp(loaded_transcript, transcript)
         assert loaded_metadata == metadata
 
 

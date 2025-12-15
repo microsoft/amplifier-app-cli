@@ -17,6 +17,35 @@ import pytest
 from amplifier_app_cli.session_store import SessionStore
 
 
+def messages_equal_ignoring_timestamp(loaded: list, original: list) -> bool:
+    """Compare message lists ignoring the timestamp field added by SessionStore.
+
+    The timestamp field is added automatically during save (bd-45) and should
+    not affect the semantic equality of messages.
+    """
+    if len(loaded) != len(original):
+        return False
+    for loaded_msg, orig_msg in zip(loaded, original, strict=True):
+        # Create a copy of loaded message without timestamp for comparison
+        loaded_without_ts = {k: v for k, v in loaded_msg.items() if k != "timestamp"}
+        if loaded_without_ts != orig_msg:
+            return False
+    return True
+
+
+def verify_timestamps_present(messages: list) -> bool:
+    """Verify that all messages have valid ISO8601 timestamps."""
+    for msg in messages:
+        if "timestamp" not in msg:
+            return False
+        # Verify it's a valid ISO format by parsing
+        try:
+            datetime.fromisoformat(msg["timestamp"])
+        except (ValueError, TypeError):
+            return False
+    return True
+
+
 class TestSessionStore:
     """Test session persistence functionality."""
 
@@ -61,8 +90,9 @@ class TestSessionStore:
         # Load session
         loaded_transcript, loaded_metadata = store.load(session_id)
 
-        # Verify data integrity
-        assert loaded_transcript == sample_transcript
+        # Verify data integrity (ignoring auto-added timestamps)
+        assert messages_equal_ignoring_timestamp(loaded_transcript, sample_transcript)
+        assert verify_timestamps_present(loaded_transcript)
         assert loaded_metadata == sample_metadata
 
     def test_atomic_write_on_failure(self, store, sample_metadata):
@@ -75,7 +105,7 @@ class TestSessionStore:
 
         # Verify initial save worked
         loaded_transcript, _ = store.load(session_id)
-        assert loaded_transcript == good_transcript
+        assert messages_equal_ignoring_timestamp(loaded_transcript, good_transcript)
 
         # Try to save with an object that can't be JSON serialized
         # This should now succeed with sanitization instead of failing
@@ -109,7 +139,7 @@ class TestSessionStore:
 
         # Load should recover from backup
         loaded_transcript, _ = store.load(session_id)
-        assert loaded_transcript == sample_transcript  # Should get the backup version
+        assert messages_equal_ignoring_timestamp(loaded_transcript, sample_transcript)  # Should get backup
 
     def test_corruption_recovery_metadata(self, store, sample_transcript, sample_metadata, temp_dir):
         """Test recovery from corrupted metadata file using backup."""
@@ -325,7 +355,7 @@ class TestSessionStore:
         loaded_transcript, _ = store.load(session_id)
 
         assert len(loaded_transcript) == 1000
-        assert loaded_transcript == large_transcript
+        assert messages_equal_ignoring_timestamp(loaded_transcript, large_transcript)
 
     def test_concurrent_save_protection(self, store, sample_transcript, sample_metadata):
         """Test that atomic writes protect against concurrent saves."""
@@ -344,7 +374,7 @@ class TestSessionStore:
 
         # Final state should be consistent (last write wins)
         loaded_transcript, _ = store.load(session_id)
-        assert loaded_transcript == transcript2
+        assert messages_equal_ignoring_timestamp(loaded_transcript, transcript2)
 
     def test_jsonl_format_with_empty_lines(self, store, sample_metadata, temp_dir):
         """Test that JSONL files with empty lines are handled correctly."""
