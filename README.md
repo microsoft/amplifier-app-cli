@@ -84,6 +84,15 @@ amplifier source add <id> <uri> [--local|--project|--global]
 amplifier source remove <id> [--scope]
 amplifier source list
 amplifier source show <id>
+
+# Bundle management (opt-in alternative to profiles)
+amplifier bundle add <name> <git-url>
+amplifier bundle remove <name>
+amplifier bundle list
+amplifier bundle show <name>
+amplifier bundle use <name> [--local|--project|--global]
+amplifier bundle clear
+amplifier bundle current
 ```
 
 ### Session Commands
