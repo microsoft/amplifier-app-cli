@@ -71,7 +71,14 @@ async def resolve_bundle_config(
         loaded_agents = {}
         for agent_name in bundle_config["agents"]:
             try:
-                agent = agent_loader.load_agent(agent_name)
+                # Try to resolve agent from bundle's base_path first
+                # This handles namespaced names like "foundation:bug-hunter"
+                agent_path = prepared.bundle.resolve_agent_path(agent_name)
+                if agent_path:
+                    agent = agent_loader.load_agent_from_path(agent_path, agent_name)
+                else:
+                    # Fall back to general agent resolution
+                    agent = agent_loader.load_agent(agent_name)
                 loaded_agents[agent_name] = agent.to_mount_plan_fragment()
             except Exception:  # noqa: BLE001
                 # Keep stub if agent loading fails
