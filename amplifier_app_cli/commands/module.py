@@ -734,4 +734,15 @@ def _get_actionable_tip_for_check(check_name: str, module_type: str) -> str | No
     return None
 
 
+# Registry discovery commands
+from ..registry.commands import info_command
+from ..registry.commands import registry_command
+from ..registry.commands import search_command
+
+# Add registry discovery commands to module group
+module.add_command(registry_command)
+module.add_command(search_command)
+module.add_command(info_command)
+
+
 __all__ = ["module"]
