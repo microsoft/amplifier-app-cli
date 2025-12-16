@@ -9,7 +9,8 @@ Implementation of module registry discovery commands for amplifier-app-cli has b
 ## What Was Implemented
 
 ### 1. RegistryClient (`amplifier_app_cli/registry/client.py`)
-- Fetches registry index from GitHub (with 1-hour cache TTL)
+- Fetches registry index from configurable URL (with 1-hour cache TTL)
+- Registry URL configurable via DEFAULTS.yaml with user overrides in settings.yaml
 - Implements list, search, and get_module methods
 - Graceful error handling with fallback to stale cache
 - Cache management at `~/.amplifier/cache/registry-index.json`
@@ -19,7 +20,13 @@ Implementation of module registry discovery commands for amplifier-app-cli has b
 #### `amplifier module registry`
 - Lists all modules from the amplifier-modules registry
 - Supports filters: `--type`, `--verified`, `--json`
-- Displays modules in a rich table format
+- Displays modules in a rich table format with columns:
+  - Name (with [V] badge for verified modules)
+  - Installed (shows "Yes" for already installed modules)
+  - Version (from 'latest' field)
+  - Type (from 'module_type' field)
+  - Description
+  - Tags (first 3 tags)
 - Clear help text distinguishing from `amplifier module list`
 
 #### `amplifier module search <query>`
@@ -53,9 +60,9 @@ Commands:
 ### ⏳ Functional Testing Pending
 The commands are functionally complete but require the registry to be published:
 
-**Current Status**: Registry index returns 404
-- Expected URL: `https://raw.githubusercontent.com/microsoft/amplifier-modules/main/registry/index.json`
-- Status: File exists locally at `C:\Users\malicata\source\amplifier-modules\registry\index.json` but not yet published to GitHub
+**Current Status**: Registry is published and accessible
+- URL: `https://raw.githubusercontent.com/marklicata/amplifier-modules/main/registry/index.json`
+- Status: ✅ Registry is live and commands are fully functional
 
 **What Works**:
 - Command registration ✅
@@ -84,6 +91,10 @@ The commands are functionally complete but require the registry to be published:
 
 ### Modified Files
 - `amplifier_app_cli/commands/module.py` (added registry command imports and registration)
+- `amplifier_app_cli/registry/client.py` (made registry URL configurable)
+- `amplifier_app_cli/registry/commands/registry.py` (enhanced output with install status, version, type, tags)
+- `amplifier_app_cli/data/profiles/DEFAULTS.yaml` (added registry_url configuration)
+- `amplifier_app_cli/data/profiles/__init__.py` (added get_system_registry_url function)
 
 ---
 
@@ -133,6 +144,32 @@ All functionality uses existing dependencies:
 
 ---
 
+## Configuration System
+
+### Registry URL Configuration
+The module registry URL is configurable at multiple levels:
+
+1. **System Default** (`amplifier_app_cli/data/profiles/DEFAULTS.yaml`):
+   ```yaml
+   registry_url: https://raw.githubusercontent.com/marklicata/amplifier-modules/main/registry/index.json
+   ```
+
+2. **User Override** (`~/.amplifier/settings.yaml`):
+   ```yaml
+   registry:
+     url: https://example.com/my-custom-registry/index.json
+   ```
+
+3. **Project Override** (`.amplifier/settings.yaml`):
+   ```yaml
+   registry:
+     url: https://example.com/project-registry/index.json
+   ```
+
+This allows organizations to host private module registries while maintaining the public registry as the default.
+
+---
+
 ## Design Decisions
 
 1. **Command Naming**: Used `registry` instead of `list-registry` for cleaner UX
@@ -140,13 +177,15 @@ All functionality uses existing dependencies:
 3. **Cache Strategy**: 1-hour TTL balances freshness vs. network usage
 4. **Error Handling**: Graceful degradation with helpful error messages
 5. **Discovery Only**: Installation remains with existing `amplifier module add`
+6. **Configurable Registry**: Registry URL follows same pattern as profile configuration
+7. **Windows Compatibility**: Replaced Unicode characters with ASCII for better Windows console support
 
 ---
 
 ## Known Limitations
 
 1. **Registry Must Be Published**: Commands require the registry to be available at GitHub
-2. **Single Registry**: Currently hardcoded to microsoft/amplifier-modules (can be enhanced later)
+2. ~~**Single Registry**: Currently hardcoded to microsoft/amplifier-modules~~ ✅ **RESOLVED**: Registry URL now configurable via DEFAULTS.yaml and settings.yaml
 3. **No Version Selection**: Shows only latest version (future enhancement)
 4. **No Dependency Info**: Doesn't show module dependencies (future enhancement)
 
@@ -154,7 +193,8 @@ All functionality uses existing dependencies:
 
 ## References
 
-- **Issue**: [#29](https://github.com/microsoft/amplifier-app-cli/issues/29)
+- **Initial Issue**: [#29](https://github.com/microsoft/amplifier-app-cli/issues/29) - Module registry discovery
+- **Configuration Issue**: [#31](https://github.com/microsoft/amplifier-app-cli/issues/31) - Make module registry URL configurable
 - **Spec**: `C:\Users\malicata\source\amplifier-modules\CLI_INTEGRATION_SPEC.md`
 - **Plan**: `IMPLEMENTATION_PLAN.md`
 - **Branch**: `feature/module-registry-discovery`

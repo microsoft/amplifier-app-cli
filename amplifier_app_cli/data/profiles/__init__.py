@@ -33,3 +33,33 @@ def get_system_default_profile() -> str:
 
     # Ultimate fallback if file is missing/corrupted
     return "dev"
+
+
+def get_system_registry_url() -> str:
+    """Get module registry URL from bundled configuration.
+
+    This is the SINGLE source of truth for the default registry URL.
+    Users can override via settings.yaml (registry.url).
+
+    Returns:
+        URL to the module registry index
+    """
+    try:
+        import yaml
+    except ImportError:
+        logger.warning("PyYAML not available, using hardcoded default")
+        return "https://raw.githubusercontent.com/marklicata/amplifier-modules/main/registry/index.json"
+
+    defaults_file = Path(__file__).parent / "DEFAULTS.yaml"
+
+    if defaults_file.exists():
+        try:
+            with open(defaults_file, encoding="utf-8") as f:
+                defaults = yaml.safe_load(f)
+                if defaults and "registry_url" in defaults:
+                    return defaults["registry_url"]
+        except Exception as e:
+            logger.warning(f"Failed to read DEFAULTS.yaml: {e}")
+
+    # Ultimate fallback if file is missing/corrupted
+    return "https://raw.githubusercontent.com/marklicata/amplifier-modules/main/registry/index.json"

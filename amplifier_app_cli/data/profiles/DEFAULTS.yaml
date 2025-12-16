@@ -5,6 +5,12 @@
 # This is the ONLY place to change the system default
 default_profile: developer-expertise:dev
 
+# Module registry URL
+# URL to the central module registry index
+# Users can override via ~/.amplifier/settings.yaml (registry.url)
+# Projects can override via .amplifier/settings.yaml (registry.url)
+registry_url: https://raw.githubusercontent.com/marklicata/amplifier-modules/main/registry/index.json
+
 # Rationale for "developer-expertise:dev" as default:
 # - foundation:foundation: Too minimal (no tools, no hooks) - not practical
 # - foundation:base: Good foundation but dev adds developer experience

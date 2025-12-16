@@ -12,6 +12,8 @@ from typing import Any
 
 import httpx
 
+from ..data.profiles import get_system_registry_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,16 +26,16 @@ class RegistryClient:
 
     def __init__(
         self,
-        registry_url: str = "https://raw.githubusercontent.com/microsoft/amplifier-modules/main/registry/index.json",
+        registry_url: str | None = None,
         cache_ttl: int = 3600,
     ):
         """Initialize registry client.
 
         Args:
-            registry_url: URL to registry index.json
+            registry_url: URL to registry index.json. If None, uses system default from DEFAULTS.yaml.
             cache_ttl: Cache time-to-live in seconds (default: 1 hour)
         """
-        self.registry_url = registry_url
+        self.registry_url = registry_url or get_system_registry_url()
         self.cache_ttl = cache_ttl
         self.cache_dir = Path.home() / ".amplifier" / "cache"
         self.cache_file = self.cache_dir / "registry-index.json"
@@ -119,7 +121,7 @@ class RegistryClient:
         for name, module in index.get("modules", {}).items():
             # Apply filters
             if filters:
-                if filters.get("type") and module.get("type") != filters["type"]:
+                if filters.get("type") and module.get("module_type") != filters["type"]:
                     continue
                 if filters.get("verified") and not module.get("verified"):
                     continue
@@ -148,7 +150,7 @@ class RegistryClient:
         for name, module in index.get("modules", {}).items():
             # Apply filters first
             if filters:
-                if filters.get("type") and module.get("type") != filters["type"]:
+                if filters.get("type") and module.get("module_type") != filters["type"]:
                     continue
                 if filters.get("verified") and not module.get("verified"):
                     continue
