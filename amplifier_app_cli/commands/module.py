@@ -22,6 +22,9 @@ from ..paths import create_config_manager
 from ..paths import create_module_resolver
 from ..paths import create_profile_loader
 from ..paths import get_effective_scope
+from ..registry.commands import info_command
+from ..registry.commands import registry_command
+from ..registry.commands import search_command
 
 
 @click.group(invoke_without_command=True)
@@ -733,11 +736,6 @@ def _get_actionable_tip_for_check(check_name: str, module_type: str) -> str | No
 
     return None
 
-
-# Registry discovery commands
-from ..registry.commands import info_command
-from ..registry.commands import registry_command
-from ..registry.commands import search_command
 
 # Add registry discovery commands to module group
 module.add_command(registry_command)
