@@ -227,7 +227,7 @@ def module_add(module_id: str, source: str | None, scope_flag: str | None):
         scope, was_fallback = get_effective_scope(
             cast(ScopeType, scope_flag) if scope_flag else None,
             config_manager,
-            default_scope="local",
+            default_scope="global",
         )
         if was_fallback:
             console.print(
@@ -276,7 +276,7 @@ def module_remove(module_id: str, scope_flag: str | None):
         scope, was_fallback = get_effective_scope(
             cast(ScopeType, scope_flag) if scope_flag else None,
             config_manager,
-            default_scope="local",
+            default_scope="global",
         )
         if was_fallback:
             console.print(
