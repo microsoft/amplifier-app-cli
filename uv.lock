@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 
 [[package]]
@@ -52,7 +52,7 @@ dev = [
 [[package]]
 name = "amplifier-collections"
 version = "0.1.0"
-source = { git = "https://github.com/microsoft/amplifier-collections?branch=main#694daf5433cf372843a25466f820217c37f3043e" }
+source = { git = "https://github.com/microsoft/amplifier-collections?branch=main#187d3dfbe0c56c24018812d7bc5fbbe42bb03626" }
 dependencies = [
     { name = "pydantic" },
 ]
@@ -68,7 +68,7 @@ dependencies = [
 [[package]]
 name = "amplifier-core"
 version = "1.0.0"
-source = { git = "https://github.com/microsoft/amplifier-core?branch=main#ac163e5fb0d315bb1c735a91ac4a9d7a82ae8fc1" }
+source = { git = "https://github.com/microsoft/amplifier-core?branch=main#e0ad0bc85d43233483fc1ce15051436c474a3042" }
 dependencies = [
     { name = "click" },
     { name = "pydantic" },
@@ -80,7 +80,7 @@ dependencies = [
 [[package]]
 name = "amplifier-foundation"
 version = "1.0.0"
-source = { git = "https://github.com/microsoft/amplifier-foundation?branch=main#1a2b4a2e8176df848b196053c5686d4c39f8f600" }
+source = { git = "https://github.com/microsoft/amplifier-foundation?branch=main#200e0d20797b419c5eeca364887b1f33ad01221f" }
 dependencies = [
     { name = "amplifier-core" },
     { name = "pyyaml" },

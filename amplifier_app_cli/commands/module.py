@@ -36,6 +36,12 @@ def module(ctx: click.Context):
         ctx.exit()
 
 
+# Add registry discovery commands to module group immediately after definition
+module.add_command(registry_command)
+module.add_command(search_command)
+module.add_command(info_command)
+
+
 @module.command("list")
 @click.option(
     "--type",
@@ -194,6 +200,7 @@ def module_add(module_id: str, source: str | None, scope_flag: str | None):
 
     MODULE_ID should follow naming convention: provider-*, tool-*, hooks-*, etc.
     Use --source to specify where to load the module from.
+    If --source is not provided, the source will be fetched from the registry.
     """
     # Infer module type from ID prefix
     module_type: Literal["tool", "hook", "agent", "provider", "orchestrator", "context"] | None = None
@@ -222,6 +229,60 @@ def module_add(module_id: str, source: str | None, scope_flag: str | None):
         console.print("  amplifier module add provider-anthropic --source git+https://github.com/org/repo@main")
         console.print("  amplifier module add tool-jupyter")
         return
+
+    # If no source provided, try to fetch from registry
+    if source is None:
+        from ..registry.client import RegistryClient
+
+        console.print(f"[dim]No source provided, looking up {module_id} in registry...[/dim]")
+        try:
+            client = RegistryClient()
+            module_info = client.get_module(module_id)
+
+            if not module_info:
+                console.print(f"[red]Error:[/red] Module '{module_id}' not found in registry")
+                console.print("\n[yellow]Please provide a source:[/yellow]")
+                console.print(f"  amplifier module add {module_id} --source git+https://github.com/org/repo@main")
+                console.print("\n[dim]Or search for available modules:[/dim]")
+                console.print("  amplifier module search <query>")
+                console.print("  amplifier module registry")
+                return
+
+            # Extract source/repository URL from registry
+            # Check both 'source' and 'repository' fields
+            repository = module_info.get("source") or module_info.get("repository")
+            if not repository:
+                console.print(f"[red]Error:[/red] Module '{module_id}' found but has no source/repository URL")
+                console.print("[yellow]Please provide a source manually:[/yellow]")
+                console.print(f"  amplifier module add {module_id} --source git+https://github.com/org/repo@main")
+                return
+
+            # Convert repository URL to git source format if needed
+            if repository.startswith("https://github.com/") or repository.startswith("http://github.com/"):
+                # Convert https://github.com/org/repo to git+https://github.com/org/repo@main
+                # Check if it already has a ref (branch/tag)
+                if "@" not in repository:
+                    source = f"git+{repository}@main"
+                else:
+                    source = f"git+{repository}"
+            elif repository.startswith("git+"):
+                # Already in correct format
+                source = repository
+            else:
+                console.print(f"[yellow]Warning:[/yellow] Unsupported repository format: {repository}")
+                console.print("[yellow]Please provide a source manually:[/yellow]")
+                console.print(f"  amplifier module add {module_id} --source git+https://github.com/org/repo@main")
+                return
+
+            console.print(f"[green]✓[/green] Found in registry: {repository}")
+            if source != repository:
+                console.print(f"[dim]Converted to: {source}[/dim]")
+
+        except Exception as e:
+            console.print(f"[yellow]Warning:[/yellow] Could not fetch from registry: {e}")
+            console.print("[yellow]Please provide a source manually:[/yellow]")
+            console.print(f"  amplifier module add {module_id} --source git+https://github.com/org/repo@main")
+            return
 
     config_manager = create_config_manager()
 
@@ -270,8 +331,13 @@ def module_add(module_id: str, source: str | None, scope_flag: str | None):
 @click.option("--local", "scope_flag", flag_value="local", help="Remove from local")
 @click.option("--project", "scope_flag", flag_value="project", help="Remove from project")
 @click.option("--global", "scope_flag", flag_value="global", help="Remove from global")
-def module_remove(module_id: str, scope_flag: str | None):
-    """Remove a module override from settings."""
+@click.option("--clear-cache", is_flag=True, help="Also remove from cache (~/.amplifier/module-cache)")
+def module_remove(module_id: str, scope_flag: str | None, clear_cache: bool):
+    """Remove a module override from settings.
+
+    By default, only removes from settings. Cached files remain in ~/.amplifier/module-cache
+    since they may be used by other projects. Use --clear-cache to also remove cached files.
+    """
     config_manager = create_config_manager()
 
     # Validate scope availability
@@ -293,6 +359,28 @@ def module_remove(module_id: str, scope_flag: str | None):
     module_mgr.remove_module(module_id, scope)  # type: ignore[arg-type]
 
     console.print(f"[green]✓ Removed {module_id} from {scope}[/green]")
+
+    # Clear cache if requested
+    if clear_cache:
+        from ..utils.module_cache import clear_module_cache
+        from ..utils.module_cache import find_cached_module
+
+        # Check if module exists in cache
+        cached_module = find_cached_module(module_id)
+        if cached_module:
+            console.print(f"  Clearing cache for {module_id}...", end="")
+            cleared, _ = clear_module_cache(module_id=module_id)
+            if cleared > 0:
+                console.print(" [green]✓[/green]")
+                console.print(f"  Removed {cleared} cached version(s)")
+            else:
+                console.print(" [yellow]⚠[/yellow]")
+                console.print("  [yellow]Could not clear cache[/yellow]")
+        else:
+            console.print(f"  [dim]No cached files found for {module_id}[/dim]")
+    else:
+        console.print(f"  [dim]Cached files remain at ~/.amplifier/module-cache[/dim]")
+        console.print(f"  [dim]Use --clear-cache to remove cached files[/dim]")
 
 
 @module.command("current")
@@ -735,12 +823,5 @@ def _get_actionable_tip_for_check(check_name: str, module_type: str) -> str | No
         return "Hook must implement __call__(event, data) -> HookResult method"
 
     return None
-
-
-# Add registry discovery commands to module group
-module.add_command(registry_command)
-module.add_command(search_command)
-module.add_command(info_command)
-
 
 __all__ = ["module"]

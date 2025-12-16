@@ -70,53 +70,85 @@ def info_command(module_name: str, output_json: bool):
         if verified:
             title = f"✓ {title} [Verified]"
 
-        # Build content sections
+        # Build content sections - now showing ALL fields dynamically
         content_parts = []
 
-        # Description
-        desc = module.get("description", "No description provided")
-        content_parts.append(f"[bold]Description:[/bold]\n{desc}")
+        # Priority fields first (in specific order for better readability)
+        priority_fields = {
+            "description": ("Description", lambda v: v),
+            "author": ("Author", lambda v: v),
+            "author_github": ("Author GitHub", lambda v: f"[cyan]{v}[/cyan]"),
+            "license": ("License", lambda v: v),
+            "repository": ("Repository", lambda v: f"[cyan]{v}[/cyan]"),
+            "type": ("Type", lambda v: v),
+            "module_type": ("Module Type", lambda v: v),
+            "entry_point": ("Entry Point", lambda v: f"[dim]{v}[/dim]"),
+        }
 
-        # Author
-        author = module.get("author", "Unknown")
-        author_github = module.get("author_github", "")
-        if author_github:
-            author_line = f"{author} ([cyan]{author_github}[/cyan])"
-        else:
-            author_line = author
-        content_parts.append(f"\n[bold]Author:[/bold] {author_line}")
+        # Display priority fields
+        for field, (label, formatter) in priority_fields.items():
+            if field in module and module[field]:
+                # Combine author and author_github into one line
+                if field == "author_github":
+                    continue  # Skip, handled with author
+                elif field == "author":
+                    author = module.get("author", "Unknown")
+                    author_github = module.get("author_github", "")
+                    if author_github:
+                        author_line = f"{author} ([cyan]{author_github}[/cyan])"
+                    else:
+                        author_line = author
+                    content_parts.append(f"\n[bold]{label}:[/bold] {author_line}")
+                else:
+                    value = formatter(module[field])
+                    content_parts.append(f"\n[bold]{label}:[/bold] {value}")
 
-        # License
-        license_name = module.get("license", "Not specified")
-        content_parts.append(f"[bold]License:[/bold] {license_name}")
-
-        # Repository
-        repo = module.get("repository", "")
-        if repo:
-            content_parts.append(f"[bold]Repository:[/bold] [cyan]{repo}[/cyan]")
-
-        # Type and entry point
-        module_type = module.get("type", "unknown")
-        content_parts.append(f"\n[bold]Type:[/bold] {module_type}")
-
-        entry_point = module.get("entry_point", "")
-        if entry_point:
-            content_parts.append(f"[bold]Entry Point:[/bold] [dim]{entry_point}[/dim]")
-
+        # Special handling for complex fields
         # Compatibility
-        compatibility = module.get("compatibility", {})
-        if compatibility:
+        if "compatibility" in module and module["compatibility"]:
             content_parts.append("\n[bold]Compatibility:[/bold]")
-            if "foundation" in compatibility:
-                content_parts.append(f"  Foundation: {compatibility['foundation']}")
-            if "python" in compatibility:
-                content_parts.append(f"  Python: {compatibility['python']}")
+            compatibility = module["compatibility"]
+            for key, value in compatibility.items():
+                content_parts.append(f"  {key.title()}: {value}")
 
         # Tags
-        tags = module.get("tags", [])
-        if tags:
-            tags_str = ", ".join(tags)
+        if "tags" in module and module["tags"]:
+            tags_str = ", ".join(module["tags"])
             content_parts.append(f"\n[bold]Tags:[/bold] [dim]{tags_str}[/dim]")
+
+        # Dependencies
+        if "dependencies" in module and module["dependencies"]:
+            content_parts.append("\n[bold]Dependencies:[/bold]")
+            if isinstance(module["dependencies"], list):
+                for dep in module["dependencies"]:
+                    content_parts.append(f"  - {dep}")
+            elif isinstance(module["dependencies"], dict):
+                for dep_name, dep_version in module["dependencies"].items():
+                    content_parts.append(f"  - {dep_name}: {dep_version}")
+
+        # Now display all remaining fields not yet shown
+        displayed_fields = set(priority_fields.keys()) | {"name", "version", "verified", "compatibility", "tags", "dependencies"}
+
+        remaining_fields = sorted(set(module.keys()) - displayed_fields)
+        if remaining_fields:
+            content_parts.append("\n[bold]Additional Information:[/bold]")
+            for field in remaining_fields:
+                value = module[field]
+                # Format the field name nicely
+                field_label = field.replace("_", " ").title()
+
+                # Format the value based on type
+                if isinstance(value, dict):
+                    content_parts.append(f"  {field_label}:")
+                    for k, v in value.items():
+                        content_parts.append(f"    {k}: {v}")
+                elif isinstance(value, list):
+                    if value:  # Only show non-empty lists
+                        content_parts.append(f"  {field_label}:")
+                        for item in value:
+                            content_parts.append(f"    - {item}")
+                elif value is not None and value != "":  # Skip empty/null values
+                    content_parts.append(f"  {field_label}: {value}")
 
         # Installation instructions
         content_parts.append(f"\n[bold]Installation:[/bold]")
