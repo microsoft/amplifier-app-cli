@@ -162,9 +162,10 @@ def register_run_command(
         # Create agent loader with appropriate mode:
         # - Bundle mode: only load bundle agents (not profile/collection agents)
         # - Profile mode: only load profile/collection agents (not bundle agents)
-        agent_loader = create_agent_loader(
-            use_bundle=bool(bundle), bundle_name=bundle, bundle_base_path=bundle_base_path
-        )
+        # Note: bundle_mappings is built from early bundle load; full source_base_paths
+        # comes later from PreparedBundle after prepare workflow completes
+        bundle_mappings = {bundle: bundle_base_path} if bundle and bundle_base_path else None
+        agent_loader = create_agent_loader(use_bundle=bool(bundle), bundle_name=bundle, bundle_mappings=bundle_mappings)
         app_settings = AppSettings(config_manager)
 
         # Track configuration source for display

@@ -45,6 +45,10 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str]] = {
         "package": "amplifier_foundation",
         "remote": "git+https://github.com/microsoft/amplifier-foundation@main",
     },
+    "recipes": {
+        "package": "",  # No Python package - bundle-only
+        "remote": "git+https://github.com/microsoft/amplifier-bundle-recipes@main",
+    },
     # Future bundles follow the same pattern:
     # "design-intelligence": {
     #     "package": "amplifier_collection_design_intelligence",
@@ -89,11 +93,11 @@ class AppBundleDiscovery:
         self._collection_resolver = collection_resolver
         self._registry = registry or BundleRegistry()
 
-        # Load user-added bundles from registry file (highest priority after manual)
-        self._load_user_registry()
-
-        # Auto-register well-known bundles with resolved URIs
+        # Register well-known bundles first (defaults)
         self._register_well_known_bundles()
+
+        # Load user-added bundles second (can override well-known bundles)
+        self._load_user_registry()
 
     def _load_user_registry(self) -> None:
         """Load user-added bundles from the registry file.

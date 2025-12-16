@@ -577,7 +577,7 @@ def create_agent_loader(
     *,
     use_bundle: bool = False,
     bundle_name: str | None = None,
-    bundle_base_path: Path | None = None,
+    bundle_mappings: dict[str, Path] | None = None,
 ) -> "AgentLoader":
     """Create CLI-configured agent loader with dependencies.
 
@@ -585,7 +585,8 @@ def create_agent_loader(
         collection_resolver: Optional collection resolver (creates one if not provided)
         use_bundle: If True, load only bundle agents (not profile/collection agents)
         bundle_name: Specific bundle to load agents from (when use_bundle=True)
-        bundle_base_path: Base path of the bundle for resolving @bundle_name:... mentions
+        bundle_mappings: Dict mapping bundle namespace to base_path for @mention resolution.
+            Populated from bundle.source_base_paths after composition.
 
     Returns:
         AgentLoader with CLI paths and protocols injected
@@ -604,12 +605,8 @@ def create_agent_loader(
         collection_resolver=collection_resolver,
     )
 
-    # Create MentionResolver with bundle override if in bundle mode
-    bundle_override = None
-    if use_bundle and bundle_name and bundle_base_path:
-        bundle_override = (bundle_name, bundle_base_path)
-
-    mention_resolver = MentionResolver(bundle_override=bundle_override)
+    # Create MentionResolver with bundle mappings for composed bundle @mentions
+    mention_resolver = MentionResolver(bundle_mappings=bundle_mappings)
 
     return AgentLoader(
         resolver=resolver,

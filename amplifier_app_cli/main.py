@@ -1091,25 +1091,30 @@ def _create_prompt_session() -> PromptSession:
 def _register_mention_handling(
     session: AmplifierSession,
     profile_name: str,
-    bundle_base_path: Path | None = None,
+    prepared_bundle: "PreparedBundle | None" = None,
 ) -> None:
     """Register MentionResolver and ContentDeduplicator capabilities on a session.
 
     This is app-layer policy for @mention resolution. It handles both profile
     and bundle modes by detecting the "bundle:" prefix in profile_name.
 
+    For bundle mode, uses source_base_paths from PreparedBundle to enable
+    @mention resolution for all included bundles (e.g., @foundation:... and @recipes:...).
+
     Args:
         session: The AmplifierSession to register capabilities on
         profile_name: Profile or bundle name (e.g., "dev" or "bundle:foundation")
-        bundle_base_path: Base path of the bundle for @mention resolution (bundle mode only)
+        prepared_bundle: PreparedBundle from foundation's prepare workflow (bundle mode only)
     """
-    # Determine bundle override for @mention resolution
-    bundle_override = None
-    if profile_name.startswith("bundle:") and bundle_base_path:
-        bundle_name = profile_name[7:]  # Remove "bundle:" prefix
-        bundle_override = (bundle_name, bundle_base_path)
+    # Build bundle_mappings from prepared_bundle.bundle.source_base_paths
+    # This enables @mention resolution for ALL included bundles, not just the top-level
+    bundle_mappings: dict[str, Path] | None = None
+    if profile_name.startswith("bundle:") and prepared_bundle is not None:
+        # source_base_paths maps namespace -> base_path for all composed bundles
+        # e.g., {"foundation": Path(...), "recipes": Path(...)}
+        bundle_mappings = prepared_bundle.bundle.source_base_paths
 
-    mention_resolver = MentionResolver(bundle_override=bundle_override)
+    mention_resolver = MentionResolver(bundle_mappings=bundle_mappings)
     session.coordinator.register_capability("mention_resolver", mention_resolver)
 
     # Register session-wide ContentDeduplicator for @mention deduplication
@@ -1207,7 +1212,7 @@ async def interactive_chat(
     await session.coordinator.mount("module-source-resolver", resolver)
 
     # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
-    _register_mention_handling(session, profile_name, bundle_base_path)
+    _register_mention_handling(session, profile_name, prepared_bundle)
 
     # Register session spawning capabilities for agent delegation (app-layer policy)
     _register_session_spawning(session)
@@ -1442,7 +1447,7 @@ async def execute_single(
 
         # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
         # IMPORTANT: Must be registered BEFORE session.initialize() so tools can access them
-        _register_mention_handling(session, profile_name, bundle_base_path)
+        _register_mention_handling(session, profile_name, prepared_bundle)
 
         await session.initialize()
 
@@ -1673,7 +1678,7 @@ async def execute_single_with_session(
             register_provider(approval_provider)
 
         # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
-        _register_mention_handling(session, profile_name, bundle_base_path)
+        _register_mention_handling(session, profile_name, prepared_bundle)
 
         # Register session spawning capabilities for agent delegation (app-layer policy)
         _register_session_spawning(session)
@@ -1863,7 +1868,7 @@ async def interactive_chat_with_session(
     await session.initialize()
 
     # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
-    _register_mention_handling(session, profile_name, bundle_base_path)
+    _register_mention_handling(session, profile_name, prepared_bundle)
 
     # Register session spawning capabilities for agent delegation (app-layer policy)
     _register_session_spawning(session)

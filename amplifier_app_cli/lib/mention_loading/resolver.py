@@ -28,7 +28,7 @@ class MentionResolver:
         project_context_dir: Path | None = None,
         user_context_dir: Path | None = None,
         relative_to: Path | None = None,
-        bundle_override: tuple[str, Path] | None = None,
+        bundle_mappings: dict[str, Path] | None = None,
     ):
         """Initialize resolver with search paths and collection resolver.
 
@@ -37,10 +37,10 @@ class MentionResolver:
             project_context_dir: Path to project context (default: .amplifier/context/)
             user_context_dir: Path to user context (default: ~/.amplifier/context/)
             relative_to: Base path for resolving relative mentions (./file)
-            bundle_override: Optional (bundle_name, base_path) tuple that overrides
-                collection resolution for @bundle_name:... mentions. This allows
-                bundle mode to resolve @foundation:context/... from the bundle's
-                base_path instead of looking up a collection named "foundation".
+            bundle_mappings: Optional dict mapping bundle namespace to base_path.
+                Enables @namespace:path mentions to resolve from the bundle's
+                base_path. Supports multiple namespaces from composed bundles
+                (e.g., foundation + recipes both resolvable after composition).
         """
         if bundled_data_dir is None:
             bundled_data_dir = self._get_bundled_data_dir()
@@ -55,7 +55,7 @@ class MentionResolver:
         self.project_context_dir = project_context_dir
         self.user_context_dir = user_context_dir
         self.relative_to = relative_to
-        self.bundle_override = bundle_override
+        self.bundle_mappings = bundle_mappings or {}
 
         # Collection resolver with source override support (APP LAYER POLICY)
         from ...paths import create_collection_resolver
@@ -128,11 +128,11 @@ class MentionResolver:
                 logger.debug(f"Project shortcut path not found: {project_path}")
                 return None
 
-            # Bundle override: If we're in bundle mode and the prefix matches the bundle name,
-            # resolve from the bundle's base_path instead of looking up a collection.
-            # This allows @foundation:context/... to resolve to the bundle's context/ directory.
-            if self.bundle_override and prefix == self.bundle_override[0]:
-                bundle_base_path = self.bundle_override[1]
+            # Bundle mappings: If prefix matches a known bundle namespace, resolve from
+            # that bundle's base_path. Supports composed bundles (foundation + recipes).
+            # This allows @foundation:context/... and @recipes:examples/... to resolve.
+            if prefix in self.bundle_mappings:
+                bundle_base_path = self.bundle_mappings[prefix]
                 resource_path = bundle_base_path / path
                 if resource_path.exists():
                     logger.debug(f"Bundle resource found: {resource_path}")
