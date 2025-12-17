@@ -5,6 +5,7 @@ from pathlib import Path
 from amplifier_core.message_models import Message
 from amplifier_foundation.mentions import ContentDeduplicator
 from amplifier_foundation.mentions import ContextFile
+from amplifier_foundation.mentions import format_directory_listing  # pyright: ignore[reportAttributeAccessIssue]
 
 from ...utils.mentions import extract_mention_path
 from ...utils.mentions import parse_mentions
@@ -118,6 +119,17 @@ class MentionLoader:
 
             visited_paths.add(resolved_path)
             path_to_mention[resolved_path] = mention  # Remember original @mention
+
+            # Handle directories: generate listing instead of expanding all files
+            if resolved_path.is_dir():
+                try:
+                    content = format_directory_listing(resolved_path)
+                except (PermissionError, OSError):
+                    continue
+
+                deduplicator.add_file(resolved_path, content)
+                path_to_mention[resolved_path] = mention
+                continue
 
             try:
                 content = resolved_path.read_text(encoding="utf-8")
