@@ -16,6 +16,7 @@ from amplifier_foundation.bundle import PreparedBundle
 # Local imports
 from amplifier_app_cli.lib.bundle_loader import user_registry
 from amplifier_app_cli.lib.bundle_loader.discovery import AppBundleDiscovery
+from amplifier_app_cli.lib.bundle_loader.resolvers import AppModuleResolver
 from amplifier_app_cli.lib.bundle_loader.source_resolver import create_bundle_cache
 from amplifier_app_cli.lib.bundle_loader.source_resolver import create_bundle_source_resolver
 from amplifier_app_cli.lib.bundle_loader.source_resolver import get_bundle_cache_dir
@@ -23,6 +24,7 @@ from amplifier_app_cli.lib.bundle_loader.source_resolver import get_bundle_cache
 __all__ = [
     # CLI-specific
     "AppBundleDiscovery",
+    "AppModuleResolver",
     "create_bundle_cache",
     "create_bundle_source_resolver",
     "get_bundle_cache_dir",

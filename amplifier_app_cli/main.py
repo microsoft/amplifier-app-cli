@@ -48,6 +48,7 @@ from .console import Markdown
 from .console import console
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
+from .lib.bundle_loader import AppModuleResolver
 from .lib.mention_loading.deduplicator import ContentDeduplicator
 from .lib.mention_loading.resolver import MentionResolver
 from .paths import create_module_resolver
@@ -57,67 +58,6 @@ from .ui.error_display import display_validation_error
 from .utils.version import get_version
 
 logger = logging.getLogger(__name__)
-
-
-class CompositeModuleResolver:
-    """Module resolver that combines bundle and standard resolvers.
-
-    Tries bundle resolver first (for modules downloaded during prepare),
-    then falls back to standard resolver (for provider overrides, etc.).
-
-    This enables provider-agnostic bundles like 'foundation' to work with
-    provider overrides configured via 'amplifier provider use'.
-    """
-
-    def __init__(self, bundle_resolver, standard_resolver):
-        """Initialize with both resolvers.
-
-        Args:
-            bundle_resolver: BundleModuleResolver from PreparedBundle.
-            standard_resolver: StandardModuleSourceResolver for fallback.
-        """
-        self._bundle_resolver = bundle_resolver
-        self._standard_resolver = standard_resolver
-
-    def resolve(self, module_id: str, profile_hint=None):
-        """Resolve module, trying bundle first then standard.
-
-        Args:
-            module_id: Module identifier (e.g., "tool-bash", "provider-anthropic").
-            profile_hint: Optional hint (passed to resolvers).
-
-        Returns:
-            ModuleSource from whichever resolver succeeds.
-
-        Raises:
-            ModuleNotFoundError: If neither resolver can find the module.
-        """
-        # Try bundle resolver first (modules downloaded during prepare)
-        try:
-            return self._bundle_resolver.resolve(module_id, profile_hint)
-        except (ModuleNotFoundError, KeyError):
-            # Not in bundle - try standard resolver (provider overrides, etc.)
-            pass
-
-        # Fall back to standard resolver
-        return self._standard_resolver.resolve(module_id, profile_hint)
-
-    def get_module_source(self, module_id: str) -> str | None:
-        """Get module source path as string.
-
-        Args:
-            module_id: Module identifier.
-
-        Returns:
-            String path to module, or None if not found.
-        """
-        # Try bundle resolver first
-        result = self._bundle_resolver.get_module_source(module_id)
-        if result is not None:
-            return result
-
-        # Fall back to standard resolver
-        return self._standard_resolver.get_module_source(module_id)
 
 
 # Load API keys from ~/.amplifier/keys.env on startup
@@ -909,128 +849,19 @@ async def _process_profile_mentions(session: AmplifierSession, profile_name: str
         logger.warning(f"Failed to process profile @mentions: {e}")
 
 
-async def _process_bundle_mentions(session: AmplifierSession, bundle_name: str) -> None:
-    """Process context files and @mentions from bundle configuration.
+async def _process_mentions(session: AmplifierSession, profile_name: str) -> None:
+    """Process @mentions for profile mode only.
 
-    Handles two sources of context:
-    1. context.include section in frontmatter - explicitly listed context files
-    2. @mentions in markdown body - inline file references
-
-    Args:
-        session: Active session to add context messages to
-        bundle_name: Name of the bundle (without "bundle:" prefix)
-    """
-    import logging
-
-    from amplifier_core.message_models import Message
-
-    from .lib.mention_loading import MentionLoader
-    from .paths import create_bundle_registry
-    from .utils.mentions import has_mentions
-
-    logger = logging.getLogger(__name__)
-
-    try:
-        logger.info(f"Processing context for bundle: {bundle_name}")
-
-        # Load bundle to get instruction and context
-        bundle_registry = create_bundle_registry()
-        loaded = await bundle_registry.load(bundle_name)
-        # registry.load() returns Bundle | dict[str, Bundle]
-        if isinstance(loaded, dict):
-            raise ValueError(f"Expected single bundle, got dict for '{bundle_name}'")
-        bundle = loaded
-
-        context_parts = []
-
-        # 1. Load context files from frontmatter (context.include section)
-        if bundle.context:
-            logger.info(f"Loading {len(bundle.context)} context files from bundle frontmatter")
-            for context_name, context_path in bundle.context.items():
-                try:
-                    if context_path.exists():
-                        file_content = context_path.read_text(encoding="utf-8")
-                        context_parts.append(f"# Context: {context_name}\n\n{file_content}")
-                        logger.debug(f"Loaded context file: {context_name} ({len(file_content)} chars)")
-                    else:
-                        logger.warning(f"Context file not found: {context_path}")
-                except OSError as e:
-                    logger.warning(f"Failed to load context file {context_name}: {e}")
-
-        # 2. Get markdown body (system instruction) from bundle
-        markdown_body = bundle.get_system_instruction()
-
-        # 3. Process @mentions in markdown body if present
-        if markdown_body and has_mentions(markdown_body):
-            logger.info("Processing @mentions in bundle markdown body...")
-
-            # Load @mentioned files with session-wide deduplicator
-            mention_resolver = session.coordinator.get_capability("mention_resolver")
-            loader = MentionLoader(resolver=mention_resolver)
-            deduplicator = session.coordinator.get_capability("mention_deduplicator")
-
-            # Use bundle base_path as relative_to for resolving @mentions
-            relative_to = bundle.base_path or Path.cwd()
-            mention_messages = loader.load_mentions(markdown_body, relative_to=relative_to, deduplicator=deduplicator)
-
-            logger.info(f"Loaded {len(mention_messages)} files from @mentions")
-
-            # Extract text content from mention messages
-            for msg in mention_messages:
-                if isinstance(msg.content, str):
-                    context_parts.append(msg.content)
-                elif isinstance(msg.content, list):
-                    # Handle structured content (ContentBlocks) - extract text from TextBlock types
-                    text_parts = []
-                    for block in msg.content:
-                        if block.type == "text":
-                            text_parts.append(block.text)
-                        else:
-                            text_parts.append(str(block))
-                    context_parts.append("".join(text_parts))
-                else:
-                    context_parts.append(str(msg.content))
-
-        # 4. Combine all context and add as system message
-        context_manager = session.coordinator.get("context")
-
-        if context_parts or markdown_body:
-            # Build final system message: context files + markdown body
-            final_content_parts = []
-            if context_parts:
-                final_content_parts.append("\n\n".join(context_parts))
-            if markdown_body:
-                final_content_parts.append(markdown_body)
-
-            final_content = "\n\n---\n\n".join(final_content_parts)
-
-            system_msg = Message(role="system", content=final_content)
-            logger.info(
-                f"Adding bundle system message ({len(final_content)} chars, {len(context_parts)} context files)"
-            )
-            await context_manager.add_message(system_msg.model_dump())
-
-        # Verify messages were added
-        all_messages = await context_manager.get_messages()
-        logger.debug(f"Total messages in context after processing: {len(all_messages)}")
-
-    except Exception as e:
-        # Bundle not found or invalid - skip mention processing
-        logger.warning(f"Failed to process bundle context: {e}")
-
-
-async def _process_mentions(session: AmplifierSession, config_source_name: str) -> None:
-    """Process @mentions for either profile or bundle based on config source.
+    Bundle mode uses foundation's PreparedBundle.create_session() which handles
+    @mention resolution internally via BaseMentionResolver. This function is
+    only called in profile mode branches.
 
     Args:
         session: Active session to add context messages to
-        config_source_name: Config source like "bundle:foundation" or "dev"
+        profile_name: Profile name (e.g., "dev", "full")
     """
-    if config_source_name.startswith("bundle:"):
-        bundle_name = config_source_name[7:]  # Remove "bundle:" prefix
-        await _process_bundle_mentions(session, bundle_name)
-    else:
-        await _process_profile_mentions(session, config_source_name)
+    # Profile mode only - bundle mode handled by foundation's create_session()
+    await _process_profile_mentions(session, profile_name)
 
 
 def _create_prompt_session() -> PromptSession:
@@ -1088,33 +919,18 @@ def _create_prompt_session() -> PromptSession:
     )
 
 
-def _register_mention_handling(
-    session: AmplifierSession,
-    profile_name: str,
-    prepared_bundle: "PreparedBundle | None" = None,
-) -> None:
+def _register_mention_handling(session: AmplifierSession) -> None:
     """Register MentionResolver and ContentDeduplicator capabilities on a session.
 
-    This is app-layer policy for @mention resolution. It handles both profile
-    and bundle modes by detecting the "bundle:" prefix in profile_name.
-
-    For bundle mode, uses source_base_paths from PreparedBundle to enable
-    @mention resolution for all included bundles (e.g., @foundation:... and @recipes:...).
+    This is app-layer policy for @mention resolution in PROFILE MODE ONLY.
+    Bundle mode uses foundation's PreparedBundle.create_session() which handles
+    @mention resolution internally via BaseMentionResolver.
 
     Args:
         session: The AmplifierSession to register capabilities on
-        profile_name: Profile or bundle name (e.g., "dev" or "bundle:foundation")
-        prepared_bundle: PreparedBundle from foundation's prepare workflow (bundle mode only)
     """
-    # Build bundle_mappings from prepared_bundle.bundle.source_base_paths
-    # This enables @mention resolution for ALL included bundles, not just the top-level
-    bundle_mappings: dict[str, Path] | None = None
-    if profile_name.startswith("bundle:") and prepared_bundle is not None:
-        # source_base_paths maps namespace -> base_path for all composed bundles
-        # e.g., {"foundation": Path(...), "recipes": Path(...)}
-        bundle_mappings = prepared_bundle.bundle.source_base_paths
-
-    mention_resolver = MentionResolver(bundle_mappings=bundle_mappings)
+    # Profile mode: Use app-cli's MentionResolver (no bundle mappings)
+    mention_resolver = MentionResolver()
     session.coordinator.register_capability("mention_resolver", mention_resolver)
 
     # Register session-wide ContentDeduplicator for @mention deduplication
@@ -1192,56 +1008,90 @@ async def interactive_chat(
     # Create CLI UX systems (app-layer policy)
     approval_system, display_system = _create_cli_ux_systems()
 
-    # Create session with resolved config, session_id, and injected UX systems
-    session = AmplifierSession(
-        config, session_id=session_id, approval_system=approval_system, display_system=display_system
-    )
+    # Bundle mode vs Profile mode: Clean separation per KERNEL_PHILOSOPHY
+    # - Bundle mode uses foundation's turn-key solution (PreparedBundle.create_session)
+    # - Profile mode uses app-cli's manual session setup (deprecated soon)
+    if profile_name.startswith("bundle:") and prepared_bundle is not None:
+        # === BUNDLE MODE ===
+        # Foundation handles everything: session creation, module resolver mounting,
+        # initialization, @mention resolution via BaseMentionResolver, and context injection.
+        # App-cli only adds session spawning capability (app-layer policy).
 
-    # Mount module source resolver (app-layer policy)
-    # Bundle mode: Composite resolver (bundle first, standard fallback for provider overrides)
-    # Profile mode: Standard resolver only
-    if prepared_bundle is not None:
-        # Bundle resolver knows about modules downloaded during prepare
-        # Standard resolver handles provider overrides not in the bundle
-        resolver = CompositeModuleResolver(
+        # Wrap bundle resolver with app-layer fallback policy
+        # This allows provider-agnostic bundles like "foundation" to work with user-configured providers
+        # Pattern: Foundation provides mechanism, app provides policy (per KERNEL_PHILOSOPHY)
+        fallback_resolver = create_module_resolver()
+        prepared_bundle.resolver = AppModuleResolver(  # type: ignore[assignment]
             bundle_resolver=prepared_bundle.resolver,
-            standard_resolver=create_module_resolver(),
+            settings_resolver=fallback_resolver,
         )
+
+        # Show loading indicator during initialization
+        core_logger = logging.getLogger("amplifier_core")
+        original_level = core_logger.level
+        if not verbose:
+            core_logger.setLevel(logging.CRITICAL)
+        try:
+            with console.status("[dim]Loading...[/dim]", spinner="dots"):
+                session = await prepared_bundle.create_session(
+                    session_id=session_id,
+                    approval_system=approval_system,
+                    display_system=display_system,
+                )
+        except (ModuleValidationError, RuntimeError) as e:
+            core_logger.setLevel(original_level)
+            if not display_validation_error(console, e, verbose=verbose):
+                console.print(f"[red]Error:[/red] {e}")
+                if verbose:
+                    console.print_exception()
+            sys.exit(1)
+        finally:
+            core_logger.setLevel(original_level)
+
+        # Add app-layer policy: mention handling and session spawning
+        # Override foundation's mention handling with app-cli's (ensures ContextFile compatibility)
+        _register_mention_handling(session)
+        _register_session_spawning(session)
+
     else:
+        # === PROFILE MODE ===
+        # Manual session setup with app-cli's MentionResolver (deprecated codepath)
+
+        # Create session with resolved config, session_id, and injected UX systems
+        session = AmplifierSession(
+            config, session_id=session_id, approval_system=approval_system, display_system=display_system
+        )
+
+        # Mount module source resolver (app-layer policy)
         resolver = create_module_resolver()
-    await session.coordinator.mount("module-source-resolver", resolver)
+        await session.coordinator.mount("module-source-resolver", resolver)
 
-    # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
-    _register_mention_handling(session, profile_name, prepared_bundle)
+        # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
+        _register_mention_handling(session)
 
-    # Register session spawning capabilities for agent delegation (app-layer policy)
-    _register_session_spawning(session)
+        # Register session spawning capabilities for agent delegation (app-layer policy)
+        _register_session_spawning(session)
 
-    # Show loading indicator during initialization (modules loading, etc.)
-    # Temporarily suppress amplifier_core error logs during init - we'll show clean error panel if it fails
-    core_logger = logging.getLogger("amplifier_core")
-    original_level = core_logger.level
-    if not verbose:
-        core_logger.setLevel(logging.CRITICAL)
-    try:
-        with console.status("[dim]Loading...[/dim]", spinner="dots"):
-            await session.initialize()
-    except (ModuleValidationError, RuntimeError) as e:
-        # Restore log level before showing error
-        core_logger.setLevel(original_level)
-        # Try clean error display for module validation errors
-        if not display_validation_error(console, e, verbose=verbose):
-            # Fall back to generic error display
-            console.print(f"[red]Error:[/red] {e}")
-            if verbose:
-                console.print_exception()
-        sys.exit(1)
-    finally:
-        # Restore log level on success path
-        core_logger.setLevel(original_level)
+        # Show loading indicator during initialization (modules loading, etc.)
+        core_logger = logging.getLogger("amplifier_core")
+        original_level = core_logger.level
+        if not verbose:
+            core_logger.setLevel(logging.CRITICAL)
+        try:
+            with console.status("[dim]Loading...[/dim]", spinner="dots"):
+                await session.initialize()
+        except (ModuleValidationError, RuntimeError) as e:
+            core_logger.setLevel(original_level)
+            if not display_validation_error(console, e, verbose=verbose):
+                console.print(f"[red]Error:[/red] {e}")
+                if verbose:
+                    console.print_exception()
+            sys.exit(1)
+        finally:
+            core_logger.setLevel(original_level)
 
-    # Process @mentions (profile or bundle based on config source name)
-    await _process_mentions(session, profile_name)
+        # Process @mentions (profile mode only - bundle mode handled by foundation)
+        await _process_mentions(session, profile_name)
 
     # Register CLI approval provider if approval hook is active (app-layer policy)
     from .approval_provider import CLIApprovalProvider
@@ -1415,11 +1265,6 @@ async def execute_single(
     # Create CLI UX systems (app-layer policy)
     approval_system, display_system = _create_cli_ux_systems()
 
-    # Create session with resolved config, session_id, and injected UX systems
-    session = AmplifierSession(
-        config, session_id=session_id, approval_system=approval_system, display_system=display_system
-    )
-
     # For JSON output, store response data to output after cleanup
     json_output_data: dict[str, Any] | None = None
 
@@ -1430,26 +1275,56 @@ async def execute_single(
 
         trace_collector = TraceCollector()
 
+    # Bundle mode vs Profile mode: Clean separation per KERNEL_PHILOSOPHY
+    if profile_name.startswith("bundle:") and prepared_bundle is not None:
+        # === BUNDLE MODE ===
+        # Foundation handles everything: session creation, module resolver mounting,
+        # initialization, @mention resolution via BaseMentionResolver, and context injection.
+
+        # Wrap bundle resolver with app-layer fallback policy
+        # This allows provider-agnostic bundles like "foundation" to work with user-configured providers
+        # Pattern: Foundation provides mechanism, app provides policy (per KERNEL_PHILOSOPHY)
+        fallback_resolver = create_module_resolver()
+        prepared_bundle.resolver = AppModuleResolver(  # type: ignore[assignment]
+            bundle_resolver=prepared_bundle.resolver,
+            settings_resolver=fallback_resolver,
+        )
+
+        session = await prepared_bundle.create_session(
+            session_id=session_id,
+            approval_system=approval_system,
+            display_system=display_system,
+        )
+
+        # Add app-layer policy: mention handling and session spawning
+        # Override foundation's mention handling with app-cli's (ensures ContextFile compatibility)
+        _register_mention_handling(session)
+        _register_session_spawning(session)
+
+    else:
+        # === PROFILE MODE ===
+        # Manual session setup with app-cli's MentionResolver (deprecated codepath)
+        session = AmplifierSession(
+            config, session_id=session_id, approval_system=approval_system, display_system=display_system
+        )
+
     try:
-        # Mount module source resolver (app-layer policy)
-        # Bundle mode: Composite resolver (bundle first, standard fallback for provider overrides)
-        # Profile mode: Standard resolver only
-        if prepared_bundle is not None:
-            # Bundle resolver knows about modules downloaded during prepare
-            # Standard resolver handles provider overrides not in the bundle
-            resolver = CompositeModuleResolver(
-                bundle_resolver=prepared_bundle.resolver,
-                standard_resolver=create_module_resolver(),
-            )
-        else:
+        # Profile mode: manual setup (bundle mode already initialized via create_session)
+        if not (profile_name.startswith("bundle:") and prepared_bundle is not None):
+            # Mount module source resolver (app-layer policy)
             resolver = create_module_resolver()
-        await session.coordinator.mount("module-source-resolver", resolver)
+            await session.coordinator.mount("module-source-resolver", resolver)
 
-        # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
-        # IMPORTANT: Must be registered BEFORE session.initialize() so tools can access them
-        _register_mention_handling(session, profile_name, prepared_bundle)
+            # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
+            _register_mention_handling(session)
 
-        await session.initialize()
+            await session.initialize()
+
+            # Register session spawning capabilities for agent delegation (app-layer policy)
+            _register_session_spawning(session)
+
+            # Process @mentions (profile mode only - bundle mode handled by foundation)
+            await _process_mentions(session, profile_name)
 
         # Register trace collector hooks if in json-trace mode
         if trace_collector:
@@ -1457,12 +1332,6 @@ async def execute_single(
             if hooks:
                 hooks.register("tool:pre", trace_collector.on_tool_pre, priority=1000, name="trace_collector_pre")
                 hooks.register("tool:post", trace_collector.on_tool_post, priority=1000, name="trace_collector_post")
-
-        # Register session spawning capabilities for agent delegation (app-layer policy)
-        _register_session_spawning(session)
-
-        # Process @mentions (profile or bundle based on config source name)
-        await _process_mentions(session, profile_name)
 
         # Register CLI approval provider if approval hook is active (app-layer policy)
         from .approval_provider import CLIApprovalProvider
@@ -1624,11 +1493,6 @@ async def execute_single_with_session(
     # Create CLI UX systems (app-layer policy)
     approval_system, display_system = _create_cli_ux_systems()
 
-    # Create session with session_id and injected UX systems
-    session = AmplifierSession(
-        config, session_id=session_id, approval_system=approval_system, display_system=display_system
-    )
-
     # For JSON output, store response data to output after cleanup
     json_output_data: dict[str, Any] | None = None
 
@@ -1639,21 +1503,55 @@ async def execute_single_with_session(
 
         trace_collector = TraceCollector()
 
+    # Bundle mode vs Profile mode: Clean separation per KERNEL_PHILOSOPHY
+    if profile_name.startswith("bundle:") and prepared_bundle is not None:
+        # === BUNDLE MODE ===
+        # Foundation handles everything: session creation, module resolver mounting,
+        # initialization, @mention resolution via BaseMentionResolver, and context injection.
+
+        # Wrap bundle resolver with app-layer fallback policy
+        # This allows provider-agnostic bundles like "foundation" to work with user-configured providers
+        # Pattern: Foundation provides mechanism, app provides policy (per KERNEL_PHILOSOPHY)
+        fallback_resolver = create_module_resolver()
+        prepared_bundle.resolver = AppModuleResolver(  # type: ignore[assignment]
+            bundle_resolver=prepared_bundle.resolver,
+            settings_resolver=fallback_resolver,
+        )
+
+        session = await prepared_bundle.create_session(
+            session_id=session_id,
+            approval_system=approval_system,
+            display_system=display_system,
+        )
+
+        # Add app-layer policy: mention handling and session spawning
+        # Override foundation's mention handling with app-cli's (ensures ContextFile compatibility)
+        _register_mention_handling(session)
+        _register_session_spawning(session)
+
+    else:
+        # === PROFILE MODE ===
+        # Manual session setup with app-cli's MentionResolver (deprecated codepath)
+        session = AmplifierSession(
+            config, session_id=session_id, approval_system=approval_system, display_system=display_system
+        )
+
     try:
-        # Mount module source resolver (app-layer policy)
-        # Bundle mode: Composite resolver (bundle first, standard fallback for provider overrides)
-        # Profile mode: Standard resolver only
-        if prepared_bundle is not None:
-            # Bundle resolver knows about modules downloaded during prepare
-            # Standard resolver handles provider overrides not in the bundle
-            resolver = CompositeModuleResolver(
-                bundle_resolver=prepared_bundle.resolver,
-                standard_resolver=create_module_resolver(),
-            )
-        else:
+        # Profile mode: manual setup (bundle mode already initialized via create_session)
+        if not (profile_name.startswith("bundle:") and prepared_bundle is not None):
+            # Mount module source resolver (app-layer policy)
             resolver = create_module_resolver()
-        await session.coordinator.mount("module-source-resolver", resolver)
-        await session.initialize()
+            await session.coordinator.mount("module-source-resolver", resolver)
+            await session.initialize()
+
+            # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
+            _register_mention_handling(session)
+
+            # Register session spawning capabilities for agent delegation (app-layer policy)
+            _register_session_spawning(session)
+
+            # Process config @mentions (profile mode only - bundle mode handled by foundation)
+            await _process_mentions(session, profile_name)
 
         # Register trace collector hooks if in json-trace mode
         if trace_collector:
@@ -1662,7 +1560,7 @@ async def execute_single_with_session(
                 hooks.register("tool:pre", trace_collector.on_tool_pre, priority=1000, name="trace_collector_pre")
                 hooks.register("tool:post", trace_collector.on_tool_post, priority=1000, name="trace_collector_post")
 
-        # Restore context from transcript
+        # Restore context from transcript (applies to both modes)
         context = session.coordinator.get("context")
         if context and hasattr(context, "set_messages") and initial_transcript:
             await context.set_messages(initial_transcript)
@@ -1676,15 +1574,6 @@ async def execute_single_with_session(
         if register_provider:
             approval_provider = CLIApprovalProvider(console)
             register_provider(approval_provider)
-
-        # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
-        _register_mention_handling(session, profile_name, prepared_bundle)
-
-        # Register session spawning capabilities for agent delegation (app-layer policy)
-        _register_session_spawning(session)
-
-        # Process config @mentions (works for both profiles and bundles)
-        await _process_mentions(session, profile_name)
 
         # Process runtime @mentions in user input
         await _process_runtime_mentions(session, prompt)
@@ -1846,32 +1735,50 @@ async def interactive_chat_with_session(
     # Create CLI UX systems (app-layer policy)
     approval_system, display_system = _create_cli_ux_systems()
 
-    # Create session with resolved config, session_id, and injected UX systems
-    session = AmplifierSession(
-        config, session_id=session_id, approval_system=approval_system, display_system=display_system
-    )
+    # Bundle mode vs Profile mode: Clean separation per KERNEL_PHILOSOPHY
+    if profile_name.startswith("bundle:") and prepared_bundle is not None:
+        # === BUNDLE MODE ===
+        # Foundation handles everything: session creation, module resolver mounting,
+        # initialization, @mention resolution via BaseMentionResolver, and context injection.
 
-    # Mount module source resolver (app-layer policy)
-    # Bundle mode: Composite resolver (bundle first, standard fallback for provider overrides)
-    # Profile mode: Standard resolver only
-    if prepared_bundle is not None:
-        # Bundle resolver knows about modules downloaded during prepare
-        # Standard resolver handles provider overrides not in the bundle
-        resolver = CompositeModuleResolver(
+        # Wrap bundle resolver with app-layer fallback policy
+        # This allows provider-agnostic bundles like "foundation" to work with user-configured providers
+        # Pattern: Foundation provides mechanism, app provides policy (per KERNEL_PHILOSOPHY)
+        fallback_resolver = create_module_resolver()
+        prepared_bundle.resolver = AppModuleResolver(  # type: ignore[assignment]
             bundle_resolver=prepared_bundle.resolver,
-            standard_resolver=create_module_resolver(),
+            settings_resolver=fallback_resolver,
         )
+
+        session = await prepared_bundle.create_session(
+            session_id=session_id,
+            approval_system=approval_system,
+            display_system=display_system,
+        )
+
+        # Add app-layer policy: mention handling and session spawning
+        # Override foundation's mention handling with app-cli's (ensures ContextFile compatibility)
+        _register_mention_handling(session)
+        _register_session_spawning(session)
+
     else:
+        # === PROFILE MODE ===
+        # Manual session setup with app-cli's MentionResolver (deprecated codepath)
+        session = AmplifierSession(
+            config, session_id=session_id, approval_system=approval_system, display_system=display_system
+        )
+
+        # Mount module source resolver (app-layer policy)
         resolver = create_module_resolver()
-    await session.coordinator.mount("module-source-resolver", resolver)
+        await session.coordinator.mount("module-source-resolver", resolver)
 
-    await session.initialize()
+        await session.initialize()
 
-    # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
-    _register_mention_handling(session, profile_name, prepared_bundle)
+        # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
+        _register_mention_handling(session)
 
-    # Register session spawning capabilities for agent delegation (app-layer policy)
-    _register_session_spawning(session)
+        # Register session spawning capabilities for agent delegation (app-layer policy)
+        _register_session_spawning(session)
 
     # Register CLI approval provider if approval hook is active (app-layer policy)
     from .approval_provider import CLIApprovalProvider
@@ -1881,7 +1788,7 @@ async def interactive_chat_with_session(
         approval_provider = CLIApprovalProvider(console)
         register_provider(approval_provider)
 
-    # Restore context from transcript if available
+    # Restore context from transcript if available (applies to both modes)
     context = session.coordinator.get("context")
     if context and hasattr(context, "set_messages") and initial_transcript:
         await context.set_messages(initial_transcript)

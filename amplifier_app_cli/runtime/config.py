@@ -101,7 +101,14 @@ async def resolve_bundle_config(
         console.print(f"[dim]Bundle '{bundle_name}' prepared successfully[/dim]")
 
     # Expand environment variables (same as resolve_app_config)
+    # IMPORTANT: Must expand BEFORE syncing to mount_plan, so ${ANTHROPIC_API_KEY} etc. become actual values
     bundle_config = expand_env_vars(bundle_config)
+
+    # CRITICAL: Sync providers to prepared.mount_plan so create_session() uses them
+    # prepared.mount_plan is what create_session() uses, not bundle_config
+    # This must happen AFTER env var expansion so API keys are actual values, not "${VAR}" literals
+    if provider_overrides:
+        prepared.mount_plan["providers"] = bundle_config["providers"]
 
     return bundle_config, prepared
 
