@@ -4,9 +4,9 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from amplifier_app_cli.lib.mention_loading.deduplicator import ContentDeduplicator
 from amplifier_app_cli.lib.mention_loading.loader import MentionLoader
 from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
+from amplifier_foundation.mentions import ContentDeduplicator
 
 
 @pytest.fixture

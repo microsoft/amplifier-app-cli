@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from amplifier_app_cli.lib.mention_loading.deduplicator import ContentDeduplicator
+from amplifier_foundation.mentions import ContentDeduplicator
 
 
 def test_deduplicator_unique_content():
@@ -67,4 +67,4 @@ def test_deduplicator_hash_consistency():
     assert len(files) == 1
 
     expected_hash = "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72"
-    assert files[0].hash == expected_hash
+    assert files[0].content_hash == expected_hash

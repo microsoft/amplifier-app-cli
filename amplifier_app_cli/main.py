@@ -49,8 +49,8 @@ from .console import console
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
 from .lib.bundle_loader import AppModuleResolver
-from .lib.mention_loading.deduplicator import ContentDeduplicator
-from .lib.mention_loading.resolver import MentionResolver
+from .lib.mention_loading import AppMentionResolver
+from .lib.mention_loading import ContentDeduplicator
 from .paths import create_module_resolver
 from .paths import create_profile_loader
 from .session_store import SessionStore
@@ -919,21 +919,47 @@ def _create_prompt_session() -> PromptSession:
     )
 
 
-def _register_mention_handling(session: AmplifierSession) -> None:
-    """Register MentionResolver and ContentDeduplicator capabilities on a session.
+def _register_mention_handling(session: AmplifierSession, *, bundle_mode: bool = False) -> None:
+    """Register mention resolver capability on a session.
 
-    This is app-layer policy for @mention resolution in PROFILE MODE ONLY.
-    Bundle mode uses foundation's PreparedBundle.create_session() which handles
-    @mention resolution internally via BaseMentionResolver.
+    This function handles @mention resolution differently based on mode:
+
+    Bundle mode (bundle_mode=True):
+        - Gets foundation's BaseMentionResolver (registered by create_session)
+        - Wraps it with AppMentionResolver to add app shortcuts (@user:, @project:, @~/)
+        - Collections NOT enabled (prevents naming conflicts, deprecated)
+        - Foundation resolver handles all bundle namespaces (@recipes:, @foundation:, etc.)
+
+    Profile mode (bundle_mode=False):
+        - Creates AppMentionResolver with collection support (deprecated path)
+        - No foundation resolver (profiles don't use bundles)
+
+    Per KERNEL_PHILOSOPHY: Foundation provides mechanism (bundle namespaces),
+    app provides policy (shortcuts, resolution order, collection support).
 
     Args:
         session: The AmplifierSession to register capabilities on
+        bundle_mode: True if using bundle mode, False for profile mode
     """
-    # Profile mode: Use app-cli's MentionResolver (no bundle mappings)
-    mention_resolver = MentionResolver()
+    if bundle_mode:
+        # Bundle mode: Wrap foundation's resolver with app shortcuts
+        # Foundation resolver already has all bundle namespaces from composition
+        foundation_resolver = session.coordinator.get_capability("mention_resolver")
+        mention_resolver = AppMentionResolver(
+            foundation_resolver=foundation_resolver,
+            enable_collections=False,  # Bundles take precedence, no naming conflicts
+        )
+    else:
+        # Profile mode: App resolver with collection support (deprecated)
+        mention_resolver = AppMentionResolver(
+            foundation_resolver=None,
+            enable_collections=True,
+        )
+
     session.coordinator.register_capability("mention_resolver", mention_resolver)
 
     # Register session-wide ContentDeduplicator for @mention deduplication
+    # Uses foundation's ContentDeduplicator which tracks multiple paths per unique content
     mention_deduplicator = ContentDeduplicator()
     session.coordinator.register_capability("mention_deduplicator", mention_deduplicator)
 
@@ -1050,7 +1076,7 @@ async def interactive_chat(
 
         # Add app-layer policy: mention handling and session spawning
         # Override foundation's mention handling with app-cli's (ensures ContextFile compatibility)
-        _register_mention_handling(session)
+        _register_mention_handling(session, bundle_mode=True)
         _register_session_spawning(session)
 
     else:
@@ -1298,7 +1324,7 @@ async def execute_single(
 
         # Add app-layer policy: mention handling and session spawning
         # Override foundation's mention handling with app-cli's (ensures ContextFile compatibility)
-        _register_mention_handling(session)
+        _register_mention_handling(session, bundle_mode=True)
         _register_session_spawning(session)
 
     else:
@@ -1316,7 +1342,7 @@ async def execute_single(
             await session.coordinator.mount("module-source-resolver", resolver)
 
             # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
-            _register_mention_handling(session)
+            _register_mention_handling(session)  # Profile mode: bundle_mode=False
 
             await session.initialize()
 
@@ -1526,7 +1552,7 @@ async def execute_single_with_session(
 
         # Add app-layer policy: mention handling and session spawning
         # Override foundation's mention handling with app-cli's (ensures ContextFile compatibility)
-        _register_mention_handling(session)
+        _register_mention_handling(session, bundle_mode=True)
         _register_session_spawning(session)
 
     else:
@@ -1545,7 +1571,7 @@ async def execute_single_with_session(
             await session.initialize()
 
             # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
-            _register_mention_handling(session)
+            _register_mention_handling(session)  # Profile mode: bundle_mode=False
 
             # Register session spawning capabilities for agent delegation (app-layer policy)
             _register_session_spawning(session)
@@ -1758,7 +1784,7 @@ async def interactive_chat_with_session(
 
         # Add app-layer policy: mention handling and session spawning
         # Override foundation's mention handling with app-cli's (ensures ContextFile compatibility)
-        _register_mention_handling(session)
+        _register_mention_handling(session, bundle_mode=True)
         _register_session_spawning(session)
 
     else:
@@ -1775,7 +1801,7 @@ async def interactive_chat_with_session(
         await session.initialize()
 
         # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
-        _register_mention_handling(session)
+        _register_mention_handling(session)  # Profile mode: bundle_mode=False
 
         # Register session spawning capabilities for agent delegation (app-layer policy)
         _register_session_spawning(session)

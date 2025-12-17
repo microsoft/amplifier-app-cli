@@ -3,11 +3,11 @@
 from pathlib import Path
 
 from amplifier_core.message_models import Message
+from amplifier_foundation.mentions import ContentDeduplicator
+from amplifier_foundation.mentions import ContextFile
 
 from ...utils.mentions import extract_mention_path
 from ...utils.mentions import parse_mentions
-from .deduplicator import ContentDeduplicator
-from .models import ContextFile
 from .resolver import MentionResolver
 
 
@@ -132,7 +132,7 @@ class MentionLoader:
                     to_process.append(nested)
 
         context_files = deduplicator.get_unique_files()
-        new_context_files = [ctx for ctx in context_files if ctx.hash not in existing_hashes]
+        new_context_files = [ctx for ctx in context_files if ctx.content_hash not in existing_hashes]
 
         return self._create_messages(new_context_files, path_to_mention)
 
