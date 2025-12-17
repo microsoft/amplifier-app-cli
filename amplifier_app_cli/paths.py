@@ -597,16 +597,20 @@ def create_agent_loader(
     from amplifier_profiles import AgentLoader
     from amplifier_profiles import AgentResolver
 
+    from .lib.mention_loading import AppMentionResolver
     from .lib.mention_loading import MentionLoader
-    from .lib.mention_loading import MentionResolver
 
     resolver = AgentResolver(
         search_paths=get_agent_search_paths(use_bundle=use_bundle, bundle_name=bundle_name),
         collection_resolver=collection_resolver,
     )
 
-    # Create MentionResolver with bundle mappings for composed bundle @mentions
-    mention_resolver = MentionResolver(bundle_mappings=bundle_mappings)
+    # Create AppMentionResolver with bundle mappings for composed bundle @mentions
+    # enable_collections=True since this is profile mode
+    mention_resolver = AppMentionResolver(
+        bundle_mappings=bundle_mappings,
+        enable_collections=True,
+    )
 
     return AgentLoader(
         resolver=resolver,

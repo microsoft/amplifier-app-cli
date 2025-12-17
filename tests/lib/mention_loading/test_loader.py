@@ -4,8 +4,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
 from amplifier_app_cli.lib.mention_loading.loader import MentionLoader
-from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
 from amplifier_foundation.mentions import ContentDeduplicator
 
 
@@ -33,12 +33,8 @@ def temp_test_files():
 def test_loader_single_file(temp_test_files):
     """Test loading a single file without mentions."""
     # Use relative_to so @simple.md resolves correctly
-    resolver = MentionResolver(
-        bundled_data_dir=temp_test_files,
-        project_context_dir=temp_test_files,
-        user_context_dir=temp_test_files,
-        relative_to=temp_test_files,
-    )
+    resolver = AppMentionResolver()
+    resolver.relative_to = temp_test_files
     loader = MentionLoader(resolver)
 
     messages = loader.load_mentions("@simple.md", relative_to=temp_test_files)
@@ -51,12 +47,8 @@ def test_loader_single_file(temp_test_files):
 
 def test_loader_recursive_loading(temp_test_files):
     """Test recursive loading of mentions."""
-    resolver = MentionResolver(
-        bundled_data_dir=temp_test_files,
-        project_context_dir=temp_test_files,
-        user_context_dir=temp_test_files,
-        relative_to=temp_test_files,
-    )
+    resolver = AppMentionResolver()
+    resolver.relative_to = temp_test_files
     loader = MentionLoader(resolver)
 
     messages = loader.load_mentions("@with_mentions.md", relative_to=temp_test_files)
@@ -73,12 +65,8 @@ def test_loader_recursive_loading(temp_test_files):
 
 def test_loader_cycle_detection(temp_test_files):
     """Test cycle detection prevents infinite loops."""
-    resolver = MentionResolver(
-        bundled_data_dir=temp_test_files,
-        project_context_dir=temp_test_files,
-        user_context_dir=temp_test_files,
-        relative_to=temp_test_files,
-    )
+    resolver = AppMentionResolver()
+    resolver.relative_to = temp_test_files
     loader = MentionLoader(resolver)
 
     messages = loader.load_mentions("@recursive_a.md", relative_to=temp_test_files)
@@ -94,12 +82,8 @@ def test_loader_cycle_detection(temp_test_files):
 
 def test_loader_missing_file_silent_skip(temp_test_files):
     """Test missing files are silently skipped."""
-    resolver = MentionResolver(
-        bundled_data_dir=temp_test_files,
-        project_context_dir=temp_test_files,
-        user_context_dir=temp_test_files,
-        relative_to=temp_test_files,
-    )
+    resolver = AppMentionResolver()
+    resolver.relative_to = temp_test_files
     loader = MentionLoader(resolver)
 
     messages = loader.load_mentions("@missing.md @simple.md", relative_to=temp_test_files)
@@ -110,12 +94,8 @@ def test_loader_missing_file_silent_skip(temp_test_files):
 
 def test_loader_deduplication(temp_test_files):
     """Test content deduplication with multiple paths."""
-    resolver = MentionResolver(
-        bundled_data_dir=temp_test_files,
-        project_context_dir=temp_test_files,
-        user_context_dir=temp_test_files,
-        relative_to=temp_test_files,
-    )
+    resolver = AppMentionResolver()
+    resolver.relative_to = temp_test_files
     loader = MentionLoader(resolver)
 
     messages = loader.load_mentions("@duplicate1.md @duplicate2.md", relative_to=temp_test_files)
@@ -128,12 +108,8 @@ def test_loader_deduplication(temp_test_files):
 
 def test_loader_shared_deduplicator_prevents_duplicates(temp_test_files):
     """Ensure session-wide deduplicator only returns new files across calls."""
-    resolver = MentionResolver(
-        bundled_data_dir=temp_test_files,
-        project_context_dir=temp_test_files,
-        user_context_dir=temp_test_files,
-        relative_to=temp_test_files,
-    )
+    resolver = AppMentionResolver()
+    resolver.relative_to = temp_test_files
     loader = MentionLoader(resolver)
     deduplicator = ContentDeduplicator()
 
@@ -146,11 +122,8 @@ def test_loader_shared_deduplicator_prevents_duplicates(temp_test_files):
 
 def test_loader_no_mentions(temp_test_files):
     """Test text without mentions returns empty list."""
-    resolver = MentionResolver(
-        bundled_data_dir=temp_test_files,
-        project_context_dir=temp_test_files,
-        user_context_dir=temp_test_files,
-    )
+    resolver = AppMentionResolver()
+    resolver.relative_to = temp_test_files
     loader = MentionLoader(resolver)
 
     messages = loader.load_mentions("No mentions here")
@@ -164,12 +137,8 @@ def test_loader_message_format(temp_test_files):
     Note: Provider adds <context_file> wrapper around developer messages.
     Loader only adds [Context from @mention → path] header.
     """
-    resolver = MentionResolver(
-        bundled_data_dir=temp_test_files,
-        project_context_dir=temp_test_files,
-        user_context_dir=temp_test_files,
-        relative_to=temp_test_files,
-    )
+    resolver = AppMentionResolver()
+    resolver.relative_to = temp_test_files
     loader = MentionLoader(resolver)
 
     messages = loader.load_mentions("@simple.md", relative_to=temp_test_files)

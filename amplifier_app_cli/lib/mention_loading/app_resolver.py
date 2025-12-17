@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 class MentionResolverProtocol(Protocol):
     """Protocol for mention resolvers."""
 
+    relative_to: Path | None
+
     def resolve(self, mention: str) -> Path | None:
         """Resolve @mention to file path."""
         ...
@@ -58,6 +60,7 @@ class AppMentionResolver:
         self,
         foundation_resolver: BaseMentionResolver | MentionResolverProtocol | None = None,
         enable_collections: bool = False,
+        bundle_mappings: dict[str, Path] | None = None,
     ):
         """Initialize app mention resolver.
 
@@ -69,10 +72,16 @@ class AppMentionResolver:
             enable_collections: Enable @collection:path resolution.
                 DEPRECATED: Only set True for legacy profile mode.
                 Bundle mode should use False to prevent naming conflicts.
+            bundle_mappings: Optional dict mapping bundle namespace to base_path.
+                Enables @namespace:path mentions to resolve from the bundle's
+                base_path. Used in profile mode when foundation_resolver is not
+                available. Supports multiple namespaces from composed bundles.
         """
         self.foundation_resolver = foundation_resolver
         self._enable_collections = enable_collections
+        self._bundle_mappings = bundle_mappings or {}
         self._collection_resolver = None
+        self.relative_to: Path | None = None  # For context-relative path resolution
 
         if enable_collections:
             try:
@@ -120,6 +129,15 @@ class AppMentionResolver:
             result = self.foundation_resolver.resolve(mention)
             if result:
                 logger.debug(f"Resolved via foundation: {mention} -> {result}")
+                return result
+
+        # === BUNDLE MAPPINGS (dict fallback for profile mode) ===
+        # If no foundation resolver, try bundle_mappings dict directly
+        # This supports @namespace:path in profile mode where bundles are composed
+        if self._bundle_mappings and ":" in mention[1:]:
+            result = self._resolve_bundle_mapping(mention)
+            if result:
+                logger.debug(f"Resolved via bundle mapping: {mention} -> {result}")
                 return result
 
         # === COLLECTIONS (deprecated, profile mode only) ===
@@ -175,6 +193,39 @@ class AppMentionResolver:
         logger.debug(f"Home shortcut not found: {home_path}")
         return None
 
+    def _resolve_bundle_mapping(self, mention: str) -> Path | None:
+        """Resolve @namespace:path via bundle_mappings dict.
+
+        Used in profile mode when foundation_resolver is not available.
+        """
+        # Extract prefix and path
+        prefix, path = mention[1:].split(":", 1)
+
+        # Skip app shortcuts (already handled)
+        if prefix in ("user", "project"):
+            return None
+
+        if prefix not in self._bundle_mappings:
+            return None
+
+        bundle_base_path = self._bundle_mappings[prefix]
+
+        # Strip leading "/" to prevent path from becoming absolute
+        # (Python's Path("/base") / "/" = Path("/") which is wrong)
+        path = path.lstrip("/")
+        if not path:
+            # Empty path means bundle root
+            if bundle_base_path.exists():
+                return bundle_base_path.resolve()
+            return None
+
+        resource_path = bundle_base_path / path
+        if resource_path.exists():
+            return resource_path.resolve()
+
+        logger.debug(f"Bundle resource not found: {resource_path}")
+        return None
+
     def _resolve_collection(self, mention: str) -> Path | None:
         """Resolve @collection:path (DEPRECATED).
 
@@ -212,20 +263,26 @@ class AppMentionResolver:
         return None
 
     def _resolve_relative(self, mention: str) -> Path | None:
-        """Resolve @path → CWD/path."""
+        """Resolve @path → base_path/path.
+
+        Uses self.relative_to if set, otherwise falls back to CWD.
+        """
         path = mention[1:]  # Remove "@"
         if not path:
             return None
 
+        # Use relative_to if set, otherwise CWD
+        base_path = self.relative_to if self.relative_to else Path.cwd()
+
         # Handle explicit relative paths
         if path.startswith("./") or path.startswith("../"):
-            cwd_path = (Path.cwd() / path).resolve()
+            resolved_path = (base_path / path).resolve()
         else:
-            cwd_path = Path.cwd() / path
+            resolved_path = base_path / path
 
-        if cwd_path.exists():
-            logger.debug(f"Relative path resolved: {mention} -> {cwd_path}")
-            return cwd_path.resolve()
+        if resolved_path.exists():
+            logger.debug(f"Relative path resolved: {mention} -> {resolved_path}")
+            return resolved_path.resolve()
 
-        logger.debug(f"Relative path not found: {cwd_path}")
+        logger.debug(f"Relative path not found: {resolved_path}")
         return None

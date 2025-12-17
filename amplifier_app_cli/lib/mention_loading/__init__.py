@@ -8,13 +8,13 @@ from amplifier_foundation.mentions import ContentDeduplicator
 from amplifier_foundation.mentions import ContextFile
 
 from .app_resolver import AppMentionResolver
+from .app_resolver import MentionResolverProtocol
 from .loader import MentionLoader
-from .resolver import MentionResolver
 
 __all__ = [
     "AppMentionResolver",
     "ContentDeduplicator",
     "ContextFile",
     "MentionLoader",
-    "MentionResolver",
+    "MentionResolverProtocol",
 ]

@@ -129,8 +129,9 @@ async def spawn_sub_session(
 
     # Register app-layer capabilities for child session
     # Inherit from parent session where available to preserve bundle context and deduplication state
-    from amplifier_app_cli.lib.mention_loading.deduplicator import ContentDeduplicator
-    from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
+    from amplifier_foundation.mentions import ContentDeduplicator
+
+    from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
     from amplifier_app_cli.paths import create_module_resolver
 
     # Module source resolver - inherit from parent to preserve BundleModuleResolver in bundle mode
@@ -148,7 +149,7 @@ async def spawn_sub_session(
         child_session.coordinator.register_capability("mention_resolver", parent_mention_resolver)
     else:
         # Fallback to fresh resolver if parent doesn't have one
-        child_session.coordinator.register_capability("mention_resolver", MentionResolver())
+        child_session.coordinator.register_capability("mention_resolver", AppMentionResolver(enable_collections=True))
 
     # Mention deduplicator - inherit from parent to preserve session-wide deduplication state
     parent_deduplicator = parent_session.coordinator.get_capability("mention_deduplicator")
@@ -285,8 +286,9 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     # Note: Resumed sessions create fresh instances since parent session is not available.
     # Bundle context (including BundleModuleResolver) would need to be serialized to metadata
     # to preserve bundle mode for resumed sessions - using StandardModuleSourceResolver as fallback.
-    from amplifier_app_cli.lib.mention_loading.deduplicator import ContentDeduplicator
-    from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
+    from amplifier_foundation.mentions import ContentDeduplicator
+
+    from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
     from amplifier_app_cli.paths import create_module_resolver
 
     # Module source resolver - uses StandardModuleSourceResolver for resumed sessions
@@ -295,7 +297,7 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     await child_session.coordinator.mount("module-source-resolver", resolver)
 
     # Mention resolver - create fresh (no parent available for resumed sessions)
-    child_session.coordinator.register_capability("mention_resolver", MentionResolver())
+    child_session.coordinator.register_capability("mention_resolver", AppMentionResolver(enable_collections=True))
 
     # Mention deduplicator - create fresh (deduplication state doesn't persist across resumes)
     child_session.coordinator.register_capability("mention_deduplicator", ContentDeduplicator())

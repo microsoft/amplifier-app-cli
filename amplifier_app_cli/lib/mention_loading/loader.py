@@ -8,7 +8,8 @@ from amplifier_foundation.mentions import ContextFile
 
 from ...utils.mentions import extract_mention_path
 from ...utils.mentions import parse_mentions
-from .resolver import MentionResolver
+from .app_resolver import AppMentionResolver
+from .app_resolver import MentionResolverProtocol
 
 
 def prepend_context_to_markdown(context_messages: list[Message], markdown_body: str) -> str:
@@ -59,13 +60,13 @@ class MentionLoader:
     - Silent skip on missing files
     """
 
-    def __init__(self, resolver: MentionResolver | None = None):
+    def __init__(self, resolver: MentionResolverProtocol | None = None):
         """Initialize loader with optional custom resolver.
 
         Args:
-            resolver: MentionResolver to use (default: creates new with defaults)
+            resolver: Resolver implementing MentionResolverProtocol (default: creates AppMentionResolver)
         """
-        self.resolver = resolver or MentionResolver()
+        self.resolver = resolver or AppMentionResolver(enable_collections=True)
 
     def has_mentions(self, text: str) -> bool:
         """Check if text contains @mention patterns.
@@ -99,7 +100,7 @@ class MentionLoader:
         if deduplicator is None:
             deduplicator = ContentDeduplicator()
 
-        existing_hashes = deduplicator.get_known_hashes()
+        existing_hashes = deduplicator.get_known_hashes()  # pyright: ignore[reportAttributeAccessIssue]
         visited_paths: set[Path] = set()
         path_to_mention: dict[Path, str] = {}  # Track original @mention for each path
         to_process: list[str] = parse_mentions(text)
@@ -150,7 +151,7 @@ class MentionLoader:
         for ctx_file in context_files:
             # Format paths with original @mention and absolute path
             path_displays = []
-            for p in ctx_file.paths:
+            for p in ctx_file.paths:  # pyright: ignore[reportAttributeAccessIssue]
                 original_mention = path_to_mention.get(p)
                 if original_mention:
                     path_displays.append(f"{original_mention} → {p}")

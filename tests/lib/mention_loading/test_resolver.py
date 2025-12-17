@@ -1,10 +1,10 @@
-"""Tests for mention path resolver with explicit prefix syntax."""
+"""Tests for AppMentionResolver with explicit prefix syntax."""
 
 import tempfile
 from pathlib import Path
 
 import pytest
-from amplifier_app_cli.lib.mention_loading.resolver import MentionResolver
+from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
 
 
 @pytest.fixture
@@ -42,11 +42,7 @@ def test_resolver_cwd_file(temp_context_dirs, monkeypatch):
     """Test @file.md resolves from CWD."""
     monkeypatch.chdir(temp_context_dirs["root"])
 
-    resolver = MentionResolver(
-        bundled_data_dir=temp_context_dirs["bundled"],
-        project_context_dir=temp_context_dirs["project"],
-        user_context_dir=temp_context_dirs["user"],
-    )
+    resolver = AppMentionResolver()
 
     path = resolver.resolve("@cwd_file.md")
     assert path is not None
@@ -58,42 +54,34 @@ def test_resolver_relative_to(temp_context_dirs):
     base_dir = temp_context_dirs["bundled"]
     (base_dir / "relative.md").write_text("relative content")
 
-    resolver = MentionResolver(
-        bundled_data_dir=temp_context_dirs["bundled"],
-        project_context_dir=temp_context_dirs["project"],
-        user_context_dir=temp_context_dirs["user"],
-        relative_to=base_dir,
-    )
+    resolver = AppMentionResolver()
+    resolver.relative_to = base_dir
 
     path = resolver.resolve("@relative.md")
     assert path is not None
     assert path.read_text() == "relative content"
 
 
-def test_resolver_relative_path_syntax(temp_context_dirs):
+def test_resolver_relative_path_syntax(temp_context_dirs, monkeypatch):
     """Test ./relative.md syntax with relative_to."""
     base_dir = temp_context_dirs["bundled"]
     (base_dir / "relative.md").write_text("relative content")
 
-    resolver = MentionResolver(
-        bundled_data_dir=temp_context_dirs["bundled"],
-        project_context_dir=temp_context_dirs["project"],
-        user_context_dir=temp_context_dirs["user"],
-        relative_to=base_dir,
-    )
+    # Need to be in a directory for ./ syntax to work
+    monkeypatch.chdir(base_dir)
 
-    path = resolver.resolve("./relative.md")
+    resolver = AppMentionResolver()
+    resolver.relative_to = base_dir
+
+    path = resolver.resolve("@./relative.md")
     assert path is not None
     assert path.read_text() == "relative content"
 
 
 def test_resolver_missing_file(temp_context_dirs):
     """Test returns None for missing files."""
-    resolver = MentionResolver(
-        bundled_data_dir=temp_context_dirs["bundled"],
-        project_context_dir=temp_context_dirs["project"],
-        user_context_dir=temp_context_dirs["user"],
-    )
+    resolver = AppMentionResolver()
+    resolver.relative_to = temp_context_dirs["root"]
 
     path = resolver.resolve("@missing.md")
     assert path is None
@@ -106,11 +94,7 @@ def test_resolver_home_directory(temp_context_dirs):
     test_file.write_text("home content")
 
     try:
-        resolver = MentionResolver(
-            bundled_data_dir=temp_context_dirs["bundled"],
-            project_context_dir=temp_context_dirs["project"],
-            user_context_dir=temp_context_dirs["user"],
-        )
+        resolver = AppMentionResolver()
 
         path = resolver.resolve("@~/test_resolver_home.md")
         assert path is not None
@@ -121,11 +105,7 @@ def test_resolver_home_directory(temp_context_dirs):
 
 def test_resolver_path_traversal_blocked(temp_context_dirs):
     """Test path traversal attempts are blocked."""
-    resolver = MentionResolver(
-        bundled_data_dir=temp_context_dirs["bundled"],
-        project_context_dir=temp_context_dirs["project"],
-        user_context_dir=temp_context_dirs["user"],
-    )
+    resolver = AppMentionResolver(enable_collections=True)
 
     # Should return None for path traversal attempts in collection references
     path = resolver.resolve("@foundation:../../etc/passwd")
