@@ -24,7 +24,7 @@ Interactive chat mode with slash commands for controlling execution, saving work
 |---------|---------|-------|
 | `/think` | Enter plan mode | Read-only, blocks writes |
 | `/do` | Exit plan mode | Re-enables modifications |
-| `/save [file]` | Save transcript | To `.amplifier/transcripts/` |
+| `/save [file]` | Save transcript | To session directory |
 | `/clear` | Clear history | Keeps session active |
 | `/status` | Show session info | Mode, messages, tools count |
 | `/tools` | List tools | Shows loaded capabilities |
@@ -54,10 +54,10 @@ Interactive chat mode with slash commands for controlling execution, saving work
 **/save - Persist Transcript**:
 ```bash
 > /save auth_refactor.json
-✓ Saved to .amplifier/transcripts/auth_refactor.json
+✓ Saved to ~/.amplifier/projects/<project>/sessions/<session-id>/auth_refactor.json
 ```
 
-**Saves**: All messages, session config, timestamp. **Location**: `.amplifier/transcripts/` (gitignored).
+**Saves**: All messages, session config, timestamp. **Location**: Session directory `~/.amplifier/projects/<project>/sessions/<session-id>/`.
 
 **/clear - Reset Context**:
 Clears conversation history, session stays active. Use when switching topics or context grows too large.

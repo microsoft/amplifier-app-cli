@@ -353,7 +353,10 @@ class CommandProcessor:
                     self.plan_mode_unregister = None
 
     async def _save_transcript(self, filename: str) -> str:
-        """Save current transcript with sanitization for non-JSON-serializable objects."""
+        """Save current transcript with sanitization for non-JSON-serializable objects.
+
+        Saves to the session directory: ~/.amplifier/projects/<project-slug>/sessions/<session-id>/
+        """
         # Default filename if not provided
         if not filename:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -370,9 +373,11 @@ class CommandProcessor:
             store = SessionStore()
             sanitized_messages = [store._sanitize_message(msg) for msg in messages]
 
-            # Save to file
-            path = Path(".amplifier/transcripts") / filename
-            path.parent.mkdir(parents=True, exist_ok=True)
+            # Save to session directory (proper location)
+            session_id = self.session.coordinator.session_id
+            session_dir = store.base_dir / session_id
+            session_dir.mkdir(parents=True, exist_ok=True)
+            path = session_dir / filename
 
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(

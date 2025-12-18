@@ -31,8 +31,11 @@ class CachedModuleInfo:
 
 
 def get_cache_dir() -> Path:
-    """Get the module cache directory path."""
-    return Path.home() / ".amplifier" / "module-cache"
+    """Get the module cache directory path.
+
+    Uses ~/.amplifier/cache/modules/ to align with cache/bundles/ and cache/bundle_metadata/.
+    """
+    return Path.home() / ".amplifier" / "cache" / "modules"
 
 
 def _infer_module_type(module_id: str) -> str:

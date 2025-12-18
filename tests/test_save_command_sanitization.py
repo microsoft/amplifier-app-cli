@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -20,10 +21,11 @@ class MockThinkingBlock:
 class MockSession:
     """Mock session for testing."""
 
-    def __init__(self):
-        self.session_id = "test-session-123"
+    def __init__(self, session_id: str = "test-session-123"):
+        self.session_id = session_id
         self.config = {"test": "config"}
         self.coordinator = MagicMock()
+        self.coordinator.session_id = session_id
 
 
 @pytest.mark.asyncio
@@ -50,20 +52,26 @@ async def test_save_transcript_with_thinking_blocks():
 
     processor = CommandProcessor(mock_session)  # type: ignore[arg-type]
 
-    # Use temp directory for output
+    # Use temp directory for SessionStore base_dir
     with tempfile.TemporaryDirectory() as temp_dir:
-        original_cwd = Path.cwd()
         temp_path = Path(temp_dir)
-        import os
 
-        os.chdir(temp_path)
+        # Patch SessionStore to use temp directory
+        with patch("amplifier_app_cli.main.SessionStore") as mock_store_class:
+            mock_store = MagicMock()
+            mock_store.base_dir = temp_path
+            # Forward _sanitize_message to real implementation
+            from amplifier_app_cli.session_store import SessionStore
 
-        try:
+            real_store = SessionStore.__new__(SessionStore)
+            mock_store._sanitize_message = real_store._sanitize_message
+            mock_store_class.return_value = mock_store
+
             # Call _save_transcript - should NOT crash
             result = await processor._save_transcript("test_save.json")
 
-            # Verify file was created
-            assert "transcript" in result
+            # Verify file was created in session subdirectory
+            assert "test_save.json" in result
             saved_file = Path(result)
             assert saved_file.exists()
 
@@ -89,9 +97,6 @@ async def test_save_transcript_with_thinking_blocks():
             if "thinking_text" in data["messages"][1]:
                 assert data["messages"][1]["thinking_text"] == "This is my thinking"
 
-        finally:
-            os.chdir(original_cwd)
-
 
 @pytest.mark.asyncio
 async def test_save_transcript_without_thinking():
@@ -110,15 +115,20 @@ async def test_save_transcript_without_thinking():
     processor = CommandProcessor(mock_session)  # type: ignore[arg-type]
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        original_cwd = Path.cwd()
-        import os
+        temp_path = Path(temp_dir)
 
-        os.chdir(temp_dir)
+        with patch("amplifier_app_cli.main.SessionStore") as mock_store_class:
+            mock_store = MagicMock()
+            mock_store.base_dir = temp_path
+            from amplifier_app_cli.session_store import SessionStore
 
-        try:
+            real_store = SessionStore.__new__(SessionStore)
+            mock_store._sanitize_message = real_store._sanitize_message
+            mock_store_class.return_value = mock_store
+
             result = await processor._save_transcript("test_normal.json")
 
-            assert "transcript" in result
+            assert "test_normal.json" in result
             saved_file = Path(result)
             assert saved_file.exists()
 
@@ -127,6 +137,3 @@ async def test_save_transcript_without_thinking():
 
             # All messages should be preserved exactly
             assert data["messages"] == normal_messages
-
-        finally:
-            os.chdir(original_cwd)

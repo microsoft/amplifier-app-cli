@@ -155,7 +155,7 @@ def install_known_providers(
                 if result.returncode != 0:
                     raise RuntimeError(f"Failed to install: {result.stderr}")
             else:
-                # GitSource.resolve() downloads and installs with deps to ~/.amplifier/module-cache/
+                # GitSource.resolve() downloads and installs with deps to ~/.amplifier/cache/modules/
                 source.resolve()
 
             if verbose and console:
