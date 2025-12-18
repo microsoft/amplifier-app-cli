@@ -23,9 +23,10 @@ class KeyManager:
                     line = line.strip()
                     if line and not line.startswith("#") and "=" in line:
                         key, value = line.split("=", 1)
+                        key = key.strip()  # Strip whitespace from key name
                         # Only set if not already in environment
                         if key not in os.environ:
-                            os.environ[key] = value.strip('"').strip("'")
+                            os.environ[key] = value.strip().strip('"').strip("'")
         except Exception:
             # Fail silently - manual env vars will still work
             pass
@@ -46,7 +47,7 @@ class KeyManager:
                     line = line.strip()
                     if line and not line.startswith("#") and "=" in line:
                         k, v = line.split("=", 1)
-                        existing_keys[k] = v
+                        existing_keys[k.strip()] = v
 
         # Update with new key
         existing_keys[key_name] = f'"{key_value}"'
