@@ -31,10 +31,11 @@ from ..runtime.config import resolve_bundle_config
 logger = logging.getLogger(__name__)
 
 InteractiveChat = Callable[
-    [dict, list, bool, str | None, str, Path | None, "PreparedBundle | None"], Coroutine[Any, Any, None]
+    [dict, list, bool, str | None, str, Path | None, "PreparedBundle | None", str | None], Coroutine[Any, Any, None]
 ]
 InteractiveResume = Callable[
-    [dict, list, bool, str, list[dict], str, Path | None, "PreparedBundle | None"], Coroutine[Any, Any, None]
+    [dict, list, bool, str, list[dict], str, Path | None, "PreparedBundle | None", str | None],
+    Coroutine[Any, Any, None],
 ]
 ExecuteSingle = Callable[
     [str, dict, list, bool, str | None, str, str, Path | None, "PreparedBundle | None"], Coroutine[Any, Any, None]
@@ -277,7 +278,14 @@ def register_run_command(
         asyncio.run(check_and_notify())
 
         if mode == "chat":
-            # Interactive mode
+            # Interactive mode - supports optional initial_prompt for auto-execution
+            # Check for piped input if no prompt provided
+            initial_prompt = prompt
+            if initial_prompt is None and not sys.stdin.isatty():
+                initial_prompt = sys.stdin.read()
+                if initial_prompt is not None and not initial_prompt.strip():
+                    initial_prompt = None
+
             if resume:
                 # Resume existing session (transcript loaded earlier)
                 if transcript is None:
@@ -293,6 +301,7 @@ def register_run_command(
                         config_source_name,
                         bundle_base_path,
                         prepared_bundle,
+                        initial_prompt,
                     )
                 )
             else:
@@ -307,6 +316,7 @@ def register_run_command(
                         config_source_name,
                         bundle_base_path,
                         prepared_bundle,
+                        initial_prompt,
                     )
                 )
         else:

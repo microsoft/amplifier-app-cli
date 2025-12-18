@@ -703,6 +703,7 @@ def cli(ctx, install_completion):
 
     # If no command specified, launch chat mode with current profile
     # Note: Update check happens inside run command (not here, to avoid slowing other commands)
+    # For initial prompt support, use: amplifier run --mode chat "prompt"
     if ctx.invoked_subcommand is None:
         if _run_command is None:
             raise RuntimeError("Run command not registered")
@@ -1020,6 +1021,7 @@ async def interactive_chat(
     profile_name: str = "unknown",
     bundle_base_path: Path | None = None,
     prepared_bundle: "PreparedBundle | None" = None,
+    initial_prompt: str | None = None,
 ):
     """Run an interactive chat session.
 
@@ -1031,7 +1033,10 @@ async def interactive_chat(
         profile_name: Profile or bundle name (e.g., "dev" or "bundle:foundation")
         bundle_base_path: Base path of the bundle for @mention resolution (bundle mode only)
         prepared_bundle: PreparedBundle from foundation's prepare workflow (bundle mode only)
+        initial_prompt: Optional prompt to auto-execute before entering interactive loop
     """
+    global _abort_requested  # Declare at function level for signal handler
+
     # Generate session ID if not provided
     if not session_id:
         session_id = str(uuid.uuid4())
@@ -1155,6 +1160,78 @@ async def interactive_chat(
     # Create prompt session for history and advanced editing
     prompt_session = _create_prompt_session()
 
+    # Execute initial prompt if provided (for 'amplifier "prompt"' or 'amplifier run --mode chat "prompt"')
+    if initial_prompt:
+        console.print(f"\n[bold cyan]>[/bold cyan] {initial_prompt[:100]}{'...' if len(initial_prompt) > 100 else ''}")
+        console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
+
+        # Process runtime @mentions in initial prompt
+        await _process_runtime_mentions(session, initial_prompt)
+
+        # Install signal handler to catch Ctrl-C without raising KeyboardInterrupt
+        _abort_requested = False
+
+        def sigint_handler_initial(signum, frame):
+            """Handle Ctrl-C by setting abort flag instead of raising exception."""
+            global _abort_requested
+            _abort_requested = True
+
+        original_handler = signal.signal(signal.SIGINT, sigint_handler_initial)
+
+        try:
+            # Run execute as cancellable task
+            execute_task = asyncio.create_task(session.execute(initial_prompt))
+
+            # Poll task while checking for abort flag
+            while not execute_task.done():
+                if _abort_requested:
+                    execute_task.cancel()
+                    break
+                await asyncio.sleep(0.05)  # Check every 50ms
+
+            # Handle result or cancellation
+            try:
+                response = await execute_task
+                # Use shared message renderer (single source of truth)
+                from .ui import render_message
+
+                render_message({"role": "assistant", "content": response}, console)
+
+                # Emit prompt:complete (canonical kernel event) after displaying response
+                hooks = session.coordinator.get("hooks")
+                if hooks:
+                    from amplifier_core.events import PROMPT_COMPLETE
+
+                    await hooks.emit(PROMPT_COMPLETE, {"prompt": initial_prompt, "response": response})
+
+                # Save session after initial prompt execution
+                context = session.coordinator.get("context")
+                if context and hasattr(context, "get_messages"):
+                    messages = await context.get_messages()
+                    # Extract model from providers config
+                    model_name = "unknown"
+                    if isinstance(config.get("providers"), list) and config["providers"]:
+                        first_provider = config["providers"][0]
+                        if isinstance(first_provider, dict) and "config" in first_provider:
+                            provider_config = first_provider["config"]
+                            model_name = provider_config.get("model") or provider_config.get("default_model", "unknown")
+
+                    metadata = {
+                        "session_id": session_id,
+                        "created": datetime.now(UTC).isoformat(),
+                        "profile": profile_name,
+                        "model": model_name,
+                        "turn_count": len([m for m in messages if m.get("role") == "user"]),
+                    }
+                    store.save(session_id, messages, metadata)
+            except asyncio.CancelledError:
+                # Ctrl-C pressed during processing
+                console.print("\n[yellow]Aborted (Ctrl-C)[/yellow]")
+        finally:
+            # Always restore original signal handler
+            signal.signal(signal.SIGINT, original_handler)
+            _abort_requested = False
+
     try:
         while True:
             try:
@@ -1179,7 +1256,6 @@ async def interactive_chat(
                         await _process_runtime_mentions(session, data["text"])
 
                         # Install signal handler to catch Ctrl-C without raising KeyboardInterrupt
-                        global _abort_requested
                         _abort_requested = False
 
                         def sigint_handler(signum, frame):
@@ -1750,6 +1826,7 @@ async def interactive_chat_with_session(
     profile_name: str = "unknown",
     bundle_base_path: Path | None = None,
     prepared_bundle: "PreparedBundle | None" = None,
+    initial_prompt: str | None = None,
 ):
     """Run an interactive chat session with restored context.
 
@@ -1762,7 +1839,10 @@ async def interactive_chat_with_session(
         profile_name: Profile or bundle name (e.g., "dev" or "bundle:foundation")
         bundle_base_path: Base path of the bundle for @mention resolution (bundle mode only)
         prepared_bundle: PreparedBundle from foundation's prepare workflow (bundle mode only)
+        initial_prompt: Optional prompt to auto-execute before entering interactive loop
     """
+    global _abort_requested  # Declare at function level for signal handler
+
     # Create CLI UX systems (app-layer policy)
     approval_system, display_system = _create_cli_ux_systems()
 
@@ -1836,6 +1916,71 @@ async def interactive_chat_with_session(
     # Create prompt session for history and advanced editing
     prompt_session = _create_prompt_session()
 
+    # Execute initial prompt if provided (for resumed session with initial prompt)
+    if initial_prompt:
+        console.print(f"\n[bold cyan]>[/bold cyan] {initial_prompt[:100]}{'...' if len(initial_prompt) > 100 else ''}")
+        console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
+
+        # Process runtime @mentions in initial prompt
+        await _process_runtime_mentions(session, initial_prompt)
+
+        # Install signal handler to catch Ctrl-C without raising KeyboardInterrupt
+        _abort_requested = False
+
+        def sigint_handler_initial(signum, frame):
+            """Handle Ctrl-C by setting abort flag instead of raising exception."""
+            global _abort_requested
+            _abort_requested = True
+
+        original_handler = signal.signal(signal.SIGINT, sigint_handler_initial)
+
+        try:
+            # Run execute as cancellable task
+            execute_task = asyncio.create_task(session.execute(initial_prompt))
+
+            # Poll task while checking for abort flag
+            while not execute_task.done():
+                if _abort_requested:
+                    execute_task.cancel()
+                    break
+                await asyncio.sleep(0.05)  # Check every 50ms
+
+            # Handle result or cancellation
+            try:
+                response = await execute_task
+                # Use shared message renderer (single source of truth)
+                from .ui import render_message
+
+                render_message({"role": "assistant", "content": response}, console)
+
+                # Save session after initial prompt execution
+                context = session.coordinator.get("context")
+                if context and hasattr(context, "get_messages"):
+                    messages = await context.get_messages()
+                    # Extract model from providers config
+                    model_name = "unknown"
+                    if isinstance(config.get("providers"), list) and config["providers"]:
+                        first_provider = config["providers"][0]
+                        if isinstance(first_provider, dict) and "config" in first_provider:
+                            provider_config = first_provider["config"]
+                            model_name = provider_config.get("model") or provider_config.get("default_model", "unknown")
+
+                    metadata = {
+                        "session_id": session_id,
+                        "created": datetime.now(UTC).isoformat(),
+                        "profile": profile_name,
+                        "model": model_name,
+                        "turn_count": len([m for m in messages if m.get("role") == "user"]),
+                    }
+                    store.save(session_id, messages, metadata)
+            except asyncio.CancelledError:
+                # Ctrl-C pressed during processing
+                console.print("\n[yellow]Aborted (Ctrl-C)[/yellow]")
+        finally:
+            # Always restore original signal handler
+            signal.signal(signal.SIGINT, original_handler)
+            _abort_requested = False
+
     try:
         while True:
             try:
@@ -1860,7 +2005,6 @@ async def interactive_chat_with_session(
                         await _process_runtime_mentions(session, data["text"])
 
                         # Install signal handler to catch Ctrl-C without raising KeyboardInterrupt
-                        global _abort_requested
                         _abort_requested = False
 
                         def sigint_handler(signum, frame):
