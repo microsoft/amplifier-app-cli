@@ -20,11 +20,15 @@ from rich.table import Table
 from ..console import console
 from ..lib.app_settings import AppSettings
 from ..paths import create_agent_loader
+from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..paths import create_profile_loader
 from ..project_utils import get_project_slug
 from ..runtime.config import resolve_app_config
 from ..session_store import SessionStore
+
+# Prefix used to identify bundle-based sessions in metadata
+BUNDLE_PREFIX = "bundle:"
 
 InteractiveResume = Callable[[dict, list[Path], bool, str, list[dict], str], Coroutine[Any, Any, None]]
 ExecuteSingleWithSession = Callable[[str, dict, list[Path], bool, str, list[dict], str], Coroutine[Any, Any, None]]
@@ -256,21 +260,36 @@ def register_session_commands(
             console.print(f"  Messages: {len(transcript)}")
 
             saved_profile = metadata.get("profile", "unknown")
+
+            # Detect if this was a bundle-based session
+            bundle_name = None
+            profile_override = profile  # Use explicit --profile if provided
+
             if not profile and saved_profile and saved_profile != "unknown":
-                profile = saved_profile
-                console.print(f"  Using saved profile: {profile}")
+                if saved_profile.startswith(BUNDLE_PREFIX):
+                    # Extract bundle name from "bundle:foundation" format
+                    bundle_name = saved_profile[len(BUNDLE_PREFIX) :]
+                    console.print(f"  Using saved bundle: {bundle_name}")
+                else:
+                    profile_override = saved_profile
+                    console.print(f"  Using saved profile: {saved_profile}")
 
             config_manager = create_config_manager()
             profile_loader = create_profile_loader()
             agent_loader = create_agent_loader()
             app_settings = AppSettings(config_manager)
 
+            # Create bundle registry if resuming a bundle-based session
+            bundle_registry = create_bundle_registry() if bundle_name else None
+
             config_data = resolve_app_config(
                 config_manager=config_manager,
                 profile_loader=profile_loader,
                 agent_loader=agent_loader,
                 app_settings=app_settings,
-                profile_override=profile,
+                profile_override=profile_override if not bundle_name else None,
+                bundle_name=bundle_name,
+                bundle_registry=bundle_registry,
                 console=console,
             )
 
@@ -486,21 +505,36 @@ def register_session_commands(
             console.print(f"  Messages: {len(transcript)}")
 
             saved_profile = metadata.get("profile", "unknown")
+
+            # Detect if this was a bundle-based session
+            bundle_name = None
+            profile_override = profile  # Use explicit --profile if provided
+
             if not profile and saved_profile and saved_profile != "unknown":
-                profile = saved_profile
-                console.print(f"  Using saved profile: {profile}")
+                if saved_profile.startswith(BUNDLE_PREFIX):
+                    # Extract bundle name from "bundle:foundation" format
+                    bundle_name = saved_profile[len(BUNDLE_PREFIX) :]
+                    console.print(f"  Using saved bundle: {bundle_name}")
+                else:
+                    profile_override = saved_profile
+                    console.print(f"  Using saved profile: {saved_profile}")
 
             config_manager = create_config_manager()
             profile_loader = create_profile_loader()
             agent_loader = create_agent_loader()
             app_settings = AppSettings(config_manager)
 
+            # Create bundle registry if resuming a bundle-based session
+            bundle_registry = create_bundle_registry() if bundle_name else None
+
             config_data = resolve_app_config(
                 config_manager=config_manager,
                 profile_loader=profile_loader,
                 agent_loader=agent_loader,
                 app_settings=app_settings,
-                profile_override=profile,
+                profile_override=profile_override if not bundle_name else None,
+                bundle_name=bundle_name,
+                bundle_registry=bundle_registry,
                 console=console,
             )
 
