@@ -640,7 +640,8 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
         console.print("[yellow]No bundles found.[/yellow]")
         return
 
-    console.print(f"[bold]Checking {len(bundle_names)} bundle(s)...[/bold]\n")
+    console.print("Checking for updates...")
+    console.print("  Checking bundles...")
 
     # Track results
     results: dict[str, BundleStatus] = {}
@@ -649,7 +650,6 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
 
     # Check each bundle
     for bundle_name in bundle_names:
-        console.print(f"[dim]Checking:[/dim] {bundle_name}")
         try:
             loaded = await registry.load(bundle_name)
             if isinstance(loaded, dict):
@@ -662,56 +662,95 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
 
             if status.has_updates:
                 bundles_with_updates.append(bundle_name)
-                console.print("  [yellow]→ Updates available[/yellow]")
-            else:
-                console.print("  [green]→ Up to date[/green]")
 
         except FileNotFoundError:
             errors[bundle_name] = "Bundle not found"
-            console.print("  [red]→ Not found[/red]")
         except Exception as exc:
             errors[bundle_name] = str(exc)
-            console.print(f"  [red]→ Error: {exc}[/red]")
+
+    # Create bundles table
+    table = Table(title="Bundles", show_header=True, header_style="bold cyan")
+    table.add_column("Name", style="green")
+    table.add_column("Sources", style="dim", justify="right")
+    table.add_column("Updates", style="dim", justify="right")
+    table.add_column("", width=1, justify="center")
+
+    for bundle_name in sorted(bundle_names):
+        if bundle_name in results:
+            status = results[bundle_name]
+            total_sources = len(status.sources)
+            update_count = len(status.updateable_sources)
+
+            # Status symbol
+            if update_count > 0:
+                status_symbol = Text("●", style="yellow")
+                updates_text = Text(str(update_count), style="yellow")
+            else:
+                status_symbol = Text("✓", style="green")
+                updates_text = Text("0", style="dim")
+
+            table.add_row(
+                bundle_name,
+                str(total_sources),
+                updates_text,
+                status_symbol,
+            )
+        elif bundle_name in errors:
+            table.add_row(
+                bundle_name,
+                Text("error", style="red"),
+                Text("-", style="dim"),
+                Text("✗", style="red"),
+            )
+
+    console.print()
+    console.print(table)
+    console.print()
+    console.print("[dim]Legend: [green]✓[/green] up to date  [yellow]●[/yellow] update available[/dim]")
+
+    # Show errors if any
+    if errors:
+        console.print()
+        for name, error in errors.items():
+            console.print(f"[red]Error checking {name}:[/red] {error}")
 
     # Summary
-    console.print("\n" + "─" * 50)
-    console.print("[bold]Summary:[/bold]")
-    console.print(f"  Checked: {len(results)} bundle(s)")
-    console.print(f"  Updates available: {len(bundles_with_updates)}")
-    if errors:
-        console.print(f"  Errors: {len(errors)}")
-
-    if not bundles_with_updates:
-        console.print("\n[green]All bundles are up to date.[/green]")
+    total_updates = len(bundles_with_updates)
+    if total_updates == 0:
+        console.print("[green]✓ All bundles up to date[/green]")
         return
 
     if check_only:
-        console.print("\n[dim](--check flag: skipping refresh)[/dim]")
-        # Show which bundles have updates
-        console.print("\n[yellow]Bundles with updates:[/yellow]")
-        for name in bundles_with_updates:
-            status = results[name]
-            console.print(f"  • {name}: {len(status.updateable_sources)} source(s)")
+        console.print()
+        console.print(f"[yellow]{total_updates} bundle(s) have updates available[/yellow]")
+        console.print("Run [cyan]amplifier bundle update --all[/cyan] to install")
         return
 
-    # Confirm update
-    if not auto_confirm:
-        console.print(f"\n[yellow]Ready to update {len(bundles_with_updates)} bundle(s)[/yellow]")
-        for name in bundles_with_updates:
-            console.print(f"  • {name}")
+    # Show what will be updated
+    console.print()
+    console.print("Run amplifier bundle update --all to install")
+    console.print()
+    for name in bundles_with_updates:
+        status = results[name]
+        console.print(f"  • Update {name} ({len(status.updateable_sources)} source(s))")
 
-        confirm = click.confirm("\nProceed with updates?", default=True)
+    # Confirm update
+    console.print()
+    if not auto_confirm:
+        confirm = click.confirm("Proceed with update?", default=True)
         if not confirm:
             console.print("[dim]Update cancelled.[/dim]")
             return
 
     # Perform updates
-    console.print("\n[bold]Updating bundles...[/bold]")
+    console.print()
+    console.print("Updating...")
+    console.print()
+
     updated_count = 0
     update_errors: dict[str, str] = {}
 
     for bundle_name in bundles_with_updates:
-        console.print(f"[dim]Updating:[/dim] {bundle_name}")
         try:
             loaded = await registry.load(bundle_name)
             if isinstance(loaded, dict):
@@ -721,19 +760,19 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
 
             await refresh_bundle(bundle_obj)
             updated_count += 1
-            console.print("  [green]✓ Updated[/green]")
+            console.print(f"[green]✓[/green] {bundle_name}")
         except Exception as exc:
             update_errors[bundle_name] = str(exc)
-            console.print(f"  [red]✗ Error: {exc}[/red]")
+            console.print(f"[red]✗[/red] {bundle_name}: {exc}")
 
     # Final summary
-    console.print("\n" + "─" * 50)
-    console.print("[bold]Update complete:[/bold]")
-    console.print(f"  Updated: {updated_count} bundle(s)")
+    console.print()
     if update_errors:
-        console.print(f"  Failed: {len(update_errors)} bundle(s)")
-        for name, error in update_errors.items():
-            console.print(f"    • {name}: {error}")
+        console.print(f"[yellow]✓ Update complete ({updated_count} updated, {len(update_errors)} failed)[/yellow]")
+    else:
+        console.print("[green]✓ Update complete[/green]")
+        for name in bundles_with_updates:
+            console.print(f"  [green]✓[/green] {name}")
 
 
 def _display_bundle_status(status: BundleStatus) -> None:
