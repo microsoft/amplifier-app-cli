@@ -505,14 +505,18 @@ def bundle_remove(name: str):
 
 @bundle.command(name="update")
 @click.argument("name", required=False)
+@click.option("--all", "update_all", is_flag=True, help="Update all discovered bundles")
 @click.option("--check", "check_only", is_flag=True, help="Only check for updates, don't apply")
 @click.option("--yes", "-y", "auto_confirm", is_flag=True, help="Auto-confirm update without prompting")
 @click.option("--source", "specific_source", help="Update only a specific source URI")
-def bundle_update(name: str | None, check_only: bool, auto_confirm: bool, specific_source: str | None):
+def bundle_update(
+    name: str | None, update_all: bool, check_only: bool, auto_confirm: bool, specific_source: str | None
+):
     """Check for and apply updates to bundle sources.
 
     By default, checks and updates the currently active bundle.
     Specify a bundle name to check a different bundle.
+    Use --all to check/update all discovered bundles.
 
     The update process has two phases:
     1. Check status (no side effects) - shows what updates are available
@@ -524,8 +528,13 @@ def bundle_update(name: str | None, check_only: bool, auto_confirm: bool, specif
         amplifier bundle update --check      # Only check, don't update
         amplifier bundle update foundation   # Check specific bundle
         amplifier bundle update -y           # Update without prompting
+        amplifier bundle update --all        # Check and update all bundles
+        amplifier bundle update --all --check # Check all bundles without updating
     """
-    asyncio.run(_bundle_update_async(name, check_only, auto_confirm, specific_source))
+    if update_all:
+        asyncio.run(_bundle_update_all_async(check_only, auto_confirm))
+    else:
+        asyncio.run(_bundle_update_async(name, check_only, auto_confirm, specific_source))
 
 
 async def _bundle_update_async(
@@ -614,6 +623,117 @@ async def _bundle_update_async(
         sys.exit(1)
 
     console.print("\n[green]Bundle update complete![/green]")
+
+
+async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None:
+    """Check and update all discovered bundles."""
+    from amplifier_foundation import check_bundle_status
+    from amplifier_foundation import refresh_bundle
+
+    discovery = AppBundleDiscovery()
+    registry = create_bundle_registry()
+
+    # Get all bundles
+    bundle_names = discovery.list_bundles()
+
+    if not bundle_names:
+        console.print("[yellow]No bundles found.[/yellow]")
+        return
+
+    console.print(f"[bold]Checking {len(bundle_names)} bundle(s)...[/bold]\n")
+
+    # Track results
+    results: dict[str, BundleStatus] = {}
+    errors: dict[str, str] = {}
+    bundles_with_updates: list[str] = []
+
+    # Check each bundle
+    for bundle_name in bundle_names:
+        console.print(f"[dim]Checking:[/dim] {bundle_name}")
+        try:
+            loaded = await registry.load(bundle_name)
+            if isinstance(loaded, dict):
+                errors[bundle_name] = "Expected single bundle, got dict"
+                continue
+            bundle_obj = loaded
+
+            status: BundleStatus = await check_bundle_status(bundle_obj)
+            results[bundle_name] = status
+
+            if status.has_updates:
+                bundles_with_updates.append(bundle_name)
+                console.print("  [yellow]→ Updates available[/yellow]")
+            else:
+                console.print("  [green]→ Up to date[/green]")
+
+        except FileNotFoundError:
+            errors[bundle_name] = "Bundle not found"
+            console.print("  [red]→ Not found[/red]")
+        except Exception as exc:
+            errors[bundle_name] = str(exc)
+            console.print(f"  [red]→ Error: {exc}[/red]")
+
+    # Summary
+    console.print("\n" + "─" * 50)
+    console.print("[bold]Summary:[/bold]")
+    console.print(f"  Checked: {len(results)} bundle(s)")
+    console.print(f"  Updates available: {len(bundles_with_updates)}")
+    if errors:
+        console.print(f"  Errors: {len(errors)}")
+
+    if not bundles_with_updates:
+        console.print("\n[green]All bundles are up to date.[/green]")
+        return
+
+    if check_only:
+        console.print("\n[dim](--check flag: skipping refresh)[/dim]")
+        # Show which bundles have updates
+        console.print("\n[yellow]Bundles with updates:[/yellow]")
+        for name in bundles_with_updates:
+            status = results[name]
+            console.print(f"  • {name}: {len(status.updateable_sources)} source(s)")
+        return
+
+    # Confirm update
+    if not auto_confirm:
+        console.print(f"\n[yellow]Ready to update {len(bundles_with_updates)} bundle(s)[/yellow]")
+        for name in bundles_with_updates:
+            console.print(f"  • {name}")
+
+        confirm = click.confirm("\nProceed with updates?", default=True)
+        if not confirm:
+            console.print("[dim]Update cancelled.[/dim]")
+            return
+
+    # Perform updates
+    console.print("\n[bold]Updating bundles...[/bold]")
+    updated_count = 0
+    update_errors: dict[str, str] = {}
+
+    for bundle_name in bundles_with_updates:
+        console.print(f"[dim]Updating:[/dim] {bundle_name}")
+        try:
+            loaded = await registry.load(bundle_name)
+            if isinstance(loaded, dict):
+                update_errors[bundle_name] = "Expected single bundle, got dict"
+                continue
+            bundle_obj = loaded
+
+            await refresh_bundle(bundle_obj)
+            updated_count += 1
+            console.print("  [green]✓ Updated[/green]")
+        except Exception as exc:
+            update_errors[bundle_name] = str(exc)
+            console.print(f"  [red]✗ Error: {exc}[/red]")
+
+    # Final summary
+    console.print("\n" + "─" * 50)
+    console.print("[bold]Update complete:[/bold]")
+    console.print(f"  Updated: {updated_count} bundle(s)")
+    if update_errors:
+        console.print(f"  Failed: {len(update_errors)} bundle(s)")
+        for name, error in update_errors.items():
+            console.print(f"    • {name}: {error}")
 
 
 def _display_bundle_status(status: BundleStatus) -> None:
