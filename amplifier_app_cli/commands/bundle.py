@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from typing import TYPE_CHECKING
 from typing import cast
 
 import click
 from rich.table import Table
+from rich.text import Text
 
 from ..console import console
 from ..lib.bundle_loader import AppBundleDiscovery
@@ -23,6 +25,9 @@ from ..paths import ScopeType
 from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..paths import get_effective_scope
+
+if TYPE_CHECKING:
+    from amplifier_foundation import BundleStatus
 
 
 def _remove_bundle_from_settings(config_manager, scope_path) -> bool:
@@ -496,6 +501,163 @@ def bundle_remove(name: str):
     else:
         console.print(f"[yellow]Bundle '{name}' not found in user registry[/yellow]")
         console.print("\nUser-added bundles can be seen with 'amplifier bundle list'")
+
+
+@bundle.command(name="update")
+@click.argument("name", required=False)
+@click.option("--check", "check_only", is_flag=True, help="Only check for updates, don't apply")
+@click.option("--yes", "-y", "auto_confirm", is_flag=True, help="Auto-confirm update without prompting")
+@click.option("--source", "specific_source", help="Update only a specific source URI")
+def bundle_update(name: str | None, check_only: bool, auto_confirm: bool, specific_source: str | None):
+    """Check for and apply updates to bundle sources.
+
+    By default, checks and updates the currently active bundle.
+    Specify a bundle name to check a different bundle.
+
+    The update process has two phases:
+    1. Check status (no side effects) - shows what updates are available
+    2. Refresh (side effects) - downloads updates from remote sources
+
+    Examples:
+
+        amplifier bundle update              # Check and update active bundle
+        amplifier bundle update --check      # Only check, don't update
+        amplifier bundle update foundation   # Check specific bundle
+        amplifier bundle update -y           # Update without prompting
+    """
+    asyncio.run(_bundle_update_async(name, check_only, auto_confirm, specific_source))
+
+
+async def _bundle_update_async(
+    name: str | None, check_only: bool, auto_confirm: bool, specific_source: str | None
+) -> None:
+    """Async implementation of bundle update command."""
+    from amplifier_foundation import check_bundle_status
+    from amplifier_foundation import refresh_bundle
+
+    config_manager = create_config_manager()
+    registry = create_bundle_registry()
+
+    # Determine which bundle to check
+    if name:
+        bundle_name = name
+    else:
+        # Use active bundle
+        merged = config_manager.get_merged_settings()
+        bundle_settings = merged.get("bundle", {})
+        bundle_name = bundle_settings.get("active") if isinstance(bundle_settings, dict) else None
+
+        if not bundle_name:
+            console.print("[yellow]No active bundle.[/yellow]")
+            console.print("\nEither specify a bundle name or set an active bundle:")
+            console.print("  amplifier bundle update <name>")
+            console.print("  amplifier bundle use <name>")
+            sys.exit(1)
+
+    # Load the bundle
+    console.print(f"[bold]Checking bundle:[/bold] {bundle_name}")
+    try:
+        loaded = await registry.load(bundle_name)
+        if isinstance(loaded, dict):
+            console.print(f"[red]Error:[/red] Expected single bundle, got dict for '{bundle_name}'")
+            sys.exit(1)
+        bundle_obj = loaded
+    except FileNotFoundError:
+        console.print(f"[red]Error:[/red] Bundle '{bundle_name}' not found")
+        sys.exit(1)
+    except Exception as exc:
+        console.print(f"[red]Error:[/red] Failed to load bundle: {exc}")
+        sys.exit(1)
+
+    # Check status
+    console.print("\n[dim]Checking for updates...[/dim]")
+    status: BundleStatus = await check_bundle_status(bundle_obj)
+
+    # Display status table
+    _display_bundle_status(status)
+
+    # Summary
+    console.print(f"\n{status.summary}")
+
+    if not status.has_updates:
+        console.print("\n[green]All sources are up to date.[/green]")
+        return
+
+    if check_only:
+        console.print("\n[dim](--check flag: skipping refresh)[/dim]")
+        return
+
+    # Confirm update
+    if not auto_confirm:
+        update_count = len(status.updateable_sources)
+        if specific_source:
+            console.print(f"\n[yellow]Update specific source:[/yellow] {specific_source}")
+        else:
+            console.print(f"\n[yellow]Ready to update {update_count} source(s)[/yellow]")
+
+        confirm = click.confirm("Proceed with update?", default=True)
+        if not confirm:
+            console.print("[dim]Update cancelled.[/dim]")
+            return
+
+    # Perform refresh
+    console.print("\n[bold]Refreshing sources...[/bold]")
+    try:
+        if specific_source:
+            await refresh_bundle(bundle_obj, selective=[specific_source])
+            console.print(f"[green]✓ Updated:[/green] {specific_source}")
+        else:
+            await refresh_bundle(bundle_obj)
+            console.print(f"[green]✓ Updated {len(status.updateable_sources)} source(s)[/green]")
+    except Exception as exc:
+        console.print(f"[red]Error during update:[/red] {exc}")
+        sys.exit(1)
+
+    console.print("\n[green]Bundle update complete![/green]")
+
+
+def _display_bundle_status(status: BundleStatus) -> None:
+    """Display bundle status in a formatted table."""
+    if not status.sources:
+        console.print("[dim]No sources to check.[/dim]")
+        return
+
+    table = Table(title=f"Bundle Sources: {status.bundle_name}", show_header=True, header_style="bold cyan")
+    table.add_column("Source", style="dim", no_wrap=False, max_width=60)
+    table.add_column("Status", justify="center")
+    table.add_column("Details", style="dim")
+
+    for source in status.sources:
+        # Truncate long URIs
+        uri = source.source_uri
+        if len(uri) > 57:
+            uri = uri[:54] + "..."
+
+        # Status indicator
+        if source.has_update:
+            status_text = Text("🔄 Update", style="yellow")
+        elif source.has_update is False:
+            status_text = Text("✅ Current", style="green")
+        else:
+            status_text = Text("❓ Unknown", style="dim")
+
+        # Details
+        details_parts = []
+        if source.cached_commit and source.remote_commit:
+            local_short = source.cached_commit[:7]
+            remote_short = source.remote_commit[:7]
+            if source.has_update:
+                details_parts.append(f"{local_short} → {remote_short}")
+        elif source.is_pinned:
+            details_parts.append("pinned")
+        elif source.error:
+            details_parts.append(f"error: {source.error[:30]}")
+
+        details = " ".join(details_parts) if details_parts else source.summary[:40]
+
+        table.add_row(uri, status_text, details)
+
+    console.print(table)
 
 
 __all__ = ["bundle"]
