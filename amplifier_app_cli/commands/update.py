@@ -1,18 +1,25 @@
 """Update command for Amplifier CLI."""
 
 import asyncio
+from typing import TYPE_CHECKING
 
 import click
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from ..lib.bundle_loader import AppBundleDiscovery
+from ..paths import create_bundle_registry
+from ..paths import create_config_manager
 from ..utils.display import create_sha_text
 from ..utils.display import create_status_symbol
 from ..utils.display import print_legend
 from ..utils.settings_manager import save_update_last_check
 from ..utils.source_status import check_all_sources
 from ..utils.update_executor import execute_updates
+
+if TYPE_CHECKING:
+    from amplifier_foundation import BundleStatus
 
 console = Console()
 
@@ -200,6 +207,43 @@ async def _get_umbrella_dependency_details(umbrella_info) -> list[dict]:
         return []
 
 
+async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
+    """Check status of all discovered bundles.
+
+    Returns:
+        Dict mapping bundle name to BundleStatus
+    """
+    from amplifier_foundation import check_bundle_status
+
+    discovery = AppBundleDiscovery()
+    registry = create_bundle_registry()
+
+    bundle_names = discovery.list_bundles()
+    results: dict[str, BundleStatus] = {}
+
+    for bundle_name in bundle_names:
+        try:
+            loaded = await registry.load(bundle_name)
+            if isinstance(loaded, dict):
+                continue  # Skip if not a single bundle
+            bundle_obj = loaded
+
+            status: BundleStatus = await check_bundle_status(bundle_obj)
+            results[bundle_name] = status
+        except Exception:
+            continue  # Skip bundles that fail to load
+
+    return results
+
+
+def _get_active_bundle_name() -> str | None:
+    """Get the name of the currently active bundle, if any."""
+    config_manager = create_config_manager()
+    merged = config_manager.get_merged_settings()
+    bundle_settings = merged.get("bundle", {})
+    return bundle_settings.get("active") if isinstance(bundle_settings, dict) else None
+
+
 def _create_local_package_table(packages: list[dict], title: str) -> Table | None:
     """Create a table for local packages (core, app, or libraries).
 
@@ -239,10 +283,16 @@ def _create_local_package_table(packages: list[dict], title: str) -> Table | Non
     return table
 
 
-def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool, umbrella_deps=None) -> None:
+def _show_concise_report(
+    report,
+    check_only: bool,
+    has_umbrella_updates: bool,
+    umbrella_deps=None,
+    bundle_results: dict[str, "BundleStatus"] | None = None,
+) -> None:
     """Show concise table format for all sources.
 
-    Organized by type: Core → Application → Libraries → Modules → Collections
+    Organized by type: Core → Application → Libraries → Modules → Collections → Bundles
     Uses Rich Tables with status symbols: ✓ (up to date), ● (update available), ◦ (local changes)
     """
     console.print()
@@ -362,9 +412,50 @@ def _show_concise_report(report, check_only: bool, has_umbrella_updates: bool, u
 
         console.print(table)
 
+    # === BUNDLES ===
+    if bundle_results:
+        active_bundle = _get_active_bundle_name()
+        for bundle_name in sorted(bundle_results.keys()):
+            status = bundle_results[bundle_name]
+            if status.sources:
+                # Add "(active)" marker if this is the active bundle
+                title_suffix = " [green](active)[/green]" if bundle_name == active_bundle else ""
+                table = Table(title=f"Bundle: {bundle_name}{title_suffix}", show_header=True, header_style="bold cyan")
+                table.add_column("Source", style="green")
+                table.add_column("Cached", style="dim", justify="right")
+                table.add_column("Remote", style="dim", justify="right")
+                table.add_column("", width=1, justify="center")
+
+                for source in sorted(status.sources, key=lambda x: x.source_uri):
+                    # Extract module name from source URI for cleaner display
+                    source_name = source.source_uri
+                    if "/" in source_name:
+                        # Get last path component, strip common prefixes
+                        source_name = source_name.split("/")[-1]
+                        if source_name.startswith("amplifier-module-"):
+                            source_name = source_name[17:]  # Remove "amplifier-module-"
+                        elif "@" in source_name:
+                            source_name = source_name.split("@")[0]
+
+                    status_symbol = create_status_symbol(source.cached_commit, source.remote_commit)
+
+                    table.add_row(
+                        source_name,
+                        create_sha_text(source.cached_commit),
+                        create_sha_text(source.remote_commit),
+                        status_symbol,
+                    )
+
+                console.print()
+                console.print(table)
+
     console.print()
     print_legend()
-    if not check_only and (report.has_updates or has_umbrella_updates):
+
+    # Determine if there are bundle updates
+    has_bundle_updates = bundle_results and any(s.has_updates for s in bundle_results.values())
+
+    if not check_only and (report.has_updates or has_umbrella_updates or has_bundle_updates):
         console.print()
         console.print("Run [cyan]amplifier update[/cyan] to install")
 
@@ -414,7 +505,12 @@ def _print_verbose_item(
         console.print(remote_line)
 
 
-def _show_verbose_report(report, check_only: bool, umbrella_deps=None) -> None:
+def _show_verbose_report(
+    report,
+    check_only: bool,
+    umbrella_deps=None,
+    bundle_results: dict[str, "BundleStatus"] | None = None,
+) -> None:
     """Show detailed multi-line format for each source (no truncation)."""
 
     # === AMPLIFIER PACKAGES ===
@@ -559,6 +655,38 @@ def _show_verbose_report(report, check_only: bool, umbrella_deps=None) -> None:
             )
             console.print()
 
+    # === BUNDLES ===
+    if bundle_results:
+        active_bundle = _get_active_bundle_name()
+        for bundle_name in sorted(bundle_results.keys()):
+            status = bundle_results[bundle_name]
+            if status.sources:
+                # Add "(active)" marker if this is the active bundle
+                title_suffix = " (active)" if bundle_name == active_bundle else ""
+                console.print(f"[bold cyan]Bundle: {bundle_name}{title_suffix}[/bold cyan]")
+                console.print()
+
+                for source in sorted(status.sources, key=lambda x: x.source_uri):
+                    # Extract module name from source URI for cleaner display
+                    source_name = source.source_uri
+                    if "/" in source_name:
+                        # Get last path component, strip common prefixes
+                        source_name = source_name.split("/")[-1]
+                        if source_name.startswith("amplifier-module-"):
+                            source_name = source_name[17:]  # Remove "amplifier-module-"
+                        elif "@" in source_name:
+                            source_name = source_name.split("@")[0]
+
+                    status_symbol = create_status_symbol(source.cached_commit, source.remote_commit)
+                    _print_verbose_item(
+                        name=source_name,
+                        status_symbol=status_symbol,
+                        local_sha=source.cached_commit,
+                        remote_sha=source.remote_commit,
+                        remote_url=source.source_uri,
+                    )
+                    console.print()
+
     print_legend()
 
 
@@ -599,17 +727,25 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
 
     report = asyncio.run(check_all_sources(include_all_cached=True, force=force))
 
+    # Check bundles
+    if not force:
+        console.print("  Checking bundles...")
+    bundle_results = asyncio.run(_check_all_bundle_status())
+    has_bundle_updates = any(s.has_updates for s in bundle_results.values()) if bundle_results else False
+
     # Get Amplifier dependency details
     umbrella_deps = asyncio.run(_get_umbrella_dependency_details(umbrella_info)) if umbrella_info else []
 
     # Display results based on verbosity
     if verbose:
-        _show_verbose_report(report, check_only, umbrella_deps=umbrella_deps)
+        _show_verbose_report(report, check_only, umbrella_deps=umbrella_deps, bundle_results=bundle_results)
     else:
-        _show_concise_report(report, check_only, has_umbrella_updates, umbrella_deps=umbrella_deps)
+        _show_concise_report(
+            report, check_only, has_umbrella_updates, umbrella_deps=umbrella_deps, bundle_results=bundle_results
+        )
 
     # Check if anything actually needs updating
-    nothing_to_update = not report.has_updates and not has_umbrella_updates and not force
+    nothing_to_update = not report.has_updates and not has_umbrella_updates and not has_bundle_updates and not force
 
     # Exit early if nothing to update
     if nothing_to_update:
@@ -623,6 +759,9 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             console.print("  • Amplifier (umbrella dependencies have updates)")
         if report.has_updates:
             console.print("  • Modules and/or collections")
+        if has_bundle_updates:
+            bundles_with_updates = [name for name, status in bundle_results.items() if status.has_updates]
+            console.print(f"  • {len(bundles_with_updates)} bundle(s)")
         console.print("\nRun [cyan]amplifier update[/cyan] to install")
         return
 
@@ -634,6 +773,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         # Show what will be updated (only count items with actual updates)
         modules_with_updates = [s for s in report.cached_git_sources if s.has_update]
         collections_with_updates = [s for s in report.collection_sources if s.has_update]
+        bundles_with_updates = [name for name, status in bundle_results.items() if status.has_updates]
 
         if modules_with_updates:
             count = len(modules_with_updates)
@@ -641,6 +781,9 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         if collections_with_updates:
             count = len(collections_with_updates)
             console.print(f"  • Update {count} collection{'s' if count != 1 else ''}")
+        if bundles_with_updates:
+            count = len(bundles_with_updates)
+            console.print(f"  • Update {count} bundle{'s' if count != 1 else ''}")
         if has_umbrella_updates:
             console.print("  • Update Amplifier to latest version (dependencies have updates)")
 
@@ -656,21 +799,57 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
 
     result = asyncio.run(execute_updates(report, umbrella_info=umbrella_info if has_umbrella_updates else None))
 
+    # Execute bundle updates
+    bundle_updated: list[str] = []
+    bundle_failed: list[str] = []
+    bundle_errors: dict[str, str] = {}
+
+    if has_bundle_updates:
+        from amplifier_foundation import refresh_bundle
+
+        registry = create_bundle_registry()
+        bundles_to_update = [name for name, status in bundle_results.items() if status.has_updates]
+
+        for bundle_name in bundles_to_update:
+            try:
+                loaded = asyncio.run(registry.load(bundle_name))
+                if isinstance(loaded, dict):
+                    bundle_errors[bundle_name] = "Expected single bundle, got dict"
+                    bundle_failed.append(bundle_name)
+                    continue
+                bundle_obj = loaded
+
+                # Refresh bundle sources
+                asyncio.run(refresh_bundle(bundle_obj))
+                bundle_updated.append(bundle_name)
+            except Exception as exc:
+                bundle_errors[bundle_name] = str(exc)
+                bundle_failed.append(bundle_name)
+
     # Show results
     console.print()
-    if result.success:
+    # Determine overall success including bundles
+    overall_success = result.success and not bundle_failed
+    if overall_success:
         console.print("[green]✓ Update complete[/green]")
         for item in result.updated:
             console.print(f"  [green]✓[/green] {item}")
+        for bundle_name in bundle_updated:
+            console.print(f"  [green]✓[/green] Bundle: {bundle_name}")
         for msg in result.messages:
             console.print(f"  {msg}")
     else:
         console.print("[yellow]⚠ Update completed with errors[/yellow]")
         for item in result.updated:
             console.print(f"  [green]✓[/green] {item}")
+        for bundle_name in bundle_updated:
+            console.print(f"  [green]✓[/green] Bundle: {bundle_name}")
         for item in result.failed:
             error = result.errors.get(item, "Unknown error")
             console.print(f"  [red]✗[/red] {item}: {error}")
+        for bundle_name in bundle_failed:
+            error = bundle_errors.get(bundle_name, "Unknown error")
+            console.print(f"  [red]✗[/red] Bundle: {bundle_name}: {error}")
 
     # Update last check timestamp
     from datetime import datetime
