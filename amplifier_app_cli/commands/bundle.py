@@ -25,6 +25,9 @@ from ..paths import ScopeType
 from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..paths import get_effective_scope
+from ..utils.display import create_sha_text
+from ..utils.display import create_status_symbol
+from ..utils.display import print_legend
 
 if TYPE_CHECKING:
     from amplifier_foundation import BundleStatus
@@ -668,45 +671,47 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
         except Exception as exc:
             errors[bundle_name] = str(exc)
 
-    # Create bundles table
-    table = Table(title="Bundles", show_header=True, header_style="bold cyan")
-    table.add_column("Name", style="green")
-    table.add_column("Sources", style="dim", justify="right")
-    table.add_column("Updates", style="dim", justify="right")
-    table.add_column("", width=1, justify="center")
-
+    # Display sources table for each bundle (matching amplifier update style)
     for bundle_name in sorted(bundle_names):
         if bundle_name in results:
             status = results[bundle_name]
-            total_sources = len(status.sources)
-            update_count = len(status.updateable_sources)
+            if status.sources:
+                table = Table(title=f"Bundle: {bundle_name}", show_header=True, header_style="bold cyan")
+                table.add_column("Source", style="green")
+                table.add_column("Cached", style="dim", justify="right")
+                table.add_column("Remote", style="dim", justify="right")
+                table.add_column("", width=1, justify="center")
 
-            # Status symbol
-            if update_count > 0:
-                status_symbol = Text("●", style="yellow")
-                updates_text = Text(str(update_count), style="yellow")
-            else:
-                status_symbol = Text("✓", style="green")
-                updates_text = Text("0", style="dim")
+                for source in sorted(status.sources, key=lambda x: x.source_uri):
+                    # Extract module name from source URI for cleaner display
+                    source_name = source.source_uri
+                    if "/" in source_name:
+                        # Get last path component, strip common prefixes
+                        source_name = source_name.split("/")[-1]
+                        if source_name.startswith("amplifier-module-"):
+                            source_name = source_name[17:]  # Remove "amplifier-module-"
+                        elif "@" in source_name:
+                            source_name = source_name.split("@")[0]
 
-            table.add_row(
-                bundle_name,
-                str(total_sources),
-                updates_text,
-                status_symbol,
-            )
+                    status_symbol = create_status_symbol(source.cached_commit, source.remote_commit)
+
+                    table.add_row(
+                        source_name,
+                        create_sha_text(source.cached_commit),
+                        create_sha_text(source.remote_commit),
+                        status_symbol,
+                    )
+
+                console.print()
+                console.print(table)
+
         elif bundle_name in errors:
-            table.add_row(
-                bundle_name,
-                Text("error", style="red"),
-                Text("-", style="dim"),
-                Text("✗", style="red"),
-            )
+            console.print()
+            console.print(f"[red]Bundle: {bundle_name}[/red]")
+            console.print(f"  [red]Error:[/red] {errors[bundle_name]}")
 
     console.print()
-    console.print(table)
-    console.print()
-    console.print("[dim]Legend: [green]✓[/green] up to date  [yellow]●[/yellow] update available[/dim]")
+    print_legend()
 
     # Show errors if any
     if errors:
