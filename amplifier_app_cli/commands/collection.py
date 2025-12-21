@@ -36,31 +36,47 @@ from ..paths import get_collection_lock_path
 logger = logging.getLogger(__name__)
 
 
-@click.group()
-def collection():
-    """Manage Amplifier collections.
+def _show_deprecation_warning():
+    """Show deprecation warning for collection commands."""
+    console.print(
+        "\n[yellow]⚠ Collections are deprecated.[/yellow] "
+        "Use [cyan]amplifier bundle[/cyan] commands instead.\n"
+        "  • [dim]amplifier bundle use <name>[/dim] - Set active bundle\n"
+        "  • [dim]amplifier bundle add <git-url>[/dim] - Register a bundle\n"
+        "  • [dim]amplifier bundle list[/dim] - List available bundles\n"
+        "  • [dim]See: amplifier bundle --help[/dim]\n"
+    )
 
-    Collections are shareable bundles of expertise including profiles,
-    agents, context, scenario tools, and modules.
+
+@click.group(invoke_without_command=True)
+@click.pass_context
+def collection(ctx: click.Context):
+    """Manage Amplifier collections (DEPRECATED - use 'amplifier bundle' instead).
+
+    Collections are deprecated. Use bundles instead for shareable configurations.
 
     Examples:
 
         \b
-        # Install a collection
+        # Install a collection (DEPRECATED)
         amplifier collection add git+https://github.com/org/collection@main
 
         \b
-        # List installed collections
+        # List installed collections (DEPRECATED)
         amplifier collection list
 
         \b
-        # Show collection details
+        # Show collection details (DEPRECATED)
         amplifier collection show foundation
 
         \b
-        # Remove a collection
+        # Remove a collection (DEPRECATED)
         amplifier collection remove foundation
     """
+    _show_deprecation_warning()
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+        ctx.exit()
 
 
 @collection.command()

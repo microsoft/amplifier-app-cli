@@ -1,20 +1,20 @@
 # Bundled Context Files
 
-This directory contains context files bundled with the Amplifier CLI that can be referenced in profiles and agents using @mention syntax.
+This directory contains context files bundled with the Amplifier CLI that can be referenced in bundles and agents using @mention syntax.
 
 ## What Are Context Files?
 
-Context files are markdown documents that provide additional context to AI sessions. Profiles and agents reference these files using @mentions to load relevant knowledge and instructions.
+Context files are markdown documents that provide additional context to AI sessions. Bundles and agents reference these files using @mentions to load relevant knowledge and instructions.
 
 ---
 
-## Collections-Based Context
+## Bundle-Based Context
 
-Most context files are now organized in **collections** rather than this flat directory. Collections provide better organization and shareability.
+Most context files are now organized in **bundles** via **amplifier-foundation**. Bundles provide better organization and shareability.
 
-### Foundation Collection Context
+### Foundation Bundle Context
 
-Core philosophy and shared patterns:
+Core philosophy and shared patterns from the foundation bundle:
 
 ```markdown
 @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
@@ -22,13 +22,15 @@ Core philosophy and shared patterns:
 @foundation:context/shared/common-agent-base.md
 ```
 
-### Developer Expertise Collection
+### Custom Bundle Context
 
-Development-focused context (if developer-expertise collection is installed):
+Development-focused context from custom bundles:
 
 ```markdown
-@developer-expertise:context/...
+@my-bundle:context/...
 ```
+
+See the [Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md) for creating bundles with context files.
 
 ---
 

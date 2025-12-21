@@ -1,34 +1,46 @@
-# Profile System Defaults
+# Profile System Defaults (DEPRECATED)
 
-This directory contains system-level defaults for the Amplifier profile system.
+> **⚠️ DEPRECATED**: The profile system is deprecated. Use **bundles** instead.
+> See [Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md) for the current approach.
+> See [Migration Guide](https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md) to migrate existing profiles.
 
-## Contents
+This directory contains legacy system-level defaults for backward compatibility.
 
-- `DEFAULTS.yaml` - System default profile configuration (single source of truth)
-- `__init__.py` - Python utility: `get_system_default_profile()`
+## Migration Path
 
-## Bundled Profiles Location
+```bash
+# Check your current configuration
+amplifier bundle current
 
-**Profiles are NOT in this directory.** They are bundled in collections:
+# If using profiles, migrate to bundles:
+amplifier bundle clear  # Clears profile, defaults to foundation bundle
 
-- **Foundation collection**: `data/collections/foundation/profiles/`
-  - foundation.md, base.md, production.md, test.md
+# Or explicitly set a bundle
+amplifier bundle use foundation
+```
 
-- **Developer-Expertise collection**: `data/collections/developer-expertise/profiles/`
-  - dev.md, full.md
+## Contents (Legacy)
 
-See `amplifier_app_cli/data/collections/` for bundled collections.
+- `DEFAULTS.yaml` - Legacy system default profile configuration
+- `__init__.py` - Python utility for backward compatibility
 
-## System Default Profile
+## Current Approach: Bundles
 
-The default profile used when no profile is active is defined in `DEFAULTS.yaml`.
+New users should use bundles instead of profiles:
 
-To change the system default, edit `DEFAULTS.yaml` (this is the ONLY place to change it).
+```bash
+# List available bundles
+amplifier bundle list
 
-Current default: `developer-expertise:dev`
+# Use a bundle
+amplifier bundle use foundation
+
+# Run with a specific bundle
+amplifier run --bundle foundation "Your prompt"
+```
 
 ## Documentation
 
-**→ [Profile Authoring Guide](https://github.com/microsoft/amplifier-profiles/blob/main/docs/PROFILE_AUTHORING.md)** - Complete profile system documentation
+**→ [Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md)** - Creating and using bundles (current)
 
-**→ [Collections Guide](https://github.com/microsoft/amplifier-collections/blob/main/README.md)** - Understanding collections
+**→ [Migration Guide](https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md)** - Migrating from profiles to bundles
