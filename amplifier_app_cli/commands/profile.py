@@ -27,6 +27,10 @@ def _show_deprecation_warning():
         "  • [dim]amplifier bundle use <name>[/dim] - Set active bundle\n"
         "  • [dim]amplifier bundle clear[/dim] - Reset to default (foundation)\n"
         "  • [dim]See: amplifier bundle --help[/dim]\n"
+        "\n"
+        "[dim]For profile/collection developers migrating to bundles, see:[/dim]\n"
+        "[link=https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md]"
+        "https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md[/link]\n"
     )
 
 

@@ -431,6 +431,11 @@ def bundle_current():
             console.print("[bold]Mode:[/bold] Profile (deprecated)")
             console.print(f"[bold]Active profile:[/bold] {active_profile}")
             console.print("\n[dim]Profiles are deprecated. Use 'amplifier bundle clear' to switch to bundles.[/dim]")
+            console.print(
+                "[dim]Migration guide: "
+                "[link=https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md]"
+                "https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md[/link][/dim]"
+            )
         else:
             # No explicit bundle or profile - will default to foundation bundle
             console.print("[bold]Mode:[/bold] Bundle (default)")
