@@ -251,7 +251,7 @@ def bundle_use(name: str, scope_flag: str | None):
     When a bundle is active, it takes precedence over profiles for session
     configuration. Use 'amplifier bundle clear' to revert to profiles.
     """
-    from amplifier_config import Scope
+    from amplifier_app_cli.lib.legacy import Scope
 
     # Verify bundle exists
     discovery = AppBundleDiscovery()
@@ -312,7 +312,7 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
     Without scope flags, auto-detects and clears from wherever settings are found.
     Use --all to clear from all scopes.
     """
-    from amplifier_config import Scope
+    from amplifier_app_cli.lib.legacy import Scope
 
     config_manager = create_config_manager()
 
@@ -444,7 +444,7 @@ def _find_bundle_or_profile_scope(config_manager) -> str | None:
     Checks for both bundle.active and profile.active settings.
     Returns the first scope where either is found.
     """
-    from amplifier_config import Scope
+    from amplifier_app_cli.lib.legacy import Scope
 
     # Check scopes in precedence order (local first, as that's what user likely wants to clear)
     scope_paths = [
@@ -472,7 +472,7 @@ def _find_bundle_or_profile_scope(config_manager) -> str | None:
 
 def _get_bundle_source_scope(config_manager) -> str:
     """Determine which scope the active bundle comes from."""
-    from amplifier_config import Scope
+    from amplifier_app_cli.lib.legacy import Scope
 
     # Check scopes in precedence order
     scope_paths = [

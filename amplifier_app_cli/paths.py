@@ -8,18 +8,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Literal
 
-from amplifier_collections import CollectionResolver
-from amplifier_config import ConfigManager
-from amplifier_config import ConfigPaths
-from amplifier_config import Scope
 from amplifier_foundation import BundleRegistry
-from amplifier_profiles import ProfileLoader
 
+from amplifier_app_cli.lib.legacy import CollectionResolver
+from amplifier_app_cli.lib.legacy import ConfigManager
+from amplifier_app_cli.lib.legacy import ConfigPaths
+from amplifier_app_cli.lib.legacy import ProfileLoader
+from amplifier_app_cli.lib.legacy import Scope
 from amplifier_app_cli.lib.legacy import StandardModuleSourceResolver
 
 if TYPE_CHECKING:
     from amplifier_core import AmplifierSession
-    from amplifier_profiles import AgentLoader
+
+    from amplifier_app_cli.lib.legacy import AgentLoader
 
 # Type alias for scope names used in CLI
 ScopeType = Literal["local", "project", "global"]
@@ -198,6 +199,8 @@ def get_effective_scope(
 
 
 # ===== COLLECTION PATHS =====
+# LEGACY-DELETE: This entire section (get_collection_search_paths, get_collection_lock_path)
+# DELETE WHEN: Profiles/collections removed in Phase 4
 
 
 def get_collection_search_paths() -> list[Path]:
@@ -236,6 +239,8 @@ def get_collection_lock_path(local: bool = False) -> Path:
 
 
 # ===== PROFILE PATHS =====
+# LEGACY-DELETE: This entire section (get_profile_search_paths)
+# DELETE WHEN: Profiles/collections removed in Phase 4
 
 
 def get_profile_search_paths() -> list[Path]:
@@ -253,7 +258,7 @@ def get_profile_search_paths() -> list[Path]:
     Returns:
         List of paths to search for profiles
     """
-    from amplifier_collections import discover_collection_resources
+    from amplifier_app_cli.lib.legacy import discover_collection_resources
 
     package_dir = Path(__file__).parent
 
@@ -306,6 +311,8 @@ def create_config_manager() -> ConfigManager:
     return ConfigManager(paths=get_cli_config_paths())
 
 
+# LEGACY-DELETE: create_collection_resolver function
+# DELETE WHEN: Profiles/collections removed in Phase 4
 def create_collection_resolver() -> CollectionResolver:
     """Create CLI-configured collection resolver with source provider.
 
@@ -332,6 +339,8 @@ def create_collection_resolver() -> CollectionResolver:
     )
 
 
+# LEGACY-DELETE: create_profile_loader function
+# DELETE WHEN: Profiles/collections removed in Phase 4
 def create_profile_loader(
     collection_resolver: CollectionResolver | None = None,
 ) -> ProfileLoader:
@@ -525,6 +534,8 @@ def get_agent_search_paths_for_bundle(bundle_name: str | None = None) -> list[Pa
     return paths
 
 
+# LEGACY-DELETE: get_agent_search_paths_for_profile function
+# DELETE WHEN: Profiles/collections removed in Phase 4
 def get_agent_search_paths_for_profile() -> list[Path]:
     """Get agent search paths when using PROFILE mode.
 
@@ -540,7 +551,7 @@ def get_agent_search_paths_for_profile() -> list[Path]:
     Returns:
         List of paths to search for agents (profile/collection sources only)
     """
-    from amplifier_collections import discover_collection_resources
+    from amplifier_app_cli.lib.legacy import discover_collection_resources
 
     # Project and user paths (highest precedence)
     paths = _get_user_and_project_paths("agents")
@@ -595,9 +606,8 @@ def create_agent_loader(
     if collection_resolver is None:
         collection_resolver = create_collection_resolver()
 
-    from amplifier_profiles import AgentLoader
-    from amplifier_profiles import AgentResolver
-
+    from .lib.legacy import AgentLoader
+    from .lib.legacy import AgentResolver
     from .lib.mention_loading import AppMentionResolver
     from .lib.mention_loading import MentionLoader
 
@@ -668,6 +678,8 @@ def create_module_resolver() -> StandardModuleSourceResolver:
             """Get module source from CLI settings."""
             return self.get_module_sources().get(module_id)
 
+    # LEGACY-DELETE: CLICollectionModuleProvider class (entire class and collection_provider usage)
+    # DELETE WHEN: Profiles/collections removed in Phase 4
     # CLI implements CollectionModuleProviderProtocol
     class CLICollectionModuleProvider:
         """CLI implementation of CollectionModuleProviderProtocol.
@@ -682,7 +694,7 @@ def create_module_resolver() -> StandardModuleSourceResolver:
             Uses filesystem discovery via CollectionResolver - same pattern as
             profile/agent discovery for consistency across all resource types.
             """
-            from amplifier_collections import discover_collection_resources
+            from amplifier_app_cli.lib.legacy import discover_collection_resources
 
             resolver = create_collection_resolver()
             modules = {}

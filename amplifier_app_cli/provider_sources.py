@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from rich.console import Console
 
 if TYPE_CHECKING:
-    from amplifier_config import ConfigManager
+    from amplifier_app_cli.lib.legacy import ConfigManager
 
 logger = logging.getLogger(__name__)
 

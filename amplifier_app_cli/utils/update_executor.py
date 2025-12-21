@@ -100,6 +100,8 @@ async def execute_selective_module_update(
     )
 
 
+# LEGACY-DELETE: execute_selective_collection_update function
+# DELETE WHEN: Profiles/collections removed in Phase 4
 async def execute_selective_collection_update(
     collections_to_update: list[CollectionStatus],
     progress_callback: Callable[[str, str], None] | None = None,
@@ -118,10 +120,9 @@ async def execute_selective_collection_update(
     """
     import shutil
 
-    from amplifier_collections import CollectionLock
-    from amplifier_collections import install_collection
-
+    from amplifier_app_cli.lib.legacy import CollectionLock
     from amplifier_app_cli.lib.legacy import GitSource
+    from amplifier_app_cli.lib.legacy import install_collection
 
     from ..paths import get_collection_lock_path
 

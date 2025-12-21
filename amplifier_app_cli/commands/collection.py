@@ -1,6 +1,7 @@
-"""Collection management commands - APP LAYER POLICY.
+"""LEGACY: Collection management commands. DELETE when Phase 4 removes collections.
 
 CLI commands for installing, listing, and managing collections.
+DEPRECATED - use 'amplifier bundle' commands instead.
 
 Per KERNEL_PHILOSOPHY:
 - "Could two teams want different behavior?" → YES (CLI UX is policy)
@@ -18,17 +19,17 @@ import shutil
 from pathlib import Path
 
 import click
-from amplifier_collections import CollectionInstallError
-from amplifier_collections import CollectionLock
-from amplifier_collections import CollectionMetadata
-from amplifier_collections import discover_collection_resources
-from amplifier_collections import install_collection
-from amplifier_collections import list_agents
-from amplifier_collections import list_profiles
-from amplifier_collections import uninstall_collection
 from rich.table import Table
 
+from amplifier_app_cli.lib.legacy import CollectionInstallError
+from amplifier_app_cli.lib.legacy import CollectionLock
+from amplifier_app_cli.lib.legacy import CollectionMetadata
 from amplifier_app_cli.lib.legacy import GitSource
+from amplifier_app_cli.lib.legacy import discover_collection_resources
+from amplifier_app_cli.lib.legacy import install_collection
+from amplifier_app_cli.lib.legacy import list_agents
+from amplifier_app_cli.lib.legacy import list_profiles
+from amplifier_app_cli.lib.legacy import uninstall_collection
 
 from ..console import console
 from ..paths import create_collection_resolver

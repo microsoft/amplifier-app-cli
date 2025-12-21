@@ -11,7 +11,6 @@ dependencies = [
     "rich>=13.0.0",
     "pydantic>=2.0.0",
     "amplifier-core",
-    "amplifier-config",
     "amplifier-collections",
     "amplifier-foundation",
     "amplifier-profiles",
@@ -41,7 +40,6 @@ dev = ["pytest>=8.4.2", "pytest-asyncio>=0.24.0"]
 
 [tool.uv.sources]
 amplifier-core = { git = "https://github.com/microsoft/amplifier-core", branch = "main" }
-amplifier-config = { git = "https://github.com/microsoft/amplifier-config", branch = "main" }
 amplifier-collections = { git = "https://github.com/microsoft/amplifier-collections", branch = "main" }
 amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", branch = "main" }
 amplifier-profiles = { git = "https://github.com/microsoft/amplifier-profiles", branch = "main" }

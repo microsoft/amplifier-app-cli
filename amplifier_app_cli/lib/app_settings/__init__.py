@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any
 from typing import Literal
 
-from amplifier_config import ConfigManager
-from amplifier_config import Scope
-from amplifier_profiles.schema import ModuleConfig
-from amplifier_profiles.schema import Profile
+from amplifier_app_cli.lib.legacy import ConfigManager
+from amplifier_app_cli.lib.legacy import ModuleConfig
+from amplifier_app_cli.lib.legacy import Profile
+from amplifier_app_cli.lib.legacy import Scope
 
 from ...provider_sources import DEFAULT_PROVIDER_SOURCES
 

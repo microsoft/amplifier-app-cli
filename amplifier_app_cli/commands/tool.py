@@ -102,8 +102,8 @@ async def _get_mounted_tools_async(profile_name: str) -> list[dict[str, Any]]:
         List of tool dicts with name, module (if determinable), and callable status
     """
     from amplifier_core import AmplifierSession
-    from amplifier_profiles import compile_profile_to_mount_plan
 
+    from ..lib.legacy import compile_profile_to_mount_plan
     from ..paths import create_module_resolver
 
     # Load profile and compile to mount plan
@@ -392,8 +392,8 @@ async def _invoke_tool_async(profile_name: str, tool_name: str, tool_args: dict[
         Exception: If tool execution fails
     """
     from amplifier_core import AmplifierSession
-    from amplifier_profiles import compile_profile_to_mount_plan
 
+    from ..lib.legacy import compile_profile_to_mount_plan
     from ..main import _register_session_spawning
     from ..paths import create_agent_loader
     from ..paths import create_module_resolver

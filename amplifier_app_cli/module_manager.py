@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 from typing import Literal
 
-from amplifier_config import ConfigManager
+from amplifier_app_cli.lib.legacy import ConfigManager
 
 from .paths import create_config_manager
 

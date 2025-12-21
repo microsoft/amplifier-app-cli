@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
-from amplifier_config import ConfigManager
+from amplifier_app_cli.lib.legacy import ConfigManager
 
 from .lib.app_settings import AppSettings
 from .lib.app_settings import ScopeType

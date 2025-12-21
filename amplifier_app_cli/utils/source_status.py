@@ -524,6 +524,8 @@ def _cache_age_days_from_string(cached_at: str) -> int:
         return 0
 
 
+# LEGACY-DELETE: _check_collection_sources function
+# DELETE WHEN: Profiles/collections removed in Phase 4
 async def _check_collection_sources(force: bool = False) -> list[CollectionStatus]:
     """Check installed collections for updates.
 
@@ -535,8 +537,7 @@ async def _check_collection_sources(force: bool = False) -> list[CollectionStatu
     Returns:
         List of CollectionStatus for ALL collections (with has_update flag)
     """
-    from amplifier_collections import CollectionLock
-
+    from amplifier_app_cli.lib.legacy import CollectionLock
     from amplifier_app_cli.lib.legacy import GitSource
 
     from ..paths import get_collection_lock_path

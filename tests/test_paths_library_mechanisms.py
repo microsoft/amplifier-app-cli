@@ -71,7 +71,7 @@ version = "1.0.0"
         (profiles_dir / "test.md").write_text("# Test")
 
         # Create resolver with this path
-        from amplifier_collections import CollectionResolver
+        from amplifier_app_cli.lib.legacy import CollectionResolver
 
         resolver = CollectionResolver(search_paths=[base / "collections"])
 
@@ -126,7 +126,7 @@ version = "1.0.0"
         )
 
         # Resolver should return metadata name
-        from amplifier_collections import CollectionResolver
+        from amplifier_app_cli.lib.legacy import CollectionResolver
 
         resolver = CollectionResolver(search_paths=[collections_path])
         collections = resolver.list_collections()

@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from amplifier_foundation import BundleRegistry
 
 if TYPE_CHECKING:
-    from amplifier_collections import CollectionResolver
+    from amplifier_app_cli.lib.legacy import CollectionResolver
 
 logger = logging.getLogger(__name__)
 

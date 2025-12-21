@@ -7,7 +7,7 @@ Agents are loaded via profiles library (amplifier-profiles).
 import logging
 from typing import Any
 
-from amplifier_profiles.merger import merge_profile_dicts
+from .lib.legacy import merge_profile_dicts
 
 logger = logging.getLogger(__name__)
 

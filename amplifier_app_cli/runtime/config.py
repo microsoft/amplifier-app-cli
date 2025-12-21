@@ -9,11 +9,11 @@ import re
 from typing import TYPE_CHECKING
 from typing import Any
 
-from amplifier_profiles import compile_profile_to_mount_plan
-from amplifier_profiles.merger import merge_module_items
 from rich.console import Console
 
 from ..lib.app_settings import AppSettings
+from ..lib.legacy import compile_profile_to_mount_plan
+from ..lib.legacy import merge_module_items
 
 if TYPE_CHECKING:
     from amplifier_foundation import BundleRegistry

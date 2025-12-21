@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from amplifier_foundation.bundle import PreparedBundle
 from amplifier_core import AmplifierSession
 from amplifier_core import ModuleValidationError  # pyright: ignore[reportAttributeAccessIssue]
-from amplifier_profiles.utils import parse_markdown_body
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
@@ -49,6 +48,7 @@ from .console import console
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
 from .lib.bundle_loader import AppModuleResolver
+from .lib.legacy import parse_markdown_body
 from .lib.mention_loading import AppMentionResolver
 from .lib.mention_loading import ContentDeduplicator
 from .paths import create_module_resolver

@@ -131,7 +131,7 @@ def build_effective_config_with_sources(chain_dicts: list[dict[str, Any]], chain
     Returns:
         Tuple of (effective_config, sources) where sources tracks provenance
     """
-    from amplifier_profiles.merger import merge_profile_dicts
+    from ..lib.legacy import merge_profile_dicts
 
     effective_config: dict[str, Any] = {
         "session": {},
@@ -474,7 +474,7 @@ def profile_show(name: str, detailed: bool):
 @click.option("--global", "scope_flag", flag_value="global", help="Set globally (all projects)")
 def profile_use(name: str, scope_flag: str | None):
     """Set the active profile (DEPRECATED - use 'amplifier bundle use')."""
-    from amplifier_config import Scope
+    from amplifier_app_cli.lib.legacy import Scope
 
     loader = create_profile_loader()
     config_manager = create_config_manager()
@@ -521,7 +521,7 @@ def profile_use(name: str, scope_flag: str | None):
 @profile.command(name="reset")
 def profile_reset():
     """Clear the local profile choice (falls back to project default if set)."""
-    from amplifier_config import Scope
+    from amplifier_app_cli.lib.legacy import Scope
 
     config_manager = create_config_manager()
 
@@ -549,7 +549,7 @@ def profile_reset():
 @click.option("--clear", is_flag=True, help="Clear project default profile")
 def profile_default(set_default: str | None, clear: bool):
     """Manage the project default profile."""
-    from amplifier_config import Scope
+    from amplifier_app_cli.lib.legacy import Scope
 
     config_manager = create_config_manager()
 

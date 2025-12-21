@@ -189,7 +189,7 @@ def source_add(
         # Force collection type
         amplifier source add my-bundle ~/dev/my-bundle --collection
     """
-    from amplifier_config import Scope
+    from amplifier_app_cli.lib.legacy import Scope
 
     # Handle conflicting flags
     if force_module and force_collection:
@@ -277,7 +277,7 @@ def source_remove(
         # Remove global override
         amplifier source remove foundation --global
     """
-    from amplifier_config import Scope
+    from amplifier_app_cli.lib.legacy import Scope
 
     # Handle conflicting flags
     if force_module and force_collection:
