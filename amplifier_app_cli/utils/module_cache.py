@@ -33,9 +33,11 @@ class CachedModuleInfo:
 def get_cache_dir() -> Path:
     """Get the module cache directory path.
 
-    Uses ~/.amplifier/cache/modules/ to align with cache/bundles/ and cache/bundle_metadata/.
+    Uses ~/.amplifier/modules/ to align with amplifier-foundation's ModuleActivator.
+    This unified path ensures update checks find modules regardless of whether they
+    were installed via bundles or the legacy profile system.
     """
-    return Path.home() / ".amplifier" / "cache" / "modules"
+    return Path.home() / ".amplifier" / "modules"
 
 
 def _infer_module_type(module_id: str) -> str:
@@ -78,6 +80,10 @@ def scan_cached_modules(type_filter: str = "all") -> list[CachedModuleInfo]:
     Single source of truth for cache scanning.
     Used by: module list, module check-updates, source_status.py
 
+    Supports both cache formats:
+    - Foundation format: {module-name}-{hash}/.amplifier_cache_meta.json
+    - Legacy format: {hash}/{ref}/.amplifier_cache_metadata.json
+
     Args:
         type_filter: Filter by module type ("all", "tool", "hook", "provider", etc.)
 
@@ -90,30 +96,71 @@ def scan_cached_modules(type_filter: str = "all") -> list[CachedModuleInfo]:
         return []
 
     modules: list[CachedModuleInfo] = []
+    seen_ids: set[str] = set()  # Avoid duplicates if same module in both formats
 
-    for cache_hash in cache_dir.iterdir():
-        if not cache_hash.is_dir():
+    for cache_entry in cache_dir.iterdir():
+        if not cache_entry.is_dir():
             continue
 
-        for ref_dir in cache_hash.iterdir():
+        # Try foundation format first: {module-name}-{hash}/.amplifier_cache_meta.json
+        foundation_meta = cache_entry / ".amplifier_cache_meta.json"
+        if foundation_meta.exists():
+            try:
+                metadata = json.loads(foundation_meta.read_text(encoding="utf-8"))
+                # Foundation format uses git_url and commit
+                url = metadata.get("git_url", "")
+                sha = metadata.get("commit", "")
+
+                module_id = _extract_module_id(url)
+                if module_id in seen_ids:
+                    continue
+                seen_ids.add(module_id)
+
+                module_type = _infer_module_type(module_id)
+
+                if type_filter != "all" and type_filter != module_type:
+                    continue
+
+                # Foundation format doesn't track is_mutable, assume True for branches
+                ref = metadata.get("ref", "main")
+                is_mutable = not _is_immutable_ref(ref)
+
+                modules.append(
+                    CachedModuleInfo(
+                        module_id=module_id,
+                        module_type=module_type,
+                        ref=ref,
+                        sha=sha[:8] if sha else "",
+                        url=url,
+                        is_mutable=is_mutable,
+                        cached_at=metadata.get("cached_at", ""),
+                        cache_path=cache_entry,
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"Could not read foundation metadata from {foundation_meta}: {e}")
+            continue
+
+        # Try legacy format: {hash}/{ref}/.amplifier_cache_metadata.json
+        for ref_dir in cache_entry.iterdir():
             if not ref_dir.is_dir():
                 continue
 
-            metadata_file = ref_dir / ".amplifier_cache_metadata.json"
-            if not metadata_file.exists():
+            legacy_meta = ref_dir / ".amplifier_cache_metadata.json"
+            if not legacy_meta.exists():
                 continue
 
             try:
-                metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+                metadata = json.loads(legacy_meta.read_text(encoding="utf-8"))
                 url = metadata.get("url", "")
 
-                # Extract module ID from URL
                 module_id = _extract_module_id(url)
+                if module_id in seen_ids:
+                    continue
+                seen_ids.add(module_id)
 
-                # Infer module type
                 module_type = _infer_module_type(module_id)
 
-                # Apply type filter
                 if type_filter != "all" and type_filter != module_type:
                     continue
 
@@ -130,12 +177,23 @@ def scan_cached_modules(type_filter: str = "all") -> list[CachedModuleInfo]:
                     )
                 )
             except Exception as e:
-                logger.debug(f"Could not read metadata from {metadata_file}: {e}")
+                logger.debug(f"Could not read legacy metadata from {legacy_meta}: {e}")
                 continue
 
     # Sort by module_id for consistent output
     modules.sort(key=lambda m: m.module_id)
     return modules
+
+
+def _is_immutable_ref(ref: str) -> bool:
+    """Check if ref is immutable (SHA or version tag)."""
+    import re
+
+    # Full or short SHA
+    if re.match(r"^[0-9a-f]{7,40}$", ref):
+        return True
+    # Semantic version tags
+    return bool(re.match(r"^v?\d+\.\d+", ref))
 
 
 def find_cached_module(module_id: str) -> CachedModuleInfo | None:

@@ -469,7 +469,9 @@ async def _check_all_cached_modules(force: bool = False) -> tuple[list[CachedGit
         if not module.is_mutable:
             continue
 
-        if not module.sha or not module.url or not module.ref:
+        # Must have url and ref to check for updates (sha may be missing from old cache)
+        if not module.url or not module.ref:
+            logger.debug(f"Skipping {module.module_id}: missing url or ref")
             continue
 
         try:
@@ -478,7 +480,14 @@ async def _check_all_cached_modules(force: bool = False) -> tuple[list[CachedGit
 
             # Add ALL cached modules (with has_update flag)
             # Note: module.sha is already truncated to 8 chars by scan_cached_modules
-            has_update = (remote_sha[:8] != module.sha) or force
+            # If cached SHA is missing (old cache format), consider it as needing update
+            if not module.sha:
+                has_update = True
+                cached_sha_display = "unknown"
+                logger.debug(f"{module.module_id}: missing cached SHA, marking as update available")
+            else:
+                has_update = (remote_sha[:8] != module.sha) or force
+                cached_sha_display = module.sha[:7]
 
             statuses.append(
                 CachedGitStatus(
@@ -486,7 +495,7 @@ async def _check_all_cached_modules(force: bool = False) -> tuple[list[CachedGit
                     url=module.url,
                     ref=module.ref,
                     layer="cache",
-                    cached_sha=module.sha[:7],  # Consistent 7 chars for display comparison
+                    cached_sha=cached_sha_display,  # Consistent 7 chars for display comparison
                     remote_sha=remote_sha[:7],
                     has_update=has_update,
                     age_days=_cache_age_days_from_string(module.cached_at),
