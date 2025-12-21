@@ -53,6 +53,27 @@ def _remove_bundle_from_settings(config_manager, scope_path) -> bool:
     return False
 
 
+def _remove_profile_from_settings(config_manager, scope_path) -> bool:
+    """Remove the profile key entirely from a settings file.
+
+    This ensures that after bundle clear, the system defaults to the
+    foundation bundle (Phase 2 behavior) rather than falling back to
+    a previously-set profile.
+
+    Returns:
+        True if profile was removed, False if not present or error
+    """
+    try:
+        settings = config_manager._read_yaml(scope_path)
+        if settings and "profile" in settings:
+            del settings["profile"]
+            config_manager._write_yaml(scope_path, settings)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 @click.group(invoke_without_command=True)
 @click.pass_context
 def bundle(ctx: click.Context):
@@ -274,53 +295,63 @@ def bundle_use(name: str, scope_flag: str | None):
         console.print(f"[green]✓ Set bundle '{name}' globally[/green]")
         console.print("  File: ~/.amplifier/settings.yaml")
 
-    console.print("\n[dim]Tip: Use 'amplifier bundle clear' to revert to profile mode[/dim]")
+    console.print("\n[dim]Tip: Use 'amplifier bundle clear' to revert to default (foundation bundle)[/dim]")
 
 
 @bundle.command(name="clear")
-@click.option("--local", "scope_flag", flag_value="local", help="Clear local bundle setting")
-@click.option("--project", "scope_flag", flag_value="project", help="Clear project bundle setting")
-@click.option("--global", "scope_flag", flag_value="global", help="Clear global bundle setting")
-@click.option("--all", "clear_all", is_flag=True, help="Clear bundle settings from all scopes")
+@click.option("--local", "scope_flag", flag_value="local", help="Clear local settings")
+@click.option("--project", "scope_flag", flag_value="project", help="Clear project settings")
+@click.option("--global", "scope_flag", flag_value="global", help="Clear global settings")
+@click.option("--all", "clear_all", is_flag=True, help="Clear settings from all scopes")
 def bundle_clear(scope_flag: str | None, clear_all: bool):
-    """Clear active bundle (reverts to profile mode).
+    """Clear bundle and profile settings (reverts to default foundation bundle).
 
-    Without scope flags, auto-detects and clears the bundle from wherever it's set.
-    Use --all to clear bundle settings from all scopes.
+    Clears both bundle.active and profile.active settings, so the system
+    defaults to the foundation bundle (Phase 2 behavior).
+
+    Without scope flags, auto-detects and clears from wherever settings are found.
+    Use --all to clear from all scopes.
     """
     from amplifier_config import Scope
 
     config_manager = create_config_manager()
 
     if clear_all:
-        # Clear from all available scopes by removing the bundle key entirely
-        cleared = []
+        # Clear from all available scopes by removing bundle and profile keys entirely
+        # This ensures the system defaults to foundation bundle (Phase 2 behavior)
+        bundle_cleared = []
+        profile_cleared = []
         scope_paths = [
             (Scope.LOCAL, config_manager.paths.local, "local"),
             (Scope.PROJECT, config_manager.paths.project, "project"),
             (Scope.USER, config_manager.paths.user, "user"),
         ]
         for scope, path, name in scope_paths:
-            if config_manager.is_scope_available(scope) and _remove_bundle_from_settings(config_manager, path):
-                cleared.append(name)
+            if config_manager.is_scope_available(scope):
+                if _remove_bundle_from_settings(config_manager, path):
+                    bundle_cleared.append(name)
+                if _remove_profile_from_settings(config_manager, path):
+                    profile_cleared.append(name)
 
-        if cleared:
-            console.print(f"[green]✓ Cleared bundle settings from: {', '.join(cleared)}[/green]")
-        else:
-            console.print("[yellow]No bundle settings found to clear[/yellow]")
+        if bundle_cleared:
+            console.print(f"[green]✓ Cleared bundle settings from: {', '.join(bundle_cleared)}[/green]")
+        if profile_cleared:
+            console.print(f"[green]✓ Cleared profile settings from: {', '.join(profile_cleared)}[/green]")
+        if not bundle_cleared and not profile_cleared:
+            console.print("[yellow]No bundle or profile settings found to clear[/yellow]")
 
-        console.print("[green]Now using profile mode[/green]")
+        console.print("[green]Now using default: foundation bundle[/green]")
         return
 
-    # If no scope specified, auto-detect which scope has the bundle
+    # If no scope specified, auto-detect which scope has bundle or profile settings
     if scope_flag is None:
-        detected_scope = _find_bundle_scope(config_manager)
+        detected_scope = _find_bundle_or_profile_scope(config_manager)
         if detected_scope is None:
-            console.print("[yellow]No active bundle found in any scope[/yellow]")
-            console.print("[dim]Already using profile mode[/dim]")
+            console.print("[yellow]No bundle or profile settings found in any scope[/yellow]")
+            console.print("[dim]Already using default: foundation bundle[/dim]")
             return
         scope = detected_scope
-        console.print(f"[dim]Auto-detected bundle in {scope} scope[/dim]")
+        console.print(f"[dim]Auto-detected settings in {scope} scope[/dim]")
     else:
         # Clear from specific scope
         try:
@@ -341,21 +372,32 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
         "global": config_manager.paths.user,
     }[scope]
 
-    # Remove bundle key entirely (not set to null) to allow inheritance from lower scopes
-    if not _remove_bundle_from_settings(config_manager, scope_path):
-        console.print(f"[yellow]No bundle setting in {scope} scope[/yellow]")
+    # Remove bundle and profile keys entirely to default to foundation bundle (Phase 2)
+    bundle_removed = _remove_bundle_from_settings(config_manager, scope_path)
+    profile_removed = _remove_profile_from_settings(config_manager, scope_path)
+
+    if not bundle_removed and not profile_removed:
+        console.print(f"[yellow]No bundle or profile setting in {scope} scope[/yellow]")
         return
 
-    console.print(f"[green]✓ Cleared bundle from {scope} scope[/green]")
+    if bundle_removed:
+        console.print(f"[green]✓ Cleared bundle from {scope} scope[/green]")
+    if profile_removed:
+        console.print(f"[green]✓ Cleared profile from {scope} scope[/green]")
 
-    # Check if any bundle is still active at other scopes
+    # Check if any bundle or profile is still active at other scopes
     merged = config_manager.get_merged_settings()
     bundle_settings = merged.get("bundle", {})
     remaining_bundle = bundle_settings.get("active") if isinstance(bundle_settings, dict) else None
+    remaining_profile = config_manager.get_active_profile()
+
     if remaining_bundle:
         console.print(f"[dim]Bundle '{remaining_bundle}' still active from another scope[/dim]")
+    elif remaining_profile:
+        console.print(f"[dim]Profile '{remaining_profile}' still active from another scope[/dim]")
+        console.print("[dim]Use --all to clear from all scopes[/dim]")
     else:
-        console.print("[green]Now using profile mode[/green]")
+        console.print("[green]Now using default: foundation bundle[/green]")
 
 
 @bundle.command(name="current")
@@ -381,25 +423,27 @@ def bundle_current():
         if uri:
             console.print(f"[bold]Location:[/bold] {_format_location(uri)}")
 
-        console.print("\n[dim]Use 'amplifier bundle clear' to revert to profile mode[/dim]")
+        console.print("\n[dim]Use 'amplifier bundle clear' to revert to default (foundation bundle)[/dim]")
     else:
-        console.print("[bold]Mode:[/bold] Profile (default)")
-        console.print("[yellow]No active bundle[/yellow]")
-
-        # Show active profile for context
+        # Check if a profile is explicitly set (backward compatibility)
         active_profile = config_manager.get_active_profile()
         if active_profile:
+            console.print("[bold]Mode:[/bold] Profile (deprecated)")
             console.print(f"[bold]Active profile:[/bold] {active_profile}")
+            console.print("\n[dim]Profiles are deprecated. Use 'amplifier bundle clear' to switch to bundles.[/dim]")
         else:
-            from ..data.profiles import get_system_default_profile
+            # No explicit bundle or profile - will default to foundation bundle
+            console.print("[bold]Mode:[/bold] Bundle (default)")
+            console.print("[bold]Active bundle:[/bold] foundation (default)")
+            console.print("\n[dim]Use 'amplifier bundle use <name>' to switch to a different bundle[/dim]")
 
-            console.print(f"[bold]Active profile:[/bold] {get_system_default_profile()} (system default)")
 
-        console.print("\n[dim]Use 'amplifier bundle use <name>' to switch to bundle mode[/dim]")
+def _find_bundle_or_profile_scope(config_manager) -> str | None:
+    """Find which scope has a bundle or profile setting (for auto-clear).
 
-
-def _find_bundle_scope(config_manager) -> str | None:
-    """Find which scope has a bundle setting (for auto-clear)."""
+    Checks for both bundle.active and profile.active settings.
+    Returns the first scope where either is found.
+    """
     from amplifier_config import Scope
 
     # Check scopes in precedence order (local first, as that's what user likely wants to clear)
@@ -413,8 +457,13 @@ def _find_bundle_scope(config_manager) -> str | None:
             continue
         try:
             settings = config_manager._read_yaml(path)
-            if settings and "bundle" in settings and settings["bundle"].get("active"):
-                return name
+            if settings:
+                # Check for bundle.active
+                if "bundle" in settings and settings["bundle"].get("active"):
+                    return name
+                # Check for profile.active
+                if "profile" in settings and settings["profile"].get("active"):
+                    return name
         except Exception:
             pass
 

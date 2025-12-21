@@ -130,14 +130,24 @@ def register_run_command(
 
         config_manager = create_config_manager()
 
-        # Check for active bundle from settings (opt-in via 'amplifier bundle use')
+        # Check for active bundle from settings (via 'amplifier bundle use')
         # CLI --bundle flag takes precedence over settings
         if not bundle:
             bundle_settings = config_manager.get_merged_settings().get("bundle", {})
             if isinstance(bundle_settings, dict):
                 bundle = bundle_settings.get("active")
 
-        active_profile_name = profile or config_manager.get_active_profile() or get_system_default_profile()
+        # Check for explicit profile configuration (CLI flag or settings)
+        # Note: We intentionally don't fall back to system default yet
+        explicit_profile = profile or config_manager.get_active_profile()
+
+        # Default to foundation bundle when no explicit bundle or profile is configured
+        # This makes bundles the default for fresh installs (Phase 2 behavior)
+        if not bundle and not explicit_profile:
+            bundle = "foundation"
+
+        # Set active_profile_name only for profile-based flow (backward compatibility)
+        active_profile_name = (explicit_profile or get_system_default_profile()) if not bundle else None
 
         if check_first_run() and not profile and prompt_first_run_init(console):
             active_profile_name = config_manager.get_active_profile() or get_system_default_profile()
@@ -172,6 +182,8 @@ def register_run_command(
         # Track configuration source for display
         # When bundle is specified, use bundle name; otherwise use profile name
         config_source_name = f"bundle:{bundle}" if bundle else active_profile_name
+        # Invariant: either bundle is set (defaulting to "foundation") or explicit profile was configured
+        assert config_source_name is not None
 
         # Resolve configuration - bundle mode uses foundation's prepare workflow
         prepared_bundle = None
