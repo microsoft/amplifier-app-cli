@@ -19,20 +19,38 @@ logger = logging.getLogger(__name__)
 
 
 def check_first_run() -> bool:
-    """Check if this appears to be first run (no provider configured)."""
+    """Check if this appears to be first run (no provider configured).
+
+    Returns True if user should run `amplifier init` before starting a session.
+    Checks both:
+    1. API keys (environment or keyring) - necessary for authentication
+    2. Provider configured in settings - necessary for bundle system to know which provider to use
+
+    Both conditions must be satisfied for a working setup. Having an API key alone
+    is not sufficient because the bundle system needs to know which provider to use.
+    """
     key_manager = KeyManager()
 
-    # Check if any provider is configured
+    # Check if any API key is present
     # Note: For Azure, we check ENDPOINT instead of API_KEY because Azure supports
     # multiple auth methods (API key, Azure CLI via DefaultAzureCredential, Managed Identity)
     # and ENDPOINT is always saved regardless of auth method.
-    return not any(
+    has_api_key = any(
         [
             key_manager.has_key("ANTHROPIC_API_KEY"),
             key_manager.has_key("OPENAI_API_KEY"),
             key_manager.has_key("AZURE_OPENAI_ENDPOINT"),  # Detects both API key and Azure CLI auth
         ]
     )
+
+    # Also check if a provider is configured in settings
+    # This ensures that even with an API key in env, we still prompt init if no provider configured
+    config = create_config_manager()
+    provider_mgr = ProviderManager(config)
+    has_configured_provider = provider_mgr.get_current_provider() is not None
+
+    # First run if either condition is missing
+    return not (has_api_key and has_configured_provider)
 
 
 def prompt_first_run_init(console_arg: Console) -> bool:
