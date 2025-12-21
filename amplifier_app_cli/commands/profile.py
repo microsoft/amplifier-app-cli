@@ -18,18 +18,31 @@ from ..paths import create_profile_loader
 from ..paths import get_effective_scope
 
 
+def _show_deprecation_warning():
+    """Show deprecation warning for profile commands."""
+    console.print(
+        "\n[yellow]⚠ Profiles are deprecated.[/yellow] "
+        "Use [cyan]amplifier bundle[/cyan] commands instead.\n"
+        "  • [dim]amplifier bundle current[/dim] - Show active configuration\n"
+        "  • [dim]amplifier bundle use <name>[/dim] - Set active bundle\n"
+        "  • [dim]amplifier bundle clear[/dim] - Reset to default (foundation)\n"
+        "  • [dim]See: amplifier bundle --help[/dim]\n"
+    )
+
+
 @click.group(invoke_without_command=True)
 @click.pass_context
 def profile(ctx: click.Context):
-    """Manage Amplifier profiles."""
+    """Manage Amplifier profiles (DEPRECATED - use 'amplifier bundle' instead)."""
+    _show_deprecation_warning()
     if ctx.invoked_subcommand is None:
-        click.echo("\n" + ctx.get_help())
+        click.echo(ctx.get_help())
         ctx.exit()
 
 
 @profile.command(name="list")
 def profile_list():
-    """List all available profiles."""
+    """List all available profiles (DEPRECATED)."""
     loader = create_profile_loader()
     config_manager = create_config_manager()
     profiles = loader.list_profiles()
@@ -64,7 +77,7 @@ def profile_list():
 
 @profile.command(name="current")
 def profile_current():
-    """Show the currently active profile and its source."""
+    """Show the currently active profile (DEPRECATED - use 'amplifier bundle current')."""
     config_manager = create_config_manager()
 
     local = config_manager._read_yaml(config_manager.paths.local)
@@ -460,7 +473,7 @@ def profile_show(name: str, detailed: bool):
 @click.option("--project", "scope_flag", flag_value="project", help="Set for project (team)")
 @click.option("--global", "scope_flag", flag_value="global", help="Set globally (all projects)")
 def profile_use(name: str, scope_flag: str | None):
-    """Set the active profile."""
+    """Set the active profile (DEPRECATED - use 'amplifier bundle use')."""
     from amplifier_config import Scope
 
     loader = create_profile_loader()

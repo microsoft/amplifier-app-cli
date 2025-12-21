@@ -29,7 +29,7 @@ amplifier init
 # Install shell completion (optional, one-time setup)
 amplifier --install-completion
 
-# Single command
+# Single command (uses foundation bundle by default)
 amplifier run "Create a Python function to calculate fibonacci numbers"
 
 # Single command via stdin (useful for scripts/pipelines)
@@ -38,8 +38,8 @@ echo "Summarize this spec" | amplifier run
 # Interactive chat mode
 amplifier
 
-# Use specific profile
-amplifier run --profile dev "Your prompt"
+# Use specific bundle
+amplifier run --bundle my-bundle "Your prompt"
 ```
 
 **Environment variables**: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY` detected automatically during `amplifier init`.
@@ -49,26 +49,20 @@ amplifier run --profile dev "Your prompt"
 ### Configuration Commands
 
 ```bash
+# Bundle management (primary configuration method)
+amplifier bundle current                              # Show active bundle
+amplifier bundle use <name> [--local|--project|--global]  # Set active bundle
+amplifier bundle list                                 # List available bundles
+amplifier bundle show <name>                          # Show bundle details
+amplifier bundle add <name> <git-url>                 # Register a bundle
+amplifier bundle remove <name>                        # Unregister a bundle
+amplifier bundle clear                                # Reset to default (foundation)
+
 # Provider management
 amplifier provider use <name> [--local|--project|--global]
 amplifier provider current
 amplifier provider list
 amplifier provider reset [--scope]
-
-# Profile management
-amplifier profile use <name> [--local|--project|--global]
-amplifier profile current
-amplifier profile list
-amplifier profile show <name>
-amplifier profile default [--set <name>|--clear]
-amplifier profile reset
-
-# Collection management
-amplifier collection add <git-url> [--local]
-amplifier collection list
-amplifier collection show <name>
-amplifier collection remove <name> [--local]
-amplifier collection refresh [<name>] [--mutable-only]
 
 # Module management
 amplifier module add <name> [--local|--project|--global]
@@ -85,14 +79,9 @@ amplifier source remove <id> [--scope]
 amplifier source list
 amplifier source show <id>
 
-# Bundle management (opt-in alternative to profiles)
-amplifier bundle add <name> <git-url>
-amplifier bundle remove <name>
-amplifier bundle list
-amplifier bundle show <name>
-amplifier bundle use <name> [--local|--project|--global]
-amplifier bundle clear
-amplifier bundle current
+# Legacy commands (DEPRECATED - use bundles instead)
+# amplifier profile ...     # Use 'amplifier bundle' instead
+# amplifier collection ...  # Use 'amplifier bundle add' instead
 ```
 
 ### Session Commands
@@ -265,14 +254,15 @@ amplifier run --<TAB>      # Shows all options
 
 This CLI is built on top of amplifier-core and provides:
 
-- **Profile system** - Reusable, composable configuration bundles (via amplifier-profiles)
+- **Bundle system** - Composable configuration packages (via amplifier-foundation)
 - **Settings management** - Three-scope configuration (local/project/global via amplifier-config)
-- **Module resolution** - Five-layer module source resolution (via amplifier-module-resolution)
-- **Collection system** - Shareable expertise bundles (via amplifier-collections)
+- **Module resolution** - Module source resolution for tools, providers, hooks
 - **Session storage** - Project-scoped session persistence with multi-turn sub-session resumption
 - **Agent delegation** - Spawn and resume sub-sessions for iterative collaboration with specialized agents
 - **Interactive mode** - REPL with slash commands
 - **Key management** - Secure API key storage
+
+> **Note**: Profile and collection systems are deprecated. Use bundles instead.
 
 ## Supported Providers
 
@@ -335,10 +325,10 @@ toolkit/               # Standalone scenario tool utilities (at repo root)
 ```
 
 **Note**: Core functionality provided by libraries:
-- `amplifier-profiles` - Profile loading and compilation
+- `amplifier-foundation` - Bundle loading and composition (primary)
 - `amplifier-config` - Settings management
-- `amplifier-module-resolution` - Module source resolution
-- `amplifier-collections` - Collection installation and discovery
+- `amplifier-profiles` - Profile loading (deprecated, for backward compatibility)
+- `amplifier-collections` - Collection system (deprecated, for backward compatibility)
 
 ## Documentation
 
@@ -349,9 +339,9 @@ toolkit/               # Standalone scenario tool utilities (at repo root)
 - [Architectural Decisions](docs/decisions/) - ADRs for major design choices
 
 **Authoritative Guides** (external, maintained in library repos):
-- **→ [Profile Authoring](https://github.com/microsoft/amplifier-profiles/blob/main/docs/PROFILE_AUTHORING.md)** - Creating and managing profiles
-- **→ [Agent Authoring](https://github.com/microsoft/amplifier-profiles/blob/main/docs/AGENT_AUTHORING.md)** - Creating specialized agents
-- **→ [User Onboarding](https://github.com/microsoft/amplifier/blob/next/docs/USER_ONBOARDING.md)** - Complete user guide and reference
+- **→ [Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md)** - Creating and managing bundles
+- **→ [Migration Guide](https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md)** - Migrating from profiles/collections to bundles
+- **→ [User Onboarding](https://github.com/microsoft/amplifier/blob/main/docs/USER_ONBOARDING.md)** - Complete user guide and reference
 
 **Toolkit** (for building sophisticated tools):
 - **→ [Toolkit Guide](https://github.com/microsoft/amplifier-collection-toolkit/blob/main/docs/TOOLKIT_GUIDE.md)** - Multi-config metacognitive recipes
