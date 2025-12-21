@@ -3,7 +3,6 @@
 import logging
 
 import click
-from amplifier_config import Scope
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm
@@ -123,21 +122,9 @@ def init_cmd():
         console.print("[red]Configuration cancelled.[/red]")
         return
 
-    # Step 3: Profile selection
-    console.print()
-    console.print("[bold]Step 2: Profile[/bold]")
-    console.print("  [1] dev (recommended - full development tools)")
-    console.print("  [2] base (essential tools only)")
-    console.print("  [3] full (everything enabled)")
-    console.print()
-
-    profile_choice = Prompt.ask("Which profile?", choices=["1", "2", "3"], default="1")
-    profile_map = {"1": "dev", "2": "base", "3": "full"}
-    profile_id = profile_map[profile_choice]
-
-    # Save configuration to user's global settings (~/.amplifier/settings.yaml)
+    # Save provider configuration to user's global settings (~/.amplifier/settings.yaml)
     # This is first-time setup, so it should be available across all projects
-    config.set_active_profile(profile_id, scope=Scope.USER)
+    # Note: We don't set a profile - the bundle system handles defaults
     provider_mgr.use_provider(module_id, scope="global", config=provider_config, source=None)
 
     console.print()

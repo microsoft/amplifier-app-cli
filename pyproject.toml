@@ -14,7 +14,6 @@ dependencies = [
     "amplifier-config",
     "amplifier-collections",
     "amplifier-foundation",
-    "amplifier-module-resolution",
     "amplifier-profiles",
     "pyyaml>=6.0.3",
     "prompt-toolkit>=3.0.52",
@@ -45,7 +44,6 @@ amplifier-core = { git = "https://github.com/microsoft/amplifier-core", branch =
 amplifier-config = { git = "https://github.com/microsoft/amplifier-config", branch = "main" }
 amplifier-collections = { git = "https://github.com/microsoft/amplifier-collections", branch = "main" }
 amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", branch = "main" }
-amplifier-module-resolution = { git = "https://github.com/microsoft/amplifier-module-resolution", branch = "main" }
 amplifier-profiles = { git = "https://github.com/microsoft/amplifier-profiles", branch = "main" }
 
 [tool.pytest.ini_options]

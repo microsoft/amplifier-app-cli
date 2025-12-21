@@ -96,8 +96,8 @@ def source_from_uri(source_uri: str):
     Returns:
         FileSource for local paths, GitSource for git URLs
     """
-    from amplifier_module_resolution.sources import FileSource
-    from amplifier_module_resolution.sources import GitSource
+    from amplifier_app_cli.lib.legacy import FileSource
+    from amplifier_app_cli.lib.legacy import GitSource
 
     if is_local_path(source_uri):
         return FileSource(source_uri)

@@ -244,7 +244,7 @@ def module_add(module_id: str, source: str | None, scope_flag: str | None):
 
     # Download the module if it's a git source
     if source and source.startswith("git+"):
-        from amplifier_module_resolution.sources import GitSource
+        from amplifier_app_cli.lib.legacy import GitSource
 
         console.print("  Downloading module...", end="")
         try:
@@ -360,7 +360,7 @@ def _get_local_override_names() -> set[str]:
 
     These modules use FileSource and should take precedence over cached versions.
     """
-    from amplifier_module_resolution import FileSource
+    from amplifier_app_cli.lib.legacy import FileSource
 
     resolver = create_module_resolver()
     local_names: set[str] = set()

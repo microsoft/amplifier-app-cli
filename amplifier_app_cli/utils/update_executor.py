@@ -120,7 +120,8 @@ async def execute_selective_collection_update(
 
     from amplifier_collections import CollectionLock
     from amplifier_collections import install_collection
-    from amplifier_module_resolution import GitSource
+
+    from amplifier_app_cli.lib.legacy import GitSource
 
     from ..paths import get_collection_lock_path
 

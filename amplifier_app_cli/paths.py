@@ -13,8 +13,9 @@ from amplifier_config import ConfigManager
 from amplifier_config import ConfigPaths
 from amplifier_config import Scope
 from amplifier_foundation import BundleRegistry
-from amplifier_module_resolution import StandardModuleSourceResolver
 from amplifier_profiles import ProfileLoader
+
+from amplifier_app_cli.lib.legacy import StandardModuleSourceResolver
 
 if TYPE_CHECKING:
     from amplifier_core import AmplifierSession

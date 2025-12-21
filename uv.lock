@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 
 [[package]]
@@ -11,7 +11,6 @@ dependencies = [
     { name = "amplifier-config" },
     { name = "amplifier-core" },
     { name = "amplifier-foundation" },
-    { name = "amplifier-module-resolution" },
     { name = "amplifier-profiles" },
     { name = "click" },
     { name = "httpx", extra = ["socks"] },
@@ -33,7 +32,6 @@ requires-dist = [
     { name = "amplifier-config", git = "https://github.com/microsoft/amplifier-config?branch=main" },
     { name = "amplifier-core", git = "https://github.com/microsoft/amplifier-core?branch=main" },
     { name = "amplifier-foundation", git = "https://github.com/microsoft/amplifier-foundation?branch=main" },
-    { name = "amplifier-module-resolution", git = "https://github.com/microsoft/amplifier-module-resolution?branch=main" },
     { name = "amplifier-profiles", git = "https://github.com/microsoft/amplifier-profiles?branch=main" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
@@ -85,11 +83,6 @@ dependencies = [
     { name = "amplifier-core" },
     { name = "pyyaml" },
 ]
-
-[[package]]
-name = "amplifier-module-resolution"
-version = "0.1.0"
-source = { git = "https://github.com/microsoft/amplifier-module-resolution?branch=main#4bf854b38ea51538a13dce95ce10e830fc1b1194" }
 
 [[package]]
 name = "amplifier-profiles"
