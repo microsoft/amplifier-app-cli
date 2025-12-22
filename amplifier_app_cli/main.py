@@ -16,6 +16,8 @@ from typing import Any
 
 import click
 
+from amplifier_app_cli.utils.help_formatter import AmplifierGroup
+
 if TYPE_CHECKING:
     from amplifier_foundation.bundle import PreparedBundle
 from amplifier_core import AmplifierSession
@@ -638,7 +640,7 @@ def get_module_search_paths() -> list[Path]:
     return paths
 
 
-@click.group(invoke_without_command=True)
+@click.group(cls=AmplifierGroup, invoke_without_command=True)
 @click.version_option(version=get_version(), prog_name="amplifier")
 @click.option(
     "--install-completion",

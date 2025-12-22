@@ -19,7 +19,6 @@ import shutil
 from pathlib import Path
 
 import click
-from rich.panel import Panel
 from rich.table import Table
 
 from amplifier_app_cli.lib.legacy import CollectionInstallError
@@ -35,31 +34,15 @@ from amplifier_app_cli.lib.legacy import uninstall_collection
 from ..console import console
 from ..paths import create_collection_resolver
 from ..paths import get_collection_lock_path
+from ..utils.deprecation import show_collection_deprecation_warning
 
 logger = logging.getLogger(__name__)
 
 
-def _show_deprecation_warning():
-    """Show deprecation warning for collection commands in a visible panel."""
-    warning_text = (
-        "[yellow bold]⚠ Collections are deprecated.[/yellow bold]\n\n"
-        "Use [cyan]amplifier bundle[/cyan] commands instead:\n"
-        "  • [dim]amplifier bundle use <name>[/dim] - Set active bundle\n"
-        "  • [dim]amplifier bundle add <git-url>[/dim] - Register a bundle\n"
-        "  • [dim]amplifier bundle list[/dim] - List available bundles\n"
-        "  • [dim]See: amplifier bundle --help[/dim]\n\n"
-        "[dim]Migration guide for developers:[/dim]\n"
-        "[link=https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md]"
-        "https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md[/link]"
-    )
-    console.print()
-    console.print(Panel(warning_text, border_style="yellow", title="Deprecated", title_align="left"))
-
-
-@click.group(invoke_without_command=True)
+@click.group(invoke_without_command=True, deprecated=True)
 @click.pass_context
 def collection(ctx: click.Context):
-    """Manage Amplifier collections (DEPRECATED - use 'amplifier bundle' instead).
+    """Manage Amplifier collections.
 
     Collections are deprecated. Use bundles instead for shareable configurations.
 
@@ -83,7 +66,7 @@ def collection(ctx: click.Context):
     """
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
-        _show_deprecation_warning()
+        show_collection_deprecation_warning()
         ctx.exit()
 
 
@@ -182,7 +165,7 @@ def add(source_uri: str, local: bool):
                 click.echo(f"    • {capability}")
 
         click.echo(f"\n✓ Collection '{metadata.name}' is ready to use!")
-        _show_deprecation_warning()
+        show_collection_deprecation_warning()
 
     except CollectionInstallError as e:
         click.echo(f"✗ Installation failed: {e}", err=True)
@@ -224,7 +207,7 @@ def list(show_all: bool):
         collections = resolver.list_collections()
         if not collections:
             console.print("[yellow]No collections found.[/yellow]")
-            _show_deprecation_warning()
+            show_collection_deprecation_warning()
             return
 
         # Build table for all collections
@@ -261,7 +244,7 @@ def list(show_all: bool):
 
         console.print(table)
         console.print("\n[dim]✓ = Installed. Use 'amplifier collection add <source>' to install others.[/dim]")
-        _show_deprecation_warning()
+        show_collection_deprecation_warning()
 
     else:
         # Show only installed (in lock file)
@@ -270,7 +253,7 @@ def list(show_all: bool):
             console.print("[yellow]No collections installed.[/yellow]")
             console.print("\nInstall a collection with:")
             console.print("  [cyan]amplifier collection add git+https://github.com/org/collection@main[/cyan]")
-            _show_deprecation_warning()
+            show_collection_deprecation_warning()
             return
 
         # Build table for installed collections
@@ -304,7 +287,7 @@ def list(show_all: bool):
 
         console.print(table)
         console.print("\n[dim]Use 'amplifier collection show <name>' for details[/dim]")
-        _show_deprecation_warning()
+        show_collection_deprecation_warning()
 
 
 @collection.command()
@@ -420,7 +403,7 @@ def show(name: str):
                 click.echo(f"    • {module.name}")
 
     click.echo()
-    _show_deprecation_warning()
+    show_collection_deprecation_warning()
 
 
 @collection.command()
@@ -470,7 +453,7 @@ def remove(name: str, local: bool):
         asyncio.run(uninstall_collection(collection_name=name, collections_dir=collections_dir, lock=lock))
 
         click.echo(f"✓ Removed collection '{name}'")
-        _show_deprecation_warning()
+        show_collection_deprecation_warning()
 
     except CollectionInstallError as e:
         click.echo(f"✗ Removal failed: {e}", err=True)
@@ -519,7 +502,7 @@ def update(collection_name: str | None, check_only: bool, mutable_only: bool):
     if not entries:
         console.print("[dim]No collections installed[/dim]")
         console.print("[dim]Install collections with 'amplifier collection add <source>'[/dim]")
-        _show_deprecation_warning()
+        show_collection_deprecation_warning()
         return
 
     # Check-only mode: use source_status to get collection status and display
@@ -533,7 +516,7 @@ def update(collection_name: str | None, check_only: bool, mutable_only: bool):
             collection_sources = [s for s in collection_sources if s.name == collection_name]
             if not collection_sources:
                 console.print(f"[yellow]Collection '{collection_name}' not found or not installed[/yellow]")
-                _show_deprecation_warning()
+                show_collection_deprecation_warning()
                 return
 
         # Filter by mutability if requested
@@ -554,7 +537,7 @@ def update(collection_name: str | None, check_only: bool, mutable_only: bool):
             collection_sources = filtered_sources
 
         show_collections_report(collection_sources, check_only=True)
-        _show_deprecation_warning()
+        show_collection_deprecation_warning()
         return
 
     # Update mode: filter entries based on criteria
@@ -585,7 +568,7 @@ def update(collection_name: str | None, check_only: bool, mutable_only: bool):
             console.print(f"[yellow]Collection '{collection_name}' not found or not updatable[/yellow]")
         else:
             console.print("[dim]No updatable collections found[/dim]")
-        _show_deprecation_warning()
+        show_collection_deprecation_warning()
         return
 
     # Update each collection
@@ -620,4 +603,4 @@ def update(collection_name: str | None, check_only: bool, mutable_only: bool):
         console.print(f"\n[green]✓ Updated {updated} collection(s)[/green]")
     if failed > 0:
         console.print(f"[red]✗ Failed to update {failed} collection(s)[/red]")
-    _show_deprecation_warning()
+    show_collection_deprecation_warning()
