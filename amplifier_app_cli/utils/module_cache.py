@@ -33,11 +33,11 @@ class CachedModuleInfo:
 def get_cache_dir() -> Path:
     """Get the module cache directory path.
 
-    Uses ~/.amplifier/modules/ to align with amplifier-foundation's ModuleActivator.
-    This unified path ensures update checks find modules regardless of whether they
-    were installed via bundles or the legacy profile system.
+    Uses ~/.amplifier/cache/ as the consolidated cache directory for all module
+    and bundle caching. This unified path ensures update checks find modules
+    regardless of whether they were installed via bundles or the legacy profile system.
     """
-    return Path.home() / ".amplifier" / "modules"
+    return Path.home() / ".amplifier" / "cache"
 
 
 def _infer_module_type(module_id: str) -> str:
