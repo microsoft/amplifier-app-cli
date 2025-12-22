@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from typing import cast
 
 import click
+from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
@@ -430,12 +431,16 @@ def bundle_current():
         if active_profile:
             console.print("[bold]Mode:[/bold] Profile (deprecated)")
             console.print(f"[bold]Active profile:[/bold] {active_profile}")
-            console.print("\n[dim]Profiles are deprecated. Use 'amplifier bundle clear' to switch to bundles.[/dim]")
-            console.print(
-                "[dim]Migration guide: "
+
+            warning_text = (
+                "[yellow bold]⚠ Profiles are deprecated.[/yellow bold]\n\n"
+                "Use [cyan]amplifier bundle clear[/cyan] to switch to bundles.\n\n"
+                "[dim]Migration guide for developers:[/dim]\n"
                 "[link=https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md]"
-                "https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md[/link][/dim]"
+                "https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md[/link]"
             )
+            console.print()
+            console.print(Panel(warning_text, border_style="yellow", title="Deprecated", title_align="left"))
         else:
             # No explicit bundle or profile - will default to foundation bundle
             console.print("[bold]Mode:[/bold] Bundle (default)")

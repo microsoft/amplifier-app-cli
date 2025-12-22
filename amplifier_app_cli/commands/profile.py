@@ -7,6 +7,7 @@ from typing import Any
 from typing import cast
 
 import click
+from rich.panel import Panel
 from rich.table import Table
 
 from ..console import console
@@ -19,28 +20,29 @@ from ..paths import get_effective_scope
 
 
 def _show_deprecation_warning():
-    """Show deprecation warning for profile commands."""
-    console.print(
-        "\n[yellow]⚠ Profiles are deprecated.[/yellow] "
-        "Use [cyan]amplifier bundle[/cyan] commands instead.\n"
+    """Show deprecation warning for profile commands in a visible panel."""
+    warning_text = (
+        "[yellow bold]⚠ Profiles are deprecated.[/yellow bold]\n\n"
+        "Use [cyan]amplifier bundle[/cyan] commands instead:\n"
         "  • [dim]amplifier bundle current[/dim] - Show active configuration\n"
         "  • [dim]amplifier bundle use <name>[/dim] - Set active bundle\n"
         "  • [dim]amplifier bundle clear[/dim] - Reset to default (foundation)\n"
-        "  • [dim]See: amplifier bundle --help[/dim]\n"
-        "\n"
-        "[dim]For profile/collection developers migrating to bundles, see:[/dim]\n"
+        "  • [dim]See: amplifier bundle --help[/dim]\n\n"
+        "[dim]Migration guide for developers:[/dim]\n"
         "[link=https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md]"
-        "https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md[/link]\n"
+        "https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md[/link]"
     )
+    console.print()
+    console.print(Panel(warning_text, border_style="yellow", title="Deprecated", title_align="left"))
 
 
 @click.group(invoke_without_command=True)
 @click.pass_context
 def profile(ctx: click.Context):
     """Manage Amplifier profiles (DEPRECATED - use 'amplifier bundle' instead)."""
-    _show_deprecation_warning()
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
+        _show_deprecation_warning()
         ctx.exit()
 
 
@@ -55,6 +57,7 @@ def profile_list():
 
     if not profiles:
         console.print("[yellow]No profiles found.[/yellow]")
+        _show_deprecation_warning()
         return
 
     table = Table(title="Available Profiles", show_header=True, header_style="bold cyan")
@@ -77,6 +80,7 @@ def profile_list():
         table.add_row(profile_name, source_label, status)
 
     console.print(table)
+    _show_deprecation_warning()
 
 
 @profile.command(name="current")
@@ -119,6 +123,8 @@ def profile_current():
         console.print("  Local:   [cyan]amplifier profile use <name>[/cyan]")
         console.print("  Project: [cyan]amplifier profile use <name> --project[/cyan]")
         console.print("  Global:  [cyan]amplifier profile use <name> --global[/cyan]")
+
+    _show_deprecation_warning()
 
 
 def build_effective_config_with_sources(chain_dicts: list[dict[str, Any]], chain_names: list[str]):
@@ -469,6 +475,7 @@ def profile_show(name: str, detailed: bool):
 
     # Display effective configuration with source overrides
     render_effective_config(chain_dicts, chain_names, source_overrides, detailed)
+    _show_deprecation_warning()
 
 
 @profile.command(name="use")
@@ -521,6 +528,8 @@ def profile_use(name: str, scope_flag: str | None):
         console.print(f"[green]✓ Set '{name}' globally[/green]")
         console.print("  File: ~/.amplifier/settings.yaml")
 
+    _show_deprecation_warning()
+
 
 @profile.command(name="reset")
 def profile_reset():
@@ -535,6 +544,7 @@ def profile_reset():
             "[yellow]Note:[/yellow] Running from home directory - no local profile to reset.\n"
             "Use [cyan]amplifier profile use <name> --global[/cyan] to set a global profile."
         )
+        _show_deprecation_warning()
         return
 
     config_manager.clear_active_profile(scope=Scope.LOCAL)
@@ -546,6 +556,8 @@ def profile_reset():
     else:
         console.print("[green]✓[/green] Cleared local profile")
         console.print(f"Now using system default: [bold]{get_system_default_profile()}[/bold]")
+
+    _show_deprecation_warning()
 
 
 @profile.command(name="default")
@@ -568,6 +580,7 @@ def profile_default(set_default: str | None, clear: bool):
     if clear:
         config_manager.clear_project_default()
         console.print("[green]✓[/green] Cleared project default profile")
+        _show_deprecation_warning()
         return
 
     if set_default:
@@ -584,6 +597,7 @@ def profile_default(set_default: str | None, clear: bool):
         config_manager.set_project_default(set_default)
         console.print(f"[green]✓[/green] Set project default: {set_default}")
         console.print("\n[yellow]Note:[/yellow] Remember to commit .amplifier/settings.yaml")
+        _show_deprecation_warning()
         return
 
     project_default = config_manager.get_project_default()
@@ -595,6 +609,8 @@ def profile_default(set_default: str | None, clear: bool):
         console.print(f"System default: [bold]{get_system_default_profile()}[/bold]")
         console.print("\nSet a project default with:")
         console.print("  [cyan]amplifier profile default --set <name>[/cyan]")
+
+    _show_deprecation_warning()
 
 
 __all__ = ["profile"]
