@@ -52,33 +52,36 @@ def _extract_module_name_from_uri(source_uri: str) -> str:
     return name
 
 
-def _is_bundle_source(name: str, source_uri: str | None = None) -> bool:
-    """Check if a source is a bundle definition (not a regular module)."""
-    # Check name patterns or URI patterns
-    return "bundle" in name.lower() or bool(source_uri and "bundle" in source_uri.lower())
-
-
-def _collect_unified_sources(
+def _collect_unified_modules(
     report,
     bundle_results: dict[str, "BundleStatus"] | None,
-) -> tuple[dict[str, dict], dict[str, dict]]:
-    """Collect and deduplicate all sources from cache and bundles.
+) -> dict[str, dict]:
+    """Collect and deduplicate all module sources from cache and bundles.
 
     Returns:
-        Tuple of (modules_dict, bundles_dict) where each dict maps
-        name -> {cached_sha, remote_sha, has_update, source_uri, used_by_bundles}
+        Dict mapping module name -> {cached_sha, remote_sha, has_update, source_uri, used_by_bundles}
+
+    Note: Uses proper type identification via bundle_results.keys() rather than name-based detection.
+    Bundle repos are NOT included here - they're handled separately using BundleStatus.
     """
     modules: dict[str, dict] = {}
-    bundles: dict[str, dict] = {}
 
-    # 1. Add all cached git sources
+    # Track bundle source URIs to exclude them from modules list
+    bundle_source_uris: set[str] = set()
+    if bundle_results:
+        for bundle_status in bundle_results.values():
+            if bundle_status.bundle_source:
+                bundle_source_uris.add(bundle_status.bundle_source)
+
+    # 1. Add all cached git sources (excluding bundle repos)
     for status in report.cached_git_sources:
         name = status.name
-        is_bundle = _is_bundle_source(name, status.url)
-        target = bundles if is_bundle else modules
+        # Skip if this is a bundle repo (identified by URL match, not name)
+        if status.url and status.url in bundle_source_uris:
+            continue
 
-        if name not in target:
-            target[name] = {
+        if name not in modules:
+            modules[name] = {
                 "cached_sha": status.cached_sha,
                 "remote_sha": status.remote_sha,
                 "has_update": status.has_update,
@@ -86,17 +89,19 @@ def _collect_unified_sources(
                 "used_by_bundles": set(),
             }
 
-    # 2. Add/merge bundle sources and track which bundles use which modules
+    # 2. Add/merge bundle sources (excluding the bundle repos themselves)
     if bundle_results:
         for bundle_name, bundle_status in bundle_results.items():
             for source in bundle_status.sources:
-                name = _extract_module_name_from_uri(source.source_uri)
-                is_bundle = _is_bundle_source(name, source.source_uri)
-                target = bundles if is_bundle else modules
+                # Skip the bundle repo itself (identified by URI match)
+                if bundle_status.bundle_source and source.source_uri == bundle_status.bundle_source:
+                    continue
 
-                if name not in target:
+                name = _extract_module_name_from_uri(source.source_uri)
+
+                if name not in modules:
                     # New source from bundle not in cache
-                    target[name] = {
+                    modules[name] = {
                         "cached_sha": source.cached_commit[:7] if source.cached_commit else None,
                         "remote_sha": source.remote_commit[:7] if source.remote_commit else None,
                         "has_update": source.has_update is True,
@@ -104,11 +109,32 @@ def _collect_unified_sources(
                         "used_by_bundles": set(),
                     }
 
-                # Track which bundles use this source
-                if not is_bundle:  # Only track module usage, not bundle self-refs
-                    target[name]["used_by_bundles"].add(bundle_name)
+                # Track which bundles use this module
+                modules[name]["used_by_bundles"].add(bundle_name)
 
-    return modules, bundles
+    return modules
+
+
+def _get_bundle_repo_info(bundle_status: "BundleStatus") -> dict | None:
+    """Extract the bundle repo's own SHA info from BundleStatus.
+
+    Finds the SourceStatus in bundle_status.sources that matches bundle_status.bundle_source.
+
+    Returns:
+        Dict with cached_sha, remote_sha, has_update or None if not found.
+    """
+    if not bundle_status.bundle_source:
+        return None
+
+    for source in bundle_status.sources:
+        if source.source_uri == bundle_status.bundle_source:
+            return {
+                "cached_sha": source.cached_commit[:7] if source.cached_commit else None,
+                "remote_sha": source.remote_commit[:7] if source.remote_commit else None,
+                "has_update": source.has_update is True,
+            }
+
+    return None
 
 
 def _get_installed_amplifier_packages() -> list[dict]:
@@ -457,9 +483,9 @@ def _show_concise_report(
 
         console.print(table)
 
-    # === MODULES & BUNDLES (Unified, Deduplicated) ===
-    # Collect all sources from cache and bundles, deduplicate by name
-    unified_modules, unified_bundles = _collect_unified_sources(report, bundle_results)
+    # === MODULES (Unified, Deduplicated) ===
+    # Collect all module sources from cache and bundles, deduplicate by name
+    unified_modules = _collect_unified_modules(report, bundle_results)
 
     # Show unified modules table (deduplicated from cache + bundle sources)
     if unified_modules:
@@ -504,8 +530,9 @@ def _show_concise_report(
 
         console.print(table)
 
-    # === BUNDLES (Just bundle repos, not their included modules) ===
-    if unified_bundles:
+    # === BUNDLES (Bundle repos with their own SHA info) ===
+    # Use bundle_results.keys() as authoritative list (not name-based detection)
+    if bundle_results:
         console.print()
         active_bundle = _get_active_bundle_name()
         table = Table(title="Bundles", show_header=True, header_style="bold cyan")
@@ -514,19 +541,30 @@ def _show_concise_report(
         table.add_column("Remote", style="dim", justify="right")
         table.add_column("", width=1, justify="center")
 
-        for name in sorted(unified_bundles.keys()):
-            info = unified_bundles[name]
-            status_symbol = create_status_symbol(info["cached_sha"], info["remote_sha"])
+        for bundle_name in sorted(bundle_results.keys()):
+            bundle_status = bundle_results[bundle_name]
+            # Get the bundle repo's own SHA info from its sources
+            repo_info = _get_bundle_repo_info(bundle_status)
+
+            if repo_info:
+                status_symbol = create_status_symbol(repo_info["cached_sha"], repo_info["remote_sha"])
+                cached_sha = repo_info["cached_sha"]
+                remote_sha = repo_info["remote_sha"]
+            else:
+                # Bundle loaded but no repo info available (e.g., local bundle)
+                status_symbol = Text("✓", style="green")
+                cached_sha = None
+                remote_sha = None
 
             # Add "(active)" marker if this is the active bundle
-            display_name = name
-            if active_bundle and name.endswith(active_bundle):
-                display_name = f"{name} [green](active)[/green]"
+            display_name = bundle_name
+            if active_bundle and bundle_name == active_bundle:
+                display_name = f"{bundle_name} [green](active)[/green]"
 
             table.add_row(
                 display_name,
-                create_sha_text(info["cached_sha"]),
-                create_sha_text(info["remote_sha"]),
+                create_sha_text(cached_sha),
+                create_sha_text(remote_sha),
                 status_symbol,
             )
 

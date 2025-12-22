@@ -15,13 +15,14 @@ def create_status_symbol(local_sha: str | None, remote_sha: str | None, has_loca
     """Create styled status symbol based on update state.
 
     Returns:
-        ● (yellow) - update available
+        ● (yellow) - update available (remote has value and local is missing or different)
         ◦ (cyan) - local changes
         ✓ (green) - up to date
     """
     if has_local_changes:
         return Text("◦", style="cyan")
-    if local_sha and remote_sha and local_sha != remote_sha:
+    # Update available if: remote exists AND (local is missing OR local differs from remote)
+    if remote_sha and (not local_sha or local_sha != remote_sha):
         return Text("●", style="yellow")
     return Text("✓", style="green")
 
