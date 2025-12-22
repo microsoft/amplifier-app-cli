@@ -10,6 +10,7 @@ from click import Context
 from click import HelpFormatter
 
 from amplifier_app_cli.utils.deprecation import DEPRECATED_SECTION_HEADER
+from amplifier_app_cli.utils.deprecation import MIGRATION_GUIDE_URL
 
 
 class AmplifierGroup(click.Group):
@@ -46,8 +47,14 @@ class AmplifierGroup(click.Group):
                 with formatter.section("Commands"):
                     formatter.write_dl(rows)
 
-        # Deprecated commands section - shown at the bottom with clear header
+        # Deprecated commands section - shown at the bottom with warning notice
         if deprecated_commands:
+            # Write the deprecation warning notice first (left aligned)
+            formatter.write("\n⚠️ Deprecation Notice:\n")
+            formatter.write("Profiles and collections are deprecated in favor of bundles, see migration guide:\n")
+            formatter.write(f"{MIGRATION_GUIDE_URL}\n")
+
+            # Build the command rows
             limit = formatter.width - 6 - max(len(cmd[0]) for cmd in deprecated_commands)
             rows = []
             for subcommand, cmd in deprecated_commands:
@@ -57,5 +64,6 @@ class AmplifierGroup(click.Group):
                 help_text = help_text.replace(" (DEPRECATED)", "")
                 rows.append((subcommand, help_text))
             if rows:
+                # formatter.section() adds a blank line before the header
                 with formatter.section(DEPRECATED_SECTION_HEADER):
                     formatter.write_dl(rows)

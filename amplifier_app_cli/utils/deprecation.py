@@ -11,12 +11,8 @@ from amplifier_app_cli.console import console
 # Migration guide URL - single source of truth
 MIGRATION_GUIDE_URL = "https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md"
 
-# Help text section header for deprecated commands
-DEPRECATED_SECTION_HEADER = (
-    f"⚠️Deprecated - use 'amplifier bundle', see migration guide:\n"
-    f"  {MIGRATION_GUIDE_URL}\n"
-    f"  Commands below will be removed in a future release"
-)
+# Section header for deprecated commands list (simple, like "Commands")
+DEPRECATED_SECTION_HEADER = "Deprecated Commands"
 
 
 def show_deprecation_warning(
