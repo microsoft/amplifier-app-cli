@@ -24,6 +24,93 @@ if TYPE_CHECKING:
 console = Console()
 
 
+def _extract_module_name_from_uri(source_uri: str) -> str:
+    """Extract a clean module name from a source URI.
+
+    Examples:
+        git+https://github.com/microsoft/amplifier-module-tool-bash@main -> tool-bash
+        git+https://github.com/microsoft/amplifier-bundle-recipes@main -> amplifier-bundle-recipes
+    """
+    # Remove git+ prefix and @ref suffix
+    uri = source_uri
+    if uri.startswith("git+"):
+        uri = uri[4:]
+    if "@" in uri:
+        uri = uri.split("@")[0]
+
+    # Get last path component
+    name = uri.rstrip("/").split("/")[-1]
+
+    # Remove .git suffix
+    if name.endswith(".git"):
+        name = name[:-4]
+
+    # Remove amplifier-module- prefix for cleaner display
+    if name.startswith("amplifier-module-"):
+        name = name[17:]
+
+    return name
+
+
+def _is_bundle_source(name: str, source_uri: str | None = None) -> bool:
+    """Check if a source is a bundle definition (not a regular module)."""
+    # Check name patterns or URI patterns
+    return "bundle" in name.lower() or bool(source_uri and "bundle" in source_uri.lower())
+
+
+def _collect_unified_sources(
+    report,
+    bundle_results: dict[str, "BundleStatus"] | None,
+) -> tuple[dict[str, dict], dict[str, dict]]:
+    """Collect and deduplicate all sources from cache and bundles.
+
+    Returns:
+        Tuple of (modules_dict, bundles_dict) where each dict maps
+        name -> {cached_sha, remote_sha, has_update, source_uri, used_by_bundles}
+    """
+    modules: dict[str, dict] = {}
+    bundles: dict[str, dict] = {}
+
+    # 1. Add all cached git sources
+    for status in report.cached_git_sources:
+        name = status.name
+        is_bundle = _is_bundle_source(name, status.url)
+        target = bundles if is_bundle else modules
+
+        if name not in target:
+            target[name] = {
+                "cached_sha": status.cached_sha,
+                "remote_sha": status.remote_sha,
+                "has_update": status.has_update,
+                "source_uri": status.url,
+                "used_by_bundles": set(),
+            }
+
+    # 2. Add/merge bundle sources and track which bundles use which modules
+    if bundle_results:
+        for bundle_name, bundle_status in bundle_results.items():
+            for source in bundle_status.sources:
+                name = _extract_module_name_from_uri(source.source_uri)
+                is_bundle = _is_bundle_source(name, source.source_uri)
+                target = bundles if is_bundle else modules
+
+                if name not in target:
+                    # New source from bundle not in cache
+                    target[name] = {
+                        "cached_sha": source.cached_commit[:7] if source.cached_commit else None,
+                        "remote_sha": source.remote_commit[:7] if source.remote_commit else None,
+                        "has_update": source.has_update is True,
+                        "source_uri": source.source_uri,
+                        "used_by_bundles": set(),
+                    }
+
+                # Track which bundles use this source
+                if not is_bundle:  # Only track module usage, not bundle self-refs
+                    target[name]["used_by_bundles"].add(bundle_name)
+
+    return modules, bundles
+
+
 def _get_installed_amplifier_packages() -> list[dict]:
     """Get details of installed Amplifier packages.
 
@@ -370,22 +457,27 @@ def _show_concise_report(
 
         console.print(table)
 
-    # Show cached git sources (if any)
-    if report.cached_git_sources:
+    # === MODULES & BUNDLES (Unified, Deduplicated) ===
+    # Collect all sources from cache and bundles, deduplicate by name
+    unified_modules, unified_bundles = _collect_unified_sources(report, bundle_results)
+
+    # Show unified modules table (deduplicated from cache + bundle sources)
+    if unified_modules:
         console.print()
-        table = Table(title="Modules (Cached)", show_header=True, header_style="bold cyan")
+        table = Table(title="Modules", show_header=True, header_style="bold cyan")
         table.add_column("Name", style="green")
         table.add_column("Cached", style="dim", justify="right")
         table.add_column("Remote", style="dim", justify="right")
         table.add_column("", width=1, justify="center")
 
-        for status in sorted(report.cached_git_sources, key=lambda x: x.name):
-            status_symbol = create_status_symbol(status.cached_sha, status.remote_sha)
+        for name in sorted(unified_modules.keys()):
+            info = unified_modules[name]
+            status_symbol = create_status_symbol(info["cached_sha"], info["remote_sha"])
 
             table.add_row(
-                status.name,
-                create_sha_text(status.cached_sha),
-                create_sha_text(status.remote_sha),
+                name,
+                create_sha_text(info["cached_sha"]),
+                create_sha_text(info["remote_sha"]),
                 status_symbol,
             )
 
@@ -412,42 +504,33 @@ def _show_concise_report(
 
         console.print(table)
 
-    # === BUNDLES ===
-    if bundle_results:
+    # === BUNDLES (Just bundle repos, not their included modules) ===
+    if unified_bundles:
+        console.print()
         active_bundle = _get_active_bundle_name()
-        for bundle_name in sorted(bundle_results.keys()):
-            status = bundle_results[bundle_name]
-            if status.sources:
-                # Add "(active)" marker if this is the active bundle
-                title_suffix = " [green](active)[/green]" if bundle_name == active_bundle else ""
-                table = Table(title=f"Bundle: {bundle_name}{title_suffix}", show_header=True, header_style="bold cyan")
-                table.add_column("Source", style="green")
-                table.add_column("Cached", style="dim", justify="right")
-                table.add_column("Remote", style="dim", justify="right")
-                table.add_column("", width=1, justify="center")
+        table = Table(title="Bundles", show_header=True, header_style="bold cyan")
+        table.add_column("Name", style="green")
+        table.add_column("Cached", style="dim", justify="right")
+        table.add_column("Remote", style="dim", justify="right")
+        table.add_column("", width=1, justify="center")
 
-                for source in sorted(status.sources, key=lambda x: x.source_uri):
-                    # Extract module name from source URI for cleaner display
-                    source_name = source.source_uri
-                    if "/" in source_name:
-                        # Get last path component, strip common prefixes
-                        source_name = source_name.split("/")[-1]
-                        if source_name.startswith("amplifier-module-"):
-                            source_name = source_name[17:]  # Remove "amplifier-module-"
-                        elif "@" in source_name:
-                            source_name = source_name.split("@")[0]
+        for name in sorted(unified_bundles.keys()):
+            info = unified_bundles[name]
+            status_symbol = create_status_symbol(info["cached_sha"], info["remote_sha"])
 
-                    status_symbol = create_status_symbol(source.cached_commit, source.remote_commit)
+            # Add "(active)" marker if this is the active bundle
+            display_name = name
+            if active_bundle and name.endswith(active_bundle):
+                display_name = f"{name} [green](active)[/green]"
 
-                    table.add_row(
-                        source_name,
-                        create_sha_text(source.cached_commit),
-                        create_sha_text(source.remote_commit),
-                        status_symbol,
-                    )
+            table.add_row(
+                display_name,
+                create_sha_text(info["cached_sha"]),
+                create_sha_text(info["remote_sha"]),
+                status_symbol,
+            )
 
-                console.print()
-                console.print(table)
+        console.print(table)
 
     console.print()
     print_legend()
