@@ -103,7 +103,8 @@ class GitSource:
         self.url = url
         self.ref = ref
         self.subdirectory = subdirectory
-        self.cache_dir = Path.home() / ".amplifier" / "cache" / "modules"
+        # Use unified cache path aligned with amplifier-foundation's ModuleActivator
+        self.cache_dir = Path.home() / ".amplifier" / "modules"
         self._cached_commit_sha: str | None = None
 
     def _get_effective_url(self) -> str:
