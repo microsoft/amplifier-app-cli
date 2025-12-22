@@ -7,11 +7,13 @@ Full end-to-end integration testing done manually (see test report).
 import re
 
 import pytest
-from amplifier_app_cli.session_spawner import DEFAULT_PARENT_SPAN
-from amplifier_app_cli.session_spawner import SPAN_HEX_LEN
-from amplifier_app_cli.session_spawner import _generate_sub_session_id
 from amplifier_app_cli.session_spawner import resume_sub_session
 from amplifier_app_cli.session_store import SessionStore
+from amplifier_foundation import generate_sub_session_id
+
+# W3C Trace Context constants (these are private in amplifier_foundation.tracing)
+SPAN_HEX_LEN = 16
+DEFAULT_PARENT_SPAN = "0" * SPAN_HEX_LEN
 
 # Configure anyio for async tests (asyncio backend only)
 pytestmark = pytest.mark.anyio
@@ -63,7 +65,7 @@ class TestGenerateSubSessionId:
         _mock_uuid(monkeypatch, hex_value)
 
         parent_session_id = "1111111111111111-2222222222222222_zen-architect"
-        result = _generate_sub_session_id(
+        result = generate_sub_session_id(
             "zen-architect",
             parent_session_id,
             None,
@@ -80,7 +82,7 @@ class TestGenerateSubSessionId:
         hex_value = "b" * 32
         _mock_uuid(monkeypatch, hex_value)
 
-        result = _generate_sub_session_id(
+        result = generate_sub_session_id(
             "Zen Architect!",
             "root-session",
             "1234567890abcdef1234567890abcdef",
@@ -97,7 +99,7 @@ class TestGenerateSubSessionId:
         hex_value = "c" * 32
         _mock_uuid(monkeypatch, hex_value)
 
-        result = _generate_sub_session_id(
+        result = generate_sub_session_id(
             ".hidden.agent",
             None,
             None,
@@ -114,7 +116,7 @@ class TestGenerateSubSessionId:
         hex_value = "d" * 32
         _mock_uuid(monkeypatch, hex_value)
 
-        result = _generate_sub_session_id(
+        result = generate_sub_session_id(
             "agent__###__core",
             None,
             None,
@@ -132,7 +134,7 @@ class TestGenerateSubSessionId:
         hex_value = "e" * 32
         _mock_uuid(monkeypatch, hex_value)
 
-        result = _generate_sub_session_id(raw_name, None, None)
+        result = generate_sub_session_id(raw_name, None, None)
 
         self._assert_format(
             result,
@@ -147,7 +149,7 @@ class TestGenerateSubSessionId:
 
         long_name = "VeryVeryLongAgentNameWith123Numbers"
         parent_session_id = "aaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb_builder"
-        result = _generate_sub_session_id(long_name, parent_session_id, None)
+        result = generate_sub_session_id(long_name, parent_session_id, None)
 
         # Agent name should be fully preserved (just lowercased)
         expected_suffix = "veryverylongagentnamewith123numbers"
@@ -164,7 +166,7 @@ class TestGenerateSubSessionId:
         _mock_uuid(monkeypatch, hex_value)
 
         trace_id = "0123456789abcdef0123456789abcdef"
-        result = _generate_sub_session_id("observer", "root", trace_id)
+        result = generate_sub_session_id("observer", "root", trace_id)
 
         self._assert_format(
             result,
@@ -177,7 +179,7 @@ class TestGenerateSubSessionId:
         hex_value = "2" * 32
         _mock_uuid(monkeypatch, hex_value)
 
-        result = _generate_sub_session_id("inspector", None, "invalid-trace")
+        result = generate_sub_session_id("inspector", None, "invalid-trace")
 
         self._assert_format(
             result,

@@ -3,55 +3,25 @@ Session persistence management for Amplifier.
 
 Manages session state persistence to filesystem with atomic writes,
 backup mechanism, and corruption recovery.
+
+Uses amplifier_foundation utilities for:
+- sanitize_message, sanitize_for_json: JSON sanitization for LLM responses
+- write_with_backup: Atomic writes with backup pattern
 """
 
-import contextlib
 import json
 import logging
 import shutil
-import tempfile
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
 
+from amplifier_foundation import sanitize_message
+from amplifier_foundation import write_with_backup
+
 from amplifier_app_cli.project_utils import get_project_slug
 
 logger = logging.getLogger(__name__)
-
-
-def _atomic_write(
-    target_file: Path, write_func, prefix: str = "temp_", error_msg: str = "Failed to write file"
-) -> None:
-    """Write file atomically with Windows-safe file handle management.
-
-    Args:
-        target_file: Final destination file path
-        write_func: Callable that takes file handle and writes content
-        prefix: Prefix for temporary file name
-        error_msg: Error message prefix for exceptions
-
-    Raises:
-        OSError: If file write or rename fails
-    """
-    session_dir = target_file.parent
-    temp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=session_dir, prefix=prefix, suffix=".tmp", delete=False
-        ) as tmp_file:
-            temp_path = Path(tmp_file.name)
-            write_func(tmp_file)
-            tmp_file.flush()
-        # File is now closed, safe to rename on Windows
-        # Atomic rename
-        temp_path.replace(target_file)
-
-    except Exception as e:
-        # Clean up temp file on failure
-        if temp_path:
-            with contextlib.suppress(Exception):
-                temp_path.unlink()
-        raise OSError(f"{error_msg}: {e}") from e
 
 
 class SessionStore:
@@ -109,78 +79,6 @@ class SessionStore:
 
         logger.debug(f"Session {session_id} saved successfully")
 
-    def _sanitize_value(self, value):
-        """Sanitize any value to ensure it's JSON-serializable.
-
-        Args:
-            value: Any value that may or may not be serializable
-
-        Returns:
-            Sanitized value that's JSON-serializable, or None if not serializable
-        """
-        # Handle None and basic types that are always serializable
-        if value is None or isinstance(value, bool | int | float | str):
-            return value
-
-        # Handle dictionaries recursively
-        if isinstance(value, dict):
-            return self._sanitize_message(value)
-
-        # Handle lists recursively
-        if isinstance(value, list):
-            sanitized_list = []
-            for item in value:
-                sanitized_item = self._sanitize_value(item)
-                # Only include items that could be sanitized
-                if sanitized_item is not None:
-                    sanitized_list.append(sanitized_item)
-            return sanitized_list
-
-        # Try to serialize other types
-        try:
-            json.dumps(value)
-            return value
-        except (TypeError, ValueError):
-            # Can't serialize, return None to indicate it should be skipped
-            logger.debug(f"Skipping non-serializable value of type {type(value)}")
-            return None
-
-    def _sanitize_message(self, message: dict) -> dict:
-        """Sanitize a message to ensure it's JSON-serializable.
-
-        Removes non-serializable objects like ThinkingBlock instances
-        while preserving the essential message content.
-
-        Args:
-            message: Message dictionary that may contain non-serializable objects
-
-        Returns:
-            Sanitized message dictionary that's JSON-serializable
-        """
-        if not isinstance(message, dict):
-            # If not a dict, use the general sanitizer
-            sanitized = self._sanitize_value(message)
-            return sanitized if sanitized is not None else {}
-
-        # Create a copy to avoid modifying the original
-        sanitized = {}
-
-        for key, value in message.items():
-            # Skip known non-serializable fields
-            if key in ["thinking_block", "content_blocks"]:
-                # These contain raw API objects that can't be serialized
-                # We preserve the thinking text if available but skip the raw objects
-                if key == "thinking_block" and isinstance(value, dict) and "text" in value:
-                    sanitized["thinking_text"] = value["text"]
-                continue
-
-            # Sanitize the value
-            sanitized_value = self._sanitize_value(value)
-            if sanitized_value is not None:
-                sanitized[key] = sanitized_value
-
-        return sanitized
-
     def _save_transcript(self, session_dir: Path, transcript: list) -> None:
         """Save transcript with atomic write and backup.
 
@@ -189,34 +87,27 @@ class SessionStore:
             transcript: List of message objects
         """
         transcript_file = session_dir / "transcript.jsonl"
-        backup_file = session_dir / "transcript.jsonl.backup"
 
-        # Create backup if file exists
-        if transcript_file.exists():
-            try:
-                shutil.copy2(transcript_file, backup_file)
-            except Exception as e:
-                logger.warning(f"Failed to create backup: {e}")
+        # Build JSONL content
+        lines = []
+        for message in transcript:
+            # Skip system and developer role messages from transcript
+            # Keep only user/assistant conversation (the actual interaction)
+            # - system: Internal instructions merged by providers
+            # - developer: Context files merged by providers
+            msg_dict = message if isinstance(message, dict) else message.model_dump()
+            if msg_dict.get("role") in ("system", "developer"):
+                continue
 
-        def write_transcript(tmp_file):
-            for message in transcript:
-                # Skip system and developer role messages from transcript
-                # Keep only user/assistant conversation (the actual interaction)
-                # - system: Internal instructions merged by providers
-                # - developer: Context files merged by providers
-                msg_dict = message if isinstance(message, dict) else message.model_dump()
-                if msg_dict.get("role") in ("system", "developer"):
-                    continue
+            # Sanitize message to ensure it's JSON-serializable
+            sanitized_msg = sanitize_message(message)
+            # Add timestamp if not present (for accurate replay timing - bd-45)
+            if "timestamp" not in sanitized_msg:
+                sanitized_msg["timestamp"] = datetime.now(UTC).isoformat(timespec="milliseconds")
+            lines.append(json.dumps(sanitized_msg, ensure_ascii=False))
 
-                # Sanitize message to ensure it's JSON-serializable
-                sanitized_message = self._sanitize_message(message)
-                # Add timestamp if not present (for accurate replay timing - bd-45)
-                if "timestamp" not in sanitized_message:
-                    sanitized_message["timestamp"] = datetime.now(UTC).isoformat(timespec="milliseconds")
-                json.dump(sanitized_message, tmp_file, ensure_ascii=False)
-                tmp_file.write("\n")
-
-        _atomic_write(transcript_file, write_transcript, prefix="transcript_", error_msg="Failed to save transcript")
+        content = "\n".join(lines) + "\n" if lines else ""
+        write_with_backup(transcript_file, content)
 
     def _save_metadata(self, session_dir: Path, metadata: dict) -> None:
         """Save metadata with atomic write and backup.
@@ -226,19 +117,8 @@ class SessionStore:
             metadata: Metadata dictionary
         """
         metadata_file = session_dir / "metadata.json"
-        backup_file = session_dir / "metadata.json.backup"
-
-        # Create backup if file exists
-        if metadata_file.exists():
-            try:
-                shutil.copy2(metadata_file, backup_file)
-            except Exception as e:
-                logger.warning(f"Failed to create backup: {e}")
-
-        def write_metadata(tmp_file):
-            json.dump(metadata, tmp_file, indent=2, ensure_ascii=False)
-
-        _atomic_write(metadata_file, write_metadata, prefix="metadata_", error_msg="Failed to save metadata")
+        content = json.dumps(metadata, indent=2, ensure_ascii=False)
+        write_with_backup(metadata_file, content)
 
     def load(self, session_id: str) -> tuple[list, dict]:
         """Load session state with corruption recovery.
@@ -424,16 +304,9 @@ class SessionStore:
         # Convert profile dict to Markdown+YAML frontmatter
         import yaml
 
-        def write_profile(tmp_file):
-            # Write YAML frontmatter
-            tmp_file.write("---\n")
-            yaml_content = yaml.dump(profile, default_flow_style=False, sort_keys=False)
-            tmp_file.write(yaml_content)
-            tmp_file.write("---\n\n")
-            # Add a description
-            tmp_file.write(f"Profile snapshot for session {session_id}\n")
-
-        _atomic_write(profile_file, write_profile, prefix="profile_", error_msg="Failed to save profile")
+        yaml_content = yaml.dump(profile, default_flow_style=False, sort_keys=False)
+        content = f"---\n{yaml_content}---\n\nProfile snapshot for session {session_id}\n"
+        write_with_backup(profile_file, content)
 
         logger.debug(f"Profile saved for session {session_id}")
 

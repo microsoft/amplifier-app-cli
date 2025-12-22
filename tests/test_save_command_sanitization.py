@@ -60,11 +60,6 @@ async def test_save_transcript_with_thinking_blocks():
         with patch("amplifier_app_cli.main.SessionStore") as mock_store_class:
             mock_store = MagicMock()
             mock_store.base_dir = temp_path
-            # Forward _sanitize_message to real implementation
-            from amplifier_app_cli.session_store import SessionStore
-
-            real_store = SessionStore.__new__(SessionStore)
-            mock_store._sanitize_message = real_store._sanitize_message
             mock_store_class.return_value = mock_store
 
             # Call _save_transcript - should NOT crash
@@ -120,10 +115,6 @@ async def test_save_transcript_without_thinking():
         with patch("amplifier_app_cli.main.SessionStore") as mock_store_class:
             mock_store = MagicMock()
             mock_store.base_dir = temp_path
-            from amplifier_app_cli.session_store import SessionStore
-
-            real_store = SessionStore.__new__(SessionStore)
-            mock_store._sanitize_message = real_store._sanitize_message
             mock_store_class.return_value = mock_store
 
             result = await processor._save_transcript("test_normal.json")

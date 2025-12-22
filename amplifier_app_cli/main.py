@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from amplifier_foundation.bundle import PreparedBundle
 from amplifier_core import AmplifierSession
 from amplifier_core import ModuleValidationError  # pyright: ignore[reportAttributeAccessIssue]
+from amplifier_foundation import sanitize_message
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
@@ -373,7 +374,7 @@ class CommandProcessor:
             from .session_store import SessionStore
 
             store = SessionStore()
-            sanitized_messages = [store._sanitize_message(msg) for msg in messages]
+            sanitized_messages = [sanitize_message(msg) for msg in messages]
 
             # Save to session directory (proper location)
             session_id = self.session.coordinator.session_id

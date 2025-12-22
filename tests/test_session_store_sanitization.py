@@ -93,7 +93,12 @@ def test_sanitize_message_preserves_serializable():
 
 
 def test_sanitize_nested_non_serializable():
-    """Test that nested non-serializable objects are handled."""
+    """Test that nested non-serializable objects are handled.
+
+    Note: Foundation's sanitize_for_json converts objects via __dict__ when possible,
+    so NonSerializable objects become {"value": ...} dicts rather than being removed.
+    This is better behavior as it preserves more information.
+    """
     with tempfile.TemporaryDirectory() as temp_dir:
         store = SessionStore(Path(temp_dir))
 
@@ -120,17 +125,20 @@ def test_sanitize_nested_non_serializable():
         # Load and verify sanitization
         loaded_transcript, loaded_metadata = store.load("test-session")
 
-        # The structure should be preserved but non-serializable removed
+        # The structure should be preserved - foundation's sanitize_for_json
+        # converts objects via __dict__, so NonSerializable becomes {"value": ...}
         assert loaded_transcript[0]["role"] == "assistant"
         assert loaded_transcript[0]["content"] == "Test"
         assert loaded_transcript[0]["nested"]["level1"]["safe"] == "value"
-        assert "level2" not in loaded_transcript[0]["nested"]["level1"]
-        # Non-serializable items in lists are removed entirely
+        # NonSerializable("deep") becomes {"value": "deep"} via __dict__
+        assert loaded_transcript[0]["nested"]["level1"]["level2"] == {"value": "deep"}
+        # NonSerializable items in lists become dicts via __dict__
         assert loaded_transcript[0]["nested"]["list"] == [
             1,
             2,
-            {},
-        ]  # The dict with non-serializable value becomes empty
+            {"value": "in list"},
+            {"key": {"value": "in dict"}},
+        ]
 
 
 def test_sanitize_with_thinking_text():
