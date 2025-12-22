@@ -24,6 +24,24 @@ if TYPE_CHECKING:
 console = Console()
 
 
+def _normalize_git_url(url: str) -> str:
+    """Normalize git URL for comparison by stripping git+ prefix and @branch suffix.
+
+    Examples:
+        git+https://github.com/microsoft/amplifier-bundle-recipes@main
+        -> https://github.com/microsoft/amplifier-bundle-recipes
+
+        https://github.com/microsoft/amplifier-bundle-recipes
+        -> https://github.com/microsoft/amplifier-bundle-recipes
+    """
+    if url.startswith("git+"):
+        url = url[4:]
+    # Don't strip @ref from file:// URLs
+    if not url.startswith("file://") and "@" in url:
+        url = url.split("@")[0]
+    return url.rstrip("/")
+
+
 def _extract_module_name_from_uri(source_uri: str) -> str:
     """Extract a clean module name from a source URI.
 
@@ -66,18 +84,19 @@ def _collect_unified_modules(
     """
     modules: dict[str, dict] = {}
 
-    # Track bundle source URIs to exclude them from modules list
+    # Track normalized bundle source URIs to exclude them from modules list
+    # Normalize URLs so git+https://...@main matches https://...
     bundle_source_uris: set[str] = set()
     if bundle_results:
         for bundle_status in bundle_results.values():
             if bundle_status.bundle_source:
-                bundle_source_uris.add(bundle_status.bundle_source)
+                bundle_source_uris.add(_normalize_git_url(bundle_status.bundle_source))
 
     # 1. Add all cached git sources (excluding bundle repos)
     for status in report.cached_git_sources:
         name = status.name
-        # Skip if this is a bundle repo (identified by URL match, not name)
-        if status.url and status.url in bundle_source_uris:
+        # Skip if this is a bundle repo (identified by normalized URL match, not name)
+        if status.url and _normalize_git_url(status.url) in bundle_source_uris:
             continue
 
         if name not in modules:
@@ -93,8 +112,8 @@ def _collect_unified_modules(
     if bundle_results:
         for bundle_name, bundle_status in bundle_results.items():
             for source in bundle_status.sources:
-                # Skip the bundle repo itself (identified by URI match)
-                if bundle_status.bundle_source and source.source_uri == bundle_status.bundle_source:
+                # Skip any bundle repo (identified by normalized URI match)
+                if _normalize_git_url(source.source_uri) in bundle_source_uris:
                     continue
 
                 name = _extract_module_name_from_uri(source.source_uri)
