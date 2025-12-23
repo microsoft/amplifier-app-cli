@@ -145,22 +145,27 @@ def install_known_providers(
             # Use helper to create appropriate source type (DRY)
             source = source_from_uri(source_uri)
 
+            # Resolve downloads to cache (for git) or validates path (for local)
+            module_path = source.resolve()
+
             if is_local_path(source_uri):
-                # For local sources, install with deps to current Python environment
-                # Uses --python to target the running Python (works for uv tool installs,
-                # venvs, and system Python without permission issues)
-                module_path = source.resolve()
+                # Local sources: install editable for development
                 result = subprocess.run(
                     ["uv", "pip", "install", "-e", str(module_path), "--python", sys.executable],
                     capture_output=True,
                     text=True,
                 )
-                if result.returncode != 0:
-                    raise RuntimeError(f"Failed to install: {result.stderr}")
             else:
-                # FoundationGitSource.resolve() downloads to ~/.amplifier/cache/modules/
-                # using new cache format: {repo-name}-{hash}/ (not legacy {hash}/{ref}/)
-                source.resolve()
+                # Git sources: install from cached path (non-editable)
+                # This registers entry points so providers can be discovered
+                result = subprocess.run(
+                    ["uv", "pip", "install", str(module_path), "--python", sys.executable],
+                    capture_output=True,
+                    text=True,
+                )
+
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to install: {result.stderr}")
 
             if verbose and console:
                 suffix = " (local)" if is_local_path(source_uri) else ""
