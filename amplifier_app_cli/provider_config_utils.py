@@ -114,16 +114,35 @@ def _should_show_field(field: dict[str, Any], collected_config: dict[str, Any]) 
 
     Returns:
         True if field should be shown
+
+    Supported patterns for expected_value:
+        - "exact-value" - Exact match (case-insensitive)
+        - "contains:substring" - Match if actual value contains substring
+        - "startswith:prefix" - Match if actual value starts with prefix
     """
     show_when = field.get("show_when")
     if not show_when:
         return True
 
     # show_when is a dict like {"model": "claude-sonnet-4-5-20250929"}
+    # or with patterns like {"model": "contains:sonnet"}
     for key, expected_value in show_when.items():
-        actual_value = collected_config.get(key, "")
-        if str(actual_value).lower() != str(expected_value).lower():
-            return False
+        actual_value = str(collected_config.get(key, "")).lower()
+        expected_str = str(expected_value).lower()
+
+        # Check for pattern matching prefixes
+        if expected_str.startswith("contains:"):
+            pattern = expected_str[9:]  # Remove "contains:" prefix
+            if pattern not in actual_value:
+                return False
+        elif expected_str.startswith("startswith:"):
+            pattern = expected_str[11:]  # Remove "startswith:" prefix
+            if not actual_value.startswith(pattern):
+                return False
+        else:
+            # Default: exact match (case-insensitive)
+            if actual_value != expected_str:
+                return False
     return True
 
 
