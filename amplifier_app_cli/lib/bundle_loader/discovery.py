@@ -49,11 +49,10 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str]] = {
         "package": "",  # No Python package - bundle-only
         "remote": "git+https://github.com/microsoft/amplifier-bundle-recipes@main",
     },
-    # Future bundles follow the same pattern:
-    # "design-intelligence": {
-    #     "package": "amplifier_collection_design_intelligence",
-    #     "remote": "git+https://github.com/microsoft/amplifier-collection-design-intelligence@main",
-    # },
+    "design-intelligence": {
+        "package": "",  # No Python package - bundle-only
+        "remote": "git+https://github.com/microsoft/amplifier-bundle-design-intelligence@main",
+    },
 }
 
 
