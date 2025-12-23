@@ -60,6 +60,8 @@ class FoundationGitSource:
         """Resolve to cached git repository path (sync wrapper).
 
         Uses foundation's async resolver wrapped in sync for kernel compatibility.
+        Handles both sync and async contexts safely by running in a separate thread
+        when called from within an async context.
 
         Returns:
             Path to cached module directory.
@@ -67,16 +69,32 @@ class FoundationGitSource:
         Raises:
             ModuleResolutionError: Clone/resolution failed.
         """
+        from concurrent.futures import ThreadPoolExecutor
+
         from amplifier_foundation.exceptions import BundleNotFoundError
 
-        try:
-            # Run async resolver synchronously
+        def _run_async():
+            """Run the async resolver in a new event loop (in a separate thread)."""
             loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             try:
-                result = loop.run_until_complete(self._resolver.resolve(self.uri))
-                return result.active_path
+                return loop.run_until_complete(self._resolver.resolve(self.uri))
             finally:
                 loop.close()
+
+        try:
+            # Check if we're in an async context
+            try:
+                asyncio.get_running_loop()
+                # We're in async context - run in thread pool to avoid nested loop error
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_run_async)
+                    result = future.result()
+            except RuntimeError:
+                # No running loop - we can safely create one directly
+                result = _run_async()
+
+            return result.active_path
         except BundleNotFoundError as e:
             raise ModuleResolutionError(str(e)) from e
 
