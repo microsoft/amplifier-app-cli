@@ -55,7 +55,7 @@ from .lib.bundle_loader import AppModuleResolver
 from .lib.legacy import parse_markdown_body
 from .lib.mention_loading import AppMentionResolver
 from .lib.mention_loading import ContentDeduplicator
-from .paths import create_module_resolver
+from .paths import create_foundation_resolver
 from .paths import create_profile_loader
 from .session_store import SessionStore
 from .ui.error_display import display_validation_error
@@ -1060,7 +1060,7 @@ async def interactive_chat(
         # Wrap bundle resolver with app-layer fallback policy
         # This allows provider-agnostic bundles like "foundation" to work with user-configured providers
         # Pattern: Foundation provides mechanism, app provides policy (per KERNEL_PHILOSOPHY)
-        fallback_resolver = create_module_resolver()
+        fallback_resolver = create_foundation_resolver()
         prepared_bundle.resolver = AppModuleResolver(  # type: ignore[assignment]
             bundle_resolver=prepared_bundle.resolver,
             settings_resolver=fallback_resolver,
@@ -1103,7 +1103,7 @@ async def interactive_chat(
         )
 
         # Mount module source resolver (app-layer policy)
-        resolver = create_module_resolver()
+        resolver = create_foundation_resolver()
         await session.coordinator.mount("module-source-resolver", resolver)
 
         # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
@@ -1395,7 +1395,7 @@ async def execute_single(
         # Wrap bundle resolver with app-layer fallback policy
         # This allows provider-agnostic bundles like "foundation" to work with user-configured providers
         # Pattern: Foundation provides mechanism, app provides policy (per KERNEL_PHILOSOPHY)
-        fallback_resolver = create_module_resolver()
+        fallback_resolver = create_foundation_resolver()
         prepared_bundle.resolver = AppModuleResolver(  # type: ignore[assignment]
             bundle_resolver=prepared_bundle.resolver,
             settings_resolver=fallback_resolver,
@@ -1423,7 +1423,7 @@ async def execute_single(
         # Profile mode: manual setup (bundle mode already initialized via create_session)
         if not (profile_name.startswith("bundle:") and prepared_bundle is not None):
             # Mount module source resolver (app-layer policy)
-            resolver = create_module_resolver()
+            resolver = create_foundation_resolver()
             await session.coordinator.mount("module-source-resolver", resolver)
 
             # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
@@ -1623,7 +1623,7 @@ async def execute_single_with_session(
         # Wrap bundle resolver with app-layer fallback policy
         # This allows provider-agnostic bundles like "foundation" to work with user-configured providers
         # Pattern: Foundation provides mechanism, app provides policy (per KERNEL_PHILOSOPHY)
-        fallback_resolver = create_module_resolver()
+        fallback_resolver = create_foundation_resolver()
         prepared_bundle.resolver = AppModuleResolver(  # type: ignore[assignment]
             bundle_resolver=prepared_bundle.resolver,
             settings_resolver=fallback_resolver,
@@ -1651,7 +1651,7 @@ async def execute_single_with_session(
         # Profile mode: manual setup (bundle mode already initialized via create_session)
         if not (profile_name.startswith("bundle:") and prepared_bundle is not None):
             # Mount module source resolver (app-layer policy)
-            resolver = create_module_resolver()
+            resolver = create_foundation_resolver()
             await session.coordinator.mount("module-source-resolver", resolver)
             await session.initialize()
 
@@ -1860,7 +1860,7 @@ async def interactive_chat_with_session(
         # Wrap bundle resolver with app-layer fallback policy
         # This allows provider-agnostic bundles like "foundation" to work with user-configured providers
         # Pattern: Foundation provides mechanism, app provides policy (per KERNEL_PHILOSOPHY)
-        fallback_resolver = create_module_resolver()
+        fallback_resolver = create_foundation_resolver()
         prepared_bundle.resolver = AppModuleResolver(  # type: ignore[assignment]
             bundle_resolver=prepared_bundle.resolver,
             settings_resolver=fallback_resolver,
@@ -1885,7 +1885,7 @@ async def interactive_chat_with_session(
         )
 
         # Mount module source resolver (app-layer policy)
-        resolver = create_module_resolver()
+        resolver = create_foundation_resolver()
         await session.coordinator.mount("module-source-resolver", resolver)
 
         await session.initialize()

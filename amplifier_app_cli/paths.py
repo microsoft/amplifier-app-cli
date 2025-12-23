@@ -20,6 +20,7 @@ from amplifier_app_cli.lib.legacy import StandardModuleSourceResolver
 if TYPE_CHECKING:
     from amplifier_core import AmplifierSession
 
+    from amplifier_app_cli.lib.bundle_loader.resolvers import FoundationSettingsResolver
     from amplifier_app_cli.lib.legacy import AgentLoader
 
 # Type alias for scope names used in CLI
@@ -713,5 +714,95 @@ def create_module_resolver() -> StandardModuleSourceResolver:
     return StandardModuleSourceResolver(
         settings_provider=CLISettingsProvider(),
         collection_provider=CLICollectionModuleProvider(),  # type: ignore[call-arg]
+        workspace_dir=get_workspace_dir(),
+    )
+
+
+def create_foundation_resolver() -> "FoundationSettingsResolver":
+    """Create CLI-configured foundation resolver with settings and collection providers.
+
+    This resolver uses foundation's source handlers which create the NEW cache format:
+    {repo-name}-{hash}/ instead of legacy {hash}/{ref}/ format.
+
+    Returns:
+        FoundationSettingsResolver with CLI providers injected
+    """
+    from amplifier_app_cli.lib.bundle_loader.resolvers import FoundationSettingsResolver
+
+    config = create_config_manager()
+
+    # CLI implements SettingsProviderProtocol
+    class CLISettingsProvider:
+        """CLI implementation of SettingsProviderProtocol."""
+
+        def get_module_sources(self) -> dict[str, str]:
+            """Get all module sources from CLI settings.
+
+            Merges sources from multiple locations:
+            1. settings.sources (explicit source overrides)
+            2. settings.modules.providers[] (registered provider modules)
+            3. settings.modules.tools[] (registered tool modules)
+            4. settings.modules.hooks[] (registered hook modules)
+
+            Module-specific sources take precedence over explicit overrides
+            to ensure user-added modules are properly resolved.
+            """
+            # Start with explicit source overrides
+            sources = dict(config.get_module_sources())
+
+            # Extract sources from registered modules (modules.providers[], modules.tools[], etc.)
+            merged = config.get_merged_settings()
+            modules_section = merged.get("modules", {})
+
+            # Check each module type category
+            for category in ["providers", "tools", "hooks", "orchestrators", "contexts"]:
+                module_list = modules_section.get(category, [])
+                if isinstance(module_list, list):
+                    for entry in module_list:
+                        if isinstance(entry, dict):
+                            module_id = entry.get("module")
+                            source = entry.get("source")
+                            if module_id and source:
+                                # Module-specific sources override explicit overrides
+                                sources[module_id] = source
+
+            return sources
+
+        def get_module_source(self, module_id: str) -> str | None:
+            """Get module source from CLI settings."""
+            return self.get_module_sources().get(module_id)
+
+    # CLI implements CollectionModuleProviderProtocol
+    class CLICollectionModuleProvider:
+        """CLI implementation of CollectionModuleProviderProtocol.
+
+        Uses filesystem discovery (same as profiles/agents) for consistency.
+        Lock file tracks metadata (source URLs, SHAs) for updates, not existence.
+        """
+
+        def get_collection_modules(self) -> dict[str, str]:
+            """Get module_id -> absolute_path from installed collections.
+
+            Uses filesystem discovery via CollectionResolver - same pattern as
+            profile/agent discovery for consistency across all resource types.
+            """
+            from amplifier_app_cli.lib.legacy import discover_collection_resources
+
+            resolver = create_collection_resolver()
+            modules = {}
+
+            for _metadata_name, collection_path in resolver.list_collections():
+                resources = discover_collection_resources(collection_path)
+
+                for module_path in resources.modules:
+                    # Module name is the directory name
+                    module_name = module_path.name
+                    modules[module_name] = str(module_path)
+
+            return modules
+
+    return FoundationSettingsResolver(
+        settings_provider=CLISettingsProvider(),
+        collection_provider=CLICollectionModuleProvider(),
         workspace_dir=get_workspace_dir(),
     )
