@@ -1,6 +1,6 @@
 """Cache management commands for the Amplifier CLI.
 
-Provides commands to inspect, manage, and clear the unified cache directory
+Provides commands to inspect, manage, and clean the unified cache directory
 at ~/.amplifier/cache/. All modules (whether loaded via bundles or legacy
 profiles) are cached here.
 """
@@ -134,7 +134,7 @@ def cache_list(module_type: str):
     console.print(f"\n[bold]Total:[/bold] {len(modules)} modules, {_format_size(total_size)}")
 
 
-@cache.command(name="clear")
+@cache.command(name="clean")
 @click.option(
     "--force",
     "-f",
@@ -144,83 +144,83 @@ def cache_list(module_type: str):
 @click.option(
     "--mutable-only",
     is_flag=True,
-    help="Only clear mutable refs (branches), keep immutable (tags, SHAs)",
+    help="Only clean mutable refs (branches), keep immutable (tags, SHAs)",
 )
-def cache_clear(force: bool, mutable_only: bool):
-    """Clear the module cache.
+def cache_clean(force: bool, mutable_only: bool):
+    """Clean the module cache.
 
-    By default, clears all cached modules. Use --mutable-only to only
-    clear branch-based refs while keeping tagged versions and SHA-pinned
+    By default, cleans all cached modules. Use --mutable-only to only
+    clean branch-based refs while keeping tagged versions and SHA-pinned
     modules intact.
     """
     cache_dir = get_cache_dir()
 
     if not cache_dir.exists():
-        console.print("[dim]Cache directory does not exist - nothing to clear.[/dim]")
+        console.print("[dim]Cache directory does not exist - nothing to clean.[/dim]")
         return
 
-    # Get info about what will be cleared
+    # Get info about what will be cleaned
     modules = scan_cached_modules()
     if not modules:
-        console.print("[dim]No cached modules found - nothing to clear.[/dim]")
+        console.print("[dim]No cached modules found - nothing to clean.[/dim]")
         return
 
     # Count what will be affected
     if mutable_only:
-        to_clear = [m for m in modules if m.is_mutable]
+        to_clean = [m for m in modules if m.is_mutable]
         to_keep = [m for m in modules if not m.is_mutable]
-        clear_desc = "mutable modules (branches)"
+        clean_desc = "mutable modules (branches)"
     else:
-        to_clear = modules
+        to_clean = modules
         to_keep = []
-        clear_desc = "all cached modules"
+        clean_desc = "all cached modules"
 
-    if not to_clear:
-        console.print("[dim]No modules match the criteria - nothing to clear.[/dim]")
+    if not to_clean:
+        console.print("[dim]No modules match the criteria - nothing to clean.[/dim]")
         if mutable_only and to_keep:
             console.print(f"[dim]{len(to_keep)} immutable modules will be kept.[/dim]")
         return
 
     # Calculate sizes
-    total_size = sum(_get_dir_size(m.cache_path) for m in to_clear)
+    total_size = sum(_get_dir_size(m.cache_path) for m in to_clean)
 
-    # Show what will be cleared
-    console.print(f"\n[bold]Will clear {clear_desc}:[/bold]")
-    console.print(f"  Modules: {len(to_clear)}")
+    # Show what will be cleaned
+    console.print(f"\n[bold]Will clean {clean_desc}:[/bold]")
+    console.print(f"  Modules: {len(to_clean)}")
     console.print(f"  Size: {_format_size(total_size)}")
 
     if to_keep:
         console.print(f"\n[dim]Will keep {len(to_keep)} immutable modules.[/dim]")
 
     # Confirm unless --force
-    if not force and not click.confirm("\nProceed with clearing cache?"):
+    if not force and not click.confirm("\nProceed with cleaning cache?"):
         console.print("[yellow]Aborted.[/yellow]")
         return
 
-    # Clear the cache
-    cleared = 0
+    # Clean the cache
+    cleaned = 0
     errors = 0
 
     if mutable_only:
-        # Clear individual module directories
-        for module in to_clear:
+        # Clean individual module directories
+        for module in to_clean:
             try:
                 shutil.rmtree(module.cache_path)
-                cleared += 1
+                cleaned += 1
             except Exception as e:
-                console.print(f"[red]Error clearing {module.module_id}:[/red] {e}")
+                console.print(f"[red]Error cleaning {module.module_id}:[/red] {e}")
                 errors += 1
     else:
-        # Clear entire cache directory
+        # Clean entire cache directory
         try:
             shutil.rmtree(cache_dir)
-            cleared = len(to_clear)
+            cleaned = len(to_clean)
         except Exception as e:
-            console.print(f"[red]Error clearing cache:[/red] {e}")
-            errors = len(to_clear)
+            console.print(f"[red]Error cleaning cache:[/red] {e}")
+            errors = len(to_clean)
 
     # Report results
     if errors == 0:
-        console.print(f"\n[green]Cleared {cleared} modules ({_format_size(total_size)})[/green]")
+        console.print(f"\n[green]Cleaned {cleaned} modules ({_format_size(total_size)})[/green]")
     else:
-        console.print(f"\n[yellow]Cleared {cleared} modules, {errors} errors[/yellow]")
+        console.print(f"\n[yellow]Cleaned {cleaned} modules, {errors} errors[/yellow]")
