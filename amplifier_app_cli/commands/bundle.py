@@ -504,21 +504,54 @@ def _get_bundle_source_scope(config_manager) -> str:
 
 
 @bundle.command(name="add")
-@click.argument("name")
 @click.argument("uri")
-def bundle_add(name: str, uri: str):
+@click.option("--name", "-n", "name_override", help="Custom name for the bundle (default: from bundle metadata)")
+def bundle_add(uri: str, name_override: str | None):
     """Add a bundle to the registry for discovery.
 
-    NAME is the local name to use for this bundle.
     URI is the location of the bundle (git+https://, file://, etc.).
+    The bundle name is automatically extracted from the bundle's metadata.
+    Use --name to specify a custom alias instead.
 
     Examples:
 
-        amplifier bundle add recipes git+https://github.com/microsoft/amplifier-bundle-recipes@main
+        \b
+        # Auto-derives name from bundle metadata
+        amplifier bundle add git+https://github.com/microsoft/amplifier-bundle-recipes@main
 
-        amplifier bundle add my-local file:///path/to/bundle
+        \b
+        # Use custom alias
+        amplifier bundle add git+https://github.com/microsoft/amplifier-bundle-recipes@main --name my-recipes
+
+        \b
+        # Local bundle
+        amplifier bundle add file:///path/to/bundle
     """
+    from amplifier_foundation import load_bundle
+
     from ..lib.bundle_loader import user_registry
+
+    # Fetch and parse bundle to extract name from metadata
+    console.print(f"[dim]Fetching bundle from {uri}...[/dim]")
+
+    try:
+        # Use load_bundle to resolve URI and load bundle metadata
+        bundle = asyncio.run(load_bundle(uri, auto_include=False))
+        bundle_name = bundle.name
+        bundle_version = bundle.version
+
+        if not bundle_name:
+            console.print("[red]Error:[/red] Bundle has no name in its metadata")
+            console.print("  Use --name to specify a name manually")
+            sys.exit(1)
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] Failed to fetch bundle: {e}")
+        console.print("  Check the URI and try again")
+        sys.exit(1)
+
+    # Use override name if provided, otherwise use name from metadata
+    name = name_override or bundle_name
 
     # Check if name already exists
     existing = user_registry.get_bundle(name)
@@ -532,6 +565,10 @@ def bundle_add(name: str, uri: str):
     user_registry.add_bundle(name, uri)
     console.print(f"[green]✓ Added bundle '{name}'[/green]")
     console.print(f"  URI: {uri}")
+    if bundle_version:
+        console.print(f"  Version: {bundle_version}")
+    if name_override and name_override != bundle_name:
+        console.print(f"  [dim](Bundle's canonical name: {bundle_name})[/dim]")
     console.print("\n[dim]Use 'amplifier bundle list' to see all bundles[/dim]")
     console.print(f"[dim]Use 'amplifier bundle use {name}' to activate this bundle[/dim]")
 

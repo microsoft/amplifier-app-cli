@@ -54,7 +54,7 @@ amplifier bundle current                              # Show active bundle
 amplifier bundle use <name> [--local|--project|--global]  # Set active bundle
 amplifier bundle list                                 # List available bundles
 amplifier bundle show <name>                          # Show bundle details
-amplifier bundle add <name> <git-url>                 # Register a bundle
+amplifier bundle add <git-url> [--name alias]         # Register a bundle (name auto-derived)
 amplifier bundle remove <name>                        # Unregister a bundle
 amplifier bundle clear                                # Reset to default (foundation)
 
