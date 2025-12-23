@@ -340,30 +340,61 @@ async def _get_umbrella_dependency_details(umbrella_info) -> list[dict]:
 
 
 async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
-    """Check status of all discovered bundles.
+    """Check status of all discovered bundles WITHOUT loading them.
+
+    This checks cache status directly from URIs to avoid the side effect of
+    registry.load() downloading missing bundles, which would make deleted
+    caches appear as "up to date".
 
     Returns:
         Dict mapping bundle name to BundleStatus
     """
-    from amplifier_foundation import check_bundle_status
+    from amplifier_foundation.paths.resolution import get_amplifier_home
+    from amplifier_foundation.paths.resolution import parse_uri
+    from amplifier_foundation.sources.git import GitSourceHandler
+    from amplifier_foundation.sources.protocol import SourceStatus
+    from amplifier_foundation.updates import BundleStatus
 
     discovery = AppBundleDiscovery()
     registry = create_bundle_registry()
+    cache_dir = get_amplifier_home() / "cache"
+    git_handler = GitSourceHandler()
 
     bundle_names = discovery.list_bundles()
     results: dict[str, BundleStatus] = {}
 
     for bundle_name in bundle_names:
         try:
-            loaded = await registry.load(bundle_name)
-            if isinstance(loaded, dict):
-                continue  # Skip if not a single bundle
-            bundle_obj = loaded
+            # Get URI without loading (avoids download side effect)
+            uri = registry.find(bundle_name)
+            if not uri:
+                continue
 
-            status: BundleStatus = await check_bundle_status(bundle_obj)
-            results[bundle_name] = status
+            # Check status directly from URI
+            parsed = parse_uri(uri)
+            if git_handler.can_handle(parsed):
+                source_status: SourceStatus = await git_handler.get_status(parsed, cache_dir)
+                results[bundle_name] = BundleStatus(
+                    bundle_name=bundle_name,
+                    bundle_source=uri,
+                    sources=[source_status],
+                )
+            else:
+                # Non-git bundles - report as unknown
+                results[bundle_name] = BundleStatus(
+                    bundle_name=bundle_name,
+                    bundle_source=uri,
+                    sources=[
+                        SourceStatus(
+                            source_uri=uri,
+                            is_cached=True,
+                            has_update=None,
+                            summary="Update checking not supported for this source type",
+                        )
+                    ],
+                )
         except Exception:
-            continue  # Skip bundles that fail to load
+            continue  # Skip bundles that fail status check
 
     return results
 
