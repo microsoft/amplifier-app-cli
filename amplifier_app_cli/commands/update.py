@@ -566,14 +566,19 @@ def _show_concise_report(
             repo_info = _get_bundle_repo_info(bundle_status)
 
             if repo_info:
-                status_symbol = create_status_symbol(repo_info["cached_sha"], repo_info["remote_sha"])
                 cached_sha = repo_info["cached_sha"]
                 remote_sha = repo_info["remote_sha"]
             else:
                 # Bundle loaded but no repo info available (e.g., local bundle)
-                status_symbol = Text("✓", style="green")
                 cached_sha = None
                 remote_sha = None
+
+            # Status symbol reflects aggregate bundle state (bundle repo + ALL module sources)
+            # not just the bundle repo's SHA - this makes status consistent with "Update X bundles" message
+            if bundle_status.has_updates:
+                status_symbol = Text("●", style="yellow")
+            else:
+                status_symbol = Text("✓", style="green")
 
             # Add "(active)" marker if this is the active bundle
             display_name = bundle_name

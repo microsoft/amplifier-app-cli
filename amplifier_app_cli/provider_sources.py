@@ -90,18 +90,21 @@ def source_from_uri(source_uri: str):
     Single source of truth for source type decision - use this instead of
     manually checking is_local_path() and creating FileSource/GitSource.
 
+    Uses foundation-based source classes that create new-format cache directories:
+    {repo-name}-{hash}/ instead of legacy {hash}/{ref}/ format.
+
     Args:
         source_uri: Source URI (git+https://... or local path like /path, ./path)
 
     Returns:
-        FileSource for local paths, GitSource for git URLs
+        FoundationFileSource for local paths, FoundationGitSource for git URLs
     """
-    from amplifier_app_cli.lib.legacy import FileSource
-    from amplifier_app_cli.lib.legacy import GitSource
+    from amplifier_app_cli.lib.bundle_loader.resolvers import FoundationFileSource
+    from amplifier_app_cli.lib.bundle_loader.resolvers import FoundationGitSource
 
     if is_local_path(source_uri):
-        return FileSource(source_uri)
-    return GitSource.from_uri(source_uri)
+        return FoundationFileSource(source_uri)
+    return FoundationGitSource(source_uri)
 
 
 def install_known_providers(
@@ -155,7 +158,8 @@ def install_known_providers(
                 if result.returncode != 0:
                     raise RuntimeError(f"Failed to install: {result.stderr}")
             else:
-                # GitSource.resolve() downloads and installs with deps to ~/.amplifier/cache/
+                # FoundationGitSource.resolve() downloads to ~/.amplifier/cache/modules/
+                # using new cache format: {repo-name}-{hash}/ (not legacy {hash}/{ref}/)
                 source.resolve()
 
             if verbose and console:
