@@ -451,10 +451,12 @@ def module_update(module_id: str | None, check_only: bool, mutable_only: bool):
         # Update: clear + immediate re-download
         console.print(f"Updating {module_id}@{cached_module.ref}...")
         try:
-            update_module(
-                url=cached_module.url,
-                ref=cached_module.ref,
-                progress_callback=lambda mid, status: console.print(f"  {status}...", end="\r"),
+            asyncio.run(
+                update_module(
+                    url=cached_module.url,
+                    ref=cached_module.ref,
+                    progress_callback=lambda mid, status: console.print(f"  {status}...", end="\r"),
+                )
             )
             console.print(f"[green]✓ Updated {module_id}@{cached_module.ref}[/green]")
         except Exception as e:

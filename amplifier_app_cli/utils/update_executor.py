@@ -68,7 +68,7 @@ async def execute_selective_module_update(
             # Use URL and ref from status if available
             if status.url and status.ref:
                 logger.debug(f"Updating {module_name} from {status.url}@{status.ref}")
-                update_module(url=status.url, ref=status.ref, progress_callback=progress_callback)
+                await update_module(url=status.url, ref=status.ref, progress_callback=progress_callback)
                 updated.append(f"{module_name}@{status.ref}")
                 if progress_callback:
                     progress_callback(module_name, "done")
@@ -76,7 +76,7 @@ async def execute_selective_module_update(
                 # Fallback: find module by name to get URL and ref
                 cached = find_cached_module(module_name)
                 if cached:
-                    update_module(url=cached.url, ref=cached.ref, progress_callback=progress_callback)
+                    await update_module(url=cached.url, ref=cached.ref, progress_callback=progress_callback)
                     updated.append(f"{module_name}@{cached.ref}")
                     if progress_callback:
                         progress_callback(module_name, "done")

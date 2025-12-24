@@ -237,56 +237,52 @@ def clear_module_cache(
     cleared = 0
     skipped = 0
 
-    for cache_hash in cache_dir.iterdir():
-        if not cache_hash.is_dir():
-            continue
-
-        for ref_dir in cache_hash.iterdir():
-            if not ref_dir.is_dir():
-                continue
-
-            metadata_file = ref_dir / ".amplifier_cache_metadata.json"
-            if not metadata_file.exists():
-                # No metadata - just delete
+    if module_id is None and not mutable_only:
+        # Clear ALL cached modules - simple delete of all directories
+        # Foundation will rebuild correctly on next use
+        for entry in cache_dir.iterdir():
+            if entry.is_dir():
                 try:
-                    shutil.rmtree(ref_dir)
+                    if progress_callback:
+                        progress_callback(entry.name, "clearing")
+                    shutil.rmtree(entry)
                     cleared += 1
                 except Exception as e:
-                    logger.warning(f"Could not clear {ref_dir}: {e}")
-                continue
+                    logger.warning(f"Could not clear {entry}: {e}")
+        return cleared, skipped
 
-            try:
-                metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
-                url = metadata.get("url", "")
-                cached_module_id = _extract_module_id(url)
+    # For specific module or mutable_only: use scan_cached_modules to find entries
+    # This handles both foundation format and legacy format
+    modules = scan_cached_modules()
 
-                # Filter by module_id if specified
-                if module_id and cached_module_id != module_id:
-                    continue
+    for module in modules:
+        # Filter by module_id if specified
+        if module_id and module.module_id != module_id:
+            continue
 
-                # Skip immutable refs if mutable_only is set
-                if mutable_only and not metadata.get("is_mutable", True):
-                    skipped += 1
-                    continue
+        # Skip immutable refs if mutable_only is set
+        if mutable_only and not module.is_mutable:
+            skipped += 1
+            continue
 
-                # Report progress
-                if progress_callback:
-                    progress_callback(cached_module_id, "clearing")
+        # Report progress
+        if progress_callback:
+            progress_callback(module.module_id, "clearing")
 
-                # Delete cache directory
-                shutil.rmtree(ref_dir)
+        # Delete cache directory
+        try:
+            if module.cache_path.exists():
+                shutil.rmtree(module.cache_path)
                 cleared += 1
-
-                logger.debug(f"Cleared cache for {cached_module_id}@{metadata.get('ref', 'unknown')}")
-
-            except Exception as e:
-                logger.warning(f"Could not clear {ref_dir}: {e}")
-                continue
+                logger.debug(f"Cleared cache for {module.module_id}@{module.ref}")
+        except Exception as e:
+            logger.warning(f"Could not clear {module.cache_path}: {e}")
+            continue
 
     return cleared, skipped
 
 
-def update_module(
+async def update_module(
     url: str,
     ref: str,
     progress_callback: Callable[[str, str], None] | None = None,
@@ -294,7 +290,7 @@ def update_module(
     """Clear cache and immediately re-download a module.
 
     Single source of truth for update (clear + re-download).
-    Uses GitSource from amplifier-module-resolution.
+    Uses foundation's SimpleSourceResolver (proper git clone, not uv pip install).
 
     Args:
         url: Git repository URL
@@ -304,7 +300,7 @@ def update_module(
     Returns:
         Path to the newly downloaded module
     """
-    from amplifier_app_cli.lib.legacy import GitSource
+    from amplifier_foundation.sources import SimpleSourceResolver
 
     module_id = _extract_module_id(url)
 
@@ -319,10 +315,14 @@ def update_module(
     if progress_callback:
         progress_callback(module_id, "downloading")
 
-    # Re-download using GitSource
-    git_source = GitSource(url=url, ref=ref)
-    result_path = git_source.resolve()
+    # Build git URI in foundation format (git+url@ref)
+    uri = f"git+{url}@{ref}"
 
-    logger.debug(f"Updated {module_id}@{ref} to {result_path}")
+    # Use foundation's resolver (creates proper .git directory via git clone)
+    cache_dir = get_cache_dir()
+    resolver = SimpleSourceResolver(cache_dir=cache_dir)
+    result = await resolver.resolve(uri)
 
-    return result_path
+    logger.debug(f"Updated {module_id}@{ref} to {result.active_path}")
+
+    return result.active_path
