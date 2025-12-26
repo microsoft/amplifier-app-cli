@@ -2,32 +2,159 @@
 
 Philosophy: DRY consolidation of cache scanning, clearing, and updating.
 All module cache operations should go through this module.
+
+Type Detection Philosophy:
+- NEVER use naming conventions (amplifier-bundle-*, amplifier-module-*) to identify types
+- Use authoritative structural markers instead:
+  - Bundles: presence of bundle.md or bundle.yaml file
+  - Modules: pyproject.toml with [project.entry-points."amplifier.modules"]
+- Extract display names from the items' own definitions, not repo names
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore[import-not-found]
+
+import yaml
+
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Structural Type Detection (Authoritative - NOT name-based)
+# =============================================================================
+
+
+def is_bundle(cache_path: Path) -> bool:
+    """Check if cached entry is a bundle using authoritative structural marker.
+
+    Per amplifier-foundation/paths/discovery.py, bundles are identified by
+    the presence of bundle.md or bundle.yaml file.
+    """
+    return (cache_path / "bundle.md").exists() or (cache_path / "bundle.yaml").exists()
+
+
+def get_bundle_name(cache_path: Path) -> str | None:
+    """Extract bundle name from bundle.md or bundle.yaml frontmatter.
+
+    Returns the bundle's own declared name, not the repo name.
+    """
+    # Try bundle.md first (YAML frontmatter between --- markers)
+    bundle_md = cache_path / "bundle.md"
+    if bundle_md.exists():
+        try:
+            content = bundle_md.read_text(encoding="utf-8")
+            # Extract YAML frontmatter between --- markers
+            if content.startswith("---"):
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    frontmatter = yaml.safe_load(parts[1])
+                    if isinstance(frontmatter, dict):
+                        bundle_section = frontmatter.get("bundle", {})
+                        if isinstance(bundle_section, dict) and "name" in bundle_section:
+                            return bundle_section["name"]
+        except Exception as e:
+            logger.debug(f"Could not parse bundle.md frontmatter: {e}")
+
+    # Try bundle.yaml
+    bundle_yaml = cache_path / "bundle.yaml"
+    if bundle_yaml.exists():
+        try:
+            data = yaml.safe_load(bundle_yaml.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                bundle_section = data.get("bundle", data)  # May be nested or flat
+                if isinstance(bundle_section, dict) and "name" in bundle_section:
+                    return bundle_section["name"]
+        except Exception as e:
+            logger.debug(f"Could not parse bundle.yaml: {e}")
+
+    return None
+
+
+def get_module_info_from_pyproject(cache_path: Path) -> tuple[str | None, str | None]:
+    """Extract module name and type from pyproject.toml.
+
+    Per amplifier-core/loader.py, modules are identified by:
+    - Entry point group: amplifier.modules
+    - The entry point key (e.g., "tool-bash") reveals both ID and type
+
+    Returns:
+        Tuple of (module_id, module_type) or (None, None) if not a module.
+    """
+    pyproject = cache_path / "pyproject.toml"
+    if not pyproject.exists():
+        return None, None
+
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        entry_points = data.get("project", {}).get("entry-points", {}).get("amplifier.modules", {})
+
+        if not entry_points:
+            return None, None
+
+        # Get the first entry point key (e.g., "tool-bash", "provider-anthropic")
+        module_id = next(iter(entry_points.keys()))
+
+        # Infer type from the entry point key prefix
+        prefix = module_id.split("-")[0] if "-" in module_id else module_id
+        type_map = {
+            "tool": "tool",
+            "hooks": "hook",
+            "provider": "provider",
+            "loop": "orchestrator",
+            "context": "context",
+            "agent": "agent",
+        }
+        module_type = type_map.get(prefix, "module")
+
+        return module_id, module_type
+
+    except Exception as e:
+        logger.debug(f"Could not parse pyproject.toml: {e}")
+        return None, None
+
+
+def get_package_name_from_pyproject(cache_path: Path) -> str | None:
+    """Get the package name from pyproject.toml [project] name field."""
+    pyproject = cache_path / "pyproject.toml"
+    if not pyproject.exists():
+        return None
+
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        return data.get("project", {}).get("name")
+    except Exception:
+        return None
 
 
 @dataclass
 class CachedModuleInfo:
-    """Information about a cached module."""
+    """Information about a cached module or bundle.
 
-    module_id: str
-    module_type: str  # tool, hook, provider, orchestrator, context, agent
+    Note: Despite the name, this also tracks bundles. The module_type field
+    distinguishes between them (module_type="bundle" for bundles).
+    """
+
+    module_id: str  # Entry point key for modules (e.g., "tool-bash"), bundle name for bundles
+    module_type: str  # tool, hook, provider, orchestrator, context, agent, bundle
     ref: str
     sha: str
     url: str
     is_mutable: bool
     cached_at: str
     cache_path: Path
+    display_name: str = ""  # User-friendly name from the item's own definition
 
 
 def get_cache_dir() -> Path:
@@ -40,8 +167,12 @@ def get_cache_dir() -> Path:
     return Path.home() / ".amplifier" / "cache"
 
 
-def _infer_module_type(module_id: str) -> str:
-    """Infer module type from ID prefix."""
+def _infer_module_type_from_name(module_id: str) -> str:
+    """FALLBACK: Infer module type from ID prefix.
+
+    WARNING: This is a fallback only. Prefer structural detection via
+    get_module_info_from_pyproject() which uses authoritative entry points.
+    """
     if module_id.startswith("tool-"):
         return "tool"
     if module_id.startswith("hooks-"):
@@ -57,35 +188,34 @@ def _infer_module_type(module_id: str) -> str:
     return "unknown"
 
 
-def _extract_module_id(url: str) -> str:
-    """Extract module ID from repository URL.
-
-    Example: https://github.com/microsoft/amplifier-module-tool-filesystem.git
-           → tool-filesystem
-    """
+def _extract_repo_name(url: str) -> str:
+    """Extract repository name from URL (for fallback identification only)."""
     repo_name = url.rstrip("/").split("/")[-1]
     # Remove .git suffix properly (not with rstrip which removes any char)
     if repo_name.endswith(".git"):
         repo_name = repo_name[:-4]
-
-    # Extract module ID from repo name
-    if repo_name.startswith("amplifier-module-"):
-        return repo_name[len("amplifier-module-") :]
     return repo_name
 
 
 def scan_cached_modules(type_filter: str = "all") -> list[CachedModuleInfo]:
-    """Scan and return info for all cached modules.
+    """Scan and return info for all cached modules and bundles.
 
     Single source of truth for cache scanning.
     Used by: module list, module check-updates, source_status.py
 
-    Supports both cache formats:
-    - Foundation format: {module-name}-{hash}/.amplifier_cache_meta.json
-    - Legacy format: {hash}/{ref}/.amplifier_cache_metadata.json
+    Uses RECURSIVE search to find all cached items, including those in
+    subdirectories like ~/.amplifier/cache/modules/.
+
+    Type detection uses STRUCTURAL markers (not naming conventions):
+    - Bundles: presence of bundle.md or bundle.yaml
+    - Modules: pyproject.toml with amplifier.modules entry points
+
+    Display names come from the items' own definitions:
+    - Bundles: bundle.name from bundle.md/bundle.yaml frontmatter
+    - Modules: entry point key from pyproject.toml
 
     Args:
-        type_filter: Filter by module type ("all", "tool", "hook", "provider", etc.)
+        type_filter: Filter by type ("all", "tool", "hook", "provider", "bundle", etc.)
 
     Returns:
         List of CachedModuleInfo sorted by module_id
@@ -96,99 +226,132 @@ def scan_cached_modules(type_filter: str = "all") -> list[CachedModuleInfo]:
         return []
 
     modules: list[CachedModuleInfo] = []
-    seen_ids: set[str] = set()  # Avoid duplicates if same module in both formats
+    seen_paths: set[Path] = set()  # Avoid duplicates
 
-    for cache_entry in cache_dir.iterdir():
-        if not cache_entry.is_dir():
+    # RECURSIVE search for all cache metadata files
+    # This finds modules in subdirectories like cache/modules/
+    for meta_file in cache_dir.rglob(".amplifier_cache_meta.json"):
+        cache_entry = meta_file.parent
+
+        # Avoid duplicates
+        if cache_entry in seen_paths:
+            continue
+        seen_paths.add(cache_entry)
+
+        try:
+            metadata = json.loads(meta_file.read_text(encoding="utf-8"))
+            url = metadata.get("git_url", "")
+            sha = metadata.get("commit", "")
+            ref = metadata.get("ref", "main")
+
+            # === STRUCTURAL TYPE DETECTION ===
+            # Check for bundle first (has bundle.md or bundle.yaml)
+            if is_bundle(cache_entry):
+                module_type = "bundle"
+                # Get bundle name from its own definition
+                bundle_name = get_bundle_name(cache_entry)
+                module_id = bundle_name if bundle_name else _extract_repo_name(url)
+                display_name = bundle_name if bundle_name else module_id
+            else:
+                # Check for module (has pyproject.toml with entry points)
+                entry_id, entry_type = get_module_info_from_pyproject(cache_entry)
+                if entry_id:
+                    module_id = entry_id
+                    module_type = entry_type or "module"
+                    display_name = entry_id
+                else:
+                    # Fallback to name-based detection (legacy)
+                    repo_name = _extract_repo_name(url)
+                    if repo_name.startswith("amplifier-module-"):
+                        module_id = repo_name[len("amplifier-module-") :]
+                    else:
+                        module_id = repo_name
+                    module_type = _infer_module_type_from_name(module_id)
+                    display_name = module_id
+
+            # Apply type filter
+            if type_filter != "all" and type_filter != module_type:
+                continue
+
+            is_mutable = not _is_immutable_ref(ref)
+
+            modules.append(
+                CachedModuleInfo(
+                    module_id=module_id,
+                    module_type=module_type,
+                    ref=ref,
+                    sha=sha[:8] if sha else "",
+                    url=url,
+                    is_mutable=is_mutable,
+                    cached_at=metadata.get("cached_at", ""),
+                    cache_path=cache_entry,
+                    display_name=display_name,
+                )
+            )
+        except Exception as e:
+            logger.debug(f"Could not read metadata from {meta_file}: {e}")
             continue
 
-        # Try foundation format first: {module-name}-{hash}/.amplifier_cache_meta.json
-        foundation_meta = cache_entry / ".amplifier_cache_meta.json"
-        if foundation_meta.exists():
-            try:
-                metadata = json.loads(foundation_meta.read_text(encoding="utf-8"))
-                # Foundation format uses git_url and commit
-                url = metadata.get("git_url", "")
-                sha = metadata.get("commit", "")
+    # Also check legacy format: {hash}/{ref}/.amplifier_cache_metadata.json
+    for legacy_meta in cache_dir.rglob(".amplifier_cache_metadata.json"):
+        cache_entry = legacy_meta.parent
 
-                module_id = _extract_module_id(url)
-                if module_id in seen_ids:
-                    continue
-                seen_ids.add(module_id)
+        if cache_entry in seen_paths:
+            continue
+        seen_paths.add(cache_entry)
 
-                module_type = _infer_module_type(module_id)
+        try:
+            metadata = json.loads(legacy_meta.read_text(encoding="utf-8"))
+            url = metadata.get("url", "")
 
-                if type_filter != "all" and type_filter != module_type:
-                    continue
+            # Use structural detection for legacy entries too
+            if is_bundle(cache_entry):
+                module_type = "bundle"
+                bundle_name = get_bundle_name(cache_entry)
+                module_id = bundle_name if bundle_name else _extract_repo_name(url)
+                display_name = bundle_name if bundle_name else module_id
+            else:
+                entry_id, entry_type = get_module_info_from_pyproject(cache_entry)
+                if entry_id:
+                    module_id = entry_id
+                    module_type = entry_type or "module"
+                    display_name = entry_id
+                else:
+                    repo_name = _extract_repo_name(url)
+                    if repo_name.startswith("amplifier-module-"):
+                        module_id = repo_name[len("amplifier-module-") :]
+                    else:
+                        module_id = repo_name
+                    module_type = _infer_module_type_from_name(module_id)
+                    display_name = module_id
 
-                # Foundation format doesn't track is_mutable, assume True for branches
-                ref = metadata.get("ref", "main")
-                is_mutable = not _is_immutable_ref(ref)
+            if type_filter != "all" and type_filter != module_type:
+                continue
 
-                modules.append(
-                    CachedModuleInfo(
-                        module_id=module_id,
-                        module_type=module_type,
-                        ref=ref,
-                        sha=sha[:8] if sha else "",
-                        url=url,
-                        is_mutable=is_mutable,
-                        cached_at=metadata.get("cached_at", ""),
-                        cache_path=cache_entry,
-                    )
+            modules.append(
+                CachedModuleInfo(
+                    module_id=module_id,
+                    module_type=module_type,
+                    ref=metadata.get("ref", "unknown"),
+                    sha=metadata.get("sha", "")[:8],
+                    url=url,
+                    is_mutable=metadata.get("is_mutable", True),
+                    cached_at=metadata.get("cached_at", ""),
+                    cache_path=cache_entry,
+                    display_name=display_name,
                 )
-            except Exception as e:
-                logger.debug(f"Could not read foundation metadata from {foundation_meta}: {e}")
+            )
+        except Exception as e:
+            logger.debug(f"Could not read legacy metadata from {legacy_meta}: {e}")
             continue
 
-        # Try legacy format: {hash}/{ref}/.amplifier_cache_metadata.json
-        for ref_dir in cache_entry.iterdir():
-            if not ref_dir.is_dir():
-                continue
-
-            legacy_meta = ref_dir / ".amplifier_cache_metadata.json"
-            if not legacy_meta.exists():
-                continue
-
-            try:
-                metadata = json.loads(legacy_meta.read_text(encoding="utf-8"))
-                url = metadata.get("url", "")
-
-                module_id = _extract_module_id(url)
-                if module_id in seen_ids:
-                    continue
-                seen_ids.add(module_id)
-
-                module_type = _infer_module_type(module_id)
-
-                if type_filter != "all" and type_filter != module_type:
-                    continue
-
-                modules.append(
-                    CachedModuleInfo(
-                        module_id=module_id,
-                        module_type=module_type,
-                        ref=metadata.get("ref", "unknown"),
-                        sha=metadata.get("sha", "")[:8],
-                        url=url,
-                        is_mutable=metadata.get("is_mutable", True),
-                        cached_at=metadata.get("cached_at", ""),
-                        cache_path=ref_dir,
-                    )
-                )
-            except Exception as e:
-                logger.debug(f"Could not read legacy metadata from {legacy_meta}: {e}")
-                continue
-
-    # Sort by module_id for consistent output
-    modules.sort(key=lambda m: m.module_id)
+    # Sort by display_name for user-friendly output
+    modules.sort(key=lambda m: m.display_name)
     return modules
 
 
 def _is_immutable_ref(ref: str) -> bool:
     """Check if ref is immutable (SHA or version tag)."""
-    import re
-
     # Full or short SHA
     if re.match(r"^[0-9a-f]{7,40}$", ref):
         return True
@@ -302,7 +465,7 @@ async def update_module(
     """
     from amplifier_foundation.sources import SimpleSourceResolver
 
-    module_id = _extract_module_id(url)
+    module_id = _extract_repo_name(url)
 
     # Report progress: clearing
     if progress_callback:

@@ -460,7 +460,8 @@ async def _check_all_cached_modules(force: bool = False) -> tuple[list[CachedGit
 
     # Filter out bundles - they're handled separately via refresh_bundle
     # and would fail with uv pip install (config-only repos have no pyproject.toml)
-    cached_modules = [m for m in cached_modules if not m.module_id.startswith("bundle-")]
+    # Use structural detection (module_type="bundle") not name-based filtering
+    cached_modules = [m for m in cached_modules if m.module_type != "bundle"]
 
     if not cached_modules:
         return [], 0
