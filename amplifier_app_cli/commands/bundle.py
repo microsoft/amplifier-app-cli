@@ -641,7 +641,7 @@ async def _bundle_update_async(
 ) -> None:
     """Async implementation of bundle update command."""
     from amplifier_foundation import check_bundle_status
-    from amplifier_foundation import refresh_bundle
+    from amplifier_foundation import update_bundle
 
     config_manager = create_config_manager()
     registry = create_bundle_registry()
@@ -712,10 +712,10 @@ async def _bundle_update_async(
     console.print("\n[bold]Refreshing sources...[/bold]")
     try:
         if specific_source:
-            await refresh_bundle(bundle_obj, selective=[specific_source])
+            await update_bundle(bundle_obj, selective=[specific_source])
             console.print(f"[green]✓ Updated:[/green] {specific_source}")
         else:
-            await refresh_bundle(bundle_obj)
+            await update_bundle(bundle_obj)
             console.print(f"[green]✓ Updated {len(status.updateable_sources)} source(s)[/green]")
     except Exception as exc:
         console.print(f"[red]Error during update:[/red] {exc}")
@@ -727,7 +727,7 @@ async def _bundle_update_async(
 async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None:
     """Check and update all discovered bundles."""
     from amplifier_foundation import check_bundle_status
-    from amplifier_foundation import refresh_bundle
+    from amplifier_foundation import update_bundle
 
     discovery = AppBundleDiscovery()
     registry = create_bundle_registry()
@@ -859,7 +859,7 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
                 continue
             bundle_obj = loaded
 
-            await refresh_bundle(bundle_obj)
+            await update_bundle(bundle_obj)
             updated_count += 1
             console.print(f"[green]✓[/green] {bundle_name}")
         except Exception as exc:

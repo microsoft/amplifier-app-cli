@@ -148,21 +148,15 @@ def install_known_providers(
             # Resolve downloads to cache (for git) or validates path (for local)
             module_path = source.resolve()
 
-            if is_local_path(source_uri):
-                # Local sources: install editable for development
-                result = subprocess.run(
-                    ["uv", "pip", "install", "-e", str(module_path), "--python", sys.executable],
-                    capture_output=True,
-                    text=True,
-                )
-            else:
-                # Git sources: install from cached path (non-editable)
-                # This registers entry points so providers can be discovered
-                result = subprocess.run(
-                    ["uv", "pip", "install", str(module_path), "--python", sys.executable],
-                    capture_output=True,
-                    text=True,
-                )
+            # Always install editable (-e) so that:
+            # 1. Cache updates are immediately effective without reinstall
+            # 2. Consistent behavior with foundation's ModuleActivator
+            # 3. Dependencies are properly installed from the source location
+            result = subprocess.run(
+                ["uv", "pip", "install", "-e", str(module_path), "--python", sys.executable],
+                capture_output=True,
+                text=True,
+            )
 
             if result.returncode != 0:
                 raise RuntimeError(f"Failed to install: {result.stderr}")

@@ -981,7 +981,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
     bundle_errors: dict[str, str] = {}
 
     if has_bundle_updates:
-        from amplifier_foundation import refresh_bundle
+        from amplifier_foundation import update_bundle
 
         registry = create_bundle_registry()
         bundles_to_update = [name for name, status in bundle_results.items() if status.has_updates]
@@ -996,7 +996,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
                 bundle_obj = loaded
 
                 # Refresh bundle sources
-                asyncio.run(refresh_bundle(bundle_obj))
+                asyncio.run(update_bundle(bundle_obj))
                 bundle_updated.append(bundle_name)
             except Exception as exc:
                 bundle_errors[bundle_name] = str(exc)
