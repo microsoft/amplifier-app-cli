@@ -319,10 +319,14 @@ class AppBundleDiscovery:
         logger.debug(f"Registered bundle '{name}' → {uri}")
 
     def list_bundles(self) -> list[str]:
-        """List all discoverable bundle names.
+        """List all discoverable ROOT bundle names.
+
+        Only returns root bundles (not sub-bundles like behaviors, providers).
+        Sub-bundles are tracked in the registry but filtered out here since
+        they're part of their root bundle's git repository.
 
         Returns:
-            List of bundle names found in all search paths.
+            List of root bundle names found in all search paths.
         """
         bundles: set[str] = set()
 
@@ -340,7 +344,53 @@ class AppBundleDiscovery:
         # Read from persisted registry (includes bundles loaded via includes)
         bundles.update(self._read_persisted_registry())
 
+        # Filter to only root bundles using the persisted registry as authority
+        # The persisted registry tracks is_root for all bundles loaded by foundation
+        root_bundles, sub_bundles = self._get_root_and_sub_bundles()
+        
+        # Remove any sub-bundles from our discovered set
+        bundles -= sub_bundles
+        
+        # Also add any root bundles we might have missed (from persisted registry)
+        bundles.update(root_bundles)
+
         return sorted(bundles)
+
+    def _get_root_and_sub_bundles(self) -> tuple[set[str], set[str]]:
+        """Get sets of root bundles and sub-bundles from persisted registry.
+
+        Uses foundation's persisted registry as the authority for which bundles
+        are roots vs sub-bundles.
+
+        Returns:
+            Tuple of (root_bundle_names, sub_bundle_names)
+        """
+        import json
+
+        registry_path = Path.home() / ".amplifier" / "registry.json"
+        if not registry_path.exists():
+            return set(), set()
+
+        try:
+            with open(registry_path, encoding="utf-8") as f:
+                data = json.load(f)
+
+            root_bundles: set[str] = set()
+            sub_bundles: set[str] = set()
+
+            for name, bundle_data in data.get("bundles", {}).items():
+                if bundle_data.get("is_root", True):  # Default True for backwards compat
+                    root_bundles.add(name)
+                else:
+                    sub_bundles.add(name)
+
+            logger.debug(
+                f"Registry has {len(root_bundles)} root bundles, {len(sub_bundles)} sub-bundles"
+            )
+            return root_bundles, sub_bundles
+        except Exception as e:
+            logger.debug(f"Could not read persisted registry: {e}")
+            return set(), set()
 
     def _read_persisted_registry(self) -> list[str]:
         """Read root bundle names from foundation's persisted registry.
@@ -353,30 +403,8 @@ class AppBundleDiscovery:
         Returns:
             List of root bundle names from persisted registry.
         """
-        import json
-
-        registry_path = Path.home() / ".amplifier" / "registry.json"
-        if not registry_path.exists():
-            return []
-
-        try:
-            with open(registry_path, encoding="utf-8") as f:
-                data = json.load(f)
-
-            # Filter to only root bundles (is_root=True or missing field for backwards compat)
-            root_bundles = [
-                name
-                for name, bundle_data in data.get("bundles", {}).items()
-                if bundle_data.get("is_root", True)  # Default True for backwards compatibility
-            ]
-            logger.debug(
-                f"Read {len(root_bundles)} root bundles from persisted registry "
-                f"(filtered from {len(data.get('bundles', {}))} total)"
-            )
-            return root_bundles
-        except Exception as e:
-            logger.debug(f"Could not read persisted registry: {e}")
-            return []
+        root_bundles, _ = self._get_root_and_sub_bundles()
+        return list(root_bundles)
 
     def _scan_path_for_bundles(self, base_path: Path) -> list[str]:
         """Scan a path for bundle names.
