@@ -337,6 +337,9 @@ class AppBundleDiscovery:
         if self._collection_resolver:
             bundles.update(self._scan_collections_for_bundles())
 
+        # Scan cache for downloaded bundles (includes resolved via includes)
+        bundles.update(self._scan_cache_for_bundles())
+
         return sorted(bundles)
 
     def _scan_path_for_bundles(self, base_path: Path) -> list[str]:
@@ -379,5 +382,45 @@ class AppBundleDiscovery:
             bundles_dir = collection_path / "bundles"
             if bundles_dir.exists():
                 bundles.extend(self._scan_path_for_bundles(bundles_dir))
+
+        return bundles
+
+    def _scan_cache_for_bundles(self) -> list[str]:
+        """Scan cache directory for downloaded bundles.
+
+        This discovers bundles that were downloaded as includes (e.g., lsp-python
+        included by foundation). Cache directories follow the pattern:
+            amplifier-bundle-{name}-{hash}/
+
+        Returns:
+            List of bundle names found in cache.
+        """
+        bundles = []
+
+        cache_dir = Path.home() / ".amplifier" / "cache"
+        if not cache_dir.exists():
+            return bundles
+
+        for item in cache_dir.iterdir():
+            if not item.is_dir():
+                continue
+
+            # Check if this is a bundle directory (has bundle.md or bundle.yaml)
+            if (item / "bundle.md").exists() or (item / "bundle.yaml").exists():
+                # Extract bundle name from directory name
+                # Pattern: amplifier-bundle-{name}-{hash} or amplifier-{name}-{hash}
+                dir_name = item.name
+                if dir_name.startswith("amplifier-bundle-"):
+                    # Remove prefix and hash suffix: amplifier-bundle-lsp-python-abc123 -> lsp-python
+                    name_with_hash = dir_name[len("amplifier-bundle-") :]
+                    # Hash is last segment after final hyphen (16 chars)
+                    if len(name_with_hash) > 17 and name_with_hash[-17] == "-":
+                        bundle_name = name_with_hash[:-17]
+                        bundles.append(bundle_name)
+                        # Also register for future lookups
+                        uri = f"file://{item}"
+                        if bundle_name not in self._registry.list_registered():
+                            self._registry.register({bundle_name: uri})
+                            logger.debug(f"Discovered cached bundle '{bundle_name}' at {uri}")
 
         return bundles
