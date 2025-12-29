@@ -337,7 +337,36 @@ class AppBundleDiscovery:
         if self._collection_resolver:
             bundles.update(self._scan_collections_for_bundles())
 
+        # Read from persisted registry (includes bundles loaded via includes)
+        bundles.update(self._read_persisted_registry())
+
         return sorted(bundles)
+
+    def _read_persisted_registry(self) -> list[str]:
+        """Read bundle names from foundation's persisted registry.
+
+        This discovers bundles that were loaded during previous sessions,
+        including those loaded as includes (e.g., lsp-python included by foundation).
+
+        Returns:
+            List of bundle names from persisted registry.
+        """
+        import json
+
+        registry_path = Path.home() / ".amplifier" / "registry.json"
+        if not registry_path.exists():
+            return []
+
+        try:
+            with open(registry_path, encoding="utf-8") as f:
+                data = json.load(f)
+
+            bundle_names = list(data.get("bundles", {}).keys())
+            logger.debug(f"Read {len(bundle_names)} bundles from persisted registry")
+            return bundle_names
+        except Exception as e:
+            logger.debug(f"Could not read persisted registry: {e}")
+            return []
 
     def _scan_path_for_bundles(self, base_path: Path) -> list[str]:
         """Scan a path for bundle names.
