@@ -22,14 +22,12 @@ if TYPE_CHECKING:
 
 
 def get_bundle_cache_dir() -> Path:
-    """Get CLI-specific cache directory for remote bundles.
+    """Get cache directory for remote bundles.
 
     Returns:
-        Path to bundle cache directory under AMPLIFIER_HOME/cache/bundles/
+        Path to cache directory under AMPLIFIER_HOME/cache/
     """
-    cache_dir = get_amplifier_home() / "cache" / "bundles"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir
+    return get_amplifier_home() / "cache"
 
 
 def create_bundle_source_resolver(

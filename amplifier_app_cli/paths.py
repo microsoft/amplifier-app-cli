@@ -412,12 +412,13 @@ def create_bundle_registry(
     Returns:
         BundleRegistry with foundation source handlers and well-known bundles registered.
     """
-    from .lib.bundle_loader import get_bundle_cache_dir
+    from amplifier_foundation.paths.resolution import get_amplifier_home
+
     from .lib.bundle_loader.discovery import AppBundleDiscovery
 
-    # Use default home or derive from cache dir
+    # Use default home
     if home is None:
-        home = get_bundle_cache_dir().parent.parent  # cache/bundles -> home
+        home = get_amplifier_home()
 
     # Use AppBundleDiscovery to get a registry with well-known bundles registered.
     # This ensures plain bundle names like "foundation" resolve correctly.
