@@ -214,42 +214,48 @@ def _try_instantiate_provider(
 
     base_url = _resolve_env_placeholder(raw_base_url) or "http://placeholder"
     host = _resolve_env_placeholder(raw_host) or "http://localhost:11434"
-    api_key = _resolve_env_placeholder(raw_api_key) or ""
+    # Use a placeholder API key that looks valid to SDK validation
+    # (actual API calls would fail, but we only need to call get_info())
+    api_key = _resolve_env_placeholder(raw_api_key) or "sk-placeholder-key-for-info-only"
+
+    # Try various constructor signatures. Catch ALL exceptions since SDK clients
+    # may raise various errors (AuthenticationError, OpenAIError, etc.) with
+    # placeholder/empty credentials - we're just probing for the right signature.
 
     # Approach 1: Standard (api_key, config) - Anthropic, OpenAI
     try:
         return provider_class(api_key=api_key, config={})
-    except (TypeError, ValueError):
+    except Exception:
         pass
 
     # Approach 2: Azure-style (keyword-only base_url with api_key)
     try:
         return provider_class(base_url=base_url, api_key=api_key, config={})
-    except (TypeError, ValueError):
+    except Exception:
         pass
 
     # Approach 3: VLLM-style (base_url without api_key)
     try:
         return provider_class(base_url=base_url, config={})
-    except (TypeError, ValueError):
+    except Exception:
         pass
 
     # Approach 4: Ollama-style (host, config)
     try:
         return provider_class(host=host, config={})
-    except (TypeError, ValueError):
+    except Exception:
         pass
 
     # Approach 5: Just config
     try:
         return provider_class(config={})
-    except (TypeError, ValueError):
+    except Exception:
         pass
 
     # Approach 6: No args
     try:
         return provider_class()
-    except (TypeError, ValueError):
+    except Exception:
         pass
 
     return None
