@@ -53,7 +53,7 @@ class FoundationGitSource:
             uri: Full git URI (e.g., git+https://github.com/org/repo@ref)
         """
         self.uri = uri
-        self._cache_dir = get_amplifier_home() / "cache" / "modules"
+        self._cache_dir = get_amplifier_home() / "cache"
         self._resolver = SimpleSourceResolver(cache_dir=self._cache_dir)
 
     def resolve(self) -> Path:
