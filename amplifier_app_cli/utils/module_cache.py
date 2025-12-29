@@ -465,7 +465,14 @@ async def update_module(
     """
     from amplifier_foundation.sources import SimpleSourceResolver
 
-    module_id = _extract_repo_name(url)
+    repo_name = _extract_repo_name(url)
+    # Normalize to match how scan_cached_modules() derives module_id from
+    # pyproject.toml entry points (e.g., "provider-anthropic" not
+    # "amplifier-module-provider-anthropic")
+    if repo_name.startswith("amplifier-module-"):
+        module_id = repo_name[len("amplifier-module-"):]
+    else:
+        module_id = repo_name
 
     # Report progress: clearing
     if progress_callback:
