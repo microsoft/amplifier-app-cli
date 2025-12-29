@@ -98,6 +98,12 @@ def init_cmd():
     install_known_providers(config_manager=config, console=console, verbose=True)
     console.print()
 
+    # Invalidate import caches so newly installed providers are visible
+    # This is necessary because uv pip install runs in a subprocess but
+    # importlib.metadata caches entry points from before the install
+    import importlib
+    importlib.invalidate_caches()
+
     # Step 1: Provider selection - discover installed providers dynamically
     console.print("[bold]Step 1: Provider[/bold]")
 
