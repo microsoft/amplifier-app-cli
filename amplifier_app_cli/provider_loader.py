@@ -267,6 +267,7 @@ def get_provider_info(provider_id: str) -> dict[str, Any] | None:
     try:
         provider_class = load_provider_class(provider_id)
         if not provider_class:
+            logger.debug(f"get_provider_info: load_provider_class returned None for '{provider_id}'")
             return None
 
         # Try different instantiation approaches for different provider signatures
@@ -277,13 +278,14 @@ def get_provider_info(provider_id: str) -> dict[str, Any] | None:
 
         # Check if provider has get_info
         if not hasattr(provider, "get_info"):
+            logger.debug(f"get_provider_info: provider '{provider_id}' has no get_info method")
             return None
 
         info = provider.get_info()
         return info.model_dump() if hasattr(info, "model_dump") else vars(info)
 
     except Exception as e:
-        logger.debug(f"Could not get info for '{provider_id}': {e}")
+        logger.warning(f"get_provider_info failed for '{provider_id}': {type(e).__name__}: {e}")
         return None
 
 

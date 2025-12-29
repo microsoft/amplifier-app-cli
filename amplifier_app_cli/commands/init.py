@@ -98,11 +98,26 @@ def init_cmd():
     install_known_providers(config_manager=config, console=console, verbose=True)
     console.print()
 
-    # Invalidate import caches so newly installed providers are visible
-    # This is necessary because uv pip install runs in a subprocess but
-    # importlib.metadata caches entry points from before the install
+    # Refresh Python's view of installed packages after uv pip install
+    # The subprocess install adds .pth files and metadata that the current
+    # Python process doesn't see until we explicitly refresh
     import importlib
+    import site
+    import sys
+
+    # Invalidate import caches
     importlib.invalidate_caches()
+
+    # Re-process site-packages to pick up new .pth files from editable installs
+    # This updates sys.path with any new package locations
+    for site_dir in site.getsitepackages():
+        site.addsitedir(site_dir)
+
+    # Also clear importlib.metadata's internal cache by forcing fresh distribution discovery
+    # In Python 3.12+, this is the only way to see newly installed packages
+    if hasattr(importlib.metadata, "distributions"):
+        # Force fresh iteration of distributions to clear any caching
+        list(importlib.metadata.distributions())
 
     # Step 1: Provider selection - discover installed providers dynamically
     console.print("[bold]Step 1: Provider[/bold]")
