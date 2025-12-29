@@ -343,13 +343,15 @@ class AppBundleDiscovery:
         return sorted(bundles)
 
     def _read_persisted_registry(self) -> list[str]:
-        """Read bundle names from foundation's persisted registry.
+        """Read root bundle names from foundation's persisted registry.
 
-        This discovers bundles that were loaded during previous sessions,
-        including those loaded as includes (e.g., lsp-python included by foundation).
+        This discovers bundles that were loaded during previous sessions.
+        Only returns ROOT bundles (not sub-bundles like behaviors/providers).
+        Sub-bundles are tracked but filtered out since they're part of their
+        root bundle's git repository.
 
         Returns:
-            List of bundle names from persisted registry.
+            List of root bundle names from persisted registry.
         """
         import json
 
@@ -361,9 +363,17 @@ class AppBundleDiscovery:
             with open(registry_path, encoding="utf-8") as f:
                 data = json.load(f)
 
-            bundle_names = list(data.get("bundles", {}).keys())
-            logger.debug(f"Read {len(bundle_names)} bundles from persisted registry")
-            return bundle_names
+            # Filter to only root bundles (is_root=True or missing field for backwards compat)
+            root_bundles = [
+                name
+                for name, bundle_data in data.get("bundles", {}).items()
+                if bundle_data.get("is_root", True)  # Default True for backwards compatibility
+            ]
+            logger.debug(
+                f"Read {len(root_bundles)} root bundles from persisted registry "
+                f"(filtered from {len(data.get('bundles', {}))} total)"
+            )
+            return root_bundles
         except Exception as e:
             logger.debug(f"Could not read persisted registry: {e}")
             return []
