@@ -214,84 +214,45 @@ def _try_instantiate_provider(
 
     base_url = _resolve_env_placeholder(raw_base_url) or "http://placeholder"
     host = _resolve_env_placeholder(raw_host) or "http://localhost:11434"
-    # Use a placeholder API key that looks valid to SDK validation
-    # (actual API calls would fail, but we only need to call get_info())
-    api_key = _resolve_env_placeholder(raw_api_key) or "sk-placeholder-key-for-info-only"
-
-    # Try various constructor signatures. Catch ALL exceptions since SDK clients
-    # may raise various errors (AuthenticationError, OpenAIError, etc.) with
-    # placeholder/empty credentials - we're just probing for the right signature.
+    api_key = _resolve_env_placeholder(raw_api_key) or ""
 
     # Approach 1: Standard (api_key, config) - Anthropic, OpenAI
     try:
         return provider_class(api_key=api_key, config={})
-    except Exception:
+    except (TypeError, ValueError):
         pass
 
     # Approach 2: Azure-style (keyword-only base_url with api_key)
     try:
         return provider_class(base_url=base_url, api_key=api_key, config={})
-    except Exception:
+    except (TypeError, ValueError):
         pass
 
     # Approach 3: VLLM-style (base_url without api_key)
     try:
         return provider_class(base_url=base_url, config={})
-    except Exception:
+    except (TypeError, ValueError):
         pass
 
     # Approach 4: Ollama-style (host, config)
     try:
         return provider_class(host=host, config={})
-    except Exception:
+    except (TypeError, ValueError):
         pass
 
     # Approach 5: Just config
     try:
         return provider_class(config={})
-    except Exception:
+    except (TypeError, ValueError):
         pass
 
     # Approach 6: No args
     try:
         return provider_class()
-    except Exception:
+    except (TypeError, ValueError):
         pass
 
     return None
-
-
-def get_provider_display_name(provider_id: str) -> str | None:
-    """Get provider display name from class attribute (no instantiation needed).
-
-    Providers define display name as class attributes:
-    - api_label: "OpenAI", "Anthropic", etc.
-    - name: fallback if api_label not present
-
-    Args:
-        provider_id: Provider ID (e.g., "provider-anthropic" or "anthropic")
-
-    Returns:
-        Display name if found, None otherwise
-    """
-    try:
-        provider_class = load_provider_class(provider_id)
-        if not provider_class:
-            return None
-
-        # Try api_label first (e.g., "OpenAI", "Azure OpenAI")
-        if hasattr(provider_class, "api_label"):
-            return provider_class.api_label
-
-        # Fall back to name attribute
-        if hasattr(provider_class, "name"):
-            return provider_class.name
-
-        return None
-
-    except Exception as e:
-        logger.debug(f"Could not get display name for '{provider_id}': {e}")
-        return None
 
 
 def get_provider_info(provider_id: str) -> dict[str, Any] | None:
@@ -311,10 +272,6 @@ def get_provider_info(provider_id: str) -> dict[str, Any] | None:
         # Try different instantiation approaches for different provider signatures
         provider = _try_instantiate_provider(provider_class)
         if provider is None:
-            # Can't instantiate, but we can still get display_name from class attribute
-            display_name = get_provider_display_name(provider_id)
-            if display_name:
-                return {"display_name": display_name}
             logger.warning(f"Could not instantiate provider '{provider_id}' with any known signature")
             return None
 
