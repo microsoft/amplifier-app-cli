@@ -255,6 +255,39 @@ def _try_instantiate_provider(
     return None
 
 
+def get_provider_display_name(provider_id: str) -> str | None:
+    """Get provider display name from class attribute (no instantiation needed).
+
+    Providers define display name as class attributes:
+    - api_label: "OpenAI", "Anthropic", etc.
+    - name: fallback if api_label not present
+
+    Args:
+        provider_id: Provider ID (e.g., "provider-anthropic" or "anthropic")
+
+    Returns:
+        Display name if found, None otherwise
+    """
+    try:
+        provider_class = load_provider_class(provider_id)
+        if not provider_class:
+            return None
+
+        # Try api_label first (e.g., "OpenAI", "Azure OpenAI")
+        if hasattr(provider_class, "api_label"):
+            return provider_class.api_label
+
+        # Fall back to name attribute
+        if hasattr(provider_class, "name"):
+            return provider_class.name
+
+        return None
+
+    except Exception as e:
+        logger.debug(f"Could not get display name for '{provider_id}': {e}")
+        return None
+
+
 def get_provider_info(provider_id: str) -> dict[str, Any] | None:
     """Get provider metadata.
 
@@ -272,6 +305,10 @@ def get_provider_info(provider_id: str) -> dict[str, Any] | None:
         # Try different instantiation approaches for different provider signatures
         provider = _try_instantiate_provider(provider_class)
         if provider is None:
+            # Can't instantiate, but we can still get display_name from class attribute
+            display_name = get_provider_display_name(provider_id)
+            if display_name:
+                return {"display_name": display_name}
             logger.warning(f"Could not instantiate provider '{provider_id}' with any known signature")
             return None
 

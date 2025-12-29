@@ -17,31 +17,6 @@ from .provider_sources import source_from_uri
 
 logger = logging.getLogger(__name__)
 
-# Proper display names for well-known providers
-# Used as fallback when provider info isn't available
-_PROVIDER_DISPLAY_NAMES = {
-    "anthropic": "Anthropic",
-    "openai": "OpenAI",
-    "azure-openai": "Azure OpenAI",
-    "ollama": "Ollama",
-    "vllm": "vLLM",
-}
-
-
-def _get_provider_display_name(module_id: str) -> str:
-    """Get proper display name for a provider module.
-
-    Args:
-        module_id: Module ID like "provider-openai" or just "openai"
-
-    Returns:
-        Proper display name like "OpenAI" (not "Openai")
-    """
-    # Strip "provider-" prefix if present
-    name = module_id.replace("provider-", "")
-    # Use known display name or fall back to title case
-    return _PROVIDER_DISPLAY_NAMES.get(name, name.replace("-", " ").title())
-
 
 @dataclass
 class ProviderInfo:
@@ -263,7 +238,7 @@ class ProviderManager:
                 # Try to get provider info via direct import
                 info = get_provider_info(module_id)
                 if info:
-                    display_name = info.get("display_name", _get_provider_display_name(module_id))
+                    display_name = info.get("display_name", module_id.replace("-", " ").title())
                     description = info.get("description", f"Provider: {module_id}")
                     providers[module_id] = (module_id, display_name, description)
                     logger.debug(f"Discovered provider from source: {module_id}")
@@ -272,7 +247,7 @@ class ProviderManager:
                     provider_name = module_id.replace("provider-", "")
                     module_name = f"amplifier_module_provider_{provider_name.replace('-', '_')}"
                     importlib.import_module(module_name)
-                    display_name = _get_provider_display_name(module_id)
+                    display_name = module_id.replace("-", " ").title()
                     providers[module_id] = (module_id, display_name, f"Provider: {module_id}")
                     logger.debug(f"Discovered provider from source (no info): {module_id}")
 
@@ -305,14 +280,14 @@ class ProviderManager:
                         # Retry getting provider info
                         info = get_provider_info(module_id)
                         if info:
-                            display_name = info.get("display_name", _get_provider_display_name(module_id))
+                            display_name = info.get("display_name", module_id.replace("-", " ").title())
                             description = info.get("description", f"Provider: {module_id}")
                             providers[module_id] = (module_id, display_name, description)
                             logger.debug(f"Discovered local provider after install: {module_id}")
                         else:
                             # Use provider_name (without "provider-" prefix) as ID
                             provider_name = module_id.replace("provider-", "")
-                            display_name = _get_provider_display_name(provider_name)
+                            display_name = provider_name.replace("-", " ").title()
                             providers[provider_name] = (provider_name, display_name, f"Provider: {provider_name}")
                             logger.debug(f"Discovered local provider after install (no info): {module_id}")
 
@@ -320,7 +295,7 @@ class ProviderManager:
                         # Install failed - show fallback with consistent description
                         logger.warning(f"Could not install local provider {module_id}: {install_error}")
                         provider_name = module_id.replace("provider-", "")
-                        display_name = _get_provider_display_name(provider_name)
+                        display_name = provider_name.replace("-", " ").title()
                         providers[provider_name] = (
                             provider_name,
                             display_name,
