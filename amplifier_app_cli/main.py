@@ -968,6 +968,8 @@ def _register_mention_handling(session: AmplifierSession, *, bundle_mode: bool =
             foundation_resolver=foundation_resolver,
             enable_collections=False,  # Bundles take precedence, no naming conflicts
         )
+        print(f"[DEBUG _register_mention_handling] AppMentionResolver created id={id(mention_resolver)}", file=sys.stderr)
+        print(f"[DEBUG _register_mention_handling] AppMentionResolver.foundation_resolver={mention_resolver.foundation_resolver}", file=sys.stderr)
     else:
         # Profile mode: App resolver with collection support (deprecated)
         mention_resolver = AppMentionResolver(
