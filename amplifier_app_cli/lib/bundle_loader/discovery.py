@@ -53,6 +53,13 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str]] = {
         "package": "",  # No Python package - bundle-only
         "remote": "git+https://github.com/microsoft/amplifier-bundle-design-intelligence@main",
     },
+    # TODO: Revisit this - experimental bundles should ideally be discoverable
+    # via a general mechanism (e.g., foundation:experiments/delegation-only syntax)
+    # rather than hardcoded here. For now, adding as well-known for easy access.
+    "exp-delegation": {
+        "package": "",  # Experimental bundle in foundation/experiments/
+        "remote": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/delegation-only",
+    },
 }
 
 
