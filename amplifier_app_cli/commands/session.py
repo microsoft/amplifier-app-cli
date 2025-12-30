@@ -19,10 +19,13 @@ from rich.table import Table
 
 from ..console import console
 from ..lib.app_settings import AppSettings
+from ..lib.bundle_loader import AppBundleDiscovery
+from ..lib.bundle_loader import load_and_prepare_bundle
 from ..paths import create_agent_loader
 from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..paths import create_profile_loader
+from ..paths import get_bundle_search_paths
 from ..project_utils import get_project_slug
 from ..runtime.config import resolve_app_config
 from ..session_store import SessionStore
@@ -296,6 +299,15 @@ def register_session_commands(
             search_paths = get_module_search_paths()
             active_profile = profile if profile else saved_profile
 
+            # Load and prepare bundle if resuming a bundle-based session
+            # This is needed for proper @mention resolution via foundation_resolver
+            prepared_bundle = None
+            if bundle_name:
+                discovery = AppBundleDiscovery(search_paths=get_bundle_search_paths())
+                prepared_bundle = asyncio.run(
+                    load_and_prepare_bundle(bundle_name, discovery, install_deps=False)
+                )
+
             # Display history or replay (when resuming without prompt)
             if prompt is None and not no_history:
                 if replay:
@@ -310,7 +322,8 @@ def register_session_commands(
                 # No prompt, no pipe → interactive mode
                 asyncio.run(
                     interactive_chat_with_session(
-                        config_data, search_paths, False, session_id, transcript, active_profile
+                        config_data, search_paths, False, session_id, transcript, active_profile,
+                        prepared_bundle=prepared_bundle,
                     )
                 )
             else:
@@ -324,7 +337,8 @@ def register_session_commands(
                 # Execute single prompt with session context
                 asyncio.run(
                     execute_single_with_session(
-                        prompt, config_data, search_paths, False, session_id, transcript, active_profile
+                        prompt, config_data, search_paths, False, session_id, transcript, active_profile,
+                        prepared_bundle=prepared_bundle,
                     )
                 )
 
