@@ -18,43 +18,99 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 
+def _is_provider_module_installed(provider_id: str) -> bool:
+    """Check if a provider module is actually installed and importable.
+
+    This catches the case where provider settings exist but the module
+    was uninstalled (e.g., after `amplifier update` which wipes the venv).
+
+    Args:
+        provider_id: Provider module ID (e.g., "provider-anthropic")
+
+    Returns:
+        True if the module can be imported, False otherwise
+    """
+    import importlib
+    import importlib.metadata
+
+    # Normalize to full module ID
+    module_id = provider_id if provider_id.startswith("provider-") else f"provider-{provider_id}"
+
+    # Try entry point first (most reliable for properly installed modules)
+    try:
+        eps = importlib.metadata.entry_points(group="amplifier.modules")
+        for ep in eps:
+            if ep.name == module_id:
+                # Entry point exists - module is installed
+                return True
+    except Exception:
+        pass
+
+    # Fall back to direct import check
+    try:
+        # Convert provider ID to Python module name
+        provider_name = module_id.replace("provider-", "")
+        module_name = f"amplifier_module_provider_{provider_name.replace('-', '_')}"
+        importlib.import_module(module_name)
+        return True
+    except ImportError:
+        return False
+
+
 def check_first_run() -> bool:
     """Check if this appears to be first run (no provider configured).
 
     Returns True if user should run `amplifier init` before starting a session.
-    Checks both:
-    1. API keys (environment or keyring) - necessary for authentication
-    2. Provider configured in settings - necessary for bundle system to know which provider to use
 
-    Both conditions must be satisfied for a working setup. Having an API key alone
-    is not sufficient because the bundle system needs to know which provider to use.
+    Detection is based on whether a provider is configured in settings - NOT on
+    API key presence, since not all providers require API keys (e.g., Ollama, vLLM,
+    Azure OpenAI with CLI auth).
+
+    If a provider is configured but its module is missing (post-update scenario where
+    `amplifier update` wiped the venv), this function will automatically reinstall
+    all known provider modules without user interaction. We install ALL providers
+    (not just the configured one) because bundles may include multiple providers.
     """
-    key_manager = KeyManager()
-
-    # Check if any API key is present
-    # Note: For Azure, we check ENDPOINT instead of API_KEY because Azure supports
-    # multiple auth methods (API key, Azure CLI via DefaultAzureCredential, Managed Identity)
-    # and ENDPOINT is always saved regardless of auth method.
-    has_api_key = any(
-        [
-            key_manager.has_key("ANTHROPIC_API_KEY"),
-            key_manager.has_key("OPENAI_API_KEY"),
-            key_manager.has_key("AZURE_OPENAI_ENDPOINT"),  # Detects both API key and Azure CLI auth
-        ]
-    )
-
-    # Also check if a provider is configured in settings
-    # This ensures that even with an API key in env, we still prompt init if no provider configured
     config = create_config_manager()
     provider_mgr = ProviderManager(config)
-    has_configured_provider = provider_mgr.get_current_provider() is not None
+    current_provider = provider_mgr.get_current_provider()
 
-    # First run if either condition is missing
-    return not (has_api_key and has_configured_provider)
+    # No provider configured = true first run, need interactive init
+    if current_provider is None:
+        return True
+
+    # Provider is configured - check if its module is actually installed
+    if not _is_provider_module_installed(current_provider.module_id):
+        # Post-update scenario: settings exist but provider modules were wiped
+        # Auto-fix by reinstalling ALL known providers (bundles may need multiple)
+        logger.info(
+            f"Provider {current_provider.module_id} is configured but not installed. "
+            "Auto-installing providers (this can happen after `amplifier update`)..."
+        )
+        console.print(
+            "[dim]Provider modules need reinstallation (post-update fix)...[/dim]"
+        )
+
+        installed = install_known_providers(config, console, verbose=True)
+        if installed:
+            # Successfully reinstalled - no need for full init
+            console.print()
+            return False
+        else:
+            # Auto-fix failed - fall back to full init
+            logger.warning("Failed to auto-install providers, will prompt for init")
+            return True
+
+    # Provider configured and module installed - no init needed
+    return False
 
 
 def prompt_first_run_init(console_arg: Console) -> bool:
-    """Prompt user to run init on first run. Returns True if init was run."""
+    """Prompt user to run init on first run. Returns True if init was run.
+
+    Note: Post-update scenarios (settings exist but module missing) are auto-fixed
+    in check_first_run() and won't reach this function.
+    """
     console_arg.print()
     console_arg.print("[yellow]⚠️  No API key found![/yellow]")
     console_arg.print()
@@ -102,6 +158,7 @@ def init_cmd():
     # The subprocess install adds .pth files and metadata that the current
     # Python process doesn't see until we explicitly refresh
     import importlib
+    import importlib.metadata
     import site
     import sys
 

@@ -107,6 +107,78 @@ def source_from_uri(source_uri: str):
     return FoundationGitSource(source_uri)
 
 
+def ensure_provider_installed(
+    module_id: str,
+    config_manager: "ConfigManager | None" = None,
+    console: Console | None = None,
+) -> bool:
+    """Ensure a single provider module is installed.
+
+    This is a lightweight alternative to install_known_providers() that installs
+    only the specified provider. Used for auto-fixing the post-update scenario
+    where settings exist but the venv was wiped.
+
+    Args:
+        module_id: Provider module ID (e.g., "provider-anthropic")
+        config_manager: Optional config manager for source overrides
+        console: Optional Rich console for status messages
+
+    Returns:
+        True if provider was installed (or already available), False on failure
+    """
+    import importlib
+    import importlib.metadata
+    import site
+
+    # Normalize module ID
+    if not module_id.startswith("provider-"):
+        module_id = f"provider-{module_id}"
+
+    # Get source URI for this provider
+    sources = get_effective_provider_sources(config_manager)
+    source_uri = sources.get(module_id)
+
+    if not source_uri:
+        logger.warning(f"No source found for provider {module_id}")
+        return False
+
+    try:
+        if console:
+            console.print(f"[dim]Installing {module_id}...[/dim]", end="")
+
+        # Resolve and install
+        source = source_from_uri(source_uri)
+        module_path = source.resolve()
+
+        result = subprocess.run(
+            ["uv", "pip", "install", "-e", str(module_path), "--python", sys.executable],
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(f"Install failed: {result.stderr}")
+
+        # Refresh Python's view of installed packages
+        importlib.invalidate_caches()
+        for site_dir in site.getsitepackages():
+            site.addsitedir(site_dir)
+        if hasattr(importlib.metadata, "distributions"):
+            list(importlib.metadata.distributions())
+
+        if console:
+            console.print(" [green]✓[/green]")
+
+        logger.info(f"Successfully installed {module_id}")
+        return True
+
+    except Exception as e:
+        logger.warning(f"Failed to install {module_id}: {e}")
+        if console:
+            console.print(f" [red]✗[/red]")
+        return False
+
+
 def install_known_providers(
     config_manager: "ConfigManager | None" = None,
     console: Console | None = None,
@@ -182,6 +254,7 @@ def install_known_providers(
 
 __all__ = [
     "DEFAULT_PROVIDER_SOURCES",
+    "ensure_provider_installed",
     "get_effective_provider_sources",
     "install_known_providers",
     "is_local_path",
