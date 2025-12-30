@@ -27,10 +27,6 @@ def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
     - Parent's `agents` field is already resolved to a dict of agent configs
     - This function filters parent's agents dict based on agent's Smart Single Value
 
-    Special handling for tool-task (prevents agent delegation loops):
-    - Agents should NOT have access to the task tool (they are the workers, not coordinators)
-    - tool-task is filtered out from the merged config to prevent agents from trying to delegate
-
     Args:
         parent: Parent session's complete mount plan
         overlay: Agent's partial mount plan (config overlay)
@@ -58,14 +54,6 @@ def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
         # Filter to only specified agent names
         parent_agents = parent.get("agents", {})
         result["agents"] = {k: v for k, v in parent_agents.items() if k in agent_filter}
-
-    # Filter out tool-task from agents - they shouldn't delegate, they do the work
-    # This is app-layer policy: agents are workers, not coordinators
-    if "tools" in result:
-        result["tools"] = [
-            tool for tool in result["tools"]
-            if tool.get("module") != "tool-task"
-        ]
 
     return result
 
