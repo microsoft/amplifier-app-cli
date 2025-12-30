@@ -955,6 +955,15 @@ def _register_mention_handling(session: AmplifierSession, *, bundle_mode: bool =
         # Bundle mode: Wrap foundation's resolver with app shortcuts
         # Foundation resolver already has all bundle namespaces from composition
         foundation_resolver = session.coordinator.get_capability("mention_resolver")
+        # DEBUG: trace foundation resolver state
+        import sys
+        print(f"[DEBUG _register_mention_handling] bundle_mode=True", file=sys.stderr)
+        print(f"[DEBUG _register_mention_handling] foundation_resolver={foundation_resolver}", file=sys.stderr)
+        print(f"[DEBUG _register_mention_handling] foundation_resolver type={type(foundation_resolver).__name__ if foundation_resolver else 'None'}", file=sys.stderr)
+        if foundation_resolver and hasattr(foundation_resolver, 'bundles'):
+            print(f"[DEBUG _register_mention_handling] foundation bundles={list(foundation_resolver.bundles.keys())}", file=sys.stderr)
+        caps = list(session.coordinator._capabilities.keys()) if hasattr(session.coordinator, '_capabilities') else []
+        print(f"[DEBUG _register_mention_handling] all capabilities before wrap={caps}", file=sys.stderr)
         mention_resolver = AppMentionResolver(
             foundation_resolver=foundation_resolver,
             enable_collections=False,  # Bundles take precedence, no naming conflicts
