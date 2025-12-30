@@ -24,6 +24,7 @@ from ..data.profiles import get_system_default_profile
 from ..paths import create_agent_loader
 from ..paths import create_config_manager
 from ..paths import create_profile_loader
+from ..runtime.config import inject_user_providers
 
 # ============================================================================
 # Bundle/Profile Detection (mirrors run.py pattern)
@@ -104,6 +105,8 @@ async def _get_mounted_tools_from_bundle_async(bundle_name: str) -> list[dict[st
     except Exception as e:
         raise ValueError(f"Failed to load bundle '{bundle_name}': {e}") from e
 
+    inject_user_providers(_config, prepared_bundle)
+
     # Create session from prepared bundle
     session = await prepared_bundle.create_session()
     await session.initialize()
@@ -167,6 +170,8 @@ async def _invoke_tool_from_bundle_async(bundle_name: str, tool_name: str, tool_
         agent_loader=agent_loader,
         console=console,
     )
+
+    inject_user_providers(_config, prepared_bundle)
 
     # Create session from prepared bundle
     session = await prepared_bundle.create_session()

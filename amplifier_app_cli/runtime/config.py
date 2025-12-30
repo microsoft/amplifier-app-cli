@@ -393,11 +393,33 @@ def expand_env_vars(config: dict[str, Any]) -> dict[str, Any]:
     return replace_value(config)
 
 
+def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> None:
+    """Inject user-configured providers into bundle's mount plan.
+
+    For provider-agnostic bundles (like foundation), the bundle provides mechanism
+    (tools, agents, context) while the app layer provides policy (which provider).
+
+    This function merges the user's provider settings from resolve_app_config()
+    into the bundle's mount_plan before session creation.
+
+    Args:
+        config: App configuration dict containing "providers" key
+        prepared_bundle: PreparedBundle instance to inject providers into
+
+    Note:
+        Only injects if bundle has no providers defined (provider-agnostic design).
+        Bundles with explicit providers are preserved unchanged.
+    """
+    if config.get("providers") and not prepared_bundle.mount_plan.get("providers"):
+        prepared_bundle.mount_plan["providers"] = config["providers"]
+
+
 __all__ = [
     "resolve_app_config",
     "resolve_bundle_config",
     "deep_merge",
     "expand_env_vars",
+    "inject_user_providers",
     "_apply_provider_overrides",
     "_ensure_debug_defaults",
 ]

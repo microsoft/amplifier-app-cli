@@ -57,6 +57,7 @@ from .lib.mention_loading import AppMentionResolver
 from .lib.mention_loading import ContentDeduplicator
 from .paths import create_foundation_resolver
 from .paths import create_profile_loader
+from .runtime.config import inject_user_providers
 from .session_store import SessionStore
 from .ui.error_display import display_validation_error
 from .utils.version import get_version
@@ -1066,6 +1067,8 @@ async def interactive_chat(
             settings_resolver=fallback_resolver,
         )
 
+        inject_user_providers(config, prepared_bundle)
+
         # Show loading indicator during initialization
         core_logger = logging.getLogger("amplifier_core")
         original_level = core_logger.level
@@ -1401,6 +1404,8 @@ async def execute_single(
             settings_resolver=fallback_resolver,
         )
 
+        inject_user_providers(config, prepared_bundle)
+
         session = await prepared_bundle.create_session(
             session_id=session_id,
             approval_system=approval_system,
@@ -1628,6 +1633,8 @@ async def execute_single_with_session(
             bundle_resolver=prepared_bundle.resolver,
             settings_resolver=fallback_resolver,
         )
+
+        inject_user_providers(config, prepared_bundle)
 
         session = await prepared_bundle.create_session(
             session_id=session_id,
@@ -1865,6 +1872,8 @@ async def interactive_chat_with_session(
             bundle_resolver=prepared_bundle.resolver,
             settings_resolver=fallback_resolver,
         )
+
+        inject_user_providers(config, prepared_bundle)
 
         session = await prepared_bundle.create_session(
             session_id=session_id,

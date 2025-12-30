@@ -552,6 +552,17 @@ def register_session_commands(
                 console=console,
             )
 
+            # Load and prepare bundle if resuming a bundle-based session
+            # This enables bundle mode in interactive_chat_with_session for:
+            # 1. @mention resolution for bundle files
+            # 2. Provider injection for provider-agnostic bundles
+            prepared_bundle = None
+            if bundle_name:
+                discovery = AppBundleDiscovery(search_paths=get_bundle_search_paths())
+                prepared_bundle = asyncio.run(
+                    load_and_prepare_bundle(bundle_name, discovery, install_deps=False)
+                )
+
             search_paths = get_module_search_paths()
             active_profile = profile if profile else saved_profile
 
@@ -565,7 +576,15 @@ def register_session_commands(
                     _display_session_history(transcript, metadata, show_thinking=show_thinking)
 
             asyncio.run(
-                interactive_chat_with_session(config_data, search_paths, False, session_id, transcript, active_profile)
+                interactive_chat_with_session(
+                    config_data,
+                    search_paths,
+                    False,
+                    session_id,
+                    transcript,
+                    active_profile,
+                    prepared_bundle=prepared_bundle,
+                )
             )
         except Exception as exc:
             console.print(f"[red]Error resuming session:[/red] {exc}")
