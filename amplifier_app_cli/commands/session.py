@@ -296,16 +296,23 @@ def register_session_commands(
                 console=console,
             )
 
+            # Check first run / auto-install providers BEFORE displaying history
+            # This ensures post-update scenarios are fixed before we show anything
+            from .init import check_first_run
+
+            check_first_run()
+
             search_paths = get_module_search_paths()
             active_profile = profile if profile else saved_profile
 
             # Load and prepare bundle if resuming a bundle-based session
             # This is needed for proper @mention resolution via foundation_resolver
+            # install_deps=True ensures tool dependencies are installed
             prepared_bundle = None
             if bundle_name:
                 discovery = AppBundleDiscovery(search_paths=get_bundle_search_paths())
                 prepared_bundle = asyncio.run(
-                    load_and_prepare_bundle(bundle_name, discovery, install_deps=False)
+                    load_and_prepare_bundle(bundle_name, discovery, install_deps=True)
                 )
 
             # Display history or replay (when resuming without prompt)
