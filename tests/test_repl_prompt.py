@@ -37,16 +37,27 @@ class TestPromptSession:
         assert session.enable_history_search is not None  # Ctrl-R enabled
 
     def test_creates_history_directory(self, tmp_path, monkeypatch):
-        """Verify history directory is created if missing."""
-        # Override Path.home() to use tmp_path
+        """Verify project history directory is created if missing."""
+        # Create a fake project directory
+        project_dir = tmp_path / "test-project"
+        project_dir.mkdir(parents=True, exist_ok=True)
+
+        # Override Path.home() and Path.cwd() for project-scoped history
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(Path, "cwd", lambda: project_dir)
 
         # Create session (triggers history directory creation as side effect)
         _ = _create_prompt_session()
 
-        history_dir = tmp_path / ".amplifier"
-        assert history_dir.exists()
-        assert history_dir.is_dir()
+        # History should be in project-scoped directory
+        # The slug will be based on project_dir path
+        projects_dir = tmp_path / ".amplifier" / "projects"
+        assert projects_dir.exists()
+        assert projects_dir.is_dir()
+        # Verify at least one project directory was created
+        project_dirs = list(projects_dir.iterdir())
+        assert len(project_dirs) == 1
+        assert project_dirs[0].is_dir()
 
     def test_fallback_to_inmemory_on_history_error(self, tmp_path, monkeypatch):
         """Verify fallback to InMemoryHistory if FileHistory fails."""
@@ -95,18 +106,23 @@ class TestREPLBehavior:
         # This test verifies the integration pattern is correct
 
     def test_history_persists_across_sessions(self, tmp_path, monkeypatch):
-        """Verify command history is saved and loaded across sessions."""
+        """Verify command history is saved and loaded across sessions within same project."""
+        # Create a fake project directory
+        project_dir = tmp_path / "test-project"
+        project_dir.mkdir(parents=True, exist_ok=True)
+
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(Path, "cwd", lambda: project_dir)
 
         # Create first session and add to history
         session1 = _create_prompt_session()
         # Note: In actual usage, history is added via user input
-        # This test verifies the history file is created
+        # This test verifies the history directory is created
 
-        history_file = tmp_path / ".amplifier" / "repl_history"
-        assert history_file.parent.exists()
+        projects_dir = tmp_path / ".amplifier" / "projects"
+        assert projects_dir.exists()
 
-        # Create second session - should load same history
+        # Create second session - should load same history (same project)
         session2 = _create_prompt_session()
         # Both sessions should reference the same history file location
         assert session1.history.__class__ == session2.history.__class__

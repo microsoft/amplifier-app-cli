@@ -879,7 +879,7 @@ def _create_prompt_session() -> PromptSession:
     """Create configured PromptSession for REPL.
 
     Provides:
-    - Persistent history at ~/.amplifier/repl_history
+    - Persistent history at ~/.amplifier/projects/<project-slug>/repl_history
     - Green prompt styling matching Rich console
     - History search with Ctrl-R
     - Multi-line input with Ctrl-J
@@ -891,12 +891,15 @@ def _create_prompt_session() -> PromptSession:
     Philosophy:
     - Ruthless simplicity: Use library's defaults, minimal config
     - Graceful degradation: Fallback to in-memory if file history fails
-    - User experience: History location follows XDG pattern (~/.amplifier/)
+    - User experience: History is project-scoped (aligned with sessions)
     - Reliable keys: Ctrl-J works in all terminals
     """
-    history_path = Path.home() / ".amplifier" / "repl_history"
+    from amplifier_app_cli.project_utils import get_project_slug
 
-    # Ensure .amplifier directory exists
+    project_slug = get_project_slug()
+    history_path = Path.home() / ".amplifier" / "projects" / project_slug / "repl_history"
+
+    # Ensure project directory exists
     history_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Try to use file history, fallback to in-memory
