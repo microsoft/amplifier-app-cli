@@ -1156,6 +1156,11 @@ async def interactive_chat(
     # Create session store for saving
     store = SessionStore()
 
+    # Register incremental save hook for crash recovery between tool calls
+    from .incremental_save import register_incremental_save
+
+    register_incremental_save(session, store, session_id, profile_name, config)
+
     # Get effective config summary for banner display
     config_summary = get_effective_config_summary(config, profile_name)
 
@@ -1941,6 +1946,11 @@ async def interactive_chat_with_session(
 
     # Create session store for saving
     store = SessionStore()
+
+    # Register incremental save hook for crash recovery between tool calls
+    from .incremental_save import register_incremental_save
+
+    register_incremental_save(session, store, session_id, profile_name, config)
 
     # Create prompt session for history and advanced editing
     prompt_session = _create_prompt_session()
