@@ -28,6 +28,7 @@ from ..paths import create_profile_loader
 from ..paths import get_bundle_search_paths
 from ..project_utils import get_project_slug
 from ..runtime.config import resolve_app_config
+from ..runtime.config import resolve_bundle_config
 from ..session_store import SessionStore
 
 # Prefix used to identify bundle-based sessions in metadata
@@ -282,38 +283,43 @@ def register_session_commands(
             agent_loader = create_agent_loader()
             app_settings = AppSettings(config_manager)
 
-            # Create bundle registry if resuming a bundle-based session
-            bundle_registry = create_bundle_registry() if bundle_name else None
-
-            config_data = resolve_app_config(
-                config_manager=config_manager,
-                profile_loader=profile_loader,
-                agent_loader=agent_loader,
-                app_settings=app_settings,
-                profile_override=profile_override if not bundle_name else None,
-                bundle_name=bundle_name,
-                bundle_registry=bundle_registry,
-                console=console,
-            )
-
-            # Check first run / auto-install providers BEFORE displaying history
-            # This ensures post-update scenarios are fixed before we show anything
+            # Check first run / auto-install providers BEFORE config resolution
+            # This ensures post-update scenarios are fixed before we do anything
             from .init import check_first_run
 
             check_first_run()
 
-            search_paths = get_module_search_paths()
-            active_profile = profile if profile else saved_profile
-
-            # Load and prepare bundle if resuming a bundle-based session
-            # This is needed for proper @mention resolution via foundation_resolver
-            # install_deps=True ensures tool dependencies are installed
+            # Resolve config using the SAME pattern as the golden path (run command):
+            # - Bundle mode: use resolve_bundle_config() which internally calls
+            #   load_and_prepare_bundle() with install_deps=True
+            # - Profile mode: use resolve_app_config()
             prepared_bundle = None
             if bundle_name:
-                discovery = AppBundleDiscovery(search_paths=get_bundle_search_paths())
-                prepared_bundle = asyncio.run(
-                    load_and_prepare_bundle(bundle_name, discovery, install_deps=True)
+                # Bundle mode: use resolve_bundle_config (matches golden path)
+                # This handles: download git modules, install deps, prepare bundle
+                config_data, prepared_bundle = asyncio.run(
+                    resolve_bundle_config(
+                        bundle_name=bundle_name,
+                        app_settings=app_settings,
+                        agent_loader=agent_loader,
+                        console=console,
+                    )
                 )
+            else:
+                # Profile mode: use resolve_app_config
+                config_data = resolve_app_config(
+                    config_manager=config_manager,
+                    profile_loader=profile_loader,
+                    agent_loader=agent_loader,
+                    app_settings=app_settings,
+                    profile_override=profile_override,
+                    bundle_name=None,
+                    bundle_registry=None,
+                    console=console,
+                )
+
+            search_paths = get_module_search_paths()
+            active_profile = profile if profile else saved_profile
 
             # Display history or replay (when resuming without prompt)
             if prompt is None and not no_history:
@@ -545,37 +551,40 @@ def register_session_commands(
             agent_loader = create_agent_loader()
             app_settings = AppSettings(config_manager)
 
-            # Create bundle registry if resuming a bundle-based session
-            bundle_registry = create_bundle_registry() if bundle_name else None
-
-            config_data = resolve_app_config(
-                config_manager=config_manager,
-                profile_loader=profile_loader,
-                agent_loader=agent_loader,
-                app_settings=app_settings,
-                profile_override=profile_override if not bundle_name else None,
-                bundle_name=bundle_name,
-                bundle_registry=bundle_registry,
-                console=console,
-            )
-
-            # Check first run / auto-install providers BEFORE displaying history
-            # This ensures post-update scenarios are fixed before we show anything
+            # Check first run / auto-install providers BEFORE config resolution
+            # This ensures post-update scenarios are fixed before we do anything
             # (Otherwise user sees history, then provider reinstall messages, then errors)
             from .init import check_first_run
 
             check_first_run()
 
-            # Load and prepare bundle if resuming a bundle-based session
-            # This enables bundle mode in interactive_chat_with_session for:
-            # 1. @mention resolution for bundle files
-            # 2. Provider injection for provider-agnostic bundles
-            # 3. Tool dependency installation (install_deps=True ensures deps are installed)
+            # Resolve config using the SAME pattern as the golden path (run command):
+            # - Bundle mode: use resolve_bundle_config() which internally calls
+            #   load_and_prepare_bundle() with install_deps=True
+            # - Profile mode: use resolve_app_config()
             prepared_bundle = None
             if bundle_name:
-                discovery = AppBundleDiscovery(search_paths=get_bundle_search_paths())
-                prepared_bundle = asyncio.run(
-                    load_and_prepare_bundle(bundle_name, discovery, install_deps=True)
+                # Bundle mode: use resolve_bundle_config (matches golden path)
+                # This handles: download git modules, install deps, prepare bundle
+                config_data, prepared_bundle = asyncio.run(
+                    resolve_bundle_config(
+                        bundle_name=bundle_name,
+                        app_settings=app_settings,
+                        agent_loader=agent_loader,
+                        console=console,
+                    )
+                )
+            else:
+                # Profile mode: use resolve_app_config
+                config_data = resolve_app_config(
+                    config_manager=config_manager,
+                    profile_loader=profile_loader,
+                    agent_loader=agent_loader,
+                    app_settings=app_settings,
+                    profile_override=profile_override,
+                    bundle_name=None,
+                    bundle_registry=None,
+                    console=console,
                 )
 
             search_paths = get_module_search_paths()
