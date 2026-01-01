@@ -88,22 +88,28 @@ async def _get_mounted_tools_from_bundle_async(bundle_name: str) -> list[dict[st
         List of tool dicts with name, description, and callable status
     """
     from ..lib.app_settings import AppSettings
-    from ..runtime.config import resolve_bundle_config
+    from ..runtime.config import resolve_config_async
 
-    # Load bundle via resolve_bundle_config (mirrors run.py pattern)
+    # Load bundle via unified resolve_config_async (single source of truth)
     agent_loader = create_agent_loader()
     config_manager = create_config_manager()
+    profile_loader = create_profile_loader()
     app_settings = AppSettings(config_manager)
 
     try:
-        _config, prepared_bundle = await resolve_bundle_config(
+        _config, prepared_bundle = await resolve_config_async(
             bundle_name=bundle_name,
-            app_settings=app_settings,
+            config_manager=config_manager,
+            profile_loader=profile_loader,
             agent_loader=agent_loader,
+            app_settings=app_settings,
             console=console,
         )
     except Exception as e:
         raise ValueError(f"Failed to load bundle '{bundle_name}': {e}") from e
+    
+    if prepared_bundle is None:
+        raise ValueError(f"Bundle '{bundle_name}' did not produce a PreparedBundle")
 
     inject_user_providers(_config, prepared_bundle)
 
@@ -157,19 +163,25 @@ async def _invoke_tool_from_bundle_async(bundle_name: str, tool_name: str, tool_
     """
     from ..lib.app_settings import AppSettings
     from ..main import _register_session_spawning
-    from ..runtime.config import resolve_bundle_config
+    from ..runtime.config import resolve_config_async
 
-    # Load bundle
+    # Load bundle via unified resolve_config_async (single source of truth)
     agent_loader = create_agent_loader()
     config_manager = create_config_manager()
+    profile_loader = create_profile_loader()
     app_settings = AppSettings(config_manager)
 
-    _config, prepared_bundle = await resolve_bundle_config(
+    _config, prepared_bundle = await resolve_config_async(
         bundle_name=bundle_name,
-        app_settings=app_settings,
+        config_manager=config_manager,
+        profile_loader=profile_loader,
         agent_loader=agent_loader,
+        app_settings=app_settings,
         console=console,
     )
+    
+    if prepared_bundle is None:
+        raise ValueError(f"Bundle '{bundle_name}' did not produce a PreparedBundle")
 
     inject_user_providers(_config, prepared_bundle)
 

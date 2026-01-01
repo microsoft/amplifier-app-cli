@@ -414,7 +414,7 @@ def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> No
         prepared_bundle.mount_plan["providers"] = config["providers"]
 
 
-def resolve_config(
+async def resolve_config_async(
     *,
     bundle_name: str | None = None,
     profile_override: str | None = None,
@@ -425,10 +425,13 @@ def resolve_config(
     cli_config: dict[str, Any] | None = None,
     console: Console | None = None,
 ) -> tuple[dict[str, Any], "PreparedBundle | None"]:
-    """Unified config resolution - THE golden path for all config loading.
+    """Unified config resolution (async) - THE golden path for all config loading.
 
     This is the SINGLE source of truth for resolving configuration.
-    All code paths (run, continue, session resume) should use this function.
+    All code paths (run, continue, session resume, tool commands) should use this.
+
+    Use this async version when already in an async context (e.g., tool.py).
+    Use resolve_config() for synchronous contexts (e.g., click commands).
 
     Args:
         bundle_name: If set, use bundle mode (resolve_bundle_config)
@@ -450,13 +453,11 @@ def resolve_config(
         # - Git module downloads
         # - Dependency installation (install_deps=True by default)
         # - Bundle preparation
-        config_data, prepared_bundle = asyncio.run(
-            resolve_bundle_config(
-                bundle_name=bundle_name,
-                app_settings=app_settings,
-                agent_loader=agent_loader,
-                console=console,
-            )
+        config_data, prepared_bundle = await resolve_bundle_config(
+            bundle_name=bundle_name,
+            app_settings=app_settings,
+            agent_loader=agent_loader,
+            console=console,
         )
         return config_data, prepared_bundle
     else:
@@ -478,8 +479,54 @@ def resolve_config(
         return config_data, None
 
 
+def resolve_config(
+    *,
+    bundle_name: str | None = None,
+    profile_override: str | None = None,
+    config_manager=None,
+    profile_loader=None,
+    agent_loader,
+    app_settings: AppSettings,
+    cli_config: dict[str, Any] | None = None,
+    console: Console | None = None,
+) -> tuple[dict[str, Any], "PreparedBundle | None"]:
+    """Unified config resolution (sync wrapper) - THE golden path for all config loading.
+
+    Synchronous wrapper around resolve_config_async() for use in click commands.
+    For async contexts, use resolve_config_async() directly.
+
+    Args:
+        bundle_name: If set, use bundle mode (resolve_bundle_config)
+        profile_override: If set (and no bundle_name), use profile mode
+        config_manager: Required for profile mode
+        profile_loader: Required for profile mode
+        agent_loader: Required for both modes
+        app_settings: Required for both modes
+        cli_config: Optional CLI overrides (profile mode only)
+        console: Optional console for output
+
+    Returns:
+        Tuple of (config_data dict, PreparedBundle or None)
+        - Bundle mode: returns (config, prepared_bundle)
+        - Profile mode: returns (config, None)
+    """
+    return asyncio.run(
+        resolve_config_async(
+            bundle_name=bundle_name,
+            profile_override=profile_override,
+            config_manager=config_manager,
+            profile_loader=profile_loader,
+            agent_loader=agent_loader,
+            app_settings=app_settings,
+            cli_config=cli_config,
+            console=console,
+        )
+    )
+
+
 __all__ = [
     "resolve_config",
+    "resolve_config_async",
     "resolve_app_config",
     "resolve_bundle_config",
     "deep_merge",
