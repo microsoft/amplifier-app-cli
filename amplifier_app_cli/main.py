@@ -1000,6 +1000,7 @@ def _register_session_spawning(session: AmplifierSession) -> None:
         parent_session: AmplifierSession,
         agent_configs: dict[str, dict],
         sub_session_id: str | None = None,
+        tool_inheritance: dict[str, list[str]] | None = None,
     ) -> dict:
         """Capability wrapper for spawn_sub_session."""
         return await spawn_sub_session(
@@ -1008,6 +1009,7 @@ def _register_session_spawning(session: AmplifierSession) -> None:
             parent_session=parent_session,
             agent_configs=agent_configs,
             sub_session_id=sub_session_id,
+            tool_inheritance=tool_inheritance,
         )
 
     async def resume_capability(sub_session_id: str, instruction: str) -> dict:
