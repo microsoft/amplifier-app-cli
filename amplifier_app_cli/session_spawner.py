@@ -13,12 +13,63 @@ from .agent_config import merge_configs
 logger = logging.getLogger(__name__)
 
 
+def _filter_tools(config: dict, tool_inheritance: dict[str, list[str]]) -> dict:
+    """Filter tools in config based on tool inheritance policy.
+    
+    Args:
+        config: Session config containing "tools" list
+        tool_inheritance: Policy dict with either:
+            - "exclude_tools": list of tool module names to exclude
+            - "inherit_tools": list of tool module names to include (allowlist)
+    
+    Returns:
+        New config dict with filtered tools list
+    """
+    tools = config.get("tools", [])
+    if not tools:
+        return config
+    
+    exclude_tools = tool_inheritance.get("exclude_tools", [])
+    inherit_tools = tool_inheritance.get("inherit_tools")
+    
+    if inherit_tools is not None:
+        # Allowlist mode: only include specified tools
+        filtered_tools = [
+            t for t in tools
+            if t.get("module") in inherit_tools
+        ]
+    elif exclude_tools:
+        # Blocklist mode: exclude specified tools
+        filtered_tools = [
+            t for t in tools
+            if t.get("module") not in exclude_tools
+        ]
+    else:
+        # No filtering
+        return config
+    
+    # Return new config with filtered tools
+    new_config = dict(config)
+    new_config["tools"] = filtered_tools
+    
+    logger.debug(
+        "Filtered tools: %d -> %d (exclude=%s, inherit=%s)",
+        len(tools),
+        len(filtered_tools),
+        exclude_tools,
+        inherit_tools,
+    )
+    
+    return new_config
+
+
 async def spawn_sub_session(
     agent_name: str,
     instruction: str,
     parent_session: AmplifierSession,
     agent_configs: dict[str, dict],
     sub_session_id: str | None = None,
+    tool_inheritance: dict[str, list[str]] | None = None,
 ) -> dict:
     """
     Spawn sub-session with agent configuration overlay.
@@ -29,6 +80,9 @@ async def spawn_sub_session(
         parent_session: Parent session for inheritance
         agent_configs: Dict of agent configurations
         sub_session_id: Optional explicit ID (generates if None)
+        tool_inheritance: Optional tool filtering policy:
+            - {"exclude_tools": ["tool-task"]} - inherit all EXCEPT these
+            - {"inherit_tools": ["tool-filesystem"]} - inherit ONLY these
 
     Returns:
         Dict with "output" (response) and "session_id" (for multi-turn)
@@ -44,6 +98,10 @@ async def spawn_sub_session(
 
     # Merge parent config with agent overlay
     merged_config = merge_configs(parent_session.config, agent_config)
+
+    # Apply tool inheritance filtering if specified
+    if tool_inheritance and "tools" in merged_config:
+        merged_config = _filter_tools(merged_config, tool_inheritance)
 
     # Generate child session ID using W3C Trace Context span_id pattern
     # Use 16 hex chars (8 bytes) for fixed-length, filesystem-safe IDs
