@@ -27,8 +27,7 @@ from ..paths import create_config_manager
 from ..paths import create_profile_loader
 from ..paths import get_bundle_search_paths
 from ..project_utils import get_project_slug
-from ..runtime.config import resolve_app_config
-from ..runtime.config import resolve_bundle_config
+from ..runtime.config import resolve_config
 from ..session_store import SessionStore
 
 # Prefix used to identify bundle-based sessions in metadata
@@ -289,34 +288,16 @@ def register_session_commands(
 
             check_first_run()
 
-            # Resolve config using the SAME pattern as the golden path (run command):
-            # - Bundle mode: use resolve_bundle_config() which internally calls
-            #   load_and_prepare_bundle() with install_deps=True
-            # - Profile mode: use resolve_app_config()
-            prepared_bundle = None
-            if bundle_name:
-                # Bundle mode: use resolve_bundle_config (matches golden path)
-                # This handles: download git modules, install deps, prepare bundle
-                config_data, prepared_bundle = asyncio.run(
-                    resolve_bundle_config(
-                        bundle_name=bundle_name,
-                        app_settings=app_settings,
-                        agent_loader=agent_loader,
-                        console=console,
-                    )
-                )
-            else:
-                # Profile mode: use resolve_app_config
-                config_data = resolve_app_config(
-                    config_manager=config_manager,
-                    profile_loader=profile_loader,
-                    agent_loader=agent_loader,
-                    app_settings=app_settings,
-                    profile_override=profile_override,
-                    bundle_name=None,
-                    bundle_registry=None,
-                    console=console,
-                )
+            # Resolve configuration using unified function (single source of truth)
+            config_data, prepared_bundle = resolve_config(
+                bundle_name=bundle_name,
+                profile_override=profile_override,
+                config_manager=config_manager,
+                profile_loader=profile_loader,
+                agent_loader=agent_loader,
+                app_settings=app_settings,
+                console=console,
+            )
 
             search_paths = get_module_search_paths()
             active_profile = profile if profile else saved_profile
@@ -558,34 +539,16 @@ def register_session_commands(
 
             check_first_run()
 
-            # Resolve config using the SAME pattern as the golden path (run command):
-            # - Bundle mode: use resolve_bundle_config() which internally calls
-            #   load_and_prepare_bundle() with install_deps=True
-            # - Profile mode: use resolve_app_config()
-            prepared_bundle = None
-            if bundle_name:
-                # Bundle mode: use resolve_bundle_config (matches golden path)
-                # This handles: download git modules, install deps, prepare bundle
-                config_data, prepared_bundle = asyncio.run(
-                    resolve_bundle_config(
-                        bundle_name=bundle_name,
-                        app_settings=app_settings,
-                        agent_loader=agent_loader,
-                        console=console,
-                    )
-                )
-            else:
-                # Profile mode: use resolve_app_config
-                config_data = resolve_app_config(
-                    config_manager=config_manager,
-                    profile_loader=profile_loader,
-                    agent_loader=agent_loader,
-                    app_settings=app_settings,
-                    profile_override=profile_override,
-                    bundle_name=None,
-                    bundle_registry=None,
-                    console=console,
-                )
+            # Resolve configuration using unified function (single source of truth)
+            config_data, prepared_bundle = resolve_config(
+                bundle_name=bundle_name,
+                profile_override=profile_override,
+                config_manager=config_manager,
+                profile_loader=profile_loader,
+                agent_loader=agent_loader,
+                app_settings=app_settings,
+                console=console,
+            )
 
             search_paths = get_module_search_paths()
             active_profile = profile if profile else saved_profile

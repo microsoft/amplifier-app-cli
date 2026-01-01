@@ -25,8 +25,7 @@ from ..paths import create_agent_loader
 from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..paths import create_profile_loader
-from ..runtime.config import resolve_app_config
-from ..runtime.config import resolve_bundle_config
+from ..runtime.config import resolve_config
 
 logger = logging.getLogger(__name__)
 
@@ -185,31 +184,17 @@ def register_run_command(
         # Invariant: either bundle is set (defaulting to "foundation") or explicit profile was configured
         assert config_source_name is not None
 
-        # Resolve configuration - bundle mode uses foundation's prepare workflow
-        prepared_bundle = None
-        if bundle:
-            # Use foundation's prepare workflow for bundles (downloads git modules, installs deps)
-            # This returns both the config AND the PreparedBundle with its resolver
-            config_data, prepared_bundle = asyncio.run(
-                resolve_bundle_config(
-                    bundle_name=bundle,
-                    app_settings=app_settings,
-                    agent_loader=agent_loader,
-                    console=console,
-                )
-            )
-        else:
-            config_data = resolve_app_config(
-                config_manager=config_manager,
-                profile_loader=profile_loader,
-                agent_loader=agent_loader,
-                app_settings=app_settings,
-                cli_config=cli_overrides,
-                profile_override=active_profile_name,
-                bundle_name=None,
-                bundle_registry=None,
-                console=console,
-            )
+        # Resolve configuration using unified function (single source of truth)
+        config_data, prepared_bundle = resolve_config(
+            bundle_name=bundle,
+            profile_override=active_profile_name,
+            config_manager=config_manager,
+            profile_loader=profile_loader,
+            agent_loader=agent_loader,
+            app_settings=app_settings,
+            cli_config=cli_overrides,
+            console=console,
+        )
 
         search_paths = get_module_search_paths()
 
