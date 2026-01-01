@@ -12,6 +12,55 @@ from .lib.legacy import merge_profile_dicts
 logger = logging.getLogger(__name__)
 
 
+def apply_spawn_tool_policy(parent: dict[str, Any]) -> dict[str, Any]:
+    """
+    Apply spawn tool inheritance policy to parent config before merging.
+
+    The `spawn` section in a bundle controls what tools spawned agents receive:
+    - spawn.exclude_tools: list of tool module IDs to exclude (inherit all except these)
+    - spawn.tools: explicit list of tools for agents (replaces inheritance)
+
+    If spawn.tools is specified, it completely replaces tool inheritance.
+    If spawn.exclude_tools is specified, those tools are filtered out.
+    If neither is specified, agents inherit all parent tools (default/backward-compatible).
+
+    Args:
+        parent: Parent session's complete mount plan
+
+    Returns:
+        Parent config with tools filtered according to spawn policy
+    """
+    spawn_config = parent.get("spawn", {})
+    if not spawn_config:
+        # No spawn policy - return parent unchanged (backward compatible)
+        return parent
+
+    filtered_parent = parent.copy()
+    parent_tools = parent.get("tools", [])
+
+    # Check for explicit spawn.tools (replaces inheritance entirely)
+    if "tools" in spawn_config:
+        spawn_tools = spawn_config["tools"]
+        if isinstance(spawn_tools, list):
+            # Use explicit tool list for agents
+            filtered_parent["tools"] = spawn_tools
+            logger.debug(f"Spawn policy: using explicit tools list ({len(spawn_tools)} tools)")
+        return filtered_parent
+
+    # Check for spawn.exclude_tools (inherit all except these)
+    exclude_tools = spawn_config.get("exclude_tools", [])
+    if exclude_tools and isinstance(exclude_tools, list):
+        # Filter out excluded tools
+        filtered_tools = [
+            tool for tool in parent_tools
+            if tool.get("module") not in exclude_tools
+        ]
+        filtered_parent["tools"] = filtered_tools
+        logger.debug(f"Spawn policy: excluded {len(parent_tools) - len(filtered_tools)} tools")
+
+    return filtered_parent
+
+
 def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     """
     Deep merge parent config with agent overlay.
@@ -21,6 +70,11 @@ def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
     - Config dicts merge recursively (child keys override parent keys)
     - Sources inherit (agent doesn't need to repeat parent's source)
     - Scalar values override (child replaces parent)
+
+    Special handling for spawn tool policy:
+    - Parent's `spawn.exclude_tools` filters tools before inheritance
+    - Parent's `spawn.tools` replaces tool inheritance entirely
+    - Default (no spawn section): agents inherit all parent tools
 
     Special handling for agents field (sub-agent access control):
     - Agent's `agents` field is a Smart Single Value ("all", "none", or list of names)
@@ -38,12 +92,15 @@ def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
         amplifier_profiles.merger.merge_profile_dicts - The underlying implementation
         amplifier-profiles/docs/AGENT_AUTHORING.md - Merge behavior documentation
     """
+    # Apply spawn tool policy to parent before merging
+    filtered_parent = apply_spawn_tool_policy(parent)
+
     # Extract agent filter before merge (prevents overwriting parent's agents dict)
     overlay_copy = overlay.copy()
     agent_filter = overlay_copy.pop("agents", None)
 
     # Standard merge (parent's agents dict preserved since we removed it from overlay)
-    result = merge_profile_dicts(parent, overlay_copy)
+    result = merge_profile_dicts(filtered_parent, overlay_copy)
 
     # Apply agent filtering (Smart Single Value → filtered dict)
     # Note: "all" and None both mean "inherit parent's agents unchanged" (already in result)
