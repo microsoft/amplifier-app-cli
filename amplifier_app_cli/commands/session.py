@@ -552,15 +552,23 @@ def register_session_commands(
                 console=console,
             )
 
+            # Check first run / auto-install providers BEFORE displaying history
+            # This ensures post-update scenarios are fixed before we show anything
+            # (Otherwise user sees history, then provider reinstall messages, then errors)
+            from .init import check_first_run
+
+            check_first_run()
+
             # Load and prepare bundle if resuming a bundle-based session
             # This enables bundle mode in interactive_chat_with_session for:
             # 1. @mention resolution for bundle files
             # 2. Provider injection for provider-agnostic bundles
+            # 3. Tool dependency installation (install_deps=True ensures deps are installed)
             prepared_bundle = None
             if bundle_name:
                 discovery = AppBundleDiscovery(search_paths=get_bundle_search_paths())
                 prepared_bundle = asyncio.run(
-                    load_and_prepare_bundle(bundle_name, discovery, install_deps=False)
+                    load_and_prepare_bundle(bundle_name, discovery, install_deps=True)
                 )
 
             search_paths = get_module_search_paths()
