@@ -1593,6 +1593,10 @@ async def execute_single_with_session(
     prepared_bundle: "PreparedBundle | None" = None,
 ):
     """Execute a single prompt with restored session context."""
+    # Check first run (ensures provider is installed after updates)
+    # This is critical for session resume - without it, sessions fail after `amplifier update`
+    check_first_run()
+
     # In JSON mode, redirect all output to stderr
     if output_format in ["json", "json-trace"]:
         original_stdout = sys.stdout
@@ -1668,8 +1672,10 @@ async def execute_single_with_session(
             # Register session spawning capabilities for agent delegation (app-layer policy)
             _register_session_spawning(session)
 
-            # Process config @mentions (profile mode only - bundle mode handled by foundation)
-            await _process_mentions(session, profile_name)
+            # NOTE: Do NOT call _process_mentions() here - this is a resume function.
+            # Profile @mentions were already processed in the original session and are
+            # included in initial_transcript which gets restored below via set_messages().
+            # See interactive_chat_with_session() which correctly omits this call.
 
         # Register trace collector hooks if in json-trace mode
         if trace_collector:
@@ -1854,6 +1860,10 @@ async def interactive_chat_with_session(
         initial_prompt: Optional prompt to auto-execute before entering interactive loop
     """
     global _abort_requested  # Declare at function level for signal handler
+
+    # Check first run (ensures provider is installed after updates)
+    # This is critical for session resume - without it, sessions fail after `amplifier update`
+    check_first_run()
 
     # Create CLI UX systems (app-layer policy)
     approval_system, display_system = _create_cli_ux_systems()
