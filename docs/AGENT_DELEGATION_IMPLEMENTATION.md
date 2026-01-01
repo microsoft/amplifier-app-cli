@@ -118,6 +118,56 @@ sub_session = await parent_session.fork(
 result = await sub_session.execute("Design the auth system")
 ```
 
+### Spawn Tool Policy
+
+Bundles can control which tools spawned agents inherit using the `spawn` section:
+
+```yaml
+# In bundle.md
+spawn:
+  exclude_tools: [tool-task]  # Agents inherit all tools EXCEPT these
+  # OR
+  tools: [tool-a, tool-b]     # Agents get ONLY these tools
+```
+
+**How it works**: Before merging parent and agent configs, `apply_spawn_tool_policy()` filters the parent's tools based on the spawn policy:
+
+```python
+# In agent_config.py
+def apply_spawn_tool_policy(parent: dict) -> dict:
+    """Filter parent tools before merging with agent overlay."""
+    spawn_config = parent.get("spawn", {})
+    
+    # If spawn.tools specified, use explicit list
+    if "tools" in spawn_config:
+        filtered_parent["tools"] = spawn_config["tools"]
+        return filtered_parent
+    
+    # If spawn.exclude_tools specified, filter those out
+    exclude_tools = spawn_config.get("exclude_tools", [])
+    if exclude_tools:
+        filtered_parent["tools"] = [
+            t for t in parent["tools"] 
+            if t.get("module") not in exclude_tools
+        ]
+    
+    return filtered_parent
+```
+
+**Common pattern**: Prevent delegation recursion by excluding `tool-task`:
+
+```yaml
+tools:
+  - module: tool-task      # Coordinator can delegate
+  - module: tool-filesystem
+  - module: tool-bash
+
+spawn:
+  exclude_tools: [tool-task]  # But agents can't delegate further
+```
+
+**Default behavior**: If no `spawn` section, agents inherit all parent tools (backward compatible).
+
 ### Multi-Turn Sub-Session Resumption
 
 Sub-sessions support multi-turn conversations through automatic state persistence. When a sub-session completes, its state (transcript and configuration) is saved to persistent storage, enabling the parent session to resume the conversation across multiple turns.
