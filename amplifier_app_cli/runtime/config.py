@@ -97,6 +97,16 @@ async def resolve_bundle_config(
             # This ensures observability when using provider-agnostic bundles
             bundle_config["providers"] = _ensure_debug_defaults(provider_overrides)
 
+    # Apply tool overrides from settings (e.g., allowed_write_paths for tool-filesystem)
+    tool_overrides = app_settings.get_tool_overrides()
+    if tool_overrides:
+        if bundle_config.get("tools"):
+            # Bundle has tools - merge overrides with existing
+            bundle_config["tools"] = _apply_tool_overrides(bundle_config["tools"], tool_overrides)
+        else:
+            # Bundle has no tools - use overrides directly
+            bundle_config["tools"] = tool_overrides
+
     if console:
         console.print(f"[dim]Bundle '{bundle_name}' prepared successfully[/dim]")
 
@@ -104,11 +114,13 @@ async def resolve_bundle_config(
     # IMPORTANT: Must expand BEFORE syncing to mount_plan, so ${ANTHROPIC_API_KEY} etc. become actual values
     bundle_config = expand_env_vars(bundle_config)
 
-    # CRITICAL: Sync providers to prepared.mount_plan so create_session() uses them
+    # CRITICAL: Sync providers and tools to prepared.mount_plan so create_session() uses them
     # prepared.mount_plan is what create_session() uses, not bundle_config
     # This must happen AFTER env var expansion so API keys are actual values, not "${VAR}" literals
     if provider_overrides:
         prepared.mount_plan["providers"] = bundle_config["providers"]
+    if tool_overrides:
+        prepared.mount_plan["tools"] = bundle_config["tools"]
 
     return bundle_config, prepared
 
@@ -297,6 +309,41 @@ def _apply_provider_overrides(providers: list[dict[str, Any]], overrides: list[d
             result.append(merged)
         else:
             result.append(provider)
+
+    return result
+
+
+def _apply_tool_overrides(tools: list[dict[str, Any]], overrides: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply tool overrides to bundle tools.
+
+    Merges override configs into matching tools by module ID.
+    This enables settings like allowed_write_paths for tool-filesystem
+    to be applied from user settings.
+    """
+    if not overrides:
+        return tools
+
+    # Build lookup for overrides by module ID
+    override_map = {}
+    for override in overrides:
+        if isinstance(override, dict) and "module" in override:
+            override_map[override["module"]] = override
+
+    # Apply overrides to matching tools
+    result = []
+    for tool in tools:
+        if isinstance(tool, dict) and tool.get("module") in override_map:
+            # Merge override into tool
+            merged = merge_module_items(tool, override_map[tool["module"]])
+            result.append(merged)
+        else:
+            result.append(tool)
+
+    # Add any new tools from overrides that aren't in the base
+    existing_modules = {t.get("module") for t in tools if isinstance(t, dict)}
+    for override in overrides:
+        if isinstance(override, dict) and override.get("module") not in existing_modules:
+            result.append(override)
 
     return result
 

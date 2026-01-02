@@ -73,6 +73,24 @@ class AppSettings:
         providers = merged.get("config", {}).get("providers", [])
         return providers if isinstance(providers, list) else []
 
+    def get_tool_overrides(self) -> list[dict[str, Any]]:
+        """Return merged tool overrides (local > project > global).
+
+        Tool overrides allow settings like allowed_write_paths for tool-filesystem
+        to be configured in user settings and applied to bundles.
+
+        Expected structure in settings.yaml:
+            modules:
+              tools:
+                - module: tool-filesystem
+                  config:
+                    allowed_write_paths:
+                      - /path/to/dir
+        """
+        merged = self._config.get_merged_settings()
+        tools = merged.get("modules", {}).get("tools", [])
+        return tools if isinstance(tools, list) else []
+
     def get_scope_provider_overrides(self, scope: ScopeType) -> list[dict[str, Any]]:
         """Return provider overrides defined at a specific scope."""
         scope_path = self.scope_path(scope)

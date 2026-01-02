@@ -16,7 +16,7 @@ from typing import Literal
 
 import yaml
 
-Scope = Literal["local", "project", "global"]
+Scope = Literal["local", "project", "global", "session"]
 
 
 @dataclass
@@ -26,6 +26,7 @@ class SettingsPaths:
     global_settings: Path
     project_settings: Path
     local_settings: Path
+    session_settings: Path | None = None  # Set dynamically when session is known
 
     @classmethod
     def default(cls) -> SettingsPaths:
@@ -34,16 +35,27 @@ class SettingsPaths:
             global_settings=Path.home() / ".amplifier" / "settings.yaml",
             project_settings=Path.cwd() / ".amplifier" / "settings.yaml",
             local_settings=Path.cwd() / ".amplifier" / "settings.local.yaml",
+            session_settings=None,
         )
+
+    @classmethod
+    def with_session(cls, session_id: str, project_slug: str) -> SettingsPaths:
+        """Create paths including session-scoped settings."""
+        base = cls.default()
+        base.session_settings = (
+            Path.home() / ".amplifier" / "projects" / project_slug / "sessions" / session_id / "settings.yaml"
+        )
+        return base
 
 
 class AppSettings:
     """Simple settings manager with scope-aware merging.
 
     Scope priority (most specific wins):
-    1. local (.amplifier/settings.local.yaml) - gitignored, machine-specific
-    2. project (.amplifier/settings.yaml) - committed, team-shared
-    3. global (~/.amplifier/settings.yaml) - user defaults
+    1. session (~/.amplifier/projects/<slug>/sessions/<id>/settings.yaml) - session-specific
+    2. local (.amplifier/settings.local.yaml) - gitignored, machine-specific
+    3. project (.amplifier/settings.yaml) - committed, team-shared
+    4. global (~/.amplifier/settings.yaml) - user defaults
 
     Usage:
         settings = AppSettings()
@@ -54,10 +66,24 @@ class AppSettings:
     def __init__(self, paths: SettingsPaths | None = None) -> None:
         self.paths = paths or SettingsPaths.default()
 
+    def with_session(self, session_id: str, project_slug: str) -> "AppSettings":
+        """Return a new AppSettings instance with session scope enabled."""
+        new_paths = SettingsPaths.with_session(session_id, project_slug)
+        return AppSettings(new_paths)
+
     def get_merged_settings(self) -> dict[str, Any]:
         """Load and merge settings from all scopes."""
         result: dict[str, Any] = {}
-        for path in [self.paths.global_settings, self.paths.project_settings, self.paths.local_settings]:
+        # Order: global -> project -> local -> session (most specific wins)
+        paths_to_check = [
+            self.paths.global_settings,
+            self.paths.project_settings,
+            self.paths.local_settings,
+        ]
+        if self.paths.session_settings:
+            paths_to_check.append(self.paths.session_settings)
+
+        for path in paths_to_check:
             if path.exists():
                 try:
                     with open(path) as f:
@@ -119,15 +145,143 @@ class AppSettings:
         settings = self.get_merged_settings()
         return settings.get("overrides", {})
 
+    # ----- Allowed write paths settings -----
+
+    def get_allowed_write_paths(self) -> list[tuple[str, str]]:
+        """Return list of (path, scope) tuples, merged across all scopes.
+
+        Returns paths from all scopes with their source scope for display.
+        Paths are deduplicated - if same path appears in multiple scopes,
+        the most specific scope wins.
+        """
+        result: list[tuple[str, str]] = []
+        seen_paths: set[str] = set()
+
+        # Order from most specific to least specific for deduplication
+        scopes_to_check: list[tuple[Scope, Path | None]] = [
+            ("session", self.paths.session_settings),
+            ("local", self.paths.local_settings),
+            ("project", self.paths.project_settings),
+            ("global", self.paths.global_settings),
+        ]
+
+        for scope_name, path in scopes_to_check:
+            if path is None or not path.exists():
+                continue
+            try:
+                with open(path) as f:
+                    content = yaml.safe_load(f) or {}
+                paths_list = (
+                    content.get("modules", {})
+                    .get("tools", [{}])[0]
+                    .get("config", {})
+                    .get("allowed_write_paths", [])
+                )
+                # Handle case where tools is a list with tool-filesystem entry
+                if not paths_list:
+                    tools_list = content.get("modules", {}).get("tools", [])
+                    for tool in tools_list:
+                        if isinstance(tool, dict) and tool.get("module") == "tool-filesystem":
+                            paths_list = tool.get("config", {}).get("allowed_write_paths", [])
+                            break
+
+                for p in paths_list:
+                    if p not in seen_paths:
+                        result.append((p, scope_name))
+                        seen_paths.add(p)
+            except Exception:
+                pass  # Skip malformed files
+
+        return result
+
+    def add_allowed_write_path(self, path: str, scope: Scope = "global") -> None:
+        """Add path to allowed_write_paths at specified scope.
+
+        Args:
+            path: Absolute path to allow writes to
+            scope: Where to store the setting (global, project, local, session)
+        """
+        # Resolve to absolute path
+        resolved = str(Path(path).resolve())
+
+        settings = self._read_scope(scope)
+
+        # Ensure modules.tools structure exists
+        if "modules" not in settings:
+            settings["modules"] = {}
+        if "tools" not in settings["modules"]:
+            settings["modules"]["tools"] = []
+
+        # Find or create tool-filesystem entry
+        tools_list = settings["modules"]["tools"]
+        fs_tool = None
+        for tool in tools_list:
+            if isinstance(tool, dict) and tool.get("module") == "tool-filesystem":
+                fs_tool = tool
+                break
+
+        if fs_tool is None:
+            fs_tool = {"module": "tool-filesystem", "config": {"allowed_write_paths": []}}
+            tools_list.append(fs_tool)
+
+        if "config" not in fs_tool:
+            fs_tool["config"] = {}
+        if "allowed_write_paths" not in fs_tool["config"]:
+            fs_tool["config"]["allowed_write_paths"] = []
+
+        # Add path if not already present
+        if resolved not in fs_tool["config"]["allowed_write_paths"]:
+            fs_tool["config"]["allowed_write_paths"].append(resolved)
+
+        self._write_scope(scope, settings)
+
+    def remove_allowed_write_path(self, path: str, scope: Scope = "global") -> bool:
+        """Remove path from allowed_write_paths at specified scope.
+
+        Args:
+            path: Path to remove (will be resolved to absolute)
+            scope: Which scope to remove from
+
+        Returns:
+            True if path was found and removed, False otherwise
+        """
+        # Resolve to absolute path for matching
+        resolved = str(Path(path).resolve())
+
+        settings = self._read_scope(scope)
+
+        tools_list = settings.get("modules", {}).get("tools", [])
+        for tool in tools_list:
+            if isinstance(tool, dict) and tool.get("module") == "tool-filesystem":
+                paths_list = tool.get("config", {}).get("allowed_write_paths", [])
+                if resolved in paths_list:
+                    paths_list.remove(resolved)
+                    self._write_scope(scope, settings)
+                    return True
+                # Also try matching the original path
+                if path in paths_list:
+                    paths_list.remove(path)
+                    self._write_scope(scope, settings)
+                    return True
+
+        return False
+
     # ----- Scope utilities -----
 
     def _get_scope_path(self, scope: Scope) -> Path:
         """Get settings file path for scope."""
-        return {
+        scope_map: dict[Scope, Path | None] = {
+            "session": self.paths.session_settings,
             "local": self.paths.local_settings,
             "project": self.paths.project_settings,
             "global": self.paths.global_settings,
-        }[scope]
+        }
+        path = scope_map.get(scope)
+        if path is None:
+            if scope == "session":
+                raise ValueError("Session scope requires session_id to be set. Use with_session() first.")
+            raise ValueError(f"Unknown scope: {scope}")
+        return path
 
     def _read_scope(self, scope: Scope) -> dict[str, Any]:
         """Read settings from a specific scope."""
