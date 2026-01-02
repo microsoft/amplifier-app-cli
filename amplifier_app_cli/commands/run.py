@@ -7,10 +7,8 @@ import logging
 import sys
 import uuid
 from collections.abc import Callable
-from collections.abc import Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING
-from typing import Any
 
 import click
 
@@ -26,33 +24,21 @@ from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..paths import create_profile_loader
 from ..runtime.config import resolve_config
+from ..types import (
+    ExecuteSingleProtocol,
+    InteractiveChatProtocol,
+    SearchPathProviderProtocol,
+)
 
 logger = logging.getLogger(__name__)
-
-InteractiveChat = Callable[
-    [dict, list, bool, str | None, str, Path | None, "PreparedBundle | None", str | None], Coroutine[Any, Any, None]
-]
-InteractiveResume = Callable[
-    [dict, list, bool, str, list[dict], str, Path | None, "PreparedBundle | None", str | None],
-    Coroutine[Any, Any, None],
-]
-ExecuteSingle = Callable[
-    [str, dict, list, bool, str | None, str, str, Path | None, "PreparedBundle | None"], Coroutine[Any, Any, None]
-]
-ExecuteSingleWithSession = Callable[
-    [str, dict, list, bool, str, list[dict], str, str, Path | None, "PreparedBundle | None"], Coroutine[Any, Any, None]
-]
-SearchPathProvider = Callable[[], list]
 
 
 def register_run_command(
     cli: click.Group,
     *,
-    interactive_chat: InteractiveChat,
-    interactive_chat_with_session: InteractiveResume,
-    execute_single: ExecuteSingle,
-    execute_single_with_session: ExecuteSingleWithSession,
-    get_module_search_paths: SearchPathProvider,
+    interactive_chat: InteractiveChatProtocol,
+    execute_single: ExecuteSingleProtocol,
+    get_module_search_paths: SearchPathProviderProtocol,
     check_first_run: Callable[[], bool],
     prompt_first_run_init: Callable[[Any], bool],
 ):
@@ -288,17 +274,19 @@ def register_run_command(
                 if transcript is None:
                     console.print("[red]Error:[/red] Failed to load session transcript")
                     sys.exit(1)
+                # Display conversation history before resuming (reuse session.py's display)
+                from .session import _display_session_history
+                _display_session_history(transcript, metadata or {})
                 asyncio.run(
-                    interactive_chat_with_session(
+                    interactive_chat(
                         config_data,
                         search_paths,
                         verbose,
-                        resume,
-                        transcript,
-                        config_source_name,
-                        bundle_base_path,
-                        prepared_bundle,
-                        initial_prompt,
+                        session_id=resume,
+                        profile_name=config_source_name,
+                        prepared_bundle=prepared_bundle,
+                        initial_prompt=initial_prompt,
+                        initial_transcript=transcript,
                     )
                 )
             else:
@@ -309,11 +297,10 @@ def register_run_command(
                         config_data,
                         search_paths,
                         verbose,
-                        session_id,
-                        config_source_name,
-                        bundle_base_path,
-                        prepared_bundle,
-                        initial_prompt,
+                        session_id=session_id,
+                        profile_name=config_source_name,
+                        prepared_bundle=prepared_bundle,
+                        initial_prompt=initial_prompt,
                     )
                 )
         else:
@@ -335,17 +322,16 @@ def register_run_command(
                     console.print("[red]Error:[/red] Failed to load session transcript")
                     sys.exit(1)
                 asyncio.run(
-                    execute_single_with_session(
+                    execute_single(
                         prompt,
                         config_data,
                         search_paths,
                         verbose,
-                        resume,
-                        transcript,
-                        config_source_name,
-                        output_format,
-                        bundle_base_path,
-                        prepared_bundle,
+                        session_id=resume,
+                        profile_name=config_source_name,
+                        output_format=output_format,
+                        prepared_bundle=prepared_bundle,
+                        initial_transcript=transcript,
                     )
                 )
             else:
@@ -361,11 +347,10 @@ def register_run_command(
                         config_data,
                         search_paths,
                         verbose,
-                        session_id,
-                        config_source_name,
-                        output_format,
-                        bundle_base_path,
-                        prepared_bundle,
+                        session_id=session_id,
+                        profile_name=config_source_name,
+                        output_format=output_format,
+                        prepared_bundle=prepared_bundle,
                     )
                 )
 

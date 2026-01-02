@@ -56,7 +56,7 @@ dependencies = [
 [[package]]
 name = "amplifier-core"
 version = "1.0.0"
-source = { git = "https://github.com/microsoft/amplifier-core?branch=main#ac163e5fb0d315bb1c735a91ac4a9d7a82ae8fc1" }
+source = { git = "https://github.com/microsoft/amplifier-core?branch=main#904108b772d8949d48bdf413f7b1b63141fe84f5" }
 dependencies = [
     { name = "click" },
     { name = "pydantic" },

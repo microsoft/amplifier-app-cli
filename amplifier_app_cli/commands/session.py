@@ -6,12 +6,10 @@ import asyncio
 import json
 import sys
 from collections.abc import Callable
-from collections.abc import Coroutine
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
 
 import click
 from rich.panel import Panel
@@ -19,23 +17,20 @@ from rich.table import Table
 
 from ..console import console
 from ..lib.app_settings import AppSettings
-from ..lib.bundle_loader import AppBundleDiscovery
-from ..lib.bundle_loader import load_and_prepare_bundle
 from ..paths import create_agent_loader
-from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..paths import create_profile_loader
-from ..paths import get_bundle_search_paths
 from ..project_utils import get_project_slug
 from ..runtime.config import resolve_config
 from ..session_store import SessionStore
+from ..types import (
+    ExecuteSingleProtocol,
+    InteractiveChatProtocol,
+    SearchPathProviderProtocol,
+)
 
 # Prefix used to identify bundle-based sessions in metadata
 BUNDLE_PREFIX = "bundle:"
-
-InteractiveResume = Callable[[dict, list[Path], bool, str, list[dict], str], Coroutine[Any, Any, None]]
-ExecuteSingleWithSession = Callable[[str, dict, list[Path], bool, str, list[dict], str], Coroutine[Any, Any, None]]
-SearchPathProvider = Callable[[], list[Path]]
 
 
 def _display_session_history(transcript: list[dict], metadata: dict, *, show_thinking: bool = False) -> None:
@@ -218,9 +213,9 @@ def _calculate_replay_delay(
 def register_session_commands(
     cli: click.Group,
     *,
-    interactive_chat_with_session: InteractiveResume,
-    execute_single_with_session: ExecuteSingleWithSession,
-    get_module_search_paths: SearchPathProvider,
+    interactive_chat: InteractiveChatProtocol,
+    execute_single: ExecuteSingleProtocol,
+    get_module_search_paths: SearchPathProviderProtocol,
 ):
     """Register session commands on the root CLI group."""
 
@@ -321,9 +316,14 @@ def register_session_commands(
             if prompt is None and sys.stdin.isatty():
                 # No prompt, no pipe → interactive mode
                 asyncio.run(
-                    interactive_chat_with_session(
-                        config_data, search_paths, False, session_id, transcript, active_profile,
+                    interactive_chat(
+                        config_data,
+                        search_paths,
+                        False,
+                        session_id=session_id,
+                        profile_name=active_profile,
                         prepared_bundle=prepared_bundle,
+                        initial_transcript=transcript,
                     )
                 )
             else:
@@ -336,9 +336,15 @@ def register_session_commands(
 
                 # Execute single prompt with session context
                 asyncio.run(
-                    execute_single_with_session(
-                        prompt, config_data, search_paths, False, session_id, transcript, active_profile,
+                    execute_single(
+                        prompt,
+                        config_data,
+                        search_paths,
+                        False,
+                        session_id=session_id,
+                        profile_name=active_profile,
                         prepared_bundle=prepared_bundle,
+                        initial_transcript=transcript,
                     )
                 )
 
@@ -575,14 +581,14 @@ def register_session_commands(
                     _display_session_history(transcript, metadata, show_thinking=show_thinking)
 
             asyncio.run(
-                interactive_chat_with_session(
+                interactive_chat(
                     config_data,
                     search_paths,
                     False,
-                    session_id,
-                    transcript,
-                    active_profile,
+                    session_id=session_id,
+                    profile_name=active_profile,
                     prepared_bundle=prepared_bundle,
+                    initial_transcript=transcript,
                 )
             )
         except Exception as exc:

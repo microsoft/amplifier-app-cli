@@ -45,7 +45,8 @@ from .commands.provider import provider as provider_group
 from .commands.run import register_run_command
 from .commands.session import register_session_commands
 from .commands.source import source as source_group
-from .session_runner import register_session_spawning
+from .session_runner import create_initialized_session
+from .session_runner import SessionConfig
 from .commands.tool import tool as tool_group
 from .commands.update import update as update_cmd
 from .commands.version import version as version_cmd
@@ -53,13 +54,8 @@ from .console import Markdown
 from .console import console
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
-from .lib.bundle_loader import AppModuleResolver
 from .lib.legacy import parse_markdown_body
-from .lib.mention_loading import AppMentionResolver
-from .lib.mention_loading import ContentDeduplicator
-from .paths import create_foundation_resolver
 from .paths import create_profile_loader
-from .runtime.config import inject_user_providers
 from .session_store import SessionStore
 from .ui.error_display import display_validation_error
 from .utils.version import get_version
@@ -73,14 +69,6 @@ _key_manager = KeyManager()
 
 # Abort flag for ESC-based cancellation
 _abort_requested = False
-
-
-def _create_cli_ux_systems():
-    """Create CLI UX systems for session injection (app-layer policy)."""
-    from .ui import CLIApprovalSystem
-    from .ui import CLIDisplaySystem
-
-    return CLIApprovalSystem(), CLIDisplaySystem()
 
 
 # Placeholder for the run command; assigned after registration below
@@ -827,114 +815,6 @@ async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> N
         await context.add_message(msg_dict)
 
 
-async def _process_profile_mentions(session: AmplifierSession, profile_name: str) -> None:
-    """Process @mentions in profile markdown body.
-
-    Args:
-        session: Active session to add context messages to
-        profile_name: Name of active profile
-    """
-    import logging
-
-    from amplifier_core.message_models import Message
-
-    from .lib.mention_loading import MentionLoader
-    from .utils.mentions import has_mentions
-
-    logger = logging.getLogger(__name__)
-
-    # Load profile and extract markdown body
-    profile_loader = create_profile_loader()
-    try:
-        logger.info(f"Processing @mentions for profile: {profile_name}")
-
-        profile_file = profile_loader.find_profile_file(profile_name)
-        if not profile_file:
-            logger.debug(f"Profile file not found for: {profile_name}")
-            return
-
-        logger.debug(f"Found profile file: {profile_file}")
-
-        markdown_body = parse_markdown_body(profile_file.read_text(encoding="utf-8"))
-        if not markdown_body:
-            logger.debug(f"No markdown body in profile: {profile_name}")
-            return
-
-        logger.debug(f"Profile markdown body length: {len(markdown_body)} chars")
-
-        if not has_mentions(markdown_body):
-            logger.debug("No @mentions found in profile markdown")
-            return
-
-        logger.info("Profile contains @mentions, loading context files...")
-
-        # Load @mentioned files with session-wide deduplicator
-        # Use the same mention_resolver registered for tools (ensures consistency)
-        mention_resolver = session.coordinator.get_capability("mention_resolver")
-        loader = MentionLoader(resolver=mention_resolver)
-        deduplicator = session.coordinator.get_capability("mention_deduplicator")
-        context_messages = loader.load_mentions(
-            markdown_body, relative_to=profile_file.parent, deduplicator=deduplicator
-        )
-
-        logger.info(f"Loaded {len(context_messages)} unique context files from profile @mentions")
-
-        # Prepend loaded @mention content to markdown body
-        # Note: NOT adding as separate developer messages - only in system instruction
-        # This ensures system message contains actual content, not just @mention references
-        context_parts = []
-        for msg in context_messages:
-            if isinstance(msg.content, str):
-                context_parts.append(msg.content)
-            elif isinstance(msg.content, list):
-                # Handle structured content (ContentBlocks) - extract text from TextBlock types
-                text_parts = []
-                for block in msg.content:
-                    # Only TextBlock has .text attribute
-                    if block.type == "text":
-                        text_parts.append(block.text)
-                    else:
-                        # For other block types, use string representation
-                        text_parts.append(str(block))
-                context_parts.append("".join(text_parts))
-            else:
-                context_parts.append(str(msg.content))
-
-        if context_parts:
-            context_content = "\n\n".join(context_parts)
-            markdown_body = f"{context_content}\n\n{markdown_body}"
-            logger.debug(f"Prepended {len(context_parts)} context parts (final length={len(markdown_body)})")
-
-        # Add system instruction with resolved @mention content prepended
-        context = session.coordinator.get("context")
-        system_msg = Message(role="system", content=markdown_body)
-        logger.debug(f"Adding system instruction with resolved @mentions (length={len(markdown_body)})")
-        await context.add_message(system_msg.model_dump())
-
-        # Verify messages were added
-        all_messages = await context.get_messages()
-        logger.debug(f"Total messages in context after processing: {len(all_messages)}")
-
-    except (FileNotFoundError, ValueError) as e:
-        # Profile not found or invalid - skip mention processing
-        logger.warning(f"Failed to process profile @mentions: {e}")
-
-
-async def _process_mentions(session: AmplifierSession, profile_name: str) -> None:
-    """Process @mentions for profile mode only.
-
-    Bundle mode uses foundation's PreparedBundle.create_session() which handles
-    @mention resolution internally via BaseMentionResolver. This function is
-    only called in profile mode branches.
-
-    Args:
-        session: Active session to add context messages to
-        profile_name: Profile name (e.g., "dev", "full")
-    """
-    # Profile mode only - bundle mode handled by foundation's create_session()
-    await _process_profile_mentions(session, profile_name)
-
-
 def _create_prompt_session() -> PromptSession:
     """Create configured PromptSession for REPL.
 
@@ -993,62 +873,24 @@ def _create_prompt_session() -> PromptSession:
     )
 
 
-def _register_mention_handling(session: AmplifierSession, *, bundle_mode: bool = False) -> None:
-    """Register mention resolver capability on a session.
-
-    This function handles @mention resolution differently based on mode:
-
-    Bundle mode (bundle_mode=True):
-        - Gets foundation's BaseMentionResolver (registered by create_session)
-        - Wraps it with AppMentionResolver to add app shortcuts (@user:, @project:, @~/)
-        - Collections NOT enabled (prevents naming conflicts, deprecated)
-        - Foundation resolver handles all bundle namespaces (@recipes:, @foundation:, etc.)
-
-    Profile mode (bundle_mode=False):
-        - Creates AppMentionResolver with collection support (deprecated path)
-        - No foundation resolver (profiles don't use bundles)
-
-    Per KERNEL_PHILOSOPHY: Foundation provides mechanism (bundle namespaces),
-    app provides policy (shortcuts, resolution order, collection support).
-
-    Args:
-        session: The AmplifierSession to register capabilities on
-        bundle_mode: True if using bundle mode, False for profile mode
-    """
-    if bundle_mode:
-        # Bundle mode: Wrap foundation's resolver with app shortcuts
-        # Foundation resolver already has all bundle namespaces from composition
-        foundation_resolver = session.coordinator.get_capability("mention_resolver")
-        mention_resolver = AppMentionResolver(
-            foundation_resolver=foundation_resolver,
-            enable_collections=False,  # Bundles take precedence, no naming conflicts
-        )
-    else:
-        # Profile mode: App resolver with collection support (deprecated)
-        mention_resolver = AppMentionResolver(
-            foundation_resolver=None,
-            enable_collections=True,
-        )
-
-    session.coordinator.register_capability("mention_resolver", mention_resolver)
-
-    # Register session-wide ContentDeduplicator for @mention deduplication
-    # Uses foundation's ContentDeduplicator which tracks multiple paths per unique content
-    mention_deduplicator = ContentDeduplicator()
-    session.coordinator.register_capability("mention_deduplicator", mention_deduplicator)
-
-
 async def interactive_chat(
     config: dict,
     search_paths: list[Path],
     verbose: bool,
     session_id: str | None = None,
     profile_name: str = "unknown",
-    bundle_base_path: Path | None = None,
     prepared_bundle: "PreparedBundle | None" = None,
     initial_prompt: str | None = None,
+    initial_transcript: list[dict] | None = None,
 ):
     """Run an interactive chat session.
+
+    This is the unified entry point for interactive REPL sessions. It handles:
+    - New sessions (initial_transcript=None)
+    - Resumed sessions (initial_transcript provided)
+    - Bundle mode and profile mode (via prepared_bundle)
+    - Initial prompt auto-execution
+    - Ctrl+C abort handling
 
     Args:
         config: Resolved mount plan configuration
@@ -1056,114 +898,27 @@ async def interactive_chat(
         verbose: Enable verbose output
         session_id: Optional session ID (generated if not provided)
         profile_name: Profile or bundle name (e.g., "dev" or "bundle:foundation")
-        bundle_base_path: Base path of the bundle for @mention resolution (bundle mode only)
         prepared_bundle: PreparedBundle from foundation's prepare workflow (bundle mode only)
         initial_prompt: Optional prompt to auto-execute before entering interactive loop
+        initial_transcript: If provided, restore this transcript (resume mode)
     """
-    global _abort_requested  # Declare at function level for signal handler
+    global _abort_requested
 
-    # Generate session ID if not provided
-    if not session_id:
-        session_id = str(uuid.uuid4())
+    # === SESSION CREATION (unified via create_initialized_session) ===
+    session_config = SessionConfig(
+        config=config,
+        search_paths=search_paths,
+        verbose=verbose,
+        session_id=session_id,
+        profile_name=profile_name,
+        initial_transcript=initial_transcript,
+        prepared_bundle=prepared_bundle,
+    )
 
-    # Create CLI UX systems (app-layer policy)
-    approval_system, display_system = _create_cli_ux_systems()
-
-    # Bundle mode vs Profile mode: Clean separation per KERNEL_PHILOSOPHY
-    # - Bundle mode uses foundation's turn-key solution (PreparedBundle.create_session)
-    # - Profile mode uses app-cli's manual session setup (deprecated soon)
-    if profile_name.startswith("bundle:") and prepared_bundle is not None:
-        # === BUNDLE MODE ===
-        # Foundation handles everything: session creation, module resolver mounting,
-        # initialization, @mention resolution via BaseMentionResolver, and context injection.
-        # App-cli only adds session spawning capability (app-layer policy).
-
-        # Wrap bundle resolver with app-layer fallback policy
-        # This allows provider-agnostic bundles like "foundation" to work with user-configured providers
-        # Pattern: Foundation provides mechanism, app provides policy (per KERNEL_PHILOSOPHY)
-        fallback_resolver = create_foundation_resolver()
-        prepared_bundle.resolver = AppModuleResolver(  # type: ignore[assignment]
-            bundle_resolver=prepared_bundle.resolver,
-            settings_resolver=fallback_resolver,
-        )
-
-        inject_user_providers(config, prepared_bundle)
-
-        # Show loading indicator during initialization
-        core_logger = logging.getLogger("amplifier_core")
-        original_level = core_logger.level
-        if not verbose:
-            core_logger.setLevel(logging.CRITICAL)
-        try:
-            with console.status("[dim]Loading...[/dim]", spinner="dots"):
-                session = await prepared_bundle.create_session(
-                    session_id=session_id,
-                    approval_system=approval_system,
-                    display_system=display_system,
-                )
-        except (ModuleValidationError, RuntimeError) as e:
-            core_logger.setLevel(original_level)
-            if not display_validation_error(console, e, verbose=verbose):
-                console.print(f"[red]Error:[/red] {e}")
-                if verbose:
-                    console.print_exception()
-            sys.exit(1)
-        finally:
-            core_logger.setLevel(original_level)
-
-        # Add app-layer policy: mention handling and session spawning
-        # Override foundation's mention handling with app-cli's (ensures ContextFile compatibility)
-        _register_mention_handling(session, bundle_mode=True)
-        register_session_spawning(session)
-
-    else:
-        # === PROFILE MODE ===
-        # Manual session setup with app-cli's MentionResolver (deprecated codepath)
-
-        # Create session with resolved config, session_id, and injected UX systems
-        session = AmplifierSession(
-            config, session_id=session_id, approval_system=approval_system, display_system=display_system
-        )
-
-        # Mount module source resolver (app-layer policy)
-        resolver = create_foundation_resolver()
-        await session.coordinator.mount("module-source-resolver", resolver)
-
-        # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
-        _register_mention_handling(session)
-
-        # Register session spawning capabilities for agent delegation (app-layer policy)
-        register_session_spawning(session)
-
-        # Show loading indicator during initialization (modules loading, etc.)
-        core_logger = logging.getLogger("amplifier_core")
-        original_level = core_logger.level
-        if not verbose:
-            core_logger.setLevel(logging.CRITICAL)
-        try:
-            with console.status("[dim]Loading...[/dim]", spinner="dots"):
-                await session.initialize()
-        except (ModuleValidationError, RuntimeError) as e:
-            core_logger.setLevel(original_level)
-            if not display_validation_error(console, e, verbose=verbose):
-                console.print(f"[red]Error:[/red] {e}")
-                if verbose:
-                    console.print_exception()
-            sys.exit(1)
-        finally:
-            core_logger.setLevel(original_level)
-
-        # Process @mentions (profile mode only - bundle mode handled by foundation)
-        await _process_mentions(session, profile_name)
-
-    # Register CLI approval provider if approval hook is active (app-layer policy)
-    from .approval_provider import CLIApprovalProvider
-
-    register_provider = session.coordinator.get_capability("approval.register_provider")
-    if register_provider:
-        approval_provider = CLIApprovalProvider(console)
-        register_provider(approval_provider)
-        logger.info("Registered CLIApprovalProvider for interactive approvals")
+    # Create fully initialized session (handles all setup including resume)
+    initialized = await create_initialized_session(session_config, console)
+    session = initialized.session
+    actual_session_id = initialized.session_id
 
     # Create command processor
     command_processor = CommandProcessor(session, profile_name)
@@ -1174,96 +929,104 @@ async def interactive_chat(
     # Register incremental save hook for crash recovery between tool calls
     from .incremental_save import register_incremental_save
 
-    register_incremental_save(session, store, session_id, profile_name, config)
+    register_incremental_save(session, store, actual_session_id, profile_name, config)
 
-    # Get effective config summary for banner display
-    config_summary = get_effective_config_summary(config, profile_name)
-
-    console.print(
-        Panel.fit(
-            f"[bold cyan]Amplifier Interactive Session[/bold cyan]\n"
-            f"[dim]Session ID: [/dim][dim bright_yellow]{session_id}[/dim bright_yellow]\n"
-            f"[dim]{config_summary.format_banner_line()}[/dim]\n"
-            f"Commands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D",
-            border_style="cyan",
+    # Show banner only for NEW sessions (resume shows banner via history display in commands/session.py)
+    if not session_config.is_resume:
+        config_summary = get_effective_config_summary(config, profile_name)
+        console.print(
+            Panel.fit(
+                f"[bold cyan]Amplifier Interactive Session[/bold cyan]\n"
+                f"[dim]Session ID: [/dim][dim bright_yellow]{actual_session_id}[/dim bright_yellow]\n"
+                f"[dim]{config_summary.format_banner_line()}[/dim]\n"
+                f"Commands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D",
+                border_style="cyan",
+            )
         )
-    )
 
     # Create prompt session for history and advanced editing
     prompt_session = _create_prompt_session()
 
-    # Execute initial prompt if provided (for 'amplifier "prompt"' or 'amplifier run --mode chat "prompt"')
-    if initial_prompt:
-        console.print(f"\n[bold cyan]>[/bold cyan] {initial_prompt[:100]}{'...' if len(initial_prompt) > 100 else ''}")
-        console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
+    # Helper to extract model name from config
+    def _extract_model_name() -> str:
+        if isinstance(config.get("providers"), list) and config["providers"]:
+            first_provider = config["providers"][0]
+            if isinstance(first_provider, dict) and "config" in first_provider:
+                provider_config = first_provider["config"]
+                return provider_config.get("model") or provider_config.get("default_model", "unknown")
+        return "unknown"
 
-        # Process runtime @mentions in initial prompt
-        await _process_runtime_mentions(session, initial_prompt)
+    # Helper to save session after each turn
+    async def _save_session():
+        context = session.coordinator.get("context")
+        if context and hasattr(context, "get_messages"):
+            messages = await context.get_messages()
+            metadata = {
+                "session_id": actual_session_id,
+                "created": datetime.now(UTC).isoformat(),
+                "profile": profile_name,
+                "model": _extract_model_name(),
+                "turn_count": len([m for m in messages if m.get("role") == "user"]),
+            }
+            store.save(actual_session_id, messages, metadata)
 
-        # Install signal handler to catch Ctrl-C without raising KeyboardInterrupt
+    # Helper to execute a prompt with Ctrl+C handling
+    async def _execute_with_interrupt(prompt_text: str) -> bool:
+        """Execute prompt with interrupt handling. Returns True if completed, False if aborted."""
+        global _abort_requested
         _abort_requested = False
 
-        def sigint_handler_initial(signum, frame):
-            """Handle Ctrl-C by setting abort flag instead of raising exception."""
+        def sigint_handler(signum, frame):
             global _abort_requested
             _abort_requested = True
 
-        original_handler = signal.signal(signal.SIGINT, sigint_handler_initial)
+        original_handler = signal.signal(signal.SIGINT, sigint_handler)
 
         try:
-            # Run execute as cancellable task
-            execute_task = asyncio.create_task(session.execute(initial_prompt))
+            execute_task = asyncio.create_task(session.execute(prompt_text))
 
             # Poll task while checking for abort flag
             while not execute_task.done():
                 if _abort_requested:
                     execute_task.cancel()
                     break
-                await asyncio.sleep(0.05)  # Check every 50ms
+                await asyncio.sleep(0.05)
 
-            # Handle result or cancellation
             try:
                 response = await execute_task
-                # Use shared message renderer (single source of truth)
                 from .ui import render_message
 
                 render_message({"role": "assistant", "content": response}, console)
 
-                # Emit prompt:complete (canonical kernel event) after displaying response
+                # Emit prompt:complete event
                 hooks = session.coordinator.get("hooks")
                 if hooks:
                     from amplifier_core.events import PROMPT_COMPLETE
 
-                    await hooks.emit(PROMPT_COMPLETE, {"prompt": initial_prompt, "response": response})
+                    await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt_text, "response": response})
 
-                # Save session after initial prompt execution
-                context = session.coordinator.get("context")
-                if context and hasattr(context, "get_messages"):
-                    messages = await context.get_messages()
-                    # Extract model from providers config
-                    model_name = "unknown"
-                    if isinstance(config.get("providers"), list) and config["providers"]:
-                        first_provider = config["providers"][0]
-                        if isinstance(first_provider, dict) and "config" in first_provider:
-                            provider_config = first_provider["config"]
-                            model_name = provider_config.get("model") or provider_config.get("default_model", "unknown")
+                # Save session after successful execution
+                await _save_session()
+                return True
 
-                    metadata = {
-                        "session_id": session_id,
-                        "created": datetime.now(UTC).isoformat(),
-                        "profile": profile_name,
-                        "model": model_name,
-                        "turn_count": len([m for m in messages if m.get("role") == "user"]),
-                    }
-                    store.save(session_id, messages, metadata)
             except asyncio.CancelledError:
-                # Ctrl-C pressed during processing
                 console.print("\n[yellow]Aborted (Ctrl-C)[/yellow]")
+                return False
+
         finally:
-            # Always restore original signal handler
             signal.signal(signal.SIGINT, original_handler)
             _abort_requested = False
 
+    # Execute initial prompt if provided
+    if initial_prompt:
+        console.print(f"\n[bold cyan]>[/bold cyan] {initial_prompt[:100]}{'...' if len(initial_prompt) > 100 else ''}")
+        console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
+
+        # Process runtime @mentions in initial prompt
+        await _process_runtime_mentions(session, initial_prompt)
+        await _execute_with_interrupt(initial_prompt)
+
+    # === REPL LOOP ===
     try:
         while True:
             try:
@@ -1279,80 +1042,12 @@ async def interactive_chat(
                     action, data = command_processor.process_input(user_input)
 
                     if action == "prompt":
-                        # Normal prompt execution
-                        # Note: Don't echo user input here - prompt already shows it with ">"
-                        # History/replay will show "You:" labels via render_message()
                         console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
 
                         # Process runtime @mentions in user input
                         await _process_runtime_mentions(session, data["text"])
+                        await _execute_with_interrupt(data["text"])
 
-                        # Install signal handler to catch Ctrl-C without raising KeyboardInterrupt
-                        _abort_requested = False
-
-                        def sigint_handler(signum, frame):
-                            """Handle Ctrl-C by setting abort flag instead of raising exception."""
-                            global _abort_requested
-                            _abort_requested = True
-
-                        original_handler = signal.signal(signal.SIGINT, sigint_handler)
-
-                        try:
-                            # Run execute as cancellable task
-                            execute_task = asyncio.create_task(session.execute(data["text"]))
-
-                            # Poll task while checking for abort flag
-                            while not execute_task.done():
-                                if _abort_requested:
-                                    execute_task.cancel()
-                                    break
-                                await asyncio.sleep(0.05)  # Check every 50ms
-
-                            # Handle result or cancellation
-                            try:
-                                response = await execute_task
-                                # Use shared message renderer (single source of truth)
-                                from .ui import render_message
-
-                                render_message({"role": "assistant", "content": response}, console)
-
-                                # Emit prompt:complete (canonical kernel event) after displaying response
-                                hooks = session.coordinator.get("hooks")
-                                if hooks:
-                                    from amplifier_core.events import PROMPT_COMPLETE
-
-                                    await hooks.emit(PROMPT_COMPLETE, {"prompt": data["text"], "response": response})
-
-                                # Save session after each interaction
-                                context = session.coordinator.get("context")
-                                if context and hasattr(context, "get_messages"):
-                                    messages = await context.get_messages()
-                                    # Extract model from providers config
-                                    model_name = "unknown"
-                                    if isinstance(config.get("providers"), list) and config["providers"]:
-                                        first_provider = config["providers"][0]
-                                        if isinstance(first_provider, dict) and "config" in first_provider:
-                                            # Check both "model" and "default_model" keys
-                                            provider_config = first_provider["config"]
-                                            model_name = provider_config.get("model") or provider_config.get(
-                                                "default_model", "unknown"
-                                            )
-
-                                    metadata = {
-                                        "session_id": session_id,
-                                        "created": datetime.now(UTC).isoformat(),
-                                        "profile": profile_name,
-                                        "model": model_name,
-                                        "turn_count": len([m for m in messages if m.get("role") == "user"]),
-                                    }
-                                    store.save(session_id, messages, metadata)
-                            except asyncio.CancelledError:
-                                # Ctrl-C pressed during processing
-                                console.print("\n[yellow]Aborted (Ctrl-C)[/yellow]")
-                        finally:
-                            # Always restore original signal handler
-                            signal.signal(signal.SIGINT, original_handler)
-                            _abort_requested = False
                     else:
                         # Handle command
                         result = await command_processor.handle_command(action, data)
@@ -1364,15 +1059,15 @@ async def interactive_chat(
                 break
 
             except ModuleValidationError as e:
-                # Clean display for module validation errors
                 display_validation_error(console, e, verbose=verbose)
 
             except Exception as e:
                 console.print(f"[red]Error:[/red] {e}")
                 if verbose:
                     console.print_exception()
+
     finally:
-        await session.cleanup()
+        await initialized.cleanup()
         console.print("\n[yellow]Session ended[/yellow]\n")
 
 
@@ -1384,10 +1079,29 @@ async def execute_single(
     session_id: str | None = None,
     profile_name: str = "unknown",
     output_format: str = "text",
-    bundle_base_path: Path | None = None,
     prepared_bundle: "PreparedBundle | None" = None,
+    initial_transcript: list[dict] | None = None,
 ):
-    """Execute a single prompt and exit."""
+    """Execute a single prompt and exit.
+    
+    This is the unified entry point for single-shot execution. It handles:
+    - New sessions (initial_transcript=None)
+    - Resumed sessions (initial_transcript provided)
+    - Bundle mode and profile mode (via prepared_bundle)
+    - All output formats (text, json, json-trace)
+    
+    Args:
+        prompt: The user prompt to execute
+        config: Effective configuration dict
+        search_paths: Paths for module resolution
+        verbose: Enable verbose output
+        session_id: Optional session ID (generated if None)
+        profile_name: Profile/bundle name for metadata
+        output_format: Output format (text, json, json-trace)
+        prepared_bundle: PreparedBundle for bundle mode
+        initial_transcript: If provided, restore this transcript (resume mode)
+    """
+    # === OUTPUT REDIRECTION (must happen before any console output) ===
     # In JSON mode, redirect all output to stderr so only JSON goes to stdout
     if output_format in ["json", "json-trace"]:
         original_stdout = sys.stdout
@@ -1395,14 +1109,8 @@ async def execute_single(
         sys.stdout = sys.stderr
         console.file = sys.stderr
     else:
-        # Show initialization feedback in text mode
-        console.print("[dim]Initializing session...[/dim]", end="")
-        console.print("\r", end="")  # Clear the line after initialization
         original_stdout = None
         original_console_file = None
-
-    # Create CLI UX systems (app-layer policy)
-    approval_system, display_system = _create_cli_ux_systems()
 
     # For JSON output, store response data to output after cleanup
     json_output_data: dict[str, Any] | None = None
@@ -1411,76 +1119,31 @@ async def execute_single(
     trace_collector = None
     if output_format == "json-trace":
         from .trace_collector import TraceCollector
-
         trace_collector = TraceCollector()
 
-    # Bundle mode vs Profile mode: Clean separation per KERNEL_PHILOSOPHY
-    if profile_name.startswith("bundle:") and prepared_bundle is not None:
-        # === BUNDLE MODE ===
-        # Foundation handles everything: session creation, module resolver mounting,
-        # initialization, @mention resolution via BaseMentionResolver, and context injection.
-
-        # Wrap bundle resolver with app-layer fallback policy
-        # This allows provider-agnostic bundles like "foundation" to work with user-configured providers
-        # Pattern: Foundation provides mechanism, app provides policy (per KERNEL_PHILOSOPHY)
-        fallback_resolver = create_foundation_resolver()
-        prepared_bundle.resolver = AppModuleResolver(  # type: ignore[assignment]
-            bundle_resolver=prepared_bundle.resolver,
-            settings_resolver=fallback_resolver,
-        )
-
-        inject_user_providers(config, prepared_bundle)
-
-        session = await prepared_bundle.create_session(
-            session_id=session_id,
-            approval_system=approval_system,
-            display_system=display_system,
-        )
-
-        # Add app-layer policy: mention handling and session spawning
-        # Override foundation's mention handling with app-cli's (ensures ContextFile compatibility)
-        _register_mention_handling(session, bundle_mode=True)
-        register_session_spawning(session)
-
-    else:
-        # === PROFILE MODE ===
-        # Manual session setup with app-cli's MentionResolver (deprecated codepath)
-        session = AmplifierSession(
-            config, session_id=session_id, approval_system=approval_system, display_system=display_system
-        )
+    # === SESSION CREATION (unified via create_initialized_session) ===
+    session_config = SessionConfig(
+        config=config,
+        search_paths=search_paths,
+        verbose=verbose,
+        session_id=session_id,
+        profile_name=profile_name,
+        initial_transcript=initial_transcript,
+        prepared_bundle=prepared_bundle,
+        output_format=output_format,
+    )
+    
+    # Create fully initialized session (handles all setup including resume)
+    initialized = await create_initialized_session(session_config, console)
+    session = initialized.session
 
     try:
-        # Profile mode: manual setup (bundle mode already initialized via create_session)
-        if not (profile_name.startswith("bundle:") and prepared_bundle is not None):
-            # Mount module source resolver (app-layer policy)
-            resolver = create_foundation_resolver()
-            await session.coordinator.mount("module-source-resolver", resolver)
-
-            # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
-            _register_mention_handling(session)  # Profile mode: bundle_mode=False
-
-            await session.initialize()
-
-            # Register session spawning capabilities for agent delegation (app-layer policy)
-            register_session_spawning(session)
-
-            # Process @mentions (profile mode only - bundle mode handled by foundation)
-            await _process_mentions(session, profile_name)
-
         # Register trace collector hooks if in json-trace mode
         if trace_collector:
             hooks = session.coordinator.get("hooks")
             if hooks:
                 hooks.register("tool:pre", trace_collector.on_tool_pre, priority=1000, name="trace_collector_pre")
                 hooks.register("tool:post", trace_collector.on_tool_post, priority=1000, name="trace_collector_post")
-
-        # Register CLI approval provider if approval hook is active (app-layer policy)
-        from .approval_provider import CLIApprovalProvider
-
-        register_provider = session.coordinator.get_capability("approval.register_provider")
-        if register_provider:
-            approval_provider = CLIApprovalProvider(console)
-            register_provider(approval_provider)
 
         # Process runtime @mentions in user input
         await _process_runtime_mentions(session, prompt)
@@ -1507,7 +1170,6 @@ async def execute_single(
         hooks = session.coordinator.get("hooks")
         if hooks:
             from amplifier_core.events import PROMPT_COMPLETE
-
             await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt, "response": response})
 
         # Output response based on format
@@ -1534,7 +1196,7 @@ async def execute_single(
 
         # Always save session (for debugging/archival)
         context = session.coordinator.get("context")
-        messages = getattr(context, "messages", [])
+        messages = await context.get_messages() if context else []
         if messages:
             store = SessionStore()
             metadata = {
@@ -1557,7 +1219,7 @@ async def execute_single(
                 "status": "error",
                 "error": str(e),
                 "error_type": "ModuleValidationError",
-                "session_id": getattr(session, "session_id", None) if "session" in locals() else None,
+                "session_id": session.session_id,
                 "timestamp": datetime.now(UTC).isoformat(),
             }
             print(json.dumps(error_output, indent=2))
@@ -1575,7 +1237,7 @@ async def execute_single(
             error_output = {
                 "status": "error",
                 "error": str(e),
-                "session_id": getattr(session, "session_id", None) if "session" in locals() else None,
+                "session_id": session.session_id,
                 "timestamp": datetime.now(UTC).isoformat(),
             }
             print(json.dumps(error_output, indent=2))
@@ -1587,248 +1249,9 @@ async def execute_single(
                 if verbose:
                     console.print_exception()
         sys.exit(1)
+
     finally:
-        await session.cleanup()
-        # Allow async tasks to complete before output
-        if output_format in ["json", "json-trace"]:
-            await asyncio.sleep(0.1)  # Brief pause for any deferred hook output
-        # Flush stderr to ensure all hook output is written
-        sys.stderr.flush()
-        # Restore stdout and print JSON
-        if json_output_data is not None and original_stdout is not None:
-            sys.stdout = original_stdout
-            print(json.dumps(json_output_data, indent=2))
-            sys.stdout.flush()
-        elif original_stdout is not None:
-            sys.stdout = original_stdout
-        if original_console_file is not None:
-            console.file = original_console_file
-
-
-async def execute_single_with_session(
-    prompt: str,
-    config: dict,
-    search_paths: list[Path],
-    verbose: bool,
-    session_id: str,
-    initial_transcript: list[dict],
-    profile_name: str = "unknown",
-    output_format: str = "text",
-    bundle_base_path: Path | None = None,
-    prepared_bundle: "PreparedBundle | None" = None,
-):
-    """Execute a single prompt with restored session context."""
-    # Check first run (ensures provider is installed after updates)
-    # This is critical for session resume - without it, sessions fail after `amplifier update`
-    check_first_run()
-
-    # In JSON mode, redirect all output to stderr
-    if output_format in ["json", "json-trace"]:
-        original_stdout = sys.stdout
-        original_console_file = console.file
-        sys.stdout = sys.stderr
-        console.file = sys.stderr
-    else:
-        # Show initialization feedback in text mode
-        console.print("[dim]Initializing session...[/dim]", end="")
-        console.print("\r", end="")  # Clear the line
-        original_stdout = None
-        original_console_file = None
-
-    # Create CLI UX systems (app-layer policy)
-    approval_system, display_system = _create_cli_ux_systems()
-
-    # For JSON output, store response data to output after cleanup
-    json_output_data: dict[str, Any] | None = None
-
-    # For json-trace, create trace collector
-    trace_collector = None
-    if output_format == "json-trace":
-        from .trace_collector import TraceCollector
-
-        trace_collector = TraceCollector()
-
-    # Bundle mode vs Profile mode: Clean separation per KERNEL_PHILOSOPHY
-    if profile_name.startswith("bundle:") and prepared_bundle is not None:
-        # === BUNDLE MODE ===
-        # Foundation handles everything: session creation, module resolver mounting,
-        # initialization, @mention resolution via BaseMentionResolver, and context injection.
-
-        # Wrap bundle resolver with app-layer fallback policy
-        # This allows provider-agnostic bundles like "foundation" to work with user-configured providers
-        # Pattern: Foundation provides mechanism, app provides policy (per KERNEL_PHILOSOPHY)
-        fallback_resolver = create_foundation_resolver()
-        prepared_bundle.resolver = AppModuleResolver(  # type: ignore[assignment]
-            bundle_resolver=prepared_bundle.resolver,
-            settings_resolver=fallback_resolver,
-        )
-
-        inject_user_providers(config, prepared_bundle)
-
-        session = await prepared_bundle.create_session(
-            session_id=session_id,
-            approval_system=approval_system,
-            display_system=display_system,
-        )
-
-        # Add app-layer policy: mention handling and session spawning
-        # Override foundation's mention handling with app-cli's (ensures ContextFile compatibility)
-        _register_mention_handling(session, bundle_mode=True)
-        register_session_spawning(session)
-
-    else:
-        # === PROFILE MODE ===
-        # Manual session setup with app-cli's MentionResolver (deprecated codepath)
-        session = AmplifierSession(
-            config, session_id=session_id, approval_system=approval_system, display_system=display_system
-        )
-
-    try:
-        # Profile mode: manual setup (bundle mode already initialized via create_session)
-        if not (profile_name.startswith("bundle:") and prepared_bundle is not None):
-            # Mount module source resolver (app-layer policy)
-            resolver = create_foundation_resolver()
-            await session.coordinator.mount("module-source-resolver", resolver)
-            await session.initialize()
-
-            # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
-            _register_mention_handling(session)  # Profile mode: bundle_mode=False
-
-            # Register session spawning capabilities for agent delegation (app-layer policy)
-            register_session_spawning(session)
-
-            # NOTE: Do NOT call _process_mentions() here - this is a resume function.
-            # Profile @mentions were already processed in the original session and are
-            # included in initial_transcript which gets restored below via set_messages().
-            # See interactive_chat_with_session() which correctly omits this call.
-
-        # Register trace collector hooks if in json-trace mode
-        if trace_collector:
-            hooks = session.coordinator.get("hooks")
-            if hooks:
-                hooks.register("tool:pre", trace_collector.on_tool_pre, priority=1000, name="trace_collector_pre")
-                hooks.register("tool:post", trace_collector.on_tool_post, priority=1000, name="trace_collector_post")
-
-        # Restore context from transcript (applies to both modes)
-        context = session.coordinator.get("context")
-        if context and hasattr(context, "set_messages") and initial_transcript:
-            await context.set_messages(initial_transcript)
-            if verbose:
-                console.print(f"[dim]Restored {len(initial_transcript)} messages[/dim]")
-
-        # Register CLI approval provider if needed
-        from .approval_provider import CLIApprovalProvider
-
-        register_provider = session.coordinator.get_capability("approval.register_provider")
-        if register_provider:
-            approval_provider = CLIApprovalProvider(console)
-            register_provider(approval_provider)
-
-        # Process runtime @mentions in user input
-        await _process_runtime_mentions(session, prompt)
-
-        if verbose:
-            console.print(f"[dim]Executing: {prompt}[/dim]")
-
-        response = await session.execute(prompt)
-
-        # Get model name from provider
-        providers = session.coordinator.get("providers") or {}
-        model_name = "unknown"
-        for prov_name, prov in providers.items():
-            if hasattr(prov, "model"):
-                model_name = f"{prov_name}/{prov.model}"
-                break
-            if hasattr(prov, "default_model"):
-                model_name = f"{prov_name}/{prov.default_model}"
-                break
-
-        # Emit prompt:complete event BEFORE formatting output
-        # This ensures hook output goes to stderr in JSON mode
-        hooks = session.coordinator.get("hooks")
-        if hooks:
-            from amplifier_core.events import PROMPT_COMPLETE
-
-            await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt, "response": response})
-
-        # Output response based on format
-        if output_format in ["json", "json-trace"]:
-            # Store data for JSON output in finally block (after all hooks fired)
-            json_output_data = {
-                "status": "success",
-                "response": response,
-                "session_id": session_id,
-                "profile": profile_name,
-                "model": model_name,
-                "timestamp": datetime.now(UTC).isoformat(),
-            }
-            # Add trace data if collecting
-            if trace_collector:
-                json_output_data["execution_trace"] = trace_collector.get_trace()
-                json_output_data["metadata"] = trace_collector.get_metadata()
-        else:
-            # Text output for humans
-            if verbose:
-                console.print(f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]")
-            console.print(Markdown(response))
-            console.print()  # Blank line after output
-
-        # Save updated session
-        messages = getattr(context, "messages", [])
-        if messages:
-            store = SessionStore()
-            metadata = {
-                "session_id": session_id,
-                "created": datetime.now(UTC).isoformat(),
-                "profile": profile_name,
-                "model": model_name,
-                "turn_count": len([m for m in messages if m.get("role") == "user"]),
-            }
-            store.save(session_id, messages, metadata)
-            if verbose and output_format == "text":
-                console.print(f"[dim]Session {session_id[:8]}... saved[/dim]")
-
-    except ModuleValidationError as e:
-        if output_format in ["json", "json-trace"]:
-            # Restore stdout before writing error JSON
-            if original_stdout is not None:
-                sys.stdout = original_stdout
-            error_output = {
-                "status": "error",
-                "error": str(e),
-                "error_type": "ModuleValidationError",
-                "session_id": session_id if "session_id" in locals() else None,
-                "timestamp": datetime.now(UTC).isoformat(),
-            }
-            print(json.dumps(error_output, indent=2))
-        else:
-            # Clean display for module validation errors
-            display_validation_error(console, e, verbose=verbose)
-        sys.exit(1)
-
-    except Exception as e:
-        if output_format in ["json", "json-trace"]:
-            # Restore stdout before writing error JSON
-            if original_stdout is not None:
-                sys.stdout = original_stdout
-            # JSON error output
-            error_output = {
-                "status": "error",
-                "error": str(e),
-                "session_id": session_id if "session_id" in locals() else None,
-                "timestamp": datetime.now(UTC).isoformat(),
-            }
-            print(json.dumps(error_output, indent=2))
-        else:
-            # Try clean display for module validation errors (including wrapped ones)
-            if not display_validation_error(console, e, verbose=verbose):
-                # Fall back to generic error output
-                console.print(f"[red]Error:[/red] {e}")
-                if verbose:
-                    console.print_exception()
-        sys.exit(1)
-    finally:
-        await session.cleanup()
+        await initialized.cleanup()
         # Allow async tasks to complete before output
         if output_format in ["json", "json-trace"]:
             await asyncio.sleep(0.1)  # Brief pause for any deferred hook output
@@ -1861,287 +1284,14 @@ cli.add_command(update_cmd)
 cli.add_command(version_cmd)
 
 
-async def interactive_chat_with_session(
-    config: dict,
-    search_paths: list[Path],
-    verbose: bool,
-    session_id: str,
-    initial_transcript: list[dict],
-    profile_name: str = "unknown",
-    bundle_base_path: Path | None = None,
-    prepared_bundle: "PreparedBundle | None" = None,
-    initial_prompt: str | None = None,
-):
-    """Run an interactive chat session with restored context.
-
-    Args:
-        config: Resolved mount plan configuration
-        search_paths: Module search paths
-        verbose: Enable verbose output
-        session_id: Session ID to resume
-        initial_transcript: Previous conversation messages
-        profile_name: Profile or bundle name (e.g., "dev" or "bundle:foundation")
-        bundle_base_path: Base path of the bundle for @mention resolution (bundle mode only)
-        prepared_bundle: PreparedBundle from foundation's prepare workflow (bundle mode only)
-        initial_prompt: Optional prompt to auto-execute before entering interactive loop
-    """
-    global _abort_requested  # Declare at function level for signal handler
-
-    # Check first run (ensures provider is installed after updates)
-    # This is critical for session resume - without it, sessions fail after `amplifier update`
-    check_first_run()
-
-    # Create CLI UX systems (app-layer policy)
-    approval_system, display_system = _create_cli_ux_systems()
-
-    # Bundle mode vs Profile mode: Clean separation per KERNEL_PHILOSOPHY
-    if profile_name.startswith("bundle:") and prepared_bundle is not None:
-        # === BUNDLE MODE ===
-        # Foundation handles everything: session creation, module resolver mounting,
-        # initialization, @mention resolution via BaseMentionResolver, and context injection.
-
-        # Wrap bundle resolver with app-layer fallback policy
-        # This allows provider-agnostic bundles like "foundation" to work with user-configured providers
-        # Pattern: Foundation provides mechanism, app provides policy (per KERNEL_PHILOSOPHY)
-        fallback_resolver = create_foundation_resolver()
-        prepared_bundle.resolver = AppModuleResolver(  # type: ignore[assignment]
-            bundle_resolver=prepared_bundle.resolver,
-            settings_resolver=fallback_resolver,
-        )
-
-        inject_user_providers(config, prepared_bundle)
-
-        session = await prepared_bundle.create_session(
-            session_id=session_id,
-            approval_system=approval_system,
-            display_system=display_system,
-        )
-
-        # Add app-layer policy: mention handling and session spawning
-        # Override foundation's mention handling with app-cli's (ensures ContextFile compatibility)
-        _register_mention_handling(session, bundle_mode=True)
-        register_session_spawning(session)
-
-    else:
-        # === PROFILE MODE ===
-        # Manual session setup with app-cli's MentionResolver (deprecated codepath)
-        session = AmplifierSession(
-            config, session_id=session_id, approval_system=approval_system, display_system=display_system
-        )
-
-        # Mount module source resolver (app-layer policy)
-        resolver = create_foundation_resolver()
-        await session.coordinator.mount("module-source-resolver", resolver)
-
-        await session.initialize()
-
-        # Register MentionResolver and ContentDeduplicator capabilities (app-layer policy)
-        _register_mention_handling(session)  # Profile mode: bundle_mode=False
-
-        # Register session spawning capabilities for agent delegation (app-layer policy)
-        register_session_spawning(session)
-
-    # Register CLI approval provider if approval hook is active (app-layer policy)
-    from .approval_provider import CLIApprovalProvider
-
-    register_provider = session.coordinator.get_capability("approval.register_provider")
-    if register_provider:
-        approval_provider = CLIApprovalProvider(console)
-        register_provider(approval_provider)
-
-    # Restore context from transcript if available (applies to both modes)
-    context = session.coordinator.get("context")
-    if context and hasattr(context, "set_messages") and initial_transcript:
-        await context.set_messages(initial_transcript)
-
-    # Create command processor
-    command_processor = CommandProcessor(session, profile_name)
-
-    # Note: Banner already shown by history display function in commands/session.py
-    # No need to show duplicate banner here for resumed sessions
-
-    # Create session store for saving
-    store = SessionStore()
-
-    # Register incremental save hook for crash recovery between tool calls
-    from .incremental_save import register_incremental_save
-
-    register_incremental_save(session, store, session_id, profile_name, config)
-
-    # Create prompt session for history and advanced editing
-    prompt_session = _create_prompt_session()
-
-    # Execute initial prompt if provided (for resumed session with initial prompt)
-    if initial_prompt:
-        console.print(f"\n[bold cyan]>[/bold cyan] {initial_prompt[:100]}{'...' if len(initial_prompt) > 100 else ''}")
-        console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
-
-        # Process runtime @mentions in initial prompt
-        await _process_runtime_mentions(session, initial_prompt)
-
-        # Install signal handler to catch Ctrl-C without raising KeyboardInterrupt
-        _abort_requested = False
-
-        def sigint_handler_initial(signum, frame):
-            """Handle Ctrl-C by setting abort flag instead of raising exception."""
-            global _abort_requested
-            _abort_requested = True
-
-        original_handler = signal.signal(signal.SIGINT, sigint_handler_initial)
-
-        try:
-            # Run execute as cancellable task
-            execute_task = asyncio.create_task(session.execute(initial_prompt))
-
-            # Poll task while checking for abort flag
-            while not execute_task.done():
-                if _abort_requested:
-                    execute_task.cancel()
-                    break
-                await asyncio.sleep(0.05)  # Check every 50ms
-
-            # Handle result or cancellation
-            try:
-                response = await execute_task
-                # Use shared message renderer (single source of truth)
-                from .ui import render_message
-
-                render_message({"role": "assistant", "content": response}, console)
-
-                # Save session after initial prompt execution
-                context = session.coordinator.get("context")
-                if context and hasattr(context, "get_messages"):
-                    messages = await context.get_messages()
-                    # Extract model from providers config
-                    model_name = "unknown"
-                    if isinstance(config.get("providers"), list) and config["providers"]:
-                        first_provider = config["providers"][0]
-                        if isinstance(first_provider, dict) and "config" in first_provider:
-                            provider_config = first_provider["config"]
-                            model_name = provider_config.get("model") or provider_config.get("default_model", "unknown")
-
-                    metadata = {
-                        "session_id": session_id,
-                        "created": datetime.now(UTC).isoformat(),
-                        "profile": profile_name,
-                        "model": model_name,
-                        "turn_count": len([m for m in messages if m.get("role") == "user"]),
-                    }
-                    store.save(session_id, messages, metadata)
-            except asyncio.CancelledError:
-                # Ctrl-C pressed during processing
-                console.print("\n[yellow]Aborted (Ctrl-C)[/yellow]")
-        finally:
-            # Always restore original signal handler
-            signal.signal(signal.SIGINT, original_handler)
-            _abort_requested = False
-
-    try:
-        while True:
-            try:
-                # Get user input with history, editing, and paste support
-                with patch_stdout():
-                    user_input = await prompt_session.prompt_async()
-
-                if user_input.lower() in ["exit", "quit"]:
-                    break
-
-                if user_input.strip():
-                    # Process input for commands
-                    action, data = command_processor.process_input(user_input)
-
-                    if action == "prompt":
-                        # Normal prompt execution
-                        # Note: Don't echo user input here - prompt already shows it with ">"
-                        # History/replay will show "You:" labels via render_message()
-                        console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
-
-                        # Process runtime @mentions in user input
-                        await _process_runtime_mentions(session, data["text"])
-
-                        # Install signal handler to catch Ctrl-C without raising KeyboardInterrupt
-                        _abort_requested = False
-
-                        def sigint_handler(signum, frame):
-                            """Handle Ctrl-C by setting abort flag instead of raising exception."""
-                            global _abort_requested
-                            _abort_requested = True
-
-                        original_handler = signal.signal(signal.SIGINT, sigint_handler)
-
-                        try:
-                            # Run execute as cancellable task
-                            execute_task = asyncio.create_task(session.execute(data["text"]))
-
-                            # Poll task while checking for abort flag
-                            while not execute_task.done():
-                                if _abort_requested:
-                                    execute_task.cancel()
-                                    break
-                                await asyncio.sleep(0.05)  # Check every 50ms
-
-                            # Handle result or cancellation
-                            try:
-                                response = await execute_task
-                                # Use shared message renderer (single source of truth)
-                                from .ui import render_message
-
-                                render_message({"role": "assistant", "content": response}, console)
-
-                                # Save session after each interaction
-                                if context and hasattr(context, "get_messages"):
-                                    messages = await context.get_messages()
-                                    # Extract model from providers config
-                                    model_name = "unknown"
-                                    if isinstance(config.get("providers"), list) and config["providers"]:
-                                        first_provider = config["providers"][0]
-                                        if isinstance(first_provider, dict) and "config" in first_provider:
-                                            # Check both "model" and "default_model" keys
-                                            provider_config = first_provider["config"]
-                                            model_name = provider_config.get("model") or provider_config.get(
-                                                "default_model", "unknown"
-                                            )
-
-                                    metadata = {
-                                        "session_id": session_id,
-                                        "created": datetime.now(UTC).isoformat(),
-                                        "profile": profile_name,
-                                        "model": model_name,
-                                        "turn_count": len([m for m in messages if m.get("role") == "user"]),
-                                    }
-                                    store.save(session_id, messages, metadata)
-                            except asyncio.CancelledError:
-                                # Ctrl-C pressed during processing
-                                console.print("\n[yellow]Aborted (Ctrl-C)[/yellow]")
-                        finally:
-                            # Always restore original signal handler
-                            signal.signal(signal.SIGINT, original_handler)
-                            _abort_requested = False
-                    else:
-                        # Handle command
-                        result = await command_processor.handle_command(action, data)
-                        console.print(f"[cyan]{result}[/cyan]")
-
-            except EOFError:
-                # Ctrl-D - graceful exit
-                console.print("\n[dim]Exiting...[/dim]")
-                break
-
-            except Exception as e:
-                console.print(f"[red]Error:[/red] {e}")
-                if verbose:
-                    console.print_exception()
-    finally:
-        await session.cleanup()
-        console.print("\n[yellow]Session ended[/yellow]\n")
-
+# Note: The *_with_session variants were removed in favor of unified functions
+# that accept optional initial_transcript parameter for resume functionality.
+# See execute_single() and interactive_chat() above.
 
 _run_command = register_run_command(
     cli,
     interactive_chat=interactive_chat,
-    interactive_chat_with_session=interactive_chat_with_session,
     execute_single=execute_single,
-    execute_single_with_session=execute_single_with_session,
     get_module_search_paths=get_module_search_paths,
     check_first_run=check_first_run,
     prompt_first_run_init=prompt_first_run_init,
@@ -2149,8 +1299,8 @@ _run_command = register_run_command(
 
 register_session_commands(
     cli,
-    interactive_chat_with_session=interactive_chat_with_session,
-    execute_single_with_session=execute_single_with_session,
+    interactive_chat=interactive_chat,
+    execute_single=execute_single,
     get_module_search_paths=get_module_search_paths,
 )
 

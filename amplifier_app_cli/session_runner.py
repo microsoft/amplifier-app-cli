@@ -58,7 +58,9 @@ class SessionConfig:
     - initial_transcript: If provided, this is a resume
     - prepared_bundle: If provided, use bundle mode
     - profile_name: For display and metadata
-    - bundle_base_path: For @mention resolution in bundle mode
+    
+    Note: bundle_base_path for @mention resolution is handled internally by
+    foundation's PreparedBundle.create_session() via source_base_paths dict.
     """
     
     # Required configuration
@@ -75,7 +77,6 @@ class SessionConfig:
     
     # Bundle mode (if provided, use bundle flow)
     prepared_bundle: "PreparedBundle | None" = None
-    bundle_base_path: Path | None = None
     
     # Execution mode
     output_format: str = "text"  # text | json | json-trace
@@ -187,6 +188,8 @@ async def create_initialized_session(
         if context and hasattr(context, "set_messages"):
             await context.set_messages(config.initial_transcript)
             logger.info("Restored %d messages from transcript", len(config.initial_transcript))
+        elif config.initial_transcript:
+            logger.warning("Context module lacks set_messages - transcript NOT restored")
     
     # Step 10: Register approval provider (app-layer policy)
     from .approval_provider import CLIApprovalProvider
@@ -261,7 +264,7 @@ async def _create_bundle_session(
         core_logger.setLevel(original_level)
     
     # Step 5: Register mention handling (wrap foundation's resolver)
-    _register_mention_handling(session, bundle_mode=True)
+    register_mention_handling(session, bundle_mode=True)
     
     # Step 6: Register session spawning
     register_session_spawning(session)
@@ -301,7 +304,7 @@ async def _create_profile_session(
     await session.coordinator.mount("module-source-resolver", resolver)
     
     # Step 5: Register mention handling (BEFORE initialize)
-    _register_mention_handling(session, bundle_mode=False)
+    register_mention_handling(session, bundle_mode=False)
     
     # Step 6: Register session spawning (BEFORE initialize)
     register_session_spawning(session)
@@ -332,29 +335,52 @@ async def _create_profile_session(
     return session
 
 
-def _register_mention_handling(session: AmplifierSession, *, bundle_mode: bool = False) -> None:
+def register_mention_handling(session: AmplifierSession, *, bundle_mode: bool = False) -> None:
     """Register mention resolver capability on a session.
-    
-    Bundle mode: Wraps foundation's resolver with app shortcuts
-    Profile mode: Creates app resolver with collection support (deprecated)
+
+    This function handles @mention resolution differently based on mode:
+
+    Bundle mode (bundle_mode=True):
+        - Gets foundation's BaseMentionResolver (registered by create_session)
+        - Wraps it with AppMentionResolver to add app shortcuts (@user:, @project:, @~/)
+        - Collections NOT enabled (prevents naming conflicts, deprecated)
+        - Foundation resolver handles all bundle namespaces (@recipes:, @foundation:, etc.)
+
+    Profile mode (bundle_mode=False):
+        - Creates AppMentionResolver with collection support (deprecated path)
+        - No foundation resolver (profiles don't use bundles)
+
+    Per KERNEL_PHILOSOPHY: Foundation provides mechanism (bundle namespaces),
+    app provides policy (shortcuts, resolution order, collection support).
+
+    Args:
+        session: The AmplifierSession to register capabilities on
+        bundle_mode: True if using bundle mode, False for profile mode
     """
     from .lib.mention_loading import AppMentionResolver
     from .lib.mention_loading import ContentDeduplicator
     
     if bundle_mode:
+        # Bundle mode: Wrap foundation's resolver with app shortcuts
+        # Foundation resolver already has all bundle namespaces from composition
         foundation_resolver = session.coordinator.get_capability("mention_resolver")
         mention_resolver = AppMentionResolver(
             foundation_resolver=foundation_resolver,
-            enable_collections=False,
+            enable_collections=False,  # Bundles take precedence, no naming conflicts
         )
     else:
+        # Profile mode: App resolver with collection support (deprecated)
         mention_resolver = AppMentionResolver(
             foundation_resolver=None,
             enable_collections=True,
         )
     
     session.coordinator.register_capability("mention_resolver", mention_resolver)
-    session.coordinator.register_capability("content_deduplicator", ContentDeduplicator())
+    
+    # Register session-wide ContentDeduplicator for @mention deduplication
+    # Uses foundation's ContentDeduplicator which tracks multiple paths per unique content
+    mention_deduplicator = ContentDeduplicator()
+    session.coordinator.register_capability("mention_deduplicator", mention_deduplicator)
 
 
 def register_session_spawning(session: AmplifierSession) -> None:
@@ -412,7 +438,7 @@ async def _process_mentions(session: AmplifierSession, profile_name: str) -> Non
             _, mentions = parse_markdown_body(profile.markdown_body)
             if mentions:
                 mention_resolver = session.coordinator.get_capability("mention_resolver")
-                deduplicator = session.coordinator.get_capability("content_deduplicator")
+                deduplicator = session.coordinator.get_capability("mention_deduplicator")
                 if mention_resolver:
                     for mention in mentions:
                         try:
