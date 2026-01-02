@@ -22,15 +22,14 @@ from ..paths import create_config_manager
 from ..paths import create_profile_loader
 from ..project_utils import get_project_slug
 from ..runtime.config import resolve_config
-from ..session_store import SessionStore
+from ..session_store import SessionStore, extract_session_mode
 from ..types import (
     ExecuteSingleProtocol,
     InteractiveChatProtocol,
     SearchPathProviderProtocol,
 )
 
-# Prefix used to identify bundle-based sessions in metadata
-BUNDLE_PREFIX = "bundle:"
+
 
 
 def _display_session_history(transcript: list[dict], metadata: dict, *, show_thinking: bool = False) -> None:
@@ -257,18 +256,16 @@ def register_session_commands(
             console.print(f"[green]✓[/green] Resuming most recent session: {session_id}")
             console.print(f"  Messages: {len(transcript)}")
 
-            saved_profile = metadata.get("profile", "unknown")
-
-            # Detect if this was a bundle-based session
+            # Detect if this was a bundle-based or profile-based session
             bundle_name = None
             profile_override = profile  # Use explicit --profile if provided
 
-            if not profile and saved_profile and saved_profile != "unknown":
-                if saved_profile.startswith(BUNDLE_PREFIX):
-                    # Extract bundle name from "bundle:foundation" format
-                    bundle_name = saved_profile[len(BUNDLE_PREFIX) :]
+            if not profile:
+                saved_bundle, saved_profile = extract_session_mode(metadata)
+                if saved_bundle:
+                    bundle_name = saved_bundle
                     console.print(f"  Using saved bundle: {bundle_name}")
-                else:
+                elif saved_profile:
                     profile_override = saved_profile
                     console.print(f"  Using saved profile: {saved_profile}")
 
@@ -524,18 +521,16 @@ def register_session_commands(
             console.print(f"[green]✓[/green] Resuming session: {session_id}")
             console.print(f"  Messages: {len(transcript)}")
 
-            saved_profile = metadata.get("profile", "unknown")
-
-            # Detect if this was a bundle-based session
+            # Detect if this was a bundle-based or profile-based session
             bundle_name = None
             profile_override = profile  # Use explicit --profile if provided
 
-            if not profile and saved_profile and saved_profile != "unknown":
-                if saved_profile.startswith(BUNDLE_PREFIX):
-                    # Extract bundle name from "bundle:foundation" format
-                    bundle_name = saved_profile[len(BUNDLE_PREFIX) :]
+            if not profile:
+                saved_bundle, saved_profile = extract_session_mode(metadata)
+                if saved_bundle:
+                    bundle_name = saved_bundle
                     console.print(f"  Using saved bundle: {bundle_name}")
-                else:
+                elif saved_profile:
                     profile_override = saved_profile
                     console.print(f"  Using saved profile: {saved_profile}")
 

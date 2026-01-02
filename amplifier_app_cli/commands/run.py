@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 from ..console import console
 from ..data.profiles import get_system_default_profile
+from ..session_store import extract_session_mode
 from ..effective_config import get_effective_config_summary
 from ..lib.app_settings import AppSettings
 from ..paths import create_agent_loader
@@ -87,10 +88,15 @@ def register_run_command(
                 console.print(f"[green]✓[/green] Resuming session: {resume}")
                 console.print(f"  Messages: {len(transcript)}")
 
-                saved_profile = metadata.get("profile", "unknown")
-                if not profile and saved_profile and saved_profile != "unknown":
-                    profile = saved_profile
-                    console.print(f"  Using saved profile: {profile}")
+                # Detect if this was a bundle-based or profile-based session
+                if not profile and not bundle:
+                    saved_bundle, saved_profile = extract_session_mode(metadata)
+                    if saved_bundle:
+                        bundle = saved_bundle
+                        console.print(f"  Using saved bundle: {bundle}")
+                    elif saved_profile:
+                        profile = saved_profile
+                        console.print(f"  Using saved profile: {profile}")
 
             except Exception as exc:
                 console.print(f"[red]Error loading session:[/red] {exc}")

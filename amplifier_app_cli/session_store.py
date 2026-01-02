@@ -23,6 +23,39 @@ from amplifier_app_cli.project_utils import get_project_slug
 
 logger = logging.getLogger(__name__)
 
+# Prefix used to identify bundle-based sessions in metadata
+BUNDLE_PREFIX = "bundle:"
+
+
+def extract_session_mode(metadata: dict) -> tuple[str | None, str | None]:
+    """Extract bundle name or profile name from session metadata.
+
+    Sessions can be created with either a bundle (e.g., "foundation") or a profile.
+    When saved, bundle-based sessions store the profile as "bundle:<name>".
+    This function detects which mode was used and returns the appropriate value.
+
+    Args:
+        metadata: Session metadata dict containing "profile" key
+
+    Returns:
+        (bundle_name, profile_name) tuple where exactly one is set, other is None.
+        Returns (None, None) if no valid profile/bundle is found in metadata.
+
+    Example:
+        >>> extract_session_mode({"profile": "bundle:foundation"})
+        ("foundation", None)
+        >>> extract_session_mode({"profile": "my-profile"})
+        (None, "my-profile")
+        >>> extract_session_mode({"profile": "unknown"})
+        (None, None)
+    """
+    saved = metadata.get("profile", "unknown")
+    if saved and saved != "unknown":
+        if saved.startswith(BUNDLE_PREFIX):
+            return (saved[len(BUNDLE_PREFIX) :], None)
+        return (None, saved)
+    return (None, None)
+
 
 class SessionStore:
     """
