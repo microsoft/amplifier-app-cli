@@ -264,7 +264,7 @@ async def _create_bundle_session(
     _register_mention_handling(session, bundle_mode=True)
     
     # Step 6: Register session spawning
-    _register_session_spawning(session)
+    register_session_spawning(session)
     
     return session
 
@@ -304,7 +304,7 @@ async def _create_profile_session(
     _register_mention_handling(session, bundle_mode=False)
     
     # Step 6: Register session spawning (BEFORE initialize)
-    _register_session_spawning(session)
+    register_session_spawning(session)
     
     # Step 7: Initialize session
     core_logger = logging.getLogger("amplifier_core")
@@ -357,8 +357,19 @@ def _register_mention_handling(session: AmplifierSession, *, bundle_mode: bool =
     session.coordinator.register_capability("content_deduplicator", ContentDeduplicator())
 
 
-def _register_session_spawning(session: AmplifierSession) -> None:
-    """Register session spawning capabilities for agent delegation."""
+def register_session_spawning(session: AmplifierSession) -> None:
+    """Register session spawning capabilities for agent delegation.
+    
+    This is app-layer policy that enables kernel modules (like tool-task) to
+    spawn sub-sessions without directly importing from the app layer.
+    
+    The capabilities registered:
+    - session.spawn: Create new agent sub-session
+    - session.resume: Resume existing sub-session
+    
+    Args:
+        session: The AmplifierSession to register capabilities on
+    """
     from .session_spawner import resume_sub_session
     from .session_spawner import spawn_sub_session
     

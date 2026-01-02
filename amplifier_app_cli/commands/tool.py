@@ -162,7 +162,7 @@ async def _invoke_tool_from_bundle_async(bundle_name: str, tool_name: str, tool_
         Exception: If tool execution fails
     """
     from ..lib.app_settings import AppSettings
-    from ..main import _register_session_spawning
+    from ..session_runner import register_session_spawning
     from ..runtime.config import resolve_config_async
 
     # Load bundle via unified resolve_config_async (single source of truth)
@@ -190,7 +190,7 @@ async def _invoke_tool_from_bundle_async(bundle_name: str, tool_name: str, tool_
     await session.initialize()
 
     # Register session spawning (enables tools like recipes to spawn sub-sessions)
-    _register_session_spawning(session)
+    register_session_spawning(session)
 
     try:
         # Get mounted tools
@@ -712,7 +712,7 @@ async def _invoke_tool_async(profile_name: str, tool_name: str, tool_args: dict[
     from amplifier_core import AmplifierSession
 
     from ..lib.legacy import compile_profile_to_mount_plan
-    from ..main import _register_session_spawning
+    from ..session_runner import register_session_spawning
     from ..paths import create_agent_loader
     from ..paths import create_module_resolver
 
@@ -734,7 +734,7 @@ async def _invoke_tool_async(profile_name: str, tool_name: str, tool_args: dict[
 
     # Register session spawning capabilities (app-layer policy)
     # This enables tools like recipes to spawn agent sub-sessions
-    _register_session_spawning(session)
+    register_session_spawning(session)
 
     try:
         # Get mounted tools
