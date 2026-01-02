@@ -27,6 +27,9 @@ async def resolve_bundle_config(
     app_settings: AppSettings,
     agent_loader,
     console: Console | None = None,
+    *,
+    session_id: str | None = None,
+    project_slug: str | None = None,
 ) -> tuple[dict[str, Any], PreparedBundle]:
     """Resolve configuration from bundle using foundation's prepare workflow.
 
@@ -41,6 +44,8 @@ async def resolve_bundle_config(
         app_settings: App settings for provider overrides.
         agent_loader: Agent loader for resolving agent metadata.
         console: Optional console for status messages.
+        session_id: Optional session ID to include session-scoped tool overrides.
+        project_slug: Optional project slug (required if session_id provided).
 
     Returns:
         Tuple of (mount_plan_config, PreparedBundle).
@@ -98,7 +103,8 @@ async def resolve_bundle_config(
             bundle_config["providers"] = _ensure_debug_defaults(provider_overrides)
 
     # Apply tool overrides from settings (e.g., allowed_write_paths for tool-filesystem)
-    tool_overrides = app_settings.get_tool_overrides()
+    # Include session-scoped settings if session context provided
+    tool_overrides = app_settings.get_tool_overrides(session_id=session_id, project_slug=project_slug)
     if tool_overrides:
         if bundle_config.get("tools"):
             # Bundle has tools - merge overrides with existing
@@ -471,6 +477,8 @@ async def resolve_config_async(
     app_settings: AppSettings,
     cli_config: dict[str, Any] | None = None,
     console: Console | None = None,
+    session_id: str | None = None,
+    project_slug: str | None = None,
 ) -> tuple[dict[str, Any], "PreparedBundle | None"]:
     """Unified config resolution (async) - THE golden path for all config loading.
 
@@ -489,6 +497,8 @@ async def resolve_config_async(
         app_settings: Required for both modes
         cli_config: Optional CLI overrides (profile mode only)
         console: Optional console for output
+        session_id: Optional session ID for session-scoped tool overrides
+        project_slug: Optional project slug (required if session_id provided)
 
     Returns:
         Tuple of (config_data dict, PreparedBundle or None)
@@ -505,6 +515,8 @@ async def resolve_config_async(
             app_settings=app_settings,
             agent_loader=agent_loader,
             console=console,
+            session_id=session_id,
+            project_slug=project_slug,
         )
         return config_data, prepared_bundle
     else:
@@ -536,6 +548,8 @@ def resolve_config(
     app_settings: AppSettings,
     cli_config: dict[str, Any] | None = None,
     console: Console | None = None,
+    session_id: str | None = None,
+    project_slug: str | None = None,
 ) -> tuple[dict[str, Any], "PreparedBundle | None"]:
     """Unified config resolution (sync wrapper) - THE golden path for all config loading.
 
@@ -551,6 +565,8 @@ def resolve_config(
         app_settings: Required for both modes
         cli_config: Optional CLI overrides (profile mode only)
         console: Optional console for output
+        session_id: Optional session ID for session-scoped tool overrides
+        project_slug: Optional project slug (required if session_id provided)
 
     Returns:
         Tuple of (config_data dict, PreparedBundle or None)
@@ -567,6 +583,8 @@ def resolve_config(
             app_settings=app_settings,
             cli_config=cli_config,
             console=console,
+            session_id=session_id,
+            project_slug=project_slug,
         )
     )
 

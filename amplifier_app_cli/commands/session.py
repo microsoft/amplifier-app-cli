@@ -288,7 +288,11 @@ def register_session_commands(
 
             check_first_run()
 
+            # Get project slug for session-scoped settings
+            project_slug = get_project_slug()
+
             # Resolve configuration using unified function (single source of truth)
+            # Pass session_id and project_slug to include session-scoped tool overrides
             config_data, prepared_bundle = resolve_config(
                 bundle_name=bundle_name,
                 profile_override=profile_override,
@@ -297,6 +301,8 @@ def register_session_commands(
                 agent_loader=agent_loader,
                 app_settings=app_settings,
                 console=console,
+                session_id=session_id,
+                project_slug=project_slug,
             )
 
             search_paths = get_module_search_paths()
@@ -539,7 +545,11 @@ def register_session_commands(
 
             check_first_run()
 
+            # Get project slug for session-scoped settings
+            project_slug = get_project_slug()
+
             # Resolve configuration using unified function (single source of truth)
+            # Pass session_id and project_slug to include session-scoped tool overrides
             config_data, prepared_bundle = resolve_config(
                 bundle_name=bundle_name,
                 profile_override=profile_override,
@@ -548,6 +558,8 @@ def register_session_commands(
                 agent_loader=agent_loader,
                 app_settings=app_settings,
                 console=console,
+                session_id=session_id,
+                project_slug=project_slug,
             )
 
             search_paths = get_module_search_paths()

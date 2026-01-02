@@ -73,11 +73,15 @@ class AppSettings:
         providers = merged.get("config", {}).get("providers", [])
         return providers if isinstance(providers, list) else []
 
-    def get_tool_overrides(self) -> list[dict[str, Any]]:
-        """Return merged tool overrides (local > project > global).
+    def get_tool_overrides(self, session_id: str | None = None, project_slug: str | None = None) -> list[dict[str, Any]]:
+        """Return merged tool overrides (session > local > project > global).
 
         Tool overrides allow settings like allowed_write_paths for tool-filesystem
         to be configured in user settings and applied to bundles.
+
+        Args:
+            session_id: Optional session ID to include session-scoped settings
+            project_slug: Optional project slug (required if session_id provided)
 
         Expected structure in settings.yaml:
             modules:
@@ -87,9 +91,53 @@ class AppSettings:
                     allowed_write_paths:
                       - /path/to/dir
         """
+        import yaml
+
         merged = self._config.get_merged_settings()
         tools = merged.get("modules", {}).get("tools", [])
+
+        # Also check session-scoped settings if session context provided
+        if session_id and project_slug:
+            session_settings_path = (
+                Path.home() / ".amplifier" / "projects" / project_slug / "sessions" / session_id / "settings.yaml"
+            )
+            if session_settings_path.exists():
+                try:
+                    with open(session_settings_path) as f:
+                        session_settings = yaml.safe_load(f) or {}
+                    session_tools = session_settings.get("modules", {}).get("tools", [])
+                    if session_tools:
+                        # Merge session tools with other scopes (session wins)
+                        tools = self._merge_tool_lists(tools, session_tools)
+                except Exception:
+                    pass  # Skip malformed session settings
         return tools if isinstance(tools, list) else []
+
+    def _merge_tool_lists(self, base: list[dict[str, Any]], overlay: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Merge tool lists, with overlay taking precedence for matching modules."""
+        result = list(base)
+        base_modules = {t.get("module"): i for i, t in enumerate(base) if isinstance(t, dict)}
+
+        for tool in overlay:
+            if not isinstance(tool, dict):
+                continue
+            module_id = tool.get("module")
+            if module_id and module_id in base_modules:
+                # Merge configs (overlay wins)
+                idx = base_modules[module_id]
+                base_config = result[idx].get("config", {}) or {}
+                overlay_config = tool.get("config", {}) or {}
+                merged_config = {**base_config, **overlay_config}
+                # Deep merge allowed_write_paths specifically (combine lists)
+                if "allowed_write_paths" in base_config and "allowed_write_paths" in overlay_config:
+                    merged_config["allowed_write_paths"] = list(
+                        set(base_config["allowed_write_paths"]) | set(overlay_config["allowed_write_paths"])
+                    )
+                result[idx] = {**result[idx], **tool, "config": merged_config}
+            else:
+                result.append(tool)
+
+        return result
 
     def get_scope_provider_overrides(self, scope: ScopeType) -> list[dict[str, Any]]:
         """Return provider overrides defined at a specific scope."""
