@@ -298,7 +298,19 @@ def register_session_commands(
             )
 
             search_paths = get_module_search_paths()
-            active_profile = profile if profile else saved_profile
+            # Determine profile_name for SessionConfig
+            # - If user specified --profile, use that
+            # - If resuming a bundle session, construct "bundle:<name>"
+            # - If resuming a profile session, use the saved profile
+            # - Fallback to "unknown"
+            if profile:
+                active_profile = profile
+            elif bundle_name:
+                active_profile = f"bundle:{bundle_name}"
+            elif saved_profile:
+                active_profile = saved_profile
+            else:
+                active_profile = "unknown"
 
             # Display history or replay (when resuming without prompt)
             if prompt is None and not no_history:
@@ -564,7 +576,19 @@ def register_session_commands(
             )
 
             search_paths = get_module_search_paths()
-            active_profile = profile if profile else saved_profile
+            # Determine profile_name for SessionConfig
+            # - If user specified --profile, use that
+            # - If resuming a bundle session, construct "bundle:<name>"
+            # - If resuming a profile session, use the saved profile
+            # - Fallback to "unknown"
+            if profile:
+                active_profile = profile
+            elif bundle_name:
+                active_profile = f"bundle:{bundle_name}"
+            elif saved_profile:
+                active_profile = saved_profile
+            else:
+                active_profile = "unknown"
 
             # Display history or replay before entering interactive mode
             if not no_history:
