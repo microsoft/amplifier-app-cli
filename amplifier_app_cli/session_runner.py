@@ -186,8 +186,30 @@ async def create_initialized_session(
     if config.is_resume and config.initial_transcript:
         context = session.coordinator.get("context")
         if context and hasattr(context, "set_messages"):
+            # CRITICAL: For bundle mode, create_session() already added a fresh system prompt.
+            # We need to preserve it because the transcript might have lost its system message
+            # during compaction (bug fixed in context-simple, but old sessions are affected).
+            fresh_system_msg = None
+            if config.is_bundle_mode and hasattr(context, "get_messages"):
+                current_msgs = await context.get_messages()
+                system_msgs = [m for m in current_msgs if m.get("role") == "system"]
+                if system_msgs:
+                    fresh_system_msg = system_msgs[0]
+                    logger.debug("Preserved fresh system prompt (%d chars)", len(fresh_system_msg.get("content", "")))
+            
+            # Restore the transcript
             await context.set_messages(config.initial_transcript)
             logger.info("Restored %d messages from transcript", len(config.initial_transcript))
+            
+            # Check if transcript has a system message; if not, re-inject the fresh one
+            if fresh_system_msg:
+                restored_msgs = await context.get_messages()
+                has_system = any(m.get("role") == "system" for m in restored_msgs)
+                if not has_system:
+                    logger.warning("Transcript missing system prompt - re-injecting from bundle")
+                    # Prepend system message to restored messages
+                    await context.set_messages([fresh_system_msg] + restored_msgs)
+                    logger.info("Re-injected system prompt (%d chars)", len(fresh_system_msg.get("content", "")))
         elif config.initial_transcript:
             logger.warning("Context module lacks set_messages - transcript NOT restored")
     
