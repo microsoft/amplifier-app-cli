@@ -14,6 +14,7 @@ from rich.console import Console
 from ..lib.app_settings import AppSettings
 from ..lib.legacy import compile_profile_to_mount_plan
 from ..lib.legacy import merge_module_items
+from ..lib.merge_utils import merge_tool_configs
 
 if TYPE_CHECKING:
     from amplifier_foundation import BundleRegistry
@@ -325,6 +326,9 @@ def _apply_tool_overrides(tools: list[dict[str, Any]], overrides: list[dict[str,
     Merges override configs into matching tools by module ID.
     This enables settings like allowed_write_paths for tool-filesystem
     to be applied from user settings.
+
+    Permission fields (allowed_write_paths, allowed_read_paths) are UNIONED
+    rather than replaced, so session-scoped paths ADD to bundle defaults.
     """
     if not overrides:
         return tools
@@ -339,8 +343,14 @@ def _apply_tool_overrides(tools: list[dict[str, Any]], overrides: list[dict[str,
     result = []
     for tool in tools:
         if isinstance(tool, dict) and tool.get("module") in override_map:
-            # Merge override into tool
-            merged = merge_module_items(tool, override_map[tool["module"]])
+            override = override_map[tool["module"]]
+            # Merge the tool-level fields first
+            merged = merge_module_items(tool, override)
+            # Then merge configs with permission field union policy
+            base_config = tool.get("config", {}) or {}
+            override_config = override.get("config", {}) or {}
+            if base_config or override_config:
+                merged["config"] = merge_tool_configs(base_config, override_config)
             result.append(merged)
         else:
             result.append(tool)

@@ -16,6 +16,7 @@ from amplifier_app_cli.lib.legacy import Profile
 from amplifier_app_cli.lib.legacy import Scope
 
 from ...provider_sources import DEFAULT_PROVIDER_SOURCES
+from amplifier_app_cli.lib.merge_utils import merge_tool_configs
 
 ScopeType = Literal["local", "project", "global"]
 
@@ -123,16 +124,11 @@ class AppSettings:
                 continue
             module_id = tool.get("module")
             if module_id and module_id in base_modules:
-                # Merge configs (overlay wins)
+                # Merge configs using shared helper (handles permission field unions)
                 idx = base_modules[module_id]
                 base_config = result[idx].get("config", {}) or {}
                 overlay_config = tool.get("config", {}) or {}
-                merged_config = {**base_config, **overlay_config}
-                # Deep merge allowed_write_paths specifically (combine lists)
-                if "allowed_write_paths" in base_config and "allowed_write_paths" in overlay_config:
-                    merged_config["allowed_write_paths"] = list(
-                        set(base_config["allowed_write_paths"]) | set(overlay_config["allowed_write_paths"])
-                    )
+                merged_config = merge_tool_configs(base_config, overlay_config)
                 result[idx] = {**result[idx], **tool, "config": merged_config}
             else:
                 result.append(tool)
