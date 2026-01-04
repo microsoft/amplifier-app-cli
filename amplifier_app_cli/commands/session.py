@@ -835,6 +835,22 @@ def _interactive_resume_impl(
     store = SessionStore()
     all_session_ids = store.list_sessions()
 
+    # Filter to top-level sessions only (no parent_id)
+    # Sub-sessions are created by agent delegation and shouldn't appear in resume list
+    session_ids = []
+    for sid in all_session_ids:
+        try:
+            _, metadata = store.load(sid)
+            # Sub-sessions have parent_id - exclude them
+            if not metadata.get("parent_id"):
+                session_ids.append(sid)
+        except Exception:
+            # Include sessions we can't load metadata for (let user see them)
+            session_ids.append(sid)
+
+    # Replace all_session_ids with filtered list
+    all_session_ids = session_ids
+
     if not all_session_ids:
         console.print("[yellow]No sessions found to resume.[/yellow]")
         console.print("\nStart a new session with: [cyan]amplifier[/cyan]")
