@@ -48,28 +48,28 @@ class AppSettings:
         """Persist provider override at a specific scope.
         
         Updates or adds the provider entry without replacing other providers.
-        If a provider with the same module ID already exists, it's updated.
-        Otherwise, the new provider is prepended (highest priority).
+        The new/updated provider is always moved to the front (becomes active).
+        Other providers with priority 1 are demoted to priority 10.
         """
         # Read existing providers at this scope
         existing_providers = self.get_scope_provider_overrides(scope)
         
-        # Find and update existing, or prepend new
         module_id = provider_entry.get("module")
-        updated = False
-        new_providers = []
+        other_providers = []
         
         for provider in existing_providers:
             if provider.get("module") == module_id:
-                # Update existing provider with new entry
-                new_providers.append(provider_entry)
-                updated = True
+                # Skip - we'll add the new entry at the front
+                continue
             else:
-                new_providers.append(provider)
+                # Demote any other priority-1 providers to priority 10
+                config = provider.get("config", {})
+                if isinstance(config, dict) and config.get("priority") == 1:
+                    provider = {**provider, "config": {**config, "priority": 10}}
+                other_providers.append(provider)
         
-        if not updated:
-            # Prepend new provider (first = highest priority)
-            new_providers.insert(0, provider_entry)
+        # New provider goes first (becomes active)
+        new_providers = [provider_entry] + other_providers
         
         # Write back the merged list directly to avoid deep_merge replacing lists
         scope_path = self.scope_path(scope)
