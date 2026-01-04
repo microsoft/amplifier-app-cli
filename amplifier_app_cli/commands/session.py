@@ -873,8 +873,10 @@ def _interactive_resume_impl(
         # Get sessions for current page
         page_sessions = all_session_ids[page_offset : page_offset + limit]
 
-        # Display numbered list
-        for idx, session_id in enumerate(page_sessions, 1):
+        # Display numbered list (continuous numbering across pages)
+        first_num = page_offset + 1
+        last_num = page_offset + len(page_sessions)
+        for idx, session_id in enumerate(page_sessions, first_num):
             info = _get_session_display_info(store, session_id)
 
             # Format session ID (first 8 chars + ...)
@@ -910,7 +912,7 @@ def _interactive_resume_impl(
 
         # Prompt for selection (accept any input, validate manually)
         try:
-            choice = Prompt.ask("Select session", default="1")
+            choice = Prompt.ask("Select session", default=str(first_num))
         except KeyboardInterrupt:
             console.print("\n[yellow]Cancelled[/yellow]")
             return
@@ -936,11 +938,13 @@ def _interactive_resume_impl(
             console.print("[yellow]Cancelled[/yellow]")
             return
 
-        # Handle number selection
+        # Handle number selection (continuous numbering)
         try:
-            selection_idx = int(choice) - 1
-            if 0 <= selection_idx < len(page_sessions):
-                selected_session_id = page_sessions[selection_idx]
+            selection_num = int(choice)
+            if first_num <= selection_num <= last_num:
+                # Convert global number to index into page_sessions
+                page_idx = selection_num - first_num
+                selected_session_id = page_sessions[page_idx]
 
                 # Invoke the existing sessions_resume command
                 ctx.invoke(
@@ -955,7 +959,7 @@ def _interactive_resume_impl(
                 )
                 return
             else:
-                console.print(f"[yellow]Please enter 1-{len(page_sessions)}[/yellow]")
+                console.print(f"[yellow]Please enter {first_num}-{last_num}[/yellow]")
                 continue
         except ValueError:
             console.print("[yellow]Invalid input. Enter a number, 'n' for next, 'p' for prev, or 'q' to quit.[/yellow]")
