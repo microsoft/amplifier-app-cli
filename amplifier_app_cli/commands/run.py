@@ -79,8 +79,13 @@ def register_run_command(
         # Handle --resume flag
         if resume:
             store = SessionStore()
-            if not store.exists(resume):
-                console.print(f"[red]Error:[/red] Session '{resume}' not found")
+            try:
+                resume = store.find_session(resume)
+            except FileNotFoundError:
+                console.print(f"[red]Error:[/red] No session found matching '{resume}'")
+                sys.exit(1)
+            except ValueError as e:
+                console.print(f"[red]Error:[/red] {e}")
                 sys.exit(1)
 
             try:

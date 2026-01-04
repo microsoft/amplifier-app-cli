@@ -287,6 +287,44 @@ class SessionStore:
         session_dir = self.base_dir / session_id
         return session_dir.exists() and session_dir.is_dir()
 
+    def find_session(self, partial_id: str) -> str:
+        """Find session by partial ID prefix.
+
+        Args:
+            partial_id: Partial session ID (prefix match)
+
+        Returns:
+            Full session ID if exactly one match
+
+        Raises:
+            FileNotFoundError: If no sessions match
+            ValueError: If multiple sessions match (ambiguous)
+        """
+        if not partial_id or not partial_id.strip():
+            raise ValueError("Session ID cannot be empty")
+
+        partial_id = partial_id.strip()
+
+        # Check for exact match first
+        if self.exists(partial_id):
+            return partial_id
+
+        # Find prefix matches
+        matches = [
+            sid for sid in self.list_sessions()
+            if sid.startswith(partial_id)
+        ]
+
+        if not matches:
+            raise FileNotFoundError(f"No session found matching '{partial_id}'")
+        if len(matches) > 1:
+            raise ValueError(
+                f"Ambiguous session ID '{partial_id}' matches {len(matches)} sessions: "
+                f"{', '.join(m[:12] + '...' for m in matches[:3])}"
+                + (f" and {len(matches) - 3} more" if len(matches) > 3 else "")
+            )
+        return matches[0]
+
     def list_sessions(self) -> list[str]:
         """List all session IDs.
 

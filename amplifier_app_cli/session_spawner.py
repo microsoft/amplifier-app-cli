@@ -13,6 +13,50 @@ from .agent_config import merge_configs
 logger = logging.getLogger(__name__)
 
 
+def _extract_bundle_context(session: "AmplifierSession") -> dict | None:
+    """Extract serializable bundle context from session.
+
+    Extracts both module resolution paths and mention mappings needed to
+    reconstruct bundle context on resume.
+
+    Args:
+        session: The session to extract bundle context from.
+
+    Returns:
+        Dict with module_paths and mention_mappings, or None if not bundle mode.
+    """
+    # Get module resolver
+    resolver = session.coordinator.get("module-source-resolver")
+    if resolver is None:
+        return None
+
+    # Extract module paths from resolver
+    # Handle both AppModuleResolver (wraps _bundle) and BundleModuleResolver directly
+    module_paths: dict[str, str] = {}
+
+    if hasattr(resolver, "_bundle") and hasattr(resolver._bundle, "_paths"):
+        # AppModuleResolver wrapping BundleModuleResolver
+        module_paths = {k: str(v) for k, v in resolver._bundle._paths.items()}
+    elif hasattr(resolver, "_paths"):
+        # Direct BundleModuleResolver
+        module_paths = {k: str(v) for k, v in resolver._paths.items()}
+
+    if not module_paths:
+        # Not bundle mode - no paths to preserve
+        return None
+
+    # Extract mention mappings from mention resolver (for @namespace:path resolution)
+    mention_mappings: dict[str, str] = {}
+    mention_resolver = session.coordinator.get_capability("mention_resolver")
+    if mention_resolver and hasattr(mention_resolver, "_bundle_mappings"):
+        mention_mappings = {k: str(v) for k, v in mention_resolver._bundle_mappings.items()}
+
+    return {
+        "module_paths": module_paths,
+        "mention_mappings": mention_mappings,
+    }
+
+
 def _filter_tools(config: dict, tool_inheritance: dict[str, list[str]]) -> dict:
     """Filter tools in config based on tool inheritance policy.
     
@@ -201,6 +245,7 @@ async def spawn_sub_session(
         "config": merged_config,
         "agent_overlay": agent_config,
         "turn_count": 1,
+        "bundle_context": _extract_bundle_context(parent_session),
     }
 
     store = SessionStore()
@@ -259,11 +304,25 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
 
     parent_id = metadata.get("parent_id")
     agent_name = metadata.get("agent_name", "unknown")
+    trace_id = metadata.get("trace_id")
 
-    # Recreate child session with same ID and loaded config
-    # Note: We don't have parent session ref here, so create fresh UX systems
+    # Sub-session resume creates fresh UX systems. Parent UX context (approval history,
+    # display state) is not preserved across resume. This is acceptable because:
+    # 1. Sub-sessions are typically short-lived agent delegations
+    # 2. Serializing full UX state would add significant complexity
+    # 3. The parent session may no longer be running when sub-session resumes
+    # 4. Approval decisions are contextual to the current execution state
     from amplifier_app_cli.ui import CLIApprovalSystem
     from amplifier_app_cli.ui import CLIDisplaySystem
+
+    logger.debug(
+        "Resuming sub-session %s (agent=%s, parent=%s, trace=%s). "
+        "UX context (approval history, display state) not preserved - using fresh UX systems.",
+        sub_session_id,
+        agent_name,
+        parent_id,
+        trace_id,
+    )
 
     approval_system = CLIApprovalSystem()
     display_system = CLIDisplaySystem()
@@ -281,21 +340,42 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     await child_session.initialize()
 
     # Register app-layer capabilities for resumed child session
-    # Note: Resumed sessions create fresh instances since parent session is not available.
-    # Bundle context (including BundleModuleResolver) would need to be serialized to metadata
-    # to preserve bundle mode for resumed sessions - using FoundationSettingsResolver as fallback.
+    # Restore bundle context from metadata if available, otherwise create fresh instances
+    from pathlib import Path
+
     from amplifier_foundation.mentions import ContentDeduplicator
 
     from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
     from amplifier_app_cli.paths import create_foundation_resolver
 
-    # Module source resolver - uses FoundationSettingsResolver for resumed sessions
-    # (BundleModuleResolver inheritance only works for live sub-session spawning)
-    resolver = create_foundation_resolver()
+    # Extract bundle context from metadata (saved during spawn_sub_session)
+    bundle_context = metadata.get("bundle_context")
+
+    # Module source resolver - restore from bundle context if available
+    if bundle_context and bundle_context.get("module_paths"):
+        # Restore BundleModuleResolver with saved module paths
+        from amplifier_foundation.bundle import BundleModuleResolver
+
+        module_paths = {k: Path(v) for k, v in bundle_context["module_paths"].items()}
+        resolver = BundleModuleResolver(module_paths=module_paths)
+        logger.debug(f"Restored BundleModuleResolver with {len(module_paths)} module paths")
+    else:
+        # Fallback to FoundationSettingsResolver for profile mode
+        resolver = create_foundation_resolver()
     await child_session.coordinator.mount("module-source-resolver", resolver)
 
-    # Mention resolver - create fresh (no parent available for resumed sessions)
-    child_session.coordinator.register_capability("mention_resolver", AppMentionResolver(enable_collections=True))
+    # Mention resolver - restore bundle mappings if available
+    if bundle_context and bundle_context.get("mention_mappings"):
+        # Restore AppMentionResolver with saved bundle mappings for @namespace:path resolution
+        mention_mappings = {k: Path(v) for k, v in bundle_context["mention_mappings"].items()}
+        child_session.coordinator.register_capability(
+            "mention_resolver",
+            AppMentionResolver(enable_collections=True, bundle_mappings=mention_mappings),
+        )
+        logger.debug(f"Restored AppMentionResolver with {len(mention_mappings)} bundle mappings")
+    else:
+        # Fallback to fresh resolver without bundle mappings
+        child_session.coordinator.register_capability("mention_resolver", AppMentionResolver(enable_collections=True))
 
     # Mention deduplicator - create fresh (deduplication state doesn't persist across resumes)
     child_session.coordinator.register_capability("mention_deduplicator", ContentDeduplicator())
