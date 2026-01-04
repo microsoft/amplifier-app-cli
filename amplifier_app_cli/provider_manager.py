@@ -220,7 +220,8 @@ class ProviderManager:
             if module_id not in providers:
                 providers[module_id] = provider_info
 
-        return list(providers.values())
+        # Sort alphabetically by display name (second element of tuple)
+        return sorted(providers.values(), key=lambda p: p[1].lower())
 
     def _discover_providers_from_sources(self) -> dict[str, tuple[str, str, str]]:
         """Discover providers by resolving effective sources.

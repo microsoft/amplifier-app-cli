@@ -16,9 +16,11 @@ logger = logging.getLogger(__name__)
 # Single source of truth for known provider git URLs
 DEFAULT_PROVIDER_SOURCES = {
     "provider-anthropic": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
-    "provider-openai": "git+https://github.com/microsoft/amplifier-module-provider-openai@main",
     "provider-azure-openai": "git+https://github.com/microsoft/amplifier-module-provider-azure-openai@main",
+    "provider-gemini": "git+https://github.com/microsoft/amplifier-module-provider-gemini@main",
     "provider-ollama": "git+https://github.com/microsoft/amplifier-module-provider-ollama@main",
+    "provider-openai": "git+https://github.com/microsoft/amplifier-module-provider-openai@main",
+    "provider-vllm": "git+https://github.com/microsoft/amplifier-module-provider-vllm@main",
 }
 
 
