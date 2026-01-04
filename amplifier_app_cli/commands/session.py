@@ -891,7 +891,8 @@ def _interactive_resume_impl(
                 f"  [cyan][{idx}][/cyan] {short_id} | "
                 f"[magenta]{profile}[/magenta] | "
                 f"{info['turn_count']} turns | "
-                f"[dim]{info['time_ago']}[/dim]"
+                f"[dim]{info['time_ago']}[/dim]",
+                highlight=False,
             )
 
         console.print()
