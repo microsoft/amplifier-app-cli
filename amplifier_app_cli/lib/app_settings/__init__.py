@@ -45,8 +45,39 @@ class AppSettings:
     # ----- Provider overrides -----
 
     def set_provider_override(self, provider_entry: dict[str, Any], scope: ScopeType) -> None:
-        """Persist provider override at a specific scope."""
-        self._config.update_settings({"config": {"providers": [provider_entry]}}, scope=self._scope_enum(scope))
+        """Persist provider override at a specific scope.
+        
+        Updates or adds the provider entry without replacing other providers.
+        If a provider with the same module ID already exists, it's updated.
+        Otherwise, the new provider is prepended (highest priority).
+        """
+        # Read existing providers at this scope
+        existing_providers = self.get_scope_provider_overrides(scope)
+        
+        # Find and update existing, or prepend new
+        module_id = provider_entry.get("module")
+        updated = False
+        new_providers = []
+        
+        for provider in existing_providers:
+            if provider.get("module") == module_id:
+                # Update existing provider with new entry
+                new_providers.append(provider_entry)
+                updated = True
+            else:
+                new_providers.append(provider)
+        
+        if not updated:
+            # Prepend new provider (first = highest priority)
+            new_providers.insert(0, provider_entry)
+        
+        # Write back the merged list directly to avoid deep_merge replacing lists
+        scope_path = self.scope_path(scope)
+        scope_settings = self._config._read_yaml(scope_path) or {}  # type: ignore[attr-defined]
+        if "config" not in scope_settings:
+            scope_settings["config"] = {}
+        scope_settings["config"]["providers"] = new_providers
+        self._config._write_yaml(scope_path, scope_settings)  # type: ignore[attr-defined]
 
     def clear_provider_override(self, scope: ScopeType) -> bool:
         """Clear provider override from a scope."""

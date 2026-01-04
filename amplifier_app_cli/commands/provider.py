@@ -233,6 +233,12 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
         model_list = get_provider_models(module_id, config_manager, collected_config=stored_config)
     except Exception as e:
         console.print(f"[red]Failed to load provider '{display_name}': {e}[/]")
+        # Provide helpful next steps based on whether provider is configured
+        if stored_config:
+            console.print(f"\nRe-configure with: [cyan]amplifier provider use {display_name}[/]")
+        else:
+            console.print(f"\nConfigure first with: [cyan]amplifier provider use {display_name}[/]")
+            console.print(f"Or run: [cyan]amplifier init[/]")
         ctx.exit(1)
 
     # Handle empty list
