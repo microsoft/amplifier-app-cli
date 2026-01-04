@@ -226,7 +226,7 @@ def init_cmd():
     console.print()
     console.print(
         Panel.fit(
-            '[bold green]✓ Ready![/bold green]\n\nTry it now:\n  [cyan]amplifier run "Hello, Amplifier!"[/cyan]',
+            '[bold green]✓ Ready![/bold green]\n\nStart an interactive session:\n  [cyan]amplifier[/cyan]\n\nThen try:\n  [dim]Tell me about the Amplifier ecosystem[/dim]',
             border_style="green",
         )
     )
