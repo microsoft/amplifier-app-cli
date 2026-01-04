@@ -578,7 +578,8 @@ def bundle_add(uri: str, name_override: str | None):
 def bundle_remove(name: str):
     """Remove a bundle from the user registry.
 
-    This only removes the registry entry, not any cached files.
+    This removes the bundle from both the user registry and the persisted
+    foundation registry. Does not delete cached files.
     Does not affect well-known bundles like 'foundation'.
 
     Example:
@@ -594,11 +595,17 @@ def bundle_remove(name: str):
         console.print("  Well-known bundles are built into amplifier")
         sys.exit(1)
 
-    # Try to remove
-    if user_registry.remove_bundle(name):
-        console.print(f"[green]✓ Removed bundle '{name}' from registry[/green]")
+    # Remove from user registry (CLI layer)
+    removed_from_user = user_registry.remove_bundle(name)
+
+    # Remove from foundation registry (persistence layer)
+    registry = create_bundle_registry()
+    removed_from_foundation = registry.unregister(name)
+
+    if removed_from_user or removed_from_foundation:
+        console.print(f"[green]✓ Removed bundle '{name}'[/green]")
     else:
-        console.print(f"[yellow]Bundle '{name}' not found in user registry[/yellow]")
+        console.print(f"[yellow]Bundle '{name}' not found[/yellow]")
         console.print("\nUser-added bundles can be seen with 'amplifier bundle list'")
 
 
