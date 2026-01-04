@@ -128,7 +128,8 @@ def get_provider_models(
     """Get available models for a provider.
 
     Loads the provider and queries list_models() to get dynamic model list.
-    Falls back to empty list if provider cannot be loaded or doesn't support list_models().
+    Re-raises authentication and connection errors so callers can show meaningful messages.
+    Returns empty list only for non-critical failures (provider not found, no list_models method).
 
     Args:
         provider_id: Provider ID (e.g., "provider-anthropic" or "anthropic")
@@ -138,33 +139,34 @@ def get_provider_models(
 
     Returns:
         List of ModelInfo for available models, empty list if unavailable
+
+    Raises:
+        Exception: Re-raises authentication errors, API errors, and connection errors
+            so callers can display meaningful error messages to users.
     """
-    try:
-        provider_class = load_provider_class(provider_id)
-        if not provider_class:
-            return []
-
-        # Try different instantiation approaches for different provider signatures
-        # Pass collected_config so providers can use real connection values
-        provider = _try_instantiate_provider(provider_class, collected_config)
-        if provider is None:
-            logger.debug(f"Could not instantiate provider '{provider_id}' for model listing")
-            return []
-
-        # Check if provider has list_models
-        if not hasattr(provider, "list_models"):
-            logger.debug(f"Provider '{provider_id}' does not have list_models()")
-            return []
-
-        # Call list_models (may be sync or async)
-        list_models_fn = provider.list_models
-        if asyncio.iscoroutinefunction(list_models_fn):
-            return asyncio.run(list_models_fn())
-        return list_models_fn()
-
-    except Exception as e:
-        logger.debug(f"Could not get models for '{provider_id}': {e}")
+    provider_class = load_provider_class(provider_id)
+    if not provider_class:
         return []
+
+    # Try different instantiation approaches for different provider signatures
+    # Pass collected_config so providers can use real connection values
+    provider = _try_instantiate_provider(provider_class, collected_config)
+    if provider is None:
+        logger.debug(f"Could not instantiate provider '{provider_id}' for model listing")
+        return []
+
+    # Check if provider has list_models
+    if not hasattr(provider, "list_models"):
+        logger.debug(f"Provider '{provider_id}' does not have list_models()")
+        return []
+
+    # Call list_models (may be sync or async)
+    # Let exceptions propagate - auth errors, API errors, connection errors
+    # should be shown to the user, not silently swallowed
+    list_models_fn = provider.list_models
+    if asyncio.iscoroutinefunction(list_models_fn):
+        return asyncio.run(list_models_fn())
+    return list_models_fn()
 
 
 def _resolve_env_placeholder(value: str | None) -> str | None:
