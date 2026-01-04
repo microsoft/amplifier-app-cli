@@ -838,7 +838,7 @@ def _interactive_resume_impl(
     # Filter to top-level sessions only
     # Sub-sessions have format: {parent_id}_{agent_name} (contain underscore)
     # Top-level sessions are just UUIDs without underscores
-    session_ids = [sid for sid in all_session_ids if "_" not in sid]
+    all_session_ids = [sid for sid in all_session_ids if "_" not in sid]
 
     if not all_session_ids:
         console.print("[yellow]No sessions found to resume.[/yellow]")
