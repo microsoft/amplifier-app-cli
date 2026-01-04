@@ -899,9 +899,10 @@ def _interactive_resume_impl(
         has_prev = page_offset > 0
         nav_hints = []
         if has_next:
-            nav_hints.append("'n' next")
+            remaining = total_sessions - (page_offset + limit)
+            nav_hints.append(f"'n' next ({remaining})")
         if has_prev:
-            nav_hints.append("'p' prev")
+            nav_hints.append(f"'p' prev ({page_offset})")
         nav_hints.append("'q' quit")
 
         console.print(f"  [dim]{' | '.join(nav_hints)}[/dim]")
