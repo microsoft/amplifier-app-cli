@@ -905,70 +905,70 @@ def _interactive_resume_impl(
 
         console.print()
 
-        # Show navigation options
-        nav_options = []
-        if page_offset + limit < total_sessions:
-            nav_options.append("[n] Next page")
-        if page_offset > 0:
-            nav_options.append("[p] Previous page")
-        nav_options.append("[q] Quit")
+        # Show navigation options (typed commands, not TUI hotkeys)
+        has_next = page_offset + limit < total_sessions
+        has_prev = page_offset > 0
+        nav_hints = []
+        if has_next:
+            nav_hints.append("'n' next")
+        if has_prev:
+            nav_hints.append("'p' prev")
+        nav_hints.append("'q' quit")
 
-        console.print(f"  [dim]{' | '.join(nav_options)}[/dim]")
+        console.print(f"  [dim]{' | '.join(nav_hints)}[/dim]")
         console.print()
 
-        # Build valid choices
-        valid_numbers = [str(i) for i in range(1, len(page_sessions) + 1)]
-        valid_nav = []
-        if page_offset + limit < total_sessions:
-            valid_nav.append("n")
-        if page_offset > 0:
-            valid_nav.append("p")
-        valid_nav.append("q")
-
-        all_choices = valid_numbers + valid_nav
-
-        # Prompt for selection
+        # Prompt for selection (accept any input, validate manually)
         try:
-            choice = Prompt.ask(
-                "Select session",
-                choices=all_choices,
-                default="1",
-                show_choices=False,
-            )
+            choice = Prompt.ask("Select session", default="1")
         except KeyboardInterrupt:
             console.print("\n[yellow]Cancelled[/yellow]")
             return
 
-        # Handle navigation
-        if choice == "n":
-            page_offset += limit
-            continue
-        elif choice == "p":
-            page_offset = max(0, page_offset - limit)
-            continue
-        elif choice == "q":
+        choice = choice.strip().lower()
+
+        # Handle navigation commands (accept variants)
+        if choice in ("n", "next"):
+            if has_next:
+                page_offset += limit
+                continue
+            else:
+                console.print("[yellow]No more sessions[/yellow]")
+                continue
+        elif choice in ("p", "prev", "previous"):
+            if has_prev:
+                page_offset -= limit
+                continue
+            else:
+                console.print("[yellow]Already at first page[/yellow]")
+                continue
+        elif choice in ("q", "quit", "exit"):
             console.print("[yellow]Cancelled[/yellow]")
             return
 
         # Handle number selection
         try:
             selection_idx = int(choice) - 1
-            selected_session_id = page_sessions[selection_idx]
+            if 0 <= selection_idx < len(page_sessions):
+                selected_session_id = page_sessions[selection_idx]
 
-            # Invoke the existing sessions_resume command
-            ctx.invoke(
-                sessions_resume_cmd,
-                session_id=selected_session_id,
-                profile=None,
-                no_history=False,
-                full_history=False,
-                replay=False,
-                replay_speed=2.0,
-                show_thinking=False,
-            )
-            return
-        except (ValueError, IndexError):
-            console.print("[red]Invalid selection[/red]")
+                # Invoke the existing sessions_resume command
+                ctx.invoke(
+                    sessions_resume_cmd,
+                    session_id=selected_session_id,
+                    profile=None,
+                    no_history=False,
+                    full_history=False,
+                    replay=False,
+                    replay_speed=2.0,
+                    show_thinking=False,
+                )
+                return
+            else:
+                console.print(f"[yellow]Please enter 1-{len(page_sessions)}[/yellow]")
+                continue
+        except ValueError:
+            console.print("[yellow]Invalid input. Enter a number, 'n' for next, 'p' for prev, or 'q' to quit.[/yellow]")
             continue
 
 
