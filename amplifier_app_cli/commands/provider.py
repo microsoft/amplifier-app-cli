@@ -22,7 +22,9 @@ console = Console()
 @click.group()
 def provider():
     """Manage AI providers."""
-    pass
+    # Ensure provider modules are installed (post-update fix)
+    from .init import check_first_run
+    check_first_run()
 
 
 @provider.command("use")
@@ -222,9 +224,13 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
     module_id = provider_id if provider_id.startswith("provider-") else f"provider-{provider_id}"
     display_name = module_id.replace("provider-", "")
 
+    # Get stored provider config (for credentials/endpoints)
+    manager = ProviderManager(config_manager)
+    stored_config = manager.get_provider_config(module_id)
+
     # Fetch models
     try:
-        model_list = get_provider_models(module_id, config_manager)
+        model_list = get_provider_models(module_id, config_manager, collected_config=stored_config)
     except Exception as e:
         console.print(f"[red]Failed to load provider '{display_name}': {e}[/]")
         ctx.exit(1)
