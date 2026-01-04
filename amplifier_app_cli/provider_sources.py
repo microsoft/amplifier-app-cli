@@ -1,5 +1,6 @@
 """Canonical sources for provider modules."""
 
+import importlib
 import logging
 import subprocess
 import sys
@@ -248,6 +249,11 @@ def install_known_providers(
 
     if failed and verbose and console:
         console.print(f"\n[yellow]Warning: {len(failed)} provider(s) failed to install[/yellow]")
+
+    # Invalidate import caches so newly installed packages are immediately visible
+    # Without this, the current Python process won't see packages installed via subprocess
+    if installed:
+        importlib.invalidate_caches()
 
     return installed
 
