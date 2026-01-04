@@ -189,6 +189,71 @@ def provider_reset(scope_flag: str | None):
     else:
         console.print(f"[yellow]No provider override at {scope} scope[/yellow]")
 
+@provider.command("models")
+@click.argument("provider_id", required=False)
+@click.pass_context
+def provider_models(ctx: click.Context, provider_id: str | None) -> None:
+    """List available models for a provider.
+
+    If PROVIDER_ID is omitted, uses the currently active provider.
+
+    Examples:
+      amplifier provider models anthropic
+      amplifier provider models openai
+      amplifier provider models  # uses current provider
+    """
+    from ..provider_loader import get_provider_models
+
+    config_manager = create_config_manager()
+
+    # Determine which provider to query
+    if provider_id is None:
+        manager = ProviderManager(config_manager)
+        current = manager.get_current_provider()
+        if current is None:
+            console.print(
+                "[yellow]No active provider. Run 'amplifier provider use' first "
+                "or specify a provider ID.[/]"
+            )
+            ctx.exit(1)
+        provider_id = current.module_id
+
+    # Normalize provider ID (handle both "anthropic" and "provider-anthropic")
+    module_id = provider_id if provider_id.startswith("provider-") else f"provider-{provider_id}"
+    display_name = module_id.replace("provider-", "")
+
+    # Fetch models
+    try:
+        model_list = get_provider_models(module_id, config_manager)
+    except Exception as e:
+        console.print(f"[red]Failed to load provider '{display_name}': {e}[/]")
+        ctx.exit(1)
+
+    # Handle empty list
+    if not model_list:
+        console.print(f"[yellow]No models available for provider '{display_name}'.[/]")
+        console.print("This provider may require manual model specification.")
+        return
+
+    # Build and display table
+    table = Table(title=f"Models for {display_name}")
+    table.add_column("Model ID", style="cyan")
+    table.add_column("Display Name")
+    table.add_column("Context", justify="right")
+    table.add_column("Max Output", justify="right")
+    table.add_column("Capabilities")
+
+    for model in model_list:
+        table.add_row(
+            model.id,
+            model.display_name or model.id,
+            f"{model.context_window:,}" if model.context_window else "-",
+            f"{model.max_output_tokens:,}" if model.max_output_tokens else "-",
+            ", ".join(model.capabilities) if model.capabilities else "-",
+        )
+
+    console.print(table)
+
 
 def prompt_scope() -> Literal["local", "project", "global"]:
     """Interactive scope selection.
