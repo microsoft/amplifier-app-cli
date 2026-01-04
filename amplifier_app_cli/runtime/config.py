@@ -329,9 +329,12 @@ def _apply_tool_overrides(tools: list[dict[str, Any]], overrides: list[dict[str,
 
     Permission fields (allowed_write_paths, allowed_read_paths) are UNIONED
     rather than replaced, so session-scoped paths ADD to bundle defaults.
+
+    Policy: Current working directory (".") is always included in allowed_write_paths
+    for tool-filesystem, ensuring users can always write within their project.
     """
     if not overrides:
-        return tools
+        return _ensure_cwd_in_write_paths(tools)
 
     # Build lookup for overrides by module ID
     override_map = {}
@@ -361,6 +364,34 @@ def _apply_tool_overrides(tools: list[dict[str, Any]], overrides: list[dict[str,
         if isinstance(override, dict) and override.get("module") not in existing_modules:
             result.append(override)
 
+    return _ensure_cwd_in_write_paths(result)
+
+
+def _ensure_cwd_in_write_paths(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure current working directory is always in allowed_write_paths for tool-filesystem.
+
+    This is a CLI policy decision: users should always be able to write within their
+    current working directory and its subdirectories. Without this, explicit paths in
+    settings.yaml would completely replace the module's default, locking users out of
+    their own project directories.
+
+    Args:
+        tools: List of tool configurations
+
+    Returns:
+        Tools with "." guaranteed in tool-filesystem's allowed_write_paths
+    """
+    result = []
+    for tool in tools:
+        if isinstance(tool, dict) and tool.get("module") == "tool-filesystem":
+            tool = tool.copy()
+            config = (tool.get("config") or {}).copy()
+            paths = list(config.get("allowed_write_paths", []))
+            if "." not in paths:
+                paths.insert(0, ".")
+            config["allowed_write_paths"] = paths
+            tool["config"] = config
+        result.append(tool)
     return result
 
 
