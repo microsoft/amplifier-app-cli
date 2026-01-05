@@ -42,7 +42,7 @@ amplifier
 amplifier run --bundle my-bundle "Your prompt"
 ```
 
-**Environment variables**: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY` detected automatically during `amplifier init`.
+**Environment variables**: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, `GOOGLE_API_KEY` detected automatically during `amplifier init`.
 
 ## Commands
 
@@ -269,6 +269,7 @@ This CLI is built on top of amplifier-core and provides:
 - **Anthropic Claude** - Recommended, most tested (Sonnet, Opus models)
 - **OpenAI** - Good alternative (GPT-4o, GPT-4o-mini, o1 models)
 - **Azure OpenAI** - Enterprise users with Azure subscriptions
+- **Google Gemini** - Google's AI models with large context windows (Gemini 2.5 Flash, Pro)
 - **Ollama** - Local, free, no API key needed
 
 ### Provider sources

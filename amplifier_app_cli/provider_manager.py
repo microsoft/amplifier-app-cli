@@ -23,6 +23,7 @@ _PROVIDER_DISPLAY_NAMES = {
     "anthropic": "Anthropic",
     "openai": "OpenAI",
     "azure-openai": "Azure OpenAI",
+    "gemini": "Google Gemini",
     "ollama": "Ollama",
     "vllm": "vLLM",
 }
