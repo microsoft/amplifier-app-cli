@@ -69,7 +69,7 @@ class ConfigManager:
         if path is None or not path.exists():
             return None
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 return yaml.safe_load(f) or {}
         except Exception:
             return None
@@ -79,7 +79,7 @@ class ConfigManager:
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(data, f, default_flow_style=False)
 
     def _deep_merge(self, base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:

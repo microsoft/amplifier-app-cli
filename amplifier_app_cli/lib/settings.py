@@ -86,7 +86,7 @@ class AppSettings:
         for path in paths_to_check:
             if path.exists():
                 try:
-                    with open(path) as f:
+                    with open(path, encoding="utf-8") as f:
                         content = yaml.safe_load(f) or {}
                     result = self._deep_merge(result, content)
                 except Exception:
@@ -169,7 +169,7 @@ class AppSettings:
             if path is None or not path.exists():
                 continue
             try:
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     content = yaml.safe_load(f) or {}
                 paths_list = (
                     content.get("modules", {})
@@ -289,7 +289,7 @@ class AppSettings:
         if not path.exists():
             return {}
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 return yaml.safe_load(f) or {}
         except Exception:
             return {}
@@ -298,7 +298,7 @@ class AppSettings:
         """Write settings to a specific scope."""
         path = self._get_scope_path(scope)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(settings, f, default_flow_style=False)
 
     def _update_setting(self, key: str, value: Any, scope: Scope) -> None:

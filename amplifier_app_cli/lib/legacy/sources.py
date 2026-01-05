@@ -340,7 +340,7 @@ class GitSource:
                     try:
                         import yaml
 
-                        gh_config = yaml.safe_load(gh_config_file.read_text())
+                        gh_config = yaml.safe_load(gh_config_file.read_text(encoding="utf-8"))
                         token = gh_config.get("github.com", {}).get("oauth_token")
                         if token:
                             headers["Authorization"] = f"Bearer {token}"

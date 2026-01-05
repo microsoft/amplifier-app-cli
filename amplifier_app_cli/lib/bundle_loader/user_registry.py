@@ -34,7 +34,7 @@ def load_user_registry() -> dict[str, dict[str, Any]]:
         return {}
 
     try:
-        with open(REGISTRY_PATH) as f:
+        with open(REGISTRY_PATH, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         return data.get("bundles", {})
     except Exception as e:
@@ -55,7 +55,7 @@ def save_user_registry(bundles: dict[str, dict[str, Any]]) -> None:
         "bundles": bundles,
     }
 
-    with open(REGISTRY_PATH, "w") as f:
+    with open(REGISTRY_PATH, "w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
 
 
