@@ -71,7 +71,7 @@ async def test_save_transcript_with_thinking_blocks():
             assert saved_file.exists()
 
             # Load and verify sanitization worked
-            with open(saved_file) as f:
+            with open(saved_file, encoding="utf-8") as f:
                 data = json.load(f)
 
             # Check structure
@@ -123,7 +123,7 @@ async def test_save_transcript_without_thinking():
             saved_file = Path(result)
             assert saved_file.exists()
 
-            with open(saved_file) as f:
+            with open(saved_file, encoding="utf-8") as f:
                 data = json.load(f)
 
             # All messages should be preserved exactly

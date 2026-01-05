@@ -135,7 +135,7 @@ class AppSettings:
             )
             if session_settings_path.exists():
                 try:
-                    with open(session_settings_path) as f:
+                    with open(session_settings_path, encoding="utf-8") as f:
                         session_settings = yaml.safe_load(f) or {}
                     session_tools = session_settings.get("modules", {}).get("tools", [])
                     if session_tools:

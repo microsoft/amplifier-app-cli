@@ -700,7 +700,7 @@ def _get_github_auth_headers() -> dict:
         try:
             import yaml
 
-            config = yaml.safe_load(gh_config.read_text())
+            config = yaml.safe_load(gh_config.read_text(encoding="utf-8"))
             if token := config.get("github.com", {}).get("oauth_token"):
                 return {"Authorization": f"Bearer {token}"}
         except Exception:

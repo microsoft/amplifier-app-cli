@@ -72,7 +72,7 @@ def resolve_dev_override(resource_type: ResourceType, resource_id: str) -> Path 
             continue
 
         try:
-            with open(settings_file) as f:
+            with open(settings_file, encoding="utf-8") as f:
                 settings = yaml.safe_load(f) or {}
         except Exception:
             continue  # Skip malformed files
