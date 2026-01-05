@@ -6,6 +6,7 @@ Philosophy: Simple, non-blocking, user-controllable.
 import logging
 from datetime import datetime
 
+import httpx
 from rich.console import Console
 
 from .settings_manager import DEFAULT_SETTINGS
@@ -55,8 +56,10 @@ async def check_and_notify():
 
     try:
         # Check all sources including cached modules (show progress indicator)
-        with console.status("[dim]Checking for updates...[/dim]", spinner="dots"):
-            report = await check_all_sources(include_all_cached=True)
+        # Use single shared httpx client to avoid cleanup race conditions
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            with console.status("[dim]Checking for updates...[/dim]", spinner="dots"):
+                report = await check_all_sources(client=client, include_all_cached=True)
 
         if report.has_updates:
             console.print()

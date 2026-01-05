@@ -170,10 +170,13 @@ def extract_github_org(git_url: str) -> str | None:
     return None
 
 
-async def fetch_umbrella_dependencies(umbrella_info: UmbrellaInfo) -> dict[str, dict]:
+async def fetch_umbrella_dependencies(
+    client: httpx.AsyncClient, umbrella_info: UmbrellaInfo
+) -> dict[str, dict]:
     """Fetch dependency info from umbrella pyproject.toml.
 
     Args:
+        client: Shared httpx client for all HTTP requests
         umbrella_info: Discovered umbrella source info
 
     Returns:
@@ -187,20 +190,19 @@ async def fetch_umbrella_dependencies(umbrella_info: UmbrellaInfo) -> dict[str, 
 
     logger.debug(f"Fetching umbrella pyproject.toml from: {raw_url}")
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(raw_url)
-        response.raise_for_status()
+    response = await client.get(raw_url)
+    response.raise_for_status()
 
-        # Parse TOML
-        config = tomllib.loads(response.text)
+    # Parse TOML
+    config = tomllib.loads(response.text)
 
-        # Extract git sources
-        sources = config.get("tool", {}).get("uv", {}).get("sources", {})
+    # Extract git sources
+    sources = config.get("tool", {}).get("uv", {}).get("sources", {})
 
-        deps = {}
-        for name, source_info in sources.items():
-            if isinstance(source_info, dict) and "git" in source_info:
-                deps[name] = {"url": source_info["git"], "branch": source_info.get("branch", "main")}
+    deps = {}
+    for name, source_info in sources.items():
+        if isinstance(source_info, dict) and "git" in source_info:
+            deps[name] = {"url": source_info["git"], "branch": source_info.get("branch", "main")}
 
-        logger.info(f"Found {len(deps)} library dependencies in umbrella")
-        return deps
+    logger.info(f"Found {len(deps)} library dependencies in umbrella")
+    return deps

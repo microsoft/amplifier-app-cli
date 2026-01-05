@@ -508,7 +508,14 @@ def update(collection_name: str | None, check_only: bool, mutable_only: bool):
     # Check-only mode: use source_status to get collection status and display
     if check_only:
         console.print("Checking collections for updates...")
-        report = asyncio.run(check_all_sources(include_all_cached=False, force=False))
+
+        async def _check():
+            import httpx
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                return await check_all_sources(client=client, include_all_cached=False, force=False)
+
+        report = asyncio.run(_check())
 
         # Filter collection_sources if specific collection requested
         collection_sources = report.collection_sources

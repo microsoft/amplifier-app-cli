@@ -291,50 +291,53 @@ async def _get_umbrella_dependency_details(umbrella_info) -> list[dict]:
     import importlib.metadata
     import json
 
+    import httpx
+
+    from ..utils.source_status import _get_github_commit_sha
     from ..utils.umbrella_discovery import fetch_umbrella_dependencies
 
     if not umbrella_info:
         return []
 
     try:
-        # Get dependency definitions from umbrella
-        umbrella_deps = await fetch_umbrella_dependencies(umbrella_info)
+        # Use single shared httpx client for all requests
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Get dependency definitions from umbrella
+            umbrella_deps = await fetch_umbrella_dependencies(client, umbrella_info)
 
-        details = []
-        for lib_name, dep_info in umbrella_deps.items():
-            # Get current installed SHA
-            current_sha = None
-            try:
-                dist = importlib.metadata.distribution(lib_name)
-                if hasattr(dist, "read_text"):
-                    direct_url_text = dist.read_text("direct_url.json")
-                    if direct_url_text:
-                        direct_url = json.loads(direct_url_text)
-                        if "vcs_info" in direct_url:
-                            current_sha = direct_url["vcs_info"].get("commit_id", "")[:7]
-            except Exception:
-                current_sha = "unknown"
+            details = []
+            for lib_name, dep_info in umbrella_deps.items():
+                # Get current installed SHA
+                current_sha = None
+                try:
+                    dist = importlib.metadata.distribution(lib_name)
+                    if hasattr(dist, "read_text"):
+                        direct_url_text = dist.read_text("direct_url.json")
+                        if direct_url_text:
+                            direct_url = json.loads(direct_url_text)
+                            if "vcs_info" in direct_url:
+                                current_sha = direct_url["vcs_info"].get("commit_id", "")[:7]
+                except Exception:
+                    current_sha = "unknown"
 
-            # Get remote SHA
-            from ..utils.source_status import _get_github_commit_sha
+                # Get remote SHA
+                try:
+                    remote_sha_full = await _get_github_commit_sha(client, dep_info["url"], dep_info["branch"])
+                    remote_sha = remote_sha_full[:7]
+                except Exception:
+                    remote_sha = "unknown"
 
-            try:
-                remote_sha_full = await _get_github_commit_sha(dep_info["url"], dep_info["branch"])
-                remote_sha = remote_sha_full[:7]
-            except Exception:
-                remote_sha = "unknown"
+                details.append(
+                    {
+                        "name": lib_name,
+                        "current_sha": current_sha,
+                        "remote_sha": remote_sha,
+                        "source_url": dep_info["url"],
+                        "has_update": current_sha != remote_sha,
+                    }
+                )
 
-            details.append(
-                {
-                    "name": lib_name,
-                    "current_sha": current_sha,
-                    "remote_sha": remote_sha,
-                    "source_url": dep_info["url"],
-                    "has_update": current_sha != remote_sha,
-                }
-            )
-
-        return details
+            return details
     except Exception:
         return []
 
@@ -901,7 +904,13 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         console.print("  Checking modules...")
         console.print("  Checking collections...")
 
-    report = asyncio.run(check_all_sources(include_all_cached=True, force=force))
+    async def _check_sources():
+        import httpx
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            return await check_all_sources(client=client, include_all_cached=True, force=force)
+
+    report = asyncio.run(_check_sources())
 
     # Check bundles
     if not force:

@@ -431,7 +431,14 @@ def module_update(module_id: str | None, check_only: bool, mutable_only: bool):
     # Check-only mode: show status using shared display utilities
     if check_only:
         console.print("Checking for updates...")
-        report = asyncio.run(check_all_sources(include_all_cached=True))
+
+        async def _check():
+            import httpx
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                return await check_all_sources(client=client, include_all_cached=True)
+
+        report = asyncio.run(_check())
         show_modules_report(report.cached_git_sources, report.local_file_sources, check_only=True)
         return
 

@@ -104,13 +104,16 @@ class UpdateReport:
         return any(s.uncommitted_changes or s.unpushed_commits for s in self.local_file_sources)
 
 
-async def check_all_sources(include_all_cached: bool = False, force: bool = False) -> UpdateReport:
+async def check_all_sources(
+    client: httpx.AsyncClient, include_all_cached: bool = False, force: bool = False
+) -> UpdateReport:
     """Check all libraries and modules for updates.
 
     Uses source-granular approach - checks each entity independently.
     Uses existing StandardModuleSourceResolver infrastructure.
 
     Args:
+        client: Shared httpx client for all HTTP requests
         include_all_cached: Include all cached modules, not just active ones
         force: When True, include ALL sources for forced update (skip SHA comparison)
 
@@ -121,7 +124,7 @@ async def check_all_sources(include_all_cached: bool = False, force: bool = Fals
     from amplifier_app_cli.lib.legacy import GitSource
 
     # Get all sources to check
-    all_sources = await _get_all_sources_to_check()
+    all_sources = await _get_all_sources_to_check(client)
 
     local_statuses = []
     git_statuses = []
@@ -133,11 +136,11 @@ async def check_all_sources(include_all_cached: bool = False, force: bool = Fals
 
         try:
             if isinstance(source, FileSource):
-                status = await _check_file_source(source, name, layer)
+                status = await _check_file_source(client, source, name, layer)
                 local_statuses.append(status)
 
             elif isinstance(source, GitSource):
-                status = await _check_git_source(source, name, layer, force=force)
+                status = await _check_git_source(client, source, name, layer, force=force)
                 if status:  # Add ALL cached sources (with has_update flag)
                     git_statuses.append(status)
 
@@ -150,7 +153,7 @@ async def check_all_sources(include_all_cached: bool = False, force: bool = Fals
     # If include_all_cached, also scan ALL cached modules (not just active)
     cached_modules_checked = 0
     if include_all_cached:
-        cached_statuses, cached_modules_checked = await _check_all_cached_modules(force=force)
+        cached_statuses, cached_modules_checked = await _check_all_cached_modules(client, force=force)
         # Add any not already in git_statuses (avoid duplicates from active profile)
         existing_names = {s.name for s in git_statuses}
         for status in cached_statuses:
@@ -162,7 +165,7 @@ async def check_all_sources(include_all_cached: bool = False, force: bool = Fals
     git_statuses = [s for s in git_statuses if s.name not in local_override_names]
 
     # Check installed collections
-    collection_statuses = await _check_collection_sources(force=force)
+    collection_statuses = await _check_collection_sources(client, force=force)
 
     return UpdateReport(
         local_file_sources=local_statuses,
@@ -172,10 +175,13 @@ async def check_all_sources(include_all_cached: bool = False, force: bool = Fals
     )
 
 
-async def _get_all_sources_to_check() -> dict[str, dict]:
+async def _get_all_sources_to_check(client: httpx.AsyncClient) -> dict[str, dict]:
     """Get all libraries and modules with their resolved sources.
 
     Uses existing StandardModuleSourceResolver!
+
+    Args:
+        client: Shared httpx client for all HTTP requests
 
     Returns:
         Dict of name -> {source, layer, entity_type}
@@ -197,7 +203,7 @@ async def _get_all_sources_to_check() -> dict[str, dict]:
     umbrella_info = discover_umbrella_source()
     if umbrella_info:
         try:
-            umbrella_deps = await fetch_umbrella_dependencies(umbrella_info)
+            umbrella_deps = await fetch_umbrella_dependencies(client, umbrella_info)
 
             for lib_name in umbrella_deps:
                 try:
@@ -258,12 +264,17 @@ async def _get_all_sources_to_check() -> dict[str, dict]:
     return sources
 
 
-async def _check_file_source(source, name: str, layer: str) -> LocalFileStatus:
+async def _check_file_source(
+    client: httpx.AsyncClient, source, name: str, layer: str
+) -> LocalFileStatus:
     """Check local file source for updates.
 
     Checks:
     - Local git status (uncommitted, unpushed)
     - Remote comparison (if has remote URL)
+
+    Args:
+        client: Shared httpx client for all HTTP requests
     """
 
     local_path = source.path
@@ -291,7 +302,7 @@ async def _check_file_source(source, name: str, layer: str) -> LocalFileStatus:
             # Get current branch
             current_branch = _get_current_branch(local_path)
             if current_branch:
-                remote_sha = await _get_github_commit_sha(remote_url, current_branch)
+                remote_sha = await _get_github_commit_sha(client, remote_url, current_branch)
 
                 if remote_sha != local_sha:
                     status.remote_sha = remote_sha[:7]
@@ -302,12 +313,15 @@ async def _check_file_source(source, name: str, layer: str) -> LocalFileStatus:
     return status
 
 
-async def _check_git_source(source, name: str, layer: str, force: bool = False) -> CachedGitStatus | None:
+async def _check_git_source(
+    client: httpx.AsyncClient, source, name: str, layer: str, force: bool = False
+) -> CachedGitStatus | None:
     """Check cached git source for updates.
 
     Compares cached SHA with remote SHA.
 
     Args:
+        client: Shared httpx client for all HTTP requests
         source: GitSource to check
         name: Module name
         layer: Resolution layer
@@ -342,7 +356,7 @@ async def _check_git_source(source, name: str, layer: str, force: bool = False) 
             return None
 
         # Check remote
-        remote_sha = await _get_github_commit_sha(source.url, source.ref)
+        remote_sha = await _get_github_commit_sha(client, source.url, source.ref)
 
         # Return ALL cached sources (not just those with updates)
         has_update = (remote_sha != cached_sha) or force
@@ -442,12 +456,15 @@ def _count_commits_behind(repo_path: Path) -> int:
     return 0
 
 
-async def _check_all_cached_modules(force: bool = False) -> tuple[list[CachedGitStatus], int]:
+async def _check_all_cached_modules(
+    client: httpx.AsyncClient, force: bool = False
+) -> tuple[list[CachedGitStatus], int]:
     """Check ALL cached modules for updates (not just active ones).
 
     Uses centralized scan_cached_modules() utility for DRY compliance.
 
     Args:
+        client: Shared httpx client for all HTTP requests
         force: When True, include all cached modules even if up to date
 
     Returns:
@@ -481,7 +498,7 @@ async def _check_all_cached_modules(force: bool = False) -> tuple[list[CachedGit
 
         try:
             # Check remote SHA
-            remote_sha = await _get_github_commit_sha(module.url, module.ref)
+            remote_sha = await _get_github_commit_sha(client, module.url, module.ref)
 
             # Add ALL cached modules (with has_update flag)
             # Note: module.sha is already truncated to 8 chars by scan_cached_modules
@@ -540,12 +557,15 @@ def _cache_age_days_from_string(cached_at: str) -> int:
 
 # LEGACY-DELETE: _check_collection_sources function
 # DELETE WHEN: Profiles/collections removed in Phase 4
-async def _check_collection_sources(force: bool = False) -> list[CollectionStatus]:
+async def _check_collection_sources(
+    client: httpx.AsyncClient, force: bool = False
+) -> list[CollectionStatus]:
     """Check installed collections for updates.
 
     Reads collection lock file, compares installed SHAs with remote SHAs.
 
     Args:
+        client: Shared httpx client for all HTTP requests
         force: When True, mark all collections as needing update
 
     Returns:
@@ -581,7 +601,7 @@ async def _check_collection_sources(force: bool = False) -> list[CollectionStatu
             source = GitSource.from_uri(entry.source)
 
             # Check remote SHA
-            remote_sha = await _get_github_commit_sha(source.url, source.ref)
+            remote_sha = await _get_github_commit_sha(client, source.url, source.ref)
 
             # Add ALL collections to report (not just those with updates)
             has_update = (remote_sha != entry.commit) or force
@@ -607,11 +627,14 @@ async def _check_collection_sources(force: bool = False) -> list[CollectionStatu
 # GitHub API helpers (exposed for update_check.py)
 
 
-async def _get_github_commit_sha(repo_url: str, ref: str) -> str:
+async def _get_github_commit_sha(client: httpx.AsyncClient, repo_url: str, ref: str) -> str:
     """Get SHA for ref using GitHub Atom feed (no API, no auth, no rate limits).
 
     Uses public Atom feed: https://github.com/{owner}/{repo}/commits/{ref}.atom
     This avoids GitHub API rate limiting (60 req/hr unauthenticated).
+
+    Args:
+        client: Shared httpx client for all HTTP requests
     """
     # Remove .git suffix properly (not with rstrip - it removes any char in '.git'!)
     url_clean = repo_url[:-4] if repo_url.endswith(".git") else repo_url
@@ -624,21 +647,24 @@ async def _get_github_commit_sha(repo_url: str, ref: str) -> str:
     # Fetch Atom feed (public, no auth, no rate limits)
     atom_url = f"https://github.com/{owner}/{repo}/commits/{ref}.atom"
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(atom_url)
-        response.raise_for_status()
+    response = await client.get(atom_url)
+    response.raise_for_status()
 
-        # Parse XML for first commit SHA
-        # Format: <id>tag:github.com,2008:Grit::Commit/{SHA}</id>
-        match = re.search(r"<id>tag:github\.com,2008:Grit::Commit/([a-f0-9]{40})</id>", response.text)
-        if not match:
-            raise ValueError(f"Could not extract commit SHA from Atom feed: {atom_url}")
+    # Parse XML for first commit SHA
+    # Format: <id>tag:github.com,2008:Grit::Commit/{SHA}</id>
+    match = re.search(r"<id>tag:github\.com,2008:Grit::Commit/([a-f0-9]{40})</id>", response.text)
+    if not match:
+        raise ValueError(f"Could not extract commit SHA from Atom feed: {atom_url}")
 
-        return match.group(1)
+    return match.group(1)
 
 
-async def _get_commit_details(repo_url: str, sha: str) -> dict:
-    """Get commit details for better UX."""
+async def _get_commit_details(client: httpx.AsyncClient, repo_url: str, sha: str) -> dict:
+    """Get commit details for better UX.
+
+    Args:
+        client: Shared httpx client for all HTTP requests
+    """
     # Remove .git suffix properly
     url_clean = repo_url[:-4] if repo_url.endswith(".git") else repo_url
     parts = url_clean.split("github.com/")[-1].split("/")
@@ -647,19 +673,18 @@ async def _get_commit_details(repo_url: str, sha: str) -> dict:
 
     owner, repo = parts[0], parts[1]
 
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        response = await client.get(
-            f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}",
-            headers={"Accept": "application/vnd.github.v3+json", **_get_github_auth_headers()},
-        )
-        response.raise_for_status()
+    response = await client.get(
+        f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}",
+        headers={"Accept": "application/vnd.github.v3+json", **_get_github_auth_headers()},
+    )
+    response.raise_for_status()
 
-        data = response.json()
-        return {
-            "message": data["commit"]["message"].split("\n")[0],
-            "date": data["commit"]["author"]["date"],
-            "author": data["commit"]["author"]["name"],
-        }
+    data = response.json()
+    return {
+        "message": data["commit"]["message"].split("\n")[0],
+        "date": data["commit"]["author"]["date"],
+        "author": data["commit"]["author"]["name"],
+    }
 
 
 def _get_github_auth_headers() -> dict:

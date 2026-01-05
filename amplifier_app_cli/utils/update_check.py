@@ -9,6 +9,8 @@ import logging
 import time
 from pathlib import Path
 
+import httpx
+
 from .source_status import UpdateReport
 from .source_status import check_all_sources
 
@@ -35,7 +37,8 @@ async def check_updates(include_all_cached: bool = False) -> UpdateReport:
     Returns:
         UpdateReport with all source statuses
     """
-    return await check_all_sources(include_all_cached=include_all_cached)
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        return await check_all_sources(client=client, include_all_cached=include_all_cached)
 
 
 async def check_updates_background() -> UpdateReport | None:
@@ -52,7 +55,8 @@ async def check_updates_background() -> UpdateReport | None:
         return None
 
     try:
-        result = await check_all_sources()
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            result = await check_all_sources(client=client)
         _save_cached_result(result)
         _mark_checked()
         return result
@@ -72,7 +76,8 @@ async def get_github_commit_sha(repo_url: str, ref: str) -> str:
     """
     from .source_status import _get_github_commit_sha
 
-    return await _get_github_commit_sha(repo_url, ref)
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        return await _get_github_commit_sha(client, repo_url, ref)
 
 
 async def get_commit_details(repo_url: str, sha: str) -> dict:
@@ -82,7 +87,8 @@ async def get_commit_details(repo_url: str, sha: str) -> dict:
     """
     from .source_status import _get_commit_details
 
-    return await _get_commit_details(repo_url, sha)
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        return await _get_commit_details(client, repo_url, sha)
 
 
 # Caching implementation

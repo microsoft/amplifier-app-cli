@@ -249,72 +249,76 @@ async def check_umbrella_dependencies_for_updates(umbrella_info: UmbrellaInfo) -
     import importlib.metadata
     import json
 
+    import httpx
+
     from .source_status import _get_github_commit_sha
     from .umbrella_discovery import fetch_umbrella_dependencies
 
     try:
-        # Step 1: Fetch umbrella's direct dependencies
-        umbrella_deps = await fetch_umbrella_dependencies(umbrella_info)
+        # Use single shared httpx client for all requests
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Step 1: Fetch umbrella's direct dependencies
+            umbrella_deps = await fetch_umbrella_dependencies(client, umbrella_info)
 
-        # Step 2: Recursively fetch transitive git dependencies
-        all_deps = dict(umbrella_deps)  # Start with umbrella deps
-        checked = set()  # Track what we've already checked to avoid cycles
+            # Step 2: Recursively fetch transitive git dependencies
+            all_deps = dict(umbrella_deps)  # Start with umbrella deps
+            checked = set()  # Track what we've already checked to avoid cycles
 
-        for dep_name, dep_info in list(umbrella_deps.items()):
-            if dep_name in checked:
-                continue
-            checked.add(dep_name)
+            for dep_name, dep_info in list(umbrella_deps.items()):
+                if dep_name in checked:
+                    continue
+                checked.add(dep_name)
 
-            # Fetch this dependency's git dependencies
-            transitive_deps = await fetch_library_git_dependencies(dep_info["url"], dep_info["branch"])
+                # Fetch this dependency's git dependencies
+                transitive_deps = await fetch_library_git_dependencies(dep_info["url"], dep_info["branch"])
 
-            for trans_name, trans_info in transitive_deps.items():
-                if trans_name not in all_deps:
-                    all_deps[trans_name] = trans_info
-                    logger.debug(f"Found transitive dependency: {trans_name} (via {dep_name})")
+                for trans_name, trans_info in transitive_deps.items():
+                    if trans_name not in all_deps:
+                        all_deps[trans_name] = trans_info
+                        logger.debug(f"Found transitive dependency: {trans_name} (via {dep_name})")
 
-        logger.debug(f"Checking {len(all_deps)} dependencies (including transitive) for updates")
+            logger.debug(f"Checking {len(all_deps)} dependencies (including transitive) for updates")
 
-        # Step 3: Check each dependency for updates
-        for dep_name, dep_info in all_deps.items():
-            try:
-                # Get installed SHA (from direct_url.json)
-                dist = importlib.metadata.distribution(dep_name)
-                if not hasattr(dist, "read_text"):
+            # Step 3: Check each dependency for updates
+            for dep_name, dep_info in all_deps.items():
+                try:
+                    # Get installed SHA (from direct_url.json)
+                    dist = importlib.metadata.distribution(dep_name)
+                    if not hasattr(dist, "read_text"):
+                        continue
+
+                    direct_url_text = dist.read_text("direct_url.json")
+                    if not direct_url_text:
+                        continue
+
+                    direct_url = json.loads(direct_url_text)
+
+                    # Skip editable/local installs
+                    if "dir_info" in direct_url:
+                        continue
+
+                    # Get installed commit SHA
+                    if "vcs_info" not in direct_url:
+                        continue
+
+                    installed_sha = direct_url["vcs_info"].get("commit_id")
+                    if not installed_sha:
+                        continue
+
+                    # Get remote SHA
+                    remote_sha = await _get_github_commit_sha(client, dep_info["url"], dep_info["branch"])
+
+                    # Compare
+                    if installed_sha != remote_sha:
+                        logger.info(f"Dependency {dep_name} has updates: {installed_sha[:7]} → {remote_sha[:7]}")
+                        return True
+
+                except Exception as e:
+                    logger.debug(f"Could not check dependency {dep_name}: {e}")
                     continue
 
-                direct_url_text = dist.read_text("direct_url.json")
-                if not direct_url_text:
-                    continue
-
-                direct_url = json.loads(direct_url_text)
-
-                # Skip editable/local installs
-                if "dir_info" in direct_url:
-                    continue
-
-                # Get installed commit SHA
-                if "vcs_info" not in direct_url:
-                    continue
-
-                installed_sha = direct_url["vcs_info"].get("commit_id")
-                if not installed_sha:
-                    continue
-
-                # Get remote SHA
-                remote_sha = await _get_github_commit_sha(dep_info["url"], dep_info["branch"])
-
-                # Compare
-                if installed_sha != remote_sha:
-                    logger.info(f"Dependency {dep_name} has updates: {installed_sha[:7]} → {remote_sha[:7]}")
-                    return True
-
-            except Exception as e:
-                logger.debug(f"Could not check dependency {dep_name}: {e}")
-                continue
-
-        logger.debug("All dependencies up to date")
-        return False
+            logger.debug("All dependencies up to date")
+            return False
 
     except Exception as e:
         logger.warning(f"Could not check umbrella dependencies: {e}")
