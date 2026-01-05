@@ -266,8 +266,6 @@ def get_provider_info(provider_id: str) -> dict[str, Any] | None:
     Returns:
         Provider info dict if available, None otherwise
     """
-    import gc
-
     try:
         provider_class = load_provider_class(provider_id)
         if not provider_class:
@@ -286,22 +284,7 @@ def get_provider_info(provider_id: str) -> dict[str, Any] | None:
             return None
 
         info = provider.get_info()
-        result = info.model_dump() if hasattr(info, "model_dump") else vars(info)
-
-        # Clean up provider to avoid httpx AsyncClient "Event loop is closed" warnings.
-        # Provider SDKs create httpx clients internally that cause warnings on GC when
-        # instantiated outside an async context. Force cleanup now while we can suppress
-        # the asyncio logger that prints "Task exception was never retrieved".
-        del provider
-        asyncio_logger = logging.getLogger("asyncio")
-        original_level = asyncio_logger.level
-        asyncio_logger.setLevel(logging.CRITICAL)
-        try:
-            gc.collect()
-        finally:
-            asyncio_logger.setLevel(original_level)
-
-        return result
+        return info.model_dump() if hasattr(info, "model_dump") else vars(info)
 
     except Exception as e:
         logger.warning(f"get_provider_info failed for '{provider_id}': {type(e).__name__}: {e}")
