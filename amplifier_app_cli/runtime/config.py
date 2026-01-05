@@ -614,20 +614,36 @@ def resolve_config(
         - Bundle mode: returns (config, prepared_bundle)
         - Profile mode: returns (config, None)
     """
-    return asyncio.run(
-        resolve_config_async(
-            bundle_name=bundle_name,
-            profile_override=profile_override,
-            config_manager=config_manager,
-            profile_loader=profile_loader,
-            agent_loader=agent_loader,
-            app_settings=app_settings,
-            cli_config=cli_config,
-            console=console,
-            session_id=session_id,
-            project_slug=project_slug,
+    import gc
+
+    # Suppress asyncio warnings that occur when httpx.AsyncClient instances are
+    # garbage collected after their event loop closes. This happens when provider
+    # SDKs are instantiated during first-run wizard (init flow) - their internal
+    # httpx clients persist and fail to clean up when THIS asyncio.run() closes.
+    # The warning is cosmetic (session works fine) but confusing for new users.
+    asyncio_logger = logging.getLogger("asyncio")
+    original_level = asyncio_logger.level
+    asyncio_logger.setLevel(logging.CRITICAL)
+    try:
+        result = asyncio.run(
+            resolve_config_async(
+                bundle_name=bundle_name,
+                profile_override=profile_override,
+                config_manager=config_manager,
+                profile_loader=profile_loader,
+                agent_loader=agent_loader,
+                app_settings=app_settings,
+                cli_config=cli_config,
+                console=console,
+                session_id=session_id,
+                project_slug=project_slug,
+            )
         )
-    )
+        # Force GC while logger is suppressed to clean up orphaned httpx clients
+        gc.collect()
+        return result
+    finally:
+        asyncio_logger.setLevel(original_level)
 
 
 __all__ = [
