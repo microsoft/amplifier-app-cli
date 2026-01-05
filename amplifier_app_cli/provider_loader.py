@@ -257,59 +257,6 @@ def _try_instantiate_provider(
     return None
 
 
-def _cleanup_provider(provider: Any) -> None:
-    """Clean up provider's internal httpx clients to prevent event loop warnings.
-
-    Provider SDKs (like Anthropic, OpenAI) internally create httpx.AsyncClient instances.
-    When providers are instantiated outside an async context (like during first-run wizard),
-    these clients can cause "Event loop is closed" warnings when garbage collected.
-
-    This function attempts to close these clients properly before the provider
-    goes out of scope.
-
-    Args:
-        provider: Provider instance to clean up
-    """
-    import gc
-
-    # Common SDK client attribute names used by various provider SDKs
-    client_attrs = ["_client", "client", "_async_client", "_http_client"]
-
-    for attr_name in client_attrs:
-        client = getattr(provider, attr_name, None)
-        if client is None:
-            continue
-
-        # Try to close the httpx client synchronously
-        # httpx.Client (sync) has close()
-        if hasattr(client, "close") and callable(client.close):
-            try:
-                client.close()
-            except Exception:
-                pass
-
-        # For httpx.AsyncClient, we need to run aclose() in an event loop
-        # Create a temporary loop just for cleanup to avoid the "Event loop is closed" error
-        if hasattr(client, "aclose") and callable(client.aclose):
-            try:
-                loop = asyncio.new_event_loop()
-                try:
-                    loop.run_until_complete(client.aclose())
-                finally:
-                    loop.close()
-            except Exception:
-                # If async cleanup fails, try to close transport directly as fallback
-                if hasattr(client, "_transport") and hasattr(client._transport, "close"):
-                    try:
-                        client._transport.close()
-                    except Exception:
-                        pass
-
-    # Clear reference and force garbage collection while we're still in control
-    del provider
-    gc.collect()
-
-
 def get_provider_info(provider_id: str) -> dict[str, Any] | None:
     """Get provider metadata.
 
@@ -319,7 +266,6 @@ def get_provider_info(provider_id: str) -> dict[str, Any] | None:
     Returns:
         Provider info dict if available, None otherwise
     """
-    provider = None
     try:
         provider_class = load_provider_class(provider_id)
         if not provider_class:
@@ -343,13 +289,6 @@ def get_provider_info(provider_id: str) -> dict[str, Any] | None:
     except Exception as e:
         logger.warning(f"get_provider_info failed for '{provider_id}': {type(e).__name__}: {e}")
         return None
-
-    finally:
-        # Clean up provider's internal httpx clients to prevent "Event loop is closed" warnings
-        # This is necessary because provider SDKs create httpx.AsyncClient internally,
-        # and when instantiated outside an async context, cleanup fails on GC
-        if provider is not None:
-            _cleanup_provider(provider)
 
 
 __all__ = ["load_provider_class", "get_provider_models", "get_provider_info"]
