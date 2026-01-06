@@ -33,6 +33,7 @@ from rich.panel import Panel
 
 from .commands.agents import agents as agents_group
 from .commands.allowed_dirs import allowed_dirs as allowed_dirs_group
+from .commands.denied_dirs import denied_dirs as denied_dirs_group
 from .commands.bundle import bundle as bundle_group
 from .commands.cache import cache as cache_group
 from .commands.collection import collection as collection_group
@@ -249,6 +250,7 @@ class CommandProcessor:
         "/tools": {"action": "list_tools", "description": "List available tools"},
         "/agents": {"action": "list_agents", "description": "List available agents"},
         "/allowed-dirs": {"action": "manage_allowed_dirs", "description": "Manage allowed write directories"},
+        "/denied-dirs": {"action": "manage_denied_dirs", "description": "Manage denied write directories"},
     }
 
     def __init__(self, session: AmplifierSession, profile_name: str = "unknown"):
@@ -317,6 +319,9 @@ class CommandProcessor:
 
         if action == "manage_allowed_dirs":
             return await self._manage_allowed_dirs(data.get("args", ""))
+
+        if action == "manage_denied_dirs":
+            return await self._manage_denied_dirs(data.get("args", ""))
 
         if action == "unknown_command":
             return f"Unknown command: {data['command']}. Use /help for available commands."
@@ -667,6 +672,60 @@ class CommandProcessor:
   /allowed-dirs list            - List allowed directories
   /allowed-dirs add <path>      - Add directory (session scope)
   /allowed-dirs remove <path>   - Remove directory (session scope)"""
+
+    async def _manage_denied_dirs(self, args: str) -> str:
+        """Manage denied write directories (session-scoped).
+
+        Usage:
+            /denied-dirs list
+            /denied-dirs add <path>
+            /denied-dirs remove <path>
+        """
+        from .lib.settings import AppSettings
+        from .project_utils import get_project_slug
+
+        parts = args.strip().split(maxsplit=1)
+        subcommand = parts[0].lower() if parts else "list"
+        path_arg = parts[1] if len(parts) > 1 else ""
+
+        # Get session-scoped settings
+        session_id = self.session.coordinator.session_id
+        project_slug = get_project_slug()
+        settings = AppSettings().with_session(session_id, project_slug)
+
+        if subcommand == "list":
+            paths = settings.get_denied_write_paths()
+            if not paths:
+                return "No denied directories configured.\nUse '/denied-dirs add <path>' to add one."
+
+            lines = ["Denied Write Directories:"]
+            for p, scope in paths:
+                lines.append(f"  {p} ({scope})")
+            return "\n".join(lines)
+
+        elif subcommand == "add":
+            if not path_arg:
+                return "Usage: /denied-dirs add <path>"
+
+            resolved = Path(path_arg).expanduser().resolve()
+            settings.add_denied_write_path(str(resolved), "session")
+            return f"✓ Denied {resolved} (session scope)"
+
+        elif subcommand == "remove":
+            if not path_arg:
+                return "Usage: /denied-dirs remove <path>"
+
+            removed = settings.remove_denied_write_path(path_arg, "session")
+            if removed:
+                return f"✓ Removed {path_arg} from denied paths (session scope)"
+            else:
+                return f"Path not found in session scope: {path_arg}\nNote: /denied-dirs remove only removes from session scope."
+
+        else:
+            return """Usage:
+  /denied-dirs list            - List denied directories
+  /denied-dirs add <path>      - Add directory (session scope)
+  /denied-dirs remove <path>   - Remove directory (session scope)"""
 
 
 def get_module_search_paths() -> list[Path]:
@@ -1271,6 +1330,7 @@ async def execute_single(
 # Register standalone commands
 cli.add_command(agents_group)
 cli.add_command(allowed_dirs_group)
+cli.add_command(denied_dirs_group)
 cli.add_command(bundle_group)
 cli.add_command(cache_group)
 cli.add_command(collection_group)

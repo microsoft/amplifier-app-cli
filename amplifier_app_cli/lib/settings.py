@@ -266,6 +266,143 @@ class AppSettings:
 
         return False
 
+    # ----- Denied write paths settings -----
+
+    def _get_tool_config_paths(self, content: dict, key: str) -> list[str]:
+        """Extract a path list from tool-filesystem config.
+
+        Args:
+            content: Parsed YAML content
+            key: Config key to extract (e.g., 'allowed_write_paths', 'denied_write_paths')
+
+        Returns:
+            List of paths, or empty list if not found
+        """
+        # Try first tool's config
+        paths_list = (
+            content.get("modules", {})
+            .get("tools", [{}])[0]
+            .get("config", {})
+            .get(key, [])
+        )
+        # Handle case where tools is a list with tool-filesystem entry
+        if not paths_list:
+            tools_list = content.get("modules", {}).get("tools", [])
+            for tool in tools_list:
+                if isinstance(tool, dict) and tool.get("module") == "tool-filesystem":
+                    paths_list = tool.get("config", {}).get(key, [])
+                    break
+        return paths_list
+
+    def _ensure_fs_tool_config(self, settings: dict[str, Any]) -> dict[str, Any]:
+        """Ensure modules.tools.tool-filesystem.config structure exists.
+
+        Returns the tool-filesystem config dict for modification.
+        """
+        if "modules" not in settings:
+            settings["modules"] = {}
+        if "tools" not in settings["modules"]:
+            settings["modules"]["tools"] = []
+
+        tools_list = settings["modules"]["tools"]
+        fs_tool = None
+        for tool in tools_list:
+            if isinstance(tool, dict) and tool.get("module") == "tool-filesystem":
+                fs_tool = tool
+                break
+
+        if fs_tool is None:
+            fs_tool = {"module": "tool-filesystem", "config": {}}
+            tools_list.append(fs_tool)
+
+        if "config" not in fs_tool:
+            fs_tool["config"] = {}
+
+        return fs_tool
+
+    def get_denied_write_paths(self) -> list[tuple[str, str]]:
+        """Return list of (path, scope) tuples for denied paths.
+
+        Returns paths from all scopes with their source scope for display.
+        Paths are deduplicated - if same path appears in multiple scopes,
+        the most specific scope wins.
+        """
+        result: list[tuple[str, str]] = []
+        seen_paths: set[str] = set()
+
+        # Order from most specific to least specific for deduplication
+        scopes_to_check: list[tuple[Scope, Path | None]] = [
+            ("session", self.paths.session_settings),
+            ("local", self.paths.local_settings),
+            ("project", self.paths.project_settings),
+            ("global", self.paths.global_settings),
+        ]
+
+        for scope_name, path in scopes_to_check:
+            if path is None or not path.exists():
+                continue
+            try:
+                with open(path, encoding="utf-8") as f:
+                    content = yaml.safe_load(f) or {}
+                paths_list = self._get_tool_config_paths(content, "denied_write_paths")
+                for p in paths_list:
+                    if p not in seen_paths:
+                        result.append((p, scope_name))
+                        seen_paths.add(p)
+            except Exception:
+                pass  # Skip malformed files
+
+        return result
+
+    def add_denied_write_path(self, path: str, scope: Scope = "global") -> None:
+        """Add path to denied_write_paths at specified scope.
+
+        Args:
+            path: Absolute path to deny writes to
+            scope: Where to store the setting (global, project, local, session)
+        """
+        resolved = str(Path(path).resolve())
+        settings = self._read_scope(scope)
+
+        fs_tool = self._ensure_fs_tool_config(settings)
+
+        if "denied_write_paths" not in fs_tool["config"]:
+            fs_tool["config"]["denied_write_paths"] = []
+
+        if resolved not in fs_tool["config"]["denied_write_paths"]:
+            fs_tool["config"]["denied_write_paths"].append(resolved)
+
+        self._write_scope(scope, settings)
+
+    def remove_denied_write_path(self, path: str, scope: Scope = "global") -> bool:
+        """Remove path from denied_write_paths at specified scope.
+
+        Args:
+            path: Path to remove (will be resolved to absolute)
+            scope: Which scope to remove from
+
+        Returns:
+            True if path was found and removed, False otherwise
+        """
+        resolved = str(Path(path).resolve())
+        settings = self._read_scope(scope)
+
+        tools_list = settings.get("modules", {}).get("tools", [])
+        for tool in tools_list:
+            if isinstance(tool, dict) and tool.get("module") == "tool-filesystem":
+                paths_list = tool.get("config", {}).get("denied_write_paths", [])
+                if resolved in paths_list:
+                    paths_list.remove(resolved)
+                    self._write_scope(scope, settings)
+                    return True
+                # Also try matching the original path
+                if path in paths_list:
+                    paths_list.remove(path)
+                    self._write_scope(scope, settings)
+                    return True
+
+        return False
+
     # ----- Scope utilities -----
 
     def _get_scope_path(self, scope: Scope) -> Path:
