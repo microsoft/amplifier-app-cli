@@ -642,11 +642,18 @@ class CommandProcessor:
         if subcommand == "list":
             paths = settings.get_allowed_write_paths()
             if not paths:
-                return "No allowed directories configured.\nUse '/allowed-dirs add <path>' to add one."
-
-            lines = ["Allowed Write Directories:"]
-            for p, scope in paths:
-                lines.append(f"  {p} ({scope})")
+                lines = ["No allowed directories configured."]
+            else:
+                lines = ["Allowed Write Directories:"]
+                for p, scope in paths:
+                    lines.append(f"  {p} ({scope})")
+            
+            # Add help text
+            lines.append("")
+            lines.append("Usage:")
+            lines.append("  /allowed-dirs list            - List allowed directories")
+            lines.append("  /allowed-dirs add <path>      - Add directory (session scope)")
+            lines.append("  /allowed-dirs remove <path>   - Remove directory (session scope)")
             return "\n".join(lines)
 
         elif subcommand == "add":
@@ -696,11 +703,18 @@ class CommandProcessor:
         if subcommand == "list":
             paths = settings.get_denied_write_paths()
             if not paths:
-                return "No denied directories configured.\nUse '/denied-dirs add <path>' to add one."
-
-            lines = ["Denied Write Directories:"]
-            for p, scope in paths:
-                lines.append(f"  {p} ({scope})")
+                lines = ["No denied directories configured."]
+            else:
+                lines = ["Denied Write Directories:"]
+                for p, scope in paths:
+                    lines.append(f"  {p} ({scope})")
+            
+            # Add help text
+            lines.append("")
+            lines.append("Usage:")
+            lines.append("  /denied-dirs list            - List denied directories")
+            lines.append("  /denied-dirs add <path>      - Add directory (session scope)")
+            lines.append("  /denied-dirs remove <path>   - Remove directory (session scope)")
             return "\n".join(lines)
 
         elif subcommand == "add":
