@@ -1,8 +1,9 @@
 """Merge utilities for tool configurations.
 
 This module provides app-level policy for how tool configs should be merged.
-The key policy decision: permission fields (allowed_write_paths, allowed_read_paths)
-should be UNIONED rather than replaced, so user/session settings ADD to bundle defaults.
+The key policy decision: permission fields (allowed_write_paths, allowed_read_paths,
+denied_write_paths) should be UNIONED rather than replaced, so user/session settings
+ADD to bundle defaults.
 """
 
 from typing import Any
@@ -13,6 +14,7 @@ from typing import Any
 UNION_CONFIG_FIELDS = frozenset({
     "allowed_write_paths",
     "allowed_read_paths",
+    "denied_write_paths",
 })
 
 
