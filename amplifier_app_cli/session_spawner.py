@@ -169,6 +169,13 @@ async def spawn_sub_session(
     # Initialize child session (mounts modules per merged config)
     await child_session.initialize()
 
+    # Wire up cancellation propagation: parent cancellation should propagate to child
+    # This enables graceful Ctrl+C handling for nested agent sessions
+    parent_cancellation = parent_session.coordinator.cancellation
+    child_cancellation = child_session.coordinator.cancellation
+    parent_cancellation.register_child(child_cancellation)
+    logger.debug(f"Registered child cancellation token for sub-session {sub_session_id}")
+
     # Register app-layer capabilities for child session
     # Inherit from parent session where available to preserve bundle context and deduplication state
     from amplifier_foundation.mentions import ContentDeduplicator
@@ -251,6 +258,10 @@ async def spawn_sub_session(
     store = SessionStore()
     store.save(sub_session_id, transcript, metadata)
     logger.debug(f"Sub-session {sub_session_id} state persisted")
+
+    # Unregister child cancellation token before cleanup
+    parent_cancellation.unregister_child(child_cancellation)
+    logger.debug(f"Unregistered child cancellation token for sub-session {sub_session_id}")
 
     # Cleanup child session
     await child_session.cleanup()
