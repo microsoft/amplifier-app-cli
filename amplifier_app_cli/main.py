@@ -560,6 +560,28 @@ class CommandProcessor:
 
         return "\n".join(lines)
 
+    def _get_agent_source(self, agent_name: str) -> str:
+        """Determine the source location of an agent.
+
+        Args:
+            agent_name: Name of the agent to check
+
+        Returns:
+            Rich-formatted source label: (project), (user), or (bundle)
+        """
+        # Check project agents directory
+        project_agent = Path.cwd() / ".amplifier" / "agents" / f"{agent_name}.md"
+        if project_agent.exists():
+            return "[dim](project)[/]"
+
+        # Check user agents directory
+        user_agent = Path.home() / ".amplifier" / "agents" / f"{agent_name}.md"
+        if user_agent.exists():
+            return "[dim](user)[/]"
+
+        # Otherwise it's from a bundle
+        return "[dim](bundle)[/]"
+
     async def _list_agents(self) -> str:
         """List available agents from current configuration.
 
@@ -584,8 +606,9 @@ class CommandProcessor:
         console.print(f"\n[bold]Available Agents[/bold] ({len(agent_items)} loaded)\n")
 
         for name, config in sorted(agent_items.items()):
-            # Agent name as header
-            console.print(f"[bold cyan]{name}[/bold cyan]")
+            # Agent name as header with source location
+            source_label = self._get_agent_source(name)
+            console.print(f"[bold cyan]{name}[/bold cyan] {source_label}")
 
             # Full description
             description = config.get("description", "No description")
