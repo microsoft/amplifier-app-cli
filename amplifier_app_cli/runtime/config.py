@@ -129,6 +129,13 @@ async def resolve_bundle_config(
     if tool_overrides:
         prepared.mount_plan["tools"] = bundle_config["tools"]
 
+    # Inject notification policy hooks based on settings
+    # This is an app-level policy: only root sessions get notifications
+    # (Sub-agents spawned via task tool have is_root_session=False via parent_id)
+    notification_config = app_settings.get_notification_config()
+    if notification_config:
+        inject_notification_policy(notification_config, prepared, is_root_session=True)
+
     return bundle_config, prepared
 
 
@@ -508,6 +515,93 @@ def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> No
         prepared_bundle.mount_plan["providers"] = config["providers"]
 
 
+def inject_notification_policy(
+    notifications_config: dict[str, Any],
+    prepared_bundle: "PreparedBundle",
+    is_root_session: bool = True,
+) -> None:
+    """Inject notification hooks based on config.notifications settings.
+
+    Notifications are an app-level policy that should only apply to root sessions
+    (not sub-agents or recipe steps). This function composes notification hooks
+    onto the bundle's mount plan based on user configuration.
+
+    Args:
+        notifications_config: Dict from settings.yaml config.notifications section
+        prepared_bundle: PreparedBundle instance to inject hooks into
+        is_root_session: Whether this is a root session (default True for CLI)
+
+    Note:
+        - Only injects for root sessions (is_root_session=True)
+        - Desktop and push notifications can be enabled simultaneously
+        - Each notification method has its own enabled flag
+        - Common options (min_iterations, etc.) apply to all methods
+
+    Expected config structure:
+        notifications:
+          desktop:
+            enabled: true
+            title: "Amplifier"
+            subtitle: "cwd"
+          push:
+            enabled: true
+            service: ntfy
+            topic: "my-topic"
+          min_iterations: 1
+          show_iteration_count: true
+    """
+    # Policy behaviors only apply to root sessions
+    if not is_root_session:
+        return
+
+    if not notifications_config:
+        return
+
+    # Extract method-specific configs
+    desktop_config = notifications_config.get("desktop", {})
+    push_config = notifications_config.get("push", {})
+
+    # Common options that apply to all notification methods
+    common_options = {
+        "min_iterations": notifications_config.get("min_iterations", 1),
+        "show_iteration_count": notifications_config.get("show_iteration_count", True),
+    }
+
+    # Ensure hooks list exists
+    if "hooks" not in prepared_bundle.mount_plan:
+        prepared_bundle.mount_plan["hooks"] = []
+
+    # Inject desktop notification hook if enabled
+    if desktop_config.get("enabled", False):
+        desktop_hook = {
+            "module": "hooks-notify",
+            "source": "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=modules/hooks-notify",
+            "config": {
+                **common_options,
+                "title": desktop_config.get("title", "Amplifier"),
+                "subtitle": desktop_config.get("subtitle", "cwd"),
+                "suppress_if_focused": desktop_config.get("suppress_if_focused", True),
+                "sound": desktop_config.get("sound", False),
+            },
+        }
+        prepared_bundle.mount_plan["hooks"].append(desktop_hook)
+
+    # Inject push notification hook if enabled
+    if push_config.get("enabled", False):
+        push_hook = {
+            "module": "hooks-notify-push",
+            "source": "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=modules/hooks-notify-push",
+            "config": {
+                **common_options,
+                "service": push_config.get("service", "ntfy"),
+                "topic": push_config.get("topic"),
+                "server": push_config.get("server", "https://ntfy.sh"),
+                "priority": push_config.get("priority", "default"),
+            },
+        }
+        prepared_bundle.mount_plan["hooks"].append(push_hook)
+
+
 async def resolve_config_async(
     *,
     bundle_name: str | None = None,
@@ -654,6 +748,7 @@ __all__ = [
     "deep_merge",
     "expand_env_vars",
     "inject_user_providers",
+    "inject_notification_policy",
     "_apply_provider_overrides",
     "_ensure_debug_defaults",
 ]
