@@ -43,6 +43,7 @@ from .commands.init import prompt_first_run_init
 from .commands.module import module as module_group
 from .commands.profile import profile as profile_group
 from .commands.provider import provider as provider_group
+from .commands.reset import reset as reset_cmd
 from .commands.run import register_run_command
 from .commands.session import register_session_commands
 from .commands.source import source as source_group
@@ -1387,6 +1388,7 @@ cli.add_command(source_group)
 cli.add_command(tool_group)
 cli.add_command(update_cmd)
 cli.add_command(version_cmd)
+cli.add_command(reset_cmd)
 
 
 # Note: The *_with_session variants were removed in favor of unified functions
