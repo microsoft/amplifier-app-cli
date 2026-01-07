@@ -32,7 +32,6 @@ from pathlib import Path
 import click
 
 from ..console import console
-from ..paths import get_amplifier_home
 from .reset_interactive import ChecklistItem, run_checklist
 
 
@@ -66,7 +65,7 @@ DEFAULT_INSTALL_SOURCE = "git+https://github.com/microsoft/amplifier"
 
 def _get_amplifier_dir() -> Path:
     """Get the ~/.amplifier directory path."""
-    return get_amplifier_home()
+    return Path.home() / ".amplifier"
 
 
 def _get_preserve_paths(preserve: set[str]) -> set[str]:
