@@ -68,8 +68,8 @@ logger = logging.getLogger(__name__)
 # This allows keys saved by 'amplifier init' or 'amplifier provider use' to be available
 _key_manager = KeyManager()
 
-# Abort flag for ESC-based cancellation
-_abort_requested = False
+# Cancel flag for ESC-based cancellation (legacy, kept for compatibility)
+_cancel_requested = False
 
 
 # Placeholder for the run command; assigned after registration below
@@ -963,7 +963,7 @@ async def interactive_chat(
     - Resumed sessions (initial_transcript provided)
     - Bundle mode and profile mode (via prepared_bundle)
     - Initial prompt auto-execution
-    - Ctrl+C abort handling
+    - Ctrl+C cancellation handling
 
     Args:
         config: Resolved mount plan configuration
@@ -975,7 +975,7 @@ async def interactive_chat(
         initial_prompt: Optional prompt to auto-execute before entering interactive loop
         initial_transcript: If provided, restore this transcript (resume mode)
     """
-    global _abort_requested
+    global _cancel_requested
 
     # === SESSION CREATION (unified via create_initialized_session) ===
     session_config = SessionConfig(
@@ -1045,22 +1045,45 @@ async def interactive_chat(
 
     # Helper to execute a prompt with Ctrl+C handling
     async def _execute_with_interrupt(prompt_text: str) -> bool:
-        """Execute prompt with interrupt handling. Returns True if completed, False if aborted."""
-        global _abort_requested
-        _abort_requested = False
+        """Execute prompt with interrupt handling. Returns True if completed, False if cancelled."""
+        # Reset cancellation state for new execution
+        session.coordinator.cancellation.reset()
 
         def sigint_handler(signum, frame):
-            global _abort_requested
-            _abort_requested = True
+            """Handle Ctrl+C with graceful/immediate cancellation."""
+            cancellation = session.coordinator.cancellation
+
+            if cancellation.is_cancelled:
+                # Second Ctrl+C - request immediate cancellation
+                # Use call_soon_threadsafe since we're in a signal handler
+                loop = asyncio.get_event_loop()
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(session.coordinator.request_cancel(immediate=True))
+                )
+                console.print("\n[bold red]Cancelling immediately...[/bold red]")
+            else:
+                # First Ctrl+C - request graceful cancellation
+                loop = asyncio.get_event_loop()
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(session.coordinator.request_cancel(immediate=False))
+                )
+                # Show what's running
+                running_tools = cancellation.running_tool_names
+                if running_tools:
+                    tools_str = ", ".join(running_tools)
+                    console.print(f"\n[yellow]Cancelling after [bold]{tools_str}[/bold] completes... (Ctrl+C again to force)[/yellow]")
+                else:
+                    console.print("\n[yellow]Cancelling after current operation completes... (Ctrl+C again to force)[/yellow]")
 
         original_handler = signal.signal(signal.SIGINT, sigint_handler)
 
         try:
             execute_task = asyncio.create_task(session.execute(prompt_text))
 
-            # Poll task while checking for abort flag
+            # Poll task while checking for cancellation
             while not execute_task.done():
-                if _abort_requested:
+                # Check for immediate cancellation - cancel the task
+                if session.coordinator.cancellation.is_immediate:
                     execute_task.cancel()
                     break
                 await asyncio.sleep(0.05)
@@ -1078,22 +1101,30 @@ async def interactive_chat(
 
                     await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt_text, "response": response})
 
-                # Save session after successful execution
+                # Save session after execution (even if cancelled - preserves state)
                 await _save_session()
+
+                # Return based on cancellation status
+                if session.coordinator.cancellation.is_cancelled:
+                    console.print("\n[yellow]Cancelled[/yellow]")
+                    return False
                 return True
 
             except asyncio.CancelledError:
-                console.print("\n[yellow]Aborted (Ctrl-C)[/yellow]")
+                # Immediate cancellation - task was force-cancelled
+                console.print("\n[yellow]Cancelled[/yellow]")
+                # Still save session to preserve any partial progress
+                await _save_session()
                 return False
 
         finally:
             signal.signal(signal.SIGINT, original_handler)
-            _abort_requested = False
+            # Don't reset cancellation here - session.py handles status
 
     # Execute initial prompt if provided
     if initial_prompt:
         console.print(f"\n[bold cyan]>[/bold cyan] {initial_prompt[:100]}{'...' if len(initial_prompt) > 100 else ''}")
-        console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
+        console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
 
         # Process runtime @mentions in initial prompt
         await _process_runtime_mentions(session, initial_prompt)
@@ -1115,7 +1146,7 @@ async def interactive_chat(
                     action, data = command_processor.process_input(user_input)
 
                     if action == "prompt":
-                        console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
+                        console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
 
                         # Process runtime @mentions in user input
                         await _process_runtime_mentions(session, data["text"])

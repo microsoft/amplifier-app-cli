@@ -194,7 +194,7 @@ def cache_clean(force: bool, mutable_only: bool):
 
     # Confirm unless --force
     if not force and not click.confirm("\nProceed with cleaning cache?"):
-        console.print("[yellow]Aborted.[/yellow]")
+        console.print("[yellow]Cancelled.[/yellow]")
         return
 
     # Clean the cache
