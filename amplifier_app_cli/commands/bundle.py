@@ -576,9 +576,10 @@ def bundle_add(uri: str, name_override: str | None):
 @bundle.command(name="remove")
 @click.argument("name")
 def bundle_remove(name: str):
-    """Remove a bundle from the user registry.
+    """Remove a bundle from all registries.
 
-    This only removes the registry entry, not any cached files.
+    Removes the bundle from both the user registry and foundation registry.
+    Does not delete cached files.
     Does not affect well-known bundles like 'foundation'.
 
     Example:
@@ -594,11 +595,30 @@ def bundle_remove(name: str):
         console.print("  Well-known bundles are built into amplifier")
         sys.exit(1)
 
-    # Try to remove
-    if user_registry.remove_bundle(name):
+    # Remove from user registry (app-layer)
+    user_removed = user_registry.remove_bundle(name)
+
+    # Remove from foundation registry (foundation-layer)
+    foundation_removed = False
+    try:
+        registry = create_bundle_registry()
+        if registry.unregister(name):
+            registry.save()
+            foundation_removed = True
+    except Exception as e:
+        # Log but don't fail - user registry removal is primary concern
+        console.print(f"[yellow]Warning:[/yellow] Failed to remove from foundation registry: {e}")
+
+    if user_removed or foundation_removed:
         console.print(f"[green]✓ Removed bundle '{name}' from registry[/green]")
+        if user_removed and foundation_removed:
+            console.print("  [dim](Removed from both user and foundation registries)[/dim]")
+        elif user_removed:
+            console.print("  [dim](Removed from user registry only)[/dim]")
+        elif foundation_removed:
+            console.print("  [dim](Removed from foundation registry only)[/dim]")
     else:
-        console.print(f"[yellow]Bundle '{name}' not found in user registry[/yellow]")
+        console.print(f"[yellow]Bundle '{name}' not found in any registry[/yellow]")
         console.print("\nUser-added bundles can be seen with 'amplifier bundle list'")
 
 
