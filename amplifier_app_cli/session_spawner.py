@@ -151,15 +151,18 @@ async def spawn_sub_session(
         merged_config = _filter_tools(merged_config, tool_inheritance)
 
     # Apply orchestrator config override if specified (recipe-level rate limiting)
+    # Session reads orchestrator config from: config["session"]["orchestrator"]["config"]
     if orchestrator_config:
-        if "orchestrator" not in merged_config:
-            merged_config["orchestrator"] = {}
-        if "config" not in merged_config["orchestrator"]:
-            merged_config["orchestrator"]["config"] = {}
+        if "session" not in merged_config:
+            merged_config["session"] = {}
+        if "orchestrator" not in merged_config["session"]:
+            merged_config["session"]["orchestrator"] = {}
+        if "config" not in merged_config["session"]["orchestrator"]:
+            merged_config["session"]["orchestrator"]["config"] = {}
         # Merge orchestrator config (caller's config takes precedence)
-        merged_config["orchestrator"]["config"].update(orchestrator_config)
+        merged_config["session"]["orchestrator"]["config"].update(orchestrator_config)
         logger.debug(
-            "Applied orchestrator config override: %s",
+            "Applied orchestrator config override to session.orchestrator.config: %s",
             orchestrator_config,
         )
 
