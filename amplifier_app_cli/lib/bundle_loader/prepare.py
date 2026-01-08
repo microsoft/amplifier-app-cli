@@ -28,19 +28,20 @@ async def load_and_prepare_bundle(
     install_deps: bool = True,
     compose_behaviors: list[str] | None = None,
 ) -> PreparedBundle:
-    """Load bundle by name and prepare it for execution.
+    """Load bundle by name or URI and prepare it for execution.
 
     Uses CLI discovery to find the bundle URI, then foundation's prepare()
     to download/install all modules from git sources.
 
     This is the CORRECT way to load bundles with remote modules:
-    1. Discovery: bundle_name → URI (via CLI search paths)
+    1. Discovery: bundle_name → URI (via CLI search paths), or use URI directly
     2. Load: URI → Bundle (handles file://, git+, http://, zip+)
     3. Compose: Optionally compose additional behavior bundles
     4. Prepare: Bundle → PreparedBundle (downloads modules, installs deps)
 
     Args:
-        bundle_name: Bundle name to load (e.g., "foundation").
+        bundle_name: Bundle name (e.g., "foundation") or URI (e.g., "git+https://...").
+            If a URI is provided, it's used directly without discovery lookup.
         discovery: CLI bundle discovery for name → URI resolution.
         install_deps: Whether to install Python dependencies for modules.
         compose_behaviors: Optional list of behavior bundle URIs to compose
@@ -60,6 +61,12 @@ async def load_and_prepare_bundle(
         prepared = await load_and_prepare_bundle("foundation", discovery)
         session = await prepared.create_session()
 
+    Example with URI:
+        prepared = await load_and_prepare_bundle(
+            "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/amplifier-dev.yaml",
+            discovery,
+        )
+
     Example with behaviors:
         prepared = await load_and_prepare_bundle(
             "foundation",
@@ -69,8 +76,15 @@ async def load_and_prepare_bundle(
             ],
         )
     """
-    # 1. Discover bundle URI via CLI search paths
-    uri = discovery.find(bundle_name)
+    # Check if input looks like a URI rather than a bundle name
+    # URI prefixes that indicate direct loading without discovery
+    uri_prefixes = ("git+", "file://", "http://", "https://", "zip+")
+    if bundle_name.startswith(uri_prefixes):
+        logger.info(f"Input is URI, loading directly: {bundle_name}")
+        uri = bundle_name
+    else:
+        # 1. Discover bundle URI via CLI search paths
+        uri = discovery.find(bundle_name)
     if not uri:
         available = discovery.list_bundles()
         raise FileNotFoundError(
