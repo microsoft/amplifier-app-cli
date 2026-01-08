@@ -114,6 +114,7 @@ async def spawn_sub_session(
     agent_configs: dict[str, dict],
     sub_session_id: str | None = None,
     tool_inheritance: dict[str, list[str]] | None = None,
+    orchestrator_config: dict | None = None,
 ) -> dict:
     """
     Spawn sub-session with agent configuration overlay.
@@ -127,6 +128,8 @@ async def spawn_sub_session(
         tool_inheritance: Optional tool filtering policy:
             - {"exclude_tools": ["tool-task"]} - inherit all EXCEPT these
             - {"inherit_tools": ["tool-filesystem"]} - inherit ONLY these
+        orchestrator_config: Optional orchestrator config to merge into session
+            (e.g., {"min_delay_between_calls_ms": 500} for rate limiting)
 
     Returns:
         Dict with "output" (response) and "session_id" (for multi-turn)
@@ -146,6 +149,19 @@ async def spawn_sub_session(
     # Apply tool inheritance filtering if specified
     if tool_inheritance and "tools" in merged_config:
         merged_config = _filter_tools(merged_config, tool_inheritance)
+
+    # Apply orchestrator config override if specified (recipe-level rate limiting)
+    if orchestrator_config:
+        if "orchestrator" not in merged_config:
+            merged_config["orchestrator"] = {}
+        if "config" not in merged_config["orchestrator"]:
+            merged_config["orchestrator"]["config"] = {}
+        # Merge orchestrator config (caller's config takes precedence)
+        merged_config["orchestrator"]["config"].update(orchestrator_config)
+        logger.debug(
+            "Applied orchestrator config override: %s",
+            orchestrator_config,
+        )
 
     # Generate child session ID using W3C Trace Context span_id pattern
     # Use 16 hex chars (8 bytes) for fixed-length, filesystem-safe IDs
