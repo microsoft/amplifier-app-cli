@@ -17,9 +17,14 @@ Example:
 from __future__ import annotations
 
 import sys
-import tty
-import termios
 from dataclasses import dataclass
+
+# Platform-specific imports for terminal raw mode
+if sys.platform != "win32":
+    import tty
+    import termios
+else:
+    import msvcrt
 
 
 @dataclass
@@ -38,48 +43,64 @@ class ChecklistItem:
 
 
 def _get_key() -> str:
-    """Read a single keypress from stdin.
+    """Read a single keypress from stdin."""
+    if sys.platform != "win32":
+        # Unix-like system
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
 
-    Returns:
-        The key pressed, or special strings for arrow keys:
-        - "UP" for up arrow
-        - "DOWN" for down arrow
-        - "ENTER" for enter/return
-        - Single character for other keys
-    """
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        ch = sys.stdin.read(1)
+            # Handle escape sequences (arrow keys)
+            if ch == "\x1b":
+                ch2 = sys.stdin.read(1)
+                if ch2 == "[":
+                    ch3 = sys.stdin.read(1)
+                    if ch3 == "A":
+                        return "UP"
+                    elif ch3 == "B":
+                        return "DOWN"
+                    elif ch3 == "C":
+                        return "RIGHT"
+                    elif ch3 == "D":
+                        return "LEFT"
+                return "ESC"
 
-        # Handle escape sequences (arrow keys)
-        if ch == "\x1b":
-            ch2 = sys.stdin.read(1)
-            if ch2 == "[":
-                ch3 = sys.stdin.read(1)
-                if ch3 == "A":
-                    return "UP"
-                elif ch3 == "B":
-                    return "DOWN"
-                elif ch3 == "C":
-                    return "RIGHT"
-                elif ch3 == "D":
-                    return "LEFT"
-            return "ESC"
+            # Handle enter
+            if ch in ("\r", "\n"):
+                return "ENTER"
 
-        # Handle enter
-        if ch in ("\r", "\n"):
+            # Handle ctrl+c
+            if ch == "\x03":
+                raise KeyboardInterrupt
+
+            return ch
+
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    else:
+        # Windows
+        ch = msvcrt.getch()
+        if ch == b'\\xe0':  # Arrow key prefix
+            ch2 = msvcrt.getch()
+            if ch2 == b'H':
+                return "UP"
+            elif ch2 == b'P':
+                return "DOWN"
+            elif ch2 == b'M':
+                return "RIGHT"
+            elif ch2 == b'K':
+                return "LEFT"
+        
+        if ch in (b'\\r', b'\\n'):
             return "ENTER"
-
-        # Handle ctrl+c
-        if ch == "\x03":
+        if ch == b' ':
+            return " "
+        if ch == b'\\x03':
             raise KeyboardInterrupt
-
-        return ch
-
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        
+        return ch.decode("utf-8", errors="ignore")
 
 
 def _clear_lines(n: int) -> None:
