@@ -36,6 +36,8 @@ def _prepare_resume_context(
     profile_override: str | None,
     get_module_search_paths: Callable[[], list[str]],
     console: "Console",
+    *,
+    bundle_override: str | None = None,
 ) -> tuple[str, list, dict, dict, list, "PreparedBundle | None", str | None, str | None, str]:
     """Prepare context for resuming a session.
 
@@ -50,6 +52,9 @@ def _prepare_resume_context(
         profile_override: Optional profile to use instead of saved session config
         get_module_search_paths: Callable to get module search paths
         console: Rich console for output (passed to resolve_config)
+        bundle_override: Optional bundle to force (overrides saved session bundle).
+            This is experimental and may cause instability if the bundle differs
+            significantly from the one the session was created with.
 
     Returns:
         Tuple of:
@@ -71,7 +76,14 @@ def _prepare_resume_context(
     effective_profile = profile_override
     saved_profile_used = None  # Only set if actually using saved profile
 
-    if not profile_override:
+    # Force bundle override takes precedence over everything
+    if bundle_override:
+        bundle_name = bundle_override
+        console.print(
+            f"[yellow]⚠ Forcing bundle override:[/yellow] {bundle_override}\n"
+            f"[dim]  (session was created with different config - may cause instability)[/dim]"
+        )
+    elif not profile_override:
         saved_bundle, saved_profile = extract_session_mode(metadata)
         if saved_bundle:
             bundle_name = saved_bundle
@@ -339,6 +351,12 @@ def register_session_commands(
     @cli.command(name="continue")
     @click.argument("prompt", required=False)
     @click.option("--profile", "-P", help="Profile to use for resumed session")
+    @click.option(
+        "--force-bundle",
+        "-B",
+        help="[Experimental] Force a different bundle for this session. "
+        "May cause instability if the bundle differs significantly from the original.",
+    )
     @click.option("--no-history", is_flag=True, help="Skip displaying conversation history")
     @click.option("--full-history", is_flag=True, help="Show all messages (default: last 10)")
     @click.option("--replay", is_flag=True, help="Replay conversation with timing simulation")
@@ -347,6 +365,7 @@ def register_session_commands(
     def continue_session(
         prompt: str | None,
         profile: str | None,
+        force_bundle: str | None,
         no_history: bool,
         full_history: bool,
         replay: bool,
@@ -382,12 +401,14 @@ def register_session_commands(
                 bundle_name,
                 saved_profile,
                 active_profile,
-            ) = _prepare_resume_context(session_id, profile, get_module_search_paths, console)
+            ) = _prepare_resume_context(
+                session_id, profile, get_module_search_paths, console, bundle_override=force_bundle
+            )
 
             # Display resume status
             console.print(f"[green]✓[/green] Resuming most recent session: {session_id}")
             console.print(f"  Messages: {len(transcript)}")
-            if bundle_name:
+            if bundle_name and not force_bundle:
                 console.print(f"  Using saved bundle: {bundle_name}")
             elif saved_profile:
                 console.print(f"  Using saved profile: {saved_profile}")
@@ -603,6 +624,12 @@ def register_session_commands(
     @session.command(name="resume")
     @click.argument("session_id")
     @click.option("--profile", "-P", help="Profile to use for resumed session")
+    @click.option(
+        "--force-bundle",
+        "-B",
+        help="[Experimental] Force a different bundle for this session. "
+        "May cause instability if the bundle differs significantly from the original.",
+    )
     @click.option("--no-history", is_flag=True, help="Skip displaying conversation history")
     @click.option("--full-history", is_flag=True, help="Show all messages (default: last 10)")
     @click.option("--replay", is_flag=True, help="Replay conversation with timing simulation")
@@ -611,6 +638,7 @@ def register_session_commands(
     def sessions_resume(
         session_id: str,
         profile: str | None,
+        force_bundle: str | None,
         no_history: bool,
         full_history: bool,
         replay: bool,
@@ -641,12 +669,14 @@ def register_session_commands(
                 bundle_name,
                 saved_profile,
                 active_profile,
-            ) = _prepare_resume_context(session_id, profile, get_module_search_paths, console)
+            ) = _prepare_resume_context(
+                session_id, profile, get_module_search_paths, console, bundle_override=force_bundle
+            )
 
             # Display resume status
             console.print(f"[green]✓[/green] Resuming session: {session_id}")
             console.print(f"  Messages: {len(transcript)}")
-            if bundle_name:
+            if bundle_name and not force_bundle:
                 console.print(f"  Using saved bundle: {bundle_name}")
             elif saved_profile:
                 console.print(f"  Using saved profile: {saved_profile}")
@@ -702,8 +732,14 @@ def register_session_commands(
     @cli.command(name="resume")
     @click.argument("session_id", required=False, default=None)
     @click.option("--limit", "-n", default=10, type=int, help="Number of sessions per page")
+    @click.option(
+        "--force-bundle",
+        "-B",
+        help="[Experimental] Force a different bundle for this session. "
+        "May cause instability if the bundle differs significantly from the original.",
+    )
     @click.pass_context
-    def interactive_resume(ctx: click.Context, session_id: str | None, limit: int):
+    def interactive_resume(ctx: click.Context, session_id: str | None, limit: int, force_bundle: str | None):
         """Interactively select and resume a session.
 
         If SESSION_ID is provided (can be partial), resumes that session directly.
@@ -728,6 +764,7 @@ def register_session_commands(
                 sessions_resume,
                 session_id=full_id,
                 profile=None,
+                force_bundle=force_bundle,
                 no_history=False,
                 full_history=False,
                 replay=False,
@@ -736,7 +773,7 @@ def register_session_commands(
             )
             return
 
-        _interactive_resume_impl(ctx, limit, sessions_resume)
+        _interactive_resume_impl(ctx, limit, sessions_resume, force_bundle=force_bundle)
 
 
 def _format_time_ago(dt: datetime) -> str:
@@ -824,6 +861,8 @@ def _interactive_resume_impl(
     ctx: click.Context,
     limit: int,
     sessions_resume_cmd: click.Command,
+    *,
+    force_bundle: str | None = None,
 ) -> None:
     """Implementation of interactive resume with paging.
 
@@ -831,6 +870,7 @@ def _interactive_resume_impl(
         ctx: Click context for invoking commands
         limit: Number of sessions per page
         sessions_resume_cmd: The sessions_resume command to invoke
+        force_bundle: Optional bundle to force for the resumed session
     """
     store = SessionStore()
     all_session_ids = store.list_sessions()
@@ -852,6 +892,7 @@ def _interactive_resume_impl(
             sessions_resume_cmd,
             session_id=all_session_ids[0],
             profile=None,
+            force_bundle=force_bundle,
             no_history=False,
             full_history=False,
             replay=False,
@@ -952,6 +993,7 @@ def _interactive_resume_impl(
                     sessions_resume_cmd,
                     session_id=selected_session_id,
                     profile=None,
+                    force_bundle=force_bundle,
                     no_history=False,
                     full_history=False,
                     replay=False,
