@@ -363,7 +363,8 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
     cache_dir = get_amplifier_home() / "cache"
     git_handler = GitSourceHandler()
 
-    bundle_names = discovery.list_bundles()
+    # Use cached root bundles for update checking (all roots, not filtered user list)
+    bundle_names = discovery.list_cached_root_bundles()
     results: dict[str, BundleStatus] = {}
 
     for bundle_name in bundle_names:

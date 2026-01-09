@@ -439,6 +439,37 @@ class AppBundleDiscovery:
             logger.debug(f"Could not read persisted registry: {e}")
             return []
 
+    def list_cached_root_bundles(self) -> list[str]:
+        """List all cached ROOT bundles for update checking.
+
+        Returns all bundles with is_root=True from the persisted registry.
+        This is used by `amplifier update` to show all locally cached bundles
+        regardless of whether they're shown in the default `bundle list`.
+
+        Returns:
+            List of root bundle names that are cached locally.
+        """
+        import json
+
+        registry_path = Path.home() / ".amplifier" / "registry.json"
+        if not registry_path.exists():
+            return []
+
+        try:
+            with open(registry_path, encoding="utf-8") as f:
+                data = json.load(f)
+
+            root_bundles: list[str] = []
+            for name, bundle_data in data.get("bundles", {}).items():
+                # Only include root bundles (not sub-bundles like behaviors)
+                if bundle_data.get("is_root", True):
+                    root_bundles.append(name)
+
+            return sorted(root_bundles)
+        except Exception as e:
+            logger.debug(f"Could not read persisted registry: {e}")
+            return []
+
     def get_bundle_categories(self) -> dict[str, list[dict[str, str]]]:
         """Get all bundles categorized by type for detailed display.
 
