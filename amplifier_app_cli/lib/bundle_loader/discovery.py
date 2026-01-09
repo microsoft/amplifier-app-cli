@@ -50,12 +50,12 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str | bool]] = {
     "recipes": {
         "package": "",  # No Python package - bundle-only
         "remote": "git+https://github.com/microsoft/amplifier-bundle-recipes@main",
-        "show_in_list": True,
+        "show_in_list": False,  # Included by foundation, not standalone
     },
     "design-intelligence": {
         "package": "",  # No Python package - bundle-only
         "remote": "git+https://github.com/microsoft/amplifier-bundle-design-intelligence@main",
-        "show_in_list": True,
+        "show_in_list": False,  # Included by foundation, not standalone
     },
     # Experimental bundles - available but not shown by default
     "exp-delegation": {
