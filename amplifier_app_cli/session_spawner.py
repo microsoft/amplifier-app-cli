@@ -176,9 +176,13 @@ async def spawn_sub_session(
         )
 
     # Create child session with parent_id and inherited UX systems (kernel mechanism)
+    # NOTE: We intentionally do NOT share parent's loader here.
+    # The loader caches modules with their config, so sharing would cause child sessions
+    # to get the parent's cached orchestrator config instead of their own.
+    # Each session needs its own loader to respect session-specific config (e.g., rate limiting).
     child_session = AmplifierSession(
         config=merged_config,
-        loader=parent_session.loader,
+        loader=None,  # Let child create its own loader to respect its config
         session_id=sub_session_id,
         parent_id=parent_session.session_id,  # Links to parent
         approval_system=parent_session.coordinator.approval_system,  # Inherit from parent
