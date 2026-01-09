@@ -85,15 +85,35 @@ def bundle(ctx: click.Context):
 
 
 @bundle.command(name="list")
-def bundle_list():
-    """List all available bundles."""
+@click.option("--all", "-a", "show_all", is_flag=True, help="Show all bundles including dependencies and sub-bundles")
+def bundle_list(show_all: bool):
+    """List available bundles.
+
+    By default, shows bundles intended for user selection:
+    - Well-known bundles (foundation, recipes, etc.)
+    - User-added bundles (via bundle add)
+    - Local bundles (in .amplifier/bundles/)
+
+    Use --all to see everything including:
+    - Dependencies loaded transitively
+    - Sub-bundles (behaviors, providers, etc.)
+    """
     config_manager = create_config_manager()
     discovery = AppBundleDiscovery()
 
-    bundles = discovery.list_bundles()
     settings = config_manager.get_merged_settings() or {}
     bundle_settings = settings.get("bundle") or {}  # Handle bundle: null case
     active_bundle = bundle_settings.get("active")
+
+    if show_all:
+        _show_all_bundles(discovery, active_bundle)
+    else:
+        _show_user_bundles(discovery, active_bundle)
+
+
+def _show_user_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
+    """Show bundles intended for user selection (default view)."""
+    bundles = discovery.list_bundles(show_all=False)
 
     if not bundles:
         console.print("[yellow]No bundles found.[/yellow]")
@@ -101,6 +121,7 @@ def bundle_list():
         console.print("  • .amplifier/bundles/ (project)")
         console.print("  • ~/.amplifier/bundles/ (user)")
         console.print("  • Installed packages (e.g., amplifier-foundation)")
+        console.print("\n[dim]Use --all to see all discovered bundles including dependencies.[/dim]")
         return
 
     table = Table(title="Available Bundles", show_header=True, header_style="bold cyan")
@@ -126,6 +147,85 @@ def bundle_list():
         console.print(f"\n[dim]Mode: Bundle ({active_bundle})[/dim]")
     else:
         console.print("\n[dim]Mode: Profile (default)[/dim]")
+
+    console.print("[dim]Use --all to see all bundles including dependencies and sub-bundles.[/dim]")
+
+
+def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
+    """Show all bundles categorized by type (--all view)."""
+    categories = discovery.get_bundle_categories()
+
+    # Well-known bundles
+    if categories["well_known"]:
+        table = Table(title="Well-Known Bundles", show_header=True, header_style="bold cyan")
+        table.add_column("Name", style="green")
+        table.add_column("Location", style="yellow")
+        table.add_column("Show in List", style="dim")
+        table.add_column("Status")
+
+        for bundle_info in sorted(categories["well_known"], key=lambda x: x["name"]):
+            name = bundle_info["name"]
+            status = "[bold green]active[/bold green]" if name == active_bundle else ""
+            show = "✓" if bundle_info.get("show_in_list") == "True" else "✗"
+            table.add_row(name, _format_location(bundle_info["uri"]), show, status)
+
+        console.print(table)
+        console.print()
+
+    # User-added bundles
+    if categories["user_added"]:
+        table = Table(title="User-Added Bundles", show_header=True, header_style="bold cyan")
+        table.add_column("Name", style="green")
+        table.add_column("Location", style="yellow")
+        table.add_column("Status")
+
+        for bundle_info in sorted(categories["user_added"], key=lambda x: x["name"]):
+            name = bundle_info["name"]
+            status = "[bold green]active[/bold green]" if name == active_bundle else ""
+            table.add_row(name, _format_location(bundle_info["uri"]), status)
+
+        console.print(table)
+        console.print()
+
+    # Dependencies (loaded transitively)
+    if categories["dependencies"]:
+        table = Table(title="Dependencies (loaded transitively)", show_header=True, header_style="bold yellow")
+        table.add_column("Name", style="dim green")
+        table.add_column("Location", style="dim yellow")
+        table.add_column("Included By", style="dim")
+
+        for bundle_info in sorted(categories["dependencies"], key=lambda x: x["name"]):
+            table.add_row(
+                bundle_info["name"],
+                _format_location(bundle_info["uri"]),
+                bundle_info.get("included_by", ""),
+            )
+
+        console.print(table)
+        console.print()
+
+    # Sub-bundles (behaviors, providers, etc.)
+    if categories["sub_bundles"]:
+        table = Table(title="Sub-Bundles (behaviors, providers, etc.)", show_header=True, header_style="bold magenta")
+        table.add_column("Name", style="dim green")
+        table.add_column("Root Bundle", style="dim cyan")
+        table.add_column("Location", style="dim yellow")
+
+        for bundle_info in sorted(categories["sub_bundles"], key=lambda x: x["name"]):
+            table.add_row(
+                bundle_info["name"],
+                bundle_info.get("root", ""),
+                _format_location(bundle_info["uri"]),
+            )
+
+        console.print(table)
+        console.print()
+
+    # Show current mode
+    if active_bundle:
+        console.print(f"[dim]Mode: Bundle ({active_bundle})[/dim]")
+    else:
+        console.print("[dim]Mode: Profile (default)[/dim]")
 
 
 def _format_location(uri: str | None) -> str:
