@@ -35,7 +35,6 @@ from .commands.agents import agents as agents_group
 from .commands.allowed_dirs import allowed_dirs as allowed_dirs_group
 from .commands.denied_dirs import denied_dirs as denied_dirs_group
 from .commands.bundle import bundle as bundle_group
-from .commands.cache import cache as cache_group
 from .commands.collection import collection as collection_group
 from .commands.init import check_first_run
 from .commands.init import init_cmd
@@ -1378,7 +1377,6 @@ cli.add_command(agents_group)
 cli.add_command(allowed_dirs_group)
 cli.add_command(denied_dirs_group)
 cli.add_command(bundle_group)
-cli.add_command(cache_group)
 cli.add_command(collection_group)
 cli.add_command(init_cmd)
 cli.add_command(profile_group)

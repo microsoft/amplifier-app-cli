@@ -15,9 +15,6 @@ Example:
     # Interactive mode (default)
     amplifier reset
 
-    # Clear only cache (safest)
-    amplifier reset --cache-only
-
     # Scripted usage
     amplifier reset --preserve projects,settings,keys -y
 """
@@ -312,11 +309,6 @@ def _launch_amplifier() -> None:
     help="Comma-separated categories to remove (e.g., cache,registry)",
 )
 @click.option(
-    "--cache-only",
-    is_flag=True,
-    help="Only clear cache (safest option)",
-)
-@click.option(
     "--full",
     is_flag=True,
     help="Remove everything including projects (nuclear option)",
@@ -345,7 +337,6 @@ def _launch_amplifier() -> None:
 def reset(
     preserve_cats: set[str] | None,
     remove_cats: set[str] | None,
-    cache_only: bool,
     full: bool,
     yes: bool,
     dry_run: bool,
@@ -368,7 +359,6 @@ def reset(
     \b
     Examples:
       amplifier reset                      Interactive mode (default)
-      amplifier reset --cache-only         Clear only cache (safest)
       amplifier reset --preserve projects,settings,keys -y
                                            Scripted: preserve specific categories
       amplifier reset --remove cache,registry -y
@@ -380,12 +370,11 @@ def reset(
     exclusive_count = sum([
         preserve_cats is not None,
         remove_cats is not None,
-        cache_only,
         full,
     ])
     if exclusive_count > 1:
         raise click.UsageError(
-            "Options --preserve, --remove, --cache-only, and --full are mutually exclusive"
+            "Options --preserve, --remove, and --full are mutually exclusive"
         )
 
     # Determine preserve set based on arguments
@@ -393,8 +382,6 @@ def reset(
 
     if full:
         preserve = set()
-    elif cache_only:
-        preserve = set(RESET_CATEGORIES.keys()) - {"cache"}
     elif remove_cats is not None:
         preserve = set(RESET_CATEGORIES.keys()) - remove_cats
     elif preserve_cats is not None:
