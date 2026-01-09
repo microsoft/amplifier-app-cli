@@ -60,6 +60,11 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str]] = {
         "package": "",  # Experimental bundle in foundation/experiments/
         "remote": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/delegation-only",
     },
+    # Amplifier ecosystem development bundle - multi-repo workflows, shadow environments
+    "amplifier-dev": {
+        "package": "",  # Bundle in foundation/bundles/
+        "remote": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/amplifier-dev.yaml",
+    },
 }
 
 
