@@ -274,6 +274,10 @@ class CommandProcessor:
             "action": "fork_session",
             "description": "Fork session at turn N: /fork [turn]",
         },
+        "/reload-commands": {
+            "action": "reload_commands",
+            "description": "Reload custom commands from disk",
+        },
     }
 
     # Dynamic shortcuts for modes (populated from mode definitions)
@@ -289,6 +293,9 @@ class CommandProcessor:
             self.session.coordinator.session_state["active_mode"] = None
         # Populate mode shortcuts from discovery (if available)
         self._populate_mode_shortcuts()
+        # Custom slash commands
+        self.custom_commands: dict[str, dict[str, Any]] = {}
+        self._load_custom_commands()
 
     def _populate_mode_shortcuts(self) -> None:
         """Populate MODE_SHORTCUTS from mode discovery."""
@@ -297,6 +304,74 @@ class CommandProcessor:
             shortcuts = discovery.get_shortcuts()
             # Update class-level shortcuts dict
             CommandProcessor.MODE_SHORTCUTS.update(shortcuts)
+
+    def _load_custom_commands(self) -> None:
+        """Load custom commands from slash_command module if available."""
+        try:
+            # Check if slash_command tool is available via coordinator
+            tools = self.session.coordinator.get("tools")
+            if not tools:
+                return
+
+            # Look for the slash_command tool
+            slash_cmd_tool = tools.get("slash_command")
+            if not slash_cmd_tool:
+                return
+
+            # Get the registry from the tool
+            if hasattr(slash_cmd_tool, "registry") and slash_cmd_tool.registry:
+                registry = slash_cmd_tool.registry
+                if hasattr(registry, "is_loaded") and registry.is_loaded():
+                    # Load commands into our custom_commands dict
+                    for cmd_name, cmd_data in registry.get_command_dict().items():
+                        # Store with / prefix for lookup
+                        key = f"/{cmd_name}"
+                        self.custom_commands[key] = {
+                            "action": "execute_custom_command",
+                            "description": cmd_data.get(
+                                "description", "Custom command"
+                            ),
+                            "metadata": cmd_data,
+                        }
+                    if self.custom_commands:
+                        logger.debug(
+                            f"Loaded {len(self.custom_commands)} custom commands"
+                        )
+        except Exception as e:
+            logger.debug(f"Could not load custom commands: {e}")
+
+    def reload_custom_commands(self) -> int:
+        """Reload custom commands from disk. Returns count of commands loaded."""
+        self.custom_commands.clear()
+
+        try:
+            tools = self.session.coordinator.get("tools")
+            if not tools:
+                return 0
+
+            slash_cmd_tool = tools.get("slash_command")
+            if not slash_cmd_tool:
+                return 0
+
+            if hasattr(slash_cmd_tool, "registry") and slash_cmd_tool.registry:
+                # Reload from disk
+                slash_cmd_tool.registry.reload()
+
+                # Reload into our dict
+                for (
+                    cmd_name,
+                    cmd_data,
+                ) in slash_cmd_tool.registry.get_command_dict().items():
+                    key = f"/{cmd_name}"
+                    self.custom_commands[key] = {
+                        "action": "execute_custom_command",
+                        "description": cmd_data.get("description", "Custom command"),
+                        "metadata": cmd_data,
+                    }
+        except Exception as e:
+            logger.debug(f"Could not reload custom commands: {e}")
+
+        return len(self.custom_commands)
 
     def process_input(self, user_input: str) -> tuple[str, dict[str, Any]]:
         """
@@ -311,6 +386,7 @@ class CommandProcessor:
             command = parts[0].lower()
             args = parts[1] if len(parts) > 1 else ""
 
+            # Check built-in commands first
             if command in self.COMMANDS:
                 cmd_info = self.COMMANDS[command]
                 return cmd_info["action"], {"args": args, "command": command}
@@ -319,6 +395,15 @@ class CommandProcessor:
             shortcut_name = command[1:]  # Remove leading /
             if shortcut_name in self.MODE_SHORTCUTS:
                 return "handle_mode", {"args": shortcut_name, "command": command}
+
+            # Check custom commands
+            if command in self.custom_commands:
+                cmd_info = self.custom_commands[command]
+                return cmd_info["action"], {
+                    "args": args,
+                    "command": command,
+                    "metadata": cmd_info["metadata"],
+                }
 
             return "unknown_command", {"command": command}
 
@@ -370,6 +455,13 @@ class CommandProcessor:
 
         if action == "fork_session":
             return await self._fork_session(data.get("args", ""))
+
+        if action == "reload_commands":
+            count = self.reload_custom_commands()
+            return f"✓ Reloaded {count} custom commands"
+
+        if action == "execute_custom_command":
+            return await self._execute_custom_command(data)
 
         if action == "unknown_command":
             return (
@@ -479,6 +571,41 @@ class CommandProcessor:
 
         lines.append("\nUse /mode <name> to activate, /mode off to clear.")
         return "\n".join(lines)
+
+    async def _execute_custom_command(self, data: dict[str, Any]) -> str:
+        """Execute a custom slash command by substituting template and returning as prompt.
+
+        Returns the substituted prompt text which will be sent to the LLM.
+        """
+        metadata = data.get("metadata", {})
+        args = data.get("args", "")
+        command_name = data.get("command", "").lstrip("/")
+
+        try:
+            # Get the slash_command tool
+            tools = self.session.coordinator.get("tools")
+            if not tools:
+                return "Error: No tools available"
+
+            slash_cmd_tool = tools.get("slash_command")
+            if not slash_cmd_tool:
+                return "Error: slash_command tool not loaded"
+
+            # Get executor from tool
+            if not hasattr(slash_cmd_tool, "executor") or not slash_cmd_tool.executor:
+                return "Error: Command executor not available"
+
+            # Execute the command (substitute template variables)
+            prompt = slash_cmd_tool.executor.execute(command_name, args)
+
+            # Return special marker so the REPL knows to execute this as a prompt
+            return f"__EXECUTE_PROMPT__:{prompt}"
+
+        except ValueError as e:
+            return f"Error executing /{command_name}: {e}"
+        except Exception as e:
+            logger.exception(f"Error executing custom command /{command_name}")
+            return f"Error: {e}"
 
     async def _save_transcript(self, filename: str) -> str:
         """Save current transcript with sanitization for non-JSON-serializable objects.
@@ -722,10 +849,10 @@ class CommandProcessor:
             return f"Error forking session: {e}"
 
     def _format_help(self) -> str:
-        """Format help text with commands and dynamic modes section."""
+        """Format help text with commands, dynamic modes, and custom commands."""
         lines = ["Available Commands:"]
         for cmd, info in self.COMMANDS.items():
-            lines.append(f"  {cmd:<12} - {info['description']}")
+            lines.append(f"  {cmd:<18} - {info['description']}")
 
         # Add dynamic modes section if modes are available
         session_state = self.session.coordinator.session_state
@@ -737,9 +864,24 @@ class CommandProcessor:
                 lines.append("Mode Shortcuts:")
                 for name, description in modes:
                     if description:
-                        lines.append(f"  /{name:<11} - {description}")
+                        lines.append(f"  /{name:<17} - {description}")
                     else:
                         lines.append(f"  /{name}")
+
+        # Add custom commands if any
+        if self.custom_commands:
+            lines.append("")
+            lines.append("Custom Commands:")
+            for cmd, info in sorted(self.custom_commands.items()):
+                desc = info.get("description", "No description")
+                # Truncate long descriptions
+                if len(desc) > 50:
+                    desc = desc[:47] + "..."
+                lines.append(f"  {cmd:<18} - {desc}")
+            lines.append("")
+            lines.append(
+                "Tip: Use /reload-commands to reload custom commands from disk"
+            )
 
         return "\n".join(lines)
 
@@ -1516,7 +1658,23 @@ async def interactive_chat(
                     else:
                         # Handle command
                         result = await command_processor.handle_command(action, data)
-                        console.print(f"[cyan]{result}[/cyan]")
+
+                        # Check if this is a custom command that should be executed as a prompt
+                        if result.startswith("__EXECUTE_PROMPT__:"):
+                            prompt_text = result[len("__EXECUTE_PROMPT__:") :]
+                            console.print("\n[dim]Executing custom command...[/dim]")
+                            console.print(
+                                f"[dim]Prompt: {prompt_text[:100]}{'...' if len(prompt_text) > 100 else ''}[/dim]"
+                            )
+                            console.print(
+                                "\n[dim]Processing... (Ctrl+C to cancel)[/dim]"
+                            )
+
+                            # Process runtime @mentions in the generated prompt
+                            await _process_runtime_mentions(session, prompt_text)
+                            await _execute_with_interrupt(prompt_text)
+                        else:
+                            console.print(f"[cyan]{result}[/cyan]")
 
             except EOFError:
                 # Ctrl-D - graceful exit
