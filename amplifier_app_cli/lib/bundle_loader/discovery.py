@@ -57,11 +57,11 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str | bool]] = {
         "remote": "git+https://github.com/microsoft/amplifier-bundle-design-intelligence@main",
         "show_in_list": False,  # Included by foundation, not standalone
     },
-    # Experimental bundles - available but not shown by default
+    # Experimental delegation-only bundle (subdirectory of foundation)
     "exp-delegation": {
         "package": "",  # Experimental bundle in foundation/experiments/
         "remote": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/delegation-only",
-        "show_in_list": False,  # Experimental - show with --all
+        "show_in_list": True,
     },
     # Amplifier ecosystem development bundle - multi-repo workflows, shadow environments
     "amplifier-dev": {
@@ -442,9 +442,13 @@ class AppBundleDiscovery:
     def list_cached_root_bundles(self) -> list[str]:
         """List all cached ROOT bundles for update checking.
 
-        Returns all bundles with is_root=True from the persisted registry.
-        This is used by `amplifier update` to show all locally cached bundles
-        regardless of whether they're shown in the default `bundle list`.
+        Returns bundles that are:
+        - is_root=True (not sub-bundles like behaviors)
+        - NOT subdirectory bundles (#subdirectory= in URI) since those share
+          a repo with their parent and updating the parent updates them too
+
+        This is used by `amplifier update` to show locally cached bundles
+        that can be independently updated.
 
         Returns:
             List of root bundle names that are cached locally.
@@ -461,9 +465,17 @@ class AppBundleDiscovery:
 
             root_bundles: list[str] = []
             for name, bundle_data in data.get("bundles", {}).items():
-                # Only include root bundles (not sub-bundles like behaviors)
-                if bundle_data.get("is_root", True):
-                    root_bundles.append(name)
+                # Skip sub-bundles (behaviors, providers, etc.)
+                if not bundle_data.get("is_root", True):
+                    continue
+
+                # Skip subdirectory bundles - they share a repo with their parent
+                # and updating the parent updates them too
+                uri = bundle_data.get("uri", "")
+                if "#subdirectory=" in uri:
+                    continue
+
+                root_bundles.append(name)
 
             return sorted(root_bundles)
         except Exception as e:
