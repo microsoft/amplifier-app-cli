@@ -31,6 +31,29 @@ from ..types import (
 )
 
 
+def _record_bundle_override(metadata: dict, new_bundle: str, original_config: str) -> None:
+    """Record a bundle override in session metadata for diagnostics.
+
+    Tracks when users force a different bundle on resume, enabling session analyst
+    to understand potential instability from mixed bundle usage.
+
+    Args:
+        metadata: Session metadata dict (modified in place)
+        new_bundle: The bundle being forced
+        original_config: The original bundle/profile the session was created with
+    """
+    # Initialize bundle_overrides list if not present
+    if "bundle_overrides" not in metadata:
+        metadata["bundle_overrides"] = []
+
+    # Record this override with timestamp
+    metadata["bundle_overrides"].append({
+        "timestamp": datetime.now(UTC).isoformat(timespec="milliseconds"),
+        "original": original_config,
+        "forced": new_bundle,
+    })
+
+
 def _prepare_resume_context(
     session_id: str,
     profile_override: str | None,
@@ -72,6 +95,9 @@ def _prepare_resume_context(
     transcript, metadata = store.load(session_id)
 
     # Detect if this was a bundle-based or profile-based session
+    # Always extract saved mode first (needed for warning message and metadata tracking)
+    saved_bundle, saved_profile = extract_session_mode(metadata)
+    
     bundle_name = None
     effective_profile = profile_override
     saved_profile_used = None  # Only set if actually using saved profile
@@ -79,12 +105,14 @@ def _prepare_resume_context(
     # Force bundle override takes precedence over everything
     if bundle_override:
         bundle_name = bundle_override
+        original_config = saved_bundle or saved_profile or "unknown"
         console.print(
             f"[yellow]⚠ Forcing bundle override:[/yellow] {bundle_override}\n"
-            f"[dim]  (session was created with different config - may cause instability)[/dim]"
+            f"[dim]  (session was created with: {original_config})[/dim]"
         )
+        # Track bundle override in metadata for session analyst awareness
+        _record_bundle_override(metadata, bundle_override, original_config)
     elif not profile_override:
-        saved_bundle, saved_profile = extract_session_mode(metadata)
         if saved_bundle:
             bundle_name = saved_bundle
         elif saved_profile:
