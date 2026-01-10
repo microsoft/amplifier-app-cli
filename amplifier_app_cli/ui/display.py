@@ -55,27 +55,32 @@ class CLIDisplaySystem:
         Args:
             message: Message text to display
             level: Severity level (info/warning/error)
-            source: Message source for context
+            source: Message source for context (e.g., "hook:python-check")
+
+        Messages are formatted as tool output rather than system errors.
+        The source is shown as a label prefix, making it clear this is
+        feedback from a tool rather than an Amplifier error.
 
         Messages are indented based on current nesting depth to align
         with sub-session output formatting.
         """
-        # Map level to Rich style and icon
-        styles = {
-            "info": ("[green]\u2139\ufe0f[/green]", "green"),
-            "warning": ("[yellow]\u26a0\ufe0f[/yellow]", "yellow"),
-            "error": ("[red]\u274c[/red]", "red"),
-        }
-
-        icon, color = styles.get(level, ("[blue]\u2139\ufe0f[/blue]", "blue"))
-
         # Get indentation prefix for current nesting level
         indent = self._get_indent()
 
-        # Display to user with proper indentation
-        self.console.print(
-            f"{indent}{icon} [{color}]{level.upper()}[/{color}] {message} [dim]({source})[/dim]"
-        )
+        # Extract tool name from source (e.g., "hook:python-check" -> "python-check")
+        tool_name = source.split(":", 1)[-1] if ":" in source else source
+
+        # Map level to color for the tool label
+        level_colors = {
+            "info": "cyan",
+            "warning": "yellow",
+            "error": "red",
+        }
+        color = level_colors.get(level, "cyan")
+
+        # Format as tool output: [tool-name] message
+        # This looks like tool feedback, not a system error
+        self.console.print(f"{indent}[{color}][{tool_name}][/{color}] {message}")
 
         # Log at debug level (user already sees the message via console.print)
         logger.debug(
