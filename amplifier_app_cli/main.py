@@ -492,7 +492,7 @@ class CommandProcessor:
         """Fork the current session at a specific turn.
 
         Usage:
-            /fork          - Interactive turn selection
+            /fork          - Show conversation turns
             /fork 3        - Fork at turn 3
             /fork 3 myname - Fork at turn 3 with custom name
         """
@@ -536,31 +536,37 @@ class CommandProcessor:
             try:
                 turn = int(parts[0])
             except ValueError:
-                return f"Error: Invalid turn number: {parts[0]}"
+                # Maybe it's a name without turn? Show help
+                return "Usage: /fork <turn> [name]\n\nRun /fork first to see your conversation turns."
 
         if len(parts) >= 2:
             custom_name = parts[1]
 
-        # If no turn specified, show turn previews for selection
+        # If no turn specified, show turn previews (most recent first)
         if turn is None:
-            lines = [f"Session has {max_turns} turns. Specify turn to fork at:", ""]
-            for t in range(1, min(max_turns + 1, 8)):  # Show up to 7 turns
+            lines = ["", "Your conversation turns (most recent first):", ""]
+            
+            # Show turns in reverse order (most recent first)
+            turns_to_show = min(max_turns, 10)
+            for t in range(max_turns, max(0, max_turns - turns_to_show), -1):
                 try:
                     summary = get_turn_summary(messages, t)
-                    user_preview = summary["user_content"][:50]
-                    if len(summary["user_content"]) > 50:
+                    user_preview = summary["user_content"][:55]
+                    if len(summary["user_content"]) > 55:
                         user_preview += "..."
                     tool_info = f" [{summary['tool_count']} tools]" if summary["tool_count"] else ""
-                    lines.append(f"  Turn {t}: {user_preview}{tool_info}")
+                    marker = " ← you are here" if t == max_turns else ""
+                    lines.append(f"  [{t}] {user_preview}{tool_info}{marker}")
                 except Exception:
-                    lines.append(f"  Turn {t}: (unable to preview)")
+                    lines.append(f"  [{t}] (unable to preview)")
 
-            if max_turns > 7:
-                lines.append(f"  ... and {max_turns - 7} more turns")
+            if max_turns > 10:
+                lines.append(f"  ... {max_turns - 10} earlier turns")
 
             lines.append("")
-            lines.append("Usage: /fork <turn> [name]")
-            lines.append("Example: /fork 3 jwt-approach")
+            lines.append("To fork, run: /fork <turn>")
+            lines.append("Example: /fork 3        - fork at turn 3")
+            lines.append("         /fork 3 my-fix - fork at turn 3 with name 'my-fix'")
             return "\n".join(lines)
 
         # Validate turn
