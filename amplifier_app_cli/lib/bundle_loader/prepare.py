@@ -26,21 +26,28 @@ async def load_and_prepare_bundle(
     bundle_name: str,
     discovery: AppBundleDiscovery,
     install_deps: bool = True,
+    compose_behaviors: list[str] | None = None,
 ) -> PreparedBundle:
-    """Load bundle by name and prepare it for execution.
+    """Load bundle by name or URI and prepare it for execution.
 
     Uses CLI discovery to find the bundle URI, then foundation's prepare()
     to download/install all modules from git sources.
 
     This is the CORRECT way to load bundles with remote modules:
-    1. Discovery: bundle_name → URI (via CLI search paths)
+    1. Discovery: bundle_name → URI (via CLI search paths), or use URI directly
     2. Load: URI → Bundle (handles file://, git+, http://, zip+)
-    3. Prepare: Bundle → PreparedBundle (downloads modules, installs deps)
+    3. Compose: Optionally compose additional behavior bundles
+    4. Prepare: Bundle → PreparedBundle (downloads modules, installs deps)
 
     Args:
-        bundle_name: Bundle name to load (e.g., "foundation").
+        bundle_name: Bundle name (e.g., "foundation") or URI (e.g., "git+https://...").
+            If a URI is provided, it's used directly without discovery lookup.
         discovery: CLI bundle discovery for name → URI resolution.
         install_deps: Whether to install Python dependencies for modules.
+        compose_behaviors: Optional list of behavior bundle URIs to compose
+            onto the main bundle before preparation. These are typically
+            app-level policy behaviors like notifications.
+            Example: ["git+https://github.com/org/bundle@main#subdirectory=behaviors/foo.yaml"]
 
     Returns:
         PreparedBundle ready for create_session().
@@ -53,9 +60,31 @@ async def load_and_prepare_bundle(
         discovery = AppBundleDiscovery(search_paths=get_bundle_search_paths())
         prepared = await load_and_prepare_bundle("foundation", discovery)
         session = await prepared.create_session()
+
+    Example with URI:
+        prepared = await load_and_prepare_bundle(
+            "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/amplifier-dev.yaml",
+            discovery,
+        )
+
+    Example with behaviors:
+        prepared = await load_and_prepare_bundle(
+            "foundation",
+            discovery,
+            compose_behaviors=[
+                "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/desktop-notifications.yaml"
+            ],
+        )
     """
-    # 1. Discover bundle URI via CLI search paths
-    uri = discovery.find(bundle_name)
+    # Check if input looks like a URI rather than a bundle name
+    # URI prefixes that indicate direct loading without discovery
+    uri_prefixes = ("git+", "file://", "http://", "https://", "zip+")
+    if bundle_name.startswith(uri_prefixes):
+        logger.info(f"Input is URI, loading directly: {bundle_name}")
+        uri = bundle_name
+    else:
+        # 1. Discover bundle URI via CLI search paths
+        uri = discovery.find(bundle_name)
     if not uri:
         available = discovery.list_bundles()
         raise FileNotFoundError(
@@ -71,7 +100,19 @@ async def load_and_prepare_bundle(
     bundle = await load_bundle(uri, registry=discovery.registry)
     logger.debug(f"Loaded bundle: {bundle.name} v{bundle.version}")
 
-    # 3. Prepare: download modules from git sources, install deps
+    # 3. Compose additional behavior bundles (app-level policies like notifications)
+    if compose_behaviors:
+        for behavior_uri in compose_behaviors:
+            logger.info(f"Composing behavior: {behavior_uri}")
+            try:
+                behavior_bundle = await load_bundle(behavior_uri, registry=discovery.registry)
+                bundle = bundle.compose(behavior_bundle)
+                logger.debug(f"Composed behavior '{behavior_bundle.name}' onto '{bundle.name}'")
+            except Exception as e:
+                logger.warning(f"Failed to compose behavior '{behavior_uri}': {e}")
+                # Continue without this behavior - notifications are optional
+
+    # 4. Prepare: download modules from git sources, install deps
     logger.info(f"Preparing bundle '{bundle_name}' (install_deps={install_deps})")
     prepared = await bundle.prepare(install_deps=install_deps)
     logger.info(f"Bundle '{bundle_name}' prepared successfully")

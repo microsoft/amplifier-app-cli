@@ -30,12 +30,51 @@ from ..types import (
     SearchPathProviderProtocol,
 )
 
+# Import session fork utilities from foundation
+try:
+    from amplifier_foundation.session import (
+        fork_session,
+        get_fork_preview,
+        get_session_lineage,
+        get_turn_summary,
+        count_turns,
+        ForkResult,
+    )
+    HAS_SESSION_FORK = True
+except ImportError:
+    HAS_SESSION_FORK = False
+
+
+def _record_bundle_override(metadata: dict, new_bundle: str, original_config: str) -> None:
+    """Record a bundle override in session metadata for diagnostics.
+
+    Tracks when users force a different bundle on resume, enabling session analyst
+    to understand potential instability from mixed bundle usage.
+
+    Args:
+        metadata: Session metadata dict (modified in place)
+        new_bundle: The bundle being forced
+        original_config: The original bundle/profile the session was created with
+    """
+    # Initialize bundle_overrides list if not present
+    if "bundle_overrides" not in metadata:
+        metadata["bundle_overrides"] = []
+
+    # Record this override with timestamp
+    metadata["bundle_overrides"].append({
+        "timestamp": datetime.now(UTC).isoformat(timespec="milliseconds"),
+        "original": original_config,
+        "forced": new_bundle,
+    })
+
 
 def _prepare_resume_context(
     session_id: str,
     profile_override: str | None,
     get_module_search_paths: Callable[[], list[str]],
     console: "Console",
+    *,
+    bundle_override: str | None = None,
 ) -> tuple[str, list, dict, dict, list, "PreparedBundle | None", str | None, str | None, str]:
     """Prepare context for resuming a session.
 
@@ -50,6 +89,9 @@ def _prepare_resume_context(
         profile_override: Optional profile to use instead of saved session config
         get_module_search_paths: Callable to get module search paths
         console: Rich console for output (passed to resolve_config)
+        bundle_override: Optional bundle to force (overrides saved session bundle).
+            This is experimental and may cause instability if the bundle differs
+            significantly from the one the session was created with.
 
     Returns:
         Tuple of:
@@ -67,12 +109,24 @@ def _prepare_resume_context(
     transcript, metadata = store.load(session_id)
 
     # Detect if this was a bundle-based or profile-based session
+    # Always extract saved mode first (needed for warning message and metadata tracking)
+    saved_bundle, saved_profile = extract_session_mode(metadata)
+    
     bundle_name = None
     effective_profile = profile_override
     saved_profile_used = None  # Only set if actually using saved profile
 
-    if not profile_override:
-        saved_bundle, saved_profile = extract_session_mode(metadata)
+    # Force bundle override takes precedence over everything
+    if bundle_override:
+        bundle_name = bundle_override
+        original_config = saved_bundle or saved_profile or "unknown"
+        console.print(
+            f"[yellow]⚠ Forcing bundle override:[/yellow] {bundle_override}\n"
+            f"[dim]  (session was created with: {original_config})[/dim]"
+        )
+        # Track bundle override in metadata for session analyst awareness
+        _record_bundle_override(metadata, bundle_override, original_config)
+    elif not profile_override:
         if saved_bundle:
             bundle_name = saved_bundle
         elif saved_profile:
@@ -339,6 +393,12 @@ def register_session_commands(
     @cli.command(name="continue")
     @click.argument("prompt", required=False)
     @click.option("--profile", "-P", help="Profile to use for resumed session")
+    @click.option(
+        "--force-bundle",
+        "-B",
+        help="[Experimental] Force a different bundle for this session. "
+        "May cause instability if the bundle differs significantly from the original.",
+    )
     @click.option("--no-history", is_flag=True, help="Skip displaying conversation history")
     @click.option("--full-history", is_flag=True, help="Show all messages (default: last 10)")
     @click.option("--replay", is_flag=True, help="Replay conversation with timing simulation")
@@ -347,6 +407,7 @@ def register_session_commands(
     def continue_session(
         prompt: str | None,
         profile: str | None,
+        force_bundle: str | None,
         no_history: bool,
         full_history: bool,
         replay: bool,
@@ -382,12 +443,14 @@ def register_session_commands(
                 bundle_name,
                 saved_profile,
                 active_profile,
-            ) = _prepare_resume_context(session_id, profile, get_module_search_paths, console)
+            ) = _prepare_resume_context(
+                session_id, profile, get_module_search_paths, console, bundle_override=force_bundle
+            )
 
             # Display resume status
             console.print(f"[green]✓[/green] Resuming most recent session: {session_id}")
             console.print(f"  Messages: {len(transcript)}")
-            if bundle_name:
+            if bundle_name and not force_bundle:
                 console.print(f"  Using saved bundle: {bundle_name}")
             elif saved_profile:
                 console.print(f"  Using saved profile: {saved_profile}")
@@ -458,8 +521,72 @@ def register_session_commands(
     @click.option("--limit", "-n", default=20, help="Number of sessions to show")
     @click.option("--all-projects", is_flag=True, help="Show sessions from all projects")
     @click.option("--project", type=click.Path(), help="Show sessions for specific project path")
-    def sessions_list(limit: int, all_projects: bool, project: str | None):
-        """List recent sessions for the current project or across all projects."""
+    @click.option("--tree", "-t", "tree_session", help="Show lineage tree for a session")
+    def sessions_list(limit: int, all_projects: bool, project: str | None, tree_session: str | None):
+        """List recent sessions for the current project or across all projects.
+        
+        Use --tree SESSION_ID to show the lineage tree for a specific session.
+        """
+        # Handle --tree option first
+        if tree_session:
+            if not HAS_SESSION_FORK:
+                console.print("[red]Error:[/red] Session fork utilities not available.")
+                console.print("Install amplifier-foundation with session support.")
+                sys.exit(1)
+            
+            store = SessionStore()
+            try:
+                session_id = store.find_session(tree_session)
+            except FileNotFoundError:
+                console.print(f"[red]Error:[/red] No session found matching '{tree_session}'")
+                sys.exit(1)
+            except ValueError as e:
+                console.print(f"[red]Error:[/red] {e}")
+                sys.exit(1)
+            
+            session_dir = store.base_dir / session_id
+            lineage = get_session_lineage(session_dir, store.base_dir)
+            
+            console.print()
+            console.print("[bold cyan]Session Lineage Tree[/bold cyan]")
+            console.print()
+            
+            # Show ancestors first (root to parent)
+            ancestors = lineage.get("ancestors", [])
+            for i, ancestor_id in enumerate(reversed(ancestors)):
+                indent = "  " * i
+                console.print(f"{indent}[dim]{ancestor_id[:8]}...[/dim]")
+                console.print(f"{indent}│")
+            
+            # Show current session
+            current_indent = "  " * len(ancestors)
+            session_info = _get_session_display_info(store, session_id)
+            forked_info = ""
+            if lineage.get("forked_from_turn"):
+                forked_info = f" [dim](forked at turn {lineage['forked_from_turn']})[/dim]"
+            console.print(
+                f"{current_indent}[bold green]{session_id[:8]}...[/bold green]{forked_info}"
+            )
+            
+            # Show children (forks)
+            children = lineage.get("children", [])
+            if children:
+                for i, child in enumerate(children):
+                    is_last = (i == len(children) - 1)
+                    prefix = "└─" if is_last else "├─"
+                    child_id = child.get("session_id", "unknown")
+                    fork_turn = child.get("forked_from_turn", "?")
+                    console.print(
+                        f"{current_indent}{prefix} [cyan]{child_id[:8]}...[/cyan] "
+                        f"[dim](forked at turn {fork_turn})[/dim]"
+                    )
+            else:
+                console.print(f"{current_indent}[dim](no forks)[/dim]")
+            
+            console.print()
+            console.print(f"[dim]Depth: {lineage.get('depth', 0)} | "
+                         f"Children: {len(children)}[/dim]")
+            return
         if all_projects:
             projects_dir = Path.home() / ".amplifier" / "projects"
             if not projects_dir.exists():
@@ -589,6 +716,161 @@ def register_session_commands(
             for item in transcript:
                 console.print(json.dumps(item, indent=2))
 
+    @session.command(name="fork")
+    @click.argument("session_id")
+    @click.option("--at-turn", "-t", "turn", type=int, help="Turn number to fork at (default: latest)")
+    @click.option("--name", "-n", "new_name", help="Custom name/ID for forked session")
+    @click.option("--resume", "-r", "resume_after", is_flag=True, help="Resume forked session immediately")
+    @click.option("--no-events", is_flag=True, help="Skip copying events.jsonl")
+    def sessions_fork(
+        session_id: str,
+        turn: int | None,
+        new_name: str | None,
+        resume_after: bool,
+        no_events: bool,
+    ):
+        """Fork a session from a specific turn.
+        
+        Creates a new session with conversation history up to the specified turn.
+        The forked session is independently resumable and tracks lineage to parent.
+        
+        Examples:
+        
+            amplifier session fork abc123 --at-turn 3
+            
+            amplifier session fork abc123 --at-turn 3 --name "jwt-approach"
+            
+            amplifier session fork abc123 --at-turn 3 --resume
+        """
+        if not HAS_SESSION_FORK:
+            console.print("[red]Error:[/red] Session fork utilities not available.")
+            console.print("Install amplifier-foundation with session support.")
+            sys.exit(1)
+        
+        store = SessionStore()
+        
+        # Find the session
+        try:
+            session_id = store.find_session(session_id)
+        except FileNotFoundError:
+            console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
+            sys.exit(1)
+        except ValueError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+        
+        session_dir = store.base_dir / session_id
+        
+        # If no turn specified, show interactive selection or use latest
+        if turn is None:
+            # Load transcript to count turns
+            transcript_path = session_dir / "transcript.jsonl"
+            if not transcript_path.exists():
+                console.print(f"[red]Error:[/red] No transcript found for session")
+                sys.exit(1)
+            
+            messages = []
+            with open(transcript_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            messages.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+            
+            max_turns = count_turns(messages)
+            if max_turns == 0:
+                console.print("[red]Error:[/red] Session has no user messages to fork from")
+                sys.exit(1)
+            
+            # Show turn previews for selection
+            console.print()
+            console.print(f"[bold cyan]Session {session_id[:8]}... ({max_turns} turns)[/bold cyan]")
+            console.print()
+            
+            for t in range(1, min(max_turns + 1, 11)):  # Show up to 10 turns
+                try:
+                    summary = get_turn_summary(messages, t)
+                    user_preview = summary["user_content"][:60]
+                    if len(summary["user_content"]) > 60:
+                        user_preview += "..."
+                    tool_info = f" [{summary['tool_count']} tools]" if summary["tool_count"] else ""
+                    console.print(f"  [cyan][{t}][/cyan] {user_preview}{tool_info}")
+                except Exception:
+                    console.print(f"  [cyan][{t}][/cyan] [dim](unable to preview)[/dim]")
+            
+            if max_turns > 10:
+                console.print(f"  [dim]... and {max_turns - 10} more turns[/dim]")
+            
+            console.print()
+            
+            # Prompt for turn selection
+            try:
+                turn_input = Prompt.ask(
+                    "Fork at turn",
+                    default=str(max_turns),
+                )
+                turn = int(turn_input)
+            except (ValueError, KeyboardInterrupt):
+                console.print("[yellow]Cancelled[/yellow]")
+                return
+        
+        # Show preview before forking
+        try:
+            preview = get_fork_preview(session_dir, turn)
+            console.print()
+            console.print(f"[bold]Fork Preview:[/bold]")
+            console.print(f"  Parent: {preview['parent_id'][:8]}...")
+            console.print(f"  Fork at turn: {turn} of {preview['max_turns']}")
+            console.print(f"  Messages to copy: {preview['message_count']}")
+            if preview['has_orphaned_tools']:
+                console.print(f"  [yellow]Note: {preview['orphaned_tool_count']} tool call(s) will be completed with synthetic results[/yellow]")
+            console.print()
+        except ValueError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+        
+        # Perform the fork
+        try:
+            result = fork_session(
+                session_dir,
+                turn=turn,
+                new_session_id=new_name,
+                include_events=not no_events,
+            )
+            
+            console.print(f"[green]✓[/green] Forked session created: {result.session_id}")
+            console.print(f"  Messages: {result.message_count}")
+            console.print(f"  Parent: {result.parent_id[:8]}...")
+            console.print(f"  Forked at turn: {result.forked_from_turn}")
+            if result.events_count > 0:
+                console.print(f"  Events copied: {result.events_count}")
+            console.print()
+            console.print(f"Resume with: [cyan]amplifier session resume {result.session_id[:8]}[/cyan]")
+            
+            # Resume if requested
+            if resume_after:
+                console.print()
+                console.print("[dim]Resuming forked session...[/dim]")
+                # Invoke the resume command
+                ctx = click.get_current_context()
+                ctx.invoke(
+                    sessions_resume,
+                    session_id=result.session_id,
+                    profile=None,
+                    force_bundle=None,
+                    no_history=False,
+                    full_history=False,
+                    replay=False,
+                    replay_speed=2.0,
+                    show_thinking=False,
+                )
+                
+        except Exception as e:
+            console.print(f"[red]Error forking session:[/red] {e}")
+            sys.exit(1)
+
     @session.command(name="delete")
     @click.argument("session_id")
     @click.option("--force", "-f", is_flag=True, help="Skip confirmation")
@@ -624,6 +906,12 @@ def register_session_commands(
     @session.command(name="resume")
     @click.argument("session_id")
     @click.option("--profile", "-P", help="Profile to use for resumed session")
+    @click.option(
+        "--force-bundle",
+        "-B",
+        help="[Experimental] Force a different bundle for this session. "
+        "May cause instability if the bundle differs significantly from the original.",
+    )
     @click.option("--no-history", is_flag=True, help="Skip displaying conversation history")
     @click.option("--full-history", is_flag=True, help="Show all messages (default: last 10)")
     @click.option("--replay", is_flag=True, help="Replay conversation with timing simulation")
@@ -632,6 +920,7 @@ def register_session_commands(
     def sessions_resume(
         session_id: str,
         profile: str | None,
+        force_bundle: str | None,
         no_history: bool,
         full_history: bool,
         replay: bool,
@@ -662,12 +951,14 @@ def register_session_commands(
                 bundle_name,
                 saved_profile,
                 active_profile,
-            ) = _prepare_resume_context(session_id, profile, get_module_search_paths, console)
+            ) = _prepare_resume_context(
+                session_id, profile, get_module_search_paths, console, bundle_override=force_bundle
+            )
 
             # Display resume status
             console.print(f"[green]✓[/green] Resuming session: {session_id}")
             console.print(f"  Messages: {len(transcript)}")
-            if bundle_name:
+            if bundle_name and not force_bundle:
                 console.print(f"  Using saved bundle: {bundle_name}")
             elif saved_profile:
                 console.print(f"  Using saved profile: {saved_profile}")
@@ -723,8 +1014,14 @@ def register_session_commands(
     @cli.command(name="resume")
     @click.argument("session_id", required=False, default=None)
     @click.option("--limit", "-n", default=10, type=int, help="Number of sessions per page")
+    @click.option(
+        "--force-bundle",
+        "-B",
+        help="[Experimental] Force a different bundle for this session. "
+        "May cause instability if the bundle differs significantly from the original.",
+    )
     @click.pass_context
-    def interactive_resume(ctx: click.Context, session_id: str | None, limit: int):
+    def interactive_resume(ctx: click.Context, session_id: str | None, limit: int, force_bundle: str | None):
         """Interactively select and resume a session.
 
         If SESSION_ID is provided (can be partial), resumes that session directly.
@@ -749,6 +1046,7 @@ def register_session_commands(
                 sessions_resume,
                 session_id=full_id,
                 profile=None,
+                force_bundle=force_bundle,
                 no_history=False,
                 full_history=False,
                 replay=False,
@@ -757,7 +1055,7 @@ def register_session_commands(
             )
             return
 
-        _interactive_resume_impl(ctx, limit, sessions_resume)
+        _interactive_resume_impl(ctx, limit, sessions_resume, force_bundle=force_bundle)
 
 
 def _format_time_ago(dt: datetime) -> str:
@@ -847,6 +1145,8 @@ def _interactive_resume_impl(
     ctx: click.Context,
     limit: int,
     sessions_resume_cmd: click.Command,
+    *,
+    force_bundle: str | None = None,
 ) -> None:
     """Implementation of interactive resume with paging.
 
@@ -854,6 +1154,7 @@ def _interactive_resume_impl(
         ctx: Click context for invoking commands
         limit: Number of sessions per page
         sessions_resume_cmd: The sessions_resume command to invoke
+        force_bundle: Optional bundle to force for the resumed session
     """
     store = SessionStore()
     all_session_ids = store.list_sessions()
@@ -875,6 +1176,7 @@ def _interactive_resume_impl(
             sessions_resume_cmd,
             session_id=all_session_ids[0],
             profile=None,
+            force_bundle=force_bundle,
             no_history=False,
             full_history=False,
             replay=False,
@@ -984,6 +1286,7 @@ def _interactive_resume_impl(
                     sessions_resume_cmd,
                     session_id=selected_session_id,
                     profile=None,
+                    force_bundle=force_bundle,
                     no_history=False,
                     full_history=False,
                     replay=False,

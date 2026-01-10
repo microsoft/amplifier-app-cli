@@ -428,6 +428,7 @@ def register_session_spawning(session: AmplifierSession) -> None:
         agent_configs: dict[str, dict],
         sub_session_id: str | None = None,
         tool_inheritance: dict[str, list[str]] | None = None,
+        orchestrator_config: dict | None = None,
     ) -> dict:
         return await spawn_sub_session(
             agent_name=agent_name,
@@ -436,6 +437,7 @@ def register_session_spawning(session: AmplifierSession) -> None:
             agent_configs=agent_configs,
             sub_session_id=sub_session_id,
             tool_inheritance=tool_inheritance,
+            orchestrator_config=orchestrator_config,
         )
     
     async def resume_capability(sub_session_id: str, instruction: str) -> dict:

@@ -105,6 +105,35 @@ class AppSettings:
         providers = merged.get("config", {}).get("providers", [])
         return providers if isinstance(providers, list) else []
 
+    def get_notification_config(self) -> dict[str, Any]:
+        """Return merged notification policy config (local > project > global).
+
+        Notifications are an app-level policy that gets composed onto bundles
+        at runtime, similar to how providers work. Unlike bundle behaviors,
+        notification hooks only fire for root sessions (not sub-agents).
+
+        Expected structure in settings.yaml:
+            config:
+              notifications:
+                desktop:
+                  enabled: true
+                  title: "Amplifier"
+                  subtitle: "cwd"
+                  suppress_if_focused: true
+                push:
+                  enabled: true
+                  service: ntfy
+                  topic: "my-topic"
+                min_iterations: 1
+                show_iteration_count: true
+
+        Returns:
+            Dict with notification config, or empty dict if not configured.
+        """
+        merged = self._config.get_merged_settings()
+        notifications = merged.get("config", {}).get("notifications", {})
+        return notifications if isinstance(notifications, dict) else {}
+
     def get_tool_overrides(self, session_id: str | None = None, project_slug: str | None = None) -> list[dict[str, Any]]:
         """Return merged tool overrides (session > local > project > global).
 

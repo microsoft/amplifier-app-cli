@@ -66,8 +66,19 @@ async def resolve_bundle_config(
     if console:
         console.print(f"[dim]Preparing bundle '{bundle_name}'...[/dim]")
 
+    # Build behavior URIs from notification settings
+    # Notifications are an app-level policy: compose behavior bundles before prepare()
+    # so modules get properly downloaded and installed via normal bundle machinery
+    compose_behaviors = _build_notification_behaviors(app_settings.get_notification_config())
+
     # Load and prepare bundle (downloads modules from git sources)
-    prepared = await load_and_prepare_bundle(bundle_name, discovery)
+    # If compose_behaviors is provided, those behaviors are composed onto the bundle
+    # BEFORE prepare() runs, so their modules get installed correctly
+    prepared = await load_and_prepare_bundle(
+        bundle_name, 
+        discovery,
+        compose_behaviors=compose_behaviors if compose_behaviors else None,
+    )
 
     # Get the mount plan from the prepared bundle
     bundle_config = prepared.mount_plan
@@ -131,6 +142,10 @@ async def resolve_bundle_config(
     # Always sync hooks - they don't have overrides but still need to be in mount_plan
     if bundle_config.get("hooks"):
         prepared.mount_plan["hooks"] = bundle_config["hooks"]
+
+    # Note: Notification hooks are now composed via compose_behaviors parameter
+    # to load_and_prepare_bundle(), so they get properly installed during prepare().
+    # The behavior bundles handle root-session-only logic internally via parent_id check.
 
     return bundle_config, prepared
 
@@ -511,6 +526,51 @@ def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> No
         prepared_bundle.mount_plan["providers"] = config["providers"]
 
 
+def _build_notification_behaviors(notifications_config: dict[str, Any] | None) -> list[str]:
+    """Build list of notification behavior URIs based on settings.
+
+    Notifications are an app-level policy. Rather than injecting hooks after
+    bundle preparation, we compose notification behavior bundles BEFORE prepare()
+    so their modules get properly downloaded and installed.
+
+    Args:
+        notifications_config: Dict from settings.yaml config.notifications section
+
+    Returns:
+        List of behavior bundle URIs to compose onto the main bundle.
+        Empty list if no notifications are enabled.
+
+    Expected config structure:
+        notifications:
+          desktop:
+            enabled: true
+            ...
+          push:
+            enabled: true
+            ...
+    """
+    if not notifications_config:
+        return []
+
+    behaviors: list[str] = []
+
+    # Desktop notifications behavior
+    desktop_config = notifications_config.get("desktop", {})
+    if desktop_config.get("enabled", False):
+        behaviors.append(
+            "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/desktop-notifications.yaml"
+        )
+
+    # Push notifications behavior (includes desktop as a dependency for the event)
+    push_config = notifications_config.get("push", {})
+    if push_config.get("enabled", False):
+        behaviors.append(
+            "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/push-notifications.yaml"
+        )
+
+    return behaviors
+
+
 async def resolve_config_async(
     *,
     bundle_name: str | None = None,
@@ -659,4 +719,5 @@ __all__ = [
     "inject_user_providers",
     "_apply_provider_overrides",
     "_ensure_debug_defaults",
+    "_build_notification_behaviors",
 ]

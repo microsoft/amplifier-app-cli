@@ -114,6 +114,7 @@ async def spawn_sub_session(
     agent_configs: dict[str, dict],
     sub_session_id: str | None = None,
     tool_inheritance: dict[str, list[str]] | None = None,
+    orchestrator_config: dict | None = None,
 ) -> dict:
     """
     Spawn sub-session with agent configuration overlay.
@@ -127,6 +128,8 @@ async def spawn_sub_session(
         tool_inheritance: Optional tool filtering policy:
             - {"exclude_tools": ["tool-task"]} - inherit all EXCEPT these
             - {"inherit_tools": ["tool-filesystem"]} - inherit ONLY these
+        orchestrator_config: Optional orchestrator config to merge into session
+            (e.g., {"min_delay_between_calls_ms": 500} for rate limiting)
 
     Returns:
         Dict with "output" (response) and "session_id" (for multi-turn)
@@ -147,6 +150,22 @@ async def spawn_sub_session(
     if tool_inheritance and "tools" in merged_config:
         merged_config = _filter_tools(merged_config, tool_inheritance)
 
+    # Apply orchestrator config override if specified (recipe-level rate limiting)
+    # Session reads orchestrator config from: config["session"]["orchestrator"]["config"]
+    if orchestrator_config:
+        if "session" not in merged_config:
+            merged_config["session"] = {}
+        if "orchestrator" not in merged_config["session"]:
+            merged_config["session"]["orchestrator"] = {}
+        if "config" not in merged_config["session"]["orchestrator"]:
+            merged_config["session"]["orchestrator"]["config"] = {}
+        # Merge orchestrator config (caller's config takes precedence)
+        merged_config["session"]["orchestrator"]["config"].update(orchestrator_config)
+        logger.debug(
+            "Applied orchestrator config override to session.orchestrator.config: %s",
+            orchestrator_config,
+        )
+
     # Generate child session ID using W3C Trace Context span_id pattern
     # Use 16 hex chars (8 bytes) for fixed-length, filesystem-safe IDs
     if not sub_session_id:
@@ -157,9 +176,13 @@ async def spawn_sub_session(
         )
 
     # Create child session with parent_id and inherited UX systems (kernel mechanism)
+    # NOTE: We intentionally do NOT share parent's loader here.
+    # The loader caches modules with their config, so sharing would cause child sessions
+    # to get the parent's cached orchestrator config instead of their own.
+    # Each session needs its own loader to respect session-specific config (e.g., rate limiting).
     child_session = AmplifierSession(
         config=merged_config,
-        loader=parent_session.loader,
+        loader=None,  # Let child create its own loader to respect its config
         session_id=sub_session_id,
         parent_id=parent_session.session_id,  # Links to parent
         approval_system=parent_session.coordinator.approval_system,  # Inherit from parent
