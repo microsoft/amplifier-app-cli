@@ -30,6 +30,20 @@ from ..types import (
     SearchPathProviderProtocol,
 )
 
+# Import session fork utilities from foundation
+try:
+    from amplifier_foundation.session import (
+        fork_session,
+        get_fork_preview,
+        get_session_lineage,
+        get_turn_summary,
+        count_turns,
+        ForkResult,
+    )
+    HAS_SESSION_FORK = True
+except ImportError:
+    HAS_SESSION_FORK = False
+
 
 def _record_bundle_override(metadata: dict, new_bundle: str, original_config: str) -> None:
     """Record a bundle override in session metadata for diagnostics.
@@ -507,8 +521,72 @@ def register_session_commands(
     @click.option("--limit", "-n", default=20, help="Number of sessions to show")
     @click.option("--all-projects", is_flag=True, help="Show sessions from all projects")
     @click.option("--project", type=click.Path(), help="Show sessions for specific project path")
-    def sessions_list(limit: int, all_projects: bool, project: str | None):
-        """List recent sessions for the current project or across all projects."""
+    @click.option("--tree", "-t", "tree_session", help="Show lineage tree for a session")
+    def sessions_list(limit: int, all_projects: bool, project: str | None, tree_session: str | None):
+        """List recent sessions for the current project or across all projects.
+        
+        Use --tree SESSION_ID to show the lineage tree for a specific session.
+        """
+        # Handle --tree option first
+        if tree_session:
+            if not HAS_SESSION_FORK:
+                console.print("[red]Error:[/red] Session fork utilities not available.")
+                console.print("Install amplifier-foundation with session support.")
+                sys.exit(1)
+            
+            store = SessionStore()
+            try:
+                session_id = store.find_session(tree_session)
+            except FileNotFoundError:
+                console.print(f"[red]Error:[/red] No session found matching '{tree_session}'")
+                sys.exit(1)
+            except ValueError as e:
+                console.print(f"[red]Error:[/red] {e}")
+                sys.exit(1)
+            
+            session_dir = store.base_dir / session_id
+            lineage = get_session_lineage(session_dir, store.base_dir)
+            
+            console.print()
+            console.print("[bold cyan]Session Lineage Tree[/bold cyan]")
+            console.print()
+            
+            # Show ancestors first (root to parent)
+            ancestors = lineage.get("ancestors", [])
+            for i, ancestor_id in enumerate(reversed(ancestors)):
+                indent = "  " * i
+                console.print(f"{indent}[dim]{ancestor_id[:8]}...[/dim]")
+                console.print(f"{indent}│")
+            
+            # Show current session
+            current_indent = "  " * len(ancestors)
+            session_info = _get_session_display_info(store, session_id)
+            forked_info = ""
+            if lineage.get("forked_from_turn"):
+                forked_info = f" [dim](forked at turn {lineage['forked_from_turn']})[/dim]"
+            console.print(
+                f"{current_indent}[bold green]{session_id[:8]}...[/bold green]{forked_info}"
+            )
+            
+            # Show children (forks)
+            children = lineage.get("children", [])
+            if children:
+                for i, child in enumerate(children):
+                    is_last = (i == len(children) - 1)
+                    prefix = "└─" if is_last else "├─"
+                    child_id = child.get("session_id", "unknown")
+                    fork_turn = child.get("forked_from_turn", "?")
+                    console.print(
+                        f"{current_indent}{prefix} [cyan]{child_id[:8]}...[/cyan] "
+                        f"[dim](forked at turn {fork_turn})[/dim]"
+                    )
+            else:
+                console.print(f"{current_indent}[dim](no forks)[/dim]")
+            
+            console.print()
+            console.print(f"[dim]Depth: {lineage.get('depth', 0)} | "
+                         f"Children: {len(children)}[/dim]")
+            return
         if all_projects:
             projects_dir = Path.home() / ".amplifier" / "projects"
             if not projects_dir.exists():
@@ -616,6 +694,161 @@ def register_session_commands(
             console.print("\n[bold]Transcript:[/bold]")
             for item in transcript:
                 console.print(json.dumps(item, indent=2))
+
+    @session.command(name="fork")
+    @click.argument("session_id")
+    @click.option("--at-turn", "-t", "turn", type=int, help="Turn number to fork at (default: latest)")
+    @click.option("--name", "-n", "new_name", help="Custom name/ID for forked session")
+    @click.option("--resume", "-r", "resume_after", is_flag=True, help="Resume forked session immediately")
+    @click.option("--no-events", is_flag=True, help="Skip copying events.jsonl")
+    def sessions_fork(
+        session_id: str,
+        turn: int | None,
+        new_name: str | None,
+        resume_after: bool,
+        no_events: bool,
+    ):
+        """Fork a session from a specific turn.
+        
+        Creates a new session with conversation history up to the specified turn.
+        The forked session is independently resumable and tracks lineage to parent.
+        
+        Examples:
+        
+            amplifier session fork abc123 --at-turn 3
+            
+            amplifier session fork abc123 --at-turn 3 --name "jwt-approach"
+            
+            amplifier session fork abc123 --at-turn 3 --resume
+        """
+        if not HAS_SESSION_FORK:
+            console.print("[red]Error:[/red] Session fork utilities not available.")
+            console.print("Install amplifier-foundation with session support.")
+            sys.exit(1)
+        
+        store = SessionStore()
+        
+        # Find the session
+        try:
+            session_id = store.find_session(session_id)
+        except FileNotFoundError:
+            console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
+            sys.exit(1)
+        except ValueError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+        
+        session_dir = store.base_dir / session_id
+        
+        # If no turn specified, show interactive selection or use latest
+        if turn is None:
+            # Load transcript to count turns
+            transcript_path = session_dir / "transcript.jsonl"
+            if not transcript_path.exists():
+                console.print(f"[red]Error:[/red] No transcript found for session")
+                sys.exit(1)
+            
+            messages = []
+            with open(transcript_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            messages.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+            
+            max_turns = count_turns(messages)
+            if max_turns == 0:
+                console.print("[red]Error:[/red] Session has no user messages to fork from")
+                sys.exit(1)
+            
+            # Show turn previews for selection
+            console.print()
+            console.print(f"[bold cyan]Session {session_id[:8]}... ({max_turns} turns)[/bold cyan]")
+            console.print()
+            
+            for t in range(1, min(max_turns + 1, 11)):  # Show up to 10 turns
+                try:
+                    summary = get_turn_summary(messages, t)
+                    user_preview = summary["user_content"][:60]
+                    if len(summary["user_content"]) > 60:
+                        user_preview += "..."
+                    tool_info = f" [{summary['tool_count']} tools]" if summary["tool_count"] else ""
+                    console.print(f"  [cyan][{t}][/cyan] {user_preview}{tool_info}")
+                except Exception:
+                    console.print(f"  [cyan][{t}][/cyan] [dim](unable to preview)[/dim]")
+            
+            if max_turns > 10:
+                console.print(f"  [dim]... and {max_turns - 10} more turns[/dim]")
+            
+            console.print()
+            
+            # Prompt for turn selection
+            try:
+                turn_input = Prompt.ask(
+                    "Fork at turn",
+                    default=str(max_turns),
+                )
+                turn = int(turn_input)
+            except (ValueError, KeyboardInterrupt):
+                console.print("[yellow]Cancelled[/yellow]")
+                return
+        
+        # Show preview before forking
+        try:
+            preview = get_fork_preview(session_dir, turn)
+            console.print()
+            console.print(f"[bold]Fork Preview:[/bold]")
+            console.print(f"  Parent: {preview['parent_id'][:8]}...")
+            console.print(f"  Fork at turn: {turn} of {preview['max_turns']}")
+            console.print(f"  Messages to copy: {preview['message_count']}")
+            if preview['has_orphaned_tools']:
+                console.print(f"  [yellow]Note: {preview['orphaned_tool_count']} tool call(s) will be completed with synthetic results[/yellow]")
+            console.print()
+        except ValueError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+        
+        # Perform the fork
+        try:
+            result = fork_session(
+                session_dir,
+                turn=turn,
+                new_session_id=new_name,
+                include_events=not no_events,
+            )
+            
+            console.print(f"[green]✓[/green] Forked session created: {result.session_id}")
+            console.print(f"  Messages: {result.message_count}")
+            console.print(f"  Parent: {result.parent_id[:8]}...")
+            console.print(f"  Forked at turn: {result.forked_from_turn}")
+            if result.events_count > 0:
+                console.print(f"  Events copied: {result.events_count}")
+            console.print()
+            console.print(f"Resume with: [cyan]amplifier session resume {result.session_id[:8]}[/cyan]")
+            
+            # Resume if requested
+            if resume_after:
+                console.print()
+                console.print("[dim]Resuming forked session...[/dim]")
+                # Invoke the resume command
+                ctx = click.get_current_context()
+                ctx.invoke(
+                    sessions_resume,
+                    session_id=result.session_id,
+                    profile=None,
+                    force_bundle=None,
+                    no_history=False,
+                    full_history=False,
+                    replay=False,
+                    replay_speed=2.0,
+                    show_thinking=False,
+                )
+                
+        except Exception as e:
+            console.print(f"[red]Error forking session:[/red] {e}")
+            sys.exit(1)
 
     @session.command(name="delete")
     @click.argument("session_id")
