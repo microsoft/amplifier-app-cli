@@ -255,6 +255,76 @@ amplifier bundle use <TAB> # Shows available bundles
 amplifier run --<TAB>      # Shows all options
 ```
 
+## Custom Slash Commands
+
+Amplifier supports extensible slash commands defined as Markdown files. Create your own commands to automate repetitive prompts.
+
+### Quick Start
+
+```bash
+# Create a command
+mkdir -p ~/.amplifier/commands
+cat > ~/.amplifier/commands/review.md << 'EOF'
+---
+description: Quick code review
+argument-hint: "<file>"
+---
+
+Review $ARGUMENTS for:
+- Code quality and best practices
+- Potential bugs or edge cases
+- Suggestions for improvement
+EOF
+
+# Use it in interactive mode
+amplifier
+> /help          # Shows your custom commands
+> /review src/main.py
+```
+
+### Command Locations
+
+Commands are discovered from (in precedence order):
+1. `.amplifier/commands/` - Project-level (highest priority)
+2. `~/.amplifier/commands/` - User-level
+
+### Template Syntax
+
+| Syntax | Description | Example |
+|--------|-------------|---------|
+| `$ARGUMENTS` | All arguments as-is | `/cmd foo bar` → `foo bar` |
+| `$1`, `$2`, etc. | Positional arguments | `/cmd foo bar` → `$1=foo`, `$2=bar` |
+| `{{$1 or "default"}}` | With default value | `/cmd` → `default` |
+
+### Example Commands
+
+```markdown
+---
+description: Generate a standup summary from git history
+argument-hint: "[days:1]"
+---
+
+Generate a standup summary from the last {{$1 or "1"}} days.
+
+Run `git log --oneline --since="{{$1 or "1"}} days ago"` and summarize.
+```
+
+### Built-in Commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show all commands (built-in + custom) |
+| `/reload-commands` | Reload custom commands from disk |
+| `/clear` | Clear conversation history |
+| `/quit` | Exit interactive mode |
+
+### More Information
+
+See [amplifier-module-tool-slash-command](https://github.com/robotdad/amplifier-module-tool-slash-command) for:
+- Full template syntax documentation
+- Example commands for GitHub, dev workflows, and more
+- Creating namespaced commands with subdirectories
+
 ## Architecture
 
 This CLI is built on top of amplifier-core and provides:
