@@ -121,13 +121,16 @@ async def resolve_bundle_config(
     # IMPORTANT: Must expand BEFORE syncing to mount_plan, so ${ANTHROPIC_API_KEY} etc. become actual values
     bundle_config = expand_env_vars(bundle_config)
 
-    # CRITICAL: Sync providers and tools to prepared.mount_plan so create_session() uses them
+    # CRITICAL: Sync providers, tools, and hooks to prepared.mount_plan so create_session() uses them
     # prepared.mount_plan is what create_session() uses, not bundle_config
     # This must happen AFTER env var expansion so API keys are actual values, not "${VAR}" literals
     if provider_overrides:
         prepared.mount_plan["providers"] = bundle_config["providers"]
     if tool_overrides:
         prepared.mount_plan["tools"] = bundle_config["tools"]
+    # Always sync hooks - they don't have overrides but still need to be in mount_plan
+    if bundle_config.get("hooks"):
+        prepared.mount_plan["hooks"] = bundle_config["hooks"]
 
     return bundle_config, prepared
 
