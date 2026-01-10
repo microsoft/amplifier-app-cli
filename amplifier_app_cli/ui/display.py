@@ -70,12 +70,28 @@ class CLIDisplaySystem:
         icon, color = styles.get(level, ("[blue]\u2139\ufe0f[/blue]", "blue"))
 
         # Get indentation prefix for current nesting level
-        indent = self._get_indent()
+        nesting_indent = self._get_indent()
 
-        # Display to user with proper indentation
-        self.console.print(
-            f"{indent}{icon} [{color}]{level.upper()}[/{color}] {message} [dim]({source})[/dim]"
-        )
+        # Handle multi-line messages by indenting subsequent lines
+        lines = message.split("\n")
+        first_line = lines[0]
+
+        # Build prefix for first line
+        prefix = f"{nesting_indent}{icon} [{color}]{level.upper()}[/{color}] "
+
+        # Calculate indent for subsequent lines (nesting + icon ~2 + space + level + space)
+        # Use spaces to align with content after the prefix
+        content_indent = nesting_indent + "         "  # 9 spaces to align after "❌ ERROR "
+
+        if len(lines) == 1:
+            # Single line - simple case
+            self.console.print(f"{prefix}{first_line} [dim]({source})[/dim]")
+        else:
+            # Multi-line - print first with source, indent rest
+            self.console.print(f"{prefix}{first_line} [dim]({source})[/dim]")
+            for line in lines[1:]:
+                if line.strip():  # Skip empty lines
+                    self.console.print(f"{content_indent}{line}")
 
         # Log at debug level (user already sees the message via console.print)
         logger.debug(
