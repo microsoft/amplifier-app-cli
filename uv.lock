@@ -68,7 +68,7 @@ dependencies = [
 [[package]]
 name = "amplifier-foundation"
 version = "1.0.0"
-source = { git = "https://github.com/microsoft/amplifier-foundation?branch=main#f245dbb0e7186b9a881fd84483cab2443c09ffd8" }
+source = { git = "https://github.com/microsoft/amplifier-foundation?branch=main#ca1322b60cc0959fedf01ea5f5668f395c725076" }
 dependencies = [
     { name = "amplifier-core" },
     { name = "pyyaml" },
