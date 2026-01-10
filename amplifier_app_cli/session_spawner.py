@@ -254,29 +254,24 @@ async def spawn_sub_session(
         resolver = create_foundation_resolver()
         await child_session.coordinator.mount("module-source-resolver", resolver)
 
-    # Initialize child session (mounts modules per merged config)
-    # Now the resolver is available for loading modules with source: directives
-    await child_session.initialize()
-
-    # Share sys.path additions from parent loader to ensure hook modules can import dependencies
-    # The parent loader adds module paths to sys.path during loading; child needs these too
+    # Share sys.path additions from parent loader BEFORE initialize()
+    # This ensures bundle packages (like amplifier_bundle_python_dev) are importable
+    # when child session loads modules that depend on them
     if hasattr(parent_session, "loader") and parent_session.loader is not None:
         parent_added_paths = getattr(parent_session.loader, "_added_paths", [])
-        if (
-            parent_added_paths
-            and hasattr(child_session, "loader")
-            and child_session.loader is not None
-        ):
+        if parent_added_paths:
             import sys
 
             for path in parent_added_paths:
                 if path not in sys.path:
                     sys.path.insert(0, path)
-                if path not in child_session.loader._added_paths:
-                    child_session.loader._added_paths.append(path)
             logger.debug(
                 f"Shared {len(parent_added_paths)} sys.path entries from parent to child session"
             )
+
+    # Initialize child session (mounts modules per merged config)
+    # Now the resolver is available for loading modules with source: directives
+    await child_session.initialize()
 
     # Wire up cancellation propagation: parent cancellation should propagate to child
     # This enables graceful Ctrl+C handling for nested agent sessions
