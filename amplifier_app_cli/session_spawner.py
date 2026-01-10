@@ -254,20 +254,38 @@ async def spawn_sub_session(
         resolver = create_foundation_resolver()
         await child_session.coordinator.mount("module-source-resolver", resolver)
 
-    # Share sys.path additions from parent loader BEFORE initialize()
+    # Share sys.path additions from parent BEFORE initialize()
     # This ensures bundle packages (like amplifier_bundle_python_dev) are importable
-    # when child session loads modules that depend on them
+    # when child session loads modules that depend on them.
+    #
+    # Two sources of paths need to be shared:
+    # 1. loader._added_paths - individual module paths added during loading
+    # 2. bundle_package_paths capability - bundle src/ directories (e.g., python-dev)
+    import sys
+
+    paths_to_share: list[str] = []
+
+    # Source 1: Module paths from parent loader
     if hasattr(parent_session, "loader") and parent_session.loader is not None:
         parent_added_paths = getattr(parent_session.loader, "_added_paths", [])
-        if parent_added_paths:
-            import sys
+        paths_to_share.extend(parent_added_paths)
 
-            for path in parent_added_paths:
-                if path not in sys.path:
-                    sys.path.insert(0, path)
-            logger.debug(
-                f"Shared {len(parent_added_paths)} sys.path entries from parent to child session"
-            )
+    # Source 2: Bundle package paths (src/ directories from bundles like python-dev)
+    # These are registered as a capability during bundle preparation
+    bundle_package_paths = parent_session.coordinator.get_capability(
+        "bundle_package_paths"
+    )
+    if bundle_package_paths:
+        paths_to_share.extend(bundle_package_paths)
+
+    # Add all paths to sys.path
+    if paths_to_share:
+        for path in paths_to_share:
+            if path not in sys.path:
+                sys.path.insert(0, path)
+        logger.debug(
+            f"Shared {len(paths_to_share)} sys.path entries from parent to child session"
+        )
 
     # Initialize child session (mounts modules per merged config)
     # Now the resolver is available for loading modules with source: directives
