@@ -103,6 +103,50 @@ def _filter_tools(config: dict, tool_inheritance: dict[str, list[str]]) -> dict:
     return new_config
 
 
+def _filter_hooks(config: dict, hook_inheritance: dict[str, list[str]]) -> dict:
+    """Filter hooks in config based on hook inheritance policy.
+
+    Args:
+        config: Session config containing "hooks" list
+        hook_inheritance: Policy dict with either:
+            - "exclude_hooks": list of hook module names to exclude
+            - "inherit_hooks": list of hook module names to include (allowlist)
+
+    Returns:
+        New config dict with filtered hooks list
+    """
+    hooks = config.get("hooks", [])
+    if not hooks:
+        return config
+
+    exclude_hooks = hook_inheritance.get("exclude_hooks", [])
+    inherit_hooks = hook_inheritance.get("inherit_hooks")
+
+    if inherit_hooks is not None:
+        # Allowlist mode: only include specified hooks
+        filtered_hooks = [h for h in hooks if h.get("module") in inherit_hooks]
+    elif exclude_hooks:
+        # Blocklist mode: exclude specified hooks
+        filtered_hooks = [h for h in hooks if h.get("module") not in exclude_hooks]
+    else:
+        # No filtering
+        return config
+
+    # Return new config with filtered hooks
+    new_config = dict(config)
+    new_config["hooks"] = filtered_hooks
+
+    logger.debug(
+        "Filtered hooks: %d -> %d (exclude=%s, inherit=%s)",
+        len(hooks),
+        len(filtered_hooks),
+        exclude_hooks,
+        inherit_hooks,
+    )
+
+    return new_config
+
+
 async def spawn_sub_session(
     agent_name: str,
     instruction: str,
@@ -110,6 +154,7 @@ async def spawn_sub_session(
     agent_configs: dict[str, dict],
     sub_session_id: str | None = None,
     tool_inheritance: dict[str, list[str]] | None = None,
+    hook_inheritance: dict[str, list[str]] | None = None,
     orchestrator_config: dict | None = None,
 ) -> dict:
     """
@@ -124,6 +169,9 @@ async def spawn_sub_session(
         tool_inheritance: Optional tool filtering policy:
             - {"exclude_tools": ["tool-task"]} - inherit all EXCEPT these
             - {"inherit_tools": ["tool-filesystem"]} - inherit ONLY these
+        hook_inheritance: Optional hook filtering policy:
+            - {"exclude_hooks": ["hooks-logging"]} - inherit all EXCEPT these
+            - {"inherit_hooks": ["hooks-approval"]} - inherit ONLY these
         orchestrator_config: Optional orchestrator config to merge into session
             (e.g., {"min_delay_between_calls_ms": 500} for rate limiting)
 
@@ -145,6 +193,10 @@ async def spawn_sub_session(
     # Apply tool inheritance filtering if specified
     if tool_inheritance and "tools" in merged_config:
         merged_config = _filter_tools(merged_config, tool_inheritance)
+
+    # Apply hook inheritance filtering if specified
+    if hook_inheritance and "hooks" in merged_config:
+        merged_config = _filter_hooks(merged_config, hook_inheritance)
 
     # Apply orchestrator config override if specified (recipe-level rate limiting)
     # Session reads orchestrator config from: config["session"]["orchestrator"]["config"]
@@ -205,6 +257,26 @@ async def spawn_sub_session(
     # Initialize child session (mounts modules per merged config)
     # Now the resolver is available for loading modules with source: directives
     await child_session.initialize()
+
+    # Share sys.path additions from parent loader to ensure hook modules can import dependencies
+    # The parent loader adds module paths to sys.path during loading; child needs these too
+    if hasattr(parent_session, "loader") and parent_session.loader is not None:
+        parent_added_paths = getattr(parent_session.loader, "_added_paths", [])
+        if (
+            parent_added_paths
+            and hasattr(child_session, "loader")
+            and child_session.loader is not None
+        ):
+            import sys
+
+            for path in parent_added_paths:
+                if path not in sys.path:
+                    sys.path.insert(0, path)
+                if path not in child_session.loader._added_paths:
+                    child_session.loader._added_paths.append(path)
+            logger.debug(
+                f"Shared {len(parent_added_paths)} sys.path entries from parent to child session"
+            )
 
     # Wire up cancellation propagation: parent cancellation should propagate to child
     # This enables graceful Ctrl+C handling for nested agent sessions
