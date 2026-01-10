@@ -428,6 +428,7 @@ def register_session_spawning(session: AmplifierSession) -> None:
         agent_configs: dict[str, dict],
         sub_session_id: str | None = None,
         tool_inheritance: dict[str, list[str]] | None = None,
+        hook_inheritance: dict[str, list[str]] | None = None,
         orchestrator_config: dict | None = None,
     ) -> dict:
         return await spawn_sub_session(
@@ -437,6 +438,7 @@ def register_session_spawning(session: AmplifierSession) -> None:
             agent_configs=agent_configs,
             sub_session_id=sub_session_id,
             tool_inheritance=tool_inheritance,
+            hook_inheritance=hook_inheritance,
             orchestrator_config=orchestrator_config,
         )
     
