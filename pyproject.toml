@@ -9,6 +9,7 @@ authors = [{ name = "Microsoft MADE:Explorations Team" }]
 dependencies = [
     "click>=8.1.0",
     "rich>=13.0.0",
+    "pygments>=2.15.0",  # Needed for pygments.lexers.markup
     "pydantic>=2.0.0",
     "amplifier-core",
     "amplifier-foundation",
