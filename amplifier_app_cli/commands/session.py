@@ -784,24 +784,28 @@ def register_session_commands(
                 console.print("[red]Error:[/red] Session has no user messages to fork from")
                 sys.exit(1)
             
-            # Show turn previews for selection
+            # Show turn previews for selection (most recent first)
             console.print()
             console.print(f"[bold cyan]Session {session_id[:8]}... ({max_turns} turns)[/bold cyan]")
             console.print()
+            console.print("[dim]Most recent first:[/dim]")
+            console.print()
             
-            for t in range(1, min(max_turns + 1, 11)):  # Show up to 10 turns
+            turns_to_show = min(max_turns, 10)
+            for t in range(max_turns, max(0, max_turns - turns_to_show), -1):
                 try:
                     summary = get_turn_summary(messages, t)
-                    user_preview = summary["user_content"][:60]
-                    if len(summary["user_content"]) > 60:
+                    user_preview = summary["user_content"][:55]
+                    if len(summary["user_content"]) > 55:
                         user_preview += "..."
                     tool_info = f" [{summary['tool_count']} tools]" if summary["tool_count"] else ""
-                    console.print(f"  [cyan][{t}][/cyan] {user_preview}{tool_info}")
+                    marker = " [green]← current[/green]" if t == max_turns else ""
+                    console.print(f"  [cyan][{t}][/cyan] {user_preview}{tool_info}{marker}")
                 except Exception:
                     console.print(f"  [cyan][{t}][/cyan] [dim](unable to preview)[/dim]")
             
             if max_turns > 10:
-                console.print(f"  [dim]... and {max_turns - 10} more turns[/dim]")
+                console.print(f"  [dim]... {max_turns - 10} earlier turns[/dim]")
             
             console.print()
             

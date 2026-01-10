@@ -252,6 +252,7 @@ class CommandProcessor:
         "/allowed-dirs": {"action": "manage_allowed_dirs", "description": "Manage allowed write directories"},
         "/denied-dirs": {"action": "manage_denied_dirs", "description": "Manage denied write directories"},
         "/rename": {"action": "rename_session", "description": "Rename current session"},
+        "/fork": {"action": "fork_session", "description": "Fork session at turn N: /fork [turn]"},
     }
 
     def __init__(self, session: AmplifierSession, profile_name: str = "unknown"):
@@ -326,6 +327,9 @@ class CommandProcessor:
 
         if action == "rename_session":
             return await self._rename_session(data.get("args", ""))
+
+        if action == "fork_session":
+            return await self._fork_session(data.get("args", ""))
 
         if action == "unknown_command":
             return f"Unknown command: {data['command']}. Use /help for available commands."
@@ -483,6 +487,121 @@ class CommandProcessor:
 
         except Exception as e:
             return f"Failed to rename session: {e}"
+
+    async def _fork_session(self, args: str) -> str:
+        """Fork the current session at a specific turn.
+
+        Usage:
+            /fork          - Show conversation turns
+            /fork 3        - Fork at turn 3
+            /fork 3 myname - Fork at turn 3 with custom name
+        """
+        from .session_store import SessionStore
+
+        # Check if session fork utilities are available
+        try:
+            from amplifier_foundation.session import (
+                fork_session,
+                count_turns,
+                get_turn_summary,
+                get_fork_preview,
+            )
+        except ImportError:
+            return "Error: Session fork utilities not available. Install amplifier-foundation with session support."
+
+        store = SessionStore()
+        session_id = self.session.coordinator.session_id
+        session_dir = store.base_dir / session_id
+
+        if not session_dir.exists():
+            return f"Error: Session directory not found: {session_dir}"
+
+        # Get current messages to count turns
+        context = self.session.coordinator.get("context")
+        if not context or not hasattr(context, "get_messages"):
+            return "Error: No context available"
+
+        messages = await context.get_messages()
+        max_turns = count_turns(messages)
+
+        if max_turns == 0:
+            return "Error: No turns to fork from (no user messages)"
+
+        # Parse arguments
+        parts = args.strip().split()
+        turn = None
+        custom_name = None
+
+        if len(parts) >= 1 and parts[0]:
+            try:
+                turn = int(parts[0])
+            except ValueError:
+                # Maybe it's a name without turn? Show help
+                return "Usage: /fork <turn> [name]\n\nRun /fork first to see your conversation turns."
+
+        if len(parts) >= 2:
+            custom_name = parts[1]
+
+        # If no turn specified, show turn previews (most recent first)
+        if turn is None:
+            lines = ["", "Your conversation turns (most recent first):", ""]
+            
+            # Show turns in reverse order (most recent first)
+            turns_to_show = min(max_turns, 10)
+            for t in range(max_turns, max(0, max_turns - turns_to_show), -1):
+                try:
+                    summary = get_turn_summary(messages, t)
+                    user_preview = summary["user_content"][:55]
+                    if len(summary["user_content"]) > 55:
+                        user_preview += "..."
+                    tool_info = f" [{summary['tool_count']} tools]" if summary["tool_count"] else ""
+                    marker = " ← you are here" if t == max_turns else ""
+                    lines.append(f"  [{t}] {user_preview}{tool_info}{marker}")
+                except Exception:
+                    lines.append(f"  [{t}] (unable to preview)")
+
+            if max_turns > 10:
+                lines.append(f"  ... {max_turns - 10} earlier turns")
+
+            lines.append("")
+            lines.append("To fork, run: /fork <turn>")
+            lines.append("Example: /fork 3        - fork at turn 3")
+            lines.append("         /fork 3 my-fix - fork at turn 3 with name 'my-fix'")
+            return "\n".join(lines)
+
+        # Validate turn
+        if turn < 1 or turn > max_turns:
+            return f"Error: Turn {turn} out of range (1-{max_turns})"
+
+        # Show preview
+        try:
+            preview = get_fork_preview(session_dir, turn)
+        except Exception as e:
+            return f"Error getting fork preview: {e}"
+
+        # Perform the fork
+        try:
+            result = fork_session(
+                session_dir,
+                turn=turn,
+                new_session_id=custom_name,
+                include_events=True,
+            )
+
+            lines = [
+                f"✓ Forked session created: {result.session_id}",
+                f"  Messages: {result.message_count}",
+                f"  Forked at turn: {result.forked_from_turn} of {max_turns}",
+            ]
+            if result.events_count > 0:
+                lines.append(f"  Events copied: {result.events_count}")
+            lines.append("")
+            lines.append(f"Resume with: amplifier session resume {result.session_id[:8]}")
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            return f"Error forking session: {e}"
 
     def _format_help(self) -> str:
         """Format help text."""
