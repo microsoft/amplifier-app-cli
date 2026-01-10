@@ -7,12 +7,41 @@ from rich.console import Console
 
 logger = logging.getLogger(__name__)
 
+# Indentation for nested sessions (matches orchestrator output style)
+NESTING_INDENT = "    "  # 4 spaces per nesting level
+
 
 class CLIDisplaySystem:
-    """Terminal-based display with Rich formatting."""
+    """Terminal-based display with Rich formatting.
+
+    Supports nesting depth tracking to indent hook messages when running
+    in sub-sessions (agent delegations). The nesting is managed via
+    push_nesting()/pop_nesting() calls from the session spawner.
+    """
 
     def __init__(self):
         self.console = Console()
+        self._nesting_depth = 0
+
+    def push_nesting(self) -> None:
+        """Increase nesting depth (called when entering a sub-session)."""
+        self._nesting_depth += 1
+        logger.debug(f"Display nesting depth increased to {self._nesting_depth}")
+
+    def pop_nesting(self) -> None:
+        """Decrease nesting depth (called when exiting a sub-session)."""
+        if self._nesting_depth > 0:
+            self._nesting_depth -= 1
+            logger.debug(f"Display nesting depth decreased to {self._nesting_depth}")
+
+    @property
+    def nesting_depth(self) -> int:
+        """Current nesting depth (0 = root session)."""
+        return self._nesting_depth
+
+    def _get_indent(self) -> str:
+        """Get indentation prefix for current nesting level."""
+        return NESTING_INDENT * self._nesting_depth
 
     def show_message(
         self,
@@ -28,24 +57,32 @@ class CLIDisplaySystem:
             level: Severity level (info/warning/error)
             source: Message source for context
 
-        Logs the message and displays it to user with appropriate styling.
+        Messages are indented based on current nesting depth to align
+        with sub-session output formatting.
         """
         # Map level to Rich style and icon
         styles = {
-            "info": ("[green]ℹ️[/green]", "green"),
-            "warning": ("[yellow]⚠️[/yellow]", "yellow"),
-            "error": ("[red]❌[/red]", "red"),
+            "info": ("[green]\u2139\ufe0f[/green]", "green"),
+            "warning": ("[yellow]\u26a0\ufe0f[/yellow]", "yellow"),
+            "error": ("[red]\u274c[/red]", "red"),
         }
 
-        icon, color = styles.get(level, ("[blue]ℹ️[/blue]", "blue"))
+        icon, color = styles.get(level, ("[blue]\u2139\ufe0f[/blue]", "blue"))
 
-        # Display to user
+        # Get indentation prefix for current nesting level
+        indent = self._get_indent()
+
+        # Display to user with proper indentation
         self.console.print(
-            f"{icon} [{color}]{level.upper()}[/{color}] {message} [dim]({source})[/dim]"
+            f"{indent}{icon} [{color}]{level.upper()}[/{color}] {message} [dim]({source})[/dim]"
         )
 
         # Log at debug level (user already sees the message via console.print)
         logger.debug(
             f"Hook message displayed: {message}",
-            extra={"source": source, "level": level},
+            extra={
+                "source": source,
+                "level": level,
+                "nesting_depth": self._nesting_depth,
+            },
         )

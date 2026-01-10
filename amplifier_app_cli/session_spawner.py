@@ -228,14 +228,19 @@ async def spawn_sub_session(
     # The loader caches modules with their config, so sharing would cause child sessions
     # to get the parent's cached orchestrator config instead of their own.
     # Each session needs its own loader to respect session-specific config (e.g., rate limiting).
+    display_system = parent_session.coordinator.display_system
     child_session = AmplifierSession(
         config=merged_config,
         loader=None,  # Let child create its own loader to respect its config
         session_id=sub_session_id,
         parent_id=parent_session.session_id,  # Links to parent
         approval_system=parent_session.coordinator.approval_system,  # Inherit from parent
-        display_system=parent_session.coordinator.display_system,  # Inherit from parent
+        display_system=display_system,  # Inherit from parent
     )
+
+    # Notify display system we're entering a nested session (for indentation)
+    if hasattr(display_system, "push_nesting"):
+        display_system.push_nesting()
 
     # Register app-layer capabilities for child session BEFORE initialization
     # These must be mounted before initialize() because module loading needs the resolver
@@ -368,6 +373,10 @@ async def spawn_sub_session(
     logger.debug(
         f"Unregistered child cancellation token for sub-session {sub_session_id}"
     )
+
+    # Notify display system we're exiting the nested session (for indentation)
+    if hasattr(display_system, "pop_nesting"):
+        display_system.pop_nesting()
 
     # Cleanup child session
     await child_session.cleanup()
