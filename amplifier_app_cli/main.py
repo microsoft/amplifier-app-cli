@@ -251,6 +251,7 @@ class CommandProcessor:
         "/agents": {"action": "list_agents", "description": "List available agents"},
         "/allowed-dirs": {"action": "manage_allowed_dirs", "description": "Manage allowed write directories"},
         "/denied-dirs": {"action": "manage_denied_dirs", "description": "Manage denied write directories"},
+        "/rename": {"action": "rename_session", "description": "Rename current session"},
     }
 
     def __init__(self, session: AmplifierSession, profile_name: str = "unknown"):
@@ -322,6 +323,9 @@ class CommandProcessor:
 
         if action == "manage_denied_dirs":
             return await self._manage_denied_dirs(data.get("args", ""))
+
+        if action == "rename_session":
+            return await self._rename_session(data.get("args", ""))
 
         if action == "unknown_command":
             return f"Unknown command: {data['command']}. Use /help for available commands."
@@ -401,7 +405,27 @@ class CommandProcessor:
     async def _get_status(self) -> str:
         """Get session status information."""
         lines = ["Session Status:"]
-        lines.append(f"  Session ID: {self.session.coordinator.session_id}")
+        session_id = self.session.coordinator.session_id
+        lines.append(f"  Session ID: {session_id}")
+
+        # Show session name if available
+        try:
+            from .session_store import SessionStore
+            from .paths import get_sessions_dir
+            store = SessionStore(get_sessions_dir())
+            if store.exists(session_id):
+                metadata = store.get_metadata(session_id)
+                if metadata.get("name"):
+                    lines.append(f"  Name: {metadata['name']}")
+                if metadata.get("description"):
+                    # Truncate long descriptions
+                    desc = metadata["description"]
+                    if len(desc) > 60:
+                        desc = desc[:57] + "..."
+                    lines.append(f"  Description: {desc}")
+        except Exception:
+            pass  # Silently skip if we can't load metadata
+
         lines.append(f"  Profile: {self.profile_name}")
 
         # Plan mode status
@@ -431,6 +455,34 @@ class CommandProcessor:
         context = self.session.coordinator.get("context")
         if context and hasattr(context, "clear"):
             await context.clear()
+
+    async def _rename_session(self, new_name: str) -> str:
+        """Rename the current session."""
+        new_name = new_name.strip()
+        if not new_name:
+            return "Usage: /rename <new name>"
+
+        session_id = self.session.coordinator.session_id
+
+        try:
+            from datetime import datetime, UTC
+            from .session_store import SessionStore
+            from .paths import get_sessions_dir
+
+            store = SessionStore(get_sessions_dir())
+            if not store.exists(session_id):
+                return f"Session {session_id[:8]}... not found in storage"
+
+            # Update the name in metadata
+            store.update_metadata(session_id, {
+                "name": new_name[:50],  # Limit name length
+                "name_generated_at": datetime.now(UTC).isoformat(),
+            })
+
+            return f"✓ Session renamed to: {new_name[:50]}"
+
+        except Exception as e:
+            return f"Failed to rename session: {e}"
 
     def _format_help(self) -> str:
         """Format help text."""
@@ -1099,7 +1151,7 @@ async def interactive_chat(
                 if hooks:
                     from amplifier_core.events import PROMPT_COMPLETE
 
-                    await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt_text, "response": response})
+                    await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt_text, "response": response, "session_id": actual_session_id})
 
                 # Save session after execution (even if cancelled - preserves state)
                 await _save_session()
@@ -1171,6 +1223,11 @@ async def interactive_chat(
                     console.print_exception()
 
     finally:
+        # Emit session:end event before cleanup to allow hooks to finish
+        hooks = session.coordinator.get("hooks")
+        if hooks:
+            from amplifier_core.events import SESSION_END
+            await hooks.emit(SESSION_END, {"session_id": actual_session_id})
         await initialized.cleanup()
         console.print("\n[yellow]Session ended[/yellow]\n")
 
@@ -1274,7 +1331,7 @@ async def execute_single(
         hooks = session.coordinator.get("hooks")
         if hooks:
             from amplifier_core.events import PROMPT_COMPLETE
-            await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt, "response": response})
+            await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt, "response": response, "session_id": actual_session_id})
 
         # Output response based on format
         if output_format in ["json", "json-trace"]:
@@ -1355,6 +1412,11 @@ async def execute_single(
         sys.exit(1)
 
     finally:
+        # Emit session:end event before cleanup to allow hooks to finish
+        hooks = session.coordinator.get("hooks")
+        if hooks:
+            from amplifier_core.events import SESSION_END
+            await hooks.emit(SESSION_END, {"session_id": actual_session_id})
         await initialized.cleanup()
         # Allow async tasks to complete before output
         if output_format in ["json", "json-trace"]:
