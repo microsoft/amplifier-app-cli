@@ -618,13 +618,14 @@ def register_session_commands(
                 return
 
             table = Table(title="All Sessions (All Projects)", show_header=True, header_style="bold cyan")
-            table.add_column("Project", style="magenta")
+            table.add_column("Name", style="cyan", max_width=30)
+            table.add_column("Project", style="magenta", max_width=20)
             table.add_column("Session ID", style="green")
-            table.add_column("Last Modified", style="yellow")
-            table.add_column("Messages")
+            table.add_column("Modified", style="yellow")
+            table.add_column("Msgs", justify="right")
 
             for project_slug, session_id, session_path, mtime in all_sessions:
-                modified = datetime.fromtimestamp(mtime, tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+                modified = datetime.fromtimestamp(mtime, tz=UTC).strftime("%Y-%m-%d %H:%M")
                 transcript_file = session_path / "transcript.jsonl"
                 message_count = "?"
                 if transcript_file.exists():
@@ -634,8 +635,28 @@ def register_session_commands(
                     except Exception:
                         pass
 
-                display_slug = project_slug if len(project_slug) <= 30 else project_slug[:27] + "..."
-                table.add_row(display_slug, session_id, modified, message_count)
+                # Get session name from metadata
+                session_name = ""
+                try:
+                    metadata_file = session_path / "metadata.json"
+                    if metadata_file.exists():
+                        import json
+                        metadata = json.loads(metadata_file.read_text())
+                        session_name = metadata.get("name", "")
+                        if len(session_name) > 30:
+                            session_name = session_name[:27] + "..."
+                except Exception:
+                    pass
+
+                display_slug = project_slug if len(project_slug) <= 20 else project_slug[:17] + "..."
+                short_id = session_id[:8] + "..."
+                table.add_row(
+                    session_name or "[dim]unnamed[/dim]",
+                    display_slug,
+                    short_id,
+                    modified,
+                    message_count
+                )
 
             console.print(table)
             return
@@ -1076,11 +1097,12 @@ def _get_session_display_info(store: SessionStore, session_id: str) -> dict:
         session_id: Session ID to get info for
 
     Returns:
-        Dict with keys: session_id, profile, turn_count, time_ago, mtime
+        Dict with keys: session_id, name, profile, turn_count, time_ago, mtime
     """
     session_path = store.base_dir / session_id
     info = {
         "session_id": session_id,
+        "name": "",
         "profile": "unknown",
         "turn_count": "?",
         "time_ago": "unknown",
@@ -1105,13 +1127,14 @@ def _get_session_display_info(store: SessionStore, session_id: str) -> dict:
         except Exception:
             pass
 
-    # Get profile from metadata
+    # Get profile and name from metadata
     metadata_file = session_path / "metadata.json"
     if metadata_file.exists():
         try:
             with open(metadata_file, encoding="utf-8") as f:
                 metadata = json.load(f)
                 info["profile"] = metadata.get("profile", "unknown")
+                info["name"] = metadata.get("name", "")
         except Exception:
             pass
 
@@ -1184,13 +1207,22 @@ def _interactive_resume_impl(
             # Format session ID (first 8 chars + ...)
             short_id = session_id[:8] + "..." if len(session_id) > 8 else session_id
 
+            # Format session name (truncate if too long)
+            name = info.get("name", "")
+            if name:
+                if len(name) > 30:
+                    name = name[:27] + "..."
+                name_display = f"[bold]{name}[/bold] "
+            else:
+                name_display = ""
+
             # Format profile (truncate if too long)
             profile = info["profile"]
-            if len(profile) > 20:
-                profile = profile[:17] + "..."
+            if len(profile) > 15:
+                profile = profile[:12] + "..."
 
             console.print(
-                f"  [cyan][{idx}][/cyan] {short_id} | "
+                f"  [cyan][{idx}][/cyan] {name_display}{short_id} | "
                 f"[magenta]{profile}[/magenta] | "
                 f"{info['turn_count']} turns | "
                 f"[dim]{info['time_ago']}[/dim]",
@@ -1278,17 +1310,28 @@ def _display_project_sessions(store: SessionStore, limit: int, title: str) -> No
         return
 
     table = Table(title=title, show_header=True, header_style="bold cyan")
+    table.add_column("Name", style="cyan", max_width=35)
     table.add_column("Session ID", style="green")
     table.add_column("Last Modified", style="yellow")
-    table.add_column("Messages")
+    table.add_column("Msgs", justify="right")
 
     for session_id in session_ids:
         session_path = store.base_dir / session_id
         try:
             mtime = session_path.stat().st_mtime
-            modified = datetime.fromtimestamp(mtime, tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+            modified = datetime.fromtimestamp(mtime, tz=UTC).strftime("%Y-%m-%d %H:%M")
         except Exception:
             modified = "unknown"
+
+        # Get session name from metadata
+        session_name = ""
+        try:
+            metadata = store.get_metadata(session_id)
+            session_name = metadata.get("name", "")
+            if len(session_name) > 35:
+                session_name = session_name[:32] + "..."
+        except Exception:
+            pass
 
         transcript_file = session_path / "transcript.jsonl"
         message_count = "?"
@@ -1299,7 +1342,9 @@ def _display_project_sessions(store: SessionStore, limit: int, title: str) -> No
             except Exception:
                 pass
 
-        table.add_row(session_id, modified, message_count)
+        # Show short session ID
+        short_id = session_id[:8] + "..."
+        table.add_row(session_name or "[dim]unnamed[/dim]", short_id, modified, message_count)
 
     console.print(table)
 

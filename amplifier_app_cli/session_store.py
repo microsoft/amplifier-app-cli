@@ -268,6 +268,69 @@ class SessionStore:
             "recovery_time": datetime.now(UTC).isoformat(),
         }
 
+    def update_metadata(self, session_id: str, updates: dict) -> dict:
+        """Update specific fields in session metadata.
+
+        Args:
+            session_id: Session identifier
+            updates: Dictionary of fields to update
+
+        Returns:
+            Updated metadata dictionary
+
+        Raises:
+            FileNotFoundError: If session does not exist
+            ValueError: If session_id is invalid
+        """
+        if not session_id or not session_id.strip():
+            raise ValueError("session_id cannot be empty")
+
+        # Sanitize session_id
+        if "/" in session_id or "\\" in session_id or session_id in (".", ".."):
+            raise ValueError(f"Invalid session_id: {session_id}")
+
+        session_dir = self.base_dir / session_id
+        if not session_dir.exists():
+            raise FileNotFoundError(f"Session '{session_id}' not found")
+
+        # Load current metadata
+        metadata = self._load_metadata(session_dir)
+
+        # Apply updates
+        metadata.update(updates)
+
+        # Save updated metadata
+        self._save_metadata(session_dir, metadata)
+
+        logger.debug(f"Session {session_id} metadata updated: {list(updates.keys())}")
+        return metadata
+
+    def get_metadata(self, session_id: str) -> dict:
+        """Get session metadata without loading transcript.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            Metadata dictionary
+
+        Raises:
+            FileNotFoundError: If session does not exist
+            ValueError: If session_id is invalid
+        """
+        if not session_id or not session_id.strip():
+            raise ValueError("session_id cannot be empty")
+
+        # Sanitize session_id
+        if "/" in session_id or "\\" in session_id or session_id in (".", ".."):
+            raise ValueError(f"Invalid session_id: {session_id}")
+
+        session_dir = self.base_dir / session_id
+        if not session_dir.exists():
+            raise FileNotFoundError(f"Session '{session_id}' not found")
+
+        return self._load_metadata(session_dir)
+
     def exists(self, session_id: str) -> bool:
         """Check if session exists.
 
