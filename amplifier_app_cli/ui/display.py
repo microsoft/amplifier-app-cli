@@ -81,7 +81,9 @@ class CLIDisplaySystem:
 
         # Calculate indent for subsequent lines (nesting + icon ~2 + space + level + space)
         # Use spaces to align with content after the prefix
-        content_indent = nesting_indent + "         "  # 9 spaces to align after "❌ ERROR "
+        content_indent = (
+            nesting_indent + "         "
+        )  # 9 spaces to align after "❌ ERROR "
 
         if len(lines) == 1:
             # Single line - simple case
