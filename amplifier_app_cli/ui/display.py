@@ -14,7 +14,12 @@ class CLIDisplaySystem:
     def __init__(self):
         self.console = Console()
 
-    def show_message(self, message: str, level: Literal["info", "warning", "error"], source: str = "hook"):
+    def show_message(
+        self,
+        message: str,
+        level: Literal["info", "warning", "error"],
+        source: str = "hook",
+    ):
         """
         Display message with appropriate formatting and severity.
 
@@ -35,10 +40,12 @@ class CLIDisplaySystem:
         icon, color = styles.get(level, ("[blue]ℹ️[/blue]", "blue"))
 
         # Display to user
-        self.console.print(f"{icon} [{color}]{level.upper()}[/{color}] {message} [dim]({source})[/dim]")
+        self.console.print(
+            f"{icon} [{color}]{level.upper()}[/{color}] {message} [dim]({source})[/dim]"
+        )
 
-        # Also log
-        log_methods = {"info": logger.info, "warning": logger.warning, "error": logger.error}
-
-        log_fn = log_methods[level]
-        log_fn(f"Hook user message: {message}", extra={"source": source, "level": level})
+        # Log at debug level (user already sees the message via console.print)
+        logger.debug(
+            f"Hook message displayed: {message}",
+            extra={"source": source, "level": level},
+        )
