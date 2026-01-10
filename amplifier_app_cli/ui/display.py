@@ -65,7 +65,7 @@ class CLIDisplaySystem:
         with sub-session output formatting.
         """
         # Get indentation prefix for current nesting level
-        indent = self._get_indent()
+        nesting_indent = self._get_indent()
 
         # Extract tool name from source (e.g., "hook:python-check" -> "python-check")
         tool_name = source.split(":", 1)[-1] if ":" in source else source
@@ -78,9 +78,26 @@ class CLIDisplaySystem:
         }
         color = level_colors.get(level, "cyan")
 
-        # Format as tool output: [tool-name] message
-        # This looks like tool feedback, not a system error
-        self.console.print(f"{indent}[{color}][{tool_name}][/{color}] {message}")
+        # Handle multi-line messages by indenting subsequent lines
+        lines = message.split("\n")
+        first_line = lines[0]
+
+        # Build prefix for first line: [tool-name] message
+        prefix = f"{nesting_indent}[{color}][{tool_name}][/{color}] "
+
+        # Calculate indent for subsequent lines to align with content
+        # Account for nesting + bracket + tool_name + bracket + space
+        content_indent = nesting_indent + " " * (len(tool_name) + 3)
+
+        if len(lines) == 1:
+            # Single line - simple case
+            self.console.print(f"{prefix}{first_line}")
+        else:
+            # Multi-line - print first, indent rest
+            self.console.print(f"{prefix}{first_line}")
+            for line in lines[1:]:
+                if line.strip():  # Skip empty lines
+                    self.console.print(f"{content_indent}{line}")
 
         # Log at debug level (user already sees the message via console.print)
         logger.debug(
