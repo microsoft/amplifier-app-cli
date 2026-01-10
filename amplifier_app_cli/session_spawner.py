@@ -49,7 +49,9 @@ def _extract_bundle_context(session: "AmplifierSession") -> dict | None:
     mention_mappings: dict[str, str] = {}
     mention_resolver = session.coordinator.get_capability("mention_resolver")
     if mention_resolver and hasattr(mention_resolver, "_bundle_mappings"):
-        mention_mappings = {k: str(v) for k, v in mention_resolver._bundle_mappings.items()}
+        mention_mappings = {
+            k: str(v) for k, v in mention_resolver._bundle_mappings.items()
+        }
 
     return {
         "module_paths": module_paths,
@@ -59,43 +61,37 @@ def _extract_bundle_context(session: "AmplifierSession") -> dict | None:
 
 def _filter_tools(config: dict, tool_inheritance: dict[str, list[str]]) -> dict:
     """Filter tools in config based on tool inheritance policy.
-    
+
     Args:
         config: Session config containing "tools" list
         tool_inheritance: Policy dict with either:
             - "exclude_tools": list of tool module names to exclude
             - "inherit_tools": list of tool module names to include (allowlist)
-    
+
     Returns:
         New config dict with filtered tools list
     """
     tools = config.get("tools", [])
     if not tools:
         return config
-    
+
     exclude_tools = tool_inheritance.get("exclude_tools", [])
     inherit_tools = tool_inheritance.get("inherit_tools")
-    
+
     if inherit_tools is not None:
         # Allowlist mode: only include specified tools
-        filtered_tools = [
-            t for t in tools
-            if t.get("module") in inherit_tools
-        ]
+        filtered_tools = [t for t in tools if t.get("module") in inherit_tools]
     elif exclude_tools:
         # Blocklist mode: exclude specified tools
-        filtered_tools = [
-            t for t in tools
-            if t.get("module") not in exclude_tools
-        ]
+        filtered_tools = [t for t in tools if t.get("module") not in exclude_tools]
     else:
         # No filtering
         return config
-    
+
     # Return new config with filtered tools
     new_config = dict(config)
     new_config["tools"] = filtered_tools
-    
+
     logger.debug(
         "Filtered tools: %d -> %d (exclude=%s, inherit=%s)",
         len(tools),
@@ -103,7 +99,7 @@ def _filter_tools(config: dict, tool_inheritance: dict[str, list[str]]) -> dict:
         exclude_tools,
         inherit_tools,
     )
-    
+
     return new_config
 
 
@@ -189,24 +185,15 @@ async def spawn_sub_session(
         display_system=parent_session.coordinator.display_system,  # Inherit from parent
     )
 
-    # Initialize child session (mounts modules per merged config)
-    await child_session.initialize()
-
-    # Wire up cancellation propagation: parent cancellation should propagate to child
-    # This enables graceful Ctrl+C handling for nested agent sessions
-    parent_cancellation = parent_session.coordinator.cancellation
-    child_cancellation = child_session.coordinator.cancellation
-    parent_cancellation.register_child(child_cancellation)
-    logger.debug(f"Registered child cancellation token for sub-session {sub_session_id}")
-
-    # Register app-layer capabilities for child session
-    # Inherit from parent session where available to preserve bundle context and deduplication state
+    # Register app-layer capabilities for child session BEFORE initialization
+    # These must be mounted before initialize() because module loading needs the resolver
     from amplifier_foundation.mentions import ContentDeduplicator
 
     from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
     from amplifier_app_cli.paths import create_foundation_resolver
 
     # Module source resolver - inherit from parent to preserve BundleModuleResolver in bundle mode
+    # CRITICAL: Must be mounted BEFORE initialize() so modules with source: directives can be resolved
     parent_resolver = parent_session.coordinator.get("module-source-resolver")
     if parent_resolver:
         await child_session.coordinator.mount("module-source-resolver", parent_resolver)
@@ -215,24 +202,51 @@ async def spawn_sub_session(
         resolver = create_foundation_resolver()
         await child_session.coordinator.mount("module-source-resolver", resolver)
 
+    # Initialize child session (mounts modules per merged config)
+    # Now the resolver is available for loading modules with source: directives
+    await child_session.initialize()
+
+    # Wire up cancellation propagation: parent cancellation should propagate to child
+    # This enables graceful Ctrl+C handling for nested agent sessions
+    parent_cancellation = parent_session.coordinator.cancellation
+    child_cancellation = child_session.coordinator.cancellation
+    parent_cancellation.register_child(child_cancellation)
+    logger.debug(
+        f"Registered child cancellation token for sub-session {sub_session_id}"
+    )
+
     # Mention resolver - inherit from parent to preserve bundle_override context
-    parent_mention_resolver = parent_session.coordinator.get_capability("mention_resolver")
+    parent_mention_resolver = parent_session.coordinator.get_capability(
+        "mention_resolver"
+    )
     if parent_mention_resolver:
-        child_session.coordinator.register_capability("mention_resolver", parent_mention_resolver)
+        child_session.coordinator.register_capability(
+            "mention_resolver", parent_mention_resolver
+        )
     else:
         # Fallback to fresh resolver if parent doesn't have one
-        child_session.coordinator.register_capability("mention_resolver", AppMentionResolver(enable_collections=True))
+        child_session.coordinator.register_capability(
+            "mention_resolver", AppMentionResolver(enable_collections=True)
+        )
 
     # Mention deduplicator - inherit from parent to preserve session-wide deduplication state
-    parent_deduplicator = parent_session.coordinator.get_capability("mention_deduplicator")
+    parent_deduplicator = parent_session.coordinator.get_capability(
+        "mention_deduplicator"
+    )
     if parent_deduplicator:
-        child_session.coordinator.register_capability("mention_deduplicator", parent_deduplicator)
+        child_session.coordinator.register_capability(
+            "mention_deduplicator", parent_deduplicator
+        )
     else:
         # Fallback to fresh deduplicator if parent doesn't have one
-        child_session.coordinator.register_capability("mention_deduplicator", ContentDeduplicator())
+        child_session.coordinator.register_capability(
+            "mention_deduplicator", ContentDeduplicator()
+        )
 
     # Approval provider (for hooks-approval module, if active)
-    register_provider_fn = child_session.coordinator.get_capability("approval.register_provider")
+    register_provider_fn = child_session.coordinator.get_capability(
+        "approval.register_provider"
+    )
     if register_provider_fn:
         from rich.console import Console
 
@@ -284,7 +298,9 @@ async def spawn_sub_session(
 
     # Unregister child cancellation token before cleanup
     parent_cancellation.unregister_child(child_cancellation)
-    logger.debug(f"Unregistered child cancellation token for sub-session {sub_session_id}")
+    logger.debug(
+        f"Unregistered child cancellation token for sub-session {sub_session_id}"
+    )
 
     # Cleanup child session
     await child_session.cleanup()
@@ -327,7 +343,9 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     try:
         transcript, metadata = store.load(sub_session_id)
     except Exception as e:
-        raise RuntimeError(f"Failed to load sub-session '{sub_session_id}': {str(e)}") from e
+        raise RuntimeError(
+            f"Failed to load sub-session '{sub_session_id}': {str(e)}"
+        ) from e
 
     # Extract reconstruction data
     merged_config = metadata.get("config")
@@ -370,11 +388,8 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
         display_system=display_system,
     )
 
-    # Initialize session (mounts modules per config)
-    await child_session.initialize()
-
-    # Register app-layer capabilities for resumed child session
-    # Restore bundle context from metadata if available, otherwise create fresh instances
+    # Register app-layer capabilities for resumed child session BEFORE initialization
+    # Must be mounted before initialize() so modules with source: directives can be resolved
     from pathlib import Path
 
     from amplifier_foundation.mentions import ContentDeduplicator
@@ -386,36 +401,55 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     bundle_context = metadata.get("bundle_context")
 
     # Module source resolver - restore from bundle context if available
+    # CRITICAL: Must be mounted BEFORE initialize() so modules with source: directives can be resolved
     if bundle_context and bundle_context.get("module_paths"):
         # Restore BundleModuleResolver with saved module paths
         from amplifier_foundation.bundle import BundleModuleResolver
 
         module_paths = {k: Path(v) for k, v in bundle_context["module_paths"].items()}
         resolver = BundleModuleResolver(module_paths=module_paths)
-        logger.debug(f"Restored BundleModuleResolver with {len(module_paths)} module paths")
+        logger.debug(
+            f"Restored BundleModuleResolver with {len(module_paths)} module paths"
+        )
     else:
         # Fallback to FoundationSettingsResolver for profile mode
         resolver = create_foundation_resolver()
     await child_session.coordinator.mount("module-source-resolver", resolver)
 
+    # Initialize session (mounts modules per config)
+    # Now the resolver is available for loading modules with source: directives
+    await child_session.initialize()
+
     # Mention resolver - restore bundle mappings if available
     if bundle_context and bundle_context.get("mention_mappings"):
         # Restore AppMentionResolver with saved bundle mappings for @namespace:path resolution
-        mention_mappings = {k: Path(v) for k, v in bundle_context["mention_mappings"].items()}
+        mention_mappings = {
+            k: Path(v) for k, v in bundle_context["mention_mappings"].items()
+        }
         child_session.coordinator.register_capability(
             "mention_resolver",
-            AppMentionResolver(enable_collections=True, bundle_mappings=mention_mappings),
+            AppMentionResolver(
+                enable_collections=True, bundle_mappings=mention_mappings
+            ),
         )
-        logger.debug(f"Restored AppMentionResolver with {len(mention_mappings)} bundle mappings")
+        logger.debug(
+            f"Restored AppMentionResolver with {len(mention_mappings)} bundle mappings"
+        )
     else:
         # Fallback to fresh resolver without bundle mappings
-        child_session.coordinator.register_capability("mention_resolver", AppMentionResolver(enable_collections=True))
+        child_session.coordinator.register_capability(
+            "mention_resolver", AppMentionResolver(enable_collections=True)
+        )
 
     # Mention deduplicator - create fresh (deduplication state doesn't persist across resumes)
-    child_session.coordinator.register_capability("mention_deduplicator", ContentDeduplicator())
+    child_session.coordinator.register_capability(
+        "mention_deduplicator", ContentDeduplicator()
+    )
 
     # Approval provider (for hooks-approval module, if active)
-    register_provider_fn = child_session.coordinator.get_capability("approval.register_provider")
+    register_provider_fn = child_session.coordinator.get_capability(
+        "approval.register_provider"
+    )
     if register_provider_fn:
         from rich.console import Console
 
@@ -424,7 +458,9 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
         console = Console()
         approval_provider = CLIApprovalProvider(console)
         register_provider_fn(approval_provider)
-        logger.debug(f"Registered approval provider for resumed child session {sub_session_id}")
+        logger.debug(
+            f"Registered approval provider for resumed child session {sub_session_id}"
+        )
 
     # Emit session:resume event for observability
     hooks = child_session.coordinator.get("hooks")
@@ -458,7 +494,9 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     metadata["last_updated"] = datetime.now(UTC).isoformat()
 
     store.save(sub_session_id, updated_transcript, metadata)
-    logger.debug(f"Sub-session {sub_session_id} state updated (turn {metadata['turn_count']})")
+    logger.debug(
+        f"Sub-session {sub_session_id} state updated (turn {metadata['turn_count']})"
+    )
 
     # Cleanup child session
     await child_session.cleanup()
