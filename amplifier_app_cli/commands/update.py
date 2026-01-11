@@ -121,8 +121,12 @@ def _collect_unified_modules(
                 if name not in modules:
                     # New source from bundle not in cache
                     modules[name] = {
-                        "cached_sha": source.cached_commit[:7] if source.cached_commit else None,
-                        "remote_sha": source.remote_commit[:7] if source.remote_commit else None,
+                        "cached_sha": source.cached_commit[:7]
+                        if source.cached_commit
+                        else None,
+                        "remote_sha": source.remote_commit[:7]
+                        if source.remote_commit
+                        else None,
                         "has_update": source.has_update is True,
                         "source_uri": source.source_uri,
                         "used_by_bundles": set(),
@@ -148,192 +152,93 @@ def _get_bundle_repo_info(bundle_status: "BundleStatus") -> dict | None:
     for source in bundle_status.sources:
         if source.source_uri == bundle_status.bundle_source:
             return {
-                "cached_sha": source.cached_commit[:7] if source.cached_commit else None,
-                "remote_sha": source.remote_commit[:7] if source.remote_commit else None,
+                "cached_sha": source.cached_commit[:7]
+                if source.cached_commit
+                else None,
+                "remote_sha": source.remote_commit[:7]
+                if source.remote_commit
+                else None,
                 "has_update": source.has_update is True,
             }
 
     return None
 
 
-def _get_installed_amplifier_packages() -> list[dict]:
-    """Get details of installed Amplifier packages.
-
-    Returns list of dicts with:
-        - name: package name
-        - version: installed version
-        - sha: git SHA if available
-        - is_local: True if installed from local path (editable or file://)
-        - is_git: True if path is a git repository
-        - has_changes: True if git repo has uncommitted changes
-        - path: local path if applicable
-        - category: 'core', 'app', or 'library'
-    """
-    import importlib.metadata
-    import json
-    import subprocess
-
-    # Package categorization
-    core_packages = {"amplifier-core"}
-    app_packages = {"amplifier-app-cli"}
-    # Libraries are everything else
-
-    # Core amplifier packages to check
-    package_names = [
-        "amplifier-core",
-        "amplifier-app-cli",
-        "amplifier-profiles",
-        "amplifier-collections",
-        "amplifier-config",
-        "amplifier-module-resolution",
-    ]
-
-    packages = []
-    for name in package_names:
-        try:
-            dist = importlib.metadata.distribution(name)
-            version = dist.version
-
-            # Check installation type and get SHA
-            sha = None
-            is_local = False
-            is_git = False
-            has_changes = False
-            path = None
-
-            if hasattr(dist, "read_text"):
-                try:
-                    direct_url_text = dist.read_text("direct_url.json")
-                    if direct_url_text:
-                        direct_url = json.loads(direct_url_text)
-
-                        if "dir_info" in direct_url:
-                            # Local install (editable or file://)
-                            is_local = True
-                            path = direct_url.get("url", "").replace("file://", "")
-
-                            # Check if it's a git repo and get status
-                            if path:
-                                try:
-                                    # Check if git repo
-                                    result = subprocess.run(
-                                        ["git", "rev-parse", "--git-dir"],
-                                        cwd=path,
-                                        capture_output=True,
-                                        text=True,
-                                        timeout=5,
-                                    )
-                                    if result.returncode == 0:
-                                        is_git = True
-
-                                        # Get HEAD SHA
-                                        result = subprocess.run(
-                                            ["git", "rev-parse", "HEAD"],
-                                            cwd=path,
-                                            capture_output=True,
-                                            text=True,
-                                            timeout=5,
-                                        )
-                                        if result.returncode == 0:
-                                            sha = result.stdout.strip()[:7]
-
-                                        # Check for uncommitted changes
-                                        result = subprocess.run(
-                                            ["git", "status", "--porcelain"],
-                                            cwd=path,
-                                            capture_output=True,
-                                            text=True,
-                                            timeout=5,
-                                        )
-                                        if result.returncode == 0:
-                                            has_changes = bool(result.stdout.strip())
-                                except Exception:
-                                    pass
-
-                        elif "vcs_info" in direct_url:
-                            # Git install from URL
-                            sha = direct_url["vcs_info"].get("commit_id", "")[:7]
-                except Exception:
-                    pass
-
-            # Determine category
-            if name in core_packages:
-                category = "core"
-            elif name in app_packages:
-                category = "app"
-            else:
-                category = "library"
-
-            packages.append(
-                {
-                    "name": name,
-                    "version": version,
-                    "sha": sha,
-                    "is_local": is_local,
-                    "is_git": is_git,
-                    "has_changes": has_changes,
-                    "path": path,
-                    "category": category,
-                }
-            )
-        except importlib.metadata.PackageNotFoundError:
-            continue
-
-    return packages
-
-
 async def _get_umbrella_dependency_details(umbrella_info) -> list[dict]:
-    """Get details of Amplifier dependencies (libs with their SHAs).
+    """Get details of all Amplifier ecosystem packages with their SHAs.
+
+    Uses recursive discovery to find ALL packages with [tool.uv.sources] entries,
+    then enriches each with local installation info and remote SHA for comparison.
 
     Returns:
-        List of dicts with {name, current_sha, remote_sha, source_url}
+        List of dicts with {name, local_sha, remote_sha, source_url, has_update,
+                           is_local, path, has_changes}
     """
-    import importlib.metadata
-    import json
-
     import httpx
 
     from ..utils.source_status import _get_github_commit_sha
-    from ..utils.umbrella_discovery import fetch_umbrella_dependencies
+    from ..utils.umbrella_discovery import discover_ecosystem_packages
+    from ..utils.umbrella_discovery import get_installed_package_info
 
     if not umbrella_info:
         return []
 
     try:
-        # Use single shared httpx client for all requests
         async with httpx.AsyncClient(timeout=10.0) as client:
-            # Get dependency definitions from umbrella
-            umbrella_deps = await fetch_umbrella_dependencies(client, umbrella_info)
+            # Recursively discover all ecosystem packages
+            ecosystem_packages = await discover_ecosystem_packages(
+                client, umbrella_info
+            )
 
             details = []
-            for lib_name, dep_info in umbrella_deps.items():
-                # Get current installed SHA
-                current_sha = None
-                try:
-                    dist = importlib.metadata.distribution(lib_name)
-                    if hasattr(dist, "read_text"):
-                        direct_url_text = dist.read_text("direct_url.json")
-                        if direct_url_text:
-                            direct_url = json.loads(direct_url_text)
-                            if "vcs_info" in direct_url:
-                                current_sha = direct_url["vcs_info"].get("commit_id", "")[:7]
-                except Exception:
-                    current_sha = "unknown"
+            for pkg in ecosystem_packages:
+                # Get local installation info
+                installed = get_installed_package_info(pkg.name)
+
+                if installed:
+                    local_sha = installed["sha"]
+                    is_local = installed["is_local"]
+                    path = installed["path"]
+                    has_changes = installed["has_changes"]
+                else:
+                    local_sha = None
+                    is_local = False
+                    path = None
+                    has_changes = False
 
                 # Get remote SHA
                 try:
-                    remote_sha_full = await _get_github_commit_sha(client, dep_info["url"], dep_info["branch"])
+                    remote_sha_full = await _get_github_commit_sha(
+                        client, pkg.url, pkg.branch
+                    )
                     remote_sha = remote_sha_full[:7]
                 except Exception:
                     remote_sha = "unknown"
 
+                # Determine if update available
+                # Local installs don't compare to remote (user controls them)
+                if is_local:
+                    has_update = False
+                elif (
+                    local_sha
+                    and remote_sha
+                    and local_sha != "unknown"
+                    and remote_sha != "unknown"
+                ):
+                    has_update = local_sha != remote_sha
+                else:
+                    has_update = False
+
                 details.append(
                     {
-                        "name": lib_name,
-                        "current_sha": current_sha,
+                        "name": pkg.name,
+                        "local_sha": local_sha,
                         "remote_sha": remote_sha,
-                        "source_url": dep_info["url"],
-                        "has_update": current_sha != remote_sha,
+                        "source_url": pkg.url,
+                        "has_update": has_update,
+                        "is_local": is_local,
+                        "path": path,
+                        "has_changes": has_changes,
                     }
                 )
 
@@ -377,7 +282,9 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
             # Check status directly from URI
             parsed = parse_uri(uri)
             if git_handler.can_handle(parsed):
-                source_status: SourceStatus = await git_handler.get_status(parsed, cache_dir)
+                source_status: SourceStatus = await git_handler.get_status(
+                    parsed, cache_dir
+                )
                 results[bundle_name] = BundleStatus(
                     bundle_name=bundle_name,
                     bundle_source=uri,
@@ -464,9 +371,9 @@ def _show_concise_report(
     """
     console.print()
 
-    # === AMPLIFIER PACKAGES ===
+    # === AMPLIFIER ECOSYSTEM PACKAGES ===
     if umbrella_deps:
-        # Production install - show dependencies with remote comparison
+        # Show all dynamically discovered ecosystem packages
         table = Table(title="Amplifier", show_header=True, header_style="bold cyan")
         table.add_column("Package", style="green")
         table.add_column("Local", style="dim", justify="right")
@@ -474,46 +381,51 @@ def _show_concise_report(
         table.add_column("", width=1, justify="center")
 
         for dep in sorted(umbrella_deps, key=lambda x: x["name"]):
-            status_symbol = create_status_symbol(dep["current_sha"], dep["remote_sha"])
+            # Handle local installs specially - show path indicator
+            if dep.get("is_local"):
+                # Local install - show SHA with local indicator
+                local_display = create_sha_text(dep["local_sha"])
+                # Show path hint in name if local
+                path = dep.get("path", "")
+                if path:
+                    # Truncate path for display
+                    if len(path) > 30:
+                        path = "..." + path[-27:]
+                    name_display = f"{dep['name']} [dim]({path})[/dim]"
+                else:
+                    name_display = f"{dep['name']} [dim](local)[/dim]"
+                # Local changes indicator
+                status_symbol = create_status_symbol(
+                    dep["local_sha"], dep["local_sha"], dep.get("has_changes", False)
+                )
+                remote_display = Text("-", style="dim")
+            else:
+                # Standard git install - compare local vs remote
+                name_display = dep["name"]
+                local_display = create_sha_text(dep["local_sha"])
+                remote_display = create_sha_text(dep["remote_sha"])
+                status_symbol = create_status_symbol(
+                    dep["local_sha"], dep["remote_sha"]
+                )
+
             table.add_row(
-                dep["name"],
-                create_sha_text(dep["current_sha"]),
-                create_sha_text(dep["remote_sha"]),
+                name_display,
+                local_display,
+                remote_display,
                 status_symbol,
             )
 
         console.print(table)
-    else:
-        # Local install - show packages by category
-        installed = _get_installed_amplifier_packages()
-        if installed:
-            # Separate and sort by category
-            core_pkgs = sorted([p for p in installed if p["category"] == "core"], key=lambda x: x["name"])
-            app_pkgs = sorted([p for p in installed if p["category"] == "app"], key=lambda x: x["name"])
-            lib_pkgs = sorted([p for p in installed if p["category"] == "library"], key=lambda x: x["name"])
-
-            # Core section
-            core_table = _create_local_package_table(core_pkgs, "Core")
-            if core_table:
-                console.print(core_table)
-
-            # Application section
-            app_table = _create_local_package_table(app_pkgs, "Application")
-            if app_table:
-                console.print()
-                console.print(app_table)
-
-            # Libraries section
-            lib_table = _create_local_package_table(lib_pkgs, "Libraries")
-            if lib_table:
-                console.print()
-                console.print(lib_table)
 
     # === MODULES (Local overrides and/or Cached git sources) ===
     # Show local overrides first (if any)
     if report.local_file_sources:
         console.print()
-        table = Table(title="Modules (Local Overrides)", show_header=True, header_style="bold cyan")
+        table = Table(
+            title="Modules (Local Overrides)",
+            show_header=True,
+            header_style="bold cyan",
+        )
         table.add_column("Name", style="green")
         table.add_column("SHA", style="dim", justify="right")
         table.add_column("Path", style="dim")
@@ -521,7 +433,9 @@ def _show_concise_report(
 
         for status in sorted(report.local_file_sources, key=lambda x: x.name):
             has_local_changes = status.uncommitted_changes or status.unpushed_commits
-            status_symbol = create_status_symbol(status.local_sha, status.local_sha, has_local_changes)
+            status_symbol = create_status_symbol(
+                status.local_sha, status.local_sha, has_local_changes
+            )
 
             # Truncate path for display
             path_str = str(status.path) if status.path else "-"
@@ -573,7 +487,9 @@ def _show_concise_report(
         table.add_column("", width=1, justify="center")
 
         for status in sorted(report.collection_sources, key=lambda x: x.name):
-            status_symbol = create_status_symbol(status.installed_sha, status.remote_sha)
+            status_symbol = create_status_symbol(
+                status.installed_sha, status.remote_sha
+            )
 
             table.add_row(
                 status.name,
@@ -633,9 +549,13 @@ def _show_concise_report(
     print_legend()
 
     # Determine if there are bundle updates
-    has_bundle_updates = bundle_results and any(s.has_updates for s in bundle_results.values())
+    has_bundle_updates = bundle_results and any(
+        s.has_updates for s in bundle_results.values()
+    )
 
-    if not check_only and (report.has_updates or has_umbrella_updates or has_bundle_updates):
+    if not check_only and (
+        report.has_updates or has_umbrella_updates or has_bundle_updates
+    ):
         console.print()
         console.print("Run [cyan]amplifier update[/cyan] to install")
 
@@ -693,77 +613,47 @@ def _show_verbose_report(
 ) -> None:
     """Show detailed multi-line format for each source (no truncation)."""
 
-    # === AMPLIFIER PACKAGES ===
+    # === AMPLIFIER ECOSYSTEM PACKAGES ===
     if umbrella_deps:
-        # Production install - show dependencies with remote comparison
+        # Show all dynamically discovered ecosystem packages
         console.print()
         console.print("[bold cyan]Amplifier[/bold cyan]")
         console.print()
 
         for dep in sorted(umbrella_deps, key=lambda x: x["name"]):
-            status_symbol = create_status_symbol(dep["current_sha"], dep["remote_sha"])
-            _print_verbose_item(
-                name=dep["name"],
-                status_symbol=status_symbol,
-                local_sha=dep["current_sha"],
-                remote_sha=dep["remote_sha"],
-                remote_url=dep.get("source_url", ""),
-            )
+            # Handle local installs specially
+            if dep.get("is_local"):
+                status_symbol = create_status_symbol(
+                    dep["local_sha"], dep["local_sha"], dep.get("has_changes", False)
+                )
+                _print_verbose_item(
+                    name=dep["name"],
+                    status_symbol=status_symbol,
+                    local_sha=dep["local_sha"],
+                    local_path=dep.get("path"),
+                )
+            else:
+                status_symbol = create_status_symbol(
+                    dep["local_sha"], dep["remote_sha"]
+                )
+                _print_verbose_item(
+                    name=dep["name"],
+                    status_symbol=status_symbol,
+                    local_sha=dep["local_sha"],
+                    remote_sha=dep["remote_sha"],
+                    remote_url=dep.get("source_url", ""),
+                )
             console.print()
     else:
-        # Local install - show packages by category
-        installed = _get_installed_amplifier_packages()
-        if installed:
-            # Separate and sort by category
-            core_pkgs = sorted([p for p in installed if p["category"] == "core"], key=lambda x: x["name"])
-            app_pkgs = sorted([p for p in installed if p["category"] == "app"], key=lambda x: x["name"])
-            lib_pkgs = sorted([p for p in installed if p["category"] == "library"], key=lambda x: x["name"])
-
-            # Core section
-            if core_pkgs:
-                console.print()
-                console.print("[bold cyan]Core[/bold cyan]")
-                console.print()
-                for pkg in core_pkgs:
-                    status_symbol = Text("◦", style="cyan") if pkg["has_changes"] else Text("✓", style="green")
-                    _print_verbose_item(
-                        name=pkg["name"],
-                        status_symbol=status_symbol,
-                        local_sha=pkg["sha"],
-                        version=pkg["version"],
-                        local_path=pkg["path"],
-                    )
-                    console.print()
-
-            # Application section
-            if app_pkgs:
-                console.print("[bold cyan]Application[/bold cyan]")
-                console.print()
-                for pkg in app_pkgs:
-                    status_symbol = Text("◦", style="cyan") if pkg["has_changes"] else Text("✓", style="green")
-                    _print_verbose_item(
-                        name=pkg["name"],
-                        status_symbol=status_symbol,
-                        local_sha=pkg["sha"],
-                        version=pkg["version"],
-                        local_path=pkg["path"],
-                    )
-                    console.print()
-
-            # Libraries section
-            if lib_pkgs:
-                console.print("[bold cyan]Libraries[/bold cyan]")
-                console.print()
-                for pkg in lib_pkgs:
-                    status_symbol = Text("◦", style="cyan") if pkg["has_changes"] else Text("✓", style="green")
-                    _print_verbose_item(
-                        name=pkg["name"],
-                        status_symbol=status_symbol,
-                        local_sha=pkg["sha"],
-                        version=pkg["version"],
-                        local_path=pkg["path"],
-                    )
-                    console.print()
+        # No umbrella info - can't discover ecosystem packages dynamically
+        console.print()
+        console.print(
+            "[dim]No umbrella source detected - ecosystem package discovery unavailable[/dim]"
+        )
+        console.print(
+            "[dim]This typically means Amplifier is installed in development mode.[/dim]"
+        )
+        console.print()
 
     # === MODULES ===
     # Merge local file sources and cached git sources by module name
@@ -787,7 +677,9 @@ def _show_verbose_report(
         if status.name in modules_by_name:
             # Merge remote info into existing entry
             modules_by_name[status.name]["remote_sha"] = status.remote_sha
-            modules_by_name[status.name]["remote_url"] = status.url if hasattr(status, "url") else None
+            modules_by_name[status.name]["remote_url"] = (
+                status.url if hasattr(status, "url") else None
+            )
             modules_by_name[status.name]["ref"] = status.ref
         else:
             # Add new entry
@@ -806,7 +698,9 @@ def _show_verbose_report(
         console.print()
 
         for mod in sorted(modules_by_name.values(), key=lambda x: x["name"]):
-            status_symbol = create_status_symbol(mod["local_sha"], mod["remote_sha"], mod["has_local_changes"])
+            status_symbol = create_status_symbol(
+                mod["local_sha"], mod["remote_sha"], mod["has_local_changes"]
+            )
             _print_verbose_item(
                 name=mod["name"],
                 status_symbol=status_symbol,
@@ -824,7 +718,9 @@ def _show_verbose_report(
         console.print()
 
         for status in sorted(report.collection_sources, key=lambda x: x.name):
-            status_symbol = create_status_symbol(status.installed_sha, status.remote_sha)
+            status_symbol = create_status_symbol(
+                status.installed_sha, status.remote_sha
+            )
             source_url = status.source if hasattr(status, "source") else None
             _print_verbose_item(
                 name=status.name,
@@ -843,7 +739,9 @@ def _show_verbose_report(
             if status.sources:
                 # Add "(active)" marker if this is the active bundle
                 title_suffix = " (active)" if bundle_name == active_bundle else ""
-                console.print(f"[bold cyan]Bundle: {bundle_name}{title_suffix}[/bold cyan]")
+                console.print(
+                    f"[bold cyan]Bundle: {bundle_name}{title_suffix}[/bold cyan]"
+                )
                 console.print()
 
                 for source in sorted(status.sources, key=lambda x: x.source_uri):
@@ -857,7 +755,9 @@ def _show_verbose_report(
                         elif "@" in source_name:
                             source_name = source_name.split("@")[0]
 
-                    status_symbol = create_status_symbol(source.cached_commit, source.remote_commit)
+                    status_symbol = create_status_symbol(
+                        source.cached_commit, source.remote_commit
+                    )
                     _print_verbose_item(
                         name=source_name,
                         status_symbol=status_symbol,
@@ -874,7 +774,9 @@ def _show_verbose_report(
 @click.option("--check-only", is_flag=True, help="Check for updates without installing")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmations")
 @click.option("--force", is_flag=True, help="Force update even if already latest")
-@click.option("--verbose", "-v", is_flag=True, help="Show detailed multi-line output per source")
+@click.option(
+    "--verbose", "-v", is_flag=True, help="Show detailed multi-line output per source"
+)
 def update(check_only: bool, yes: bool, force: bool, verbose: bool):
     """Update Amplifier to latest version.
 
@@ -898,7 +800,9 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             has_umbrella_updates = True  # Force update umbrella
         else:
             console.print("  Checking Amplifier dependencies...")
-            has_umbrella_updates = asyncio.run(check_umbrella_dependencies_for_updates(umbrella_info))
+            has_umbrella_updates = asyncio.run(
+                check_umbrella_dependencies_for_updates(umbrella_info)
+            )
 
     # Check modules and collections
     if not force:
@@ -909,7 +813,9 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         import httpx
 
         async with httpx.AsyncClient(timeout=10.0) as client:
-            return await check_all_sources(client=client, include_all_cached=True, force=force)
+            return await check_all_sources(
+                client=client, include_all_cached=True, force=force
+            )
 
     report = asyncio.run(_check_sources())
 
@@ -917,21 +823,41 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
     if not force:
         console.print("  Checking bundles...")
     bundle_results = asyncio.run(_check_all_bundle_status())
-    has_bundle_updates = any(s.has_updates for s in bundle_results.values()) if bundle_results else False
+    has_bundle_updates = (
+        any(s.has_updates for s in bundle_results.values()) if bundle_results else False
+    )
 
     # Get Amplifier dependency details
-    umbrella_deps = asyncio.run(_get_umbrella_dependency_details(umbrella_info)) if umbrella_info else []
+    umbrella_deps = (
+        asyncio.run(_get_umbrella_dependency_details(umbrella_info))
+        if umbrella_info
+        else []
+    )
 
     # Display results based on verbosity
     if verbose:
-        _show_verbose_report(report, check_only, umbrella_deps=umbrella_deps, bundle_results=bundle_results)
+        _show_verbose_report(
+            report,
+            check_only,
+            umbrella_deps=umbrella_deps,
+            bundle_results=bundle_results,
+        )
     else:
         _show_concise_report(
-            report, check_only, has_umbrella_updates, umbrella_deps=umbrella_deps, bundle_results=bundle_results
+            report,
+            check_only,
+            has_umbrella_updates,
+            umbrella_deps=umbrella_deps,
+            bundle_results=bundle_results,
         )
 
     # Check if anything actually needs updating
-    nothing_to_update = not report.has_updates and not has_umbrella_updates and not has_bundle_updates and not force
+    nothing_to_update = (
+        not report.has_updates
+        and not has_umbrella_updates
+        and not has_bundle_updates
+        and not force
+    )
 
     # Exit early if nothing to update
     if nothing_to_update:
@@ -946,7 +872,9 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         if report.has_updates:
             console.print("  • Modules and/or collections")
         if has_bundle_updates:
-            bundles_with_updates = [name for name, status in bundle_results.items() if status.has_updates]
+            bundles_with_updates = [
+                name for name, status in bundle_results.items() if status.has_updates
+            ]
             console.print(f"  • {len(bundles_with_updates)} bundle(s)")
         console.print("\nRun [cyan]amplifier update[/cyan] to install")
         return
@@ -958,12 +886,18 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
     if not yes:
         # Show what will be updated (only count items with actual updates)
         modules_with_updates = [s for s in report.cached_git_sources if s.has_update]
-        collections_with_updates = [s for s in report.collection_sources if s.has_update]
-        bundles_with_updates = [name for name, status in bundle_results.items() if status.has_updates]
+        collections_with_updates = [
+            s for s in report.collection_sources if s.has_update
+        ]
+        bundles_with_updates = [
+            name for name, status in bundle_results.items() if status.has_updates
+        ]
 
         if modules_with_updates:
             count = len(modules_with_updates)
-            console.print(f"  • Update {count} cached module{'s' if count != 1 else ''}")
+            console.print(
+                f"  • Update {count} cached module{'s' if count != 1 else ''}"
+            )
         if collections_with_updates:
             count = len(collections_with_updates)
             console.print(f"  • Update {count} collection{'s' if count != 1 else ''}")
@@ -971,7 +905,9 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             count = len(bundles_with_updates)
             console.print(f"  • Update {count} bundle{'s' if count != 1 else ''}")
         if has_umbrella_updates:
-            console.print("  • Update Amplifier to latest version (dependencies have updates)")
+            console.print(
+                "  • Update Amplifier to latest version (dependencies have updates)"
+            )
 
         console.print()
         response = input("Proceed with update? [Y/n]: ").strip().lower()
@@ -983,7 +919,11 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
     console.print()
     console.print("Updating...")
 
-    result = asyncio.run(execute_updates(report, umbrella_info=umbrella_info if has_umbrella_updates else None))
+    result = asyncio.run(
+        execute_updates(
+            report, umbrella_info=umbrella_info if has_umbrella_updates else None
+        )
+    )
 
     # Execute bundle updates
     bundle_updated: list[str] = []
@@ -994,7 +934,9 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         from amplifier_foundation import update_bundle
 
         registry = create_bundle_registry()
-        bundles_to_update = [name for name, status in bundle_results.items() if status.has_updates]
+        bundles_to_update = [
+            name for name, status in bundle_results.items() if status.has_updates
+        ]
 
         for bundle_name in bundles_to_update:
             try:
