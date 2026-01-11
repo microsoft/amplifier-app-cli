@@ -7,13 +7,13 @@ import logging
 import sys
 import uuid
 from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING
+from typing import Any
 
 import click
 
 if TYPE_CHECKING:
-    from amplifier_foundation.bundle import PreparedBundle
+    pass
 
 from ..console import console
 from ..data.profiles import get_system_default_profile
@@ -48,11 +48,18 @@ def register_run_command(
     @cli.command()
     @click.argument("prompt", required=False)
     @click.option("--profile", "-P", help="Profile to use for this session")
-    @click.option("--bundle", "-B", help="Bundle to use for this session (alternative to profile)")
+    @click.option(
+        "--bundle", "-B", help="Bundle to use for this session (alternative to profile)"
+    )
     @click.option("--provider", "-p", default=None, help="LLM provider to use")
     @click.option("--model", "-m", help="Model to use (provider-specific)")
     @click.option("--max-tokens", type=int, help="Maximum output tokens")
-    @click.option("--mode", type=click.Choice(["chat", "single"]), default="single", help="Execution mode")
+    @click.option(
+        "--mode",
+        type=click.Choice(["chat", "single"]),
+        default="single",
+        help="Execution mode",
+    )
     @click.option("--resume", help="Resume specific session with new prompt")
     @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
     @click.option(
@@ -116,7 +123,9 @@ def register_run_command(
                 if prompt is None:
                     prompt = sys.stdin.read()
                     if not prompt or not prompt.strip():
-                        console.print("[red]Error:[/red] Prompt required when resuming in single mode")
+                        console.print(
+                            "[red]Error:[/red] Prompt required when resuming in single mode"
+                        )
                         sys.exit(1)
                 mode = "single"
         else:
@@ -143,10 +152,14 @@ def register_run_command(
             bundle = "foundation"
 
         # Set active_profile_name only for profile-based flow (backward compatibility)
-        active_profile_name = (explicit_profile or get_system_default_profile()) if not bundle else None
+        active_profile_name = (
+            (explicit_profile or get_system_default_profile()) if not bundle else None
+        )
 
         if check_first_run() and not profile and prompt_first_run_init(console):
-            active_profile_name = config_manager.get_active_profile() or get_system_default_profile()
+            active_profile_name = (
+                config_manager.get_active_profile() or get_system_default_profile()
+            )
 
         profile_loader = create_profile_loader()
 
@@ -171,8 +184,12 @@ def register_run_command(
         # - Profile mode: only load profile/collection agents (not bundle agents)
         # Note: bundle_mappings is built from early bundle load; full source_base_paths
         # comes later from PreparedBundle after prepare workflow completes
-        bundle_mappings = {bundle: bundle_base_path} if bundle and bundle_base_path else None
-        agent_loader = create_agent_loader(use_bundle=bool(bundle), bundle_name=bundle, bundle_mappings=bundle_mappings)
+        bundle_mappings = (
+            {bundle: bundle_base_path} if bundle and bundle_base_path else None
+        )
+        agent_loader = create_agent_loader(
+            use_bundle=bool(bundle), bundle_name=bundle, bundle_mappings=bundle_mappings
+        )
         app_settings = AppSettings(config_manager)
 
         # Track configuration source for display
@@ -182,30 +199,41 @@ def register_run_command(
         assert config_source_name is not None
 
         # Resolve configuration using unified function (single source of truth)
-        config_data, prepared_bundle = resolve_config(
-            bundle_name=bundle,
-            profile_override=active_profile_name,
-            config_manager=config_manager,
-            profile_loader=profile_loader,
-            agent_loader=agent_loader,
-            app_settings=app_settings,
-            cli_config=cli_overrides,
-            console=console,
-        )
+        try:
+            config_data, prepared_bundle = resolve_config(
+                bundle_name=bundle,
+                profile_override=active_profile_name,
+                config_manager=config_manager,
+                profile_loader=profile_loader,
+                agent_loader=agent_loader,
+                app_settings=app_settings,
+                cli_config=cli_overrides,
+                console=console,
+            )
+        except FileNotFoundError as exc:
+            # Bundle or profile not found - display error gracefully without traceback
+            console.print(f"[red]Error:[/red] {exc}")
+            sys.exit(1)
 
         search_paths = get_module_search_paths()
 
         # If a specific provider was requested, filter providers to that entry
         if provider:
-            provider_module = provider if provider.startswith("provider-") else f"provider-{provider}"
+            provider_module = (
+                provider if provider.startswith("provider-") else f"provider-{provider}"
+            )
             providers_list = config_data.get("providers", [])
 
             matching = [
-                entry for entry in providers_list if isinstance(entry, dict) and entry.get("module") == provider_module
+                entry
+                for entry in providers_list
+                if isinstance(entry, dict) and entry.get("module") == provider_module
             ]
 
             if not matching:
-                console.print(f"[red]Error:[/red] Provider '{provider}' not available in active profile")
+                console.print(
+                    f"[red]Error:[/red] Provider '{provider}' not available in active profile"
+                )
                 sys.exit(1)
 
             selected_provider = {**matching[0]}
@@ -245,13 +273,19 @@ def register_run_command(
         elif model or max_tokens:
             providers_list = config_data.get("providers", [])
             if not providers_list:
-                console.print("[yellow]Warning:[/yellow] No providers configured; ignoring CLI overrides")
+                console.print(
+                    "[yellow]Warning:[/yellow] No providers configured; ignoring CLI overrides"
+                )
             else:
                 updated_providers: list[dict[str, Any]] = []
                 override_applied = False
 
                 for entry in providers_list:
-                    if not override_applied and isinstance(entry, dict) and entry.get("module"):
+                    if (
+                        not override_applied
+                        and isinstance(entry, dict)
+                        and entry.get("module")
+                    ):
                         new_entry = {**entry}
                         merged_config = dict(new_entry.get("config") or {})
                         if model:
@@ -287,6 +321,7 @@ def register_run_command(
                     sys.exit(1)
                 # Display conversation history before resuming (reuse session.py's display)
                 from .session import _display_session_history
+
                 _display_session_history(transcript, metadata or {})
                 asyncio.run(
                     interactive_chat(
@@ -349,7 +384,9 @@ def register_run_command(
                 # Create new session
                 session_id = str(uuid.uuid4())
                 if output_format == "text":
-                    config_summary = get_effective_config_summary(config_data, config_source_name)
+                    config_summary = get_effective_config_summary(
+                        config_data, config_source_name
+                    )
                     console.print(f"\n[dim]Session ID: {session_id}[/dim]")
                     console.print(f"[dim]{config_summary.format_banner_line()}[/dim]")
                 asyncio.run(
