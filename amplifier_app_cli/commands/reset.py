@@ -207,7 +207,14 @@ def _uninstall_amplifier(dry_run: bool = False) -> bool:
 
 
 def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
-    """Remove ~/.amplifier directory contents based on category preservation."""
+    """Remove ~/.amplifier directory contents based on category preservation.
+
+    Uses shared cache_management utilities for cache/registry removal when those
+    categories are being removed, ensuring DRY compliance across commands.
+    """
+    from ..utils.cache_management import clear_download_cache
+    from ..utils.cache_management import clear_registry
+
     amplifier_dir = _get_amplifier_dir()
     console.print(f"[bold]>>>[/bold] Removing {amplifier_dir}...")
 
@@ -246,15 +253,28 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
             else:
                 if dry_run:
                     console.print(f"    [dim][dry-run] Would remove: {item.name}[/dim]")
+                    removed_count += 1
                 else:
-                    if item.is_dir():
-                        shutil.rmtree(item)
+                    # Use shared utilities for cache and registry
+                    if item.name == "cache":
+                        count, success = clear_download_cache(dry_run=False)
+                        if success:
+                            removed_count += 1
+                    elif item.name == "registry.json":
+                        if clear_registry(dry_run=False):
+                            removed_count += 1
                     else:
-                        item.unlink()
-                removed_count += 1
+                        # Standard removal for other items
+                        if item.is_dir():
+                            shutil.rmtree(item)
+                        else:
+                            item.unlink()
+                        removed_count += 1
 
         action = "Would remove" if dry_run else "Removed"
-        console.print(f"    {action} {removed_count} items, preserved {preserved_count}")
+        console.print(
+            f"    {action} {removed_count} items, preserved {preserved_count}"
+        )
         return True
     except OSError as e:
         console.print(f"[yellow]Warning:[/yellow] Error during cleanup: {e}")
@@ -263,7 +283,9 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
 
 def _install_amplifier(dry_run: bool = False) -> bool:
     """Install amplifier via uv tool install."""
-    console.print(f"[bold]>>>[/bold] Installing amplifier from {DEFAULT_INSTALL_SOURCE}...")
+    console.print(
+        f"[bold]>>>[/bold] Installing amplifier from {DEFAULT_INSTALL_SOURCE}..."
+    )
 
     if dry_run:
         console.print(
@@ -367,11 +389,13 @@ def reset(
       amplifier reset --dry-run            Preview what would be removed
     """
     # Check for mutually exclusive options
-    exclusive_count = sum([
-        preserve_cats is not None,
-        remove_cats is not None,
-        full,
-    ])
+    exclusive_count = sum(
+        [
+            preserve_cats is not None,
+            remove_cats is not None,
+            full,
+        ]
+    )
     if exclusive_count > 1:
         raise click.UsageError(
             "Options --preserve, --remove, and --full are mutually exclusive"
@@ -412,9 +436,7 @@ def reset(
     _remove_amplifier_dir(preserve, dry_run)
 
     if dry_run:
-        console.print(
-            "\n[green]>>>[/green] Dry run complete - no changes were made"
-        )
+        console.print("\n[green]>>>[/green] Dry run complete - no changes were made")
         return
 
     # Reinstall if not skipped
