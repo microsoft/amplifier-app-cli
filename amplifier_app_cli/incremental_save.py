@@ -86,7 +86,9 @@ class IncrementalSaveHook:
 
             # Debounce: skip if no new messages
             if current_count <= self._last_message_count:
-                logger.debug(f"Incremental save skipped: no new messages ({current_count})")
+                logger.debug(
+                    f"Incremental save skipped: no new messages ({current_count})"
+                )
                 return HookResult(action="continue")
 
             # Update debounce counter
@@ -95,10 +97,17 @@ class IncrementalSaveHook:
             # Extract model name from config
             model_name = self._extract_model_name()
 
-            # Build metadata with incremental flag
+            # Load existing metadata to preserve fields like name, description
+            # that may have been set by other hooks (e.g., session-naming)
+            existing_metadata = self.store.get_metadata(self.session_id) or {}
+
+            # Build metadata, preserving existing fields while updating dynamic ones
             metadata = {
+                **existing_metadata,  # Preserve name, description, etc.
                 "session_id": self.session_id,
-                "created": datetime.now(UTC).isoformat(),
+                "created": existing_metadata.get(
+                    "created", datetime.now(UTC).isoformat()
+                ),
                 "profile": self.profile_name,
                 "model": model_name,
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
@@ -109,7 +118,9 @@ class IncrementalSaveHook:
             self.store.save(self.session_id, messages, metadata)
 
             tool_name = data.get("tool_name", "unknown")
-            logger.debug(f"Incremental save after {tool_name}: {current_count} messages")
+            logger.debug(
+                f"Incremental save after {tool_name}: {current_count} messages"
+            )
 
         except Exception as e:
             # Log but don't fail - incremental save is best-effort
@@ -128,7 +139,9 @@ class IncrementalSaveHook:
             first_provider = providers[0]
             if isinstance(first_provider, dict) and "config" in first_provider:
                 provider_config = first_provider["config"]
-                return provider_config.get("model") or provider_config.get("default_model", "unknown")
+                return provider_config.get("model") or provider_config.get(
+                    "default_model", "unknown"
+                )
         return "unknown"
 
 
@@ -163,7 +176,9 @@ def register_incremental_save(
 
     # Register with priority 900 (high, but below trace collector at 1000)
     # This ensures tracing completes before we save
-    hooks.register("tool:post", hook.on_tool_post, priority=900, name="incremental_save")
+    hooks.register(
+        "tool:post", hook.on_tool_post, priority=900, name="incremental_save"
+    )
 
     logger.debug(f"Registered incremental save hook for session {session_id[:8]}...")
     return hook
