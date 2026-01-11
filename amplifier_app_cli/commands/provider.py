@@ -15,16 +15,130 @@ from ..paths import get_effective_scope
 from ..provider_config_utils import configure_provider
 from ..provider_manager import ProviderManager
 from ..provider_manager import ScopeType
+from ..provider_sources import ensure_provider_installed
+from ..provider_sources import get_effective_provider_sources
+from ..provider_sources import install_known_providers
 
 console = Console()
+
+
+def _ensure_providers_ready() -> None:
+    """Ensure provider modules are installed (post-update fix).
+
+    Called by subcommands that need providers to be available.
+    The 'install' subcommand skips this since it IS the install.
+    """
+    from .init import check_first_run
+
+    check_first_run()
 
 
 @click.group()
 def provider():
     """Manage AI providers."""
-    # Ensure provider modules are installed (post-update fix)
-    from .init import check_first_run
-    check_first_run()
+    # Note: check_first_run() is called by subcommands that need providers.
+    # The 'install' subcommand skips this since it IS the install.
+    pass
+
+
+@provider.command("install")
+@click.argument("provider_ids", nargs=-1)
+@click.option("--all", "install_all", is_flag=True, help="Install all known providers")
+@click.option(
+    "--quiet", "-q", is_flag=True, help="Suppress progress output (for CI/CD)"
+)
+@click.option("--force", is_flag=True, help="Reinstall even if already installed")
+@click.pass_context
+def provider_install(
+    ctx: click.Context,
+    provider_ids: tuple[str, ...],
+    install_all: bool,
+    quiet: bool,
+    force: bool,
+) -> None:
+    """Install provider modules.
+
+    Downloads and installs provider modules without configuring them.
+    Useful for CI/CD, pre-init setup, or recovering after updates.
+
+    If no PROVIDER_IDs are specified, installs all known providers.
+
+    Examples:
+      amplifier provider install              # Install all providers
+      amplifier provider install anthropic    # Install just Anthropic
+      amplifier provider install anthropic openai  # Install specific providers
+      amplifier provider install -q           # Silent install (CI/CD)
+      amplifier provider install --force      # Reinstall even if installed
+    """
+    config_manager = create_config_manager()
+    sources = get_effective_provider_sources(config_manager)
+
+    # Determine which providers to install
+    if provider_ids:
+        # Validate and normalize provider IDs
+        normalized_ids: list[str] = []
+        for pid in provider_ids:
+            module_id = pid if pid.startswith("provider-") else f"provider-{pid}"
+            if module_id not in sources:
+                console.print(f"[red]Error:[/red] Unknown provider '{pid}'")
+                console.print("\nKnown providers:")
+                for known_id in sorted(sources.keys()):
+                    console.print(f"  - {known_id.replace('provider-', '')}")
+                ctx.exit(1)
+            normalized_ids.append(module_id)
+
+        # Install specific providers
+        failed: list[str] = []
+        for module_id in normalized_ids:
+            display_name = module_id.replace("provider-", "")
+
+            # Check if already installed (unless --force)
+            if not force:
+                try:
+                    import importlib.metadata
+
+                    eps = importlib.metadata.entry_points(group="amplifier.modules")
+                    already_installed = any(ep.name == module_id for ep in eps)
+                    if already_installed:
+                        if not quiet:
+                            console.print(
+                                f"[dim]{display_name} already installed (use --force to reinstall)[/dim]"
+                            )
+                        continue
+                except Exception:
+                    pass  # Continue with installation if check fails
+
+            success = ensure_provider_installed(
+                module_id,
+                config_manager=config_manager,
+                console=None if quiet else console,
+            )
+            if not success:
+                failed.append(display_name)
+
+        if failed:
+            if not quiet:
+                console.print(f"\n[red]Failed to install: {', '.join(failed)}[/red]")
+            ctx.exit(1)
+        elif not quiet:
+            console.print("\n[green]✓ Provider installation complete[/green]")
+
+    else:
+        # Install all known providers (default behavior or --all flag)
+        if not quiet:
+            console.print("[bold]Installing all known providers...[/bold]")
+
+        installed = install_known_providers(
+            config_manager=config_manager,
+            console=None if quiet else console,
+            verbose=not quiet,
+        )
+
+        if not installed and not quiet:
+            console.print("[red]No providers were installed[/red]")
+            ctx.exit(1)
+        elif not quiet:
+            console.print(f"\n[green]✓ Installed {len(installed)} provider(s)[/green]")
 
 
 @provider.command("use")
@@ -33,9 +147,18 @@ def provider():
 @click.option("--deployment", help="Deployment name (Azure OpenAI)")
 @click.option("--endpoint", help="Azure endpoint URL")
 @click.option("--use-azure-cli", is_flag=True, help="Use Azure CLI auth (Azure OpenAI)")
-@click.option("--local", "scope_flag", flag_value="local", help="Configure locally (just you)")
-@click.option("--project", "scope_flag", flag_value="project", help="Configure for project (team)")
-@click.option("--global", "scope_flag", flag_value="global", help="Configure globally (all projects)")
+@click.option(
+    "--local", "scope_flag", flag_value="local", help="Configure locally (just you)"
+)
+@click.option(
+    "--project", "scope_flag", flag_value="project", help="Configure for project (team)"
+)
+@click.option(
+    "--global",
+    "scope_flag",
+    flag_value="global",
+    help="Configure globally (all projects)",
+)
 def provider_use(
     provider_id: str,
     model: str | None,
@@ -52,8 +175,15 @@ def provider_use(
       amplifier provider use azure-openai --endpoint https://... --deployment gpt-5.1-codex --use-azure-cli
       amplifier provider use ollama --model llama3
     """
+    # Ensure providers are installed (post-update fix)
+    _ensure_providers_ready()
+
     # Build module ID (handle both "anthropic" and "provider-anthropic")
-    module_id = provider_id if provider_id.startswith("provider-") else f"provider-{provider_id}"
+    module_id = (
+        provider_id
+        if provider_id.startswith("provider-")
+        else f"provider-{provider_id}"
+    )
 
     # Validate provider exists
     config_manager = create_config_manager()
@@ -98,7 +228,9 @@ def provider_use(
         return
 
     # Configure provider
-    result = provider_mgr.use_provider(module_id, cast(ScopeType, scope), config, source=None)
+    result = provider_mgr.use_provider(
+        module_id, cast(ScopeType, scope), config, source=None
+    )
 
     # Display result
     console.print(f"\n[green]✓ Configured {provider_id}[/green]")
@@ -126,7 +258,9 @@ def provider_current():
         console.print("  [cyan]amplifier provider use <provider>[/cyan]")
         return
 
-    console.print(f"\n[bold]Active provider:[/bold] {info.module_id.replace('provider-', '')}")
+    console.print(
+        f"\n[bold]Active provider:[/bold] {info.module_id.replace('provider-', '')}"
+    )
     console.print(f"  Source: {info.source}")
 
     if "default_model" in info.config:
@@ -138,6 +272,9 @@ def provider_current():
 @provider.command("list")
 def provider_list():
     """List available providers."""
+    # Ensure providers are installed (post-update fix)
+    _ensure_providers_ready()
+
     config = create_config_manager()
     provider_mgr = ProviderManager(config)
 
@@ -157,9 +294,15 @@ def provider_list():
 
 
 @provider.command("reset")
-@click.option("--local", "scope_flag", flag_value="local", help="Reset local configuration")
-@click.option("--project", "scope_flag", flag_value="project", help="Reset project configuration")
-@click.option("--global", "scope_flag", flag_value="global", help="Reset global configuration")
+@click.option(
+    "--local", "scope_flag", flag_value="local", help="Reset local configuration"
+)
+@click.option(
+    "--project", "scope_flag", flag_value="project", help="Reset project configuration"
+)
+@click.option(
+    "--global", "scope_flag", flag_value="global", help="Reset global configuration"
+)
 def provider_reset(scope_flag: str | None):
     """Remove provider override.
 
@@ -191,6 +334,7 @@ def provider_reset(scope_flag: str | None):
     else:
         console.print(f"[yellow]No provider override at {scope} scope[/yellow]")
 
+
 @provider.command("models")
 @click.argument("provider_id", required=False)
 @click.pass_context
@@ -204,6 +348,9 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
       amplifier provider models openai
       amplifier provider models  # uses current provider
     """
+    # Ensure providers are installed (post-update fix)
+    _ensure_providers_ready()
+
     from ..provider_loader import get_provider_models
 
     config_manager = create_config_manager()
@@ -221,7 +368,11 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
         provider_id = current.module_id
 
     # Normalize provider ID (handle both "anthropic" and "provider-anthropic")
-    module_id = provider_id if provider_id.startswith("provider-") else f"provider-{provider_id}"
+    module_id = (
+        provider_id
+        if provider_id.startswith("provider-")
+        else f"provider-{provider_id}"
+    )
     display_name = module_id.replace("provider-", "")
 
     # Get stored provider config (for credentials/endpoints)
@@ -230,15 +381,21 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
 
     # Fetch models
     try:
-        model_list = get_provider_models(module_id, config_manager, collected_config=stored_config)
+        model_list = get_provider_models(
+            module_id, config_manager, collected_config=stored_config
+        )
     except Exception as e:
         console.print(f"[red]Failed to load provider '{display_name}': {e}[/]")
         # Provide helpful next steps based on whether provider is configured
         if stored_config:
-            console.print(f"\nRe-configure with: [cyan]amplifier provider use {display_name}[/]")
+            console.print(
+                f"\nRe-configure with: [cyan]amplifier provider use {display_name}[/]"
+            )
         else:
-            console.print(f"\nConfigure first with: [cyan]amplifier provider use {display_name}[/]")
-            console.print(f"Or run: [cyan]amplifier init[/]")
+            console.print(
+                f"\nConfigure first with: [cyan]amplifier provider use {display_name}[/]"
+            )
+            console.print("Or run: [cyan]amplifier init[/]")
         ctx.exit(1)
 
     # Handle empty list
@@ -279,5 +436,9 @@ def prompt_scope() -> Literal["local", "project", "global"]:
     console.print("  [3] All your projects (global)")
 
     choice = Prompt.ask("Choice", choices=["1", "2", "3"], default="1")
-    mapping: dict[str, Literal["local", "project", "global"]] = {"1": "local", "2": "project", "3": "global"}
+    mapping: dict[str, Literal["local", "project", "global"]] = {
+        "1": "local",
+        "2": "project",
+        "3": "global",
+    }
     return mapping[choice]
