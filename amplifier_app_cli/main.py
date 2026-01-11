@@ -6,7 +6,6 @@ import logging
 import os
 import signal
 import sys
-import uuid
 from collections.abc import Callable
 from datetime import UTC
 from datetime import datetime
@@ -55,8 +54,6 @@ from .console import Markdown
 from .console import console
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
-from .lib.legacy import parse_markdown_body
-from .paths import create_profile_loader
 from .session_store import SessionStore
 from .ui.error_display import display_validation_error
 from .utils.version import get_version
@@ -226,9 +223,13 @@ def _show_manual_instructions(shell: str, config_file: Path):
     console.print(f"\n[yellow]Add this line to {config_file}:[/yellow]")
 
     if shell == "fish":
-        console.print(f"  [cyan]_AMPLIFIER_COMPLETE=fish_source amplifier > {config_file}[/cyan]")
+        console.print(
+            f"  [cyan]_AMPLIFIER_COMPLETE=fish_source amplifier > {config_file}[/cyan]"
+        )
     else:
-        console.print(f'  [cyan]eval "$(_AMPLIFIER_COMPLETE={shell}_source amplifier)"[/cyan]')
+        console.print(
+            f'  [cyan]eval "$(_AMPLIFIER_COMPLETE={shell}_source amplifier)"[/cyan]'
+        )
 
     console.print("\n[dim]Then reload your shell or start a new terminal.[/dim]")
 
@@ -237,22 +238,46 @@ class CommandProcessor:
     """Process slash commands and special directives."""
 
     COMMANDS = {
-        "/think": {"action": "enable_plan_mode", "description": "Enable read-only planning mode"},
+        "/think": {
+            "action": "enable_plan_mode",
+            "description": "Enable read-only planning mode",
+        },
         "/do": {
             "action": "disable_plan_mode",
             "description": "Exit plan mode and allow modifications",
         },
-        "/save": {"action": "save_transcript", "description": "Save conversation transcript"},
+        "/save": {
+            "action": "save_transcript",
+            "description": "Save conversation transcript",
+        },
         "/status": {"action": "show_status", "description": "Show session status"},
-        "/clear": {"action": "clear_context", "description": "Clear conversation context"},
+        "/clear": {
+            "action": "clear_context",
+            "description": "Clear conversation context",
+        },
         "/help": {"action": "show_help", "description": "Show available commands"},
-        "/config": {"action": "show_config", "description": "Show current configuration"},
+        "/config": {
+            "action": "show_config",
+            "description": "Show current configuration",
+        },
         "/tools": {"action": "list_tools", "description": "List available tools"},
         "/agents": {"action": "list_agents", "description": "List available agents"},
-        "/allowed-dirs": {"action": "manage_allowed_dirs", "description": "Manage allowed write directories"},
-        "/denied-dirs": {"action": "manage_denied_dirs", "description": "Manage denied write directories"},
-        "/rename": {"action": "rename_session", "description": "Rename current session"},
-        "/fork": {"action": "fork_session", "description": "Fork session at turn N: /fork [turn]"},
+        "/allowed-dirs": {
+            "action": "manage_allowed_dirs",
+            "description": "Manage allowed write directories",
+        },
+        "/denied-dirs": {
+            "action": "manage_denied_dirs",
+            "description": "Manage denied write directories",
+        },
+        "/rename": {
+            "action": "rename_session",
+            "description": "Rename current session",
+        },
+        "/fork": {
+            "action": "fork_session",
+            "description": "Fork session at turn N: /fork [turn]",
+        },
     }
 
     def __init__(self, session: AmplifierSession, profile_name: str = "unknown"):
@@ -332,7 +357,9 @@ class CommandProcessor:
             return await self._fork_session(data.get("args", ""))
 
         if action == "unknown_command":
-            return f"Unknown command: {data['command']}. Use /help for available commands."
+            return (
+                f"Unknown command: {data['command']}. Use /help for available commands."
+            )
 
         return f"Unhandled action: {action}"
 
@@ -346,7 +373,9 @@ class CommandProcessor:
         if hooks:
             if enabled:
                 # Register plan mode hook that denies write operations
-                async def plan_mode_hook(_event: str, data: dict[str, Any]) -> HookResult:
+                async def plan_mode_hook(
+                    _event: str, data: dict[str, Any]
+                ) -> HookResult:
                     tool_name = data.get("tool")
                     if tool_name in ["write", "edit", "bash", "task"]:
                         return HookResult(
@@ -357,7 +386,9 @@ class CommandProcessor:
 
                 # Register the hook with the hooks registry and store unregister function
                 if hasattr(hooks, "register"):
-                    self.plan_mode_unregister = hooks.register("tool:pre", plan_mode_hook, priority=0, name="plan_mode")
+                    self.plan_mode_unregister = hooks.register(
+                        "tool:pre", plan_mode_hook, priority=0, name="plan_mode"
+                    )
             else:
                 # Unregister plan mode hook if we have the unregister function
                 if self.plan_mode_unregister:
@@ -416,6 +447,7 @@ class CommandProcessor:
         try:
             from .session_store import SessionStore
             from .paths import get_sessions_dir
+
             store = SessionStore(get_sessions_dir())
             if store.exists(session_id):
                 metadata = store.get_metadata(session_id)
@@ -478,10 +510,13 @@ class CommandProcessor:
                 return f"Session {session_id[:8]}... not found in storage"
 
             # Update the name in metadata
-            store.update_metadata(session_id, {
-                "name": new_name[:50],  # Limit name length
-                "name_generated_at": datetime.now(UTC).isoformat(),
-            })
+            store.update_metadata(
+                session_id,
+                {
+                    "name": new_name[:50],  # Limit name length
+                    "name_generated_at": datetime.now(UTC).isoformat(),
+                },
+            )
 
             return f"✓ Session renamed to: {new_name[:50]}"
 
@@ -545,7 +580,7 @@ class CommandProcessor:
         # If no turn specified, show turn previews (most recent first)
         if turn is None:
             lines = ["", "Your conversation turns (most recent first):", ""]
-            
+
             # Show turns in reverse order (most recent first)
             turns_to_show = min(max_turns, 10)
             for t in range(max_turns, max(0, max_turns - turns_to_show), -1):
@@ -554,7 +589,11 @@ class CommandProcessor:
                     user_preview = summary["user_content"][:55]
                     if len(summary["user_content"]) > 55:
                         user_preview += "..."
-                    tool_info = f" [{summary['tool_count']} tools]" if summary["tool_count"] else ""
+                    tool_info = (
+                        f" [{summary['tool_count']} tools]"
+                        if summary["tool_count"]
+                        else ""
+                    )
                     marker = " ← you are here" if t == max_turns else ""
                     lines.append(f"  [{t}] {user_preview}{tool_info}{marker}")
                 except Exception:
@@ -596,7 +635,9 @@ class CommandProcessor:
             if result.events_count > 0:
                 lines.append(f"  Events copied: {result.events_count}")
             lines.append("")
-            lines.append(f"Resume with: amplifier session resume {result.session_id[:8]}")
+            lines.append(
+                f"Resume with: amplifier session resume {result.session_id[:8]}"
+            )
 
             return "\n".join(lines)
 
@@ -633,14 +674,18 @@ class CommandProcessor:
             source_overrides = config_manager.get_module_sources()
 
             # render_effective_config prints directly to console with rich formatting
-            render_effective_config(chain_dicts, chain_names, source_overrides, detailed=True)
+            render_effective_config(
+                chain_dicts, chain_names, source_overrides, detailed=True
+            )
 
         # Also show loaded agents (available at runtime)
         # Note: agents can be a dict (resolved agents) or list/other format (profile config)
         loaded_agents = self.session.config.get("agents", {})
         if isinstance(loaded_agents, dict) and loaded_agents:
             # Filter out profile config keys (dirs, include, inline) - only show resolved agent names
-            agent_names = [k for k in loaded_agents if k not in ("dirs", "include", "inline")]
+            agent_names = [
+                k for k in loaded_agents if k not in ("dirs", "include", "inline")
+            ]
             if agent_names:
                 console.print()  # Blank line after Agents: section
                 console.print("[bold]Loaded Agents:[/bold]")
@@ -745,7 +790,9 @@ class CommandProcessor:
 
         # Filter out profile config keys - only show resolved agent entries
         agent_items = {
-            k: v for k, v in all_agents.items() if k not in ("dirs", "include", "inline") and isinstance(v, dict)
+            k: v
+            for k, v in all_agents.items()
+            if k not in ("dirs", "include", "inline") and isinstance(v, dict)
         }
 
         if not agent_items:
@@ -818,13 +865,17 @@ class CommandProcessor:
                 lines = ["Allowed Write Directories:"]
                 for p, scope in paths:
                     lines.append(f"  {p} ({scope})")
-            
+
             # Add help text
             lines.append("")
             lines.append("Usage:")
             lines.append("  /allowed-dirs list            - List allowed directories")
-            lines.append("  /allowed-dirs add <path>      - Add directory (session scope)")
-            lines.append("  /allowed-dirs remove <path>   - Remove directory (session scope)")
+            lines.append(
+                "  /allowed-dirs add <path>      - Add directory (session scope)"
+            )
+            lines.append(
+                "  /allowed-dirs remove <path>   - Remove directory (session scope)"
+            )
             return "\n".join(lines)
 
         elif subcommand == "add":
@@ -879,13 +930,17 @@ class CommandProcessor:
                 lines = ["Denied Write Directories:"]
                 for p, scope in paths:
                     lines.append(f"  {p} ({scope})")
-            
+
             # Add help text
             lines.append("")
             lines.append("Usage:")
             lines.append("  /denied-dirs list            - List denied directories")
-            lines.append("  /denied-dirs add <path>      - Add directory (session scope)")
-            lines.append("  /denied-dirs remove <path>   - Remove directory (session scope)")
+            lines.append(
+                "  /denied-dirs add <path>      - Add directory (session scope)"
+            )
+            lines.append(
+                "  /denied-dirs remove <path>   - Remove directory (session scope)"
+            )
             return "\n".join(lines)
 
         elif subcommand == "add":
@@ -956,8 +1011,12 @@ def cli(ctx, install_completion):
             console.print("[yellow]⚠️ Could not detect shell from $SHELL[/yellow]\n")
             console.print("Supported shells: bash, zsh, fish\n")
             console.print("Add completion manually for your shell:\n")
-            console.print('  [cyan]Bash:  eval "$(_AMPLIFIER_COMPLETE=bash_source amplifier)"[/cyan]')
-            console.print('  [cyan]Zsh:   eval "$(_AMPLIFIER_COMPLETE=zsh_source amplifier)"[/cyan]')
+            console.print(
+                '  [cyan]Bash:  eval "$(_AMPLIFIER_COMPLETE=bash_source amplifier)"[/cyan]'
+            )
+            console.print(
+                '  [cyan]Zsh:   eval "$(_AMPLIFIER_COMPLETE=zsh_source amplifier)"[/cyan]'
+            )
             console.print(
                 "  [cyan]Fish:  _AMPLIFIER_COMPLETE=fish_source amplifier > ~/.config/fish/completions/amplifier.fish[/cyan]"
             )
@@ -972,7 +1031,9 @@ def cli(ctx, install_completion):
 
         # Check if already installed (idempotent!)
         if _completion_already_installed(config_file, shell):
-            console.print(f"[green]✓ Completion already configured in {config_file}[/green]\n")
+            console.print(
+                f"[green]✓ Completion already configured in {config_file}[/green]\n"
+            )
             console.print("[dim]To use in this terminal:[/dim]")
             if shell == "fish":
                 console.print(f"  [cyan]source {config_file}[/cyan]")
@@ -1043,19 +1104,25 @@ async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> N
     mention_resolver = session.coordinator.get_capability("mention_resolver")
     loader = MentionLoader(resolver=mention_resolver)
     deduplicator = session.coordinator.get_capability("mention_deduplicator")
-    context_messages = loader.load_mentions(prompt, relative_to=Path.cwd(), deduplicator=deduplicator)
+    context_messages = loader.load_mentions(
+        prompt, relative_to=Path.cwd(), deduplicator=deduplicator
+    )
 
     if not context_messages:
         logger.debug("No files found for runtime @mentions (or all already loaded)")
         return
 
-    logger.info(f"Loaded {len(context_messages)} unique context files from runtime @mentions")
+    logger.info(
+        f"Loaded {len(context_messages)} unique context files from runtime @mentions"
+    )
 
     # Add context messages to session as developer messages (before user message)
     context = session.coordinator.get("context")
     for i, msg in enumerate(context_messages):
         msg_dict = msg.model_dump()
-        logger.debug(f"Adding runtime context {i + 1}/{len(context_messages)}: {len(msg.content)} chars")
+        logger.debug(
+            f"Adding runtime context {i + 1}/{len(context_messages)}: {len(msg.content)} chars"
+        )
         await context.add_message(msg_dict)
 
 
@@ -1081,7 +1148,9 @@ def _create_prompt_session() -> PromptSession:
     from amplifier_app_cli.project_utils import get_project_slug
 
     project_slug = get_project_slug()
-    history_path = Path.home() / ".amplifier" / "projects" / project_slug / "repl_history"
+    history_path = (
+        Path.home() / ".amplifier" / "projects" / project_slug / "repl_history"
+    )
 
     # Ensure project directory exists
     history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1092,7 +1161,9 @@ def _create_prompt_session() -> PromptSession:
     except OSError as e:
         # Fallback if history file is corrupted or inaccessible
         history = InMemoryHistory()
-        logger.warning(f"Could not load history from {history_path}: {e}. Using in-memory history for this session.")
+        logger.warning(
+            f"Could not load history from {history_path}: {e}. Using in-memory history for this session."
+        )
 
     # Create key bindings for multi-line support
     kb = KeyBindings()
@@ -1197,7 +1268,9 @@ async def interactive_chat(
             first_provider = config["providers"][0]
             if isinstance(first_provider, dict) and "config" in first_provider:
                 provider_config = first_provider["config"]
-                return provider_config.get("model") or provider_config.get("default_model", "unknown")
+                return provider_config.get("model") or provider_config.get(
+                    "default_model", "unknown"
+                )
         return "unknown"
 
     # Helper to save session after each turn
@@ -1205,9 +1278,15 @@ async def interactive_chat(
         context = session.coordinator.get("context")
         if context and hasattr(context, "get_messages"):
             messages = await context.get_messages()
+            # Load existing metadata to preserve fields like name, description
+            # that may have been set by other hooks (e.g., session-naming)
+            existing_metadata = store.get_metadata(actual_session_id) or {}
             metadata = {
+                **existing_metadata,  # Preserve name, description, etc.
                 "session_id": actual_session_id,
-                "created": datetime.now(UTC).isoformat(),
+                "created": existing_metadata.get(
+                    "created", datetime.now(UTC).isoformat()
+                ),
                 "profile": profile_name,
                 "model": _extract_model_name(),
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
@@ -1229,22 +1308,30 @@ async def interactive_chat(
                 # Use call_soon_threadsafe since we're in a signal handler
                 loop = asyncio.get_event_loop()
                 loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(session.coordinator.request_cancel(immediate=True))
+                    lambda: asyncio.create_task(
+                        session.coordinator.request_cancel(immediate=True)
+                    )
                 )
                 console.print("\n[bold red]Cancelling immediately...[/bold red]")
             else:
                 # First Ctrl+C - request graceful cancellation
                 loop = asyncio.get_event_loop()
                 loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(session.coordinator.request_cancel(immediate=False))
+                    lambda: asyncio.create_task(
+                        session.coordinator.request_cancel(immediate=False)
+                    )
                 )
                 # Show what's running
                 running_tools = cancellation.running_tool_names
                 if running_tools:
                     tools_str = ", ".join(running_tools)
-                    console.print(f"\n[yellow]Cancelling after [bold]{tools_str}[/bold] completes... (Ctrl+C again to force)[/yellow]")
+                    console.print(
+                        f"\n[yellow]Cancelling after [bold]{tools_str}[/bold] completes... (Ctrl+C again to force)[/yellow]"
+                    )
                 else:
-                    console.print("\n[yellow]Cancelling after current operation completes... (Ctrl+C again to force)[/yellow]")
+                    console.print(
+                        "\n[yellow]Cancelling after current operation completes... (Ctrl+C again to force)[/yellow]"
+                    )
 
         original_handler = signal.signal(signal.SIGINT, sigint_handler)
 
@@ -1270,7 +1357,14 @@ async def interactive_chat(
                 if hooks:
                     from amplifier_core.events import PROMPT_COMPLETE
 
-                    await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt_text, "response": response, "session_id": actual_session_id})
+                    await hooks.emit(
+                        PROMPT_COMPLETE,
+                        {
+                            "prompt": prompt_text,
+                            "response": response,
+                            "session_id": actual_session_id,
+                        },
+                    )
 
                 # Save session after execution (even if cancelled - preserves state)
                 await _save_session()
@@ -1294,7 +1388,9 @@ async def interactive_chat(
 
     # Execute initial prompt if provided
     if initial_prompt:
-        console.print(f"\n[bold cyan]>[/bold cyan] {initial_prompt[:100]}{'...' if len(initial_prompt) > 100 else ''}")
+        console.print(
+            f"\n[bold cyan]>[/bold cyan] {initial_prompt[:100]}{'...' if len(initial_prompt) > 100 else ''}"
+        )
         console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
 
         # Process runtime @mentions in initial prompt
@@ -1346,6 +1442,7 @@ async def interactive_chat(
         hooks = session.coordinator.get("hooks")
         if hooks:
             from amplifier_core.events import SESSION_END
+
             await hooks.emit(SESSION_END, {"session_id": actual_session_id})
         await initialized.cleanup()
         console.print("\n[yellow]Session ended[/yellow]\n")
@@ -1363,13 +1460,13 @@ async def execute_single(
     initial_transcript: list[dict] | None = None,
 ):
     """Execute a single prompt and exit.
-    
+
     This is the unified entry point for single-shot execution. It handles:
     - New sessions (initial_transcript=None)
     - Resumed sessions (initial_transcript provided)
     - Bundle mode and profile mode (via prepared_bundle)
     - All output formats (text, json, json-trace)
-    
+
     Args:
         prompt: The user prompt to execute
         config: Effective configuration dict
@@ -1399,6 +1496,7 @@ async def execute_single(
     trace_collector = None
     if output_format == "json-trace":
         from .trace_collector import TraceCollector
+
         trace_collector = TraceCollector()
 
     # === SESSION CREATION (unified via create_initialized_session) ===
@@ -1412,7 +1510,7 @@ async def execute_single(
         prepared_bundle=prepared_bundle,
         output_format=output_format,
     )
-    
+
     # Create fully initialized session (handles all setup including resume)
     initialized = await create_initialized_session(session_config, console)
     session = initialized.session
@@ -1422,8 +1520,18 @@ async def execute_single(
         if trace_collector:
             hooks = session.coordinator.get("hooks")
             if hooks:
-                hooks.register("tool:pre", trace_collector.on_tool_pre, priority=1000, name="trace_collector_pre")
-                hooks.register("tool:post", trace_collector.on_tool_post, priority=1000, name="trace_collector_post")
+                hooks.register(
+                    "tool:pre",
+                    trace_collector.on_tool_pre,
+                    priority=1000,
+                    name="trace_collector_pre",
+                )
+                hooks.register(
+                    "tool:post",
+                    trace_collector.on_tool_post,
+                    priority=1000,
+                    name="trace_collector_post",
+                )
 
         # Process runtime @mentions in user input
         await _process_runtime_mentions(session, prompt)
@@ -1450,7 +1558,15 @@ async def execute_single(
         hooks = session.coordinator.get("hooks")
         if hooks:
             from amplifier_core.events import PROMPT_COMPLETE
-            await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt, "response": response, "session_id": actual_session_id})
+
+            await hooks.emit(
+                PROMPT_COMPLETE,
+                {
+                    "prompt": prompt,
+                    "response": response,
+                    "session_id": actual_session_id,
+                },
+            )
 
         # Output response based on format
         if output_format in ["json", "json-trace"]:
@@ -1470,7 +1586,9 @@ async def execute_single(
         else:
             # Text output for humans
             if verbose:
-                console.print(f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]")
+                console.print(
+                    f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]"
+                )
             console.print(Markdown(response))
             console.print()  # Add blank line after output to prevent running into shell prompt
 
@@ -1479,9 +1597,15 @@ async def execute_single(
         messages = await context.get_messages() if context else []
         if messages:
             store = SessionStore()
+            # Load existing metadata to preserve fields like name, description
+            # that may have been set by other hooks (e.g., session-naming)
+            existing_metadata = store.get_metadata(actual_session_id) or {}
             metadata = {
+                **existing_metadata,  # Preserve name, description, etc.
                 "session_id": actual_session_id,
-                "created": datetime.now(UTC).isoformat(),
+                "created": existing_metadata.get(
+                    "created", datetime.now(UTC).isoformat()
+                ),
                 "profile": profile_name,
                 "model": model_name,
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
@@ -1535,6 +1659,7 @@ async def execute_single(
         hooks = session.coordinator.get("hooks")
         if hooks:
             from amplifier_core.events import SESSION_END
+
             await hooks.emit(SESSION_END, {"session_id": actual_session_id})
         await initialized.cleanup()
         # Allow async tasks to complete before output
