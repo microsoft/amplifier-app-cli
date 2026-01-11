@@ -212,8 +212,15 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
     Uses shared cache_management utilities for cache/registry removal when those
     categories are being removed, ensuring DRY compliance across commands.
     """
-    from ..utils.cache_management import clear_download_cache
-    from ..utils.cache_management import clear_registry
+    # Try to use shared utilities, but fall back to inline removal if not available
+    # (handles case where reset runs with old code before new module exists)
+    clear_download_cache = None
+    clear_registry = None
+    try:
+        from ..utils.cache_management import clear_download_cache
+        from ..utils.cache_management import clear_registry
+    except ImportError:
+        pass  # Will use inline shutil.rmtree fallback
 
     amplifier_dir = _get_amplifier_dir()
     console.print(f"[bold]>>>[/bold] Removing {amplifier_dir}...")
@@ -255,16 +262,16 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
                     console.print(f"    [dim][dry-run] Would remove: {item.name}[/dim]")
                     removed_count += 1
                 else:
-                    # Use shared utilities for cache and registry
-                    if item.name == "cache":
-                        count, success = clear_download_cache(dry_run=False)
+                    # Use shared utilities for cache and registry if available
+                    if clear_download_cache is not None and item.name == "cache":
+                        _count, success = clear_download_cache(dry_run=False)
                         if success:
                             removed_count += 1
-                    elif item.name == "registry.json":
+                    elif clear_registry is not None and item.name == "registry.json":
                         if clear_registry(dry_run=False):
                             removed_count += 1
                     else:
-                        # Standard removal for other items
+                        # Standard removal (fallback or other items)
                         if item.is_dir():
                             shutil.rmtree(item)
                         else:
