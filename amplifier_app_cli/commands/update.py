@@ -784,7 +784,18 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
     """
     # Check for updates with status messages
     if force:
-        console.print("Force update mode - skipping update detection...")
+        console.print("Force update mode...")
+        # Clear regenerable cache so everything is fetched fresh
+        from ..utils.cache_management import clear_all_regenerable
+
+        console.print("  Clearing cache...")
+        count, success = clear_all_regenerable(dry_run=False)
+        if success:
+            console.print(f"  [green]✓[/green] Cleared {count} cached items")
+        else:
+            console.print(
+                "  [yellow]Warning:[/yellow] Some cache items could not be cleared"
+            )
     else:
         console.print("Checking for updates...")
 
