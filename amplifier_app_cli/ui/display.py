@@ -83,7 +83,8 @@ class CLIDisplaySystem:
         first_line = lines[0]
 
         # Build prefix for first line: [tool-name] message
-        prefix = f"{nesting_indent}[{color}][{tool_name}][/{color}] "
+        # Note: \[ escapes the bracket so Rich renders it literally instead of as a tag
+        prefix = f"{nesting_indent}[{color}]\\[{tool_name}][/{color}] "
 
         # Calculate indent for subsequent lines to align with content
         # Account for nesting + bracket + tool_name + bracket + space
