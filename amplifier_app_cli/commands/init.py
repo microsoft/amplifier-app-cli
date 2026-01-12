@@ -34,7 +34,11 @@ def _is_provider_module_installed(provider_id: str) -> bool:
     import importlib.metadata
 
     # Normalize to full module ID
-    module_id = provider_id if provider_id.startswith("provider-") else f"provider-{provider_id}"
+    module_id = (
+        provider_id
+        if provider_id.startswith("provider-")
+        else f"provider-{provider_id}"
+    )
 
     # Try entry point first (most reliable for properly installed modules)
     try:
@@ -77,6 +81,16 @@ def check_first_run() -> bool:
 
     # No provider configured = true first run, need interactive init
     if current_provider is None:
+        # Check if any provider's credentials are in environment
+        from ..provider_env_detect import detect_provider_from_env
+
+        detected_provider = detect_provider_from_env()
+        if detected_provider is not None:
+            # Provider credentials found in env - auto-configure it
+            logger.info(f"Auto-configuring provider from env vars: {detected_provider}")
+            # Auto-configure with minimal config (credentials from env)
+            provider_mgr.use_provider(detected_provider, scope="global", config={})
+            return False
         return True
 
     # Provider is configured - check if its module is actually installed
@@ -112,9 +126,12 @@ def prompt_first_run_init(console_arg: Console) -> bool:
     in check_first_run() and won't reach this function.
     """
     console_arg.print()
-    console_arg.print("[yellow]⚠️  No API key found![/yellow]")
+    console_arg.print("[yellow]⚠️  No provider configured![/yellow]")
     console_arg.print()
-    console_arg.print("Amplifier needs an AI provider to work. Let's set that up quickly.")
+    console_arg.print("Amplifier needs an AI provider. Let's set that up quickly.")
+    console_arg.print(
+        "[dim]Tip: Set ANTHROPIC_API_KEY, OPENAI_API_KEY, etc. to skip this.[/dim]"
+    )
     console_arg.print()
 
     if Confirm.ask("Run interactive setup now?", default=True):
@@ -142,7 +159,9 @@ def init_cmd():
     Configures provider credentials, model, and active profile.
     """
     console.print()
-    console.print(Panel.fit("[bold cyan]Welcome to Amplifier![/bold cyan]", border_style="cyan"))
+    console.print(
+        Panel.fit("[bold cyan]Welcome to Amplifier![/bold cyan]", border_style="cyan")
+    )
     console.print()
 
     key_manager = KeyManager()
@@ -160,7 +179,6 @@ def init_cmd():
     import importlib
     import importlib.metadata
     import site
-    import sys
 
     # Invalidate import caches
     importlib.invalidate_caches()
@@ -183,7 +201,9 @@ def init_cmd():
     providers = provider_mgr.list_providers()
 
     if not providers:
-        console.print("[red]Error: No providers available. Installation may have failed.[/red]")
+        console.print(
+            "[red]Error: No providers available. Installation may have failed.[/red]"
+        )
         return
 
     # Build dynamic menu from discovered providers
@@ -213,7 +233,9 @@ def init_cmd():
     existing_config = provider_mgr.get_provider_config(module_id, scope="global")
 
     # Step 2: Provider-specific configuration using unified dispatcher
-    provider_config = configure_provider(module_id, key_manager, existing_config=existing_config)
+    provider_config = configure_provider(
+        module_id, key_manager, existing_config=existing_config
+    )
     if provider_config is None:
         console.print("[red]Configuration cancelled.[/red]")
         return
@@ -221,12 +243,14 @@ def init_cmd():
     # Save provider configuration to user's global settings (~/.amplifier/settings.yaml)
     # This is first-time setup, so it should be available across all projects
     # Note: We don't set a profile - the bundle system handles defaults
-    provider_mgr.use_provider(module_id, scope="global", config=provider_config, source=None)
+    provider_mgr.use_provider(
+        module_id, scope="global", config=provider_config, source=None
+    )
 
     console.print()
     console.print(
         Panel.fit(
-            '[bold green]✓ Ready![/bold green]\n\nStart an interactive session:\n  [cyan]amplifier[/cyan]\n\nThen ask:\n  [dim]Tell me about the Amplifier ecosystem[/dim]',
+            "[bold green]✓ Ready![/bold green]\n\nStart an interactive session:\n  [cyan]amplifier[/cyan]\n\nThen ask:\n  [dim]Tell me about the Amplifier ecosystem[/dim]",
             border_style="green",
         )
     )
