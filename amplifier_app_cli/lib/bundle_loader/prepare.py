@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
+from typing import Callable
 
 from amplifier_foundation import Bundle
 from amplifier_foundation import load_bundle
@@ -27,6 +28,7 @@ async def load_and_prepare_bundle(
     discovery: AppBundleDiscovery,
     install_deps: bool = True,
     compose_behaviors: list[str] | None = None,
+    source_overrides: dict[str, str] | None = None,
 ) -> PreparedBundle:
     """Load bundle by name or URI and prepare it for execution.
 
@@ -48,6 +50,9 @@ async def load_and_prepare_bundle(
             onto the main bundle before preparation. These are typically
             app-level policy behaviors like notifications.
             Example: ["git+https://github.com/org/bundle@main#subdirectory=behaviors/foo.yaml"]
+        source_overrides: Optional dict mapping module_id -> source_uri.
+            Passed to bundle.prepare() to override module sources before download.
+            This enables settings.yaml overrides to take effect at prepare time.
 
     Returns:
         PreparedBundle ready for create_session().
@@ -74,6 +79,13 @@ async def load_and_prepare_bundle(
             compose_behaviors=[
                 "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/desktop-notifications.yaml"
             ],
+        )
+
+    Example with source overrides:
+        prepared = await load_and_prepare_bundle(
+            "foundation",
+            discovery,
+            source_overrides={"tool-task": "/local/path/to/module"},
         )
     """
     # Check if input looks like a URI rather than a bundle name
@@ -105,16 +117,38 @@ async def load_and_prepare_bundle(
         for behavior_uri in compose_behaviors:
             logger.info(f"Composing behavior: {behavior_uri}")
             try:
-                behavior_bundle = await load_bundle(behavior_uri, registry=discovery.registry)
+                behavior_bundle = await load_bundle(
+                    behavior_uri, registry=discovery.registry
+                )
                 bundle = bundle.compose(behavior_bundle)
-                logger.debug(f"Composed behavior '{behavior_bundle.name}' onto '{bundle.name}'")
+                logger.debug(
+                    f"Composed behavior '{behavior_bundle.name}' onto '{bundle.name}'"
+                )
             except Exception as e:
                 logger.warning(f"Failed to compose behavior '{behavior_uri}': {e}")
                 # Continue without this behavior - notifications are optional
 
     # 4. Prepare: download modules from git sources, install deps
+    # Build source resolver callback if overrides provided
+    def make_source_resolver(
+        overrides: dict[str, str],
+    ) -> Callable[[str, str], str]:
+        def resolver(module_id: str, original_source: str) -> str:
+            resolved = overrides.get(module_id, original_source)
+            if resolved != original_source:
+                logger.info(f"Source override: {module_id} -> {resolved}")
+            return resolved
+
+        return resolver
+
+    resolver_callback = (
+        make_source_resolver(source_overrides) if source_overrides else None
+    )
+
     logger.info(f"Preparing bundle '{bundle_name}' (install_deps={install_deps})")
-    prepared = await bundle.prepare(install_deps=install_deps)
+    prepared = await bundle.prepare(
+        install_deps=install_deps, source_resolver=resolver_callback
+    )
     logger.info(f"Bundle '{bundle_name}' prepared successfully")
 
     return prepared

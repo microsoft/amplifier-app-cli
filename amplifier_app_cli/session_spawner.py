@@ -156,6 +156,7 @@ async def spawn_sub_session(
     tool_inheritance: dict[str, list[str]] | None = None,
     hook_inheritance: dict[str, list[str]] | None = None,
     orchestrator_config: dict | None = None,
+    parent_messages: list[dict] | None = None,
 ) -> dict:
     """
     Spawn sub-session with agent configuration overlay.
@@ -174,6 +175,9 @@ async def spawn_sub_session(
             - {"inherit_hooks": ["hooks-approval"]} - inherit ONLY these
         orchestrator_config: Optional orchestrator config to merge into session
             (e.g., {"min_delay_between_calls_ms": 500} for rate limiting)
+        parent_messages: Optional list of messages from parent session to inject
+            into child's context. Enables context inheritance where child can
+            reference parent's conversation history.
 
     Returns:
         Dict with "output" (response) and "session_id" (for multi-turn)
@@ -241,6 +245,17 @@ async def spawn_sub_session(
     # Notify display system we're entering a nested session (for indentation)
     if hasattr(display_system, "push_nesting"):
         display_system.push_nesting()
+
+    # Inject parent messages if provided (for context inheritance)
+    # This allows child sessions to have awareness of parent's conversation history.
+    # Only inject for new sessions, not when resuming (sub_session_id would be provided).
+    if parent_messages:
+        child_context = child_session.coordinator.get("context")
+        if child_context and hasattr(child_context, "set_messages"):
+            await child_context.set_messages(parent_messages)
+            logger.debug(
+                f"Injected {len(parent_messages)} parent messages into child session {sub_session_id}"
+            )
 
     # Register app-layer capabilities for child session BEFORE initialization
     # These must be mounted before initialize() because module loading needs the resolver

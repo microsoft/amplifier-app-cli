@@ -44,19 +44,21 @@ class AppSettings:
 
     # ----- Provider overrides -----
 
-    def set_provider_override(self, provider_entry: dict[str, Any], scope: ScopeType) -> None:
+    def set_provider_override(
+        self, provider_entry: dict[str, Any], scope: ScopeType
+    ) -> None:
         """Persist provider override at a specific scope.
-        
+
         Updates or adds the provider entry without replacing other providers.
         The new/updated provider is always moved to the front (becomes active).
         Other providers with priority 1 are demoted to priority 10.
         """
         # Read existing providers at this scope
         existing_providers = self.get_scope_provider_overrides(scope)
-        
+
         module_id = provider_entry.get("module")
         other_providers = []
-        
+
         for provider in existing_providers:
             if provider.get("module") == module_id:
                 # Skip - we'll add the new entry at the front
@@ -67,10 +69,10 @@ class AppSettings:
                 if isinstance(config, dict) and config.get("priority") == 1:
                     provider = {**provider, "config": {**config, "priority": 10}}
                 other_providers.append(provider)
-        
+
         # New provider goes first (becomes active)
         new_providers = [provider_entry] + other_providers
-        
+
         # Write back the merged list directly to avoid deep_merge replacing lists
         scope_path = self.scope_path(scope)
         scope_settings = self._config._read_yaml(scope_path) or {}  # type: ignore[attr-defined]
@@ -134,7 +136,9 @@ class AppSettings:
         notifications = merged.get("config", {}).get("notifications", {})
         return notifications if isinstance(notifications, dict) else {}
 
-    def get_tool_overrides(self, session_id: str | None = None, project_slug: str | None = None) -> list[dict[str, Any]]:
+    def get_tool_overrides(
+        self, session_id: str | None = None, project_slug: str | None = None
+    ) -> list[dict[str, Any]]:
         """Return merged tool overrides (session > local > project > global).
 
         Tool overrides allow settings like allowed_write_paths for tool-filesystem
@@ -160,7 +164,13 @@ class AppSettings:
         # Also check session-scoped settings if session context provided
         if session_id and project_slug:
             session_settings_path = (
-                Path.home() / ".amplifier" / "projects" / project_slug / "sessions" / session_id / "settings.yaml"
+                Path.home()
+                / ".amplifier"
+                / "projects"
+                / project_slug
+                / "sessions"
+                / session_id
+                / "settings.yaml"
             )
             if session_settings_path.exists():
                 try:
@@ -174,10 +184,14 @@ class AppSettings:
                     pass  # Skip malformed session settings
         return tools if isinstance(tools, list) else []
 
-    def _merge_tool_lists(self, base: list[dict[str, Any]], overlay: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _merge_tool_lists(
+        self, base: list[dict[str, Any]], overlay: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Merge tool lists, with overlay taking precedence for matching modules."""
         result = list(base)
-        base_modules = {t.get("module"): i for i, t in enumerate(base) if isinstance(t, dict)}
+        base_modules = {
+            t.get("module"): i for i, t in enumerate(base) if isinstance(t, dict)
+        }
 
         for tool in overlay:
             if not isinstance(tool, dict):
@@ -219,12 +233,16 @@ class AppSettings:
         1. User selects Ollama → only Ollama loads (not Anthropic/OpenAI from profile)
         2. User selects Anthropic → gets profile's debug settings + their model choice
         """
-        provider_overrides = overrides if overrides is not None else self.get_provider_overrides()
+        provider_overrides = (
+            overrides if overrides is not None else self.get_provider_overrides()
+        )
         if not provider_overrides:
             return profile
 
         # Build set of override module IDs for filtering
-        override_ids = {entry.get("module") for entry in provider_overrides if entry.get("module")}
+        override_ids = {
+            entry.get("module") for entry in provider_overrides if entry.get("module")
+        }
 
         # Normalize overrides into a dict for merging
         normalized_overrides: dict[str, dict[str, Any]] = {}
@@ -246,7 +264,10 @@ class AppSettings:
                 override_entry = normalized_overrides.pop(provider.module, None)
                 if override_entry:
                     # Merge: profile config as base, override config on top
-                    merged_config = {**(provider.config or {}), **(override_entry.get("config") or {})}
+                    merged_config = {
+                        **(provider.config or {}),
+                        **(override_entry.get("config") or {}),
+                    }
                     provider = ModuleConfig(
                         module=provider.module,
                         source=override_entry.get("source", provider.source),
@@ -259,3 +280,132 @@ class AppSettings:
             providers.append(ModuleConfig.model_validate(entry))
 
         return profile.model_copy(update={"providers": providers})
+
+    # ----- Unified Module Overrides -----
+
+    def get_module_overrides(self) -> dict[str, dict[str, Any]]:
+        """Return unified module overrides from settings.yaml.
+
+        This is the single source of truth for all module overrides.
+        Merges overrides from all scopes (global < project < local).
+
+        Expected structure in settings.yaml:
+            overrides:
+              tool-task:
+                source: /local/path/to/module
+                config:
+                  inherit_context: recent
+              tool-filesystem:
+                config:
+                  allowed_write_paths: ["/extra/path"]
+
+        Returns:
+            Dict mapping module_id -> {"source": str, "config": dict}
+            Both source and config are optional per module.
+        """
+        merged = self._config.get_merged_settings()
+        overrides = merged.get("overrides", {})
+        return overrides if isinstance(overrides, dict) else {}
+
+    def get_source_overrides(self) -> dict[str, str]:
+        """Return source overrides only (module_id -> source_uri).
+
+        Convenience method for passing to Bundle.prepare(source_resolver=...).
+        """
+        overrides = self.get_module_overrides()
+        return {
+            module_id: override["source"]
+            for module_id, override in overrides.items()
+            if isinstance(override, dict) and "source" in override
+        }
+
+    def get_config_overrides(self) -> dict[str, dict[str, Any]]:
+        """Return config overrides only (module_id -> config_dict).
+
+        Convenience method for applying config overrides after prepare().
+        """
+        overrides = self.get_module_overrides()
+        return {
+            module_id: override.get("config", {})
+            for module_id, override in overrides.items()
+            if isinstance(override, dict) and "config" in override
+        }
+
+    def set_module_override(
+        self,
+        module_id: str,
+        source: str | None = None,
+        config: dict[str, Any] | None = None,
+        scope: ScopeType = "project",
+    ) -> None:
+        """Set a module override at the specified scope.
+
+        Args:
+            module_id: The module to override (e.g., "tool-task")
+            source: Optional source path/URI override
+            config: Optional config override dict
+            scope: Where to save ("local", "project", "global")
+        """
+        scope_path = self.scope_path(scope)
+        if not scope_path:
+            raise ValueError(f"Scope '{scope}' is not available")
+
+        import yaml
+
+        # Read existing settings
+        if scope_path.exists():
+            with open(scope_path, encoding="utf-8") as f:
+                settings = yaml.safe_load(f) or {}
+        else:
+            settings = {}
+
+        # Ensure overrides section exists
+        if "overrides" not in settings:
+            settings["overrides"] = {}
+
+        # Build override entry
+        override: dict[str, Any] = {}
+        if source is not None:
+            override["source"] = source
+        if config is not None:
+            override["config"] = config
+
+        if override:
+            settings["overrides"][module_id] = override
+        elif module_id in settings["overrides"]:
+            # Remove if both source and config are None
+            del settings["overrides"][module_id]
+
+        # Write back
+        scope_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(scope_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(settings, f, default_flow_style=False, sort_keys=False)
+
+    def remove_module_override(
+        self, module_id: str, scope: ScopeType = "project"
+    ) -> bool:
+        """Remove a module override from the specified scope.
+
+        Returns:
+            True if override was removed, False if it didn't exist.
+        """
+        scope_path = self.scope_path(scope)
+        if not scope_path or not scope_path.exists():
+            return False
+
+        import yaml
+
+        with open(scope_path, encoding="utf-8") as f:
+            settings = yaml.safe_load(f) or {}
+
+        overrides = settings.get("overrides", {})
+        if module_id not in overrides:
+            return False
+
+        del overrides[module_id]
+        settings["overrides"] = overrides
+
+        with open(scope_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(settings, f, default_flow_style=False, sort_keys=False)
+
+        return True

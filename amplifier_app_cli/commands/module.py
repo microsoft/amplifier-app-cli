@@ -37,7 +37,9 @@ def module(ctx: click.Context):
 @click.option(
     "--type",
     "-t",
-    type=click.Choice(["all", "orchestrator", "provider", "tool", "agent", "context", "hook"]),
+    type=click.Choice(
+        ["all", "orchestrator", "provider", "tool", "agent", "context", "hook"]
+    ),
     default="all",
     help="Module type to list",
 )
@@ -50,7 +52,11 @@ def list_modules(type: str):
     resolver = create_module_resolver()
 
     if modules_info:
-        table = Table(title="Installed Modules (via entry points)", show_header=True, header_style="bold cyan")
+        table = Table(
+            title="Installed Modules (via entry points)",
+            show_header=True,
+            header_style="bold cyan",
+        )
         table.add_column("Name", style="green")
         table.add_column("Type", style="yellow")
         table.add_column("Source", style="magenta")
@@ -70,7 +76,13 @@ def list_modules(type: str):
                 source_str = "unknown"
                 origin = "unknown"
 
-            table.add_row(module_info.id, module_info.type, source_str, origin, module_info.description)
+            table.add_row(
+                module_info.id,
+                module_info.type,
+                source_str,
+                origin,
+                module_info.description,
+            )
 
         console.print(table)
     else:
@@ -113,7 +125,9 @@ def list_modules(type: str):
     # Show cached modules (downloaded from git)
     # Filter out modules that have local source overrides (local takes precedence)
     local_override_names = _get_local_override_names()
-    cached_modules = [m for m in _get_cached_modules(type) if m["id"] not in local_override_names]
+    cached_modules = [
+        m for m in _get_cached_modules(type) if m["id"] not in local_override_names
+    ]
     if cached_modules:
         console.print()
         table = Table(
@@ -133,8 +147,12 @@ def list_modules(type: str):
 
         console.print(table)
         console.print()
-        console.print("[dim]Note: Cached modules are downloaded on-demand when used.[/dim]")
-        console.print("[dim]Use 'amplifier module update' to update cached modules.[/dim]")
+        console.print(
+            "[dim]Note: Cached modules are downloaded on-demand when used.[/dim]"
+        )
+        console.print(
+            "[dim]Use 'amplifier module update' to update cached modules.[/dim]"
+        )
 
 
 @module.command("show")
@@ -147,7 +165,9 @@ def module_show(module_name: str):
     active_profile = config_manager.get_active_profile() or get_system_default_profile()
 
     profile_modules = _get_profile_modules(active_profile)
-    found_in_profile = next((m for m in profile_modules if m["id"] == module_name), None)
+    found_in_profile = next(
+        (m for m in profile_modules if m["id"] == module_name), None
+    )
 
     if found_in_profile:
         source = found_in_profile["source"]
@@ -159,7 +179,9 @@ def module_show(module_name: str):
 [bold]Source:[/bold] {source}
 [bold]Description:[/bold] {description}
 [bold]Mount Point:[/bold] {mount_point}"""
-        console.print(Panel(panel_content, title=f"Module: {module_name}", border_style="cyan"))
+        console.print(
+            Panel(panel_content, title=f"Module: {module_name}", border_style="cyan")
+        )
         return
 
     loader = ModuleLoader()
@@ -167,7 +189,9 @@ def module_show(module_name: str):
     found_module = next((m for m in modules_info if m.id == module_name), None)
 
     if not found_module:
-        console.print(f"[red]Module '{module_name}' not found in profile or installed modules[/red]")
+        console.print(
+            f"[red]Module '{module_name}' not found in profile or installed modules[/red]"
+        )
         return
 
     panel_content = f"""[bold]Name:[/bold] {found_module.id}
@@ -177,15 +201,23 @@ def module_show(module_name: str):
 [bold]Version:[/bold] {found_module.version}
 [bold]Origin:[/bold] Installed (entry point)"""
 
-    console.print(Panel(panel_content, title=f"Module: {module_name}", border_style="cyan"))
+    console.print(
+        Panel(panel_content, title=f"Module: {module_name}", border_style="cyan")
+    )
 
 
 @module.command("add")
 @click.argument("module_id")
 @click.option("--source", "-s", help="Source URI (git+https://... or file path)")
-@click.option("--local", "scope_flag", flag_value="local", help="Add locally (just you)")
-@click.option("--project", "scope_flag", flag_value="project", help="Add for project (team)")
-@click.option("--global", "scope_flag", flag_value="global", help="Add globally (all projects)")
+@click.option(
+    "--local", "scope_flag", flag_value="local", help="Add locally (just you)"
+)
+@click.option(
+    "--project", "scope_flag", flag_value="project", help="Add for project (team)"
+)
+@click.option(
+    "--global", "scope_flag", flag_value="global", help="Add globally (all projects)"
+)
 def module_add(module_id: str, source: str | None, scope_flag: str | None):
     """Add a module override to settings.
 
@@ -193,7 +225,9 @@ def module_add(module_id: str, source: str | None, scope_flag: str | None):
     Use --source to specify where to load the module from.
     """
     # Infer module type from ID prefix
-    module_type: Literal["tool", "hook", "agent", "provider", "orchestrator", "context"] | None = None
+    module_type: (
+        Literal["tool", "hook", "agent", "provider", "orchestrator", "context"] | None
+    ) = None
     if module_id.startswith("tool-"):
         module_type = "tool"
     elif module_id.startswith("hooks-"):
@@ -209,14 +243,20 @@ def module_add(module_id: str, source: str | None, scope_flag: str | None):
     else:
         console.print("[red]Error:[/red] Module ID must start with a known prefix")
         console.print("\nSupported prefixes:")
-        console.print("  provider-*     (LLM providers: provider-anthropic, provider-openai)")
+        console.print(
+            "  provider-*     (LLM providers: provider-anthropic, provider-openai)"
+        )
         console.print("  tool-*         (Tools: tool-filesystem, tool-bash)")
         console.print("  hooks-*        (Hooks: hooks-logging, hooks-approval)")
         console.print("  agent-*        (Agent configs: agent-custom)")
         console.print("  loop-*         (Orchestrators: loop-basic, loop-streaming)")
-        console.print("  context-*      (Context managers: context-simple, context-persistent)")
+        console.print(
+            "  context-*      (Context managers: context-simple, context-persistent)"
+        )
         console.print("\nExamples:")
-        console.print("  amplifier module add provider-anthropic --source git+https://github.com/org/repo@main")
+        console.print(
+            "  amplifier module add provider-anthropic --source git+https://github.com/org/repo@main"
+        )
         console.print("  amplifier module add tool-jupyter")
         return
 
@@ -265,7 +305,9 @@ def module_add(module_id: str, source: str | None, scope_flag: str | None):
 @module.command("remove")
 @click.argument("module_id")
 @click.option("--local", "scope_flag", flag_value="local", help="Remove from local")
-@click.option("--project", "scope_flag", flag_value="project", help="Remove from project")
+@click.option(
+    "--project", "scope_flag", flag_value="project", help="Remove from project"
+)
 @click.option("--global", "scope_flag", flag_value="global", help="Remove from global")
 def module_remove(module_id: str, scope_flag: str | None):
     """Remove a module override from settings."""
@@ -405,7 +447,11 @@ def _get_cached_modules(type_filter: str = "all") -> list[dict[str, Any]]:
 @module.command("update")
 @click.argument("module_id", required=False)
 @click.option("--check-only", is_flag=True, help="Check for updates without installing")
-@click.option("--mutable-only", is_flag=True, help="Only update mutable refs (branches, not tags/SHAs)")
+@click.option(
+    "--mutable-only",
+    is_flag=True,
+    help="Only update mutable refs (branches, not tags/SHAs)",
+)
 def module_update(module_id: str | None, check_only: bool, mutable_only: bool):
     """Update module cache.
 
@@ -439,7 +485,9 @@ def module_update(module_id: str | None, check_only: bool, mutable_only: bool):
                 return await check_all_sources(client=client, include_all_cached=True)
 
         report = asyncio.run(_check())
-        show_modules_report(report.cached_git_sources, report.local_file_sources, check_only=True)
+        show_modules_report(
+            report.cached_git_sources, report.local_file_sources, check_only=True
+        )
         return
 
     if module_id:
@@ -462,7 +510,9 @@ def module_update(module_id: str | None, check_only: bool, mutable_only: bool):
                 update_module(
                     url=cached_module.url,
                     ref=cached_module.ref,
-                    progress_callback=lambda mid, status: console.print(f"  {status}...", end="\r"),
+                    progress_callback=lambda mid, status: console.print(
+                        f"  {status}...", end="\r"
+                    ),
                 )
             )
             console.print(f"[green]✓ Updated {module_id}@{cached_module.ref}[/green]")
@@ -510,7 +560,13 @@ def module_update(module_id: str | None, check_only: bool, mutable_only: bool):
     default=False,
     help="Run behavioral tests in addition to structural validation",
 )
-def module_validate(module_path: str, module_type: str | None, output_format: str, verbose: bool, behavioral: bool):
+def module_validate(
+    module_path: str,
+    module_type: str | None,
+    output_format: str,
+    verbose: bool,
+    behavioral: bool,
+):
     """Validate a module against its contract.
 
     MODULE_PATH should be a path to a module directory.
@@ -518,11 +574,19 @@ def module_validate(module_path: str, module_type: str | None, output_format: st
 
     Use --behavioral to run pytest-based behavioral tests after structural validation.
     """
-    asyncio.run(_module_validate_async(module_path, module_type, output_format, verbose, behavioral))
+    asyncio.run(
+        _module_validate_async(
+            module_path, module_type, output_format, verbose, behavioral
+        )
+    )
 
 
 async def _module_validate_async(
-    module_path: str, module_type: str | None, output_format: str, verbose: bool, behavioral: bool
+    module_path: str,
+    module_type: str | None,
+    output_format: str,
+    verbose: bool,
+    behavioral: bool,
 ):
     """Async implementation of module validate."""
     from amplifier_core.validation import ContextValidator
@@ -537,8 +601,12 @@ async def _module_validate_async(
     if module_type is None:
         module_type = _infer_module_type_for_validation(path.name)
         if module_type is None:
-            console.print("[red]Could not auto-detect module type from directory name.[/red]")
-            console.print("Use --type flag to specify: provider, tool, hook, orchestrator, or context")
+            console.print(
+                "[red]Could not auto-detect module type from directory name.[/red]"
+            )
+            console.print(
+                "Use --type flag to specify: provider, tool, hook, orchestrator, or context"
+            )
             raise SystemExit(1)
 
     # Select validator
@@ -612,11 +680,15 @@ def _run_behavioral_tests(module_path: str, module_type: str) -> bool:
         test_file = core_path / "validation" / "behavioral" / f"test_{module_type}.py"
 
         if not test_file.exists():
-            console.print(f"[yellow]No behavioral tests found for {module_type} modules[/yellow]")
+            console.print(
+                f"[yellow]No behavioral tests found for {module_type} modules[/yellow]"
+            )
             return True  # Not a failure - tests just don't exist yet
 
     except ImportError:
-        console.print("[red]amplifier-core not installed - cannot run behavioral tests[/red]")
+        console.print(
+            "[red]amplifier-core not installed - cannot run behavioral tests[/red]"
+        )
         return False
 
     # Run pytest with the module path
@@ -741,6 +813,196 @@ def _get_actionable_tip_for_check(check_name: str, module_type: str) -> str | No
         return "Hook must implement __call__(event, data) -> HookResult method"
 
     return None
+
+
+# ----- Override Subcommands -----
+
+
+@module.group("override")
+def override_group():
+    """Manage module source and config overrides.
+
+    Overrides are stored in settings.yaml and take effect when bundles are prepared.
+    Use these commands to point modules to local development copies or customize configs.
+
+    Examples:
+        amplifier module override set tool-task --source /local/path
+        amplifier module override set tool-task --config inherit_context=recent
+        amplifier module override list
+        amplifier module override remove tool-task
+    """
+    pass
+
+
+@override_group.command("set")
+@click.argument("module_id")
+@click.option(
+    "--source",
+    "-s",
+    type=str,
+    help="Source path or URI for the module (e.g., /local/path or git+https://...)",
+)
+@click.option(
+    "--config",
+    "-c",
+    multiple=True,
+    help="Config key=value pair (can be repeated, e.g., -c inherit_context=recent -c timeout=30)",
+)
+@click.option(
+    "--scope",
+    type=click.Choice(["local", "project", "global"]),
+    default="project",
+    help="Where to save the override (default: project)",
+)
+def override_set(
+    module_id: str, source: str | None, config: tuple[str, ...], scope: str
+):
+    """Set a module override.
+
+    Examples:
+        # Override source to local path
+        amplifier module override set tool-task --source /path/to/local/module
+
+        # Override config values
+        amplifier module override set tool-task -c inherit_context=recent -c timeout=30
+
+        # Override both source and config
+        amplifier module override set tool-task --source /local/path -c debug=true
+    """
+    import json
+
+    from ..lib.app_settings import AppSettings
+
+    if not source and not config:
+        console.print("[red]Error:[/red] Must specify --source and/or --config")
+        raise SystemExit(1)
+
+    # Parse config key=value pairs
+    config_dict: dict[str, Any] = {}
+    for item in config:
+        if "=" not in item:
+            console.print(
+                f"[red]Error:[/red] Invalid config format '{item}', expected key=value"
+            )
+            raise SystemExit(1)
+        key, value = item.split("=", 1)
+        # Try to parse value as JSON for complex types
+        try:
+            config_dict[key] = json.loads(value)
+        except json.JSONDecodeError:
+            # Keep as string if not valid JSON
+            config_dict[key] = value
+
+    try:
+        config_manager = create_config_manager()
+        settings = AppSettings(config_manager)
+        settings.set_module_override(
+            module_id=module_id,
+            source=source,
+            config=config_dict if config_dict else None,
+            scope=cast(ScopeType, scope),
+        )
+
+        # Build confirmation message
+        parts = []
+        if source:
+            parts.append(f"source={source}")
+        if config_dict:
+            config_str = ", ".join(f"{k}={v}" for k, v in config_dict.items())
+            parts.append(f"config=[{config_str}]")
+
+        console.print(
+            f"[green]✓[/green] Override set for [cyan]{module_id}[/cyan]: {', '.join(parts)}"
+        )
+        console.print(f"[dim]Scope: {scope}[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]Error setting override:[/red] {e}")
+        raise SystemExit(1)
+
+
+@override_group.command("remove")
+@click.argument("module_id")
+@click.option(
+    "--scope",
+    type=click.Choice(["local", "project", "global"]),
+    default="project",
+    help="Scope to remove from (default: project)",
+)
+def override_remove(module_id: str, scope: str):
+    """Remove a module override.
+
+    Example:
+        amplifier module override remove tool-task
+    """
+    from ..lib.app_settings import AppSettings
+
+    try:
+        config_manager = create_config_manager()
+        settings = AppSettings(config_manager)
+        removed = settings.remove_module_override(
+            module_id, scope=cast(ScopeType, scope)
+        )
+
+        if removed:
+            console.print(
+                f"[green]✓[/green] Removed override for [cyan]{module_id}[/cyan] from {scope}"
+            )
+        else:
+            console.print(
+                f"[yellow]No override found for {module_id} in {scope}[/yellow]"
+            )
+
+    except Exception as e:
+        console.print(f"[red]Error removing override:[/red] {e}")
+        raise SystemExit(1)
+
+
+@override_group.command("list")
+@click.option(
+    "--scope",
+    type=click.Choice(["all", "local", "project", "global"]),
+    default="all",
+    help="Which scope(s) to show (default: all merged)",
+)
+def override_list(scope: str):
+    """List all module overrides.
+
+    Shows overrides from settings.yaml. Use --scope to filter by location.
+    """
+    from ..lib.app_settings import AppSettings
+
+    config_manager = create_config_manager()
+    settings = AppSettings(config_manager)
+    overrides = settings.get_module_overrides()
+
+    if not overrides:
+        console.print("[dim]No module overrides configured[/dim]")
+        console.print("\n[dim]To add an override:[/dim]")
+        console.print(
+            "  amplifier module override set <module-id> --source /local/path"
+        )
+        return
+
+    table = Table(title="Module Overrides", show_header=True, header_style="bold cyan")
+    table.add_column("Module", style="green")
+    table.add_column("Source", style="magenta")
+    table.add_column("Config", style="yellow")
+
+    for module_id, override in overrides.items():
+        source = override.get("source", "-")
+        config = override.get("config", {})
+        config_str = ", ".join(f"{k}={v}" for k, v in config.items()) if config else "-"
+
+        # Truncate long values
+        if len(str(source)) > 50:
+            source = str(source)[:47] + "..."
+        if len(config_str) > 40:
+            config_str = config_str[:37] + "..."
+
+        table.add_row(module_id, str(source), config_str)
+
+    console.print(table)
 
 
 __all__ = ["module"]

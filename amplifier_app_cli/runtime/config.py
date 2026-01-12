@@ -69,15 +69,23 @@ async def resolve_bundle_config(
     # Build behavior URIs from notification settings
     # Notifications are an app-level policy: compose behavior bundles before prepare()
     # so modules get properly downloaded and installed via normal bundle machinery
-    compose_behaviors = _build_notification_behaviors(app_settings.get_notification_config())
+    compose_behaviors = _build_notification_behaviors(
+        app_settings.get_notification_config()
+    )
+
+    # Get source overrides from unified settings
+    # This enables settings.yaml overrides to take effect at prepare time
+    source_overrides = app_settings.get_source_overrides()
 
     # Load and prepare bundle (downloads modules from git sources)
     # If compose_behaviors is provided, those behaviors are composed onto the bundle
     # BEFORE prepare() runs, so their modules get installed correctly
+    # If source_overrides is provided, module sources are overridden before download
     prepared = await load_and_prepare_bundle(
-        bundle_name, 
+        bundle_name,
         discovery,
         compose_behaviors=compose_behaviors if compose_behaviors else None,
+        source_overrides=source_overrides if source_overrides else None,
     )
 
     # Get the mount plan from the prepared bundle
@@ -107,7 +115,9 @@ async def resolve_bundle_config(
     if provider_overrides:
         if bundle_config.get("providers"):
             # Bundle has providers - merge overrides with existing
-            bundle_config["providers"] = _apply_provider_overrides(bundle_config["providers"], provider_overrides)
+            bundle_config["providers"] = _apply_provider_overrides(
+                bundle_config["providers"], provider_overrides
+            )
         else:
             # Bundle has no providers (e.g., provider-agnostic foundation bundle)
             # Use overrides directly, but inject sensible debug defaults
@@ -116,11 +126,15 @@ async def resolve_bundle_config(
 
     # Apply tool overrides from settings (e.g., allowed_write_paths for tool-filesystem)
     # Include session-scoped settings if session context provided
-    tool_overrides = app_settings.get_tool_overrides(session_id=session_id, project_slug=project_slug)
+    tool_overrides = app_settings.get_tool_overrides(
+        session_id=session_id, project_slug=project_slug
+    )
     if tool_overrides:
         if bundle_config.get("tools"):
             # Bundle has tools - merge overrides with existing
-            bundle_config["tools"] = _apply_tool_overrides(bundle_config["tools"], tool_overrides)
+            bundle_config["tools"] = _apply_tool_overrides(
+                bundle_config["tools"], tool_overrides
+            )
         else:
             # Bundle has no tools - use overrides directly
             bundle_config["tools"] = tool_overrides
@@ -194,7 +208,9 @@ def resolve_app_config(
             # load() with a name returns a single Bundle (not dict)
             loaded = asyncio.run(bundle_registry.load(bundle_name))
             if isinstance(loaded, dict):
-                raise ValueError(f"Expected single bundle, got dict for '{bundle_name}'")
+                raise ValueError(
+                    f"Expected single bundle, got dict for '{bundle_name}'"
+                )
             bundle = loaded
             bundle_config = bundle.to_mount_plan()
 
@@ -207,7 +223,9 @@ def resolve_app_config(
                         # This handles namespaced names like "foundation:bug-hunter"
                         agent_path = bundle.resolve_agent_path(agent_name)
                         if agent_path:
-                            agent = agent_loader.load_agent_from_path(agent_path, agent_name)
+                            agent = agent_loader.load_agent_from_path(
+                                agent_path, agent_name
+                            )
                         else:
                             # Fall back to general agent resolution
                             agent = agent_loader.load_agent(agent_name)
@@ -219,7 +237,9 @@ def resolve_app_config(
 
             # Apply provider overrides to bundle config
             if provider_overrides and bundle_config.get("providers"):
-                bundle_config["providers"] = _apply_provider_overrides(bundle_config["providers"], provider_overrides)
+                bundle_config["providers"] = _apply_provider_overrides(
+                    bundle_config["providers"], provider_overrides
+                )
                 provider_applied_via_config = True
 
             config = deep_merge(config, bundle_config)
@@ -236,13 +256,19 @@ def resolve_app_config(
         if active_profile_name:
             try:
                 profile = profile_loader.load_profile(active_profile_name)
-                profile = app_settings.apply_provider_overrides_to_profile(profile, provider_overrides)
+                profile = app_settings.apply_provider_overrides_to_profile(
+                    profile, provider_overrides
+                )
 
-                profile_config = compile_profile_to_mount_plan(profile, agent_loader=agent_loader)  # type: ignore[call-arg]
+                profile_config = compile_profile_to_mount_plan(
+                    profile, agent_loader=agent_loader
+                )  # type: ignore[call-arg]
                 config = deep_merge(config, profile_config)
                 provider_applied_via_config = bool(provider_overrides)
             except Exception as exc:  # noqa: BLE001
-                message = f"Warning: Could not load profile '{active_profile_name}': {exc}"
+                message = (
+                    f"Warning: Could not load profile '{active_profile_name}': {exc}"
+                )
                 if console:
                     console.print(f"[yellow]{message}[/yellow]")
                 else:
@@ -311,7 +337,9 @@ def _ensure_debug_defaults(providers: list[dict[str, Any]]) -> list[dict[str, An
     return result
 
 
-def _apply_provider_overrides(providers: list[dict[str, Any]], overrides: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _apply_provider_overrides(
+    providers: list[dict[str, Any]], overrides: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Apply provider overrides to bundle providers.
 
     Merges override configs into matching providers by module ID.
@@ -338,7 +366,9 @@ def _apply_provider_overrides(providers: list[dict[str, Any]], overrides: list[d
     return result
 
 
-def _apply_tool_overrides(tools: list[dict[str, Any]], overrides: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _apply_tool_overrides(
+    tools: list[dict[str, Any]], overrides: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Apply tool overrides to bundle tools.
 
     Merges override configs into matching tools by module ID.
@@ -379,7 +409,10 @@ def _apply_tool_overrides(tools: list[dict[str, Any]], overrides: list[dict[str,
     # Add any new tools from overrides that aren't in the base
     existing_modules = {t.get("module") for t in tools if isinstance(t, dict)}
     for override in overrides:
-        if isinstance(override, dict) and override.get("module") not in existing_modules:
+        if (
+            isinstance(override, dict)
+            and override.get("module") not in existing_modules
+        ):
             result.append(override)
 
     return _ensure_cwd_in_write_paths(result)
@@ -425,7 +458,9 @@ def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
                 result[key] = _merge_module_lists(result[key], value)
             else:
                 result[key] = value
-        elif key in result and isinstance(result[key], dict) and isinstance(value, dict):
+        elif (
+            key in result and isinstance(result[key], dict) and isinstance(value, dict)
+        ):
             result[key] = deep_merge(result[key], value)
         else:
             result[key] = value
@@ -456,7 +491,9 @@ def _merge_module_lists(
             module_id = module["module"]
             if module_id in result_dict:
                 # Module exists in base - deep merge using canonical function
-                result_dict[module_id] = merge_module_items(result_dict[module_id], module)
+                result_dict[module_id] = merge_module_items(
+                    result_dict[module_id], module
+                )
             else:
                 # New module in overlay - add it
                 result_dict[module_id] = module
@@ -526,7 +563,9 @@ def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> No
         prepared_bundle.mount_plan["providers"] = config["providers"]
 
 
-def _build_notification_behaviors(notifications_config: dict[str, Any] | None) -> list[str]:
+def _build_notification_behaviors(
+    notifications_config: dict[str, Any] | None,
+) -> list[str]:
     """Build list of notification behavior URIs based on settings.
 
     Notifications are an app-level policy. Rather than injecting hooks after
@@ -626,7 +665,9 @@ async def resolve_config_async(
     else:
         # Profile mode: use resolve_app_config
         if config_manager is None or profile_loader is None:
-            raise ValueError("config_manager and profile_loader required for profile mode")
+            raise ValueError(
+                "config_manager and profile_loader required for profile mode"
+            )
 
         config_data = resolve_app_config(
             config_manager=config_manager,
