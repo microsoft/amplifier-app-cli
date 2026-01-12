@@ -78,7 +78,9 @@ class SessionStore:
         """
         if base_dir is None:
             project_slug = get_project_slug()
-            base_dir = Path.home() / ".amplifier" / "projects" / project_slug / "sessions"
+            base_dir = (
+                Path.home() / ".amplifier" / "projects" / project_slug / "sessions"
+            )
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -136,7 +138,9 @@ class SessionStore:
             sanitized_msg = sanitize_message(message)
             # Add timestamp if not present (for accurate replay timing - bd-45)
             if "timestamp" not in sanitized_msg:
-                sanitized_msg["timestamp"] = datetime.now(UTC).isoformat(timespec="milliseconds")
+                sanitized_msg["timestamp"] = datetime.now(UTC).isoformat(
+                    timespec="milliseconds"
+                )
             lines.append(json.dumps(sanitized_msg, ensure_ascii=False))
 
         content = "\n".join(lines) + "\n" if lines else ""
@@ -237,10 +241,14 @@ class SessionStore:
             session_dir: Directory for this session
 
         Returns:
-            Metadata dictionary
+            Metadata dictionary (empty dict if no metadata exists yet)
         """
         metadata_file = session_dir / "metadata.json"
         backup_file = session_dir / "metadata.json.backup"
+
+        # If neither file exists, this is a new session - return empty dict silently
+        if not metadata_file.exists() and not backup_file.exists():
+            return {}
 
         # Try main file first
         if metadata_file.exists():
@@ -373,10 +381,7 @@ class SessionStore:
             return partial_id
 
         # Find prefix matches
-        matches = [
-            sid for sid in self.list_sessions()
-            if sid.startswith(partial_id)
-        ]
+        matches = [sid for sid in self.list_sessions() if sid.startswith(partial_id)]
 
         if not matches:
             raise FileNotFoundError(f"No session found matching '{partial_id}'")
@@ -439,7 +444,9 @@ class SessionStore:
         import yaml
 
         yaml_content = yaml.dump(profile, default_flow_style=False, sort_keys=False)
-        content = f"---\n{yaml_content}---\n\nProfile snapshot for session {session_id}\n"
+        content = (
+            f"---\n{yaml_content}---\n\nProfile snapshot for session {session_id}\n"
+        )
         write_with_backup(profile_file, content)
 
         logger.debug(f"Profile saved for session {session_id}")
