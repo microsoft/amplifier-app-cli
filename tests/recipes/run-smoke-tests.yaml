@@ -84,7 +84,8 @@ steps:
     timeout: 180
 
 # Usage:
-#   amplifier recipes execute tests/recipes/run-smoke-tests.yaml
+#   In session: "run the smoke tests recipe"
+#   CLI: amplifier tool invoke recipes operation=execute recipe_path=tests/recipes/run-smoke-tests.yaml
 #
 # This orchestrator:
 # - Runs 2 smoke tests in parallel for speed

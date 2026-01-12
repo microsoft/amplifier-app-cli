@@ -98,7 +98,8 @@ steps:
     timeout: 180
 
 # Usage:
-#   amplifier recipes execute tests/recipes/run-feature-tests.yaml
+#   In session: "run the feature tests recipe"
+#   CLI: amplifier tool invoke recipes operation=execute recipe_path=tests/recipes/run-feature-tests.yaml
 #
 # This orchestrator:
 # - Runs 6 feature tests in parallel for speed (~6x speedup)
