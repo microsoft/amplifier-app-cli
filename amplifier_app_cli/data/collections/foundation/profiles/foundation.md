@@ -12,6 +12,8 @@ session:
     module: context-simple
     source: git+https://github.com/microsoft/amplifier-module-context-simple@main
 
+agents: all  # Auto-discover agents from .amplifier/agents/, ~/.amplifier/agents/, and collections
+
 providers:
   - module: provider-anthropic
     source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
