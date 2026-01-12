@@ -1438,12 +1438,24 @@ async def interactive_chat(
                     console.print_exception()
 
     finally:
-        # Emit session:end event before cleanup to allow hooks to finish
-        hooks = session.coordinator.get("hooks")
-        if hooks:
-            from amplifier_core.events import SESSION_END
+        # Only emit session:end if actual work occurred (at least one turn)
+        # This prevents empty sessions from being logged when user immediately exits
+        context = session.coordinator.get("context")
+        turn_count = 0
+        if context and hasattr(context, "get_messages"):
+            try:
+                messages = await context.get_messages()
+                turn_count = len([m for m in messages if m.get("role") == "user"])
+            except Exception:
+                pass  # If we can't get messages, assume no turns
 
-            await hooks.emit(SESSION_END, {"session_id": actual_session_id})
+        if turn_count > 0:
+            hooks = session.coordinator.get("hooks")
+            if hooks:
+                from amplifier_core.events import SESSION_END
+
+                await hooks.emit(SESSION_END, {"session_id": actual_session_id})
+
         await initialized.cleanup()
         console.print("\n[yellow]Session ended[/yellow]\n")
 

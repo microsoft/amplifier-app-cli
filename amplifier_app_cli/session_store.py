@@ -198,10 +198,14 @@ class SessionStore:
             session_dir: Directory for this session
 
         Returns:
-            List of message objects
+            List of message objects (empty list if no transcript exists yet)
         """
         transcript_file = session_dir / "transcript.jsonl"
         backup_file = session_dir / "transcript.jsonl.backup"
+
+        # If neither file exists, this is a new/empty session - return empty list silently
+        if not transcript_file.exists() and not backup_file.exists():
+            return []
 
         # Try main file first
         if transcript_file.exists():
