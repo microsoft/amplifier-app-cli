@@ -103,6 +103,90 @@ def _filter_tools(config: dict, tool_inheritance: dict[str, list[str]]) -> dict:
     return new_config
 
 
+def _apply_provider_override(
+    config: dict,
+    provider_id: str | None,
+    model: str | None,
+) -> dict:
+    """Apply provider/model override to config.
+
+    If provider_id is specified and exists in configured providers,
+    promotes it to priority 0 (highest precedence).
+    If provider not found, logs warning and returns config unchanged.
+
+    Args:
+        config: Session config containing "providers" list
+        provider_id: Provider to promote (e.g., "anthropic")
+        model: Model to use with the provider
+
+    Returns:
+        New config with provider priority adjusted
+    """
+    if not provider_id and not model:
+        return config
+
+    providers = config.get("providers", [])
+    if not providers:
+        logger.warning(
+            "Provider override '%s' specified but no providers in config",
+            provider_id,
+        )
+        return config
+
+    # Find target provider (flexible matching)
+    target_idx = None
+    for i, p in enumerate(providers):
+        module_id = p.get("module", "")
+        # Match: "anthropic", "provider-anthropic", or full module ID
+        if provider_id and provider_id in (
+            module_id,
+            module_id.replace("provider-", ""),
+            f"provider-{provider_id}",
+        ):
+            target_idx = i
+            break
+
+    # If only model specified (no provider), apply to first/priority provider
+    if provider_id is None and model:
+        # Find lowest priority provider (current default)
+        min_priority = float("inf")
+        for i, p in enumerate(providers):
+            p_config = p.get("config", {})
+            priority = p_config.get("priority", 100)
+            if priority < min_priority:
+                min_priority = priority
+                target_idx = i
+
+    if target_idx is None:
+        logger.warning(
+            "Provider '%s' not found in config. Available: %s",
+            provider_id,
+            ", ".join(p.get("module", "?") for p in providers),
+        )
+        return config
+
+    # Clone providers list
+    new_providers = []
+    for i, p in enumerate(providers):
+        p_copy = dict(p)
+        p_copy["config"] = dict(p.get("config", {}))
+
+        if i == target_idx:
+            # Promote to priority 0 (highest)
+            p_copy["config"]["priority"] = 0
+            if model:
+                p_copy["config"]["model"] = model
+            logger.info(
+                "Provider override applied: %s (priority=0, model=%s)",
+                p_copy.get("module"),
+                model or "default",
+            )
+
+        new_providers.append(p_copy)
+
+    return {**config, "providers": new_providers}
+
+
 def _filter_hooks(config: dict, hook_inheritance: dict[str, list[str]]) -> dict:
     """Filter hooks in config based on hook inheritance policy.
 
@@ -157,6 +241,8 @@ async def spawn_sub_session(
     hook_inheritance: dict[str, list[str]] | None = None,
     orchestrator_config: dict | None = None,
     parent_messages: list[dict] | None = None,
+    provider_override: str | None = None,
+    model_override: str | None = None,
 ) -> dict:
     """
     Spawn sub-session with agent configuration overlay.
@@ -178,6 +264,10 @@ async def spawn_sub_session(
         parent_messages: Optional list of messages from parent session to inject
             into child's context. Enables context inheritance where child can
             reference parent's conversation history.
+        provider_override: Optional provider ID to use for this session
+            (e.g., "anthropic", "openai"). Promotes the provider to priority 0.
+        model_override: Optional model name to use with the provider
+            (e.g., "claude-sonnet-4-5-20250514", "gpt-4o").
 
     Returns:
         Dict with "output" (response) and "session_id" (for multi-turn)
@@ -201,6 +291,12 @@ async def spawn_sub_session(
     # Apply hook inheritance filtering if specified
     if hook_inheritance and "hooks" in merged_config:
         merged_config = _filter_hooks(merged_config, hook_inheritance)
+
+    # Apply provider override if specified (recipe-level provider selection)
+    if provider_override or model_override:
+        merged_config = _apply_provider_override(
+            merged_config, provider_override, model_override
+        )
 
     # Apply orchestrator config override if specified (recipe-level rate limiting)
     # Session reads orchestrator config from: config["session"]["orchestrator"]["config"]
