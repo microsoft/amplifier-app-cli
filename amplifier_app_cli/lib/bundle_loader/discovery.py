@@ -69,6 +69,13 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str | bool]] = {
         "remote": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/amplifier-dev.yaml",
         "show_in_list": True,
     },
+    # Notification hooks - loaded dynamically via config.notifications settings
+    # but registered here so `amplifier update` can track it
+    "notify": {
+        "package": "",  # No Python package - bundle with embedded modules
+        "remote": "git+https://github.com/microsoft/amplifier-bundle-notify@main",
+        "show_in_list": False,  # Loaded via settings, not standalone
+    },
 }
 
 
