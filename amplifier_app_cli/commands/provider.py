@@ -159,6 +159,13 @@ def provider_install(
     flag_value="global",
     help="Configure globally (all projects)",
 )
+@click.option(
+    "--yes",
+    "-y",
+    "non_interactive",
+    is_flag=True,
+    help="Non-interactive mode: use CLI values and env vars, skip prompts",
+)
 def provider_use(
     provider_id: str,
     model: str | None,
@@ -166,6 +173,7 @@ def provider_use(
     endpoint: str | None,
     use_azure_cli: bool,
     scope_flag: str | None,
+    non_interactive: bool = False,
 ):
     """Configure provider.
 
@@ -174,7 +182,21 @@ def provider_use(
       amplifier provider use openai --model gpt-5.1 --project
       amplifier provider use azure-openai --endpoint https://... --deployment gpt-5.1-codex --use-azure-cli
       amplifier provider use ollama --model llama3
+
+    Use --yes/-y for non-interactive mode (CI/CD, shadow containers).
+    In non-interactive mode, credentials are read from environment variables.
     """
+    import sys
+
+    # Check for TTY if interactive mode requested
+    if not non_interactive and not sys.stdin.isatty():
+        console.print(
+            "[red]Error:[/red] Interactive mode requires a TTY. "
+            "Use --yes flag for non-interactive setup."
+        )
+        console.print("\nExample:")
+        console.print(f"  amplifier provider use {provider_id} --model <model> --yes")
+        return
     # Ensure providers are installed (post-update fix)
     _ensure_providers_ready()
 
@@ -206,6 +228,7 @@ def provider_use(
         endpoint=endpoint,
         deployment=deployment,
         use_azure_cli=use_azure_cli if use_azure_cli else None,
+        non_interactive=non_interactive,
     )
 
     if config is None:

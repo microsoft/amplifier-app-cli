@@ -152,12 +152,76 @@ def prompt_first_run_init(console_arg: Console) -> bool:
 
 
 @click.command("init")
-def init_cmd():
+@click.option(
+    "--yes",
+    "-y",
+    "non_interactive",
+    is_flag=True,
+    help="Non-interactive mode: use env vars and defaults, skip prompts",
+)
+def init_cmd(non_interactive: bool = False):
     """Interactive first-time setup wizard.
 
     Auto-runs on first invocation if no configuration exists.
     Configures provider credentials, model, and active profile.
+
+    Use --yes/-y for non-interactive mode (CI/CD, shadow containers).
+    In non-interactive mode, providers are configured from environment
+    variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) without prompts.
     """
+    import sys
+
+    # Check for TTY if interactive mode requested
+    if not non_interactive and not sys.stdin.isatty():
+        console.print(
+            "[red]Error:[/red] Interactive mode requires a TTY. "
+            "Use --yes flag for non-interactive setup."
+        )
+        console.print("\nExample:")
+        console.print("  amplifier init --yes")
+        return
+    # Non-interactive mode: use env detection and defaults
+    if non_interactive:
+        from ..provider_env_detect import detect_provider_from_env
+
+        key_manager = KeyManager()
+        config = create_config_manager()
+        provider_mgr = ProviderManager(config)
+
+        # Install providers quietly
+        install_known_providers(config_manager=config, console=None, verbose=False)
+
+        # Detect provider from environment
+        detected_provider = detect_provider_from_env()
+        if detected_provider is None:
+            console.print(
+                "[red]Error:[/red] No provider credentials found in environment."
+            )
+            console.print("\nSet one of these environment variables:")
+            console.print("  ANTHROPIC_API_KEY")
+            console.print("  OPENAI_API_KEY")
+            console.print("  AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT")
+            return
+
+        module_id = f"provider-{detected_provider}"
+
+        # Configure provider non-interactively
+        provider_config = configure_provider(
+            module_id, key_manager, non_interactive=True
+        )
+        if provider_config is None:
+            console.print("[red]Configuration failed.[/red]")
+            return
+
+        # Save provider configuration
+        provider_mgr.use_provider(
+            module_id, scope="global", config=provider_config, source=None
+        )
+
+        console.print(f"[green]✓ Configured {detected_provider} from environment[/green]")
+        return
+
+    # Interactive mode
     console.print()
     console.print(
         Panel.fit("[bold cyan]Welcome to Amplifier![/bold cyan]", border_style="cyan")
