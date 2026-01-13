@@ -85,7 +85,13 @@ def bundle(ctx: click.Context):
 
 
 @bundle.command(name="list")
-@click.option("--all", "-a", "show_all", is_flag=True, help="Show all bundles including dependencies and sub-bundles")
+@click.option(
+    "--all",
+    "-a",
+    "show_all",
+    is_flag=True,
+    help="Show all bundles including dependencies and sub-bundles",
+)
 def bundle_list(show_all: bool):
     """List available bundles.
 
@@ -121,7 +127,9 @@ def _show_user_bundles(discovery: AppBundleDiscovery, active_bundle: str | None)
         console.print("  • .amplifier/bundles/ (project)")
         console.print("  • ~/.amplifier/bundles/ (user)")
         console.print("  • Installed packages (e.g., amplifier-foundation)")
-        console.print("\n[dim]Use --all to see all discovered bundles including dependencies.[/dim]")
+        console.print(
+            "\n[dim]Use --all to see all discovered bundles including dependencies.[/dim]"
+        )
         return
 
     table = Table(title="Available Bundles", show_header=True, header_style="bold cyan")
@@ -148,7 +156,9 @@ def _show_user_bundles(discovery: AppBundleDiscovery, active_bundle: str | None)
     else:
         console.print("\n[dim]Mode: Profile (default)[/dim]")
 
-    console.print("[dim]Use --all to see all bundles including dependencies and sub-bundles.[/dim]")
+    console.print(
+        "[dim]Use --all to see all bundles including dependencies and sub-bundles.[/dim]"
+    )
 
 
 def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
@@ -157,7 +167,9 @@ def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
 
     # Well-known bundles
     if categories["well_known"]:
-        table = Table(title="Well-Known Bundles", show_header=True, header_style="bold cyan")
+        table = Table(
+            title="Well-Known Bundles", show_header=True, header_style="bold cyan"
+        )
         table.add_column("Name", style="green")
         table.add_column("Location", style="yellow")
         table.add_column("Show in List", style="dim")
@@ -174,7 +186,9 @@ def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
 
     # User-added bundles
     if categories["user_added"]:
-        table = Table(title="User-Added Bundles", show_header=True, header_style="bold cyan")
+        table = Table(
+            title="User-Added Bundles", show_header=True, header_style="bold cyan"
+        )
         table.add_column("Name", style="green")
         table.add_column("Location", style="yellow")
         table.add_column("Status")
@@ -189,7 +203,11 @@ def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
 
     # Dependencies (loaded transitively)
     if categories["dependencies"]:
-        table = Table(title="Dependencies (loaded transitively)", show_header=True, header_style="bold yellow")
+        table = Table(
+            title="Dependencies (loaded transitively)",
+            show_header=True,
+            header_style="bold yellow",
+        )
         table.add_column("Name", style="dim green")
         table.add_column("Location", style="dim yellow")
         table.add_column("Included By", style="dim")
@@ -206,7 +224,11 @@ def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
 
     # Sub-bundles (behaviors, providers, etc.)
     if categories["sub_bundles"]:
-        table = Table(title="Sub-Bundles (behaviors, providers, etc.)", show_header=True, header_style="bold magenta")
+        table = Table(
+            title="Sub-Bundles (behaviors, providers, etc.)",
+            show_header=True,
+            header_style="bold magenta",
+        )
         table.add_column("Name", style="dim green")
         table.add_column("Root Bundle", style="dim cyan")
         table.add_column("Location", style="dim yellow")
@@ -343,9 +365,15 @@ def bundle_show(name: str, detailed: bool):
 
 @bundle.command(name="use")
 @click.argument("name")
-@click.option("--local", "scope_flag", flag_value="local", help="Set locally (just you)")
-@click.option("--project", "scope_flag", flag_value="project", help="Set for project (team)")
-@click.option("--global", "scope_flag", flag_value="global", help="Set globally (all projects)")
+@click.option(
+    "--local", "scope_flag", flag_value="local", help="Set locally (just you)"
+)
+@click.option(
+    "--project", "scope_flag", flag_value="project", help="Set for project (team)"
+)
+@click.option(
+    "--global", "scope_flag", flag_value="global", help="Set globally (all projects)"
+)
 def bundle_use(name: str, scope_flag: str | None):
     """Set a bundle as active (opts out of profile system).
 
@@ -387,7 +415,9 @@ def bundle_use(name: str, scope_flag: str | None):
         console.print(f"[green]✓ Using bundle '{name}' locally[/green]")
         console.print("  File: .amplifier/settings.local.yaml")
     elif scope == "project":
-        config_manager.update_settings({"bundle": {"active": name}}, scope=Scope.PROJECT)
+        config_manager.update_settings(
+            {"bundle": {"active": name}}, scope=Scope.PROJECT
+        )
         console.print(f"[green]✓ Set bundle '{name}' as project default[/green]")
         console.print("  File: .amplifier/settings.yaml")
         console.print("  [yellow]Remember to commit .amplifier/settings.yaml[/yellow]")
@@ -396,13 +426,19 @@ def bundle_use(name: str, scope_flag: str | None):
         console.print(f"[green]✓ Set bundle '{name}' globally[/green]")
         console.print("  File: ~/.amplifier/settings.yaml")
 
-    console.print("\n[dim]Tip: Use 'amplifier bundle clear' to revert to default (foundation bundle)[/dim]")
+    console.print(
+        "\n[dim]Tip: Use 'amplifier bundle clear' to revert to default (foundation bundle)[/dim]"
+    )
 
 
 @bundle.command(name="clear")
 @click.option("--local", "scope_flag", flag_value="local", help="Clear local settings")
-@click.option("--project", "scope_flag", flag_value="project", help="Clear project settings")
-@click.option("--global", "scope_flag", flag_value="global", help="Clear global settings")
+@click.option(
+    "--project", "scope_flag", flag_value="project", help="Clear project settings"
+)
+@click.option(
+    "--global", "scope_flag", flag_value="global", help="Clear global settings"
+)
 @click.option("--all", "clear_all", is_flag=True, help="Clear settings from all scopes")
 def bundle_clear(scope_flag: str | None, clear_all: bool):
     """Clear bundle and profile settings (reverts to default foundation bundle).
@@ -435,11 +471,17 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
                     profile_cleared.append(name)
 
         if bundle_cleared:
-            console.print(f"[green]✓ Cleared bundle settings from: {', '.join(bundle_cleared)}[/green]")
+            console.print(
+                f"[green]✓ Cleared bundle settings from: {', '.join(bundle_cleared)}[/green]"
+            )
         if profile_cleared:
-            console.print(f"[green]✓ Cleared profile settings from: {', '.join(profile_cleared)}[/green]")
+            console.print(
+                f"[green]✓ Cleared profile settings from: {', '.join(profile_cleared)}[/green]"
+            )
         if not bundle_cleared and not profile_cleared:
-            console.print("[yellow]No bundle or profile settings found to clear[/yellow]")
+            console.print(
+                "[yellow]No bundle or profile settings found to clear[/yellow]"
+            )
 
         console.print("[green]Now using default: foundation bundle[/green]")
         return
@@ -448,7 +490,9 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
     if scope_flag is None:
         detected_scope = _find_bundle_or_profile_scope(config_manager)
         if detected_scope is None:
-            console.print("[yellow]No bundle or profile settings found in any scope[/yellow]")
+            console.print(
+                "[yellow]No bundle or profile settings found in any scope[/yellow]"
+            )
             console.print("[dim]Already using default: foundation bundle[/dim]")
             return
         scope = detected_scope
@@ -462,7 +506,9 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
                 default_scope="global",
             )
             if was_fallback:
-                console.print("[yellow]Note:[/yellow] Running from home directory, using global scope")
+                console.print(
+                    "[yellow]Note:[/yellow] Running from home directory, using global scope"
+                )
         except ScopeNotAvailableError as e:
             console.print(f"[red]Error:[/red] {e.message}")
             sys.exit(1)
@@ -489,13 +535,19 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
     # Check if any bundle or profile is still active at other scopes
     merged = config_manager.get_merged_settings()
     bundle_settings = merged.get("bundle", {})
-    remaining_bundle = bundle_settings.get("active") if isinstance(bundle_settings, dict) else None
+    remaining_bundle = (
+        bundle_settings.get("active") if isinstance(bundle_settings, dict) else None
+    )
     remaining_profile = config_manager.get_active_profile()
 
     if remaining_bundle:
-        console.print(f"[dim]Bundle '{remaining_bundle}' still active from another scope[/dim]")
+        console.print(
+            f"[dim]Bundle '{remaining_bundle}' still active from another scope[/dim]"
+        )
     elif remaining_profile:
-        console.print(f"[dim]Profile '{remaining_profile}' still active from another scope[/dim]")
+        console.print(
+            f"[dim]Profile '{remaining_profile}' still active from another scope[/dim]"
+        )
         console.print("[dim]Use --all to clear from all scopes[/dim]")
     else:
         console.print("[green]Now using default: foundation bundle[/green]")
@@ -508,7 +560,9 @@ def bundle_current():
     merged = config_manager.get_merged_settings()
 
     bundle_settings = merged.get("bundle", {})
-    active_bundle = bundle_settings.get("active") if isinstance(bundle_settings, dict) else None
+    active_bundle = (
+        bundle_settings.get("active") if isinstance(bundle_settings, dict) else None
+    )
 
     if active_bundle:
         # Determine source scope
@@ -524,7 +578,9 @@ def bundle_current():
         if uri:
             console.print(f"[bold]Location:[/bold] {_format_location(uri)}")
 
-        console.print("\n[dim]Use 'amplifier bundle clear' to revert to default (foundation bundle)[/dim]")
+        console.print(
+            "\n[dim]Use 'amplifier bundle clear' to revert to default (foundation bundle)[/dim]"
+        )
     else:
         # Check if a profile is explicitly set (backward compatibility)
         active_profile = config_manager.get_active_profile()
@@ -540,12 +596,21 @@ def bundle_current():
                 "https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md[/link]"
             )
             console.print()
-            console.print(Panel(warning_text, border_style="yellow", title="Deprecated", title_align="left"))
+            console.print(
+                Panel(
+                    warning_text,
+                    border_style="yellow",
+                    title="Deprecated",
+                    title_align="left",
+                )
+            )
         else:
             # No explicit bundle or profile - will default to foundation bundle
             console.print("[bold]Mode:[/bold] Bundle (default)")
             console.print("[bold]Active bundle:[/bold] foundation (default)")
-            console.print("\n[dim]Use 'amplifier bundle use <name>' to switch to a different bundle[/dim]")
+            console.print(
+                "\n[dim]Use 'amplifier bundle use <name>' to switch to a different bundle[/dim]"
+            )
 
 
 def _find_bundle_or_profile_scope(config_manager) -> str | None:
@@ -605,7 +670,12 @@ def _get_bundle_source_scope(config_manager) -> str:
 
 @bundle.command(name="add")
 @click.argument("uri")
-@click.option("--name", "-n", "name_override", help="Custom name for the bundle (default: from bundle metadata)")
+@click.option(
+    "--name",
+    "-n",
+    "name_override",
+    help="Custom name for the bundle (default: from bundle metadata)",
+)
 def bundle_add(uri: str, name_override: str | None):
     """Add a bundle to the registry for discovery.
 
@@ -646,7 +716,11 @@ def bundle_add(uri: str, name_override: str | None):
             sys.exit(1)
 
     except Exception as e:
-        console.print(f"[red]Error:[/red] Failed to fetch bundle: {e}")
+        from ..utils.error_format import format_error_message
+
+        console.print(
+            f"[red]Error:[/red] Failed to fetch bundle: {format_error_message(e)}"
+        )
         console.print("  Check the URI and try again")
         sys.exit(1)
 
@@ -670,7 +744,9 @@ def bundle_add(uri: str, name_override: str | None):
     if name_override and name_override != bundle_name:
         console.print(f"  [dim](Bundle's canonical name: {bundle_name})[/dim]")
     console.print("\n[dim]Use 'amplifier bundle list' to see all bundles[/dim]")
-    console.print(f"[dim]Use 'amplifier bundle use {name}' to activate this bundle[/dim]")
+    console.print(
+        f"[dim]Use 'amplifier bundle use {name}' to activate this bundle[/dim]"
+    )
 
 
 @bundle.command(name="remove")
@@ -707,12 +783,16 @@ def bundle_remove(name: str):
             foundation_removed = True
     except Exception as e:
         # Log but don't fail - user registry removal is primary concern
-        console.print(f"[yellow]Warning:[/yellow] Failed to remove from foundation registry: {e}")
+        console.print(
+            f"[yellow]Warning:[/yellow] Failed to remove from foundation registry: {e}"
+        )
 
     if user_removed or foundation_removed:
         console.print(f"[green]✓ Removed bundle '{name}' from registry[/green]")
         if user_removed and foundation_removed:
-            console.print("  [dim](Removed from both user and foundation registries)[/dim]")
+            console.print(
+                "  [dim](Removed from both user and foundation registries)[/dim]"
+            )
         elif user_removed:
             console.print("  [dim](Removed from user registry only)[/dim]")
         elif foundation_removed:
@@ -725,11 +805,23 @@ def bundle_remove(name: str):
 @bundle.command(name="update")
 @click.argument("name", required=False)
 @click.option("--all", "update_all", is_flag=True, help="Update all discovered bundles")
-@click.option("--check", "check_only", is_flag=True, help="Only check for updates, don't apply")
-@click.option("--yes", "-y", "auto_confirm", is_flag=True, help="Auto-confirm update without prompting")
+@click.option(
+    "--check", "check_only", is_flag=True, help="Only check for updates, don't apply"
+)
+@click.option(
+    "--yes",
+    "-y",
+    "auto_confirm",
+    is_flag=True,
+    help="Auto-confirm update without prompting",
+)
 @click.option("--source", "specific_source", help="Update only a specific source URI")
 def bundle_update(
-    name: str | None, update_all: bool, check_only: bool, auto_confirm: bool, specific_source: str | None
+    name: str | None,
+    update_all: bool,
+    check_only: bool,
+    auto_confirm: bool,
+    specific_source: str | None,
 ):
     """Check for and apply updates to bundle sources.
 
@@ -753,7 +845,9 @@ def bundle_update(
     if update_all:
         asyncio.run(_bundle_update_all_async(check_only, auto_confirm))
     else:
-        asyncio.run(_bundle_update_async(name, check_only, auto_confirm, specific_source))
+        asyncio.run(
+            _bundle_update_async(name, check_only, auto_confirm, specific_source)
+        )
 
 
 async def _bundle_update_async(
@@ -773,7 +867,9 @@ async def _bundle_update_async(
         # Use active bundle
         merged = config_manager.get_merged_settings()
         bundle_settings = merged.get("bundle", {})
-        bundle_name = bundle_settings.get("active") if isinstance(bundle_settings, dict) else None
+        bundle_name = (
+            bundle_settings.get("active") if isinstance(bundle_settings, dict) else None
+        )
 
         if not bundle_name:
             console.print("[yellow]No active bundle.[/yellow]")
@@ -787,7 +883,9 @@ async def _bundle_update_async(
     try:
         loaded = await registry.load(bundle_name)
         if isinstance(loaded, dict):
-            console.print(f"[red]Error:[/red] Expected single bundle, got dict for '{bundle_name}'")
+            console.print(
+                f"[red]Error:[/red] Expected single bundle, got dict for '{bundle_name}'"
+            )
             sys.exit(1)
         bundle_obj = loaded
     except FileNotFoundError:
@@ -819,9 +917,13 @@ async def _bundle_update_async(
     if not auto_confirm:
         update_count = len(status.updateable_sources)
         if specific_source:
-            console.print(f"\n[yellow]Update specific source:[/yellow] {specific_source}")
+            console.print(
+                f"\n[yellow]Update specific source:[/yellow] {specific_source}"
+            )
         else:
-            console.print(f"\n[yellow]Ready to update {update_count} source(s)[/yellow]")
+            console.print(
+                f"\n[yellow]Ready to update {update_count} source(s)[/yellow]"
+            )
 
         confirm = click.confirm("Proceed with update?", default=True)
         if not confirm:
@@ -836,7 +938,9 @@ async def _bundle_update_async(
             console.print(f"[green]✓ Updated:[/green] {specific_source}")
         else:
             await update_bundle(bundle_obj)
-            console.print(f"[green]✓ Updated {len(status.updateable_sources)} source(s)[/green]")
+            console.print(
+                f"[green]✓ Updated {len(status.updateable_sources)} source(s)[/green]"
+            )
     except Exception as exc:
         console.print(f"[red]Error during update:[/red] {exc}")
         sys.exit(1)
@@ -892,7 +996,11 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
         if bundle_name in results:
             status = results[bundle_name]
             if status.sources:
-                table = Table(title=f"Bundle: {bundle_name}", show_header=True, header_style="bold cyan")
+                table = Table(
+                    title=f"Bundle: {bundle_name}",
+                    show_header=True,
+                    header_style="bold cyan",
+                )
                 table.add_column("Source", style="green")
                 table.add_column("Cached", style="dim", justify="right")
                 table.add_column("Remote", style="dim", justify="right")
@@ -909,7 +1017,9 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
                         elif "@" in source_name:
                             source_name = source_name.split("@")[0]
 
-                    status_symbol = create_status_symbol(source.cached_commit, source.remote_commit)
+                    status_symbol = create_status_symbol(
+                        source.cached_commit, source.remote_commit
+                    )
 
                     table.add_row(
                         source_name,
@@ -943,7 +1053,9 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
 
     if check_only:
         console.print()
-        console.print(f"[yellow]{total_updates} bundle(s) have updates available[/yellow]")
+        console.print(
+            f"[yellow]{total_updates} bundle(s) have updates available[/yellow]"
+        )
         console.print("Run [cyan]amplifier bundle update --all[/cyan] to install")
         return
 
@@ -989,7 +1101,9 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
     # Final summary
     console.print()
     if update_errors:
-        console.print(f"[yellow]✓ Update complete ({updated_count} updated, {len(update_errors)} failed)[/yellow]")
+        console.print(
+            f"[yellow]✓ Update complete ({updated_count} updated, {len(update_errors)} failed)[/yellow]"
+        )
     else:
         console.print("[green]✓ Update complete[/green]")
         for name in bundles_with_updates:
@@ -1002,7 +1116,11 @@ def _display_bundle_status(status: BundleStatus) -> None:
         console.print("[dim]No sources to check.[/dim]")
         return
 
-    table = Table(title=f"Bundle Sources: {status.bundle_name}", show_header=True, header_style="bold cyan")
+    table = Table(
+        title=f"Bundle Sources: {status.bundle_name}",
+        show_header=True,
+        header_style="bold cyan",
+    )
     table.add_column("Source", style="dim", no_wrap=False, max_width=60)
     table.add_column("Status", justify="center")
     table.add_column("Details", style="dim")

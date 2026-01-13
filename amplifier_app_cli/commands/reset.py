@@ -245,7 +245,11 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
             console.print("    [green]Removed entire directory[/green]")
             return True
         except OSError as e:
-            console.print(f"[red]Error:[/red] Failed to remove {amplifier_dir}: {e}")
+            from ..utils.error_format import format_error_message
+
+            console.print(
+                f"[red]Error:[/red] Failed to remove {amplifier_dir}: {format_error_message(e)}"
+            )
             return False
 
     # Selective removal - preserve specified paths
@@ -284,7 +288,11 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
         )
         return True
     except OSError as e:
-        console.print(f"[yellow]Warning:[/yellow] Error during cleanup: {e}")
+        from ..utils.error_format import format_error_message
+
+        console.print(
+            f"[yellow]Warning:[/yellow] Error during cleanup: {format_error_message(e)}"
+        )
         return False
 
 
@@ -307,7 +315,11 @@ def _install_amplifier(dry_run: bool = False) -> bool:
         )
         return True
     except subprocess.CalledProcessError as e:
-        console.print(f"[red]Error:[/red] Failed to install amplifier: {e}")
+        from ..utils.error_format import format_error_message
+
+        console.print(
+            f"[red]Error:[/red] Failed to install amplifier: {format_error_message(e)}"
+        )
         console.print("\n[yellow]To recover manually:[/yellow]")
         console.print(f"  uv tool install {DEFAULT_INSTALL_SOURCE}")
         return False

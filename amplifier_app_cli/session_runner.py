@@ -289,9 +289,9 @@ async def _create_bundle_session(
     except (ModuleValidationError, RuntimeError) as e:
         core_logger.setLevel(original_level)
         if not display_validation_error(console, e, verbose=config.verbose):
-            console.print(f"[red]Error:[/red] {e}")
-            if config.verbose:
-                console.print_exception()
+            from .utils.error_format import print_error
+
+            print_error(console, e, verbose=config.verbose)
         sys.exit(1)
     finally:
         core_logger.setLevel(original_level)
@@ -354,9 +354,9 @@ async def _create_profile_session(
     except (ModuleValidationError, RuntimeError) as e:
         core_logger.setLevel(original_level)
         if not display_validation_error(console, e, verbose=config.verbose):
-            console.print(f"[red]Error:[/red] {e}")
-            if config.verbose:
-                console.print_exception()
+            from .utils.error_format import print_error
+
+            print_error(console, e, verbose=config.verbose)
         sys.exit(1)
     finally:
         core_logger.setLevel(original_level)

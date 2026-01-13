@@ -92,7 +92,9 @@ def register_run_command(
                 console.print(f"[red]Error:[/red] No session found matching '{resume}'")
                 sys.exit(1)
             except ValueError as e:
-                console.print(f"[red]Error:[/red] {e}")
+                from ..utils.error_format import format_error_message
+
+                console.print(f"[red]Error:[/red] {format_error_message(e)}")
                 sys.exit(1)
 
             try:

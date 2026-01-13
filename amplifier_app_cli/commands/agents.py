@@ -30,7 +30,11 @@ def list_agents():
         console.print("\nUse [cyan]amplifier agents dirs[/cyan] to see search paths")
         return
 
-    table = Table(title=f"Available Agents ({len(agent_names)})", show_header=True, header_style="bold cyan")
+    table = Table(
+        title=f"Available Agents ({len(agent_names)})",
+        show_header=True,
+        header_style="bold cyan",
+    )
     table.add_column("Name", style="green")
     table.add_column("Source", style="yellow")
     table.add_column("Description")
@@ -67,7 +71,11 @@ def show_agent(name: str):
     try:
         agent = loader.load_agent(name)
     except Exception as e:
-        console.print(f"[red]Error loading agent '{name}': {e}[/red]")
+        from ..utils.error_format import format_error_message
+
+        console.print(
+            f"[red]Error loading agent '{name}': {format_error_message(e)}[/red]"
+        )
         return
 
     source = loader.get_agent_source(name) or "unknown"

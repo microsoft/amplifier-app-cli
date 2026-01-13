@@ -917,7 +917,9 @@ def override_set(
         console.print(f"[dim]Scope: {scope}[/dim]")
 
     except Exception as e:
-        console.print(f"[red]Error setting override:[/red] {e}")
+        from ..utils.error_format import format_error_message
+
+        console.print(f"[red]Error setting override:[/red] {format_error_message(e)}")
         raise SystemExit(1)
 
 
@@ -954,7 +956,9 @@ def override_remove(module_id: str, scope: str):
             )
 
     except Exception as e:
-        console.print(f"[red]Error removing override:[/red] {e}")
+        from ..utils.error_format import format_error_message
+
+        console.print(f"[red]Error removing override:[/red] {format_error_message(e)}")
         raise SystemExit(1)
 
 

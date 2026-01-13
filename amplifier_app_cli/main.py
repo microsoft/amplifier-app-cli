@@ -1433,9 +1433,9 @@ async def interactive_chat(
                 display_validation_error(console, e, verbose=verbose)
 
             except Exception as e:
-                console.print(f"[red]Error:[/red] {e}")
-                if verbose:
-                    console.print_exception()
+                from .utils.error_format import print_error
+
+                print_error(console, e, verbose=verbose)
 
     finally:
         # Only emit session:end if actual work occurred (at least one turn)
@@ -1661,9 +1661,9 @@ async def execute_single(
             # Try clean display for module validation errors (including wrapped ones)
             if not display_validation_error(console, e, verbose=verbose):
                 # Fall back to generic error output
-                console.print(f"[red]Error:[/red] {e}")
-                if verbose:
-                    console.print_exception()
+                from .utils.error_format import print_error
+
+                print_error(console, e, verbose=verbose)
         sys.exit(1)
 
     finally:
