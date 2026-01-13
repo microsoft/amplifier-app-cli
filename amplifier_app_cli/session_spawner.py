@@ -246,16 +246,8 @@ async def spawn_sub_session(
     if hasattr(display_system, "push_nesting"):
         display_system.push_nesting()
 
-    # Inject parent messages if provided (for context inheritance)
-    # This allows child sessions to have awareness of parent's conversation history.
-    # Only inject for new sessions, not when resuming (sub_session_id would be provided).
-    if parent_messages:
-        child_context = child_session.coordinator.get("context")
-        if child_context and hasattr(child_context, "set_messages"):
-            await child_context.set_messages(parent_messages)
-            logger.debug(
-                f"Injected {len(parent_messages)} parent messages into child session {sub_session_id}"
-            )
+    # NOTE: Parent message injection moved to AFTER initialize() because
+    # the context module is only mounted during initialize().
 
     # Register app-layer capabilities for child session BEFORE initialization
     # These must be mounted before initialize() because module loading needs the resolver
@@ -310,6 +302,11 @@ async def spawn_sub_session(
     # Initialize child session (mounts modules per merged config)
     # Now the resolver is available for loading modules with source: directives
     await child_session.initialize()
+
+    # Note: Parent context inheritance is now handled by tool-task formatting
+    # the parent messages directly into the instruction text. This ensures the
+    # child agent sees the context regardless of session/orchestrator behavior.
+    # The parent_messages parameter is kept for potential future use.
 
     # Wire up cancellation propagation: parent cancellation should propagate to child
     # This enables graceful Ctrl+C handling for nested agent sessions
