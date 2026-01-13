@@ -192,8 +192,9 @@ def init_cmd(non_interactive: bool = False):
         install_known_providers(config_manager=config, console=None, verbose=False)
 
         # Detect provider from environment
-        detected_provider = detect_provider_from_env()
-        if detected_provider is None:
+        # detect_provider_from_env() returns the full module_id (e.g., "provider-anthropic")
+        module_id = detect_provider_from_env()
+        if module_id is None:
             console.print(
                 "[red]Error:[/red] No provider credentials found in environment."
             )
@@ -203,7 +204,8 @@ def init_cmd(non_interactive: bool = False):
             console.print("  AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT")
             return
 
-        module_id = f"provider-{detected_provider}"
+        # Extract display name (e.g., "anthropic" from "provider-anthropic")
+        display_name = module_id.removeprefix("provider-")
 
         # Configure provider non-interactively
         provider_config = configure_provider(
@@ -218,7 +220,7 @@ def init_cmd(non_interactive: bool = False):
             module_id, scope="global", config=provider_config, source=None
         )
 
-        console.print(f"[green]✓ Configured {detected_provider} from environment[/green]")
+        console.print(f"[green]✓ Configured {display_name} from environment[/green]")
         return
 
     # Interactive mode
