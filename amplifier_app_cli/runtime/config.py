@@ -139,6 +139,14 @@ async def resolve_bundle_config(
             # Bundle has no tools - use overrides directly
             bundle_config["tools"] = tool_overrides
 
+    # Apply hook overrides from notification settings
+    # This maps config.notifications.ntfy.* to hooks-notify-push config etc.
+    hook_overrides = app_settings.get_notification_hook_overrides()
+    if hook_overrides and bundle_config.get("hooks"):
+        bundle_config["hooks"] = _apply_hook_overrides(
+            bundle_config["hooks"], hook_overrides
+        )
+
     if console:
         console.print(f"[dim]Bundle '{bundle_name}' prepared successfully[/dim]")
 
@@ -153,7 +161,7 @@ async def resolve_bundle_config(
         prepared.mount_plan["providers"] = bundle_config["providers"]
     if tool_overrides:
         prepared.mount_plan["tools"] = bundle_config["tools"]
-    # Always sync hooks - they don't have overrides but still need to be in mount_plan
+    # Sync hooks (now with notification config overrides applied)
     if bundle_config.get("hooks"):
         prepared.mount_plan["hooks"] = bundle_config["hooks"]
 
@@ -362,6 +370,50 @@ def _apply_provider_overrides(
             result.append(merged)
         else:
             result.append(provider)
+
+    return result
+
+
+def _apply_hook_overrides(
+    hooks: list[dict[str, Any]], overrides: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Apply hook overrides to bundle hooks.
+
+    Merges override configs into matching hooks by module ID.
+    This enables settings like ntfy topic for hooks-notify-push
+    to be applied from user settings.
+
+    Args:
+        hooks: List of hook configurations from bundle
+        overrides: List of hook override dicts with module and config keys
+
+    Returns:
+        Merged list of hook configurations
+    """
+    if not overrides:
+        return hooks
+
+    # Build lookup for overrides by module ID
+    override_map = {}
+    for override in overrides:
+        if isinstance(override, dict) and "module" in override:
+            override_map[override["module"]] = override
+
+    # Apply overrides to matching hooks
+    result = []
+    for hook in hooks:
+        if isinstance(hook, dict) and hook.get("module") in override_map:
+            override = override_map[hook["module"]]
+            # Merge the hook-level fields first
+            merged = merge_module_items(hook, override)
+            # Then merge configs (simple override, no special union logic needed for hooks)
+            base_config = hook.get("config", {}) or {}
+            override_config = override.get("config", {}) or {}
+            if base_config or override_config:
+                merged["config"] = {**base_config, **override_config}
+            result.append(merged)
+        else:
+            result.append(hook)
 
     return result
 
@@ -601,8 +653,10 @@ def _build_notification_behaviors(
         )
 
     # Push notifications behavior (includes desktop as a dependency for the event)
+    # Support both "push:" and "ntfy:" config keys for convenience
     push_config = notifications_config.get("push", {})
-    if push_config.get("enabled", False):
+    ntfy_config = notifications_config.get("ntfy", {})
+    if push_config.get("enabled", False) or ntfy_config.get("enabled", False):
         behaviors.append(
             "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/push-notifications.yaml"
         )

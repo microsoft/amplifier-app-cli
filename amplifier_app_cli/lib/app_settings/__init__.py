@@ -136,6 +136,76 @@ class AppSettings:
         notifications = merged.get("config", {}).get("notifications", {})
         return notifications if isinstance(notifications, dict) else {}
 
+    def get_notification_hook_overrides(self) -> list[dict[str, Any]]:
+        """Return hook overrides derived from notification settings.
+
+        Maps config.notifications.* settings to hook module configs so that
+        settings like ntfy topic get passed to the hooks-notify-push module.
+
+        Expected structure in settings.yaml:
+            config:
+              notifications:
+                desktop:
+                  enabled: true
+                  show_device: true
+                  show_project: true
+                  show_preview: true
+                  preview_length: 100
+                ntfy:
+                  enabled: true
+                  topic: my-topic
+                  server: https://ntfy.sh
+
+        Returns:
+            List of hook override dicts ready for _apply_hook_overrides().
+        """
+        notifications = self.get_notification_config()
+        if not notifications:
+            return []
+
+        overrides: list[dict[str, Any]] = []
+
+        # Map desktop notification settings to hooks-notify module
+        desktop_config = notifications.get("desktop", {})
+        if desktop_config and desktop_config.get("enabled", False):
+            # Build config dict from desktop settings
+            hook_config: dict[str, Any] = {"enabled": True}
+            # Map known desktop settings
+            for key in [
+                "show_device",
+                "show_project",
+                "show_preview",
+                "preview_length",
+                "subtitle",
+                "suppress_if_focused",
+                "min_iterations",
+                "show_iteration_count",
+                "sound",
+                "debug",
+            ]:
+                if key in desktop_config:
+                    hook_config[key] = desktop_config[key]
+
+            overrides.append({"module": "hooks-notify", "config": hook_config})
+
+        # Map ntfy/push notification settings to hooks-notify-push module
+        # Support both "ntfy:" and "push:" config keys
+        ntfy_config = notifications.get("ntfy", {})
+        push_config = notifications.get("push", {})
+        # Merge with ntfy taking precedence (more specific)
+        combined_push = {**push_config, **ntfy_config}
+
+        if combined_push and combined_push.get("enabled", False):
+            hook_config = {"enabled": True, "service": "ntfy"}
+            # Map known push/ntfy settings
+            for key in ["topic", "server", "priority", "tags", "debug"]:
+                if key in combined_push:
+                    hook_config[key] = combined_push[key]
+
+            overrides.append({"module": "hooks-notify-push", "config": hook_config})
+
+        return overrides
+
     def get_tool_overrides(
         self, session_id: str | None = None, project_slug: str | None = None
     ) -> list[dict[str, Any]]:
