@@ -1,17 +1,7 @@
-"""LEGACY: Module source wrappers for backward compatibility.
+"""Module source utilities for backward compatibility.
 
-DELETE WHEN: Profiles/collections removed in Phase 4.
-
-These wrappers maintain the deprecated amplifier-module-resolution API
-while internally using amplifier-foundation mechanisms. This allows
-app-cli to remove the external dependency while maintaining backward
-compatibility with the legacy profile/collection codepath.
-
-Key implementation notes:
-- FileSource: Thin wrapper around Path operations
-- GitSource: Uses foundation's GitSourceHandler with asyncio.run() bridge
-- Preserves cache metadata format (.amplifier_cache_metadata.json)
-- Preserves Python dependency installation in resolve()
+This module provides FileSource and GitSource classes for module resolution.
+These are used by module management commands and update utilities.
 """
 
 from __future__ import annotations
@@ -20,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import urllib.error
 import urllib.request
@@ -42,10 +33,7 @@ class InstallError(Exception):
 
 
 class FileSource:
-    """LEGACY: Local filesystem path source.
-
-    DELETE WHEN: Profiles/collections removed in Phase 4.
-    """
+    """Local filesystem path source."""
 
     def __init__(self, path: str | Path) -> None:
         """Initialize with file path.
@@ -71,7 +59,9 @@ class FileSource:
 
         # Validate it's a Python module
         if not self._is_valid_module(self.path):
-            raise ModuleResolutionError(f"Path does not contain a valid Python module: {self.path}")
+            raise ModuleResolutionError(
+                f"Path does not contain a valid Python module: {self.path}"
+            )
 
         return self.path
 
@@ -84,15 +74,14 @@ class FileSource:
 
 
 class GitSource:
-    """LEGACY: Git repository source with caching.
+    """Git repository source with caching.
 
-    DELETE WHEN: Profiles/collections removed in Phase 4.
-
-    Uses foundation's async GitSourceHandler internally with asyncio.run() bridge
-    for backward compatibility with sync callers.
+    Uses uv for downloading and caching git repositories.
     """
 
-    def __init__(self, url: str, ref: str = "main", subdirectory: str | None = None) -> None:
+    def __init__(
+        self, url: str, ref: str = "main", subdirectory: str | None = None
+    ) -> None:
         """Initialize with git URL.
 
         Args:
@@ -103,8 +92,7 @@ class GitSource:
         self.url = url
         self.ref = ref
         self.subdirectory = subdirectory
-        # Use consolidated cache path - same as module_cache.get_cache_dir()
-        # All modules (bundle-based and provider-based) cached in one location
+        # Use consolidated cache path
         self.cache_dir = Path.home() / ".amplifier" / "cache"
         self._cached_commit_sha: str | None = None
 
@@ -209,7 +197,9 @@ class GitSource:
             raise InstallError(f"Failed to download {self.url}@{self.ref}: {e}")
 
         if not cache_path.exists():
-            raise InstallError(f"Module not found after download from {self.url}@{self.ref}")
+            raise InstallError(
+                f"Module not found after download from {self.url}@{self.ref}"
+            )
 
         # Write cache metadata for update checking (with SHA from API)
         self._write_cache_metadata(cache_path, current_sha)
@@ -217,10 +207,7 @@ class GitSource:
         return cache_path
 
     async def install_to(self, target_dir: Path) -> None:
-        """Install git repository to target directory (for InstallSourceProtocol).
-
-        Used by collection installer. Downloads repo directly to target_dir.
-        Cleans up partial installs on failure to prevent orphaned directories.
+        """Install git repository to target directory.
 
         Args:
             target_dir: Directory to install into (will be created)
@@ -235,15 +222,19 @@ class GitSource:
         try:
             self._download_via_uv(target_dir)
         except subprocess.CalledProcessError as e:
-            # Clean up partial install - uv may have created the directory before failing
+            # Clean up partial install
             if target_dir.exists():
                 logger.debug(f"Cleaning up partial install at {target_dir}")
                 shutil.rmtree(target_dir)
-            raise InstallError(f"Failed to install {self.url}@{self.ref} to {target_dir}: {e}")
+            raise InstallError(
+                f"Failed to install {self.url}@{self.ref} to {target_dir}: {e}"
+            )
 
         # Verify installation
         if not target_dir.exists():
-            raise InstallError(f"Target directory not created after install: {target_dir}")
+            raise InstallError(
+                f"Target directory not created after install: {target_dir}"
+            )
 
         logger.debug(f"Successfully installed to {target_dir}")
 
@@ -288,15 +279,12 @@ class GitSource:
                 error_msg += f"\nError output:\n{result.stderr.strip()}"
             if result.stdout:
                 error_msg += f"\nStandard output:\n{result.stdout.strip()}"
-            raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
+            raise subprocess.CalledProcessError(
+                result.returncode, cmd, output=result.stdout, stderr=result.stderr
+            )
 
     def _write_cache_metadata(self, cache_path: Path, sha: str | None) -> None:
-        """Write cache metadata for update checking.
-
-        Args:
-            cache_path: Path to cached module directory
-            sha: Commit SHA (from GitHub API)
-        """
+        """Write cache metadata for update checking."""
         metadata = {
             "url": self.url,
             "ref": self.ref,
@@ -305,16 +293,11 @@ class GitSource:
             "is_mutable": self._is_mutable_ref(),
         }
 
-        # Match deprecated format: .amplifier_cache_metadata.json
         metadata_file = cache_path / ".amplifier_cache_metadata.json"
         metadata_file.write_text(json.dumps(metadata, indent=2))
 
     def _get_remote_sha_sync(self) -> str | None:
-        """Get SHA from GitHub API synchronously.
-
-        Returns:
-            Commit SHA or None if not GitHub or API fails
-        """
+        """Get SHA from GitHub API synchronously."""
         if "github.com" not in self.url:
             return None
 
@@ -340,7 +323,9 @@ class GitSource:
                     try:
                         import yaml
 
-                        gh_config = yaml.safe_load(gh_config_file.read_text(encoding="utf-8"))
+                        gh_config = yaml.safe_load(
+                            gh_config_file.read_text(encoding="utf-8")
+                        )
                         token = gh_config.get("github.com", {}).get("oauth_token")
                         if token:
                             headers["Authorization"] = f"Bearer {token}"
@@ -370,8 +355,6 @@ class GitSource:
 
     def _is_mutable_ref(self) -> bool:
         """Check if ref could change over time."""
-        import re
-
         return not re.match(r"^[0-9a-f]{7,40}$", self.ref)
 
     @property
@@ -395,10 +378,7 @@ class GitSource:
 
 
 class PackageSource:
-    """LEGACY: Installed Python package source.
-
-    DELETE WHEN: Profiles/collections removed in Phase 4.
-    """
+    """Installed Python package source."""
 
     def __init__(self, package_name: str) -> None:
         """Initialize with package name.
@@ -424,7 +404,11 @@ class PackageSource:
             if dist.files:
                 # Filter out metadata directories
                 package_files = [
-                    f for f in dist.files if not any(part.endswith((".dist-info", ".data")) for part in f.parts)
+                    f
+                    for f in dist.files
+                    if not any(
+                        part.endswith((".dist-info", ".data")) for part in f.parts
+                    )
                 ]
                 if package_files:
                     package_path = Path(str(dist.locate_file(package_files[0]))).parent
@@ -439,3 +423,12 @@ class PackageSource:
 
     def __repr__(self) -> str:
         return f"PackageSource({self.package_name})"
+
+
+__all__ = [
+    "FileSource",
+    "GitSource",
+    "PackageSource",
+    "ModuleResolutionError",
+    "InstallError",
+]

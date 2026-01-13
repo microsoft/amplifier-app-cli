@@ -14,13 +14,11 @@ from rich.panel import Panel
 from rich.table import Table
 
 from ..console import console
-from ..data.profiles import get_system_default_profile
 from ..module_manager import ModuleManager
 from ..paths import ScopeNotAvailableError
 from ..paths import ScopeType
 from ..paths import create_config_manager
-from ..paths import create_module_resolver
-from ..paths import create_profile_loader
+from ..paths import create_foundation_resolver
 from ..paths import get_effective_scope
 
 
@@ -44,12 +42,12 @@ def module(ctx: click.Context):
     help="Module type to list",
 )
 def list_modules(type: str):
-    """List installed modules and those provided by the active profile."""
+    """List installed modules."""
     from amplifier_core.loader import ModuleLoader
 
     loader = ModuleLoader()
     modules_info = asyncio.run(loader.discover())
-    resolver = create_module_resolver()
+    resolver = create_foundation_resolver()
 
     if modules_info:
         table = Table(
@@ -88,39 +86,8 @@ def list_modules(type: str):
     else:
         console.print("[dim]No installed modules found[/dim]")
 
-    config_manager = create_config_manager()
-    active_profile = config_manager.get_active_profile() or get_system_default_profile()
-
-    local = config_manager._read_yaml(config_manager.paths.local)
-    if local and "profile" in local and "active" in local["profile"]:
-        source_label = "active"
-    elif config_manager.get_project_default():
-        source_label = "project default"
-    else:
-        source_label = "system default"
-
-    profile_modules = _get_profile_modules(active_profile)
-    if profile_modules:
-        filtered = [m for m in profile_modules if type == "all" or m["type"] == type]
-
-        if filtered:
-            console.print()
-            table = Table(
-                title=f"Profile Modules (from profile '{active_profile}' ({source_label}))",
-                show_header=True,
-                header_style="bold green",
-            )
-            table.add_column("Name", style="green")
-            table.add_column("Type", style="yellow")
-            table.add_column("Source", style="magenta")
-
-            for mod in filtered:
-                source_str = str(mod["source"])
-                if len(source_str) > 60:
-                    source_str = source_str[:57] + "..."
-                table.add_row(mod["id"], mod["type"], source_str)
-
-            console.print(table)
+    # Note: Bundle modules are now discovered via the bundle loader, not displayed here.
+    # Use 'amplifier bundle info' to see modules provided by the active bundle.
 
     # Show cached modules (downloaded from git)
     # Filter out modules that have local source overrides (local takes precedence)
@@ -160,29 +127,6 @@ def list_modules(type: str):
 def module_show(module_name: str):
     """Show detailed information about a module."""
     from amplifier_core.loader import ModuleLoader
-
-    config_manager = create_config_manager()
-    active_profile = config_manager.get_active_profile() or get_system_default_profile()
-
-    profile_modules = _get_profile_modules(active_profile)
-    found_in_profile = next(
-        (m for m in profile_modules if m["id"] == module_name), None
-    )
-
-    if found_in_profile:
-        source = found_in_profile["source"]
-        description = found_in_profile.get("description", "No description provided")
-        mount_point = found_in_profile.get("mount_point", "unknown")
-
-        panel_content = f"""[bold]Name:[/bold] {module_name}
-[bold]Type:[/bold] {found_in_profile["type"]}
-[bold]Source:[/bold] {source}
-[bold]Description:[/bold] {description}
-[bold]Mount Point:[/bold] {mount_point}"""
-        console.print(
-            Panel(panel_content, title=f"Module: {module_name}", border_style="cyan")
-        )
-        return
 
     loader = ModuleLoader()
     modules_info = asyncio.run(loader.discover())
@@ -284,7 +228,7 @@ def module_add(module_id: str, source: str | None, scope_flag: str | None):
 
     # Download the module if it's a git source
     if source and source.startswith("git+"):
-        from amplifier_app_cli.lib.legacy import GitSource
+        from amplifier_app_cli.lib.sources_compat import GitSource
 
         console.print("  Downloading module...", end="")
         try:
@@ -360,41 +304,14 @@ def module_current():
     console.print("[dim]For all installed modules, use: amplifier module list[/dim]")
 
 
-def _get_profile_modules(profile_name: str) -> list[dict[str, Any]]:
-    """Return module metadata for a profile."""
-    loader = create_profile_loader()
-    try:
-        profile = loader.load_profile(profile_name)
-    except Exception:
-        return []
+def _get_bundle_modules(bundle_name: str) -> list[dict[str, Any]]:
+    """Return module metadata for a bundle.
 
-    modules: list[dict[str, Any]] = []
-
-    def add_module(module, module_type: str):
-        if module is None:
-            return
-        modules.append(
-            {
-                "id": module.module,
-                "type": module_type,
-                "source": module.source or "profile",
-                "config": module.config or {},
-                "description": getattr(module, "description", "No description"),
-                "mount_point": getattr(module, "mount_point", "unknown"),
-            }
-        )
-
-    for provider in profile.providers:
-        add_module(provider, "provider")
-    for tool in profile.tools:
-        add_module(tool, "tool")
-    for hook in profile.hooks:
-        add_module(hook, "hook")
-    if profile.session:
-        add_module(profile.session.orchestrator, "orchestrator")
-        add_module(profile.session.context, "context")
-
-    return modules
+    Note: Bundle module discovery is now handled by the bundle loader.
+    Use 'amplifier bundle info' to see modules provided by a bundle.
+    """
+    # Bundle modules are discovered via bundle loader, not here
+    return []
 
 
 def _get_local_override_names() -> set[str]:
@@ -402,9 +319,9 @@ def _get_local_override_names() -> set[str]:
 
     These modules use FileSource and should take precedence over cached versions.
     """
-    from amplifier_app_cli.lib.legacy import FileSource
+    from amplifier_app_cli.lib.sources_compat import FileSource
 
-    resolver = create_module_resolver()
+    resolver = create_foundation_resolver()
     local_names: set[str] = set()
 
     # Check all cached modules to see which have local overrides

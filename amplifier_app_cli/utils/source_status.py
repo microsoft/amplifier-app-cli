@@ -87,7 +87,8 @@ class UpdateReport:
         """Check if any updates available (uses has_update flags)."""
         # Local files with remote ahead
         local_updates = any(
-            s.has_remote and s.remote_sha and s.remote_sha != s.local_sha for s in self.local_file_sources
+            s.has_remote and s.remote_sha and s.remote_sha != s.local_sha
+            for s in self.local_file_sources
         )
 
         # Cached git sources with updates (check has_update flag)
@@ -101,7 +102,9 @@ class UpdateReport:
     @property
     def has_local_changes(self) -> bool:
         """Check if any local uncommitted/unpushed changes."""
-        return any(s.uncommitted_changes or s.unpushed_commits for s in self.local_file_sources)
+        return any(
+            s.uncommitted_changes or s.unpushed_commits for s in self.local_file_sources
+        )
 
 
 async def check_all_sources(
@@ -120,8 +123,8 @@ async def check_all_sources(
     Returns:
         UpdateReport with all source statuses
     """
-    from amplifier_app_cli.lib.legacy import FileSource
-    from amplifier_app_cli.lib.legacy import GitSource
+    from amplifier_app_cli.lib.sources_compat import FileSource
+    from amplifier_app_cli.lib.sources_compat import GitSource
 
     # Get all sources to check
     all_sources = await _get_all_sources_to_check(client)
@@ -140,7 +143,9 @@ async def check_all_sources(
                 local_statuses.append(status)
 
             elif isinstance(source, GitSource):
-                status = await _check_git_source(client, source, name, layer, force=force)
+                status = await _check_git_source(
+                    client, source, name, layer, force=force
+                )
                 if status:  # Add ALL cached sources (with has_update flag)
                     git_statuses.append(status)
 
@@ -153,7 +158,9 @@ async def check_all_sources(
     # If include_all_cached, also scan ALL cached modules (not just active)
     cached_modules_checked = 0
     if include_all_cached:
-        cached_statuses, cached_modules_checked = await _check_all_cached_modules(client, force=force)
+        cached_statuses, cached_modules_checked = await _check_all_cached_modules(
+            client, force=force
+        )
         # Add any not already in git_statuses (avoid duplicates from active profile)
         existing_names = {s.name for s in git_statuses}
         for status in cached_statuses:
@@ -164,13 +171,10 @@ async def check_all_sources(
     local_override_names = {s.name for s in local_statuses}
     git_statuses = [s for s in git_statuses if s.name not in local_override_names]
 
-    # Check installed collections
-    collection_statuses = await _check_collection_sources(client, force=force)
-
     return UpdateReport(
         local_file_sources=local_statuses,
         cached_git_sources=git_statuses,
-        collection_sources=collection_statuses,
+        collection_sources=[],  # Collections deprecated - always empty
         cached_modules_checked=cached_modules_checked,
     )
 
@@ -178,88 +182,31 @@ async def check_all_sources(
 async def _get_all_sources_to_check(client: httpx.AsyncClient) -> dict[str, dict]:
     """Get all libraries and modules with their resolved sources.
 
-    Uses existing StandardModuleSourceResolver!
-
     Args:
         client: Shared httpx client for all HTTP requests
 
     Returns:
         Dict of name -> {source, layer, entity_type}
     """
-    from ..data.profiles import get_system_default_profile
-    from ..paths import create_config_manager
-    from ..paths import create_module_resolver
-    from ..paths import create_profile_loader
     from .umbrella_discovery import discover_umbrella_source
     from .umbrella_discovery import fetch_umbrella_dependencies
 
-    sources = {}
+    sources: dict[str, dict] = {}
 
-    # Get resolver (uses existing infrastructure!)
-    resolver = create_module_resolver()
-    config_manager = create_config_manager()
-
-    # 1. Get libraries from umbrella
+    # Get libraries from umbrella (profile-based module discovery is deprecated)
     umbrella_info = discover_umbrella_source()
     if umbrella_info:
         try:
             umbrella_deps = await fetch_umbrella_dependencies(client, umbrella_info)
 
             for lib_name in umbrella_deps:
-                try:
-                    source, layer = resolver.resolve_with_layer(lib_name)
-                    sources[lib_name] = {"source": source, "layer": layer, "entity_type": "library"}
-                except Exception:
-                    # Can't resolve - skip
-                    pass
+                sources[lib_name] = {
+                    "source": None,  # Source resolution deprecated
+                    "layer": "umbrella",
+                    "entity_type": "library",
+                }
         except Exception as e:
             logger.debug(f"Could not fetch umbrella dependencies: {e}")
-
-    # 2. Get active modules from profile
-    active_profile = config_manager.get_active_profile() or get_system_default_profile()
-    profile_loader = create_profile_loader()
-
-    try:
-        profile = profile_loader.load_profile(active_profile)
-
-        # Get all module IDs from profile
-        module_ids = set()
-
-        if profile.providers:
-            for p in profile.providers:
-                if hasattr(p, "module"):
-                    module_ids.add(p.module)
-
-        if profile.tools:
-            for t in profile.tools:
-                if hasattr(t, "module"):
-                    module_ids.add(t.module)
-
-        if profile.hooks:
-            for h in profile.hooks:
-                if hasattr(h, "module"):
-                    module_ids.add(h.module)
-
-        # Include session orchestrator and context
-        if profile.session:
-            if profile.session.orchestrator and hasattr(profile.session.orchestrator, "module"):
-                module_ids.add(profile.session.orchestrator.module)
-            if profile.session.context and hasattr(profile.session.context, "module"):
-                module_ids.add(profile.session.context.module)
-
-        # Resolve each module
-        for module_id in module_ids:
-            if module_id in sources:  # Already added as library
-                continue
-
-            try:
-                source, layer = resolver.resolve_with_layer(module_id)
-                sources[module_id] = {"source": source, "layer": layer, "entity_type": "module"}
-            except Exception:
-                pass
-
-    except Exception as e:
-        logger.debug(f"Could not load profile modules: {e}")
 
     return sources
 
@@ -302,7 +249,9 @@ async def _check_file_source(
             # Get current branch
             current_branch = _get_current_branch(local_path)
             if current_branch:
-                remote_sha = await _get_github_commit_sha(client, remote_url, current_branch)
+                remote_sha = await _get_github_commit_sha(
+                    client, remote_url, current_branch
+                )
 
                 if remote_sha != local_sha:
                     status.remote_sha = remote_sha[:7]
@@ -382,7 +331,13 @@ async def _check_git_source(
 def _get_local_sha(repo_path: Path) -> str | None:
     """Get current commit SHA of local git repo."""
     try:
-        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True, timeout=2)
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
         if result.returncode == 0:
             return result.stdout.strip()
     except Exception as e:
@@ -394,7 +349,11 @@ def _get_remote_url(repo_path: Path) -> str | None:
     """Get remote URL of local git repo."""
     try:
         result = subprocess.run(
-            ["git", "config", "--get", "remote.origin.url"], cwd=repo_path, capture_output=True, text=True, timeout=2
+            ["git", "config", "--get", "remote.origin.url"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=2,
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -407,7 +366,11 @@ def _get_current_branch(repo_path: Path) -> str | None:
     """Get current branch of local git repo."""
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_path, capture_output=True, text=True, timeout=2
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=2,
         )
         if result.returncode == 0:
             branch = result.stdout.strip()
@@ -422,7 +385,11 @@ def _has_uncommitted_changes(repo_path: Path) -> bool:
     """Check if repo has uncommitted changes."""
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain"], cwd=repo_path, capture_output=True, text=True, timeout=2
+            ["git", "status", "--porcelain"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=2,
         )
         return result.returncode == 0 and bool(result.stdout.strip())
     except Exception:
@@ -433,7 +400,11 @@ def _has_unpushed_commits(repo_path: Path) -> bool:
     """Check if repo has unpushed commits."""
     try:
         result = subprocess.run(
-            ["git", "log", "@{u}..", "--oneline"], cwd=repo_path, capture_output=True, text=True, timeout=2
+            ["git", "log", "@{u}..", "--oneline"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=2,
         )
         return result.returncode == 0 and bool(result.stdout.strip())
     except Exception:
@@ -447,7 +418,11 @@ def _count_commits_behind(repo_path: Path) -> int:
         subprocess.run(["git", "fetch"], cwd=repo_path, capture_output=True, timeout=5)
 
         result = subprocess.run(
-            ["git", "log", "..@{u}", "--oneline"], cwd=repo_path, capture_output=True, text=True, timeout=2
+            ["git", "log", "..@{u}", "--oneline"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=2,
         )
         if result.returncode == 0 and result.stdout.strip():
             return len(result.stdout.strip().split("\n"))
@@ -506,7 +481,9 @@ async def _check_all_cached_modules(
             if not module.sha:
                 has_update = True
                 cached_sha_display = "unknown"
-                logger.debug(f"{module.module_id}: missing cached SHA, marking as update available")
+                logger.debug(
+                    f"{module.module_id}: missing cached SHA, marking as update available"
+                )
             else:
                 has_update = (remote_sha[:8] != module.sha) or force
                 cached_sha_display = module.sha[:7]
@@ -530,7 +507,9 @@ async def _check_all_cached_modules(
             continue
         except Exception as e:
             # Unexpected errors - log at ERROR and continue
-            logger.error(f"Unexpected error checking {module.module_id}: {type(e).__name__}: {e}")
+            logger.error(
+                f"Unexpected error checking {module.module_id}: {type(e).__name__}: {e}"
+            )
             continue
 
     return statuses, modules_checked
@@ -555,79 +534,12 @@ def _cache_age_days_from_string(cached_at: str) -> int:
         return 0
 
 
-# LEGACY-DELETE: _check_collection_sources function
-# DELETE WHEN: Profiles/collections removed in Phase 4
-async def _check_collection_sources(
-    client: httpx.AsyncClient, force: bool = False
-) -> list[CollectionStatus]:
-    """Check installed collections for updates.
-
-    Reads collection lock file, compares installed SHAs with remote SHAs.
-
-    Args:
-        client: Shared httpx client for all HTTP requests
-        force: When True, mark all collections as needing update
-
-    Returns:
-        List of CollectionStatus for ALL collections (with has_update flag)
-    """
-    from amplifier_app_cli.lib.legacy import CollectionLock
-    from amplifier_app_cli.lib.legacy import GitSource
-
-    from ..paths import get_collection_lock_path
-
-    # Load collection lock (user-global only for now)
-    try:
-        lock = CollectionLock(get_collection_lock_path(local=False))
-        entries = lock.list_entries()
-    except Exception as e:
-        logger.debug(f"Could not load collection lock: {e}")
-        return []
-
-    if not entries:
-        return []
-
-    statuses = []
-    for entry in entries:
-        # Skip non-git sources
-        if not entry.source or not entry.source.startswith("git+"):
-            continue
-
-        if not entry.commit:
-            continue  # No SHA tracked
-
-        try:
-            # Parse source
-            source = GitSource.from_uri(entry.source)
-
-            # Check remote SHA
-            remote_sha = await _get_github_commit_sha(client, source.url, source.ref)
-
-            # Add ALL collections to report (not just those with updates)
-            has_update = (remote_sha != entry.commit) or force
-            statuses.append(
-                CollectionStatus(
-                    name=entry.name,
-                    source=entry.source,
-                    layer="user",
-                    installed_sha=entry.commit[:7] if entry.commit else None,
-                    remote_sha=remote_sha[:7],
-                    has_update=has_update,
-                    installed_at=entry.installed_at,
-                )
-            )
-
-        except Exception as e:
-            logger.debug(f"Could not check collection {entry.name}: {e}")
-            continue
-
-    return statuses
-
-
 # GitHub API helpers (exposed for update_check.py)
 
 
-async def _get_github_commit_sha(client: httpx.AsyncClient, repo_url: str, ref: str) -> str:
+async def _get_github_commit_sha(
+    client: httpx.AsyncClient, repo_url: str, ref: str
+) -> str:
     """Get SHA for ref using GitHub Atom feed (no API, no auth, no rate limits).
 
     Uses public Atom feed: https://github.com/{owner}/{repo}/commits/{ref}.atom
@@ -652,14 +564,18 @@ async def _get_github_commit_sha(client: httpx.AsyncClient, repo_url: str, ref: 
 
     # Parse XML for first commit SHA
     # Format: <id>tag:github.com,2008:Grit::Commit/{SHA}</id>
-    match = re.search(r"<id>tag:github\.com,2008:Grit::Commit/([a-f0-9]{40})</id>", response.text)
+    match = re.search(
+        r"<id>tag:github\.com,2008:Grit::Commit/([a-f0-9]{40})</id>", response.text
+    )
     if not match:
         raise ValueError(f"Could not extract commit SHA from Atom feed: {atom_url}")
 
     return match.group(1)
 
 
-async def _get_commit_details(client: httpx.AsyncClient, repo_url: str, sha: str) -> dict:
+async def _get_commit_details(
+    client: httpx.AsyncClient, repo_url: str, sha: str
+) -> dict:
     """Get commit details for better UX.
 
     Args:
@@ -675,7 +591,10 @@ async def _get_commit_details(client: httpx.AsyncClient, repo_url: str, sha: str
 
     response = await client.get(
         f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}",
-        headers={"Accept": "application/vnd.github.v3+json", **_get_github_auth_headers()},
+        headers={
+            "Accept": "application/vnd.github.v3+json",
+            **_get_github_auth_headers(),
+        },
     )
     response.raise_for_status()
 

@@ -232,7 +232,7 @@ class FoundationSettingsResolver:
 
         Args:
             module_id: Module identifier (e.g., "provider-anthropic").
-            profile_hint: Optional source URI hint from profile.
+            profile_hint: Optional source URI hint (parameter name kept for API compatibility).
 
         Returns:
             Source object (FoundationGitSource, FoundationFileSource, or FoundationPackageSource).
@@ -250,7 +250,7 @@ class FoundationSettingsResolver:
 
         Returns:
             Tuple of (source, layer_name).
-            layer_name is one of: env, workspace, settings, collection, profile, package
+            layer_name is one of: env, workspace, settings, collection, source_hint, package
         """
         # Layer 1: Environment variable
         env_key = f"AMPLIFIER_MODULE_{module_id.upper().replace('-', '_')}"
@@ -278,10 +278,10 @@ class FoundationSettingsResolver:
                 logger.debug(f"[module:resolve] {module_id} -> collection ({module_path})")
                 return (FoundationFileSource(module_path), "collection")
 
-        # Layer 5: Profile hint
+        # Layer 5: Source hint (from bundle config)
         if profile_hint:
-            logger.debug(f"[module:resolve] {module_id} -> profile")
-            return (self._parse_source(profile_hint, module_id), "profile")
+            logger.debug(f"[module:resolve] {module_id} -> source_hint")
+            return (self._parse_source(profile_hint, module_id), "source_hint")
 
         # Layer 6: Installed package (fallback)
         logger.debug(f"[module:resolve] {module_id} -> package")

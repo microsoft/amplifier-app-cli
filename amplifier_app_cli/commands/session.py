@@ -18,9 +18,7 @@ from rich.table import Table
 
 from ..console import console
 from ..lib.app_settings import AppSettings
-from ..paths import create_agent_loader
 from ..paths import create_config_manager
-from ..paths import create_profile_loader
 from ..project_utils import get_project_slug
 from ..runtime.config import resolve_config
 from ..session_store import SessionStore, extract_session_mode
@@ -141,8 +139,7 @@ def _prepare_resume_context(
             saved_profile_used = saved_profile
 
     config_manager = create_config_manager()
-    profile_loader = create_profile_loader()
-    agent_loader = create_agent_loader()
+    
     app_settings = AppSettings(config_manager)
 
     # Check first run / auto-install providers BEFORE config resolution
@@ -158,8 +155,8 @@ def _prepare_resume_context(
         bundle_name=bundle_name,
         profile_override=effective_profile,
         config_manager=config_manager,
-        profile_loader=profile_loader,
-        agent_loader=agent_loader,
+        profile_loader=None,
+        agent_loader=None,
         app_settings=app_settings,
         console=console,
         session_id=session_id,
@@ -410,7 +407,6 @@ def register_session_commands(
 
     @cli.command(name="continue")
     @click.argument("prompt", required=False)
-    @click.option("--profile", "-P", help="Profile to use for resumed session")
     @click.option(
         "--force-bundle",
         "-B",
@@ -438,7 +434,6 @@ def register_session_commands(
     )
     def continue_session(
         prompt: str | None,
-        profile: str | None,
         force_bundle: str | None,
         no_history: bool,
         full_history: bool,
@@ -477,7 +472,7 @@ def register_session_commands(
                 active_profile,
             ) = _prepare_resume_context(
                 session_id,
-                profile,
+                None,
                 get_module_search_paths,
                 console,
                 bundle_override=force_bundle,
@@ -596,9 +591,7 @@ def register_session_commands(
                 )
                 sys.exit(1)
             except ValueError as e:
-                from ..utils.error_format import format_error_message
-
-                console.print(f"[red]Error:[/red] {format_error_message(e)}")
+                console.print(f"[red]Error:[/red] {e}")
                 sys.exit(1)
 
             session_dir = store.base_dir / session_id
@@ -777,19 +770,13 @@ def register_session_commands(
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
         except ValueError as e:
-            from ..utils.error_format import format_error_message
-
-            console.print(f"[red]Error:[/red] {format_error_message(e)}")
+            console.print(f"[red]Error:[/red] {e}")
             sys.exit(1)
 
         try:
             transcript, metadata = store.load(session_id)
         except Exception as exc:
-            from ..utils.error_format import format_error_message
-
-            console.print(
-                f"[red]Error loading session:[/red] {format_error_message(exc)}"
-            )
+            console.print(f"[red]Error loading session:[/red] {exc}")
             sys.exit(1)
 
         panel_content = [
@@ -860,9 +847,7 @@ def register_session_commands(
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
         except ValueError as e:
-            from ..utils.error_format import format_error_message
-
-            console.print(f"[red]Error:[/red] {format_error_message(e)}")
+            console.print(f"[red]Error:[/red] {e}")
             sys.exit(1)
 
         session_dir = store.base_dir / session_id
@@ -952,9 +937,7 @@ def register_session_commands(
                 )
             console.print()
         except ValueError as e:
-            from ..utils.error_format import format_error_message
-
-            console.print(f"[red]Error:[/red] {format_error_message(e)}")
+            console.print(f"[red]Error:[/red] {e}")
             sys.exit(1)
 
         # Perform the fork
@@ -1014,9 +997,7 @@ def register_session_commands(
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
         except ValueError as e:
-            from ..utils.error_format import format_error_message
-
-            console.print(f"[red]Error:[/red] {format_error_message(e)}")
+            console.print(f"[red]Error:[/red] {e}")
             sys.exit(1)
 
         if not force:
@@ -1037,7 +1018,6 @@ def register_session_commands(
 
     @session.command(name="resume")
     @click.argument("session_id")
-    @click.option("--profile", "-P", help="Profile to use for resumed session")
     @click.option(
         "--force-bundle",
         "-B",
@@ -1065,7 +1045,6 @@ def register_session_commands(
     )
     def sessions_resume(
         session_id: str,
-        profile: str | None,
         force_bundle: str | None,
         no_history: bool,
         full_history: bool,
@@ -1082,9 +1061,7 @@ def register_session_commands(
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
         except ValueError as e:
-            from ..utils.error_format import format_error_message
-
-            console.print(f"[red]Error:[/red] {format_error_message(e)}")
+            console.print(f"[red]Error:[/red] {e}")
             sys.exit(1)
 
         try:
@@ -1101,7 +1078,7 @@ def register_session_commands(
                 active_profile,
             ) = _prepare_resume_context(
                 session_id,
-                profile,
+                None,
                 get_module_search_paths,
                 console,
                 bundle_override=force_bundle,
@@ -1203,9 +1180,7 @@ def register_session_commands(
                 )
                 sys.exit(1)
             except ValueError as e:
-                from ..utils.error_format import format_error_message
-
-                console.print(f"[red]Error:[/red] {format_error_message(e)}")
+                console.print(f"[red]Error:[/red] {e}")
                 sys.exit(1)
 
             # Delegate to sessions_resume

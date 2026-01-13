@@ -1,7 +1,6 @@
 """App-layer bundle discovery implementing filesystem search paths.
 
-This module implements CLI-specific bundle discovery with search paths,
-following the same pattern as profile/agent discovery.
+This module implements CLI-specific bundle discovery with search paths.
 
 Per KERNEL_PHILOSOPHY: Search paths are APP LAYER POLICY.
 Per MODULAR_DESIGN_PHILOSOPHY: Bundles are just content - mechanism is generic.
@@ -19,12 +18,10 @@ from __future__ import annotations
 import importlib
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from amplifier_foundation import BundleRegistry
 
-if TYPE_CHECKING:
-    from amplifier_app_cli.lib.legacy import CollectionResolver
+# LEGACY: CollectionResolver type removed - collections are deprecated
 
 logger = logging.getLogger(__name__)
 
@@ -90,8 +87,7 @@ class AppBundleDiscovery:
     2. Well-known bundles (foundation, etc. - local package → remote fallback)
     3. Project bundles (.amplifier/bundles/)
     4. User bundles (~/.amplifier/bundles/)
-    5. Collection bundles (via CollectionResolver)
-    6. Bundled bundles (package data/bundles/)
+    5. Bundled bundles (package data/bundles/)
 
     Bundle resolution:
     - "name" → looks for name/, name.yaml, name.md in search paths
@@ -101,18 +97,19 @@ class AppBundleDiscovery:
     def __init__(
         self,
         search_paths: list[Path] | None = None,
-        collection_resolver: CollectionResolver | None = None,
+        collection_resolver: object
+        | None = None,  # DEPRECATED: CollectionResolver removed
         registry: BundleRegistry | None = None,
     ) -> None:
         """Initialize discovery with search paths.
 
         Args:
             search_paths: Explicit search paths (default: CLI standard paths).
-            collection_resolver: Resolver for collection bundles.
+            collection_resolver: DEPRECATED - collections are no longer supported.
             registry: Optional BundleRegistry (creates default if not provided).
         """
         self._search_paths = search_paths or self._default_search_paths()
-        self._collection_resolver = collection_resolver
+        self._collection_resolver = collection_resolver  # DEPRECATED: unused
         self._registry = registry or BundleRegistry()
 
         # Register well-known bundles first (defaults)
@@ -314,7 +311,10 @@ class AppBundleDiscovery:
         if not self._collection_resolver:
             return None
 
-        for _metadata_name, collection_path in self._collection_resolver.list_collections():
+        for (
+            _metadata_name,
+            collection_path,
+        ) in self._collection_resolver.list_collections():
             # Check if collection has bundles
             bundles_dir = collection_path / "bundles"
             if bundles_dir.exists():
@@ -383,6 +383,7 @@ class AppBundleDiscovery:
 
         # Add user-added bundles from user registry
         from amplifier_app_cli.lib.bundle_loader import user_registry
+
         user_bundles = user_registry.load_user_registry()
         bundles.update(user_bundles.keys())
 
@@ -508,20 +509,25 @@ class AppBundleDiscovery:
         # Well-known bundles
         for name, info in WELL_KNOWN_BUNDLES.items():
             uri = self._find_packaged_bundle(info.get("package", "")) or info["remote"]
-            categories["well_known"].append({
-                "name": name,
-                "uri": uri,
-                "show_in_list": str(info.get("show_in_list", True)),
-            })
+            categories["well_known"].append(
+                {
+                    "name": name,
+                    "uri": uri,
+                    "show_in_list": str(info.get("show_in_list", True)),
+                }
+            )
 
         # User-added bundles
         from amplifier_app_cli.lib.bundle_loader import user_registry
+
         user_bundles = user_registry.load_user_registry()
         for name, info in user_bundles.items():
-            categories["user_added"].append({
-                "name": name,
-                "uri": info.get("uri", ""),
-            })
+            categories["user_added"].append(
+                {
+                    "name": name,
+                    "uri": info.get("uri", ""),
+                }
+            )
 
         # Read persisted registry for dependencies and sub-bundles
         registry_path = Path.home() / ".amplifier" / "registry.json"
@@ -550,7 +556,9 @@ class AppBundleDiscovery:
                     elif not bundle_data.get("explicitly_requested", False):
                         # Dependency (loaded transitively)
                         included_by = bundle_data.get("included_by", [])
-                        entry["included_by"] = ", ".join(included_by) if included_by else ""
+                        entry["included_by"] = (
+                            ", ".join(included_by) if included_by else ""
+                        )
                         categories["dependencies"].append(entry)
 
             except Exception as e:
@@ -581,7 +589,9 @@ class AppBundleDiscovery:
             sub_bundles: set[str] = set()
 
             for name, bundle_data in data.get("bundles", {}).items():
-                if bundle_data.get("is_root", True):  # Default True for backwards compat
+                if bundle_data.get(
+                    "is_root", True
+                ):  # Default True for backwards compat
                     root_bundles.add(name)
                 else:
                     sub_bundles.add(name)
@@ -644,7 +654,10 @@ class AppBundleDiscovery:
         if not self._collection_resolver:
             return bundles
 
-        for _metadata_name, collection_path in self._collection_resolver.list_collections():
+        for (
+            _metadata_name,
+            collection_path,
+        ) in self._collection_resolver.list_collections():
             bundles_dir = collection_path / "bundles"
             if bundles_dir.exists():
                 bundles.extend(self._scan_path_for_bundles(bundles_dir))

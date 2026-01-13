@@ -34,13 +34,10 @@ from .commands.agents import agents as agents_group
 from .commands.allowed_dirs import allowed_dirs as allowed_dirs_group
 from .commands.denied_dirs import denied_dirs as denied_dirs_group
 from .commands.bundle import bundle as bundle_group
-from .commands.collection import collection as collection_group
 from .commands.init import check_first_run
 from .commands.init import init_cmd
 from .commands.init import prompt_first_run_init
 from .commands.module import module as module_group
-from .commands.notify import notify as notify_group
-from .commands.profile import profile as profile_group
 from .commands.provider import provider as provider_group
 from .commands.reset import reset as reset_cmd
 from .commands.run import register_run_command
@@ -281,9 +278,9 @@ class CommandProcessor:
         },
     }
 
-    def __init__(self, session: AmplifierSession, profile_name: str = "unknown"):
+    def __init__(self, session: AmplifierSession, bundle_name: str = "unknown"):
         self.session = session
-        self.profile_name = profile_name
+        self.bundle_name = bundle_name
         self.plan_mode = False
         self.plan_mode_unregister = None  # Store unregister function
 
@@ -463,7 +460,7 @@ class CommandProcessor:
         except Exception:
             pass  # Silently skip if we can't load metadata
 
-        lines.append(f"  Profile: {self.profile_name}")
+        lines.append(f"  Config: {self.bundle_name}")
 
         # Plan mode status
         lines.append(f"  Plan Mode: {'ON' if self.plan_mode else 'OFF'}")
@@ -653,37 +650,22 @@ class CommandProcessor:
         return "\n".join(lines)
 
     async def _get_config_display(self) -> str:
-        """Display current configuration using profile show format or bundle display."""
+        """Display current configuration using bundle display."""
         from .console import console
 
-        # Check if we're in bundle mode (profile_name is "bundle:<name>")
-        if self.profile_name.startswith("bundle:"):
-            bundle_name = self.profile_name.removeprefix("bundle:")
-            await self._render_bundle_config(bundle_name, console)
+        # Extract bundle name from config source name (format: "bundle:<name>")
+        if self.bundle_name.startswith("bundle:"):
+            bundle_name = self.bundle_name.removeprefix("bundle:")
         else:
-            # Profile mode: use inheritance chain display
-            from .commands.profile import render_effective_config
-            from .paths import create_config_manager
-            from .paths import create_profile_loader
+            bundle_name = self.bundle_name
 
-            loader = create_profile_loader()
-            config_manager = create_config_manager()
-
-            # Load inheritance chain for source tracking
-            chain_names = loader.get_inheritance_chain(self.profile_name)
-            chain_dicts = loader.load_inheritance_chain_dicts(self.profile_name)
-            source_overrides = config_manager.get_module_sources()
-
-            # render_effective_config prints directly to console with rich formatting
-            render_effective_config(
-                chain_dicts, chain_names, source_overrides, detailed=True
-            )
+        await self._render_bundle_config(bundle_name, console)
 
         # Also show loaded agents (available at runtime)
-        # Note: agents can be a dict (resolved agents) or list/other format (profile config)
+        # Note: agents can be a dict (resolved agents) or list/other format (config)
         loaded_agents = self.session.config.get("agents", {})
         if isinstance(loaded_agents, dict) and loaded_agents:
-            # Filter out profile config keys (dirs, include, inline) - only show resolved agent names
+            # Filter out config keys (dirs, include, inline) - only show resolved agent names
             agent_names = [
                 k for k in loaded_agents if k not in ("dirs", "include", "inline")
             ]
@@ -1069,7 +1051,6 @@ def cli(ctx, install_completion):
         ctx.invoke(
             _run_command,
             prompt=None,
-            profile=None,
             bundle=None,  # Will check settings for active bundle
             provider=None,
             model=None,
@@ -1226,7 +1207,7 @@ async def interactive_chat(
         search_paths=search_paths,
         verbose=verbose,
         session_id=session_id,
-        profile_name=profile_name,
+        bundle_name=profile_name,
         initial_transcript=initial_transcript,
         prepared_bundle=prepared_bundle,
     )
@@ -1288,7 +1269,7 @@ async def interactive_chat(
                 "created": existing_metadata.get(
                     "created", datetime.now(UTC).isoformat()
                 ),
-                "profile": profile_name,
+                "bundle": profile_name,
                 "model": _extract_model_name(),
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
             }
@@ -1434,9 +1415,9 @@ async def interactive_chat(
                 display_validation_error(console, e, verbose=verbose)
 
             except Exception as e:
-                from .utils.error_format import print_error
-
-                print_error(console, e, verbose=verbose)
+                console.print(f"[red]Error:[/red] {e}")
+                if verbose:
+                    console.print_exception()
 
     finally:
         # Only emit session:end if actual work occurred (at least one turn)
@@ -1518,7 +1499,7 @@ async def execute_single(
         search_paths=search_paths,
         verbose=verbose,
         session_id=session_id,
-        profile_name=profile_name,
+        bundle_name=profile_name,
         initial_transcript=initial_transcript,
         prepared_bundle=prepared_bundle,
         output_format=output_format,
@@ -1588,7 +1569,7 @@ async def execute_single(
                 "status": "success",
                 "response": response,
                 "session_id": actual_session_id,
-                "profile": profile_name,
+                "bundle": profile_name,
                 "model": model_name,
                 "timestamp": datetime.now(UTC).isoformat(),
             }
@@ -1619,7 +1600,7 @@ async def execute_single(
                 "created": existing_metadata.get(
                     "created", datetime.now(UTC).isoformat()
                 ),
-                "profile": profile_name,
+                "bundle": profile_name,
                 "model": model_name,
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
             }
@@ -1662,9 +1643,9 @@ async def execute_single(
             # Try clean display for module validation errors (including wrapped ones)
             if not display_validation_error(console, e, verbose=verbose):
                 # Fall back to generic error output
-                from .utils.error_format import print_error
-
-                print_error(console, e, verbose=verbose)
+                console.print(f"[red]Error:[/red] {e}")
+                if verbose:
+                    console.print_exception()
         sys.exit(1)
 
     finally:
@@ -1696,11 +1677,8 @@ cli.add_command(agents_group)
 cli.add_command(allowed_dirs_group)
 cli.add_command(denied_dirs_group)
 cli.add_command(bundle_group)
-cli.add_command(collection_group)
 cli.add_command(init_cmd)
-cli.add_command(profile_group)
 cli.add_command(module_group)
-cli.add_command(notify_group)
 cli.add_command(provider_group)
 cli.add_command(source_group)
 cli.add_command(tool_group)

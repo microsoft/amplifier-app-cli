@@ -13,7 +13,9 @@ from .app_resolver import AppMentionResolver
 from .app_resolver import MentionResolverProtocol
 
 
-def prepend_context_to_markdown(context_messages: list[Message], markdown_body: str) -> str:
+def prepend_context_to_markdown(
+    context_messages: list[Message], markdown_body: str
+) -> str:
     """Extract content from context messages and prepend to markdown body.
 
     This utility prevents duplication of the content extraction logic across
@@ -67,7 +69,7 @@ class MentionLoader:
         Args:
             resolver: Resolver implementing MentionResolverProtocol (default: creates AppMentionResolver)
         """
-        self.resolver = resolver or AppMentionResolver(enable_collections=True)
+        self.resolver = resolver or AppMentionResolver(enable_collections=False)
 
     def has_mentions(self, text: str) -> bool:
         """Check if text contains @mention patterns.
@@ -82,7 +84,10 @@ class MentionLoader:
         return len(mentions) > 0
 
     def load_mentions(
-        self, text: str, relative_to: Path | None = None, deduplicator: ContentDeduplicator | None = None
+        self,
+        text: str,
+        relative_to: Path | None = None,
+        deduplicator: ContentDeduplicator | None = None,
     ) -> list[Message]:
         """Load all @mentioned files recursively with optional session-wide deduplication.
 
@@ -145,11 +150,15 @@ class MentionLoader:
                     to_process.append(nested)
 
         context_files = deduplicator.get_unique_files()
-        new_context_files = [ctx for ctx in context_files if ctx.content_hash not in existing_hashes]
+        new_context_files = [
+            ctx for ctx in context_files if ctx.content_hash not in existing_hashes
+        ]
 
         return self._create_messages(new_context_files, path_to_mention)
 
-    def _create_messages(self, context_files: list[ContextFile], path_to_mention: dict[Path, str]) -> list[Message]:
+    def _create_messages(
+        self, context_files: list[ContextFile], path_to_mention: dict[Path, str]
+    ) -> list[Message]:
         """Create Message objects from loaded context files.
 
         Args:

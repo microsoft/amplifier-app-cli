@@ -358,7 +358,7 @@ async def spawn_sub_session(
     if parent_resolver:
         await child_session.coordinator.mount("module-source-resolver", parent_resolver)
     else:
-        # Fallback to fresh resolver if parent doesn't have one (profile mode)
+        # Fallback to fresh resolver if parent doesn't have one
         resolver = create_foundation_resolver()
         await child_session.coordinator.mount("module-source-resolver", resolver)
 
@@ -424,7 +424,7 @@ async def spawn_sub_session(
     else:
         # Fallback to fresh resolver if parent doesn't have one
         child_session.coordinator.register_capability(
-            "mention_resolver", AppMentionResolver(enable_collections=True)
+            "mention_resolver", AppMentionResolver(enable_collections=False)
         )
 
     # Mention deduplicator - inherit from parent to preserve session-wide deduplication state
@@ -614,7 +614,7 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
             f"Restored BundleModuleResolver with {len(module_paths)} module paths"
         )
     else:
-        # Fallback to FoundationSettingsResolver for profile mode
+        # Fallback to FoundationSettingsResolver
         resolver = create_foundation_resolver()
     await child_session.coordinator.mount("module-source-resolver", resolver)
 
@@ -631,7 +631,7 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
         child_session.coordinator.register_capability(
             "mention_resolver",
             AppMentionResolver(
-                enable_collections=True, bundle_mappings=mention_mappings
+                enable_collections=False, bundle_mappings=mention_mappings
             ),
         )
         logger.debug(
@@ -640,7 +640,7 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     else:
         # Fallback to fresh resolver without bundle mappings
         child_session.coordinator.register_capability(
-            "mention_resolver", AppMentionResolver(enable_collections=True)
+            "mention_resolver", AppMentionResolver(enable_collections=False)
         )
 
     # Mention deduplicator - create fresh (deduplication state doesn't persist across resumes)

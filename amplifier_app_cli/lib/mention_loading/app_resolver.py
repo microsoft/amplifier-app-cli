@@ -2,7 +2,7 @@
 
 This module demonstrates the proper pattern for extending foundation mechanisms:
 - Foundation provides the mechanism (bundle namespace resolution)
-- App provides policy (shortcuts, collection support, resolution order)
+- App provides policy (shortcuts, resolution order)
 
 Per KERNEL_PHILOSOPHY: Foundation provides mechanism, app provides policy.
 """
@@ -39,8 +39,7 @@ class AppMentionResolver:
     Resolution order (app-layer policy):
     1. App shortcuts: @user:, @project:, @~/
     2. Bundle namespaces: @namespace:path (delegated to foundation)
-    3. Collections: @collection:path (DEPRECATED, profile mode only)
-    4. Relative paths: @path (CWD)
+    3. Relative paths: @path (CWD)
 
     Shortcut prefixes (app-layer policy):
     - @user:path → ~/.amplifier/{path}
@@ -50,15 +49,13 @@ class AppMentionResolver:
     Bundle namespaces (@namespace:path like @recipes:examples/...) are delegated
     to the foundation resolver, which understands bundle composition and can
     resolve paths across all composed bundles.
-
-    Collection prefix is deprecated - only enabled in legacy profile mode.
-    In bundle mode, bundle namespaces take precedence, preventing conflicts
-    if a collection and bundle share the same name.
     """
 
     def __init__(
         self,
-        foundation_resolver: BaseMentionResolver | MentionResolverProtocol | None = None,
+        foundation_resolver: BaseMentionResolver
+        | MentionResolverProtocol
+        | None = None,
         enable_collections: bool = False,
         bundle_mappings: dict[str, Path] | None = None,
     ):
@@ -69,9 +66,8 @@ class AppMentionResolver:
                 In bundle mode, this should be the resolver registered by
                 PreparedBundle.create_session() which has all composed bundle
                 namespaces (e.g., foundation, recipes).
-            enable_collections: Enable @collection:path resolution.
-                DEPRECATED: Only set True for legacy profile mode.
-                Bundle mode should use False to prevent naming conflicts.
+            enable_collections: DEPRECATED - collections are no longer supported.
+                This parameter is ignored; collection resolution is disabled.
             bundle_mappings: Optional dict mapping bundle namespace to base_path.
                 Enables @namespace:path mentions to resolve from the bundle's
                 base_path. Used in profile mode when foundation_resolver is not
@@ -145,7 +141,9 @@ class AppMentionResolver:
         if self._enable_collections and ":" in mention[1:]:
             result = self._resolve_collection(mention)
             if result:
-                logger.debug(f"Resolved via collection (deprecated): {mention} -> {result}")
+                logger.debug(
+                    f"Resolved via collection (deprecated): {mention} -> {result}"
+                )
                 return result
 
         # === RELATIVE PATHS ===
@@ -253,7 +251,9 @@ class AppMentionResolver:
             if (collection_path / "pyproject.toml").exists():
                 parent_resource_path = collection_path.parent / path
                 if parent_resource_path.exists():
-                    logger.debug(f"Collection resource found at parent: {parent_resource_path}")
+                    logger.debug(
+                        f"Collection resource found at parent: {parent_resource_path}"
+                    )
                     return parent_resource_path.resolve()
 
             logger.debug(f"Collection resource not found: {resource_path}")

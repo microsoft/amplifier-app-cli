@@ -129,7 +129,7 @@ class TestREPLBehavior:
 
 
 # Integration notes for manual testing:
-# 1. Start REPL: `amplifier run --profile dev --mode chat`
+# 1. Start REPL: `amplifier run --bundle foundation --mode chat`
 # 2. Verify bd-19 features:
 #    - Up/Down arrows navigate history
 #    - Ctrl-R searches history

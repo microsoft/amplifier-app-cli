@@ -28,24 +28,27 @@ BUNDLE_PREFIX = "bundle:"
 
 
 def extract_session_mode(metadata: dict) -> tuple[str | None, str | None]:
-    """Extract bundle name or profile name from session metadata.
+    """Extract bundle name from session metadata.
 
-    Sessions can be created with either a bundle (e.g., "foundation") or a profile.
-    When saved, bundle-based sessions store the profile as "bundle:<name>".
-    This function detects which mode was used and returns the appropriate value.
+    Sessions are created with a bundle (e.g., "foundation").
+    When saved, bundle-based sessions store the config source as "bundle:<name>".
+    This function extracts the bundle name for session resumption.
+
+    For backward compatibility, legacy sessions without "bundle:" prefix
+    return the value as the second element (profile_name).
 
     Args:
         metadata: Session metadata dict containing "profile" key
 
     Returns:
-        (bundle_name, profile_name) tuple where exactly one is set, other is None.
-        Returns (None, None) if no valid profile/bundle is found in metadata.
+        (bundle_name, legacy_name) tuple where bundle_name is set for bundle sessions.
+        Returns (None, None) if no valid bundle is found in metadata.
 
     Example:
         >>> extract_session_mode({"profile": "bundle:foundation"})
         ("foundation", None)
-        >>> extract_session_mode({"profile": "my-profile"})
-        (None, "my-profile")
+        >>> extract_session_mode({"profile": "legacy-name"})  # backward compat
+        (None, "legacy-name")
         >>> extract_session_mode({"profile": "unknown"})
         (None, None)
     """
@@ -66,7 +69,7 @@ class SessionStore:
     - Outputs: Saved files or loaded data tuples
     - Side Effects: Filesystem writes to ~/.amplifier/projects/<project-slug>/sessions/<session-id>/
     - Errors: FileNotFoundError for missing sessions, IOError for disk issues
-    - Files created: transcript.jsonl, metadata.json, profile.md
+    - Files created: transcript.jsonl, metadata.json, config.md
     """
 
     def __init__(self, base_dir: Path | None = None):
@@ -421,16 +424,16 @@ class SessionStore:
         sessions.sort(key=lambda x: x[1], reverse=True)
         return [name for name, _ in sessions]
 
-    def save_profile(self, session_id: str, profile: dict) -> None:
-        """Save profile snapshot used for session.
+    def save_config_snapshot(self, session_id: str, config: dict) -> None:
+        """Save config snapshot used for session.
 
         Args:
             session_id: Session identifier
-            profile: Profile configuration dictionary
+            config: Bundle configuration dictionary
 
         Raises:
             ValueError: If session_id is invalid
-            IOError: If unable to write profile
+            IOError: If unable to write config
         """
         if not session_id or not session_id.strip():
             raise ValueError("session_id cannot be empty")
@@ -442,18 +445,18 @@ class SessionStore:
         session_dir = self.base_dir / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
 
-        profile_file = session_dir / "profile.md"
+        config_file = session_dir / "config.md"
 
-        # Convert profile dict to Markdown+YAML frontmatter
+        # Convert config dict to Markdown+YAML frontmatter
         import yaml
 
-        yaml_content = yaml.dump(profile, default_flow_style=False, sort_keys=False)
+        yaml_content = yaml.dump(config, default_flow_style=False, sort_keys=False)
         content = (
-            f"---\n{yaml_content}---\n\nProfile snapshot for session {session_id}\n"
+            f"---\n{yaml_content}---\n\nConfig snapshot for session {session_id}\n"
         )
-        write_with_backup(profile_file, content)
+        write_with_backup(config_file, content)
 
-        logger.debug(f"Profile saved for session {session_id}")
+        logger.debug(f"Config saved for session {session_id}")
 
     def cleanup_old_sessions(self, days: int = 30) -> int:
         """Remove sessions older than specified days.

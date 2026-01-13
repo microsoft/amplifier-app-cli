@@ -12,9 +12,12 @@ from typing import Any
 from rich.console import Console
 
 from ..lib.app_settings import AppSettings
-from ..lib.legacy import compile_profile_to_mount_plan
-from ..lib.legacy import merge_module_items
+from ..lib.merge_utils import merge_module_items
 from ..lib.merge_utils import merge_tool_configs
+
+# LEGACY: Profile compilation is no longer available after lib/legacy removal
+# Profile mode is deprecated - use bundles instead
+compile_profile_to_mount_plan = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
     from amplifier_foundation import BundleRegistry
@@ -26,7 +29,7 @@ logger = logging.getLogger(__name__)
 async def resolve_bundle_config(
     bundle_name: str,
     app_settings: AppSettings,
-    agent_loader,
+    agent_loader=None,
     console: Console | None = None,
     *,
     session_id: str | None = None,
@@ -670,7 +673,7 @@ async def resolve_config_async(
     profile_override: str | None = None,
     config_manager=None,
     profile_loader=None,
-    agent_loader,
+    agent_loader=None,
     app_settings: AppSettings,
     cli_config: dict[str, Any] | None = None,
     console: Console | None = None,
@@ -743,7 +746,7 @@ def resolve_config(
     profile_override: str | None = None,
     config_manager=None,
     profile_loader=None,
-    agent_loader,
+    agent_loader=None,
     app_settings: AppSettings,
     cli_config: dict[str, Any] | None = None,
     console: Console | None = None,

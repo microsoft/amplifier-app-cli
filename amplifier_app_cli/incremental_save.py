@@ -32,7 +32,7 @@ class IncrementalSaveHook:
     - Thread safety: Uses SessionStore's atomic write mechanism
 
     Usage:
-        hook = IncrementalSaveHook(session, store, session_id, profile_name, config)
+        hook = IncrementalSaveHook(session, store, session_id, bundle_name, config)
         hooks.register("tool:post", hook.on_tool_post, priority=900, name="incremental_save")
     """
 
@@ -41,7 +41,7 @@ class IncrementalSaveHook:
         session: "AmplifierSession",
         store: SessionStore,
         session_id: str,
-        profile_name: str,
+        bundle_name: str,
         config: dict[str, Any],
     ):
         """Initialize incremental save hook.
@@ -50,13 +50,13 @@ class IncrementalSaveHook:
             session: The AmplifierSession to save transcripts for
             store: SessionStore instance for persistence
             session_id: Session identifier
-            profile_name: Profile or bundle name for metadata
+            bundle_name: Bundle name for metadata (e.g., "bundle:foundation")
             config: Session configuration for extracting model info
         """
         self.session = session
         self.store = store
         self.session_id = session_id
-        self.profile_name = profile_name
+        self.bundle_name = bundle_name
         self.config = config
         self._last_message_count = 0
 
@@ -108,7 +108,7 @@ class IncrementalSaveHook:
                 "created": existing_metadata.get(
                     "created", datetime.now(UTC).isoformat()
                 ),
-                "profile": self.profile_name,
+                "bundle": self.bundle_name,
                 "model": model_name,
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
                 "incremental": True,  # Distinguish from final saves
@@ -149,7 +149,7 @@ def register_incremental_save(
     session: "AmplifierSession",
     store: SessionStore,
     session_id: str,
-    profile_name: str,
+    bundle_name: str,
     config: dict[str, Any],
 ) -> IncrementalSaveHook | None:
     """Register incremental save hook on session.
@@ -161,7 +161,7 @@ def register_incremental_save(
         session: The AmplifierSession to register on
         store: SessionStore instance for persistence
         session_id: Session identifier
-        profile_name: Profile or bundle name for metadata
+        bundle_name: Bundle name for metadata (e.g., "bundle:foundation")
         config: Session configuration
 
     Returns:
@@ -172,7 +172,7 @@ def register_incremental_save(
         logger.debug("Hooks not available, skipping incremental save registration")
         return None
 
-    hook = IncrementalSaveHook(session, store, session_id, profile_name, config)
+    hook = IncrementalSaveHook(session, store, session_id, bundle_name, config)
 
     # Register with priority 900 (high, but below trace collector at 1000)
     # This ensures tracing completes before we save

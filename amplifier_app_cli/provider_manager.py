@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
-from amplifier_app_cli.lib.legacy import ConfigManager
+from amplifier_app_cli.lib.config_compat import ConfigManager
 
 from .lib.app_settings import AppSettings
 from .lib.app_settings import ScopeType
@@ -125,7 +125,9 @@ class ProviderManager:
         # Get file path for return value
         file_path = str(self._settings.scope_path(scope))
 
-        return ConfigureResult(provider=provider_id, scope=scope, file=file_path, config=config)
+        return ConfigureResult(
+            provider=provider_id, scope=scope, file=file_path, config=config
+        )
 
     def get_current_provider(self) -> ProviderInfo | None:
         """Get currently active provider from merged config.
@@ -142,11 +144,17 @@ class ProviderManager:
             # Determine source (which scope provided it)
             source = self._determine_provider_source(provider)
 
-            return ProviderInfo(module_id=provider["module"], config=provider.get("config", {}), source=source)
+            return ProviderInfo(
+                module_id=provider["module"],
+                config=provider.get("config", {}),
+                source=source,
+            )
 
         return None
 
-    def get_provider_config(self, provider_id: str, scope: ScopeType | None = None) -> dict[str, Any] | None:
+    def get_provider_config(
+        self, provider_id: str, scope: ScopeType | None = None
+    ) -> dict[str, Any] | None:
         """Get configuration for a specific provider by module ID.
 
         Looks through provider overrides to find configuration for the specified
@@ -166,7 +174,9 @@ class ProviderManager:
             # Read from specific scope only
             providers = self._settings.get_scope_provider_overrides(scope)
             scope_path = self._settings.scope_path(scope)
-            logger.debug(f"get_provider_config: reading from {scope} scope at {scope_path}")
+            logger.debug(
+                f"get_provider_config: reading from {scope} scope at {scope_path}"
+            )
         else:
             # Read from merged settings (default behavior)
             providers = self._settings.get_provider_overrides()
@@ -175,12 +185,18 @@ class ProviderManager:
         logger.debug(f"get_provider_config: found {len(providers)} providers")
         for provider in providers:
             module = provider.get("module")
-            logger.debug(f"get_provider_config: checking module '{module}' against '{provider_id}'")
+            logger.debug(
+                f"get_provider_config: checking module '{module}' against '{provider_id}'"
+            )
             if module == provider_id:
                 config = provider.get("config", {})
-                logger.debug(f"get_provider_config: found matching config with keys: {list(config.keys())}")
+                logger.debug(
+                    f"get_provider_config: found matching config with keys: {list(config.keys())}"
+                )
                 return config
-        logger.debug(f"get_provider_config: no matching provider found for '{provider_id}'")
+        logger.debug(
+            f"get_provider_config: no matching provider found for '{provider_id}'"
+        )
         return None
 
     def list_providers(self) -> list[tuple[str, str, str]]:
@@ -265,23 +281,35 @@ class ProviderManager:
                 # Try to get provider info via direct import
                 info = get_provider_info(module_id)
                 if info:
-                    display_name = info.get("display_name", _get_provider_display_name(module_id))
+                    display_name = info.get(
+                        "display_name", _get_provider_display_name(module_id)
+                    )
                     description = info.get("description", f"Provider: {module_id}")
                     providers[module_id] = (module_id, display_name, description)
                     logger.debug(f"Discovered provider from source: {module_id}")
                 else:
                     # Even if we can't get info, verify module is importable
                     provider_name = module_id.replace("provider-", "")
-                    module_name = f"amplifier_module_provider_{provider_name.replace('-', '_')}"
+                    module_name = (
+                        f"amplifier_module_provider_{provider_name.replace('-', '_')}"
+                    )
                     importlib.import_module(module_name)
                     display_name = _get_provider_display_name(module_id)
-                    providers[module_id] = (module_id, display_name, f"Provider: {module_id}")
-                    logger.debug(f"Discovered provider from source (no info): {module_id}")
+                    providers[module_id] = (
+                        module_id,
+                        display_name,
+                        f"Provider: {module_id}",
+                    )
+                    logger.debug(
+                        f"Discovered provider from source (no info): {module_id}"
+                    )
 
             except Exception as e:
                 # For local sources, try to install with deps (same as install_known_providers)
                 if is_local_path(source_uri):
-                    logger.debug(f"Local provider {module_id} not importable, attempting install: {e}")
+                    logger.debug(
+                        f"Local provider {module_id} not importable, attempting install: {e}"
+                    )
                     try:
                         # Resolve source to get path
                         source = source_from_uri(source_uri)
@@ -289,7 +317,15 @@ class ProviderManager:
 
                         # Install with deps to current Python environment
                         result = subprocess.run(
-                            ["uv", "pip", "install", "-e", str(module_path), "--python", sys.executable],
+                            [
+                                "uv",
+                                "pip",
+                                "install",
+                                "-e",
+                                str(module_path),
+                                "--python",
+                                sys.executable,
+                            ],
                             capture_output=True,
                             text=True,
                         )
@@ -307,20 +343,38 @@ class ProviderManager:
                         # Retry getting provider info
                         info = get_provider_info(module_id)
                         if info:
-                            display_name = info.get("display_name", _get_provider_display_name(module_id))
-                            description = info.get("description", f"Provider: {module_id}")
-                            providers[module_id] = (module_id, display_name, description)
-                            logger.debug(f"Discovered local provider after install: {module_id}")
+                            display_name = info.get(
+                                "display_name", _get_provider_display_name(module_id)
+                            )
+                            description = info.get(
+                                "description", f"Provider: {module_id}"
+                            )
+                            providers[module_id] = (
+                                module_id,
+                                display_name,
+                                description,
+                            )
+                            logger.debug(
+                                f"Discovered local provider after install: {module_id}"
+                            )
                         else:
                             # Use provider_name (without "provider-" prefix) as ID
                             provider_name = module_id.replace("provider-", "")
                             display_name = _get_provider_display_name(provider_name)
-                            providers[provider_name] = (provider_name, display_name, f"Provider: {provider_name}")
-                            logger.debug(f"Discovered local provider after install (no info): {module_id}")
+                            providers[provider_name] = (
+                                provider_name,
+                                display_name,
+                                f"Provider: {provider_name}",
+                            )
+                            logger.debug(
+                                f"Discovered local provider after install (no info): {module_id}"
+                            )
 
                     except Exception as install_error:
                         # Install failed - show fallback with consistent description
-                        logger.warning(f"Could not install local provider {module_id}: {install_error}")
+                        logger.warning(
+                            f"Could not install local provider {module_id}: {install_error}"
+                        )
                         provider_name = module_id.replace("provider-", "")
                         display_name = _get_provider_display_name(provider_name)
                         providers[provider_name] = (
@@ -370,4 +424,4 @@ class ProviderManager:
         if any(p.get("module") == module_id for p in user_providers):
             return "global"
 
-        return "profile"  # Must be from profile
+        return "bundle"  # Must be from bundle

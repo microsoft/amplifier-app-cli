@@ -1,6 +1,6 @@
 """Bundle management commands for the Amplifier CLI.
 
-Bundles are an opt-in alternative to profiles for configuring Amplifier sessions.
+Bundles are an configuration format for configuring Amplifier sessions.
 When a bundle is active, it takes precedence over the profile system.
 
 Per IMPLEMENTATION_PHILOSOPHY: Bundles and profiles coexist - profiles remain
@@ -21,10 +21,10 @@ from rich.text import Text
 
 from ..console import console
 from ..lib.bundle_loader import AppBundleDiscovery
+from ..lib.settings import AppSettings
 from ..paths import ScopeNotAvailableError
 from ..paths import ScopeType
 from ..paths import create_bundle_registry
-from ..paths import create_config_manager
 from ..paths import get_effective_scope
 from ..utils.display import create_sha_text
 from ..utils.display import create_status_symbol
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from amplifier_foundation import BundleStatus
 
 
-def _remove_bundle_from_settings(config_manager, scope_path) -> bool:
+def _remove_bundle_from_settings(app_settings: AppSettings, scope: ScopeType) -> bool:
     """Remove the bundle key entirely from a settings file.
 
     This is better than setting bundle: null because it allows proper
@@ -44,17 +44,17 @@ def _remove_bundle_from_settings(config_manager, scope_path) -> bool:
         True if bundle was removed, False if not present or error
     """
     try:
-        settings = config_manager._read_yaml(scope_path)
+        settings = app_settings._read_scope(scope)
         if settings and "bundle" in settings:
             del settings["bundle"]
-            config_manager._write_yaml(scope_path, settings)
+            app_settings._write_scope(scope, settings)
             return True
     except Exception:
         pass
     return False
 
 
-def _remove_profile_from_settings(config_manager, scope_path) -> bool:
+def _remove_profile_from_settings(app_settings: AppSettings, scope: ScopeType) -> bool:
     """Remove the profile key entirely from a settings file.
 
     This ensures that after bundle clear, the system defaults to the
@@ -65,10 +65,10 @@ def _remove_profile_from_settings(config_manager, scope_path) -> bool:
         True if profile was removed, False if not present or error
     """
     try:
-        settings = config_manager._read_yaml(scope_path)
+        settings = app_settings._read_scope(scope)
         if settings and "profile" in settings:
             del settings["profile"]
-            config_manager._write_yaml(scope_path, settings)
+            app_settings._write_scope(scope, settings)
             return True
     except Exception:
         pass
@@ -78,7 +78,7 @@ def _remove_profile_from_settings(config_manager, scope_path) -> bool:
 @click.group(invoke_without_command=True)
 @click.pass_context
 def bundle(ctx: click.Context):
-    """Manage Amplifier bundles (opt-in alternative to profiles)."""
+    """Manage Amplifier bundles (configuration format)."""
     if ctx.invoked_subcommand is None:
         click.echo("\n" + ctx.get_help())
         ctx.exit()
@@ -104,12 +104,10 @@ def bundle_list(show_all: bool):
     - Dependencies loaded transitively
     - Sub-bundles (behaviors, providers, etc.)
     """
-    config_manager = create_config_manager()
+    app_settings = AppSettings()
     discovery = AppBundleDiscovery()
 
-    settings = config_manager.get_merged_settings() or {}
-    bundle_settings = settings.get("bundle") or {}  # Handle bundle: null case
-    active_bundle = bundle_settings.get("active")
+    active_bundle = app_settings.get_active_bundle()
 
     if show_all:
         _show_all_bundles(discovery, active_bundle)
@@ -154,7 +152,7 @@ def _show_user_bundles(discovery: AppBundleDiscovery, active_bundle: str | None)
     if active_bundle:
         console.print(f"\n[dim]Mode: Bundle ({active_bundle})[/dim]")
     else:
-        console.print("\n[dim]Mode: Profile (default)[/dim]")
+        console.print("\n[dim]Mode: No bundle active (default)[/dim]")
 
     console.print(
         "[dim]Use --all to see all bundles including dependencies and sub-bundles.[/dim]"
@@ -247,7 +245,7 @@ def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
     if active_bundle:
         console.print(f"[dim]Mode: Bundle ({active_bundle})[/dim]")
     else:
-        console.print("[dim]Mode: Profile (default)[/dim]")
+        console.print("[dim]Mode: No bundle active (default)[/dim]")
 
 
 def _format_location(uri: str | None) -> str:
@@ -380,8 +378,6 @@ def bundle_use(name: str, scope_flag: str | None):
     When a bundle is active, it takes precedence over profiles for session
     configuration. Use 'amplifier bundle clear' to revert to profiles.
     """
-    from amplifier_app_cli.lib.legacy import Scope
-
     # Verify bundle exists
     discovery = AppBundleDiscovery()
     uri = discovery.find(name)
@@ -392,13 +388,13 @@ def bundle_use(name: str, scope_flag: str | None):
             console.print(f"  • {b}")
         sys.exit(1)
 
-    config_manager = create_config_manager()
+    app_settings = AppSettings()
 
     # Validate scope availability
     try:
         scope, was_fallback = get_effective_scope(
             cast(ScopeType, scope_flag) if scope_flag else None,
-            config_manager,
+            app_settings,
             default_scope="global",
         )
         if was_fallback:
@@ -410,19 +406,16 @@ def bundle_use(name: str, scope_flag: str | None):
         sys.exit(1)
 
     # Set the bundle
+    app_settings.set_active_bundle(name, scope=scope)
+
     if scope == "local":
-        config_manager.update_settings({"bundle": {"active": name}}, scope=Scope.LOCAL)
         console.print(f"[green]✓ Using bundle '{name}' locally[/green]")
         console.print("  File: .amplifier/settings.local.yaml")
     elif scope == "project":
-        config_manager.update_settings(
-            {"bundle": {"active": name}}, scope=Scope.PROJECT
-        )
         console.print(f"[green]✓ Set bundle '{name}' as project default[/green]")
         console.print("  File: .amplifier/settings.yaml")
         console.print("  [yellow]Remember to commit .amplifier/settings.yaml[/yellow]")
     elif scope == "global":
-        config_manager.update_settings({"bundle": {"active": name}}, scope=Scope.USER)
         console.print(f"[green]✓ Set bundle '{name}' globally[/green]")
         console.print("  File: ~/.amplifier/settings.yaml")
 
@@ -449,25 +442,23 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
     Without scope flags, auto-detects and clears from wherever settings are found.
     Use --all to clear from all scopes.
     """
-    from amplifier_app_cli.lib.legacy import Scope
-
-    config_manager = create_config_manager()
+    app_settings = AppSettings()
 
     if clear_all:
         # Clear from all available scopes by removing bundle and profile keys entirely
         # This ensures the system defaults to foundation bundle (Phase 2 behavior)
-        bundle_cleared = []
-        profile_cleared = []
-        scope_paths = [
-            (Scope.LOCAL, config_manager.paths.local, "local"),
-            (Scope.PROJECT, config_manager.paths.project, "project"),
-            (Scope.USER, config_manager.paths.user, "user"),
+        bundle_cleared: list[str] = []
+        profile_cleared: list[str] = []
+        scopes: list[tuple[ScopeType, str]] = [
+            ("local", "local"),
+            ("project", "project"),
+            ("global", "global"),
         ]
-        for scope, path, name in scope_paths:
-            if config_manager.is_scope_available(scope):
-                if _remove_bundle_from_settings(config_manager, path):
+        for scope, name in scopes:
+            if app_settings.is_scope_available(scope):
+                if _remove_bundle_from_settings(app_settings, scope):
                     bundle_cleared.append(name)
-                if _remove_profile_from_settings(config_manager, path):
+                if _remove_profile_from_settings(app_settings, scope):
                     profile_cleared.append(name)
 
         if bundle_cleared:
@@ -488,7 +479,7 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
 
     # If no scope specified, auto-detect which scope has bundle or profile settings
     if scope_flag is None:
-        detected_scope = _find_bundle_or_profile_scope(config_manager)
+        detected_scope = _find_bundle_or_profile_scope(app_settings)
         if detected_scope is None:
             console.print(
                 "[yellow]No bundle or profile settings found in any scope[/yellow]"
@@ -502,7 +493,7 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
         try:
             scope, was_fallback = get_effective_scope(
                 cast(ScopeType, scope_flag),
-                config_manager,
+                app_settings,
                 default_scope="global",
             )
             if was_fallback:
@@ -513,15 +504,9 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
             console.print(f"[red]Error:[/red] {e.message}")
             sys.exit(1)
 
-    scope_path = {
-        "local": config_manager.paths.local,
-        "project": config_manager.paths.project,
-        "global": config_manager.paths.user,
-    }[scope]
-
     # Remove bundle and profile keys entirely to default to foundation bundle (Phase 2)
-    bundle_removed = _remove_bundle_from_settings(config_manager, scope_path)
-    profile_removed = _remove_profile_from_settings(config_manager, scope_path)
+    bundle_removed = _remove_bundle_from_settings(app_settings, scope)
+    profile_removed = _remove_profile_from_settings(app_settings, scope)
 
     if not bundle_removed and not profile_removed:
         console.print(f"[yellow]No bundle or profile setting in {scope} scope[/yellow]")
@@ -533,12 +518,8 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
         console.print(f"[green]✓ Cleared profile from {scope} scope[/green]")
 
     # Check if any bundle or profile is still active at other scopes
-    merged = config_manager.get_merged_settings()
-    bundle_settings = merged.get("bundle", {})
-    remaining_bundle = (
-        bundle_settings.get("active") if isinstance(bundle_settings, dict) else None
-    )
-    remaining_profile = config_manager.get_active_profile()
+    remaining_bundle = app_settings.get_active_bundle()
+    remaining_profile = app_settings.get_active_profile()
 
     if remaining_bundle:
         console.print(
@@ -556,17 +537,13 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
 @bundle.command(name="current")
 def bundle_current():
     """Show the currently active bundle and configuration mode."""
-    config_manager = create_config_manager()
-    merged = config_manager.get_merged_settings()
+    app_settings = AppSettings()
 
-    bundle_settings = merged.get("bundle", {})
-    active_bundle = (
-        bundle_settings.get("active") if isinstance(bundle_settings, dict) else None
-    )
+    active_bundle = app_settings.get_active_bundle()
 
     if active_bundle:
         # Determine source scope
-        source = _get_bundle_source_scope(config_manager)
+        source = _get_bundle_source_scope(app_settings)
 
         console.print(f"[bold green]Active bundle:[/bold green] {active_bundle}")
         console.print("[bold]Mode:[/bold] Bundle")
@@ -583,9 +560,9 @@ def bundle_current():
         )
     else:
         # Check if a profile is explicitly set (backward compatibility)
-        active_profile = config_manager.get_active_profile()
+        active_profile = app_settings.get_active_profile()
         if active_profile:
-            console.print("[bold]Mode:[/bold] Profile (deprecated)")
+            console.print("[bold]Mode:[/bold] No bundle active")
             console.print(f"[bold]Active profile:[/bold] {active_profile}")
 
             warning_text = (
@@ -613,53 +590,45 @@ def bundle_current():
             )
 
 
-def _find_bundle_or_profile_scope(config_manager) -> str | None:
+def _find_bundle_or_profile_scope(app_settings: AppSettings) -> ScopeType | None:
     """Find which scope has a bundle or profile setting (for auto-clear).
 
     Checks for both bundle.active and profile.active settings.
     Returns the first scope where either is found.
     """
-    from amplifier_app_cli.lib.legacy import Scope
-
     # Check scopes in precedence order (local first, as that's what user likely wants to clear)
-    scope_paths = [
-        (Scope.LOCAL, config_manager.paths.local, "local"),
-        (Scope.PROJECT, config_manager.paths.project, "project"),
-        (Scope.USER, config_manager.paths.user, "global"),
-    ]
-    for scope, path, name in scope_paths:
-        if not config_manager.is_scope_available(scope):  # type: ignore[attr-defined]
+    scopes: list[ScopeType] = ["local", "project", "global"]
+    for scope in scopes:
+        if not app_settings.is_scope_available(scope):
             continue
         try:
-            settings = config_manager._read_yaml(path)
+            settings = app_settings._read_scope(scope)
             if settings:
                 # Check for bundle.active
                 if "bundle" in settings and settings["bundle"].get("active"):
-                    return name
+                    return scope
                 # Check for profile.active
                 if "profile" in settings and settings["profile"].get("active"):
-                    return name
+                    return scope
         except Exception:
             pass
 
     return None
 
 
-def _get_bundle_source_scope(config_manager) -> str:
+def _get_bundle_source_scope(app_settings: AppSettings) -> str:
     """Determine which scope the active bundle comes from."""
-    from amplifier_app_cli.lib.legacy import Scope
-
     # Check scopes in precedence order
-    scope_paths = [
-        (Scope.LOCAL, config_manager.paths.local, ".amplifier/settings.local.yaml"),
-        (Scope.PROJECT, config_manager.paths.project, ".amplifier/settings.yaml"),
-        (Scope.USER, config_manager.paths.user, "~/.amplifier/settings.yaml"),
+    scope_labels: list[tuple[ScopeType, str]] = [
+        ("local", ".amplifier/settings.local.yaml"),
+        ("project", ".amplifier/settings.yaml"),
+        ("global", "~/.amplifier/settings.yaml"),
     ]
-    for scope, path, label in scope_paths:
-        if not config_manager.is_scope_available(scope):  # type: ignore[attr-defined]
+    for scope, label in scope_labels:
+        if not app_settings.is_scope_available(scope):
             continue
         try:
-            settings = config_manager._read_yaml(path)
+            settings = app_settings._read_scope(scope)
             if settings and "bundle" in settings and settings["bundle"].get("active"):
                 return label
         except Exception:
@@ -716,11 +685,7 @@ def bundle_add(uri: str, name_override: str | None):
             sys.exit(1)
 
     except Exception as e:
-        from ..utils.error_format import format_error_message
-
-        console.print(
-            f"[red]Error:[/red] Failed to fetch bundle: {format_error_message(e)}"
-        )
+        console.print(f"[red]Error:[/red] Failed to fetch bundle: {e}")
         console.print("  Check the URI and try again")
         sys.exit(1)
 
@@ -857,7 +822,7 @@ async def _bundle_update_async(
     from amplifier_foundation import check_bundle_status
     from amplifier_foundation import update_bundle
 
-    config_manager = create_config_manager()
+    app_settings = AppSettings()
     registry = create_bundle_registry()
 
     # Determine which bundle to check
@@ -865,11 +830,7 @@ async def _bundle_update_async(
         bundle_name = name
     else:
         # Use active bundle
-        merged = config_manager.get_merged_settings()
-        bundle_settings = merged.get("bundle", {})
-        bundle_name = (
-            bundle_settings.get("active") if isinstance(bundle_settings, dict) else None
-        )
+        bundle_name = app_settings.get_active_bundle()
 
         if not bundle_name:
             console.print("[yellow]No active bundle.[/yellow]")

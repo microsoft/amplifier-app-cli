@@ -1,8 +1,11 @@
-"""LEGACY: Minimal ConfigManager. DELETE when profiles/collections removed.
+"""Settings management compatibility layer.
 
-This is a temporary internalization of amplifier-config functionality
-to allow removing the external dependency. The bundle codepath uses
-lib/settings.py instead - it should NEVER import from this file.
+This module provides ConfigManager and related classes for backward compatibility.
+New code should use lib/settings.py AppSettings instead.
+
+Note: The bundle codepath primarily uses lib/settings.py. This module exists
+for code that still needs ConfigManager's interface (e.g., provider_manager,
+module_manager).
 """
 
 from __future__ import annotations
@@ -37,10 +40,7 @@ class ConfigPaths:
 
 
 class ConfigManager:
-    """LEGACY: Manage YAML config with scope-based merging.
-
-    DELETE when profiles/collections removed. Bundle codepath should
-    use lib/settings.py instead.
+    """Manage YAML config with scope-based merging.
 
     Settings are merged in order: user < project < local (most specific wins).
     """
@@ -82,11 +82,17 @@ class ConfigManager:
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(data, f, default_flow_style=False)
 
-    def _deep_merge(self, base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    def _deep_merge(
+        self, base: dict[str, Any], overlay: dict[str, Any]
+    ) -> dict[str, Any]:
         """Deep merge two dicts, overlay wins."""
         result = base.copy()
         for key, value in overlay.items():
-            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            if (
+                key in result
+                and isinstance(result[key], dict)
+                and isinstance(value, dict)
+            ):
                 result[key] = self._deep_merge(result[key], value)
             else:
                 result[key] = value
@@ -104,7 +110,9 @@ class ConfigManager:
                 result = self._deep_merge(result, content)
         return result
 
-    def update_settings(self, updates: dict[str, Any], scope: Scope = Scope.USER) -> None:
+    def update_settings(
+        self, updates: dict[str, Any], scope: Scope = Scope.USER
+    ) -> None:
         """Update settings at specified scope."""
         path = self.scope_to_path(scope)
         if path is None:
@@ -114,12 +122,11 @@ class ConfigManager:
         settings = self._deep_merge(settings, updates)
         self._write_yaml(path, settings)
 
-    # ----- Profile management -----
+    # ----- Profile management (legacy, kept for compatibility) -----
 
     def get_active_profile(self) -> str | None:
         """Get currently active profile name from merged settings."""
         merged = self.get_merged_settings()
-        # Check profile.active first (new location), then active_profile (legacy)
         profile_section = merged.get("profile", {})
         if isinstance(profile_section, dict) and "active" in profile_section:
             return profile_section["active"]
@@ -146,47 +153,9 @@ class ConfigManager:
                 settings["profile"] = profile_section
             self._write_yaml(path, settings)
 
-        # Also check legacy location
         if "active_profile" in settings:
             del settings["active_profile"]
             self._write_yaml(path, settings)
-
-    # ----- Project default -----
-
-    def get_project_default(self) -> str | None:
-        """Get project default profile from project scope only."""
-        content = self._read_yaml(self.paths.project)
-        if content:
-            profile_section = content.get("profile", {})
-            if isinstance(profile_section, dict):
-                return profile_section.get("default")
-        return None
-
-    def set_project_default(self, name: str) -> None:
-        """Set project default profile (in project scope only)."""
-        if self.paths.project is None:
-            return
-        settings = self._read_yaml(self.paths.project) or {}
-        profile_section = settings.get("profile", {})
-        if not isinstance(profile_section, dict):
-            profile_section = {}
-        profile_section["default"] = name
-        settings["profile"] = profile_section
-        self._write_yaml(self.paths.project, settings)
-
-    def clear_project_default(self) -> None:
-        """Clear project default profile."""
-        if self.paths.project is None:
-            return
-        settings = self._read_yaml(self.paths.project) or {}
-        profile_section = settings.get("profile", {})
-        if isinstance(profile_section, dict) and "default" in profile_section:
-            del profile_section["default"]
-            if not profile_section:
-                settings.pop("profile", None)
-            else:
-                settings["profile"] = profile_section
-            self._write_yaml(self.paths.project, settings)
 
     # ----- Module source overrides -----
 
@@ -196,7 +165,9 @@ class ConfigManager:
         sources = merged.get("sources", {}).get("modules", {})
         return sources if isinstance(sources, dict) else {}
 
-    def add_source_override(self, module_id: str, source_uri: str, scope: Scope = Scope.USER) -> None:
+    def add_source_override(
+        self, module_id: str, source_uri: str, scope: Scope = Scope.USER
+    ) -> None:
         """Add a module source override at specified scope."""
         path = self.scope_to_path(scope)
         if path is None:
@@ -228,7 +199,7 @@ class ConfigManager:
             return True
         return False
 
-    # ----- Collection source overrides -----
+    # ----- Collection source overrides (legacy) -----
 
     def get_collection_sources(self) -> dict[str, str]:
         """Get all collection source overrides from merged settings."""
@@ -236,34 +207,5 @@ class ConfigManager:
         sources = merged.get("sources", {}).get("collections", {})
         return sources if isinstance(sources, dict) else {}
 
-    def add_collection_source_override(self, collection_id: str, source_uri: str, scope: Scope = Scope.USER) -> None:
-        """Add a collection source override at specified scope."""
-        path = self.scope_to_path(scope)
-        if path is None:
-            return
 
-        settings = self._read_yaml(path) or {}
-        if "sources" not in settings:
-            settings["sources"] = {}
-        if "collections" not in settings["sources"]:
-            settings["sources"]["collections"] = {}
-        settings["sources"]["collections"][collection_id] = source_uri
-        self._write_yaml(path, settings)
-
-    def remove_collection_source_override(self, collection_id: str, scope: Scope = Scope.USER) -> bool:
-        """Remove a collection source override from specified scope. Returns True if removed."""
-        path = self.scope_to_path(scope)
-        if path is None:
-            return False
-
-        settings = self._read_yaml(path) or {}
-        collections = settings.get("sources", {}).get("collections", {})
-        if isinstance(collections, dict) and collection_id in collections:
-            del collections[collection_id]
-            if not collections:
-                settings["sources"].pop("collections", None)
-            if not settings.get("sources"):
-                settings.pop("sources", None)
-            self._write_yaml(path, settings)
-            return True
-        return False
+__all__ = ["ConfigManager", "ConfigPaths", "Scope"]

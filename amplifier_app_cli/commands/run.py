@@ -16,14 +16,11 @@ if TYPE_CHECKING:
     pass
 
 from ..console import console
-from ..data.profiles import get_system_default_profile
 from ..session_store import extract_session_mode
 from ..effective_config import get_effective_config_summary
 from ..lib.app_settings import AppSettings
-from ..paths import create_agent_loader
 from ..paths import create_bundle_registry
 from ..paths import create_config_manager
-from ..paths import create_profile_loader
 from ..runtime.config import resolve_config
 from ..types import (
     ExecuteSingleProtocol,
@@ -47,10 +44,7 @@ def register_run_command(
 
     @cli.command()
     @click.argument("prompt", required=False)
-    @click.option("--profile", "-P", help="Profile to use for this session")
-    @click.option(
-        "--bundle", "-B", help="Bundle to use for this session (alternative to profile)"
-    )
+    @click.option("--bundle", "-B", help="Bundle to use for this session")
     @click.option("--provider", "-p", default=None, help="LLM provider to use")
     @click.option("--model", "-m", help="Model to use (provider-specific)")
     @click.option("--max-tokens", type=int, help="Maximum output tokens")
@@ -70,7 +64,6 @@ def register_run_command(
     )
     def run(
         prompt: str | None,
-        profile: str | None,
         bundle: str | None,
         provider: str,
         model: str | None,
@@ -102,15 +95,12 @@ def register_run_command(
                 console.print(f"[green]✓[/green] Resuming session: {resume}")
                 console.print(f"  Messages: {len(transcript)}")
 
-                # Detect if this was a bundle-based or profile-based session
-                if not profile and not bundle:
-                    saved_bundle, saved_profile = extract_session_mode(metadata)
+                # Detect bundle from saved session
+                if not bundle:
+                    saved_bundle, _legacy = extract_session_mode(metadata)
                     if saved_bundle:
                         bundle = saved_bundle
                         console.print(f"  Using saved bundle: {bundle}")
-                    elif saved_profile:
-                        profile = saved_profile
-                        console.print(f"  Using saved profile: {profile}")
 
             except Exception as exc:
                 console.print(f"[red]Error loading session:[/red] {exc}")
@@ -132,6 +122,7 @@ def register_run_command(
                 mode = "single"
         else:
             transcript = None
+            metadata = None
 
         cli_overrides = {}
 
@@ -144,70 +135,39 @@ def register_run_command(
             if isinstance(bundle_settings, dict):
                 bundle = bundle_settings.get("active")
 
-        # Check for explicit profile configuration (CLI flag or settings)
-        # Note: We intentionally don't fall back to system default yet
-        explicit_profile = profile or config_manager.get_active_profile()
-
-        # Default to foundation bundle when no explicit bundle or profile is configured
-        # This makes bundles the default for fresh installs (Phase 2 behavior)
-        if not bundle and not explicit_profile:
+        # Default to foundation bundle when no explicit bundle is configured
+        if not bundle:
             bundle = "foundation"
 
-        # Set active_profile_name only for profile-based flow (backward compatibility)
-        active_profile_name = (
-            (explicit_profile or get_system_default_profile()) if not bundle else None
-        )
-
-        if check_first_run() and not profile and prompt_first_run_init(console):
-            active_profile_name = (
-                config_manager.get_active_profile() or get_system_default_profile()
-            )
-
-        profile_loader = create_profile_loader()
+        if check_first_run() and prompt_first_run_init(console):
+            pass  # First run init completed
 
         # Create bundle registry if bundle is specified (either from CLI or settings),
         # and get bundle base_path early so we can pass it to agent_loader for @mention resolution
         bundle_registry = create_bundle_registry() if bundle else None
-        bundle_base_path = None
         if bundle and bundle_registry:
             try:
-                loaded = asyncio.run(bundle_registry.load(bundle))
-                # registry.load() returns Bundle | dict[str, Bundle]
-                if isinstance(loaded, dict):
-                    raise ValueError(f"Expected single bundle, got dict for '{bundle}'")
-                bundle_obj = loaded
-                bundle_base_path = bundle_obj.base_path
+                # Early load validates bundle exists; actual loading happens in resolve_config
+                _ = asyncio.run(bundle_registry.load(bundle))
             except Exception as e:
                 # Log warning; full error will be handled later in resolve_app_config
                 logger.warning("Early bundle load failed for '%s': %s", bundle, e)
 
-        # Create agent loader with appropriate mode:
-        # - Bundle mode: only load bundle agents (not profile/collection agents)
-        # - Profile mode: only load profile/collection agents (not bundle agents)
-        # Note: bundle_mappings is built from early bundle load; full source_base_paths
-        # comes later from PreparedBundle after prepare workflow completes
-        bundle_mappings = (
-            {bundle: bundle_base_path} if bundle and bundle_base_path else None
-        )
-        agent_loader = create_agent_loader(
-            use_bundle=bool(bundle), bundle_name=bundle, bundle_mappings=bundle_mappings
-        )
+        # Agent loading is now handled via bundle preparation workflow
+        # The resolve_config function handles None agent_loader gracefully
         app_settings = AppSettings(config_manager)
 
-        # Track configuration source for display
-        # When bundle is specified, use bundle name; otherwise use profile name
-        config_source_name = f"bundle:{bundle}" if bundle else active_profile_name
-        # Invariant: either bundle is set (defaulting to "foundation") or explicit profile was configured
-        assert config_source_name is not None
+        # Track configuration source for display (always bundle mode now)
+        config_source_name = f"bundle:{bundle}"
 
         # Resolve configuration using unified function (single source of truth)
         try:
             config_data, prepared_bundle = resolve_config(
                 bundle_name=bundle,
-                profile_override=active_profile_name,
+                profile_override=None,
                 config_manager=config_manager,
-                profile_loader=profile_loader,
-                agent_loader=agent_loader,
+                profile_loader=None,
+                agent_loader=None,  # Agent loading handled via bundle preparation
                 app_settings=app_settings,
                 cli_config=cli_overrides,
                 console=console,

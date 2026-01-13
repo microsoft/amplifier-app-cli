@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from rich.console import Console
 
 if TYPE_CHECKING:
-    from amplifier_app_cli.lib.legacy import ConfigManager
+    from amplifier_app_cli.lib.config_compat import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,9 @@ DEFAULT_PROVIDER_SOURCES = {
 }
 
 
-def get_effective_provider_sources(config_manager: "ConfigManager | None" = None) -> dict[str, str]:
+def get_effective_provider_sources(
+    config_manager: "ConfigManager | None" = None,
+) -> dict[str, str]:
     """Get provider sources with settings modules and overrides applied.
 
     Merges:
@@ -48,7 +50,9 @@ def get_effective_provider_sources(config_manager: "ConfigManager | None" = None
         for module_id in list(sources.keys()):
             if module_id in overrides:
                 sources[module_id] = overrides[module_id]
-                logger.debug(f"Using override source for {module_id}: {overrides[module_id]}")
+                logger.debug(
+                    f"Using override source for {module_id}: {overrides[module_id]}"
+                )
 
         # 2. Add user-added provider modules from settings
         # These are providers added via `amplifier module add provider-X --source ...`
@@ -154,7 +158,15 @@ def ensure_provider_installed(
         module_path = source.resolve()
 
         result = subprocess.run(
-            ["uv", "pip", "install", "-e", str(module_path), "--python", sys.executable],
+            [
+                "uv",
+                "pip",
+                "install",
+                "-e",
+                str(module_path),
+                "--python",
+                sys.executable,
+            ],
             capture_output=True,
             text=True,
         )
@@ -178,7 +190,7 @@ def ensure_provider_installed(
     except Exception as e:
         logger.warning(f"Failed to install {module_id}: {e}")
         if console:
-            console.print(f" [red]✗[/red]")
+            console.print(" [red]✗[/red]")
         return False
 
 
@@ -228,7 +240,15 @@ def install_known_providers(
             # 2. Consistent behavior with foundation's ModuleActivator
             # 3. Dependencies are properly installed from the source location
             result = subprocess.run(
-                ["uv", "pip", "install", "-e", str(module_path), "--python", sys.executable],
+                [
+                    "uv",
+                    "pip",
+                    "install",
+                    "-e",
+                    str(module_path),
+                    "--python",
+                    sys.executable,
+                ],
                 capture_output=True,
                 text=True,
             )
@@ -250,7 +270,9 @@ def install_known_providers(
                 console.print(f"[red]Failed to install {module_id}: {e}[/red]")
 
     if failed and verbose and console:
-        console.print(f"\n[yellow]Warning: {len(failed)} provider(s) failed to install[/yellow]")
+        console.print(
+            f"\n[yellow]Warning: {len(failed)} provider(s) failed to install[/yellow]"
+        )
 
     # Invalidate import caches so newly installed packages are immediately visible
     # Without this, the current Python process won't see packages installed via subprocess

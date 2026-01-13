@@ -43,7 +43,13 @@ class SettingsPaths:
         """Create paths including session-scoped settings."""
         base = cls.default()
         base.session_settings = (
-            Path.home() / ".amplifier" / "projects" / project_slug / "sessions" / session_id / "settings.yaml"
+            Path.home()
+            / ".amplifier"
+            / "projects"
+            / project_slug
+            / "sessions"
+            / session_id
+            / "settings.yaml"
         )
         return base
 
@@ -96,17 +102,36 @@ class AppSettings:
     # ----- Bundle settings -----
 
     def get_active_bundle(self) -> str | None:
-        """Get currently active bundle name."""
+        """Get currently active bundle name.
+
+        Reads from bundle.active path for compatibility with bundle commands.
+        """
         settings = self.get_merged_settings()
-        return settings.get("active_bundle")
+        bundle_settings = settings.get("bundle") or {}
+        return (
+            bundle_settings.get("active") if isinstance(bundle_settings, dict) else None
+        )
 
     def set_active_bundle(self, name: str, scope: Scope = "global") -> None:
-        """Set the active bundle at specified scope."""
-        self._update_setting("active_bundle", name, scope)
+        """Set the active bundle at specified scope.
+
+        Writes to bundle.active path for compatibility with bundle commands.
+        """
+        settings = self._read_scope(scope)
+        if "bundle" not in settings:
+            settings["bundle"] = {}
+        settings["bundle"]["active"] = name
+        self._write_scope(scope, settings)
 
     def clear_active_bundle(self, scope: Scope = "global") -> None:
-        """Clear active bundle at specified scope."""
-        self._remove_setting("active_bundle", scope)
+        """Clear active bundle at specified scope.
+
+        Removes the bundle key entirely to allow inheritance from lower-priority scopes.
+        """
+        settings = self._read_scope(scope)
+        if "bundle" in settings:
+            del settings["bundle"]
+            self._write_scope(scope, settings)
 
     # ----- Provider settings -----
 
@@ -115,7 +140,9 @@ class AppSettings:
         settings = self.get_merged_settings()
         return settings.get("provider")
 
-    def set_provider(self, provider_config: dict[str, Any], scope: Scope = "global") -> None:
+    def set_provider(
+        self, provider_config: dict[str, Any], scope: Scope = "global"
+    ) -> None:
         """Set active provider configuration."""
         self._update_setting("provider", provider_config, scope)
 
@@ -126,17 +153,32 @@ class AppSettings:
     # ----- Legacy profile support (for backward compatibility) -----
 
     def get_active_profile(self) -> str | None:
-        """Get currently active profile name (legacy support)."""
+        """Get currently active profile name (legacy support).
+
+        Reads from profile.active path for compatibility.
+        """
         settings = self.get_merged_settings()
-        return settings.get("active_profile")
+        profile_settings = settings.get("profile") or {}
+        return (
+            profile_settings.get("active")
+            if isinstance(profile_settings, dict)
+            else None
+        )
 
     def set_active_profile(self, name: str, scope: Scope = "global") -> None:
         """Set the active profile at specified scope (legacy support)."""
-        self._update_setting("active_profile", name, scope)
+        settings = self._read_scope(scope)
+        if "profile" not in settings:
+            settings["profile"] = {}
+        settings["profile"]["active"] = name
+        self._write_scope(scope, settings)
 
     def clear_active_profile(self, scope: Scope = "global") -> None:
         """Clear active profile at specified scope (legacy support)."""
-        self._remove_setting("active_profile", scope)
+        settings = self._read_scope(scope)
+        if "profile" in settings:
+            del settings["profile"]
+            self._write_scope(scope, settings)
 
     # ----- Override settings (dev overrides) -----
 
@@ -144,6 +186,110 @@ class AppSettings:
         """Get development overrides section."""
         settings = self.get_merged_settings()
         return settings.get("overrides", {})
+
+    # ----- Source override settings -----
+
+    def get_module_sources(self) -> dict[str, str]:
+        """Get merged module source overrides from all scopes."""
+        settings = self.get_merged_settings()
+        return settings.get("sources", {}).get("modules", {})
+
+    def add_source_override(
+        self, identifier: str, source_uri: str, scope: Scope = "global"
+    ) -> None:
+        """Add a module source override at specified scope."""
+        settings = self._read_scope(scope)
+        if "sources" not in settings:
+            settings["sources"] = {}
+        if "modules" not in settings["sources"]:
+            settings["sources"]["modules"] = {}
+        settings["sources"]["modules"][identifier] = source_uri
+        self._write_scope(scope, settings)
+
+    def remove_source_override(self, identifier: str, scope: Scope = "global") -> bool:
+        """Remove a module source override. Returns True if found and removed."""
+        settings = self._read_scope(scope)
+        modules = settings.get("sources", {}).get("modules", {})
+        if identifier in modules:
+            del modules[identifier]
+            # Clean up empty dicts
+            if not modules and "modules" in settings.get("sources", {}):
+                del settings["sources"]["modules"]
+            if not settings.get("sources"):
+                settings.pop("sources", None)
+            self._write_scope(scope, settings)
+            return True
+        return False
+
+    def get_collection_sources(self) -> dict[str, str]:
+        """Get merged collection source overrides from all scopes."""
+        settings = self.get_merged_settings()
+        return settings.get("sources", {}).get("collections", {})
+
+    def add_collection_source_override(
+        self, identifier: str, source_uri: str, scope: Scope = "global"
+    ) -> None:
+        """Add a collection source override at specified scope."""
+        settings = self._read_scope(scope)
+        if "sources" not in settings:
+            settings["sources"] = {}
+        if "collections" not in settings["sources"]:
+            settings["sources"]["collections"] = {}
+        settings["sources"]["collections"][identifier] = source_uri
+        self._write_scope(scope, settings)
+
+    def remove_collection_source_override(
+        self, identifier: str, scope: Scope = "global"
+    ) -> bool:
+        """Remove a collection source override. Returns True if found and removed."""
+        settings = self._read_scope(scope)
+        collections = settings.get("sources", {}).get("collections", {})
+        if identifier in collections:
+            del collections[identifier]
+            # Clean up empty dicts
+            if not collections and "collections" in settings.get("sources", {}):
+                del settings["sources"]["collections"]
+            if not settings.get("sources"):
+                settings.pop("sources", None)
+            self._write_scope(scope, settings)
+            return True
+        return False
+
+    # ----- Scope availability -----
+
+    def is_scope_available(self, scope: str) -> bool:
+        """Check if a scope is available for use.
+
+        Project and local scopes require a .amplifier directory in the current
+        working directory. Global scope is always available.
+
+        Args:
+            scope: Scope name ("local", "project", "global", or "session")
+        """
+        if scope == "global":
+            return True
+        if scope == "session":
+            return self.paths.session_settings is not None
+
+        # For project and local scopes, check if .amplifier directory exists
+        # or if we're not in the home directory
+        cwd = Path.cwd()
+        home = Path.home()
+
+        # If we're in or under home directory without .amplifier, project/local not available
+        amplifier_dir = cwd / ".amplifier"
+        if amplifier_dir.exists():
+            return True
+
+        # Check if we're directly in home directory (no project context)
+        if cwd == home:
+            return False
+
+        return True
+
+    def get_scope_path(self, scope: Scope) -> Path:
+        """Get settings file path for scope. Public wrapper for _get_scope_path."""
+        return self._get_scope_path(scope)
 
     # ----- Allowed write paths settings -----
 
@@ -181,8 +327,13 @@ class AppSettings:
                 if not paths_list:
                     tools_list = content.get("modules", {}).get("tools", [])
                     for tool in tools_list:
-                        if isinstance(tool, dict) and tool.get("module") == "tool-filesystem":
-                            paths_list = tool.get("config", {}).get("allowed_write_paths", [])
+                        if (
+                            isinstance(tool, dict)
+                            and tool.get("module") == "tool-filesystem"
+                        ):
+                            paths_list = tool.get("config", {}).get(
+                                "allowed_write_paths", []
+                            )
                             break
 
                 for p in paths_list:
@@ -221,7 +372,10 @@ class AppSettings:
                 break
 
         if fs_tool is None:
-            fs_tool = {"module": "tool-filesystem", "config": {"allowed_write_paths": []}}
+            fs_tool = {
+                "module": "tool-filesystem",
+                "config": {"allowed_write_paths": []},
+            }
             tools_list.append(fs_tool)
 
         if "config" not in fs_tool:
@@ -416,7 +570,9 @@ class AppSettings:
         path = scope_map.get(scope)
         if path is None:
             if scope == "session":
-                raise ValueError("Session scope requires session_id to be set. Use with_session() first.")
+                raise ValueError(
+                    "Session scope requires session_id to be set. Use with_session() first."
+                )
             raise ValueError(f"Unknown scope: {scope}")
         return path
 
@@ -451,11 +607,17 @@ class AppSettings:
             del settings[key]
             self._write_scope(scope, settings)
 
-    def _deep_merge(self, base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    def _deep_merge(
+        self, base: dict[str, Any], overlay: dict[str, Any]
+    ) -> dict[str, Any]:
         """Deep merge two dicts, overlay wins."""
         result = base.copy()
         for key, value in overlay.items():
-            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            if (
+                key in result
+                and isinstance(result[key], dict)
+                and isinstance(value, dict)
+            ):
                 result[key] = self._deep_merge(result[key], value)
             else:
                 result[key] = value
