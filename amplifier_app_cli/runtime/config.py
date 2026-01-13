@@ -64,19 +64,10 @@ async def resolve_bundle_config(
     if console:
         console.print(f"[dim]Preparing bundle '{bundle_name}'...[/dim]")
 
-    # Build behavior URIs from app-level settings
+    # Build behavior URIs for CLI-specific features
     # These are app-level policies: compose behavior bundles before prepare()
     # so modules get properly downloaded and installed via normal bundle machinery
-    compose_behaviors: list[str] = []
-
-    # Modes system (runtime behavior overlays like /mode plan, /mode review)
-    # Always available - users choose to use /mode commands or not
-    compose_behaviors.extend(_build_modes_behaviors())
-
-    # Notification behaviors (desktop and push notifications)
-    compose_behaviors.extend(
-        _build_notification_behaviors(app_settings.get_notification_config())
-    )
+    compose_behaviors = _build_cli_behaviors(app_settings)
 
     # Add app bundles (user-configured bundles that are always composed)
     # App bundles are explicit user configuration, composed AFTER notification behaviors
@@ -578,21 +569,38 @@ def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> No
         prepared_bundle.mount_plan["providers"] = config["providers"]
 
 
-def _build_modes_behaviors() -> list[str]:
-    """Return modes behavior URI for composition.
+def _build_cli_behaviors(app_settings: AppSettings) -> list[str]:
+    """Build list of CLI-specific behavior URIs.
 
-    Modes are always available - users choose to use /mode commands or not.
-    No enable/disable needed since modes have no cost when unused.
+    The CLI composes additional behaviors onto the base bundle for features
+    that are specific to interactive CLI usage (not needed by other apps).
 
-    Loads the behavior (not root bundle) to avoid double-loading foundation
-    and to follow the same pattern as notification behaviors.
+    Args:
+        app_settings: App settings for configuration.
 
     Returns:
-        List containing the modes behavior URI.
+        List of behavior bundle URIs to compose onto the main bundle.
     """
-    return [
+    behaviors: list[str] = []
+
+    # Modes system (runtime behavior overlays like /mode plan, /mode review)
+    # Always available - users choose to use /mode commands or not
+    behaviors.append(
         "git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=behaviors/modes.yaml"
-    ]
+    )
+
+    # Slash commands - always enabled for interactive CLI
+    # This provides extensible /commands via .amplifier/commands/ directories
+    behaviors.append(
+        "git+https://github.com/microsoft/amplifier-module-tool-slash-command@main#subdirectory=behaviors/slash-command.yaml"
+    )
+
+    # Add notification behaviors based on settings
+    behaviors.extend(
+        _build_notification_behaviors(app_settings.get_notification_config())
+    )
+
+    return behaviors
 
 
 def _build_notification_behaviors(
