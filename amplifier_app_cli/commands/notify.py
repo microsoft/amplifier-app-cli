@@ -1,6 +1,11 @@
 """Notification configuration commands.
 
 Manages desktop and push notification settings for Amplifier sessions.
+
+SECURITY NOTE:
+    ntfy.sh topics are PUBLIC - anyone who knows your topic can read your
+    notifications. Topics are stored securely in ~/.amplifier/keys.env,
+    NOT in settings.yaml.
 """
 
 from typing import cast
@@ -9,6 +14,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from ..key_manager import KeyManager
 from ..lib.app_settings import AppSettings as LegacyAppSettings
 from ..lib.app_settings import ScopeType
 from ..paths import create_config_manager
@@ -17,11 +23,20 @@ from ..paths import ScopeNotAvailableError
 
 console = Console()
 
+# Environment variable name for ntfy topic (Amplifier-specific to avoid collisions)
+NTFY_TOPIC_ENV_VAR = "AMPLIFIER_NTFY_TOPIC"
+
 
 def _get_app_settings() -> LegacyAppSettings:
     """Get AppSettings instance with config manager."""
     config_manager = create_config_manager()
     return LegacyAppSettings(config_manager)
+
+
+def _has_ntfy_topic() -> bool:
+    """Check if ntfy topic is configured (in env or keys.env)."""
+    key_manager = KeyManager()
+    return key_manager.has_key(NTFY_TOPIC_ENV_VAR)
 
 
 @click.group(name="notify")
@@ -31,10 +46,13 @@ def notify():
     Manage desktop (terminal) and push (ntfy.sh) notifications
     that alert you when the assistant is ready for input.
 
+    SECURITY: ntfy topics are stored in ~/.amplifier/keys.env (not settings.yaml)
+    because anyone who knows your topic can read your notifications.
+
     Examples:
         amplifier notify status
         amplifier notify desktop --enable
-        amplifier notify ntfy --enable --topic my-topic
+        amplifier notify ntfy --enable
     """
     pass
 
@@ -44,15 +62,17 @@ def status():
     """Show current notification settings.
 
     Displays merged configuration from all scopes (local > project > global).
+    Note: ntfy topic is never displayed for security reasons.
     """
     settings = _get_app_settings()
     config = settings.get_notification_config()
+    has_topic = _has_ntfy_topic()
 
-    if not config:
+    if not config and not has_topic:
         console.print("[yellow]No notifications configured[/yellow]")
         console.print("\n[dim]Enable with:[/dim]")
         console.print("  amplifier notify desktop --enable")
-        console.print("  amplifier notify ntfy --enable --topic <your-topic>")
+        console.print("  amplifier notify ntfy --enable")
         return
 
     table = Table(
@@ -70,15 +90,27 @@ def status():
             if key in desktop:
                 table.add_row("", key, str(desktop[key]))
 
-    # ntfy settings
+    # ntfy settings - NEVER show topic
     ntfy = config.get("ntfy", {})
-    if ntfy:
-        table.add_row("ntfy", "enabled", str(ntfy.get("enabled", False)))
-        for key in ["topic", "server"]:
-            if key in ntfy:
-                table.add_row("", key, str(ntfy[key]))
+    ntfy_enabled = ntfy.get("enabled", False)
+    if ntfy or has_topic:
+        table.add_row("ntfy", "enabled", str(ntfy_enabled))
+        # Show topic status but never the actual value
+        table.add_row(
+            "",
+            "topic",
+            "[green]configured[/green]" if has_topic else "[red]not set[/red]",
+        )
+        if "server" in ntfy:
+            table.add_row("", "server", str(ntfy["server"]))
 
     console.print(table)
+
+    if ntfy_enabled and not has_topic:
+        console.print(
+            "\n[yellow]Warning:[/yellow] ntfy is enabled but no topic is configured."
+        )
+        console.print("[dim]Run: amplifier notify ntfy --enable[/dim]")
 
 
 @notify.command("desktop")
@@ -201,7 +233,6 @@ def desktop_cmd(
 @click.option(
     "--enable/--disable", default=None, help="Enable or disable ntfy push notifications"
 )
-@click.option("--topic", type=str, help="ntfy topic name (treat like a password!)")
 @click.option("--server", type=str, help="ntfy server URL (default: https://ntfy.sh)")
 @click.option("--local", "scope_flag", flag_value="local", help="Apply to local scope")
 @click.option(
@@ -215,7 +246,6 @@ def desktop_cmd(
 )
 def ntfy_cmd(
     enable: bool | None,
-    topic: str | None,
     server: str | None,
     scope_flag: str | None,
 ):
@@ -224,46 +254,38 @@ def ntfy_cmd(
     Push notifications via ntfy.sh for mobile devices. Install the ntfy app
     on iOS/Android and subscribe to your topic.
 
-    IMPORTANT: Topics are public! Use a unique, hard-to-guess topic name.
+    SECURITY WARNING:
+        ntfy.sh topics are PUBLIC - anyone who knows your topic can:
+        - See all your notifications
+        - Send messages to your topic
+
+        For this reason, the topic is stored securely in ~/.amplifier/keys.env,
+        NOT in settings.yaml. You will be prompted to enter it securely.
 
     Examples:
-        amplifier notify ntfy --enable --topic my-secret-topic
+        amplifier notify ntfy --enable           # Prompts for topic securely
         amplifier notify ntfy --disable
-        amplifier notify ntfy --server https://my-ntfy-server.com --global
+        amplifier notify ntfy --server https://my-ntfy-server.com
     """
+    has_topic = _has_ntfy_topic()
+
     # Check if any option was provided
-    if all(v is None for v in [enable, topic, server]):
+    if all(v is None for v in [enable, server]):
         # No options - show current ntfy config
         settings = _get_app_settings()
         config = settings.get_notification_config().get("ntfy", {})
-        if not config:
-            console.print("[yellow]ntfy notifications not configured[/yellow]")
-            console.print(
-                "\n[dim]Enable with: amplifier notify ntfy --enable --topic <your-topic>[/dim]"
-            )
-        else:
-            console.print("[bold]ntfy notification settings:[/bold]")
-            for key, value in config.items():
-                # Mask topic partially for security
-                if key == "topic" and value:
-                    masked = value[:3] + "***" if len(value) > 3 else "***"
-                    console.print(f"  {key}: {masked}")
-                else:
-                    console.print(f"  {key}: {value}")
+        console.print("[bold]ntfy notification settings:[/bold]")
+        console.print(f"  enabled: {config.get('enabled', False)}")
+        console.print(
+            f"  topic: {'[green]configured[/green]' if has_topic else '[red]not set[/red]'}"
+        )
+        if "server" in config:
+            console.print(f"  server: {config['server']}")
+        if not has_topic:
+            console.print("\n[dim]Configure with: amplifier notify ntfy --enable[/dim]")
         return
 
-    # Validate: enabling requires a topic
-    if enable is True and not topic:
-        settings = _get_app_settings()
-        existing_topic = settings.get_notification_config().get("ntfy", {}).get("topic")
-        if not existing_topic:
-            console.print("[red]Error:[/red] --topic is required when enabling ntfy")
-            console.print(
-                "\n[dim]Example: amplifier notify ntfy --enable --topic my-topic[/dim]"
-            )
-            return
-
-    # Determine scope
+    # Determine scope for settings.yaml options (not topic)
     config_manager = create_config_manager()
     try:
         scope, was_fallback = get_effective_scope(
@@ -279,28 +301,51 @@ def ntfy_cmd(
         console.print(f"[red]Error:[/red] {e.message}")
         return
 
-    # Build config from provided options
     settings = _get_app_settings()
+    key_manager = KeyManager()
 
-    # Get existing config to merge with
+    # If enabling and no topic configured, prompt for it
+    if enable is True and not has_topic:
+        console.print("\n[bold yellow]⚠ Security Notice[/bold yellow]")
+        console.print("ntfy.sh topics are PUBLIC. Anyone who knows your topic can:")
+        console.print("  • See all your notifications")
+        console.print("  • Send messages to your topic")
+        console.print("\nUse a unique, hard-to-guess topic name.")
+        console.print("Example: amplifier-myname-x7k9m2\n")
+
+        # Secure prompt (input not echoed)
+        topic = click.prompt(
+            "Enter ntfy topic",
+            hide_input=True,
+            confirmation_prompt="Confirm topic",
+        )
+
+        if not topic:
+            console.print("[red]Error:[/red] Topic cannot be empty")
+            return
+
+        # Save topic securely to keys.env
+        key_manager.save_key(NTFY_TOPIC_ENV_VAR, topic)
+        console.print("[green]✓ Topic saved to ~/.amplifier/keys.env[/green]")
+
+    # Build config for settings.yaml (non-secret options only)
     existing = settings.get_notification_config().get("ntfy", {})
     new_config = dict(existing)
 
+    # Remove topic from config if it somehow exists (security cleanup)
+    new_config.pop("topic", None)
+
     if enable is not None:
         new_config["enabled"] = enable
-    if topic is not None:
-        new_config["topic"] = topic
     if server is not None:
         new_config["server"] = server
 
-    # Save
+    # Save to settings.yaml
     settings.set_notification_config("ntfy", new_config, cast(ScopeType, scope))
 
     # Report what was done
     if enable is True:
         console.print("[green]✓ ntfy push notifications enabled[/green]")
-        if topic:
-            console.print(f"  Topic: {topic[:3]}*** (masked for security)")
     elif enable is False:
         console.print("[yellow]✓ ntfy push notifications disabled[/yellow]")
     else:
@@ -333,6 +378,8 @@ def reset_cmd(reset_type: str | None, scope_flag: str | None):
     """Reset notification settings.
 
     Removes notification configuration at the specified scope.
+    Note: This does NOT remove the ntfy topic from keys.env.
+    To remove the topic, manually edit ~/.amplifier/keys.env.
 
     Examples:
         amplifier notify reset --all
@@ -371,6 +418,10 @@ def reset_cmd(reset_type: str | None, scope_flag: str | None):
         console.print(f"[green]✓ {reset_type} notification settings cleared[/green]")
 
     console.print(f"  Scope: {scope}")
+
+    if reset_type in ("ntfy", "all"):
+        console.print("\n[dim]Note: ntfy topic in keys.env was NOT removed.[/dim]")
+        console.print("[dim]To remove it, edit ~/.amplifier/keys.env[/dim]")
 
 
 __all__ = ["notify"]

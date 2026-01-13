@@ -139,8 +139,12 @@ class AppSettings:
     def get_notification_hook_overrides(self) -> list[dict[str, Any]]:
         """Return hook overrides derived from notification settings.
 
-        Maps config.notifications.* settings to hook module configs so that
-        settings like ntfy topic get passed to the hooks-notify-push module.
+        Maps config.notifications.* settings to hook module configs.
+
+        SECURITY NOTE: ntfy topic is NOT passed from settings.yaml.
+        The topic MUST be set via AMPLIFIER_NTFY_TOPIC env var (in keys.env).
+        This ensures the topic (which is essentially a password for ntfy.sh)
+        is never stored in plain config files.
 
         Expected structure in settings.yaml:
             config:
@@ -153,8 +157,7 @@ class AppSettings:
                   preview_length: 100
                 ntfy:
                   enabled: true
-                  topic: my-topic
-                  server: https://ntfy.sh
+                  server: https://ntfy.sh  # topic comes from keys.env
 
         Returns:
             List of hook override dicts ready for _apply_hook_overrides().
@@ -198,7 +201,9 @@ class AppSettings:
         if combined_push and combined_push.get("enabled", False):
             hook_config = {"enabled": True, "service": "ntfy"}
             # Map known push/ntfy settings
-            for key in ["topic", "server", "priority", "tags", "debug"]:
+            # SECURITY: "topic" is intentionally NOT included here
+            # Topic must come from AMPLIFIER_NTFY_TOPIC env var (keys.env)
+            for key in ["server", "priority", "tags", "debug"]:
                 if key in combined_push:
                     hook_config[key] = combined_push[key]
 
