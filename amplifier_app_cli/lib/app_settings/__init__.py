@@ -206,6 +206,79 @@ class AppSettings:
 
         return overrides
 
+    def set_notification_config(
+        self,
+        notification_type: str,
+        config: dict[str, Any],
+        scope: ScopeType,
+    ) -> None:
+        """Set notification config at specified scope.
+
+        Args:
+            notification_type: "desktop" or "ntfy"
+            config: Config dict (enabled, topic, show_preview, etc.)
+            scope: Where to save ("local", "project", "global")
+
+        Example:
+            set_notification_config("desktop", {"enabled": True}, "global")
+            set_notification_config("ntfy", {"enabled": True, "topic": "my-topic"}, "global")
+        """
+        scope_path = self.scope_path(scope)
+        if not scope_path:
+            raise ValueError(f"Scope '{scope}' is not available")
+
+        # Read existing settings
+        settings = self._config._read_yaml(scope_path) or {}  # type: ignore[attr-defined]
+
+        # Ensure config.notifications structure exists
+        if "config" not in settings:
+            settings["config"] = {}
+        if "notifications" not in settings["config"]:
+            settings["config"]["notifications"] = {}
+
+        # Update the specific notification type
+        settings["config"]["notifications"][notification_type] = config
+
+        # Write back
+        self._config._write_yaml(scope_path, settings)  # type: ignore[attr-defined]
+
+    def clear_notification_config(
+        self,
+        notification_type: str | None,
+        scope: ScopeType,
+    ) -> None:
+        """Clear notification config at specified scope.
+
+        Args:
+            notification_type: "desktop", "ntfy", or None to clear all
+            scope: Where to clear from
+        """
+        scope_path = self.scope_path(scope)
+        if not scope_path:
+            raise ValueError(f"Scope '{scope}' is not available")
+
+        settings = self._config._read_yaml(scope_path) or {}  # type: ignore[attr-defined]
+
+        notifications = settings.get("config", {}).get("notifications", {})
+        if not notifications:
+            return  # Nothing to clear
+
+        if notification_type:
+            # Clear specific type
+            if notification_type in notifications:
+                del notifications[notification_type]
+        else:
+            # Clear all notifications
+            notifications.clear()
+
+        # Clean up empty structures
+        if not notifications:
+            settings.get("config", {}).pop("notifications", None)
+        if not settings.get("config"):
+            settings.pop("config", None)
+
+        self._config._write_yaml(scope_path, settings)  # type: ignore[attr-defined]
+
     def get_tool_overrides(
         self, session_id: str | None = None, project_slug: str | None = None
     ) -> list[dict[str, Any]]:

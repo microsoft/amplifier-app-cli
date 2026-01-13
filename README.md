@@ -79,6 +79,14 @@ amplifier source remove <id> [--scope]
 amplifier source list
 amplifier source show <id>
 
+# Notification settings (requires notify bundle)
+amplifier notify status                              # Show current notification settings
+amplifier notify desktop --enable [--scope]          # Enable desktop/terminal notifications
+amplifier notify desktop --disable [--scope]         # Disable desktop notifications
+amplifier notify ntfy --enable --topic <topic>       # Enable ntfy.sh push notifications
+amplifier notify ntfy --disable [--scope]            # Disable push notifications
+amplifier notify reset --all [--scope]               # Clear all notification settings
+
 # Legacy commands (DEPRECATED - use bundles instead)
 # amplifier profile ...     # Use 'amplifier bundle' instead
 # amplifier collection ...  # Use 'amplifier bundle add' instead
