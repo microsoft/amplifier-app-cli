@@ -23,6 +23,55 @@ DEFAULT_PROVIDER_SOURCES = {
     "provider-vllm": "git+https://github.com/microsoft/amplifier-module-provider-vllm@main",
 }
 
+# Runtime dependencies between providers.
+# Some providers extend others (e.g., Azure OpenAI extends OpenAI's provider class).
+# These are runtime dependencies, NOT build dependencies, to avoid transitive
+# dependency issues with editable installs during development.
+# Format: {"dependent": ["dependency1", "dependency2", ...]}
+PROVIDER_DEPENDENCIES: dict[str, list[str]] = {
+    "provider-azure-openai": ["provider-openai"],  # AzureOpenAIProvider extends OpenAIProvider
+}
+
+
+def _get_ordered_providers(sources: dict[str, str]) -> list[tuple[str, str]]:
+    """Order providers so dependencies are installed first (topological sort).
+
+    Ensures providers that depend on others are installed after their dependencies.
+    For example, provider-azure-openai depends on provider-openai at runtime
+    (AzureOpenAIProvider extends OpenAIProvider), so openai must be installed first.
+
+    Args:
+        sources: Dict mapping module_id to source URI
+
+    Returns:
+        List of (module_id, source_uri) tuples in dependency-respecting order
+    """
+    ordered: list[tuple[str, str]] = []
+    remaining = set(sources.keys())
+
+    while remaining:
+        # Find providers whose dependencies are all satisfied (not in remaining)
+        ready = [
+            p
+            for p in remaining
+            if all(dep not in remaining for dep in PROVIDER_DEPENDENCIES.get(p, []))
+        ]
+
+        if not ready:
+            # No providers ready - either circular dependency or dependency not in sources.
+            # Fall back to taking any remaining provider to avoid infinite loop.
+            ready = [sorted(remaining)[0]]
+            logger.debug(
+                f"Dependency ordering: no ready providers, falling back to {ready[0]}"
+            )
+
+        # Process ready providers in sorted order for determinism
+        for provider in sorted(ready):
+            ordered.append((provider, sources[provider]))
+            remaining.remove(provider)
+
+    return ordered
+
 
 def get_effective_provider_sources(
     config_manager: "ConfigManager | None" = None,
@@ -224,7 +273,11 @@ def install_known_providers(
     # Get effective sources (with overrides applied)
     sources = get_effective_provider_sources(config_manager)
 
-    for module_id, source_uri in sources.items():
+    # Order providers so dependencies are installed first
+    # (e.g., provider-openai before provider-azure-openai)
+    ordered_providers = _get_ordered_providers(sources)
+
+    for module_id, source_uri in ordered_providers:
         try:
             if verbose and console:
                 console.print(f"  Installing {module_id}...", end="")
