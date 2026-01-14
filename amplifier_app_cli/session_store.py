@@ -27,48 +27,32 @@ logger = logging.getLogger(__name__)
 BUNDLE_PREFIX = "bundle:"
 
 
-def extract_session_mode(metadata: dict) -> tuple[str | None, str | None]:
+def extract_session_mode(metadata: dict) -> tuple[str | None, None]:
     """Extract bundle name from session metadata.
 
     Sessions are created with a bundle (e.g., "foundation").
     This function extracts the bundle name for session resumption.
 
-    Checks both the new "bundle" key and the legacy "profile" key for
-    backward compatibility with sessions created before the retcon.
-
     Args:
-        metadata: Session metadata dict containing "bundle" or "profile" key
+        metadata: Session metadata dict containing "bundle" key
 
     Returns:
-        (bundle_name, legacy_name) tuple where bundle_name is set for bundle sessions.
-        Returns (None, None) if no valid bundle is found in metadata.
+        (bundle_name, None) tuple. Returns (None, None) if no bundle found,
+        allowing caller to fall back to configured default bundle.
 
     Example:
         >>> extract_session_mode({"bundle": "bundle:foundation"})
         ("foundation", None)
-        >>> extract_session_mode({"bundle": "foundation"})  # without prefix
+        >>> extract_session_mode({"bundle": "foundation"})
         ("foundation", None)
-        >>> extract_session_mode({"profile": "bundle:foundation"})  # legacy key
-        ("foundation", None)
-        >>> extract_session_mode({"profile": "legacy-name"})  # legacy profile
-        (None, "legacy-name")
         >>> extract_session_mode({})
         (None, None)
     """
-    # Check for new "bundle" key first (sessions created after retcon)
     bundle_value = metadata.get("bundle")
     if bundle_value and bundle_value != "unknown":
         if bundle_value.startswith(BUNDLE_PREFIX):
             return (bundle_value[len(BUNDLE_PREFIX):], None)
-        # Bundle name without prefix - still a bundle session
         return (bundle_value, None)
-
-    # Fall back to legacy "profile" key (sessions created before retcon)
-    saved = metadata.get("profile", "unknown")
-    if saved and saved != "unknown":
-        if saved.startswith(BUNDLE_PREFIX):
-            return (saved[len(BUNDLE_PREFIX):], None)
-        return (None, saved)
 
     return (None, None)
 

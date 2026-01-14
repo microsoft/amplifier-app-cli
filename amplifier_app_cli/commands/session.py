@@ -73,30 +73,26 @@ def _record_bundle_override(
 
 def _prepare_resume_context(
     session_id: str,
-    profile_override: str | None,
     get_module_search_paths: Callable[[], list[str]],
     console: "Console",
     *,
     bundle_override: str | None = None,
 ) -> tuple[
-    str, list, dict, dict, list, "PreparedBundle | None", str | None, str | None, str
+    str, list, dict, dict, list, "PreparedBundle | None", str | None, str
 ]:
     """Prepare context for resuming a session.
 
     Handles the common logic for loading and configuring a session resume:
     - Load session transcript and metadata
-    - Detect bundle vs profile mode from saved session
+    - Extract bundle from saved session
     - Resolve configuration
     - Prepare bundle if needed
 
     Args:
         session_id: The session ID to resume (must be valid/already resolved)
-        profile_override: Optional profile to use instead of saved session config
         get_module_search_paths: Callable to get module search paths
         console: Rich console for output (passed to resolve_config)
         bundle_override: Optional bundle to force (overrides saved session bundle).
-            This is experimental and may cause instability if the bundle differs
-            significantly from the one the session was created with.
 
     Returns:
         Tuple of:
@@ -106,44 +102,29 @@ def _prepare_resume_context(
             - config_data: dict (resolved config)
             - search_paths: list (module search paths)
             - prepared_bundle: PreparedBundle | None
-            - bundle_name: str | None (if bundle mode was detected)
-            - saved_profile: str | None (if profile mode was detected and used)
-            - active_profile: str (display name like "bundle:foundation" or "dev")
+            - bundle_name: str | None (if bundle was detected)
+            - active_bundle: str (display name like "bundle:foundation")
     """
     store = SessionStore()
     transcript, metadata = store.load(session_id)
 
-    # Detect if this was a bundle-based or profile-based session
-    # Always extract saved mode first (needed for warning message and metadata tracking)
-    saved_bundle, saved_profile = extract_session_mode(metadata)
+    # Extract bundle from saved session metadata
+    saved_bundle, _ = extract_session_mode(metadata)
 
     bundle_name = None
-    effective_profile = profile_override
-    saved_profile_used = None  # Only set if actually using saved profile
 
-    # Force bundle override takes precedence over everything
+    # Force bundle override takes precedence
     if bundle_override:
         bundle_name = bundle_override
-        original_config = saved_bundle or saved_profile or "unknown"
+        original_config = saved_bundle or "unknown"
         console.print(
             f"[yellow]⚠ Forcing bundle override:[/yellow] {bundle_override}\n"
             f"[dim]  (session was created with: {original_config})[/dim]"
         )
-        # Track bundle override in metadata for session analyst awareness
         _record_bundle_override(metadata, bundle_override, original_config)
-    elif not profile_override:
-        if saved_bundle:
-            bundle_name = saved_bundle
-        elif saved_profile:
-            # Legacy profile sessions can no longer be resumed with their original config
-            # since the profile system has been removed. Fall back to default bundle.
-            console.print(
-                f"[yellow]⚠ Legacy session detected:[/yellow] This session was created with "
-                f"profile '{saved_profile}' which is no longer supported.\n"
-                f"[dim]  Resuming with default bundle. Use --force-bundle to specify a bundle.[/dim]"
-            )
-            # Don't set effective_profile - let it fall through to bundle mode with default
-            bundle_name = "foundation"  # Use foundation as sensible default
+    elif saved_bundle:
+        bundle_name = saved_bundle
+    # If no saved bundle, bundle_name stays None and resolve_config will use default
 
     config_manager = create_config_manager()
     
@@ -160,7 +141,7 @@ def _prepare_resume_context(
     # Resolve configuration using unified function (single source of truth)
     config_data, prepared_bundle = resolve_config(
         bundle_name=bundle_name,
-        profile_override=effective_profile,
+        profile_override=None,
         config_manager=config_manager,
         profile_loader=None,
         agent_loader=None,
@@ -172,19 +153,8 @@ def _prepare_resume_context(
 
     search_paths = get_module_search_paths()
 
-    # Determine active_profile for SessionConfig
-    # - If user specified --profile, use that
-    # - If resuming a bundle session, construct "bundle:<name>"
-    # - If resuming a profile session, use the saved profile
-    # - Fallback to "unknown"
-    if profile_override:
-        active_profile = profile_override
-    elif bundle_name:
-        active_profile = f"bundle:{bundle_name}"
-    elif saved_profile_used:
-        active_profile = saved_profile_used
-    else:
-        active_profile = "unknown"
+    # Determine active_bundle for display
+    active_bundle = f"bundle:{bundle_name}" if bundle_name else "unknown"
 
     return (
         session_id,
@@ -194,8 +164,7 @@ def _prepare_resume_context(
         search_paths,
         prepared_bundle,
         bundle_name,
-        saved_profile_used,
-        active_profile,
+        active_bundle,
     )
 
 
@@ -475,11 +444,9 @@ def register_session_commands(
                 search_paths,
                 prepared_bundle,
                 bundle_name,
-                saved_profile,
-                active_profile,
+                active_bundle,
             ) = _prepare_resume_context(
                 session_id,
-                None,
                 get_module_search_paths,
                 console,
                 bundle_override=force_bundle,
@@ -492,8 +459,6 @@ def register_session_commands(
             console.print(f"  Messages: {len(transcript)}")
             if bundle_name and not force_bundle:
                 console.print(f"  Using saved bundle: {bundle_name}")
-            elif saved_profile:
-                console.print(f"  Using saved profile: {saved_profile}")
 
             # Display history or replay (when resuming without prompt)
             if prompt is None and not no_history:
@@ -523,7 +488,7 @@ def register_session_commands(
                         search_paths,
                         False,
                         session_id=session_id,
-                        profile_name=active_profile,
+                        profile_name=active_bundle,
                         prepared_bundle=prepared_bundle,
                         initial_transcript=transcript,
                     )
@@ -546,7 +511,7 @@ def register_session_commands(
                         search_paths,
                         False,
                         session_id=session_id,
-                        profile_name=active_profile,
+                        profile_name=active_bundle,
                         prepared_bundle=prepared_bundle,
                         initial_transcript=transcript,
                     )
@@ -1081,11 +1046,9 @@ def register_session_commands(
                 search_paths,
                 prepared_bundle,
                 bundle_name,
-                saved_profile,
-                active_profile,
+                active_bundle,
             ) = _prepare_resume_context(
                 session_id,
-                None,
                 get_module_search_paths,
                 console,
                 bundle_override=force_bundle,
@@ -1096,8 +1059,6 @@ def register_session_commands(
             console.print(f"  Messages: {len(transcript)}")
             if bundle_name and not force_bundle:
                 console.print(f"  Using saved bundle: {bundle_name}")
-            elif saved_profile:
-                console.print(f"  Using saved profile: {saved_profile}")
 
             # Display history or replay before entering interactive mode
             if not no_history:
@@ -1124,7 +1085,7 @@ def register_session_commands(
                     search_paths,
                     False,
                     session_id=session_id,
-                    profile_name=active_profile,
+                    profile_name=active_bundle,
                     prepared_bundle=prepared_bundle,
                     initial_transcript=transcript,
                 )
