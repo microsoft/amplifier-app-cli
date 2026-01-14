@@ -700,24 +700,22 @@ async def resolve_config_async(
         )
         return config_data, prepared_bundle
     else:
-        # Profile mode: use resolve_app_config
-        if config_manager is None or profile_loader is None:
-            raise ValueError(
-                "config_manager and profile_loader required for profile mode"
+        # No bundle specified - fall back to default bundle (foundation)
+        # Legacy profile mode has been removed
+        default_bundle = "foundation"
+        if console:
+            console.print(
+                f"[dim]No bundle specified, using default: {default_bundle}[/dim]"
             )
-
-        config_data = resolve_app_config(
-            config_manager=config_manager,
-            profile_loader=profile_loader,
-            agent_loader=agent_loader,
+        config_data, prepared_bundle = await resolve_bundle_config(
+            bundle_name=default_bundle,
             app_settings=app_settings,
-            cli_config=cli_config,
-            profile_override=profile_override,
-            bundle_name=None,
-            bundle_registry=None,
+            agent_loader=agent_loader,
             console=console,
+            session_id=session_id,
+            project_slug=project_slug,
         )
-        return config_data, None
+        return config_data, prepared_bundle
 
 
 def resolve_config(
