@@ -536,6 +536,5 @@ def create_foundation_resolver() -> "FoundationSettingsResolver":
 
     return FoundationSettingsResolver(
         settings_provider=CLISettingsProvider(),
-        collection_provider=CLICollectionModuleProvider(),
         workspace_dir=get_workspace_dir(),
     )
