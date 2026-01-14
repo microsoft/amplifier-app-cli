@@ -477,29 +477,6 @@ def _show_concise_report(
 
         console.print(table)
 
-    # === COLLECTIONS ===
-    if report.collection_sources:
-        console.print()
-        table = Table(title="Collections", show_header=True, header_style="bold cyan")
-        table.add_column("Name", style="green")
-        table.add_column("Installed", style="dim", justify="right")
-        table.add_column("Remote", style="dim", justify="right")
-        table.add_column("", width=1, justify="center")
-
-        for status in sorted(report.collection_sources, key=lambda x: x.name):
-            status_symbol = create_status_symbol(
-                status.installed_sha, status.remote_sha
-            )
-
-            table.add_row(
-                status.name,
-                create_sha_text(status.installed_sha),
-                create_sha_text(status.remote_sha),
-                status_symbol,
-            )
-
-        console.print(table)
-
     # === BUNDLES (Bundle repos with their own SHA info) ===
     # Use bundle_results.keys() as authoritative list (not name-based detection)
     if bundle_results:
@@ -712,25 +689,6 @@ def _show_verbose_report(
             )
             console.print()
 
-    # === COLLECTIONS ===
-    if report.collection_sources:
-        console.print("[bold cyan]Collections[/bold cyan]")
-        console.print()
-
-        for status in sorted(report.collection_sources, key=lambda x: x.name):
-            status_symbol = create_status_symbol(
-                status.installed_sha, status.remote_sha
-            )
-            source_url = status.source if hasattr(status, "source") else None
-            _print_verbose_item(
-                name=status.name,
-                status_symbol=status_symbol,
-                local_sha=status.installed_sha,
-                remote_sha=status.remote_sha,
-                remote_url=source_url,
-            )
-            console.print()
-
     # === BUNDLES ===
     if bundle_results:
         active_bundle = _get_active_bundle_name()
@@ -897,9 +855,6 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
     if not yes:
         # Show what will be updated (only count items with actual updates)
         modules_with_updates = [s for s in report.cached_git_sources if s.has_update]
-        collections_with_updates = [
-            s for s in report.collection_sources if s.has_update
-        ]
         bundles_with_updates = [
             name for name, status in bundle_results.items() if status.has_updates
         ]
@@ -909,9 +864,6 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             console.print(
                 f"  • Update {count} cached module{'s' if count != 1 else ''}"
             )
-        if collections_with_updates:
-            count = len(collections_with_updates)
-            console.print(f"  • Update {count} collection{'s' if count != 1 else ''}")
         if bundles_with_updates:
             count = len(bundles_with_updates)
             console.print(f"  • Update {count} bundle{'s' if count != 1 else ''}")
