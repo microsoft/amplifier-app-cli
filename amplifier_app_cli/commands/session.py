@@ -1262,12 +1262,8 @@ def _interactive_resume_impl(
         force_bundle: Optional bundle to force for the resumed session
     """
     store = SessionStore()
+    # list_sessions() defaults to top_level_only=True, filtering out spawned sub-sessions
     all_session_ids = store.list_sessions()
-
-    # Filter to top-level sessions only
-    # Sub-sessions have format: {parent_id}_{agent_name} (contain underscore)
-    # Top-level sessions are just UUIDs without underscores
-    all_session_ids = [sid for sid in all_session_ids if "_" not in sid]
 
     if not all_session_ids:
         console.print("[yellow]No sessions found to resume.[/yellow]")
