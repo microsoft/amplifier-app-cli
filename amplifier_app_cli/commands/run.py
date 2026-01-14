@@ -124,8 +124,6 @@ def register_run_command(
             transcript = None
             metadata = None
 
-        cli_overrides = {}
-
         config_manager = create_config_manager()
 
         # Check for active bundle from settings (via 'amplifier bundle use')
@@ -175,35 +173,55 @@ def register_run_command(
 
         search_paths = get_module_search_paths()
 
-        # If a specific provider was requested, filter providers to that entry
+        # Handle provider/model CLI overrides
+        if model and not provider:
+            # Require --provider when using --model for clarity
+            console.print(
+                "[red]Error:[/red] --model requires --provider\n"
+                "Specify which provider to use: --provider anthropic --model claude-opus-4\n"
+                "Run 'amplifier provider use --help' for configuration options"
+            )
+            sys.exit(1)
+
         if provider:
             provider_module = (
                 provider if provider.startswith("provider-") else f"provider-{provider}"
             )
             providers_list = config_data.get("providers", [])
 
-            matching = [
-                entry
-                for entry in providers_list
-                if isinstance(entry, dict) and entry.get("module") == provider_module
-            ]
+            # Find the target provider
+            target_idx = None
+            for i, entry in enumerate(providers_list):
+                if isinstance(entry, dict) and entry.get("module") == provider_module:
+                    target_idx = i
+                    break
 
-            if not matching:
+            if target_idx is None:
                 console.print(
-                    f"[red]Error:[/red] Provider '{provider}' not available in active profile"
+                    f"[red]Error:[/red] Provider '{provider}' not configured\n"
+                    f"Available providers: {', '.join(p.get('module', '?').replace('provider-', '') for p in providers_list if isinstance(p, dict))}\n"
+                    f"Run 'amplifier provider use --help' for configuration options"
                 )
                 sys.exit(1)
 
-            selected_provider = {**matching[0]}
-            selected_config = dict(selected_provider.get("config") or {})
+            # Clone ALL providers (keep multi-provider setup intact)
+            updated_providers: list[dict[str, Any]] = []
+            for i, entry in enumerate(providers_list):
+                entry_copy = {**entry}
+                entry_copy["config"] = dict(entry.get("config") or {})
 
-            if model:
-                selected_config["default_model"] = model
-            if max_tokens:
-                selected_config["max_tokens"] = max_tokens
+                if i == target_idx:
+                    # Promote this provider to priority 0 (highest)
+                    entry_copy["config"]["priority"] = 0
 
-            selected_provider["config"] = selected_config
-            config_data["providers"] = [selected_provider]
+                    if model:
+                        entry_copy["config"]["default_model"] = model
+                    if max_tokens:
+                        entry_copy["config"]["max_tokens"] = max_tokens
+
+                updated_providers.append(entry_copy)
+
+            config_data["providers"] = updated_providers
 
             # Hint orchestrator if it supports default provider configuration
             session_cfg = config_data.setdefault("session", {})
@@ -228,33 +246,36 @@ def register_run_command(
                 meta_config = dict(orchestrator_meta.get("config") or {})
                 meta_config["default_provider"] = provider_module
                 orchestrator_meta["config"] = meta_config
-        elif model or max_tokens:
+        elif max_tokens:
+            # Allow --max-tokens without --provider (applies to priority provider)
             providers_list = config_data.get("providers", [])
             if not providers_list:
                 console.print(
-                    "[yellow]Warning:[/yellow] No providers configured; ignoring CLI overrides"
+                    "[yellow]Warning:[/yellow] No providers configured; ignoring --max-tokens"
                 )
             else:
-                updated_providers: list[dict[str, Any]] = []
-                override_applied = False
+                # Find provider with lowest priority number (highest precedence)
+                min_priority = float("inf")
+                target_idx = 0
+                for i, entry in enumerate(providers_list):
+                    if isinstance(entry, dict):
+                        entry_config = entry.get("config", {})
+                        priority = (
+                            entry_config.get("priority", 100)
+                            if isinstance(entry_config, dict)
+                            else 100
+                        )
+                        if priority < min_priority:
+                            min_priority = priority
+                            target_idx = i
 
-                for entry in providers_list:
-                    if (
-                        not override_applied
-                        and isinstance(entry, dict)
-                        and entry.get("module")
-                    ):
-                        new_entry = {**entry}
-                        merged_config = dict(new_entry.get("config") or {})
-                        if model:
-                            merged_config["default_model"] = model
-                        if max_tokens:
-                            merged_config["max_tokens"] = max_tokens
-                        new_entry["config"] = merged_config
-                        updated_providers.append(new_entry)
-                        override_applied = True
-                    else:
-                        updated_providers.append(entry)
+                updated_providers: list[dict[str, Any]] = []
+                for i, entry in enumerate(providers_list):
+                    entry_copy = {**entry}
+                    if i == target_idx:
+                        entry_copy["config"] = dict(entry.get("config") or {})
+                        entry_copy["config"]["max_tokens"] = max_tokens
+                    updated_providers.append(entry_copy)
 
                 config_data["providers"] = updated_providers
 
