@@ -1440,7 +1440,10 @@ async def interactive_chat(
                 await hooks.emit(SESSION_END, {"session_id": actual_session_id})
 
         await initialized.cleanup()
-        console.print("\n[yellow]Session ended[/yellow]\n")
+        console.print("\n[yellow]Session exited - resume anytime with these commands:[/yellow]")
+        console.print(f"  [cyan]amplifier resume[/cyan]  # interactive list of sessions")
+        console.print(f"  [cyan]amplifier session resume {actual_session_id[:8]}[/cyan]  # jump directly to this session")
+        console.print()
 
 
 async def execute_single(
