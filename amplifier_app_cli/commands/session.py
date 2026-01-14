@@ -1205,13 +1205,13 @@ def _get_session_display_info(store: SessionStore, session_id: str) -> dict:
         session_id: Session ID to get info for
 
     Returns:
-        Dict with keys: session_id, name, profile, turn_count, time_ago, mtime
+        Dict with keys: session_id, name, bundle, turn_count, time_ago, mtime
     """
     session_path = store.base_dir / session_id
     info = {
         "session_id": session_id,
         "name": "",
-        "profile": "unknown",
+        "bundle": "unknown",
         "turn_count": "?",
         "time_ago": "unknown",
         "mtime": 0,
