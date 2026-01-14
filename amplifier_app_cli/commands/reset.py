@@ -1,8 +1,7 @@
 """Reset command for Amplifier CLI.
 
 Provides interactive reset with category-based preservation.
-Handles self-uninstall safely - once loaded into memory, the process
-continues running even after files are deleted from disk.
+Uninstalls amplifier, clears selected data, and reinstalls fresh.
 
 Categories:
     projects  - Session transcripts and history
@@ -21,7 +20,6 @@ Example:
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -112,7 +110,6 @@ def _run_interactive() -> set[str] | None:
 def _show_plan(
     preserve: set[str],
     no_install: bool,
-    no_launch: bool,
     dry_run: bool,
 ) -> None:
     """Print the reset plan."""
@@ -139,13 +136,6 @@ def _show_plan(
         console.print("  4. [dim]Skip reinstall (--no-install)[/dim]")
     else:
         console.print(f"  4. Install amplifier from: {DEFAULT_INSTALL_SOURCE}")
-
-    if no_install:
-        console.print("  5. [dim]Skip launch (no install)[/dim]")
-    elif no_launch:
-        console.print("  5. [dim]Skip launch (--no-launch)[/dim]")
-    else:
-        console.print("  5. Launch amplifier")
 
     console.print()
 
@@ -328,12 +318,6 @@ def _install_amplifier(dry_run: bool = False) -> bool:
         return False
 
 
-def _launch_amplifier() -> None:
-    """Launch amplifier CLI (replaces current process)."""
-    console.print("[bold]>>>[/bold] Launching amplifier...")
-    os.execvp("amplifier", ["amplifier"])
-
-
 @click.command()
 @click.option(
     "--preserve",
@@ -370,11 +354,6 @@ def _launch_amplifier() -> None:
     is_flag=True,
     help="Uninstall only, don't reinstall",
 )
-@click.option(
-    "--no-launch",
-    is_flag=True,
-    help="Don't launch amplifier after install",
-)
 def reset(
     preserve_cats: set[str] | None,
     remove_cats: set[str] | None,
@@ -382,7 +361,6 @@ def reset(
     yes: bool,
     dry_run: bool,
     no_install: bool,
-    no_launch: bool,
 ) -> None:
     """Reset Amplifier installation with category-based preservation.
 
@@ -441,7 +419,7 @@ def reset(
         preserve = result
 
     # Show plan
-    _show_plan(preserve, no_install, no_launch, dry_run)
+    _show_plan(preserve, no_install, dry_run)
 
     # Confirm unless -y or dry-run
     if not yes and not dry_run:
@@ -461,11 +439,6 @@ def reset(
     # Reinstall if not skipped
     if not no_install:
         if not _install_amplifier(dry_run):
-            return  # Don't try to launch if install failed
-
-    # Launch if not skipped
-    if not no_install and not no_launch:
-        _launch_amplifier()
-        # Note: execvp replaces the process, so we won't reach here
+            return
 
     console.print("\n[green]>>>[/green] Reset complete!")
