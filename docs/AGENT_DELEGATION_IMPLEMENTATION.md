@@ -7,9 +7,9 @@ layer: App-Layer Implementation
 
 # Agent Delegation - amplifier-app-cli Implementation
 
-How the CLI implements agent delegation using amplifier-profiles library and amplifier-core session forking.
+How the CLI implements agent delegation using amplifier-foundation library and amplifier-core session forking.
 
-**Agent concepts & authoring**: **→ [amplifier-profiles](https://github.com/microsoft/amplifier-profiles/blob/main/docs/AGENT_AUTHORING.md)**
+**Agent concepts & authoring**: **→ [Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md)**
 **Kernel mechanism**: **→ [SESSION_FORK_SPECIFICATION.md](https://github.com/microsoft/amplifier-core/blob/main/docs/SESSION_FORK_SPECIFICATION.md)**
 
 ---
@@ -18,10 +18,10 @@ How the CLI implements agent delegation using amplifier-profiles library and amp
 
 amplifier-app-cli implements agent delegation by:
 
-1. Using `AgentResolver` and `AgentLoader` from amplifier-profiles
+1. Using `AgentResolver` and `AgentLoader` from amplifier-foundation
 2. Resolving agent files from CLI-specific search paths
 3. Supporting environment variable overrides for testing
-4. Compiling agent configs via `compile_profile_to_mount_plan`
+4. Compiling agent configs via bundle compilation
 5. Using amplifier-core's `session.fork()` for sub-session creation
 
 ---
@@ -44,9 +44,9 @@ amplifier-app-cli implements agent delegation by:
 │    .amplifier/agents/project-reviewer.md                    │
 │    → Project-specific agents (committed to git)             │
 ├─────────────────────────────────────────────────────────────┤
-│ 4. Collection Agents                                         │
-│    collections/developer-expertise/agents/zen-architect.md  │
-│    → Agents bundled with collections                        │
+│ 4. Bundle Agents                                             │
+│    bundles/developer-expertise/agents/zen-architect.md      │
+│    → Agents bundled with bundles                            │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -65,17 +65,17 @@ amplifier run "design system"  # Uses test version
 ### Agent Resolution
 
 ```python
-from amplifier_profiles import AgentResolver
+from amplifier_foundation import AgentResolver
 from pathlib import Path
 import os
 
 # Build search paths (CLI-specific)
-# Collection agents discovered via collection system
+# Bundle agents discovered via bundle system
 # Then project and user directories
 search_paths = [
     Path(".amplifier/agents"),                        # Project
     Path.home() / ".amplifier" / "agents",           # User
-    # Collection agents added via collection discovery
+    # Bundle agents added via bundle discovery
 ]
 
 # Create resolver
@@ -91,7 +91,7 @@ if not agent_path:
     agent_path = resolver.resolve(agent_name)
 
 # Load agent
-from amplifier_profiles import AgentLoader
+from amplifier_foundation import AgentLoader
 loader = AgentLoader(resolver=resolver)
 agent = loader.load_agent(agent_name)
 ```
@@ -201,7 +201,7 @@ store.save(sub_session_id, transcript, metadata)
 **Storage Location**: `~/.amplifier/projects/{project-slug}/sessions/{session-id}/`
 - `transcript.jsonl` - Conversation history
 - `metadata.json` - Session configuration and metadata
-- `profile.md` - Profile snapshot (if applicable)
+- `bundle.md` - Bundle snapshot (if applicable)
 
 #### Resuming Existing Sessions
 
@@ -323,13 +323,13 @@ except RuntimeError as e:
 ### Agent Listing
 
 ```bash
-# List all agents (includes collection agents)
+# List all agents (includes bundle agents)
 amplifier agent list
 
 # Example output:
 # zen-architect                           developer-expertise
 # bug-hunter                              developer-expertise
-# design-intelligence:art-director        user-collection
+# design-intelligence:art-director        user-bundle
 # project-reviewer                        project
 ```
 
@@ -344,16 +344,16 @@ amplifier agent show zen-architect
 
 ### Using Agents in Sessions
 
-Agents are loaded automatically when profiles specify them:
+Agents are loaded automatically when bundles specify them:
 
 ```yaml
-# In profile.md (Smart Single Value format)
+# In bundle.md (Smart Single Value format)
 agents: all   # Load all discovered agents
 # Or: agents: [zen-architect, bug-hunter]  # Load specific agents
 # Or: agents: none                          # Disable agents
 ```
 
-Then use via task tool delegation within sessions (see amplifier-profiles docs for details).
+Then use via task tool delegation within sessions (see bundle documentation for details).
 
 ---
 
@@ -381,15 +381,15 @@ unset AMPLIFIER_AGENT_SPECIAL_ANALYZER
 
 ---
 
-## Integration with amplifier-profiles Library
+## Integration with amplifier-foundation Library
 
-amplifier-app-cli uses amplifier-profiles library for ALL agent functionality:
+amplifier-app-cli uses amplifier-foundation library for ALL agent functionality:
 
 **What CLI provides** (policy):
-- CLI-specific search paths (user, project, collection directories)
+- CLI-specific search paths (user, project, bundle directories)
 - Environment variable override mechanism
 - CLI commands for listing/showing agents
-- Integration with profile and collection systems
+- Integration with bundle system
 
 **What library provides** (mechanism):
 - Agent file format parsing (markdown + YAML frontmatter)
@@ -405,8 +405,8 @@ amplifier-app-cli uses amplifier-profiles library for ALL agent functionality:
 ## Related Documentation
 
 **Agent Concepts**:
-- **→ [amplifier-profiles](https://github.com/microsoft/amplifier-profiles)** - Agent system design and API
-- **→ [Agent Authoring Guide](https://github.com/microsoft/amplifier-profiles/blob/main/docs/AGENT_AUTHORING.md)** - How to create agents
+- **→ [amplifier-foundation](https://github.com/microsoft/amplifier-foundation)** - Agent system design and API
+- **→ [Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md)** - How to create bundles and agents
 
 **Kernel Mechanism**:
 - **→ [SESSION_FORK_SPECIFICATION.md](https://github.com/microsoft/amplifier-core/blob/main/docs/SESSION_FORK_SPECIFICATION.md)** - Session forking contract

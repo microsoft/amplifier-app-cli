@@ -176,15 +176,15 @@ $ amplifier run --resume a1b2c3d4 "What about next week?"
 ### Tool Commands
 
 ```bash
-# List tools available in the active profile (shows actual tool names)
+# List tools available in the active bundle (shows actual tool names)
 amplifier tool list                               # Table format (mounts tools)
 amplifier tool list --modules                     # Show module names (fast, no mount)
-amplifier tool list --profile dev                 # Specify profile
+amplifier tool list --bundle my-bundle            # Specify bundle
 amplifier tool list --output json                 # JSON format
 
 # Show details about a specific tool
 amplifier tool info <tool-name>                   # Show tool info
-amplifier tool info read_file --profile dev       # With specific profile
+amplifier tool info read_file --bundle my-bundle  # With specific bundle
 amplifier tool info --module tool-filesystem      # Show module info (fast)
 
 # Invoke a tool directly with arguments
@@ -199,7 +199,7 @@ amplifier tool invoke web_fetch url="https://example.com"
 
 ```bash
 amplifier init                                     # First-time setup
-amplifier update [--check-only] [--force] [-y]    # Update Amplifier, modules, and collections
+amplifier update [--check-only] [--force] [-y]    # Update Amplifier and modules
 amplifier --install-completion                     # Set up tab completion
 amplifier --version                                # Show version
 amplifier --help                                   # Show help
@@ -252,9 +252,9 @@ Detected shell: bash
 Once active, tab completion works throughout the CLI:
 
 ```bash
-amplifier pro<TAB>         # Completes to "profile"
-amplifier profile u<TAB>   # Completes to "use"
-amplifier profile use <TAB> # Shows available profiles
+amplifier bun<TAB>         # Completes to "bundle"
+amplifier bundle u<TAB>    # Completes to "use"
+amplifier bundle use <TAB> # Shows available bundles
 amplifier run --<TAB>      # Shows all options
 ```
 
@@ -270,7 +270,7 @@ This CLI is built on top of amplifier-core and provides:
 - **Interactive mode** - REPL with slash commands
 - **Key management** - Secure API key storage
 
-> **Note**: Profile and collection systems are deprecated. Use bundles instead.
+> **Note**: Profile and collection systems have been removed. Use bundles instead.
 
 ## Supported Providers
 
@@ -308,11 +308,8 @@ uv run pytest
 
 ```
 amplifier_app_cli/
-├── commands/          # CLI command implementations (provider, collection, init, logs, setup)
+├── commands/          # CLI command implementations (provider, bundle, init, logs, setup)
 ├── data/
-│   ├── collections/   # Bundled collections (foundation, developer-expertise)
-│   │   └── developer-expertise/agents/  # Default agents
-│   ├── profiles/      # Profile defaults and metadata
 │   └── context/       # Bundled context files
 ├── lib/               # Shared libraries
 │   └── mention_loading/ # @mention expansion system
@@ -336,8 +333,6 @@ toolkit/               # Standalone scenario tool utilities (at repo root)
 **Note**: Core functionality provided by libraries:
 - `amplifier-foundation` - Bundle loading and composition (primary)
 - `amplifier-config` - Settings management
-- `amplifier-profiles` - Profile loading (deprecated, for backward compatibility)
-- `amplifier-collections` - Collection system (deprecated, for backward compatibility)
 
 ## Documentation
 

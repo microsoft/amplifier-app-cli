@@ -186,7 +186,7 @@ session_store = SessionStore()  # Auto-detects project from CWD
 ### Logging Hook
 
 ```yaml
-# In profile
+# In bundle
 hooks:
   - module: hooks-logging
     config:

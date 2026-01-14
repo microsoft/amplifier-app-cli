@@ -1,11 +1,11 @@
 """Tool management commands for the Amplifier CLI.
 
 Generic mechanism to list, inspect, and invoke any mounted tool.
-This provides CLI access to tools from any collection without the CLI
-needing to know about specific tools or collections.
+This provides CLI access to tools from any bundle without the CLI
+needing to know about specific tools or bundles.
 
 Philosophy: Mechanism, not policy. CLI provides capability to invoke tools;
-which tools exist is determined by the active bundle (or deprecated profile).
+which tools exist is determined by the active bundle.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from ..paths import create_config_manager
 from ..runtime.config import inject_user_providers
 
 # ============================================================================
-# Bundle/Profile Detection (mirrors run.py pattern)
+# Bundle Detection (mirrors run.py pattern)
 # ============================================================================
 
 
@@ -90,7 +90,7 @@ async def _get_mounted_tools_from_bundle_async(
     from ..runtime.config import resolve_config_async
 
     # Load bundle via unified resolve_config_async (single source of truth)
-    
+
     config_manager = create_config_manager()
     app_settings = AppSettings(config_manager)
 
@@ -166,7 +166,7 @@ async def _invoke_tool_from_bundle_async(
     from ..runtime.config import resolve_config_async
 
     # Load bundle via unified resolve_config_async (single source of truth)
-    
+
     config_manager = create_config_manager()
     app_settings = AppSettings(config_manager)
 
@@ -588,7 +588,7 @@ def tool_info(tool_name: str, bundle: str | None, output: str, module: bool):
 
     if not found_tool:
         console.print(
-            f"[red]Error:[/red] Tool '{tool_name}' not found in profile '{profile_name}'"
+            f"[red]Error:[/red] Tool '{tool_name}' not found in bundle '{profile_name}'"
         )
         console.print("\nAvailable tools:")
         for t in tools:

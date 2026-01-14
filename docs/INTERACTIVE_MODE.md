@@ -242,19 +242,19 @@ Available Tools:
 | `/help` | Show command list | None |
 | `/stop` | Stop execution | None |
 
-## Advanced: Profile-Based Interactive Sessions
+## Advanced: Bundle-Based Interactive Sessions
 
-You can start interactive sessions with specific profiles:
+You can start interactive sessions with specific bundles:
 
 ```bash
-# Use development profile (includes more tools)
-amplifier run --profile dev --mode chat
+# Use development bundle (includes more tools)
+amplifier run --bundle dev --mode chat
 
-# Use general profile (includes logging hooks)
-amplifier run --profile general --mode chat
+# Use general bundle (includes logging hooks)
+amplifier run --bundle general --mode chat
 ```
 
-**→ [Profile Authoring](https://github.com/microsoft/amplifier-profiles/blob/main/docs/PROFILE_AUTHORING.md)** for profile details.
+**→ [Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md)** for bundle details.
 
 ## Troubleshooting
 
