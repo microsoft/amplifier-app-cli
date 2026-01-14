@@ -27,6 +27,21 @@ logger = logging.getLogger(__name__)
 BUNDLE_PREFIX = "bundle:"
 
 
+def is_top_level_session(session_id: str) -> bool:
+    """Check if a session ID is a top-level (main) session.
+
+    Spawned sub-sessions have IDs in the format: {parent_id}_{agent_name}
+    Top-level sessions are just UUIDs without underscores.
+
+    Args:
+        session_id: Session ID to check
+
+    Returns:
+        True if this is a top-level session, False if spawned
+    """
+    return "_" not in session_id
+
+
 def extract_session_mode(metadata: dict) -> tuple[str | None, None]:
     """Extract bundle name from session metadata.
 
@@ -51,7 +66,7 @@ def extract_session_mode(metadata: dict) -> tuple[str | None, None]:
     bundle_value = metadata.get("bundle")
     if bundle_value and bundle_value != "unknown":
         if bundle_value.startswith(BUNDLE_PREFIX):
-            return (bundle_value[len(BUNDLE_PREFIX):], None)
+            return (bundle_value[len(BUNDLE_PREFIX) :], None)
         return (bundle_value, None)
 
     return (None, None)
@@ -362,11 +377,13 @@ class SessionStore:
         session_dir = self.base_dir / session_id
         return session_dir.exists() and session_dir.is_dir()
 
-    def find_session(self, partial_id: str) -> str:
+    def find_session(self, partial_id: str, *, top_level_only: bool = True) -> str:
         """Find session by partial ID prefix.
 
         Args:
             partial_id: Partial session ID (prefix match)
+            top_level_only: If True (default), only match top-level sessions,
+                           excluding spawned sub-sessions. Set to False to include all.
 
         Returns:
             Full session ID if exactly one match
@@ -380,12 +397,17 @@ class SessionStore:
 
         partial_id = partial_id.strip()
 
-        # Check for exact match first
+        # Check for exact match first (respecting top_level_only filter)
         if self.exists(partial_id):
-            return partial_id
+            if not top_level_only or is_top_level_session(partial_id):
+                return partial_id
 
-        # Find prefix matches
-        matches = [sid for sid in self.list_sessions() if sid.startswith(partial_id)]
+        # Find prefix matches among filtered sessions
+        matches = [
+            sid
+            for sid in self.list_sessions(top_level_only=top_level_only)
+            if sid.startswith(partial_id)
+        ]
 
         if not matches:
             raise FileNotFoundError(f"No session found matching '{partial_id}'")
@@ -397,8 +419,12 @@ class SessionStore:
             )
         return matches[0]
 
-    def list_sessions(self) -> list[str]:
-        """List all session IDs.
+    def list_sessions(self, *, top_level_only: bool = True) -> list[str]:
+        """List session IDs.
+
+        Args:
+            top_level_only: If True (default), return only top-level sessions,
+                           excluding spawned sub-sessions. Set to False to include all.
 
         Returns:
             List of session identifiers, sorted by modification time (newest first)
@@ -409,13 +435,19 @@ class SessionStore:
         sessions = []
         for session_dir in self.base_dir.iterdir():
             if session_dir.is_dir() and not session_dir.name.startswith("."):
+                session_name = session_dir.name
+
+                # Filter to top-level sessions if requested
+                if top_level_only and not is_top_level_session(session_name):
+                    continue
+
                 # Include session with its modification time for sorting
                 try:
                     mtime = session_dir.stat().st_mtime
-                    sessions.append((session_dir.name, mtime))
+                    sessions.append((session_name, mtime))
                 except Exception:
                     # If we can't get mtime, include with 0
-                    sessions.append((session_dir.name, 0))
+                    sessions.append((session_name, 0))
 
         # Sort by modification time (newest first) and return just the names
         sessions.sort(key=lambda x: x[1], reverse=True)
