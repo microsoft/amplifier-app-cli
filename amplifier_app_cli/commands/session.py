@@ -77,9 +77,7 @@ def _prepare_resume_context(
     console: "Console",
     *,
     bundle_override: str | None = None,
-) -> tuple[
-    str, list, dict, dict, list, "PreparedBundle | None", str | None, str
-]:
+) -> tuple[str, list, dict, dict, list, "PreparedBundle | None", str | None, str]:
     """Prepare context for resuming a session.
 
     Handles the common logic for loading and configuring a session resume:
@@ -117,17 +115,19 @@ def _prepare_resume_context(
     if bundle_override:
         bundle_name = bundle_override
         original_config = saved_bundle or "unknown"
-        console.print(
-            f"[yellow]⚠ Forcing bundle override:[/yellow] {bundle_override}\n"
-            f"[dim]  (session was created with: {original_config})[/dim]"
-        )
+        # Only warn if forcing a different bundle than original
+        if bundle_override != saved_bundle:
+            console.print(
+                f"[yellow]⚠ Forcing bundle override:[/yellow] {bundle_override}\n"
+                f"[dim]  (session was created with: {original_config})[/dim]"
+            )
         _record_bundle_override(metadata, bundle_override, original_config)
     elif saved_bundle:
         bundle_name = saved_bundle
     # If no saved bundle, bundle_name stays None and resolve_config will use default
 
     config_manager = create_config_manager()
-    
+
     app_settings = AppSettings(config_manager)
 
     # Check first run / auto-install providers BEFORE config resolution
