@@ -190,7 +190,7 @@ def _display_session_history(
     # Build banner with session info
     session_id = metadata.get("session_id", "unknown")
     created = metadata.get("created", "unknown")
-    profile = metadata.get("profile", "unknown")
+    bundle = metadata.get("bundle", "unknown")
     model = metadata.get("model", "unknown")
 
     # Calculate time since creation
@@ -209,7 +209,7 @@ def _display_session_history(
     banner_text = (
         f"[bold cyan]Amplifier Interactive Session (Resumed)[/bold cyan]\n"
         f"Session: {session_id[:8]}... | Started: {time_ago}\n"
-        f"Profile: {profile} | Model: {model_display}\n"
+        f"Bundle: {bundle} | Model: {model_display}\n"
         f"Commands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D"
     )
 
@@ -259,7 +259,7 @@ async def _replay_session_history(
     # Build banner with session info and replay status
     session_id = metadata.get("session_id", "unknown")
     created = metadata.get("created", "unknown")
-    profile = metadata.get("profile", "unknown")
+    bundle = metadata.get("bundle", "unknown")
     model = metadata.get("model", "unknown")
 
     # Calculate time since creation
@@ -278,7 +278,7 @@ async def _replay_session_history(
     banner_text = (
         f"[bold cyan]Amplifier Interactive Session (Replaying at {speed}x)[/bold cyan]\n"
         f"Session: {session_id[:8]}... | Started: {time_ago}\n"
-        f"Profile: {profile} | Model: {model_display}\n"
+        f"Bundle: {bundle} | Model: {model_display}\n"
         f"[dim]Ctrl-C to skip replay[/dim] | Commands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D"
     )
 
@@ -754,7 +754,7 @@ def register_session_commands(
         panel_content = [
             f"[bold]Session ID:[/bold] {session_id}",
             f"[bold]Created:[/bold] {metadata.get('created', 'unknown')}",
-            f"[bold]Profile:[/bold] {metadata.get('profile', 'unknown')}",
+            f"[bold]Bundle:[/bold] {metadata.get('bundle', 'unknown')}",
             f"[bold]Model:[/bold] {metadata.get('model', 'unknown')}",
             f"[bold]Messages:[/bold] {metadata.get('turn_count', len(transcript))}",
         ]
@@ -943,7 +943,6 @@ def register_session_commands(
                 ctx.invoke(
                     sessions_resume,
                     session_id=result.session_id,
-                    profile=None,
                     force_bundle=None,
                     no_history=False,
                     full_history=False,
@@ -1155,7 +1154,6 @@ def register_session_commands(
             ctx.invoke(
                 sessions_resume,
                 session_id=full_id,
-                profile=None,
                 force_bundle=force_bundle,
                 no_history=False,
                 full_history=False,
@@ -1243,7 +1241,7 @@ def _get_session_display_info(store: SessionStore, session_id: str) -> dict:
         try:
             with open(metadata_file, encoding="utf-8") as f:
                 metadata = json.load(f)
-                info["profile"] = metadata.get("profile", "unknown")
+                info["bundle"] = metadata.get("bundle", "unknown")
                 info["name"] = metadata.get("name", "")
         except Exception:
             pass
@@ -1285,7 +1283,6 @@ def _interactive_resume_impl(
         ctx.invoke(
             sessions_resume_cmd,
             session_id=all_session_ids[0],
-            profile=None,
             force_bundle=force_bundle,
             no_history=False,
             full_history=False,
@@ -1326,14 +1323,14 @@ def _interactive_resume_impl(
             else:
                 name_display = ""
 
-            # Format profile (truncate if too long)
-            profile = info["profile"]
-            if len(profile) > 15:
-                profile = profile[:12] + "..."
+            # Format bundle (truncate if too long)
+            bundle = info["bundle"]
+            if len(bundle) > 15:
+                bundle = bundle[:12] + "..."
 
             console.print(
                 f"  [cyan][{idx}][/cyan] {name_display}{short_id} | "
-                f"[magenta]{profile}[/magenta] | "
+                f"[magenta]{bundle}[/magenta] | "
                 f"{info['turn_count']} turns | "
                 f"[dim]{info['time_ago']}[/dim]",
                 highlight=False,

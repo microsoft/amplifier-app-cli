@@ -261,29 +261,9 @@ def resolve_app_config(
             else:
                 logger.warning(message)
     else:
-        # Use profile-based configuration (traditional approach)
-        active_profile_name = profile_override or config_manager.get_active_profile()
-
-        if active_profile_name:
-            try:
-                profile = profile_loader.load_profile(active_profile_name)
-                profile = app_settings.apply_provider_overrides_to_profile(
-                    profile, provider_overrides
-                )
-
-                profile_config = compile_profile_to_mount_plan(
-                    profile, agent_loader=agent_loader
-                )  # type: ignore[call-arg]
-                config = deep_merge(config, profile_config)
-                provider_applied_via_config = bool(provider_overrides)
-            except Exception as exc:  # noqa: BLE001
-                message = (
-                    f"Warning: Could not load profile '{active_profile_name}': {exc}"
-                )
-                if console:
-                    console.print(f"[yellow]{message}[/yellow]")
-                else:
-                    logger.warning(message)
+        # Legacy profile path - profiles have been removed, so this is a no-op.
+        # If user has old profile settings, they'll just get the default bundle.
+        pass
 
     # If we have overrides but no config applied them (no bundle/profile or failure), apply directly
     if provider_overrides and not provider_applied_via_config:
