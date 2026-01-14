@@ -305,7 +305,6 @@ def register_mention_handling(session: AmplifierSession) -> None:
     foundation_resolver = session.coordinator.get_capability("mention_resolver")
     mention_resolver = AppMentionResolver(
         foundation_resolver=foundation_resolver,
-        enable_collections=False,  # Collections deprecated
     )
 
     session.coordinator.register_capability("mention_resolver", mention_resolver)
