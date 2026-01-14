@@ -223,6 +223,11 @@ def register_run_command(
 
             config_data["providers"] = updated_providers
 
+            # CRITICAL: Update the prepared bundle's mount plan with modified providers
+            # The bundle was already prepared with original config, we need to update it
+            if prepared_bundle and hasattr(prepared_bundle, "mount_plan"):
+                prepared_bundle.mount_plan["providers"] = updated_providers
+
             # Hint orchestrator if it supports default provider configuration
             session_cfg = config_data.setdefault("session", {})
             orchestrator_cfg = session_cfg.get("orchestrator")
@@ -278,6 +283,10 @@ def register_run_command(
                     updated_providers.append(entry_copy)
 
                 config_data["providers"] = updated_providers
+
+                # CRITICAL: Update the prepared bundle's mount plan with modified providers
+                if prepared_bundle and hasattr(prepared_bundle, "mount_plan"):
+                    prepared_bundle.mount_plan["providers"] = updated_providers
 
         # Run update check (uses unified startup_checker with settings.yaml)
         from ..utils.startup_checker import check_and_notify
