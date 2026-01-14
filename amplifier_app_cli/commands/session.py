@@ -141,9 +141,6 @@ def _prepare_resume_context(
     # Resolve configuration using unified function (single source of truth)
     config_data, prepared_bundle = resolve_config(
         bundle_name=bundle_name,
-        profile_override=None,
-        config_manager=config_manager,
-        profile_loader=None,
         agent_loader=None,
         app_settings=app_settings,
         console=console,

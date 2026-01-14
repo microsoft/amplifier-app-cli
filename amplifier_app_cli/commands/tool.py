@@ -52,19 +52,12 @@ def _should_use_bundle() -> tuple[bool, str | None, str | None]:
     2. If active bundle is set → use profile (deprecated path)
     3. Default to 'foundation' bundle (Phase 2 default)
     """
-    config_manager = create_config_manager()
-
     # Check for active bundle
     bundle_name = _get_active_bundle_name()
     if bundle_name:
         return (True, bundle_name, None)
 
-    # Check for explicit profile configuration (deprecated)
-    profile_name = config_manager.get_active_profile()
-    if profile_name:
-        return (False, None, profile_name)
-
-    # Default to foundation bundle (Phase 2)
+    # Default to foundation bundle - profile mode has been removed
     return (True, "foundation", None)
 
 
@@ -97,8 +90,6 @@ async def _get_mounted_tools_from_bundle_async(
     try:
         _config, prepared_bundle = await resolve_config_async(
             bundle_name=bundle_name,
-            config_manager=config_manager,
-            profile_loader=None,
             agent_loader=None,
             app_settings=app_settings,
             console=console,
@@ -172,8 +163,6 @@ async def _invoke_tool_from_bundle_async(
 
     _config, prepared_bundle = await resolve_config_async(
         bundle_name=bundle_name,
-        config_manager=config_manager,
-        profile_loader=None,
         agent_loader=None,
         app_settings=app_settings,
         console=console,
@@ -232,55 +221,6 @@ def tool(ctx: click.Context):
     if ctx.invoked_subcommand is None:
         click.echo("\n" + ctx.get_help())
         ctx.exit()
-
-
-def _get_active_profile_name() -> str:
-    """Get the active bundle name from config hierarchy.
-
-    DEPRECATED: Profiles are deprecated. Use bundles instead.
-    """
-    config_manager = create_config_manager()
-    active_profile = config_manager.get_active_profile()
-    if active_profile:
-        return active_profile
-
-    project_default = config_manager.get_project_default()
-    if project_default:
-        return project_default
-
-    # Default fallback - profiles are deprecated, this should not be reached
-    return "default"
-
-
-def _get_tools_from_profile(profile_name: str) -> list[dict[str, Any]]:
-    """Extract tool MODULE information from a profile's mount plan.
-
-    DEPRECATED: Profiles are deprecated. Use bundles instead.
-
-    Args:
-        profile_name: Name of profile to load
-
-    Returns:
-        Empty list - profiles are no longer supported.
-    """
-    # Profiles are deprecated - return empty list
-    return []
-
-
-async def _get_mounted_tools_async(profile_name: str) -> list[dict[str, Any]]:
-    """Get actual mounted tool names by initializing a session.
-
-    DEPRECATED: Profiles are deprecated. Use bundles instead.
-
-    Args:
-        profile_name: Profile determining which tools are available
-
-    Returns:
-        Never returns - always raises NotImplementedError
-    """
-    raise NotImplementedError(
-        "Profile mode is deprecated. Use bundles instead: 'amplifier bundle use <bundle-name>'"
-    )
 
 
 @tool.command(name="list")
@@ -363,99 +303,6 @@ def tool_list(bundle: str | None, output: str, modules: bool):
         console.print(
             "\n[dim]Use 'amplifier tool invoke <name> key=value ...' to invoke a tool[/dim]"
         )
-        return
-
-    # Profile path (deprecated - will be removed)
-    profile_name = default_profile or _get_active_profile_name()
-
-    if modules:
-        # Show module-level info (fast, no session needed)
-        tool_modules = _get_tools_from_profile(profile_name)
-
-        if not tool_modules:
-            console.print(
-                f"[yellow]No tool modules found in profile '{profile_name}'[/yellow]"
-            )
-            return
-
-        if output == "json":
-            result = {
-                "profile": profile_name,
-                "modules": [
-                    {"name": t["module"], "source": t["source"]} for t in tool_modules
-                ],
-            }
-            print(json.dumps(result, indent=2))
-            return
-
-        # Table output for humans
-        table = Table(
-            title=f"Tool Modules in profile '{profile_name}'",
-            show_header=True,
-            header_style="bold cyan",
-        )
-        table.add_column("Module", style="green")
-        table.add_column("Source", style="yellow")
-
-        for t in tool_modules:
-            source_str = str(t["source"])
-            if len(source_str) > 50:
-                source_str = source_str[:47] + "..."
-            table.add_row(t["module"], source_str)
-
-        console.print(table)
-        console.print(
-            "\n[dim]These are module names. Run without --modules to see actual tool names.[/dim]"
-        )
-        return
-
-    # Default: show actual mounted tool names (requires session initialization)
-    console.print(f"[dim]Mounting tools from profile '{profile_name}'...[/dim]")
-
-    try:
-        tools = asyncio.run(_get_mounted_tools_async(profile_name))
-    except Exception as e:
-        console.print(f"[red]Error mounting tools:[/red] {e}")
-        console.print(
-            "[dim]Try 'amplifier tool list --modules' to see tool modules without mounting.[/dim]"
-        )
-        sys.exit(1)
-
-    if not tools:
-        console.print(
-            f"[yellow]No tools mounted from profile '{profile_name}'[/yellow]"
-        )
-        return
-
-    if output == "json":
-        result = {
-            "profile": profile_name,
-            "tools": [
-                {"name": t["name"], "description": t["description"]} for t in tools
-            ],
-        }
-        print(json.dumps(result, indent=2))
-        return
-
-    # Table output for humans
-    table = Table(
-        title=f"Mounted Tools ({len(tools)} tools from profile '{profile_name}')",
-        show_header=True,
-        header_style="bold cyan",
-    )
-    table.add_column("Name", style="green")
-    table.add_column("Description", style="yellow")
-
-    for t in tools:
-        desc = t["description"]
-        if len(desc) > 60:
-            desc = desc[:57] + "..."
-        table.add_row(t["name"], desc)
-
-    console.print(table)
-    console.print(
-        "\n[dim]Use 'amplifier tool invoke <name> key=value ...' to invoke a tool[/dim]"
-    )
 
 
 @tool.command(name="info")
@@ -532,81 +379,6 @@ def tool_info(tool_name: str, bundle: str | None, output: str, module: bool):
         console.print(
             "\n[dim]Usage: amplifier tool invoke " + tool_name + " key=value ...[/dim]"
         )
-        return
-
-    # Profile path (deprecated - will be removed)
-    profile_name = default_profile or _get_active_profile_name()
-
-    if module:
-        # Module lookup (fast, no session needed)
-        tool_modules = _get_tools_from_profile(profile_name)
-        found_tool = next((t for t in tool_modules if t["module"] == tool_name), None)
-
-        if not found_tool:
-            console.print(
-                f"[red]Error:[/red] Module '{tool_name}' not found in profile '{profile_name}'"
-            )
-            console.print("\nAvailable modules:")
-            for t in tool_modules:
-                console.print(f"  - {t['module']}")
-            sys.exit(1)
-
-        if output == "json":
-            print(json.dumps(found_tool, indent=2))
-            return
-
-        panel_content = f"""[bold]Module:[/bold] {found_tool["module"]}
-[bold]Source:[/bold] {found_tool["source"]}
-[bold]Description:[/bold] {found_tool.get("description", "No description")}"""
-
-        if found_tool.get("config"):
-            panel_content += "\n[bold]Config:[/bold]"
-            for key, value in found_tool["config"].items():
-                panel_content += f"\n  {key}: {value}"
-
-        console.print(
-            Panel(panel_content, title=f"Module: {tool_name}", border_style="cyan")
-        )
-        console.print(
-            "\n[dim]This is a module. Run 'amplifier tool list' to see actual tool names.[/dim]"
-        )
-        return
-
-    # Default: look up actual mounted tool
-    console.print(f"[dim]Mounting tools to get info for '{tool_name}'...[/dim]")
-
-    try:
-        tools = asyncio.run(_get_mounted_tools_async(profile_name))
-    except Exception as e:
-        console.print(f"[red]Error mounting tools:[/red] {e}")
-        console.print(
-            "[dim]Try 'amplifier tool info --module <name>' to look up module info.[/dim]"
-        )
-        sys.exit(1)
-
-    found_tool = next((t for t in tools if t["name"] == tool_name), None)
-
-    if not found_tool:
-        console.print(
-            f"[red]Error:[/red] Tool '{tool_name}' not found in bundle '{profile_name}'"
-        )
-        console.print("\nAvailable tools:")
-        for t in tools:
-            console.print(f"  - {t['name']}")
-        sys.exit(1)
-
-    if output == "json":
-        print(json.dumps(found_tool, indent=2))
-        return
-
-    panel_content = f"""[bold]Name:[/bold] {found_tool["name"]}
-[bold]Description:[/bold] {found_tool.get("description", "No description")}
-[bold]Invokable:[/bold] {"Yes" if found_tool.get("has_execute") else "No"}"""
-
-    console.print(Panel(panel_content, title=f"Tool: {tool_name}", border_style="cyan"))
-    console.print(
-        "\n[dim]Usage: amplifier tool invoke " + tool_name + " key=value ...[/dim]"
-    )
 
 
 @tool.command(name="invoke")
@@ -648,27 +420,17 @@ def tool_invoke(tool_name: str, args: tuple[str, ...], bundle: str | None, outpu
             # Use as plain string
             tool_args[key] = value
 
-    # Determine bundle path
+    # Determine bundle
     if bundle:
-        # Explicit bundle flag
-        use_bundle, bundle_name, profile_name = True, bundle, None
+        bundle_name = bundle
     else:
-        # Auto-detect: bundle if configured, else foundation bundle (default)
-        use_bundle, bundle_name, profile_name = _should_use_bundle()
+        _, bundle_name, _ = _should_use_bundle()
 
     # Run the invocation
     try:
-        if use_bundle:
-            result = asyncio.run(
-                _invoke_tool_from_bundle_async(bundle_name, tool_name, tool_args)
-            )  # type: ignore[arg-type]
-        else:
-            # Deprecated profile path
-            result = asyncio.run(
-                _invoke_tool_async(
-                    profile_name or _get_active_profile_name(), tool_name, tool_args
-                )
-            )
+        result = asyncio.run(
+            _invoke_tool_from_bundle_async(bundle_name, tool_name, tool_args)
+        )  # type: ignore[arg-type]
     except Exception as e:
         if output == "json":
             error_output = {"status": "error", "error": str(e), "tool": tool_name}
@@ -691,26 +453,6 @@ def tool_invoke(tool_name: str, args: tuple[str, ...], bundle: str | None, outpu
                 console.print(f"  - {item}")
         else:
             console.print(f"  {result}")
-
-
-async def _invoke_tool_async(
-    profile_name: str, tool_name: str, tool_args: dict[str, Any]
-) -> Any:
-    """Invoke a tool within a session context.
-
-    DEPRECATED: Profiles are deprecated. Use bundles instead.
-
-    Args:
-        profile_name: Profile determining which tools are available
-        tool_name: Name of tool to invoke
-        tool_args: Arguments to pass to the tool
-
-    Returns:
-        Never returns - always raises NotImplementedError
-    """
-    raise NotImplementedError(
-        "Profile mode is deprecated. Use bundles instead: 'amplifier bundle use <bundle-name>'"
-    )
 
 
 __all__ = ["tool"]

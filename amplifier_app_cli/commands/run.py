@@ -164,12 +164,8 @@ def register_run_command(
         try:
             config_data, prepared_bundle = resolve_config(
                 bundle_name=bundle,
-                profile_override=None,
-                config_manager=config_manager,
-                profile_loader=None,
                 agent_loader=None,  # Agent loading handled via bundle preparation
                 app_settings=app_settings,
-                cli_config=cli_overrides,
                 console=console,
             )
         except FileNotFoundError as exc:

@@ -150,20 +150,15 @@ class AppSettings:
         """Clear provider at specified scope."""
         self._remove_setting("provider", scope)
 
-    # ----- Legacy profile support (for backward compatibility) -----
+    # ----- Legacy profile support (deprecated - always returns None) -----
 
     def get_active_profile(self) -> str | None:
-        """Get currently active profile name (legacy support).
+        """Get currently active profile name (deprecated).
 
-        Reads from profile.active path for compatibility.
+        Profiles have been removed. Always returns None.
+        Use get_active_bundle() instead.
         """
-        settings = self.get_merged_settings()
-        profile_settings = settings.get("profile") or {}
-        return (
-            profile_settings.get("active")
-            if isinstance(profile_settings, dict)
-            else None
-        )
+        return None
 
     def set_active_profile(self, name: str, scope: Scope = "global") -> None:
         """Set the active profile at specified scope (legacy support)."""

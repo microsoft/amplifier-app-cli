@@ -178,23 +178,18 @@ async def resolve_bundle_config(
 def resolve_app_config(
     *,
     config_manager,
-    profile_loader,
     agent_loader,
     app_settings: AppSettings,
     cli_config: dict[str, Any] | None = None,
-    profile_override: str | None = None,
     bundle_name: str | None = None,
     bundle_registry: BundleRegistry | None = None,
     console: Console | None = None,
 ) -> dict[str, Any]:
     """Resolve configuration with precedence, returning a mount plan dictionary.
 
-    Configuration can come from either:
-    - A profile (traditional approach via profile_loader)
-    - A bundle (new approach via bundle_registry)
-
-    If bundle_name is specified and bundle_registry is provided, bundles take
-    precedence. Otherwise, falls back to profile-based configuration.
+    Configuration comes from bundles. If bundle_name is specified and
+    bundle_registry is provided, that bundle is loaded. Otherwise, falls back
+    to the default bundle.
     """
     # 1. Base mount plan defaults
     config: dict[str, Any] = {
@@ -650,12 +645,8 @@ def _build_notification_behaviors(
 async def resolve_config_async(
     *,
     bundle_name: str | None = None,
-    profile_override: str | None = None,
-    config_manager=None,
-    profile_loader=None,
     agent_loader=None,
     app_settings: AppSettings,
-    cli_config: dict[str, Any] | None = None,
     console: Console | None = None,
     session_id: str | None = None,
     project_slug: str | None = None,
@@ -669,21 +660,15 @@ async def resolve_config_async(
     Use resolve_config() for synchronous contexts (e.g., click commands).
 
     Args:
-        bundle_name: If set, use bundle mode (resolve_bundle_config)
-        profile_override: If set (and no bundle_name), use profile mode
-        config_manager: Required for profile mode
-        profile_loader: Required for profile mode
-        agent_loader: Required for both modes
-        app_settings: Required for both modes
-        cli_config: Optional CLI overrides (profile mode only)
+        bundle_name: Bundle to load (defaults to 'foundation' if not specified)
+        agent_loader: Agent loader for resolving agent configurations
+        app_settings: Application settings
         console: Optional console for output
         session_id: Optional session ID for session-scoped tool overrides
         project_slug: Optional project slug (required if session_id provided)
 
     Returns:
-        Tuple of (config_data dict, PreparedBundle or None)
-        - Bundle mode: returns (config, prepared_bundle)
-        - Profile mode: returns (config, None)
+        Tuple of (config_data dict, PreparedBundle)
     """
     if bundle_name:
         # Bundle mode: use resolve_bundle_config which handles:
@@ -721,12 +706,8 @@ async def resolve_config_async(
 def resolve_config(
     *,
     bundle_name: str | None = None,
-    profile_override: str | None = None,
-    config_manager=None,
-    profile_loader=None,
     agent_loader=None,
     app_settings: AppSettings,
-    cli_config: dict[str, Any] | None = None,
     console: Console | None = None,
     session_id: str | None = None,
     project_slug: str | None = None,
@@ -737,21 +718,15 @@ def resolve_config(
     For async contexts, use resolve_config_async() directly.
 
     Args:
-        bundle_name: If set, use bundle mode (resolve_bundle_config)
-        profile_override: If set (and no bundle_name), use profile mode
-        config_manager: Required for profile mode
-        profile_loader: Required for profile mode
-        agent_loader: Required for both modes
-        app_settings: Required for both modes
-        cli_config: Optional CLI overrides (profile mode only)
+        bundle_name: Bundle to load (defaults to 'foundation' if not specified)
+        agent_loader: Agent loader for resolving agent configurations
+        app_settings: Application settings
         console: Optional console for output
         session_id: Optional session ID for session-scoped tool overrides
         project_slug: Optional project slug (required if session_id provided)
 
     Returns:
-        Tuple of (config_data dict, PreparedBundle or None)
-        - Bundle mode: returns (config, prepared_bundle)
-        - Profile mode: returns (config, None)
+        Tuple of (config_data dict, PreparedBundle)
     """
     import gc
 
@@ -767,12 +742,8 @@ def resolve_config(
         result = asyncio.run(
             resolve_config_async(
                 bundle_name=bundle_name,
-                profile_override=profile_override,
-                config_manager=config_manager,
-                profile_loader=profile_loader,
                 agent_loader=agent_loader,
                 app_settings=app_settings,
-                cli_config=cli_config,
                 console=console,
                 session_id=session_id,
                 project_slug=project_slug,

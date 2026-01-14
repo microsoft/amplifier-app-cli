@@ -122,15 +122,15 @@ class ConfigManager:
         settings = self._deep_merge(settings, updates)
         self._write_yaml(path, settings)
 
-    # ----- Profile management (legacy, kept for compatibility) -----
+    # ----- Profile management (deprecated - always returns None) -----
 
     def get_active_profile(self) -> str | None:
-        """Get currently active profile name from merged settings."""
-        merged = self.get_merged_settings()
-        profile_section = merged.get("profile", {})
-        if isinstance(profile_section, dict) and "active" in profile_section:
-            return profile_section["active"]
-        return merged.get("active_profile")
+        """Get currently active profile name (deprecated).
+
+        Profiles have been removed. Always returns None.
+        Use get_active_bundle() instead.
+        """
+        return None
 
     def set_active_profile(self, name: str, scope: Scope = Scope.LOCAL) -> None:
         """Set the active profile at specified scope."""
