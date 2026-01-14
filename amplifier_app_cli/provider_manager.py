@@ -11,6 +11,7 @@ from amplifier_app_cli.lib.config_compat import ConfigManager
 from .lib.app_settings import AppSettings
 from .lib.app_settings import ScopeType
 from .provider_loader import get_provider_info
+from .provider_sources import _get_ordered_providers
 from .provider_sources import get_effective_provider_sources
 from .provider_sources import is_local_path
 from .provider_sources import source_from_uri
@@ -262,8 +263,11 @@ class ProviderManager:
         providers: dict[str, tuple[str, str, str]] = {}
 
         # Use effective sources (includes both default and user-added providers)
+        # Order by dependencies so that e.g. provider-openai is processed before
+        # provider-azure-openai (which imports from the openai provider module)
         effective_sources = get_effective_provider_sources(self.config)
-        for module_id, source_uri in effective_sources.items():
+        ordered_providers = _get_ordered_providers(effective_sources)
+        for module_id, source_uri in ordered_providers:
             try:
                 # Resolve source to path (handles both git URLs and local paths)
                 source = source_from_uri(source_uri)
