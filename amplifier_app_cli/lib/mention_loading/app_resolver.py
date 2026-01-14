@@ -200,3 +200,27 @@ class AppMentionResolver:
         logger.debug(f"Bundle resource not found: {resource_path}")
         return None
 
+    def _resolve_relative(self, mention: str) -> Path | None:
+        """Resolve @path → base_path/path.
+
+        Uses self.relative_to if set, otherwise falls back to CWD.
+        """
+        path = mention[1:]  # Remove "@"
+        if not path:
+            return None
+
+        # Use relative_to if set, otherwise CWD
+        base_path = self.relative_to if self.relative_to else Path.cwd()
+
+        # Handle explicit relative paths
+        if path.startswith("./") or path.startswith("../"):
+            resolved_path = (base_path / path).resolve()
+        else:
+            resolved_path = base_path / path
+
+        if resolved_path.exists():
+            logger.debug(f"Relative path resolved: {mention} -> {resolved_path}")
+            return resolved_path.resolve()
+
+        logger.debug(f"Relative path not found: {resolved_path}")
+        return None
