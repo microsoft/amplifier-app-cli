@@ -164,14 +164,13 @@ class AppSettings:
             List of hook override dicts ready for _apply_hook_overrides().
         """
         notifications = self.get_notification_config()
-        if not notifications:
-            return []
 
         overrides: list[dict[str, Any]] = []
 
         # Map desktop notification settings to hooks-notify module
+        # Desktop notifications are ENABLED by default (set enabled: false to disable)
         desktop_config = notifications.get("desktop", {})
-        if desktop_config and desktop_config.get("enabled", False):
+        if desktop_config.get("enabled", True):
             # Build config dict from desktop settings
             hook_config: dict[str, Any] = {"enabled": True}
             # Map known desktop settings
