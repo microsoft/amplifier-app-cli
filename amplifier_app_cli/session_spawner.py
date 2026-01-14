@@ -424,7 +424,7 @@ async def spawn_sub_session(
     else:
         # Fallback to fresh resolver if parent doesn't have one
         child_session.coordinator.register_capability(
-            "mention_resolver", AppMentionResolver(enable_collections=False)
+            "mention_resolver", AppMentionResolver()
         )
 
     # Mention deduplicator - inherit from parent to preserve session-wide deduplication state
@@ -630,9 +630,7 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
         }
         child_session.coordinator.register_capability(
             "mention_resolver",
-            AppMentionResolver(
-                enable_collections=False, bundle_mappings=mention_mappings
-            ),
+            AppMentionResolver(bundle_mappings=mention_mappings),
         )
         logger.debug(
             f"Restored AppMentionResolver with {len(mention_mappings)} bundle mappings"
@@ -640,7 +638,7 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     else:
         # Fallback to fresh resolver without bundle mappings
         child_session.coordinator.register_capability(
-            "mention_resolver", AppMentionResolver(enable_collections=False)
+            "mention_resolver", AppMentionResolver()
         )
 
     # Mention deduplicator - create fresh (deduplication state doesn't persist across resumes)

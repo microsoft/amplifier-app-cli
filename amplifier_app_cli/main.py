@@ -445,9 +445,8 @@ class CommandProcessor:
         # Show session name if available
         try:
             from .session_store import SessionStore
-            from .paths import get_sessions_dir
 
-            store = SessionStore(get_sessions_dir())
+            store = SessionStore()
             if store.exists(session_id):
                 metadata = store.get_metadata(session_id)
                 if metadata.get("name"):
@@ -502,9 +501,8 @@ class CommandProcessor:
         try:
             from datetime import datetime, UTC
             from .session_store import SessionStore
-            from .paths import get_sessions_dir
 
-            store = SessionStore(get_sessions_dir())
+            store = SessionStore()
             if not store.exists(session_id):
                 return f"Session {session_id[:8]}... not found in storage"
 

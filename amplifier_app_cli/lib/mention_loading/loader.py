@@ -69,7 +69,7 @@ class MentionLoader:
         Args:
             resolver: Resolver implementing MentionResolverProtocol (default: creates AppMentionResolver)
         """
-        self.resolver = resolver or AppMentionResolver(enable_collections=False)
+        self.resolver = resolver or AppMentionResolver()
 
     def has_mentions(self, text: str) -> bool:
         """Check if text contains @mention patterns.
