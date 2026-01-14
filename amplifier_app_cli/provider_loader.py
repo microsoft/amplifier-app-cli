@@ -230,40 +230,46 @@ def _try_instantiate_provider(
     host = _resolve_env_placeholder(raw_host) or "http://localhost:11434"
     api_key = _resolve_env_placeholder(raw_api_key) or ""
 
+    # Common exceptions to catch during instantiation attempts:
+    # - TypeError: wrong argument signature
+    # - ValueError: invalid argument values
+    # - RuntimeError: some providers raise this for missing dependencies (e.g., old azure-openai)
+    instantiation_errors = (TypeError, ValueError, RuntimeError)
+
     # Approach 1: Standard (api_key, config) - Anthropic, OpenAI
     try:
         return provider_class(api_key=api_key, config={})
-    except (TypeError, ValueError):
+    except instantiation_errors:
         pass
 
     # Approach 2: Azure-style (keyword-only base_url with api_key)
     try:
         return provider_class(base_url=base_url, api_key=api_key, config={})
-    except (TypeError, ValueError):
+    except instantiation_errors:
         pass
 
     # Approach 3: VLLM-style (base_url without api_key)
     try:
         return provider_class(base_url=base_url, config={})
-    except (TypeError, ValueError):
+    except instantiation_errors:
         pass
 
     # Approach 4: Ollama-style (host, config)
     try:
         return provider_class(host=host, config={})
-    except (TypeError, ValueError):
+    except instantiation_errors:
         pass
 
     # Approach 5: Just config
     try:
         return provider_class(config={})
-    except (TypeError, ValueError):
+    except instantiation_errors:
         pass
 
     # Approach 6: No args
     try:
         return provider_class()
-    except (TypeError, ValueError):
+    except instantiation_errors:
         pass
 
     return None

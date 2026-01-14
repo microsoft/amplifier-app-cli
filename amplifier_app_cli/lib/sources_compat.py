@@ -266,6 +266,7 @@ class GitSource:
             "install",
             "--target",
             str(target),
+            "--refresh",  # Force fresh fetch from git sources
             git_url,
         ]
 

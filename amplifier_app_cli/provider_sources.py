@@ -215,6 +215,7 @@ def ensure_provider_installed(
                 str(module_path),
                 "--python",
                 sys.executable,
+                "--refresh",  # Force fresh fetch from git sources
             ],
             capture_output=True,
             text=True,

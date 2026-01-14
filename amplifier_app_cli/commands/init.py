@@ -101,9 +101,7 @@ def check_first_run() -> bool:
             f"Provider {current_provider.module_id} is configured but not installed. "
             "Auto-installing providers (this can happen after `amplifier update`)..."
         )
-        console.print(
-            "[dim]Provider modules need reinstallation (post-update fix)...[/dim]"
-        )
+        console.print("[dim]Installing provider modules...[/dim]")
 
         installed = install_known_providers(config, console, verbose=True)
         if installed:
