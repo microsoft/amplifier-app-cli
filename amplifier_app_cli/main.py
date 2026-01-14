@@ -38,6 +38,7 @@ from .commands.init import check_first_run
 from .commands.init import init_cmd
 from .commands.init import prompt_first_run_init
 from .commands.module import module as module_group
+from .commands.notify import notify as notify_group
 from .commands.provider import provider as provider_group
 from .commands.reset import reset as reset_cmd
 from .commands.run import register_run_command
@@ -1679,6 +1680,7 @@ cli.add_command(denied_dirs_group)
 cli.add_command(bundle_group)
 cli.add_command(init_cmd)
 cli.add_command(module_group)
+cli.add_command(notify_group)
 cli.add_command(provider_group)
 cli.add_command(source_group)
 cli.add_command(tool_group)
