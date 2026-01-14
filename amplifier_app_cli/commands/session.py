@@ -135,8 +135,15 @@ def _prepare_resume_context(
         if saved_bundle:
             bundle_name = saved_bundle
         elif saved_profile:
-            effective_profile = saved_profile
-            saved_profile_used = saved_profile
+            # Legacy profile sessions can no longer be resumed with their original config
+            # since the profile system has been removed. Fall back to default bundle.
+            console.print(
+                f"[yellow]⚠ Legacy session detected:[/yellow] This session was created with "
+                f"profile '{saved_profile}' which is no longer supported.\n"
+                f"[dim]  Resuming with default bundle. Use --force-bundle to specify a bundle.[/dim]"
+            )
+            # Don't set effective_profile - let it fall through to bundle mode with default
+            bundle_name = "foundation"  # Use foundation as sensible default
 
     config_manager = create_config_manager()
     
