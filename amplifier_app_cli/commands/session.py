@@ -1427,7 +1427,6 @@ def _interactive_resume_impl(
                 ctx.invoke(
                     sessions_resume_cmd,
                     session_id=selected_session_id,
-                    profile=None,
                     force_bundle=force_bundle,
                     no_history=False,
                     full_history=False,
