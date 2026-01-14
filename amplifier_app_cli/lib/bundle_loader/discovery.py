@@ -97,19 +97,15 @@ class AppBundleDiscovery:
     def __init__(
         self,
         search_paths: list[Path] | None = None,
-        collection_resolver: object
-        | None = None,  # DEPRECATED: CollectionResolver removed
         registry: BundleRegistry | None = None,
     ) -> None:
         """Initialize discovery with search paths.
 
         Args:
             search_paths: Explicit search paths (default: CLI standard paths).
-            collection_resolver: DEPRECATED - collections are no longer supported.
             registry: Optional BundleRegistry (creates default if not provided).
         """
         self._search_paths = search_paths or self._default_search_paths()
-        self._collection_resolver = collection_resolver  # DEPRECATED: unused
         self._registry = registry or BundleRegistry()
 
         # Register well-known bundles first (defaults)
@@ -208,15 +204,6 @@ class AppBundleDiscovery:
                 self._registry.register({name: uri})
                 return uri
 
-        # Try collections if resolver available
-        if self._collection_resolver:
-            uri = self._find_in_collections(name)
-            if uri:
-                logger.debug(f"Found bundle '{name}' in collection at {uri}")
-                # Register for future lookups
-                self._registry.register({name: uri})
-                return uri
-
         logger.debug(f"Bundle '{name}' not found in any search path")
         return None
 
@@ -298,35 +285,6 @@ class AppBundleDiscovery:
             return f"file://{md_file.resolve()}"
 
         return None
-
-    def _find_in_collections(self, name: str) -> str | None:
-        """Search for bundle in installed collections.
-
-        Args:
-            name: Bundle name.
-
-        Returns:
-            file:// URI if found, None otherwise.
-        """
-        if not self._collection_resolver:
-            return None
-
-        for (
-            _metadata_name,
-            collection_path,
-        ) in self._collection_resolver.list_collections():
-            # Check if collection has bundles
-            bundles_dir = collection_path / "bundles"
-            if bundles_dir.exists():
-                uri = self._find_in_path(bundles_dir, name)
-                if uri:
-                    return uri
-
-            # Also check collection root for direct bundle files
-            uri = self._find_in_path(collection_path, name)
-            if uri:
-                return uri
-
         return None
 
     def register(self, name: str, uri: str) -> None:
@@ -399,10 +357,6 @@ class AppBundleDiscovery:
         # Scan filesystem paths
         for base_path in self._search_paths:
             bundles.update(self._scan_path_for_bundles(base_path))
-
-        # Scan collections
-        if self._collection_resolver:
-            bundles.update(self._scan_collections_for_bundles())
 
         # Read ALL from persisted registry (includes dependencies and sub-bundles)
         bundles.update(self._read_all_from_registry())
@@ -643,23 +597,3 @@ class AppBundleDiscovery:
 
         return bundles
 
-    def _scan_collections_for_bundles(self) -> list[str]:
-        """Scan collections for bundle names.
-
-        Returns:
-            List of bundle names found in collections.
-        """
-        bundles = []
-
-        if not self._collection_resolver:
-            return bundles
-
-        for (
-            _metadata_name,
-            collection_path,
-        ) in self._collection_resolver.list_collections():
-            bundles_dir = collection_path / "bundles"
-            if bundles_dir.exists():
-                bundles.extend(self._scan_path_for_bundles(bundles_dir))
-
-        return bundles

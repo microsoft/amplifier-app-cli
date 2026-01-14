@@ -58,28 +58,11 @@ class CachedGitStatus:
 
 
 @dataclass
-class CollectionStatus:
-    """Status of an installed collection."""
-
-    name: str
-    source_type: str = "collection"
-    source: str | None = None
-    layer: str = "user"
-
-    # SHA comparison
-    installed_sha: str | None = None
-    remote_sha: str | None = None
-    has_update: bool = False
-    installed_at: str | None = None
-
-
-@dataclass
 class UpdateReport:
     """Comprehensive update status for all sources."""
 
     local_file_sources: list[LocalFileStatus]
     cached_git_sources: list[CachedGitStatus]
-    collection_sources: list[CollectionStatus] = field(default_factory=list)
     cached_modules_checked: int = 0  # How many cache entries were examined
 
     @property
@@ -94,10 +77,7 @@ class UpdateReport:
         # Cached git sources with updates (check has_update flag)
         git_updates = any(s.has_update for s in self.cached_git_sources)
 
-        # Collections with updates (check has_update flag)
-        collection_updates = any(s.has_update for s in self.collection_sources)
-
-        return local_updates or git_updates or collection_updates
+        return local_updates or git_updates
 
     @property
     def has_local_changes(self) -> bool:
@@ -174,7 +154,7 @@ async def check_all_sources(
     return UpdateReport(
         local_file_sources=local_statuses,
         cached_git_sources=git_statuses,
-        collection_sources=[],  # Collections deprecated - always empty
+        # Collections removed - no collection sources
         cached_modules_checked=cached_modules_checked,
     )
 

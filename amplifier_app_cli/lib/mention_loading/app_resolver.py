@@ -56,7 +56,6 @@ class AppMentionResolver:
         foundation_resolver: BaseMentionResolver
         | MentionResolverProtocol
         | None = None,
-        enable_collections: bool = False,
         bundle_mappings: dict[str, Path] | None = None,
     ):
         """Initialize app mention resolver.
@@ -66,26 +65,13 @@ class AppMentionResolver:
                 In bundle mode, this should be the resolver registered by
                 PreparedBundle.create_session() which has all composed bundle
                 namespaces (e.g., foundation, recipes).
-            enable_collections: DEPRECATED - collections are no longer supported.
-                This parameter is ignored; collection resolution is disabled.
             bundle_mappings: Optional dict mapping bundle namespace to base_path.
                 Enables @namespace:path mentions to resolve from the bundle's
-                base_path. Used in profile mode when foundation_resolver is not
-                available. Supports multiple namespaces from composed bundles.
+                base_path. Supports multiple namespaces from composed bundles.
         """
         self.foundation_resolver = foundation_resolver
-        self._enable_collections = enable_collections
         self._bundle_mappings = bundle_mappings or {}
-        self._collection_resolver = None
         self.relative_to: Path | None = None  # For context-relative path resolution
-
-        if enable_collections:
-            try:
-                from ...paths import create_collection_resolver
-
-                self._collection_resolver = create_collection_resolver()
-            except ImportError:
-                logger.debug("Collection resolver not available")
 
     def resolve(self, mention: str) -> Path | None:
         """Resolve @mention to file path.
@@ -134,16 +120,6 @@ class AppMentionResolver:
             result = self._resolve_bundle_mapping(mention)
             if result:
                 logger.debug(f"Resolved via bundle mapping: {mention} -> {result}")
-                return result
-
-        # === COLLECTIONS (deprecated, profile mode only) ===
-        # Only try collections if bundle resolution failed AND collections enabled
-        if self._enable_collections and ":" in mention[1:]:
-            result = self._resolve_collection(mention)
-            if result:
-                logger.debug(
-                    f"Resolved via collection (deprecated): {mention} -> {result}"
-                )
                 return result
 
         # === RELATIVE PATHS ===
@@ -224,65 +200,3 @@ class AppMentionResolver:
         logger.debug(f"Bundle resource not found: {resource_path}")
         return None
 
-    def _resolve_collection(self, mention: str) -> Path | None:
-        """Resolve @collection:path (DEPRECATED).
-
-        Only used in legacy profile mode. Bundle mode should not call this.
-        """
-        if not self._collection_resolver:
-            return None
-
-        # Extract prefix and path
-        prefix, path = mention[1:].split(":", 1)
-
-        # Skip app shortcuts (already handled)
-        if prefix in ("user", "project"):
-            return None
-
-        collection_path = self._collection_resolver.resolve(prefix)
-        if collection_path:
-            resource_path = collection_path / path
-
-            # Try at collection path first
-            if resource_path.exists():
-                return resource_path.resolve()
-
-            # Hybrid packaging fallback: try parent directory
-            if (collection_path / "pyproject.toml").exists():
-                parent_resource_path = collection_path.parent / path
-                if parent_resource_path.exists():
-                    logger.debug(
-                        f"Collection resource found at parent: {parent_resource_path}"
-                    )
-                    return parent_resource_path.resolve()
-
-            logger.debug(f"Collection resource not found: {resource_path}")
-            return None
-
-        logger.debug(f"Collection '{prefix}' not found")
-        return None
-
-    def _resolve_relative(self, mention: str) -> Path | None:
-        """Resolve @path → base_path/path.
-
-        Uses self.relative_to if set, otherwise falls back to CWD.
-        """
-        path = mention[1:]  # Remove "@"
-        if not path:
-            return None
-
-        # Use relative_to if set, otherwise CWD
-        base_path = self.relative_to if self.relative_to else Path.cwd()
-
-        # Handle explicit relative paths
-        if path.startswith("./") or path.startswith("../"):
-            resolved_path = (base_path / path).resolve()
-        else:
-            resolved_path = base_path / path
-
-        if resolved_path.exists():
-            logger.debug(f"Relative path resolved: {mention} -> {resolved_path}")
-            return resolved_path.resolve()
-
-        logger.debug(f"Relative path not found: {resolved_path}")
-        return None

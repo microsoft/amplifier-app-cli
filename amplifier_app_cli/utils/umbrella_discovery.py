@@ -82,7 +82,6 @@ def reconstruct_umbrella_from_libraries() -> UmbrellaInfo | None:
     library_names = [
         "amplifier-core",
         "amplifier-app-cli",
-        "amplifier-profiles",
         "amplifier-config",
     ]
 

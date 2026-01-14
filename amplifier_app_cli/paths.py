@@ -18,8 +18,6 @@ from amplifier_app_cli.lib.config_compat import Scope
 # LEGACY: These imports are no longer available - bundles are the only supported mode
 # CollectionResolver, ProfileLoader, StandardModuleSourceResolver, AgentLoader are removed
 # Functions that used these will raise NotImplementedError
-CollectionResolver = None  # type: ignore[assignment,misc]
-ProfileLoader = None  # type: ignore[assignment,misc]
 StandardModuleSourceResolver = None  # type: ignore[assignment,misc]
 
 if TYPE_CHECKING:

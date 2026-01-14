@@ -183,13 +183,6 @@ class SettingsProviderProtocol(Protocol):
         ...
 
 
-class CollectionModuleProviderProtocol(Protocol):
-    """Interface for collection module lookup."""
-
-    def get_collection_modules(self) -> dict[str, str]:
-        """Get module_id -> absolute_path mappings from installed collections."""
-        ...
-
 
 class FoundationSettingsResolver:
     """Settings-based resolver using foundation's source handling.
@@ -204,7 +197,6 @@ class FoundationSettingsResolver:
     2. Workspace convention (workspace_dir/<id>/)
     3. Settings provider (merges project + user settings)
     4. Collection modules (registered via installed collections)
-    5. Profile hint
     6. Installed package
     """
 
@@ -212,18 +204,15 @@ class FoundationSettingsResolver:
         self,
         workspace_dir: Path | None = None,
         settings_provider: SettingsProviderProtocol | None = None,
-        collection_provider: CollectionModuleProviderProtocol | None = None,
     ) -> None:
         """Initialize resolver with optional configuration.
 
         Args:
             workspace_dir: Optional workspace directory path (layer 2)
             settings_provider: Optional settings provider (layer 3)
-            collection_provider: Optional collection module provider (layer 4)
         """
         self.workspace_dir = workspace_dir
         self.settings_provider = settings_provider
-        self.collection_provider = collection_provider
 
     def resolve(
         self, module_id: str, profile_hint: str | None = None
@@ -270,15 +259,7 @@ class FoundationSettingsResolver:
                 logger.debug(f"[module:resolve] {module_id} -> settings")
                 return (self._parse_source(sources[module_id], module_id), "settings")
 
-        # Layer 4: Collection modules (registered via installed collections)
-        if self.collection_provider:
-            collection_modules = self.collection_provider.get_collection_modules()
-            if module_id in collection_modules:
-                module_path = Path(collection_modules[module_id])
-                logger.debug(f"[module:resolve] {module_id} -> collection ({module_path})")
-                return (FoundationFileSource(module_path), "collection")
-
-        # Layer 5: Source hint (from bundle config)
+        # Layer 4: Source hint (from bundle config)
         if profile_hint:
             logger.debug(f"[module:resolve] {module_id} -> source_hint")
             return (self._parse_source(profile_hint, module_id), "source_hint")
@@ -402,12 +383,6 @@ class FoundationSettingsResolver:
             sources = self.settings_provider.get_module_sources()
             if module_id in sources:
                 return sources[module_id]
-
-        # Check collection provider
-        if self.collection_provider:
-            collection_modules = self.collection_provider.get_collection_modules()
-            if module_id in collection_modules:
-                return collection_modules[module_id]
 
         return None
 
