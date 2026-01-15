@@ -122,40 +122,7 @@ class ConfigManager:
         settings = self._deep_merge(settings, updates)
         self._write_yaml(path, settings)
 
-    # ----- Profile management (deprecated - always returns None) -----
 
-    def get_active_profile(self) -> str | None:
-        """Get currently active profile name (deprecated).
-
-        Profiles have been removed. Always returns None.
-        Use get_active_bundle() instead.
-        """
-        return None
-
-    def set_active_profile(self, name: str, scope: Scope = Scope.LOCAL) -> None:
-        """Set the active profile at specified scope."""
-        self.update_settings({"profile": {"active": name}}, scope=scope)
-
-    def clear_active_profile(self, scope: Scope = Scope.LOCAL) -> None:
-        """Clear active profile from specified scope."""
-        path = self.scope_to_path(scope)
-        if path is None:
-            return
-
-        settings = self._read_yaml(path) or {}
-        profile_section = settings.get("profile", {})
-
-        if isinstance(profile_section, dict) and "active" in profile_section:
-            del profile_section["active"]
-            if not profile_section:
-                settings.pop("profile", None)
-            else:
-                settings["profile"] = profile_section
-            self._write_yaml(path, settings)
-
-        if "active_profile" in settings:
-            del settings["active_profile"]
-            self._write_yaml(path, settings)
 
     # ----- Module source overrides -----
 
@@ -199,13 +166,7 @@ class ConfigManager:
             return True
         return False
 
-    # ----- Collection source overrides (legacy) -----
 
-    def get_collection_sources(self) -> dict[str, str]:
-        """Get all collection source overrides from merged settings."""
-        merged = self.get_merged_settings()
-        sources = merged.get("sources", {}).get("collections", {})
-        return sources if isinstance(sources, dict) else {}
 
 
 __all__ = ["ConfigManager", "ConfigPaths", "Scope"]

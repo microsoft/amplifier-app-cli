@@ -243,8 +243,7 @@ def source_add(
     if source_type == "module":
         app_settings.add_source_override(identifier, source_uri, scope=scope)
     else:
-        # Note: Uses collection_source_override API for backward compatibility
-        app_settings.add_collection_source_override(identifier, source_uri, scope=scope)
+        app_settings.add_bundle_source_override(identifier, source_uri, scope=scope)
 
     scope_labels = {
         "local": "local (.amplifier/settings.local.yaml)",
@@ -347,14 +346,10 @@ def source_remove(
     removed_module = False
     removed_bundle = False
 
-    # Try to remove based on flags or both
     if force_module or not force_bundle:
         removed_module = app_settings.remove_source_override(identifier, scope=scope)
     if force_bundle or not force_module:
-        # Note: Uses collection_source_override API for backward compatibility
-        removed_bundle = app_settings.remove_collection_source_override(
-            identifier, scope=scope
-        )
+        removed_bundle = app_settings.remove_bundle_source_override(identifier, scope=scope)
 
     # Also clean up any provider config entries with local source paths for this module
     provider_cleaned = False
@@ -447,8 +442,7 @@ def source_list():
     """
     app_settings = AppSettings()
     module_sources = app_settings.get_module_sources()
-    # Note: Uses collection_sources API for backward compatibility
-    bundle_sources = app_settings.get_collection_sources()
+    bundle_sources = app_settings.get_bundle_sources()
 
     if not module_sources and not bundle_sources:
         console.print("[yellow]No source overrides configured[/yellow]")

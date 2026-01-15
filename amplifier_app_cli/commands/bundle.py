@@ -1,10 +1,6 @@
 """Bundle management commands for the Amplifier CLI.
 
-Bundles are an configuration format for configuring Amplifier sessions.
-When a bundle is active, it takes precedence over the profile system.
-
-Per IMPLEMENTATION_PHILOSOPHY: Bundles and profiles coexist - profiles remain
-the default, bundles are explicitly opted into via `amplifier bundle use`.
+Bundles are the configuration format for configuring Amplifier sessions.
 """
 
 from __future__ import annotations
@@ -15,7 +11,6 @@ from typing import TYPE_CHECKING
 from typing import cast
 
 import click
-from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
@@ -47,27 +42,6 @@ def _remove_bundle_from_settings(app_settings: AppSettings, scope: ScopeType) ->
         settings = app_settings._read_scope(scope)
         if settings and "bundle" in settings:
             del settings["bundle"]
-            app_settings._write_scope(scope, settings)
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def _remove_profile_from_settings(app_settings: AppSettings, scope: ScopeType) -> bool:
-    """Remove the profile key entirely from a settings file.
-
-    This ensures that after bundle clear, the system defaults to the
-    foundation bundle (Phase 2 behavior) rather than falling back to
-    a previously-set profile.
-
-    Returns:
-        True if profile was removed, False if not present or error
-    """
-    try:
-        settings = app_settings._read_scope(scope)
-        if settings and "profile" in settings:
-            del settings["profile"]
             app_settings._write_scope(scope, settings)
             return True
     except Exception:
@@ -373,11 +347,7 @@ def bundle_show(name: str, detailed: bool):
     "--global", "scope_flag", flag_value="global", help="Set globally (all projects)"
 )
 def bundle_use(name: str, scope_flag: str | None):
-    """Set a bundle as active (opts out of profile system).
-
-    When a bundle is active, it takes precedence over profiles for session
-    configuration. Use 'amplifier bundle clear' to revert to profiles.
-    """
+    """Set a bundle as active."""
     # Verify bundle exists
     discovery = AppBundleDiscovery()
     uri = discovery.find(name)
@@ -434,10 +404,7 @@ def bundle_use(name: str, scope_flag: str | None):
 )
 @click.option("--all", "clear_all", is_flag=True, help="Clear settings from all scopes")
 def bundle_clear(scope_flag: str | None, clear_all: bool):
-    """Clear bundle and profile settings (reverts to default foundation bundle).
-
-    Clears both bundle.active and profile.active settings, so the system
-    defaults to the foundation bundle (Phase 2 behavior).
+    """Clear bundle settings (reverts to default foundation bundle).
 
     Without scope flags, auto-detects and clears from wherever settings are found.
     Use --all to clear from all scopes.
@@ -445,10 +412,7 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
     app_settings = AppSettings()
 
     if clear_all:
-        # Clear from all available scopes by removing bundle and profile keys entirely
-        # This ensures the system defaults to foundation bundle (Phase 2 behavior)
         bundle_cleared: list[str] = []
-        profile_cleared: list[str] = []
         scopes: list[tuple[ScopeType, str]] = [
             ("local", "local"),
             ("project", "project"),
@@ -458,38 +422,26 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
             if app_settings.is_scope_available(scope):
                 if _remove_bundle_from_settings(app_settings, scope):
                     bundle_cleared.append(name)
-                if _remove_profile_from_settings(app_settings, scope):
-                    profile_cleared.append(name)
 
         if bundle_cleared:
             console.print(
                 f"[green]✓ Cleared bundle settings from: {', '.join(bundle_cleared)}[/green]"
             )
-        if profile_cleared:
-            console.print(
-                f"[green]✓ Cleared profile settings from: {', '.join(profile_cleared)}[/green]"
-            )
-        if not bundle_cleared and not profile_cleared:
-            console.print(
-                "[yellow]No bundle or profile settings found to clear[/yellow]"
-            )
+        else:
+            console.print("[yellow]No bundle settings found to clear[/yellow]")
 
         console.print("[green]Now using default: foundation bundle[/green]")
         return
 
-    # If no scope specified, auto-detect which scope has bundle or profile settings
     if scope_flag is None:
-        detected_scope = _find_bundle_or_profile_scope(app_settings)
+        detected_scope = _find_bundle_scope(app_settings)
         if detected_scope is None:
-            console.print(
-                "[yellow]No bundle or profile settings found in any scope[/yellow]"
-            )
+            console.print("[yellow]No bundle settings found in any scope[/yellow]")
             console.print("[dim]Already using default: foundation bundle[/dim]")
             return
         scope = detected_scope
         console.print(f"[dim]Auto-detected settings in {scope} scope[/dim]")
     else:
-        # Clear from specific scope
         try:
             scope, was_fallback = get_effective_scope(
                 cast(ScopeType, scope_flag),
@@ -504,30 +456,19 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
             console.print(f"[red]Error:[/red] {e.message}")
             sys.exit(1)
 
-    # Remove bundle and profile keys entirely to default to foundation bundle (Phase 2)
     bundle_removed = _remove_bundle_from_settings(app_settings, scope)
-    profile_removed = _remove_profile_from_settings(app_settings, scope)
 
-    if not bundle_removed and not profile_removed:
-        console.print(f"[yellow]No bundle or profile setting in {scope} scope[/yellow]")
+    if not bundle_removed:
+        console.print(f"[yellow]No bundle setting in {scope} scope[/yellow]")
         return
 
-    if bundle_removed:
-        console.print(f"[green]✓ Cleared bundle from {scope} scope[/green]")
-    if profile_removed:
-        console.print(f"[green]✓ Cleared profile from {scope} scope[/green]")
+    console.print(f"[green]✓ Cleared bundle from {scope} scope[/green]")
 
-    # Check if any bundle or profile is still active at other scopes
     remaining_bundle = app_settings.get_active_bundle()
-    remaining_profile = app_settings.get_active_profile()
 
     if remaining_bundle:
         console.print(
             f"[dim]Bundle '{remaining_bundle}' still active from another scope[/dim]"
-        )
-    elif remaining_profile:
-        console.print(
-            f"[dim]Profile '{remaining_profile}' still active from another scope[/dim]"
         )
         console.print("[dim]Use --all to clear from all scopes[/dim]")
     else:
@@ -542,14 +483,12 @@ def bundle_current():
     active_bundle = app_settings.get_active_bundle()
 
     if active_bundle:
-        # Determine source scope
         source = _get_bundle_source_scope(app_settings)
 
         console.print(f"[bold green]Active bundle:[/bold green] {active_bundle}")
         console.print("[bold]Mode:[/bold] Bundle")
         console.print(f"[bold]Source:[/bold] {source}")
 
-        # Show bundle info
         discovery = AppBundleDiscovery()
         uri = discovery.find(active_bundle)
         if uri:
@@ -559,57 +498,26 @@ def bundle_current():
             "\n[dim]Use 'amplifier bundle clear' to revert to default (foundation bundle)[/dim]"
         )
     else:
-        # Check if a profile is explicitly set (backward compatibility)
-        active_profile = app_settings.get_active_profile()
-        if active_profile:
-            console.print("[bold]Mode:[/bold] No bundle active")
-            console.print(f"[bold]Active profile:[/bold] {active_profile}")
-
-            warning_text = (
-                "[yellow bold]⚠ Profiles are deprecated.[/yellow bold]\n\n"
-                "Use [cyan]amplifier bundle clear[/cyan] to switch to bundles.\n\n"
-                "[dim]Migration guide for developers:[/dim]\n"
-                "[link=https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md]"
-                "https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md[/link]"
-            )
-            console.print()
-            console.print(
-                Panel(
-                    warning_text,
-                    border_style="yellow",
-                    title="Deprecated",
-                    title_align="left",
-                )
-            )
-        else:
-            # No explicit bundle or profile - will default to foundation bundle
-            console.print("[bold]Mode:[/bold] Bundle (default)")
-            console.print("[bold]Active bundle:[/bold] foundation (default)")
-            console.print(
-                "\n[dim]Use 'amplifier bundle use <name>' to switch to a different bundle[/dim]"
-            )
+        console.print("[bold]Mode:[/bold] Bundle (default)")
+        console.print("[bold]Active bundle:[/bold] foundation (default)")
+        console.print(
+            "\n[dim]Use 'amplifier bundle use <name>' to switch to a different bundle[/dim]"
+        )
 
 
-def _find_bundle_or_profile_scope(app_settings: AppSettings) -> ScopeType | None:
-    """Find which scope has a bundle or profile setting (for auto-clear).
+def _find_bundle_scope(app_settings: AppSettings) -> ScopeType | None:
+    """Find which scope has a bundle setting (for auto-clear).
 
-    Checks for both bundle.active and profile.active settings.
-    Returns the first scope where either is found.
+    Returns the first scope where bundle.active is found.
     """
-    # Check scopes in precedence order (local first, as that's what user likely wants to clear)
     scopes: list[ScopeType] = ["local", "project", "global"]
     for scope in scopes:
         if not app_settings.is_scope_available(scope):
             continue
         try:
             settings = app_settings._read_scope(scope)
-            if settings:
-                # Check for bundle.active
-                if "bundle" in settings and settings["bundle"].get("active"):
-                    return scope
-                # Check for profile.active
-                if "profile" in settings and settings["profile"].get("active"):
-                    return scope
+            if settings and "bundle" in settings and settings["bundle"].get("active"):
+                return scope
         except Exception:
             pass
 

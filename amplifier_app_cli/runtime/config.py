@@ -15,9 +15,7 @@ from ..lib.app_settings import AppSettings
 from ..lib.merge_utils import merge_module_items
 from ..lib.merge_utils import merge_tool_configs
 
-# LEGACY: Profile compilation is no longer available after lib/legacy removal
-# Profile mode is deprecated - use bundles instead
-compile_profile_to_mount_plan = None  # type: ignore[assignment]
+
 
 if TYPE_CHECKING:
     from amplifier_foundation import BundleRegistry
@@ -219,7 +217,7 @@ def resolve_app_config(
 
     provider_overrides = app_settings.get_provider_overrides()
 
-    # 2. Apply bundle OR profile (bundle takes precedence if specified)
+    # 2. Apply bundle configuration
     provider_applied_via_config = False
 
     if bundle_name and bundle_registry:
@@ -269,12 +267,7 @@ def resolve_app_config(
                 console.print(f"[yellow]{message}[/yellow]")
             else:
                 logger.warning(message)
-    else:
-        # Legacy profile path - profiles have been removed, so this is a no-op.
-        # If user has old profile settings, they'll just get the default bundle.
-        pass
 
-    # If we have overrides but no config applied them (no bundle/profile or failure), apply directly
     if provider_overrides and not provider_applied_via_config:
         config["providers"] = provider_overrides
 
@@ -519,7 +512,7 @@ def _merge_module_lists(
     Merge module lists on module ID, with deep merging.
 
     Delegates to canonical merger.merge_module_items for DRY compliance.
-    See amplifier_profiles.merger for complete merge strategy documentation.
+    Merges module lists by module ID with deep merging.
     """
     # Build dict by ID for efficient lookup
     result_dict: dict[str, dict[str, Any]] = {}
@@ -699,8 +692,6 @@ async def resolve_config_async(
         )
         return config_data, prepared_bundle
     else:
-        # No bundle specified - fall back to default bundle (foundation)
-        # Legacy profile mode has been removed
         default_bundle = "foundation"
         if console:
             console.print(

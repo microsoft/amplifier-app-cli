@@ -1,10 +1,6 @@
 """Settings management for amplifier-app-cli.
 
-Philosophy: Simple, scope-aware YAML settings designed for bundles-first world.
-This is NOT legacy code - it's the clean target state.
-
-The bundle codepath uses this module. The legacy profile/collection codepath
-uses lib/legacy/config.py instead.
+Philosophy: Simple, scope-aware YAML settings.
 """
 
 from __future__ import annotations
@@ -150,30 +146,7 @@ class AppSettings:
         """Clear provider at specified scope."""
         self._remove_setting("provider", scope)
 
-    # ----- Legacy profile support (deprecated - always returns None) -----
 
-    def get_active_profile(self) -> str | None:
-        """Get currently active profile name (deprecated).
-
-        Profiles have been removed. Always returns None.
-        Use get_active_bundle() instead.
-        """
-        return None
-
-    def set_active_profile(self, name: str, scope: Scope = "global") -> None:
-        """Set the active profile at specified scope (legacy support)."""
-        settings = self._read_scope(scope)
-        if "profile" not in settings:
-            settings["profile"] = {}
-        settings["profile"]["active"] = name
-        self._write_scope(scope, settings)
-
-    def clear_active_profile(self, scope: Scope = "global") -> None:
-        """Clear active profile at specified scope (legacy support)."""
-        settings = self._read_scope(scope)
-        if "profile" in settings:
-            del settings["profile"]
-            self._write_scope(scope, settings)
 
     # ----- Override settings (dev overrides) -----
 
@@ -216,34 +189,33 @@ class AppSettings:
             return True
         return False
 
-    def get_collection_sources(self) -> dict[str, str]:
-        """Get merged collection source overrides from all scopes."""
+    def get_bundle_sources(self) -> dict[str, str]:
+        """Get merged bundle source overrides from all scopes."""
         settings = self.get_merged_settings()
-        return settings.get("sources", {}).get("collections", {})
+        return settings.get("sources", {}).get("bundles", {})
 
-    def add_collection_source_override(
+    def add_bundle_source_override(
         self, identifier: str, source_uri: str, scope: Scope = "global"
     ) -> None:
-        """Add a collection source override at specified scope."""
+        """Add a bundle source override at specified scope."""
         settings = self._read_scope(scope)
         if "sources" not in settings:
             settings["sources"] = {}
-        if "collections" not in settings["sources"]:
-            settings["sources"]["collections"] = {}
-        settings["sources"]["collections"][identifier] = source_uri
+        if "bundles" not in settings["sources"]:
+            settings["sources"]["bundles"] = {}
+        settings["sources"]["bundles"][identifier] = source_uri
         self._write_scope(scope, settings)
 
-    def remove_collection_source_override(
+    def remove_bundle_source_override(
         self, identifier: str, scope: Scope = "global"
     ) -> bool:
-        """Remove a collection source override. Returns True if found and removed."""
+        """Remove a bundle source override. Returns True if found and removed."""
         settings = self._read_scope(scope)
-        collections = settings.get("sources", {}).get("collections", {})
-        if identifier in collections:
-            del collections[identifier]
-            # Clean up empty dicts
-            if not collections and "collections" in settings.get("sources", {}):
-                del settings["sources"]["collections"]
+        bundles = settings.get("sources", {}).get("bundles", {})
+        if identifier in bundles:
+            del bundles[identifier]
+            if not bundles and "bundles" in settings.get("sources", {}):
+                del settings["sources"]["bundles"]
             if not settings.get("sources"):
                 settings.pop("sources", None)
             self._write_scope(scope, settings)
