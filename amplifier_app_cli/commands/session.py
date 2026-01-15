@@ -124,7 +124,10 @@ def _prepare_resume_context(
         _record_bundle_override(metadata, bundle_override, original_config)
     elif saved_bundle:
         bundle_name = saved_bundle
-    # If no saved bundle, bundle_name stays None and resolve_config will use default
+    # Default to foundation bundle when no bundle found in saved session
+    # This handles old profile-based sessions gracefully (profiles are now removed)
+    if not bundle_name:
+        bundle_name = "foundation"
 
     config_manager = create_config_manager()
 
