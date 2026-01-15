@@ -245,6 +245,7 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
     # Selective removal - preserve specified paths
     removed_count = 0
     preserved_count = 0
+    clearing_cache = "cache" not in preserve_paths
 
     try:
         for item in amplifier_dir.iterdir():
@@ -271,6 +272,19 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
                         else:
                             item.unlink()
                         removed_count += 1
+
+        # CRITICAL: Clear install-state.json when cache is being removed
+        # The install state tracks module dependency fingerprints. When cache is cleared,
+        # modules are removed but install-state.json persists (it's in ~/.amplifier/).
+        # On next run, the state says "installed" but packages are gone → import errors.
+        # This fixes Issue #11: tool-web missing aiohttp after upgrade.
+        if clearing_cache and not dry_run:
+            install_state_file = amplifier_dir / "install-state.json"
+            if install_state_file.exists():
+                install_state_file.unlink()
+                console.print("    [dim]Cleared install state[/dim]")
+        elif clearing_cache and dry_run:
+            console.print("    [dim][dry-run] Would clear install-state.json[/dim]")
 
         action = "Would remove" if dry_run else "Removed"
         console.print(
