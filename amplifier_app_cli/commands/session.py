@@ -55,7 +55,7 @@ def _record_bundle_override(
     Args:
         metadata: Session metadata dict (modified in place)
         new_bundle: The bundle being forced
-        original_config: The original bundle/profile the session was created with
+        original_config: The original bundle the session was created with
     """
     # Initialize bundle_overrides list if not present
     if "bundle_overrides" not in metadata:
@@ -1232,7 +1232,7 @@ def _get_session_display_info(store: SessionStore, session_id: str) -> dict:
         except Exception:
             pass
 
-    # Get profile and name from metadata
+    # Get bundle and name from metadata
     metadata_file = session_path / "metadata.json"
     if metadata_file.exists():
         try:

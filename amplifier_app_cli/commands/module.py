@@ -134,7 +134,7 @@ def module_show(module_name: str):
 
     if not found_module:
         console.print(
-            f"[red]Module '{module_name}' not found in profile or installed modules[/red]"
+            f"[red]Module '{module_name}' not found in bundle or installed modules[/red]"
         )
         return
 

@@ -89,10 +89,10 @@ def merge_module_items(
     return merged
 
 
-def merge_profile_dicts(
+def merge_agent_dicts(
     parent: dict[str, Any], child: dict[str, Any]
 ) -> dict[str, Any]:
-    """Deep merge child profile/agent dictionary into parent.
+    """Deep merge child agent dictionary into parent.
 
     Merge rules by key:
     - 'hooks', 'tools', 'providers': Merge module lists by module ID

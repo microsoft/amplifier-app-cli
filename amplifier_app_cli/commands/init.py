@@ -161,7 +161,7 @@ def init_cmd(non_interactive: bool = False):
     """Interactive first-time setup wizard.
 
     Auto-runs on first invocation if no configuration exists.
-    Configures provider credentials, model, and active profile.
+    Configures provider credentials and model.
 
     Use --yes/-y for non-interactive mode (CI/CD, shadow containers).
     In non-interactive mode, providers are configured from environment

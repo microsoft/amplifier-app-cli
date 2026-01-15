@@ -162,7 +162,7 @@ def get_cache_dir() -> Path:
 
     Uses ~/.amplifier/cache/ as the consolidated cache directory for all module
     and bundle caching. This unified path ensures update checks find modules
-    regardless of whether they were installed via bundles or the legacy profile system.
+    regardless of whether they were installed via bundles.
     """
     return Path.home() / ".amplifier" / "cache"
 

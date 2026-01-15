@@ -1,4 +1,4 @@
-"""Shared provider configuration collection functions.
+"""Shared provider configuration gathering functions.
 
 Provides generic configuration based on provider-declared config_fields.
 Queries provider modules dynamically for model lists and config fields.

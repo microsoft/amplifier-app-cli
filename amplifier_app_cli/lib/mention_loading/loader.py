@@ -19,7 +19,7 @@ def prepend_context_to_markdown(
     """Extract content from context messages and prepend to markdown body.
 
     This utility prevents duplication of the content extraction logic across
-    ProfileLoader and _process_profile_mentions().
+    Legacy profile loader (removed)().
 
     Args:
         context_messages: Messages with loaded @mention content

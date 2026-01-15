@@ -167,7 +167,7 @@ def register_run_command(
                 console=console,
             )
         except FileNotFoundError as exc:
-            # Bundle or profile not found - display error gracefully without traceback
+            # Bundle not found - display error gracefully without traceback
             console.print(f"[red]Error:[/red] {exc}")
             sys.exit(1)
 

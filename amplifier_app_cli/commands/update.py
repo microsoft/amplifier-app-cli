@@ -773,10 +773,10 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
                 check_umbrella_dependencies_for_updates(umbrella_info)
             )
 
-    # Check modules and collections
+    # Check modules and bundles
     if not force:
         console.print("  Checking modules...")
-        console.print("  Checking collections...")
+        console.print("  Checking bundles...")
 
     async def _check_sources():
         import httpx
@@ -839,7 +839,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         if has_umbrella_updates:
             console.print("  • Amplifier (umbrella dependencies have updates)")
         if report.has_updates:
-            console.print("  • Modules and/or collections")
+            console.print("  • Modules")
         if has_bundle_updates:
             bundles_with_updates = [
                 name for name, status in bundle_results.items() if status.has_updates

@@ -4,7 +4,7 @@ Philosophy: Simple key->path mapping at any scope. Most specific scope wins.
 Only supports local paths (not remote) for development convenience.
 
 This is PERMANENT functionality (not legacy) that works for both:
-- Legacy profile/collection codepath
+- Legacy codepath
 - New bundles codepath
 
 Usage:

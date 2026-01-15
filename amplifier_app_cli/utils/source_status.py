@@ -141,7 +141,7 @@ async def check_all_sources(
         cached_statuses, cached_modules_checked = await _check_all_cached_modules(
             client, force=force
         )
-        # Add any not already in git_statuses (avoid duplicates from active profile)
+        # Add any not already in git_statuses (avoid duplicates from active bundle)
         existing_names = {s.name for s in git_statuses}
         for status in cached_statuses:
             if status.name not in existing_names:
@@ -173,7 +173,7 @@ async def _get_all_sources_to_check(client: httpx.AsyncClient) -> dict[str, dict
 
     sources: dict[str, dict] = {}
 
-    # Get libraries from umbrella (profile-based module discovery is deprecated)
+    # Get libraries from umbrella (legacy module discovery is deprecated)
     umbrella_info = discover_umbrella_source()
     if umbrella_info:
         try:

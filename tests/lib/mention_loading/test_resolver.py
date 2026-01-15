@@ -105,8 +105,7 @@ def test_resolver_home_directory(temp_context_dirs):
 
 def test_resolver_path_traversal_blocked(temp_context_dirs):
     """Test path traversal attempts are blocked."""
-    # enable_collections is still used for legacy profile mode
-    resolver = AppMentionResolver(enable_collections=True)
+    resolver = AppMentionResolver()
 
     # Should return None for path traversal attempts in bundle references
     path = resolver.resolve("@foundation:../../etc/passwd")

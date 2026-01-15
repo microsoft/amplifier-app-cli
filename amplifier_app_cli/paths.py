@@ -55,7 +55,7 @@ def _get_user_and_project_paths(
     2. Check user ~/.amplifier/<resource_type>/
 
     Args:
-        resource_type: The subdirectory name (e.g., "profiles", "bundles", "agents")
+        resource_type: The subdirectory name (e.g., "bundles", "agents")
         check_exists: If True, only include paths that exist. If False, include all.
 
     Returns:
@@ -367,7 +367,7 @@ async def create_session_from_bundle(
 def get_agent_search_paths_for_bundle(bundle_name: str | None = None) -> list[Path]:
     """Get agent search paths when using BUNDLE mode.
 
-    Only includes bundle-specific agents, NOT profile/collection agents.
+    Only includes bundle-specific agents, NOT from legacy profile system.
     This ensures clean separation: bundles use bundle stuff only.
 
     Search order (highest precedence first):
@@ -387,7 +387,7 @@ def get_agent_search_paths_for_bundle(bundle_name: str | None = None) -> list[Pa
     # Project and user paths (highest precedence) - user's own agents always included
     paths = _get_user_and_project_paths("agents")
 
-    # Bundle agents only (NO collections)
+    # Bundle agents only
     bundle_discovery = AppBundleDiscovery()
 
     if bundle_name:
@@ -430,7 +430,7 @@ def get_agent_search_paths(bundle_name: str | None = None) -> list[Path]:
 
 
 def create_foundation_resolver() -> "FoundationSettingsResolver":
-    """Create CLI-configured foundation resolver with settings and collection providers.
+    """Create CLI-configured foundation resolver with settings providers.
 
     This resolver uses foundation's source handlers which create the NEW cache format:
     {repo-name}-{hash}/ instead of legacy {hash}/{ref}/ format.

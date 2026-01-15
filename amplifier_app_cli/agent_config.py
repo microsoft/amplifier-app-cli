@@ -7,7 +7,7 @@ Agents are loaded via bundles (amplifier-foundation).
 import logging
 from typing import Any
 
-from .lib.merge_utils import merge_profile_dicts
+from .lib.merge_utils import merge_agent_dicts
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
         Merged mount plan for child session
 
     See Also:
-        merge_profile_dicts - The underlying merge implementation
+        merge_agent_dicts - The underlying merge implementation
     """
     # Apply spawn tool policy to parent before merging
     filtered_parent = apply_spawn_tool_policy(parent)
@@ -102,7 +102,7 @@ def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
     agent_filter = overlay_copy.pop("agents", None)
 
     # Standard merge (parent's agents dict preserved since we removed it from overlay)
-    result = merge_profile_dicts(filtered_parent, overlay_copy)
+    result = merge_agent_dicts(filtered_parent, overlay_copy)
 
     # Apply agent filtering (Smart Single Value → filtered dict)
     # Note: "all" and None both mean "inherit parent's agents unchanged" (already in result)

@@ -159,7 +159,7 @@ async def check_umbrella_dependencies_for_updates(umbrella_info: UmbrellaInfo) -
     """Check if any dependencies (recursively) have updates.
 
     Checks umbrella dependencies AND their transitive git dependencies.
-    For example: umbrella → amplifier-app-cli → amplifier-profiles
+    For example: umbrella → amplifier-app-cli → amplifier-foundation
 
     Args:
         umbrella_info: Discovered umbrella source info

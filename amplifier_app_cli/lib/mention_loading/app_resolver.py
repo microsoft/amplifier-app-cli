@@ -79,7 +79,7 @@ class AppMentionResolver:
         Resolution order (app-layer policy):
         1. App shortcuts: @user:, @project:, @~/
         2. Bundle namespaces: @namespace:path (via foundation)
-        3. Collections: @collection:path (DEPRECATED, profile mode only)
+        3. Collections: @collection:path (DEPRECATED, removed)
         4. Relative paths: @path (CWD)
 
         Args:
@@ -106,7 +106,7 @@ class AppMentionResolver:
 
         # === BUNDLE NAMESPACES (foundation mechanism) ===
         # Try foundation resolver first - handles @namespace:path for all composed bundles
-        # This ensures bundle namespaces take precedence over collections (no conflicts)
+        # This ensures bundle namespaces work correctly
         if self.foundation_resolver and ":" in mention[1:]:
             result = self.foundation_resolver.resolve(mention)
             if result:
@@ -170,7 +170,7 @@ class AppMentionResolver:
     def _resolve_bundle_mapping(self, mention: str) -> Path | None:
         """Resolve @namespace:path via bundle_mappings dict.
 
-        Used in profile mode when foundation_resolver is not available.
+        Used when foundation_resolver is not available.
         """
         # Extract prefix and path
         prefix, path = mention[1:].split(":", 1)

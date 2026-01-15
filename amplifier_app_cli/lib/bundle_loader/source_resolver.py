@@ -1,10 +1,10 @@
 """Independent bundle source resolution for CLI app layer.
 
 This module provides bundle source resolution WITHOUT any dependency on
-profiles/collections. It uses amplifier-foundation's source handlers directly.
+legacy systems. It uses amplifier-foundation's source handlers directly.
 
 Per DESIGN PHILOSOPHY: Bundles have their own independent code paths optimized
-for their longer term future. No coupling to profiles/collections which will
+for their longer term future. No coupling to legacy systems which will
 be deprecated and deleted later.
 """
 

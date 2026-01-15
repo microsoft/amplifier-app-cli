@@ -196,7 +196,7 @@ class FoundationSettingsResolver:
     1. Environment variable (AMPLIFIER_MODULE_<ID>)
     2. Workspace convention (workspace_dir/<id>/)
     3. Settings provider (merges project + user settings)
-    4. Collection modules (registered via installed collections)
+    4. Legacy module pattern (removed)
     6. Installed package
     """
 
@@ -221,7 +221,7 @@ class FoundationSettingsResolver:
 
         Args:
             module_id: Module identifier (e.g., "provider-anthropic").
-            profile_hint: Optional source URI hint (parameter name kept for API compatibility).
+            profile_hint: Optional source URI hint (parameter kept for API compatibility).
 
         Returns:
             Source object (FoundationGitSource, FoundationFileSource, or FoundationPackageSource).
@@ -239,7 +239,7 @@ class FoundationSettingsResolver:
 
         Returns:
             Tuple of (source, layer_name).
-            layer_name is one of: env, workspace, settings, collection, source_hint, package
+            layer_name is one of: env, workspace, settings, source_hint, package
         """
         # Layer 1: Environment variable
         env_key = f"AMPLIFIER_MODULE_{module_id.upper().replace('-', '_')}"
@@ -357,14 +357,12 @@ class FoundationSettingsResolver:
             f"  1. Environment: AMPLIFIER_MODULE_{module_id.upper().replace('-', '_')} (not set)\n"
             f"  2. Workspace: {self.workspace_dir / module_id if self.workspace_dir else 'N/A'} (not found)\n"
             f"  3. Settings: (no entry)\n"
-            f"  4. Collections: (no registered module)\n"
-            f"  5. Profile: (no source specified)\n"
-            f"  6. Package: Tried '{module_id}' and '{convention_name}' (neither installed)\n\n"
+            f"  4. Source hint: (no source specified)\n"
+            f"  5. Package: Tried '{module_id}' and '{convention_name}' (neither installed)\n\n"
             f"Suggestions:\n"
-            f"  - Add source to profile: source: git+https://...\n"
-            f"  - Add source override to settings\n"
-            f"  - Install package: uv pip install <package-name>\n"
-            f"  - Install collection with module: amplifier collection add <collection-url>"
+            f"  - Add source to bundle: source: git+https://...\n"
+            f"  - Add source override: amplifier source add {module_id} <source>\n"
+            f"  - Install package: uv pip install <package-name>"
         )
 
     def get_module_source(self, module_id: str) -> str | None:

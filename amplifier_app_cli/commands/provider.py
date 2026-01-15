@@ -329,7 +329,7 @@ def provider_list():
 def provider_reset(scope_flag: str | None):
     """Remove provider override.
 
-    Resets to whatever the profile specifies.
+    Resets to default provider.
     """
     config_manager = create_config_manager()
 

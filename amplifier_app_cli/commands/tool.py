@@ -252,7 +252,7 @@ def tool_list(bundle: str | None, output: str, modules: bool):
     By default, shows the actual tool names that can be invoked (e.g., read_file,
     write_file). Use --modules to see tool module names instead (e.g., tool-filesystem).
     """
-    # Determine whether to use bundle or profile path
+    # Determine bundle to use
     use_bundle, default_bundle, default_profile = _should_use_bundle()
 
     # Explicit flags override auto-detection
@@ -338,7 +338,7 @@ def tool_info(tool_name: str, bundle: str | None, output: str, module: bool):
     By default, looks up the actual mounted tool by name (e.g., read_file).
     Use --module to look up by module name instead (e.g., tool-filesystem).
     """
-    # Determine whether to use bundle or profile path
+    # Determine bundle to use
     use_bundle, default_bundle, default_profile = _should_use_bundle()
 
     # Explicit flags override auto-detection
