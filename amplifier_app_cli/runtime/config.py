@@ -67,12 +67,10 @@ async def resolve_bundle_config(
     if console:
         console.print(f"[dim]Preparing bundle '{bundle_name}'...[/dim]")
 
-    # Build behavior URIs from notification settings
-    # Notifications are an app-level policy: compose behavior bundles before prepare()
+    # Build behavior URIs for CLI-specific features
+    # These are app-level policies: compose behavior bundles before prepare()
     # so modules get properly downloaded and installed via normal bundle machinery
-    compose_behaviors = _build_notification_behaviors(
-        app_settings.get_notification_config()
-    )
+    compose_behaviors = _build_cli_behaviors(app_settings)
 
     # Get source overrides from unified settings
     # This enables settings.yaml overrides to take effect at prepare time
@@ -598,6 +596,34 @@ def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> No
     """
     if "providers" in config and not prepared_bundle.mount_plan.get("providers"):
         prepared_bundle.mount_plan["providers"] = config["providers"]
+
+
+def _build_cli_behaviors(app_settings: AppSettings) -> list[str]:
+    """Build list of CLI-specific behavior URIs.
+
+    The CLI composes additional behaviors onto the base bundle for features
+    that are specific to interactive CLI usage (not needed by other apps).
+
+    Args:
+        app_settings: App settings for configuration.
+
+    Returns:
+        List of behavior bundle URIs to compose onto the main bundle.
+    """
+    behaviors: list[str] = []
+
+    # Slash commands - always enabled for interactive CLI
+    # This provides extensible /commands via .amplifier/commands/ directories
+    behaviors.append(
+        "git+https://github.com/microsoft/amplifier-module-tool-slash-command@main#subdirectory=behaviors/slash-command.yaml"
+    )
+
+    # Add notification behaviors based on settings
+    behaviors.extend(
+        _build_notification_behaviors(app_settings.get_notification_config())
+    )
+
+    return behaviors
 
 
 def _build_notification_behaviors(
