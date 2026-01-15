@@ -260,7 +260,7 @@ def scan_cached_modules(type_filter: str = "all") -> list[CachedModuleInfo]:
                     module_type = entry_type or "module"
                     display_name = entry_id
                 else:
-                    # Fallback to name-based detection (legacy)
+                    # Fallback to name-based detection
                     repo_name = _extract_repo_name(url)
                     if repo_name.startswith("amplifier-module-"):
                         module_id = repo_name[len("amplifier-module-") :]
@@ -292,7 +292,7 @@ def scan_cached_modules(type_filter: str = "all") -> list[CachedModuleInfo]:
             logger.debug(f"Could not read metadata from {meta_file}: {e}")
             continue
 
-    # Also check legacy format: {hash}/{ref}/.amplifier_cache_metadata.json
+    # Also check older format: {hash}/{ref}/.amplifier_cache_metadata.json
     for legacy_meta in cache_dir.rglob(".amplifier_cache_metadata.json"):
         cache_entry = legacy_meta.parent
 
@@ -304,7 +304,7 @@ def scan_cached_modules(type_filter: str = "all") -> list[CachedModuleInfo]:
             metadata = json.loads(legacy_meta.read_text(encoding="utf-8"))
             url = metadata.get("url", "")
 
-            # Use structural detection for legacy entries too
+            # Use structural detection for older entries too
             if is_bundle(cache_entry):
                 module_type = "bundle"
                 bundle_name = get_bundle_name(cache_entry)
@@ -342,7 +342,7 @@ def scan_cached_modules(type_filter: str = "all") -> list[CachedModuleInfo]:
                 )
             )
         except Exception as e:
-            logger.debug(f"Could not read legacy metadata from {legacy_meta}: {e}")
+            logger.debug(f"Could not read metadata from {legacy_meta}: {e}")
             continue
 
     # Sort by display_name for user-friendly output
@@ -415,7 +415,7 @@ def clear_module_cache(
         return cleared, skipped
 
     # For specific module or mutable_only: use scan_cached_modules to find entries
-    # This handles both foundation format and legacy format
+    # This handles both current and older cache formats
     modules = scan_cached_modules()
 
     for module in modules:

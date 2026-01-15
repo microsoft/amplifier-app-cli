@@ -100,7 +100,7 @@ class AppSettings:
     def get_active_bundle(self) -> str | None:
         """Get currently active bundle name.
 
-        Reads from bundle.active path for compatibility with bundle commands.
+        Reads from bundle.active setting.
         """
         settings = self.get_merged_settings()
         bundle_settings = settings.get("bundle") or {}

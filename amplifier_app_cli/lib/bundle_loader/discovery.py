@@ -543,9 +543,7 @@ class AppBundleDiscovery:
             sub_bundles: set[str] = set()
 
             for name, bundle_data in data.get("bundles", {}).items():
-                if bundle_data.get(
-                    "is_root", True
-                ):  # Default True for backwards compat
+                if bundle_data.get("is_root", True):
                     root_bundles.add(name)
                 else:
                     sub_bundles.add(name)

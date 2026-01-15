@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 # This allows keys saved by 'amplifier init' or 'amplifier provider use' to be available
 _key_manager = KeyManager()
 
-# Cancel flag for ESC-based cancellation (legacy, kept for compatibility)
+# Cancel flag for ESC-based cancellation
 _cancel_requested = False
 
 
@@ -1174,7 +1174,7 @@ async def interactive_chat(
     search_paths: list[Path],
     verbose: bool,
     session_id: str | None = None,
-    profile_name: str = "unknown",
+    bundle_name: str = "unknown",
     prepared_bundle: "PreparedBundle | None" = None,
     initial_prompt: str | None = None,
     initial_transcript: list[dict] | None = None,
@@ -1193,7 +1193,7 @@ async def interactive_chat(
         search_paths: Module search paths
         verbose: Enable verbose output
         session_id: Optional session ID (generated if not provided)
-        profile_name: Profile or bundle name (e.g., "dev" or "bundle:foundation")
+        bundle_name: Bundle name (e.g., "dev" or "bundle:foundation")
         prepared_bundle: PreparedBundle from foundation's prepare workflow (bundle mode only)
         initial_prompt: Optional prompt to auto-execute before entering interactive loop
         initial_transcript: If provided, restore this transcript (resume mode)
@@ -1206,7 +1206,7 @@ async def interactive_chat(
         search_paths=search_paths,
         verbose=verbose,
         session_id=session_id,
-        bundle_name=profile_name,
+        bundle_name=bundle_name,
         initial_transcript=initial_transcript,
         prepared_bundle=prepared_bundle,
     )
@@ -1217,7 +1217,7 @@ async def interactive_chat(
     actual_session_id = initialized.session_id
 
     # Create command processor
-    command_processor = CommandProcessor(session, profile_name)
+    command_processor = CommandProcessor(session, bundle_name)
 
     # Create session store for saving
     store = SessionStore()
@@ -1225,11 +1225,11 @@ async def interactive_chat(
     # Register incremental save hook for crash recovery between tool calls
     from .incremental_save import register_incremental_save
 
-    register_incremental_save(session, store, actual_session_id, profile_name, config)
+    register_incremental_save(session, store, actual_session_id, bundle_name, config)
 
     # Show banner only for NEW sessions (resume shows banner via history display in commands/session.py)
     if not session_config.is_resume:
-        config_summary = get_effective_config_summary(config, profile_name)
+        config_summary = get_effective_config_summary(config, bundle_name)
         console.print(
             Panel.fit(
                 f"[bold cyan]Amplifier Interactive Session[/bold cyan]\n"
@@ -1268,7 +1268,7 @@ async def interactive_chat(
                 "created": existing_metadata.get(
                     "created", datetime.now(UTC).isoformat()
                 ),
-                "bundle": profile_name,
+                "bundle": bundle_name,
                 "model": _extract_model_name(),
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
             }
@@ -1450,7 +1450,7 @@ async def execute_single(
     search_paths: list[Path],
     verbose: bool,
     session_id: str | None = None,
-    profile_name: str = "unknown",
+    bundle_name: str = "unknown",
     output_format: str = "text",
     prepared_bundle: "PreparedBundle | None" = None,
     initial_transcript: list[dict] | None = None,
@@ -1469,7 +1469,7 @@ async def execute_single(
         search_paths: Paths for module resolution
         verbose: Enable verbose output
         session_id: Optional session ID (generated if None)
-        profile_name: Profile/bundle name for metadata
+        bundle_name: Bundle name for metadata
         output_format: Output format (text, json, json-trace)
         prepared_bundle: PreparedBundle for bundle mode
         initial_transcript: If provided, restore this transcript (resume mode)
@@ -1501,7 +1501,7 @@ async def execute_single(
         search_paths=search_paths,
         verbose=verbose,
         session_id=session_id,
-        bundle_name=profile_name,
+        bundle_name=bundle_name,
         initial_transcript=initial_transcript,
         prepared_bundle=prepared_bundle,
         output_format=output_format,
@@ -1571,7 +1571,7 @@ async def execute_single(
                 "status": "success",
                 "response": response,
                 "session_id": actual_session_id,
-                "bundle": profile_name,
+                "bundle": bundle_name,
                 "model": model_name,
                 "timestamp": datetime.now(UTC).isoformat(),
             }
@@ -1602,7 +1602,7 @@ async def execute_single(
                 "created": existing_metadata.get(
                     "created", datetime.now(UTC).isoformat()
                 ),
-                "bundle": profile_name,
+                "bundle": bundle_name,
                 "model": model_name,
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
             }

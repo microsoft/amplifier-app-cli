@@ -28,7 +28,7 @@ class InteractiveChatProtocol(Protocol):
         search_paths: list[Path],
         verbose: bool,
         session_id: str | None = None,
-        profile_name: str = "unknown",
+        bundle_name: str = "unknown",
         prepared_bundle: "PreparedBundle | None" = None,
         initial_prompt: str | None = None,
         initial_transcript: list[dict] | None = None,
@@ -40,7 +40,7 @@ class InteractiveChatProtocol(Protocol):
             search_paths: Module search paths
             verbose: Enable verbose output
             session_id: Optional session ID (generated if not provided)
-            profile_name: Bundle name (e.g., "bundle:foundation")
+            bundle_name: Bundle name (e.g., "bundle:foundation")
             prepared_bundle: PreparedBundle for bundle mode
             initial_prompt: Optional prompt to auto-execute
             initial_transcript: If provided, restore this transcript (resume mode)
@@ -62,7 +62,7 @@ class ExecuteSingleProtocol(Protocol):
         search_paths: list[Path],
         verbose: bool,
         session_id: str | None = None,
-        profile_name: str = "unknown",
+        bundle_name: str = "unknown",
         output_format: str = "text",
         prepared_bundle: "PreparedBundle | None" = None,
         initial_transcript: list[dict] | None = None,
@@ -75,7 +75,7 @@ class ExecuteSingleProtocol(Protocol):
             search_paths: Paths for module resolution
             verbose: Enable verbose output
             session_id: Optional session ID (generated if None)
-            profile_name: Bundle name for metadata (e.g., "bundle:foundation")
+            bundle_name: Bundle name for metadata (e.g., "bundle:foundation")
             output_format: Output format (text, json, json-trace)
             prepared_bundle: PreparedBundle for bundle mode
             initial_transcript: If provided, restore this transcript (resume mode)

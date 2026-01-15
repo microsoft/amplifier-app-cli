@@ -41,7 +41,7 @@ def load_settings() -> dict:
         with open(SETTINGS_FILE, encoding="utf-8") as f:
             settings = yaml.safe_load(f) or {}
 
-        # Ensure updates section exists (backwards compat)
+        # Ensure updates section exists
         if "updates" not in settings:
             settings["updates"] = DEFAULT_SETTINGS["updates"].copy()
 

@@ -342,7 +342,7 @@ def _get_cached_modules(type_filter: str = "all") -> list[dict[str, Any]]:
     """Return metadata for all cached modules.
 
     Uses centralized scan_cached_modules() utility and converts to dict format
-    for backward compatibility with existing display code.
+    to match display layer expectations.
     """
     from ..utils.module_cache import scan_cached_modules
 

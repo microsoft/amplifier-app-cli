@@ -1,4 +1,4 @@
-"""Module source utilities for backward compatibility.
+"""Module source utilities.
 
 This module provides FileSource and GitSource classes for module resolution.
 These are used by module management commands and update utilities.

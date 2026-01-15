@@ -32,7 +32,7 @@ def apply_spawn_tool_policy(parent: dict[str, Any]) -> dict[str, Any]:
     """
     spawn_config = parent.get("spawn", {})
     if not spawn_config:
-        # No spawn policy - return parent unchanged (backward compatible)
+        # No spawn policy - return parent unchanged
         return parent
 
     filtered_parent = parent.copy()

@@ -34,7 +34,7 @@ class EffectiveConfigSummary:
         if self.config_source.startswith("bundle:"):
             bundle_name = self.config_source.replace("bundle:", "")
         else:
-            # Legacy fallback for backward compatibility
+            # Fallback for config loading
             bundle_name = self.config_source
         return f"Bundle: {bundle_name} | Provider: {self.provider_name} | {self.model}"
 

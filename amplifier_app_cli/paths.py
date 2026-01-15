@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 # Type alias for scope names used in CLI
 ScopeType = Literal["local", "project", "global"]
 
-# Map CLI scope names to Scope enum (for legacy ConfigManager)
+# Map CLI scope names to Scope enum
 _SCOPE_MAP: dict[ScopeType, Scope] = {
     "local": Scope.LOCAL,
     "project": Scope.PROJECT,
@@ -367,7 +367,7 @@ async def create_session_from_bundle(
 def get_agent_search_paths_for_bundle(bundle_name: str | None = None) -> list[Path]:
     """Get agent search paths when using BUNDLE mode.
 
-    Only includes bundle-specific agents, NOT from legacy profile system.
+    Only includes bundle-specific agents.
     This ensures clean separation: bundles use bundle stuff only.
 
     Search order (highest precedence first):
@@ -433,7 +433,7 @@ def create_foundation_resolver() -> "FoundationSettingsResolver":
     """Create CLI-configured foundation resolver with settings providers.
 
     This resolver uses foundation's source handlers which create the NEW cache format:
-    {repo-name}-{hash}/ instead of legacy {hash}/{ref}/ format.
+    {repo-name}-{hash}/ format.
 
     Returns:
         FoundationSettingsResolver with CLI providers injected

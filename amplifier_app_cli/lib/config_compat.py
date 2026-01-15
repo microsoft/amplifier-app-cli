@@ -1,6 +1,5 @@
 """Settings management compatibility layer.
 
-This module provides ConfigManager and related classes for backward compatibility.
 New code should use lib/settings.py AppSettings instead.
 
 Note: The bundle codepath primarily uses lib/settings.py. This module exists

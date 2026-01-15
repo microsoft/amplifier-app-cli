@@ -485,7 +485,7 @@ def register_session_commands(
                         search_paths,
                         False,
                         session_id=session_id,
-                        profile_name=active_bundle,
+                        bundle_name=active_bundle,
                         prepared_bundle=prepared_bundle,
                         initial_transcript=transcript,
                     )
@@ -508,7 +508,7 @@ def register_session_commands(
                         search_paths,
                         False,
                         session_id=session_id,
-                        profile_name=active_bundle,
+                        bundle_name=active_bundle,
                         prepared_bundle=prepared_bundle,
                         initial_transcript=transcript,
                     )
@@ -1081,7 +1081,7 @@ def register_session_commands(
                     search_paths,
                     False,
                     session_id=session_id,
-                    profile_name=active_bundle,
+                    bundle_name=active_bundle,
                     prepared_bundle=prepared_bundle,
                     initial_transcript=transcript,
                 )
