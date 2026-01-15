@@ -153,6 +153,8 @@ async def _invoke_tool_from_bundle_async(
         Exception: If tool execution fails
     """
     from ..lib.app_settings import AppSettings
+    from ..lib.bundle_loader import AppModuleResolver
+    from ..paths import create_foundation_resolver
     from ..session_runner import register_session_spawning
     from ..runtime.config import resolve_config_async
 
@@ -170,6 +172,15 @@ async def _invoke_tool_from_bundle_async(
 
     if prepared_bundle is None:
         raise ValueError(f"Bundle '{bundle_name}' did not produce a PreparedBundle")
+
+    # CRITICAL: Wrap bundle resolver with app-layer fallback (mirrors session_runner.py)
+    # This enables fallback to installed providers when they're not in the bundle.
+    # Without this wrapper, provider modules fail to load even after `amplifier provider install`.
+    fallback_resolver = create_foundation_resolver()
+    prepared_bundle.resolver = AppModuleResolver(  # type: ignore[assignment]
+        bundle_resolver=prepared_bundle.resolver,
+        settings_resolver=fallback_resolver,
+    )
 
     inject_user_providers(_config, prepared_bundle)
 

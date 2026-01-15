@@ -80,15 +80,29 @@ async def resolve_bundle_config(
     # This enables settings.yaml overrides to take effect at prepare time
     source_overrides = app_settings.get_source_overrides()
 
+    # CRITICAL: Also extract provider sources from config.providers[]
+    # Providers are configured via 'amplifier provider use' and stored in config.providers,
+    # not in overrides section. Bundle.prepare() needs these sources to download provider modules.
+    provider_overrides = app_settings.get_provider_overrides()
+    provider_sources = {
+        provider["module"]: provider["source"]
+        for provider in provider_overrides
+        if isinstance(provider, dict) and "module" in provider and "source" in provider
+    }
+
+    # Merge provider sources with module source overrides
+    # Provider sources take precedence (more specific configuration)
+    combined_sources = {**source_overrides, **provider_sources}
+
     # Load and prepare bundle (downloads modules from git sources)
     # If compose_behaviors is provided, those behaviors are composed onto the bundle
     # BEFORE prepare() runs, so their modules get installed correctly
-    # If source_overrides is provided, module sources are overridden before download
+    # If combined_sources is provided, module sources are resolved before download
     prepared = await load_and_prepare_bundle(
         bundle_name,
         discovery,
         compose_behaviors=compose_behaviors if compose_behaviors else None,
-        source_overrides=source_overrides if source_overrides else None,
+        source_overrides=combined_sources if combined_sources else None,
     )
 
     # Get the mount plan from the prepared bundle
@@ -160,7 +174,7 @@ async def resolve_bundle_config(
     # CRITICAL: Sync providers, tools, and hooks to prepared.mount_plan so create_session() uses them
     # prepared.mount_plan is what create_session() uses, not bundle_config
     # This must happen AFTER env var expansion so API keys are actual values, not "${VAR}" literals
-    if provider_overrides:
+    if bundle_config.get("providers"):
         prepared.mount_plan["providers"] = bundle_config["providers"]
     if tool_overrides:
         prepared.mount_plan["tools"] = bundle_config["tools"]
@@ -589,7 +603,7 @@ def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> No
         Only injects if bundle has no providers defined (provider-agnostic design).
         Bundles with explicit providers are preserved unchanged.
     """
-    if config.get("providers") and not prepared_bundle.mount_plan.get("providers"):
+    if "providers" in config and not prepared_bundle.mount_plan.get("providers"):
         prepared_bundle.mount_plan["providers"] = config["providers"]
 
 
