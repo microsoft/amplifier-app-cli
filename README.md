@@ -87,9 +87,6 @@ amplifier notify ntfy --enable --topic <topic>       # Enable ntfy.sh push notif
 amplifier notify ntfy --disable [--scope]            # Disable push notifications
 amplifier notify reset --all [--scope]               # Clear all notification settings
 
-# Legacy commands (DEPRECATED - use bundles instead)
-# amplifier profile ...     # Use 'amplifier bundle' instead
-# amplifier collection ...  # Use 'amplifier bundle add' instead
 ```
 
 ### Session Commands
@@ -270,7 +267,6 @@ This CLI is built on top of amplifier-core and provides:
 - **Interactive mode** - REPL with slash commands
 - **Key management** - Secure API key storage
 
-> **Note**: Profile and collection systems have been removed. Use bundles instead.
 
 ## Supported Providers
 
@@ -344,11 +340,9 @@ toolkit/               # Standalone scenario tool utilities (at repo root)
 
 **Authoritative Guides** (external, maintained in library repos):
 - **→ [Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md)** - Creating and managing bundles
-- **→ [Migration Guide](https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md)** - Migrating from profiles/collections to bundles
 - **→ [User Onboarding](https://github.com/microsoft/amplifier/blob/main/docs/USER_ONBOARDING.md)** - Complete user guide and reference
 
 **Toolkit** (for building sophisticated tools):
-- **→ [Toolkit Guide](https://github.com/microsoft/amplifier-collection-toolkit/blob/main/docs/TOOLKIT_GUIDE.md)** - Multi-config metacognitive recipes
 
 ## Contributing
 
