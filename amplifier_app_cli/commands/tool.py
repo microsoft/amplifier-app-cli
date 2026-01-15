@@ -42,14 +42,14 @@ def _get_active_bundle_name() -> str | None:
 
 
 def _should_use_bundle() -> tuple[bool, str | None, str | None]:
-    """Determine whether to use bundle or profile system.
+    """Determine which bundle to use.
 
     Returns:
-        Tuple of (use_bundle: bool, bundle_name: str | None, profile_name: str | None)
+        Tuple of (use_bundle: bool, bundle_name: str | None)
 
     Logic (mirrors run.py):
     1. If active bundle is set → use bundle
-    2. If active bundle is set → use profile (deprecated path)
+    2. Always use bundle system
     3. Default to 'foundation' bundle (Phase 2 default)
     """
     # Check for active bundle
@@ -57,7 +57,7 @@ def _should_use_bundle() -> tuple[bool, str | None, str | None]:
     if bundle_name:
         return (True, bundle_name, None)
 
-    # Default to foundation bundle - profile mode has been removed
+    # Default to foundation bundle
     return (True, "foundation", None)
 
 

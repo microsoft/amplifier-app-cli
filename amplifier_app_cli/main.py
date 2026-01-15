@@ -770,7 +770,7 @@ class CommandProcessor:
         if not isinstance(all_agents, dict):
             return "No agents available (agents not loaded as dict)"
 
-        # Filter out profile config keys - only show resolved agent entries
+        # Filter out config keys - only show resolved agent entries
         agent_items = {
             k: v
             for k, v in all_agents.items()
@@ -778,7 +778,7 @@ class CommandProcessor:
         }
 
         if not agent_items:
-            return "No agents available (check profile's agents configuration)"
+            return "No agents available (check bundle's agents configuration)"
 
         # Display each agent with full frontmatter (excluding instruction)
         console.print(f"\n[bold]Available Agents[/bold] ({len(agent_items)} loaded)\n")
@@ -1184,7 +1184,7 @@ async def interactive_chat(
     This is the unified entry point for interactive REPL sessions. It handles:
     - New sessions (initial_transcript=None)
     - Resumed sessions (initial_transcript provided)
-    - Bundle mode and profile mode (via prepared_bundle)
+    - Bundle mode (via prepared_bundle)
     - Initial prompt auto-execution
     - Ctrl+C cancellation handling
 
@@ -1460,7 +1460,7 @@ async def execute_single(
     This is the unified entry point for single-shot execution. It handles:
     - New sessions (initial_transcript=None)
     - Resumed sessions (initial_transcript provided)
-    - Bundle mode and profile mode (via prepared_bundle)
+    - Bundle mode (via prepared_bundle)
     - All output formats (text, json, json-trace)
 
     Args:

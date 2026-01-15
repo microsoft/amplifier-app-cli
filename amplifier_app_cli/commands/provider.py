@@ -353,7 +353,7 @@ def provider_reset(scope_flag: str | None):
 
     if result.removed:
         console.print(f"[green]✓ Removed provider override at {scope} scope[/green]")
-        console.print("  Now using provider from profile")
+        console.print("  Now using default provider")
     else:
         console.print(f"[yellow]No provider override at {scope} scope[/yellow]")
 

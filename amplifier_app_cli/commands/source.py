@@ -30,7 +30,7 @@ from ..provider_sources import is_local_path
 
 
 def _is_module_path(path: Path) -> bool:
-    """Check if path looks like a module (not a collection).
+    """Check if path looks like a module.
 
     Module indicators:
     - Has amplifier.modules entry point in pyproject.toml

@@ -306,7 +306,7 @@ def init_cmd(non_interactive: bool = False):
 
     # Save provider configuration to user's global settings (~/.amplifier/settings.yaml)
     # This is first-time setup, so it should be available across all projects
-    # Note: We don't set a profile - the bundle system handles defaults
+    
     provider_mgr.use_provider(
         module_id, scope="global", config=provider_config, source=None
     )

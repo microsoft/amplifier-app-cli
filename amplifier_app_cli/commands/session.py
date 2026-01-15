@@ -178,7 +178,7 @@ def _display_session_history(
 
     Args:
         transcript: List of message dictionaries from SessionStore
-        metadata: Session metadata (session_id, created, profile, etc.)
+        metadata: Session metadata (session_id, created, bundle, etc.)
         show_thinking: Whether to show thinking blocks
         max_messages: Max messages to show (0 = all, default 10)
     """

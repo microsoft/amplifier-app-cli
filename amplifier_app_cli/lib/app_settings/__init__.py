@@ -15,7 +15,7 @@ from amplifier_app_cli.lib.config_compat import Scope
 
 # LEGACY: Profile and ModuleConfig types are no longer available
 # Profile mode is deprecated - use bundles instead
-# The apply_provider_overrides_to_profile method will raise NotImplementedError
+
 
 from amplifier_app_cli.lib.merge_utils import merge_tool_configs
 
@@ -365,21 +365,7 @@ class AppSettings:
         providers = config_section.get("providers", [])
         return providers if isinstance(providers, list) else []
 
-    def apply_provider_overrides_to_profile(
-        self, profile: Any, overrides: list[dict[str, Any]] | None = None
-    ) -> Any:
-        """Return a copy of `profile` with provider overrides applied.
 
-        DEPRECATED: Profile mode is no longer supported. Use bundles instead.
-        This method will raise NotImplementedError.
-
-        For bundle-based workflows, use resolve_bundle_config() in runtime/config.py
-        which handles provider overrides through the bundle preparation flow.
-        """
-        raise NotImplementedError(
-            "Profile mode is deprecated. Use bundles instead: 'amplifier bundle use <bundle-name>'\n"
-            "For bundle workflows, provider overrides are applied via resolve_bundle_config()."
-        )
 
     # ----- Unified Module Overrides -----
 

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from amplifier_foundation import BundleRegistry
 
-# LEGACY: Legacy collection resolver removed
+
 
 logger = logging.getLogger(__name__)
 

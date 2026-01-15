@@ -154,7 +154,7 @@ async def check_all_sources(
     return UpdateReport(
         local_file_sources=local_statuses,
         cached_git_sources=git_statuses,
-        # Collections removed - no collection sources
+        
         cached_modules_checked=cached_modules_checked,
     )
 

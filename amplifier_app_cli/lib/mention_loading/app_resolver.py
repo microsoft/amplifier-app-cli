@@ -79,7 +79,7 @@ class AppMentionResolver:
         Resolution order (app-layer policy):
         1. App shortcuts: @user:, @project:, @~/
         2. Bundle namespaces: @namespace:path (via foundation)
-        3. Collections: @collection:path (DEPRECATED, removed)
+        3. Bundle resources: @bundle:path
         4. Relative paths: @path (CWD)
 
         Args:
@@ -115,7 +115,7 @@ class AppMentionResolver:
 
         # === BUNDLE MAPPINGS (dict fallback for profile mode) ===
         # If no foundation resolver, try bundle_mappings dict directly
-        # This supports @namespace:path in profile mode where bundles are composed
+        # This supports @namespace:path where bundles are composed
         if self._bundle_mappings and ":" in mention[1:]:
             result = self._resolve_bundle_mapping(mention)
             if result:

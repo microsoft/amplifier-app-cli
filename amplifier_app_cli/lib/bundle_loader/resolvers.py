@@ -215,32 +215,39 @@ class FoundationSettingsResolver:
         self.settings_provider = settings_provider
 
     def resolve(
-        self, module_id: str, profile_hint: str | None = None
+        self, module_id: str, source_hint: str | None = None, profile_hint: str | None = None
     ) -> FoundationGitSource | FoundationFileSource | FoundationPackageSource:
         """Resolve module through 6-layer fallback.
 
         Args:
             module_id: Module identifier (e.g., "provider-anthropic").
-            profile_hint: Optional source URI hint (parameter kept for API compatibility).
+            source_hint: Optional source URI hint.
+            profile_hint: DEPRECATED - use source_hint instead.
 
         Returns:
             Source object (FoundationGitSource, FoundationFileSource, or FoundationPackageSource).
 
         Raises:
             ModuleResolutionError: Module not found in any layer.
+            
+        FIXME: Remove profile_hint parameter after all callers migrate to source_hint.
         """
-        source, _layer = self.resolve_with_layer(module_id, profile_hint)
+        hint = profile_hint if profile_hint is not None else source_hint
+        source, _layer = self.resolve_with_layer(module_id, hint)
         return source
 
     def resolve_with_layer(
-        self, module_id: str, profile_hint: str | None = None
+        self, module_id: str, source_hint: str | None = None, profile_hint: str | None = None
     ) -> tuple[FoundationGitSource | FoundationFileSource | FoundationPackageSource, str]:
         """Resolve module and return which layer resolved it.
 
         Returns:
             Tuple of (source, layer_name).
             layer_name is one of: env, workspace, settings, source_hint, package
+            
+        FIXME: Remove profile_hint parameter after all callers migrate to source_hint.
         """
+        hint = profile_hint if profile_hint is not None else source_hint
         # Layer 1: Environment variable
         env_key = f"AMPLIFIER_MODULE_{module_id.upper().replace('-', '_')}"
         if env_value := os.getenv(env_key):
@@ -260,9 +267,9 @@ class FoundationSettingsResolver:
                 return (self._parse_source(sources[module_id], module_id), "settings")
 
         # Layer 4: Source hint (from bundle config)
-        if profile_hint:
+        if hint:
             logger.debug(f"[module:resolve] {module_id} -> source_hint")
-            return (self._parse_source(profile_hint, module_id), "source_hint")
+            return (self._parse_source(hint, module_id), "source_hint")
 
         # Layer 6: Installed package (fallback)
         logger.debug(f"[module:resolve] {module_id} -> package")
