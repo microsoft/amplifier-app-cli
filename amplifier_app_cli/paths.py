@@ -427,35 +427,6 @@ def get_agent_search_paths(bundle_name: str | None = None) -> list[Path]:
     return get_agent_search_paths_for_bundle(bundle_name)
 
 
-def create_agent_loader(
-    collection_resolver: Any = None,
-    *,
-    use_bundle: bool = False,
-    bundle_name: str | None = None,
-    bundle_mappings: dict[str, Path] | None = None,
-) -> Any:
-    """Create CLI-configured agent loader with dependencies.
-
-    DEPRECATED: Profile/collection mode is deprecated. Use bundles instead.
-    For bundle mode, agent loading is handled through the bundle preparation workflow
-    via create_session_from_bundle() or the runtime/config module.
-    """
-    raise NotImplementedError(
-        "Profile/collection agent loading is deprecated. Use bundles instead:\n"
-        "  - For sessions: create_session_from_bundle()\n"
-        "  - For config: runtime.config.resolve_bundle_config()"
-    )
-
-
-def create_module_resolver() -> Any:
-    """Create CLI-configured module resolver with settings and collection providers.
-
-    DEPRECATED: StandardModuleSourceResolver is no longer available.
-    Use foundation's resolver instead via create_foundation_resolver().
-    """
-    raise NotImplementedError(
-        "create_module_resolver() is deprecated. Use create_foundation_resolver() instead."
-    )
 
 
 def create_foundation_resolver() -> "FoundationSettingsResolver":
@@ -518,21 +489,6 @@ def create_foundation_resolver() -> "FoundationSettingsResolver":
             """Get module source from CLI settings."""
             return self.get_module_sources().get(module_id)
 
-    # CLI implements CollectionModuleProviderProtocol
-    # LEGACY: Collections are deprecated - this returns empty dict
-    class CLICollectionModuleProvider:
-        """CLI implementation of CollectionModuleProviderProtocol.
-
-        DEPRECATED: Collections are no longer supported. Returns empty dict.
-        Module discovery now happens through bundles.
-        """
-
-        def get_collection_modules(self) -> dict[str, str]:
-            """Get module_id -> absolute_path from installed collections.
-
-            DEPRECATED: Returns empty dict - collections are deprecated.
-            """
-            return {}
 
     return FoundationSettingsResolver(
         settings_provider=CLISettingsProvider(),
