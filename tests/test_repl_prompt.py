@@ -143,9 +143,9 @@ class TestREPLBehavior:
 #    - Type "line 2", press Ctrl-J
 #    - Type "line 3", press Enter
 #    - Verify all 3 lines submitted together
-# 4. Verify bd-22 feature (abort during processing):
+# 4. Verify bd-22 feature (cancel during processing):
 #    - Type a prompt, press Enter
-#    - See "Processing... (Ctrl-C to abort)"
+#    - See "Processing... (Ctrl-C to cancel)"
 #    - Press Ctrl-C
-#    - Verify "Aborted by user (Ctrl-C)" message
+#    - Verify "Cancelled by user (Ctrl-C)" message
 #    - Verify REPL stays active (doesn't exit)

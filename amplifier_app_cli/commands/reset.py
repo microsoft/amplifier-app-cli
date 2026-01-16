@@ -428,7 +428,7 @@ def reset(
         # Interactive mode
         result = _run_interactive()
         if result is None:
-            console.print("[yellow]Aborted.[/yellow]")
+            console.print("[yellow]Cancelled.[/yellow]")
             return
         preserve = result
 
@@ -438,7 +438,7 @@ def reset(
     # Confirm unless -y or dry-run
     if not yes and not dry_run:
         if not click.confirm("Proceed?"):
-            console.print("[yellow]Aborted.[/yellow]")
+            console.print("[yellow]Cancelled.[/yellow]")
             return
 
     # Execute reset steps

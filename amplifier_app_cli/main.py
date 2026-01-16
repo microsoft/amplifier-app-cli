@@ -1508,6 +1508,14 @@ async def interactive_chat(
                 console.print("\n[dim]Exiting...[/dim]")
                 break
 
+            except KeyboardInterrupt:
+                # Ctrl-C at prompt - confirm exit to prevent accidental exits when spamming Ctrl-C
+                console.print()  # New line for cleaner output
+                if click.confirm("Exit Amplifier?", default=False):
+                    console.print("[dim]Exiting...[/dim]")
+                    break
+                # Otherwise continue in the REPL
+
             except ModuleValidationError as e:
                 display_validation_error(console, e, verbose=verbose)
 
