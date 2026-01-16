@@ -111,7 +111,7 @@ class ProviderManager:
             provider_source = effective_sources.get(provider_id)
 
         # Build provider config entry with high priority (lower = higher priority)
-        # Priority 1 ensures explicitly configured provider wins over profile defaults (100)
+        # Priority 1 ensures explicitly configured provider wins over defaults (100)
         config_with_priority = {**config, "priority": 1}
         provider_entry = {"module": provider_id, "config": config_with_priority}
 

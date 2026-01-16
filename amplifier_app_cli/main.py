@@ -764,7 +764,7 @@ class CommandProcessor:
         Agents are loaded into session.config["agents"] via mount plan (compiler).
         """
         # Get pre-loaded agents from session config
-        # Note: agents can be a dict (resolved agents) or list/other format (profile config)
+        # Note: agents can be a dict (resolved agents) or list/other format 
         all_agents = self.session.config.get("agents", {})
 
         if not isinstance(all_agents, dict):
@@ -1041,7 +1041,7 @@ def cli(ctx, install_completion):
         _show_manual_instructions(shell, config_file)
         ctx.exit(1)
 
-    # If no command specified, launch chat mode with current profile
+    # If no command specified, launch chat mode
     # Note: Update check happens inside run command (not here, to avoid slowing other commands)
     # For initial prompt support, use: amplifier run --mode chat "prompt"
     if ctx.invoked_subcommand is None:

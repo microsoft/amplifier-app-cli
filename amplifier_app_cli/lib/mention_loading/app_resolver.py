@@ -113,7 +113,7 @@ class AppMentionResolver:
                 logger.debug(f"Resolved via foundation: {mention} -> {result}")
                 return result
 
-        # === BUNDLE MAPPINGS (dict fallback for profile mode) ===
+        # === BUNDLE MAPPINGS ===
         # If no foundation resolver, try bundle_mappings dict directly
         # This supports @namespace:path where bundles are composed
         if self._bundle_mappings and ":" in mention[1:]:

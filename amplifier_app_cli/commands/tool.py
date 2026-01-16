@@ -45,12 +45,12 @@ def _should_use_bundle() -> tuple[bool, str | None, str | None]:
     """Determine which bundle to use.
 
     Returns:
-        Tuple of (use_bundle: bool, bundle_name: str | None)
+        Tuple of (use_bundle: bool, bundle_name: str | None, _unused)
 
     Logic (mirrors run.py):
     1. If active bundle is set → use bundle
     2. Always use bundle system
-    3. Default to 'foundation' bundle (Phase 2 default)
+    3. Default to 'foundation' bundle
     """
     # Check for active bundle
     bundle_name = _get_active_bundle_name()
@@ -253,7 +253,7 @@ def tool_list(bundle: str | None, output: str, modules: bool):
     write_file). Use --modules to see tool module names instead (e.g., tool-filesystem).
     """
     # Determine bundle to use
-    use_bundle, default_bundle, default_profile = _should_use_bundle()
+    use_bundle, default_bundle, _unused = _should_use_bundle()
 
     # Explicit flags override auto-detection
     if bundle:
@@ -339,7 +339,7 @@ def tool_info(tool_name: str, bundle: str | None, output: str, module: bool):
     Use --module to look up by module name instead (e.g., tool-filesystem).
     """
     # Determine bundle to use
-    use_bundle, default_bundle, default_profile = _should_use_bundle()
+    use_bundle, default_bundle, _unused = _should_use_bundle()
 
     # Explicit flags override auto-detection
     if bundle:
