@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 async def resolve_bundle_config(
     bundle_name: str,
     app_settings: AppSettings,
-    agent_loader=None,
     console: Console | None = None,
     *,
     session_id: str | None = None,
@@ -43,7 +42,6 @@ async def resolve_bundle_config(
     Args:
         bundle_name: Bundle name to load (e.g., "foundation").
         app_settings: App settings for provider overrides.
-        agent_loader: Agent loader for resolving agent metadata.
         console: Optional console for status messages.
         session_id: Optional session ID to include session-scoped tool overrides.
         project_slug: Optional project slug (required if session_id provided).
@@ -108,47 +106,12 @@ async def resolve_bundle_config(
         source_overrides=combined_sources if combined_sources else None,
     )
 
-    # Get the mount plan from the prepared bundle
+    # Load full agent metadata from .md files (for descriptions)
+    # Foundation handles this via load_agent_metadata() after source_base_paths is populated
+    prepared.bundle.load_agent_metadata()
+
+    # Get the mount plan from the prepared bundle (now includes agent descriptions)
     bundle_config = prepared.mount_plan
-
-    # Load full agent metadata via agent_loader (for descriptions)
-    # IMPORTANT: Merge loaded metadata with existing config to preserve:
-    # - Inline descriptions from bundle YAML (e.g., shadow agents)
-    # - Tool configurations and other fields from inline definitions
-    if bundle_config.get("agents") and agent_loader:
-        loaded_agents = {}
-        for agent_name, existing_config in bundle_config["agents"].items():
-            # Start with existing config (may have inline description, tools, etc.)
-            merged_config = (
-                dict(existing_config)
-                if isinstance(existing_config, dict)
-                else {"name": agent_name}
-            )
-
-            try:
-                # Try to resolve agent from bundle's base_path first
-                # This handles namespaced names like "foundation:bug-hunter"
-                agent_path = prepared.bundle.resolve_agent_path(agent_name)
-                if agent_path:
-                    agent = agent_loader.load_agent_from_path(agent_path, agent_name)
-                    loaded_fragment = agent.to_mount_plan_fragment()
-
-                    # Merge: loaded metadata enhances existing config
-                    # Only override description if loaded one is non-empty
-                    for key, value in loaded_fragment.items():
-                        if key == "description":
-                            # Only use loaded description if it's non-empty
-                            if value:
-                                merged_config[key] = value
-                        else:
-                            # For other fields, loaded takes precedence
-                            merged_config[key] = value
-            except Exception:  # noqa: BLE001
-                # Keep existing config if agent loading fails
-                pass
-
-            loaded_agents[agent_name] = merged_config
-        bundle_config["agents"] = loaded_agents
 
     # Apply provider overrides
     provider_overrides = app_settings.get_provider_overrides()
@@ -215,7 +178,6 @@ async def resolve_bundle_config(
 def resolve_app_config(
     *,
     config_manager,
-    agent_loader,
     app_settings: AppSettings,
     cli_config: dict[str, Any] | None = None,
     bundle_name: str | None = None,
@@ -255,48 +217,12 @@ def resolve_app_config(
                     f"Expected single bundle, got dict for '{bundle_name}'"
                 )
             bundle = loaded
+
+            # Load full agent metadata from .md files (for descriptions)
+            # Foundation handles this via load_agent_metadata()
+            bundle.load_agent_metadata()
+
             bundle_config = bundle.to_mount_plan()
-
-            # Load full agent metadata via agent_loader (for descriptions)
-            # IMPORTANT: Merge loaded metadata with existing config to preserve:
-            # - Inline descriptions from bundle YAML (e.g., shadow agents)
-            # - Tool configurations and other fields from inline definitions
-            if bundle_config.get("agents") and agent_loader:
-                loaded_agents = {}
-                for agent_name, existing_config in bundle_config["agents"].items():
-                    # Start with existing config (may have inline description, tools, etc.)
-                    merged_config = (
-                        dict(existing_config)
-                        if isinstance(existing_config, dict)
-                        else {"name": agent_name}
-                    )
-
-                    try:
-                        # Try to resolve agent from bundle's base_path first
-                        # This handles namespaced names like "foundation:bug-hunter"
-                        agent_path = bundle.resolve_agent_path(agent_name)
-                        if agent_path:
-                            agent = agent_loader.load_agent_from_path(
-                                agent_path, agent_name
-                            )
-                            loaded_fragment = agent.to_mount_plan_fragment()
-
-                            # Merge: loaded metadata enhances existing config
-                            # Only override description if loaded one is non-empty
-                            for key, value in loaded_fragment.items():
-                                if key == "description":
-                                    # Only use loaded description if it's non-empty
-                                    if value:
-                                        merged_config[key] = value
-                                else:
-                                    # For other fields, loaded takes precedence
-                                    merged_config[key] = value
-                    except Exception:  # noqa: BLE001
-                        # Keep existing config if agent loading fails
-                        pass
-
-                    loaded_agents[agent_name] = merged_config
-                bundle_config["agents"] = loaded_agents
 
             # Apply provider overrides to bundle config
             if provider_overrides and bundle_config.get("providers"):
@@ -697,7 +623,6 @@ def _build_notification_behaviors(
 async def resolve_config_async(
     *,
     bundle_name: str | None = None,
-    agent_loader=None,
     app_settings: AppSettings,
     console: Console | None = None,
     session_id: str | None = None,
@@ -713,7 +638,6 @@ async def resolve_config_async(
 
     Args:
         bundle_name: Bundle to load (defaults to 'foundation' if not specified)
-        agent_loader: Agent loader for resolving agent configurations
         app_settings: Application settings
         console: Optional console for output
         session_id: Optional session ID for session-scoped tool overrides
@@ -730,7 +654,6 @@ async def resolve_config_async(
         config_data, prepared_bundle = await resolve_bundle_config(
             bundle_name=bundle_name,
             app_settings=app_settings,
-            agent_loader=agent_loader,
             console=console,
             session_id=session_id,
             project_slug=project_slug,
@@ -745,7 +668,6 @@ async def resolve_config_async(
         config_data, prepared_bundle = await resolve_bundle_config(
             bundle_name=default_bundle,
             app_settings=app_settings,
-            agent_loader=agent_loader,
             console=console,
             session_id=session_id,
             project_slug=project_slug,
@@ -756,7 +678,6 @@ async def resolve_config_async(
 def resolve_config(
     *,
     bundle_name: str | None = None,
-    agent_loader=None,
     app_settings: AppSettings,
     console: Console | None = None,
     session_id: str | None = None,
@@ -769,7 +690,6 @@ def resolve_config(
 
     Args:
         bundle_name: Bundle to load (defaults to 'foundation' if not specified)
-        agent_loader: Agent loader for resolving agent configurations
         app_settings: Application settings
         console: Optional console for output
         session_id: Optional session ID for session-scoped tool overrides
@@ -792,7 +712,6 @@ def resolve_config(
         result = asyncio.run(
             resolve_config_async(
                 bundle_name=bundle_name,
-                agent_loader=agent_loader,
                 app_settings=app_settings,
                 console=console,
                 session_id=session_id,

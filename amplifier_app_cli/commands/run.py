@@ -22,7 +22,6 @@ from ..lib.settings import AppSettings
 from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..runtime.config import resolve_config
-from ..runtime.agent_loader import AgentLoader
 from ..types import (
     ExecuteSingleProtocol,
     InteractiveChatProtocol,
@@ -141,8 +140,7 @@ def register_run_command(
         if check_first_run() and prompt_first_run_init(console):
             pass  # First run init completed
 
-        # Create bundle registry if bundle is specified (either from CLI or settings),
-        # and get bundle base_path early so we can pass it to agent_loader for @mention resolution
+        # Create bundle registry if bundle is specified (either from CLI or settings)
         bundle_registry = create_bundle_registry() if bundle else None
         if bundle and bundle_registry:
             try:
@@ -152,8 +150,7 @@ def register_run_command(
                 # Log warning; full error will be handled later in resolve_app_config
                 logger.warning("Early bundle load failed for '%s': %s", bundle, e)
 
-        # Agent loading is now handled via bundle preparation workflow
-        # The resolve_config function handles None agent_loader gracefully
+        # Agent loading is now handled via foundation's bundle.load_agent_metadata()
         app_settings = AppSettings()
 
         # Track configuration source for display (always bundle mode now)
@@ -163,7 +160,6 @@ def register_run_command(
         try:
             config_data, prepared_bundle = resolve_config(
                 bundle_name=bundle,
-                agent_loader=AgentLoader(),
                 app_settings=app_settings,
                 console=console,
             )
