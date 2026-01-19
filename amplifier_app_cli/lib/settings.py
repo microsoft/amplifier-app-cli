@@ -14,6 +14,9 @@ import yaml
 
 Scope = Literal["local", "project", "global", "session"]
 
+# Backward compatibility alias (OLD AppSettings used ScopeType without "session")
+ScopeType = Literal["local", "project", "global"]
+
 
 @dataclass
 class SettingsPaths:
@@ -129,6 +132,59 @@ class AppSettings:
             del settings["bundle"]
             self._write_scope(scope, settings)
 
+    # ----- App bundle settings -----
+
+    def get_app_bundles(self) -> list[str]:
+        """Get list of app bundle URIs that are always composed.
+
+        App bundles are composed onto every session AFTER the primary bundle.
+        They enable team-wide or user-wide behaviors.
+
+        Reads from bundle.app setting (list of URIs).
+        """
+        settings = self.get_merged_settings()
+        bundle_settings = settings.get("bundle") or {}
+        app_bundles = bundle_settings.get("app", [])
+        return app_bundles if isinstance(app_bundles, list) else []
+
+    def add_app_bundle(self, uri: str, scope: Scope = "global") -> None:
+        """Add an app bundle URI at specified scope.
+
+        Args:
+            uri: Bundle URI (e.g., "git+https://github.com/org/bundle@main")
+            scope: Where to store (global, project, local)
+        """
+        settings = self._read_scope(scope)
+        if "bundle" not in settings:
+            settings["bundle"] = {}
+        if "app" not in settings["bundle"]:
+            settings["bundle"]["app"] = []
+
+        # Add if not already present
+        if uri not in settings["bundle"]["app"]:
+            settings["bundle"]["app"].append(uri)
+
+        self._write_scope(scope, settings)
+
+    def remove_app_bundle(self, uri: str, scope: Scope = "global") -> bool:
+        """Remove an app bundle URI from specified scope.
+
+        Returns True if found and removed, False otherwise.
+        """
+        settings = self._read_scope(scope)
+        app_bundles = settings.get("bundle", {}).get("app", [])
+
+        if uri in app_bundles:
+            app_bundles.remove(uri)
+            # Clean up empty structures
+            if not app_bundles:
+                settings.get("bundle", {}).pop("app", None)
+            if not settings.get("bundle"):
+                settings.pop("bundle", None)
+            self._write_scope(scope, settings)
+            return True
+        return False
+
     # ----- Provider settings -----
 
     def get_provider(self) -> dict[str, Any] | None:
@@ -146,7 +202,71 @@ class AppSettings:
         """Clear provider at specified scope."""
         self._remove_setting("provider", scope)
 
+    # ----- Provider override settings (config.providers) -----
 
+    def get_provider_overrides(self) -> list[dict[str, Any]]:
+        """Return merged provider overrides from config.providers.
+
+        This is the list of configured providers with their settings.
+        """
+        settings = self.get_merged_settings()
+        providers = settings.get("config", {}).get("providers", [])
+        return providers if isinstance(providers, list) else []
+
+    def set_provider_override(
+        self, provider_entry: dict[str, Any], scope: Scope = "global"
+    ) -> None:
+        """Persist provider override at a specific scope.
+
+        Updates or adds the provider entry. The new/updated provider
+        is moved to the front (becomes active). Other priority-1 providers
+        are demoted to priority 10.
+        """
+        existing_providers = self.get_scope_provider_overrides(scope)
+        module_id = provider_entry.get("module")
+        other_providers = []
+
+        for provider in existing_providers:
+            if provider.get("module") == module_id:
+                continue  # Skip - we'll add the new entry at the front
+            else:
+                # Demote any other priority-1 providers to priority 10
+                config = provider.get("config", {})
+                if isinstance(config, dict) and config.get("priority") == 1:
+                    provider = {**provider, "config": {**config, "priority": 10}}
+                other_providers.append(provider)
+
+        # New provider goes first (becomes active)
+        new_providers = [provider_entry] + other_providers
+
+        settings = self._read_scope(scope)
+        if "config" not in settings:
+            settings["config"] = {}
+        settings["config"]["providers"] = new_providers
+        self._write_scope(scope, settings)
+
+    def clear_provider_override(self, scope: Scope = "global") -> bool:
+        """Clear provider override from a scope. Returns True if cleared."""
+        settings = self._read_scope(scope)
+        config_section = settings.get("config") or {}
+        providers = config_section.get("providers")
+
+        if isinstance(providers, list) and providers:
+            config_section.pop("providers", None)
+            if config_section:
+                settings["config"] = config_section
+            elif "config" in settings:
+                settings.pop("config", None)
+            self._write_scope(scope, settings)
+            return True
+        return False
+
+    def get_scope_provider_overrides(self, scope: Scope) -> list[dict[str, Any]]:
+        """Return provider overrides defined at a specific scope."""
+        settings = self._read_scope(scope)
+        config_section = settings.get("config") or {}
+        providers = config_section.get("providers", [])
+        return providers if isinstance(providers, list) else []
 
     # ----- Override settings (dev overrides) -----
 
@@ -222,6 +342,109 @@ class AppSettings:
             return True
         return False
 
+    # ----- Notification settings (config.notifications) -----
+
+    def get_notification_config(self) -> dict[str, Any]:
+        """Return merged notification config from config.notifications.
+
+        Expected structure:
+            config:
+              notifications:
+                desktop:
+                  enabled: true
+                push:
+                  enabled: true
+        """
+        settings = self.get_merged_settings()
+        notifications = settings.get("config", {}).get("notifications", {})
+        return notifications if isinstance(notifications, dict) else {}
+
+    def get_notification_hook_overrides(self) -> list[dict[str, Any]]:
+        """Return hook overrides derived from notification settings.
+
+        Maps config.notifications.* settings to hook module configs.
+        """
+        notifications = self.get_notification_config()
+        overrides: list[dict[str, Any]] = []
+
+        # Desktop notifications (enabled by default)
+        desktop_config = notifications.get("desktop", {})
+        if desktop_config.get("enabled", True):
+            hook_config: dict[str, Any] = {"enabled": True}
+            for key in [
+                "show_device",
+                "show_project",
+                "show_preview",
+                "preview_length",
+                "subtitle",
+                "suppress_if_focused",
+                "min_iterations",
+                "show_iteration_count",
+                "sound",
+                "debug",
+            ]:
+                if key in desktop_config:
+                    hook_config[key] = desktop_config[key]
+            overrides.append({"module": "hooks-notify", "config": hook_config})
+
+        # Push notifications (ntfy)
+        ntfy_config = notifications.get("ntfy", {})
+        push_config = notifications.get("push", {})
+        combined_push = {**push_config, **ntfy_config}
+
+        if combined_push and combined_push.get("enabled", False):
+            hook_config = {"enabled": True, "service": "ntfy"}
+            for key in ["server", "priority", "tags", "debug"]:
+                if key in combined_push:
+                    hook_config[key] = combined_push[key]
+            overrides.append({"module": "hooks-notify-push", "config": hook_config})
+
+        return overrides
+
+    def set_notification_config(
+        self, notification_type: str, config: dict[str, Any], scope: Scope = "global"
+    ) -> None:
+        """Set notification config at specified scope.
+
+        Args:
+            notification_type: "desktop" or "ntfy"
+            config: Config dict (enabled, topic, etc.)
+            scope: Where to save
+        """
+        settings = self._read_scope(scope)
+        if "config" not in settings:
+            settings["config"] = {}
+        if "notifications" not in settings["config"]:
+            settings["config"]["notifications"] = {}
+        settings["config"]["notifications"][notification_type] = config
+        self._write_scope(scope, settings)
+
+    def clear_notification_config(
+        self, notification_type: str | None, scope: Scope = "global"
+    ) -> None:
+        """Clear notification config at specified scope.
+
+        Args:
+            notification_type: "desktop", "ntfy", or None to clear all
+            scope: Where to clear from
+        """
+        settings = self._read_scope(scope)
+        notifications = settings.get("config", {}).get("notifications", {})
+        if not notifications:
+            return
+
+        if notification_type:
+            notifications.pop(notification_type, None)
+        else:
+            notifications.clear()
+
+        # Clean up empty structures
+        if not notifications:
+            settings.get("config", {}).pop("notifications", None)
+        if not settings.get("config"):
+            settings.pop("config", None)
+        self._write_scope(scope, settings)
+
     # ----- Scope availability -----
 
     def is_scope_available(self, scope: str) -> bool:
@@ -257,6 +480,10 @@ class AppSettings:
     def get_scope_path(self, scope: Scope) -> Path:
         """Get settings file path for scope. Public wrapper for _get_scope_path."""
         return self._get_scope_path(scope)
+
+    def scope_path(self, scope: Scope) -> Path:
+        """Backward compatibility alias for get_scope_path()."""
+        return self.get_scope_path(scope)
 
     # ----- Allowed write paths settings -----
 
@@ -523,6 +750,164 @@ class AppSettings:
                     return True
 
         return False
+
+    # ----- Tool override settings (modules.tools) -----
+
+    def get_tool_overrides(
+        self, session_id: str | None = None, project_slug: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return merged tool overrides from modules.tools.
+
+        Tool overrides allow settings like allowed_write_paths for tool-filesystem.
+
+        Args:
+            session_id: Optional session ID to include session-scoped settings
+            project_slug: Optional project slug (required if session_id provided)
+        """
+        settings = self.get_merged_settings()
+        tools = settings.get("modules", {}).get("tools", [])
+
+        # Also check session-scoped settings if session context provided
+        if session_id and project_slug:
+            session_settings_path = (
+                Path.home()
+                / ".amplifier"
+                / "projects"
+                / project_slug
+                / "sessions"
+                / session_id
+                / "settings.yaml"
+            )
+            if session_settings_path.exists():
+                try:
+                    with open(session_settings_path, encoding="utf-8") as f:
+                        session_settings = yaml.safe_load(f) or {}
+                    session_tools = session_settings.get("modules", {}).get("tools", [])
+                    if session_tools:
+                        tools = self._merge_tool_lists(tools, session_tools)
+                except Exception:
+                    pass
+
+        return tools if isinstance(tools, list) else []
+
+    def _merge_tool_lists(
+        self, base: list[dict[str, Any]], overlay: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Merge tool lists, with overlay taking precedence for matching modules."""
+        result = list(base)
+        base_modules = {
+            t.get("module"): i for i, t in enumerate(base) if isinstance(t, dict)
+        }
+
+        for tool in overlay:
+            if not isinstance(tool, dict):
+                continue
+            module_id = tool.get("module")
+            if module_id and module_id in base_modules:
+                idx = base_modules[module_id]
+                base_config = result[idx].get("config", {}) or {}
+                overlay_config = tool.get("config", {}) or {}
+                merged_config = self._merge_tool_configs(base_config, overlay_config)
+                result[idx] = {**result[idx], **tool, "config": merged_config}
+            else:
+                result.append(tool)
+
+        return result
+
+    def _merge_tool_configs(
+        self, base: dict[str, Any], overlay: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Merge tool configs with special handling for permission lists."""
+        result = {**base, **overlay}
+
+        # Union permission fields instead of replacing
+        permission_fields = [
+            "allowed_write_paths",
+            "allowed_read_paths",
+            "denied_write_paths",
+        ]
+        for field in permission_fields:
+            if field in base or field in overlay:
+                base_paths = set(base.get(field, []))
+                overlay_paths = set(overlay.get(field, []))
+                result[field] = list(base_paths | overlay_paths)
+
+        return result
+
+    # ----- Module override settings (overrides section) -----
+
+    def get_module_overrides(self) -> dict[str, dict[str, Any]]:
+        """Return unified module overrides from overrides section.
+
+        Expected structure:
+            overrides:
+              tool-task:
+                source: /local/path/to/module
+                config:
+                  inherit_context: recent
+        """
+        settings = self.get_merged_settings()
+        overrides = settings.get("overrides", {})
+        return overrides if isinstance(overrides, dict) else {}
+
+    def get_source_overrides(self) -> dict[str, str]:
+        """Return source overrides only (module_id -> source_uri).
+
+        Convenience method for Bundle.prepare(source_resolver=...).
+        """
+        overrides = self.get_module_overrides()
+        return {
+            module_id: override["source"]
+            for module_id, override in overrides.items()
+            if isinstance(override, dict) and "source" in override
+        }
+
+    def get_config_overrides(self) -> dict[str, dict[str, Any]]:
+        """Return config overrides only (module_id -> config_dict)."""
+        overrides = self.get_module_overrides()
+        return {
+            module_id: override.get("config", {})
+            for module_id, override in overrides.items()
+            if isinstance(override, dict) and "config" in override
+        }
+
+    def set_module_override(
+        self,
+        module_id: str,
+        source: str | None = None,
+        config: dict[str, Any] | None = None,
+        scope: Scope = "project",
+    ) -> None:
+        """Set a module override at the specified scope."""
+        settings = self._read_scope(scope)
+        if "overrides" not in settings:
+            settings["overrides"] = {}
+
+        override: dict[str, Any] = {}
+        if source is not None:
+            override["source"] = source
+        if config is not None:
+            override["config"] = config
+
+        if override:
+            settings["overrides"][module_id] = override
+        elif module_id in settings.get("overrides", {}):
+            del settings["overrides"][module_id]
+
+        self._write_scope(scope, settings)
+
+    def remove_module_override(self, module_id: str, scope: Scope = "project") -> bool:
+        """Remove a module override from specified scope. Returns True if removed."""
+        settings = self._read_scope(scope)
+        overrides = settings.get("overrides", {})
+
+        if module_id not in overrides:
+            return False
+
+        del overrides[module_id]
+        settings["overrides"] = overrides
+        self._write_scope(scope, settings)
+        return True
 
     # ----- Scope utilities -----
 

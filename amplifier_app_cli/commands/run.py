@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 from ..console import console
 from ..session_store import extract_session_mode
 from ..effective_config import get_effective_config_summary
-from ..lib.app_settings import AppSettings
+from ..lib.settings import AppSettings
 from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..runtime.config import resolve_config
@@ -153,7 +153,7 @@ def register_run_command(
 
         # Agent loading is now handled via bundle preparation workflow
         # The resolve_config function handles None agent_loader gracefully
-        app_settings = AppSettings(config_manager)
+        app_settings = AppSettings()
 
         # Track configuration source for display (always bundle mode now)
         config_source_name = f"bundle:{bundle}"

@@ -15,8 +15,8 @@ from rich.console import Console
 from rich.table import Table
 
 from ..key_manager import KeyManager
-from ..lib.app_settings import AppSettings as LegacyAppSettings
-from ..lib.app_settings import ScopeType
+from ..lib.settings import AppSettings
+from ..lib.settings import ScopeType
 from ..paths import create_config_manager
 from ..paths import get_effective_scope
 from ..paths import ScopeNotAvailableError
@@ -27,10 +27,9 @@ console = Console()
 NTFY_TOPIC_ENV_VAR = "AMPLIFIER_NTFY_TOPIC"
 
 
-def _get_app_settings() -> LegacyAppSettings:
-    """Get AppSettings instance with config manager."""
-    config_manager = create_config_manager()
-    return LegacyAppSettings(config_manager)
+def _get_app_settings() -> AppSettings:
+    """Get AppSettings instance."""
+    return AppSettings()
 
 
 def _has_ntfy_topic() -> bool:

@@ -788,7 +788,7 @@ def override_set(
     """
     import json
 
-    from ..lib.app_settings import AppSettings
+    from ..lib.settings import AppSettings
 
     if not source and not config:
         console.print("[red]Error:[/red] Must specify --source and/or --config")
@@ -811,8 +811,7 @@ def override_set(
             config_dict[key] = value
 
     try:
-        config_manager = create_config_manager()
-        settings = AppSettings(config_manager)
+        settings = AppSettings()
         settings.set_module_override(
             module_id=module_id,
             source=source,
@@ -854,11 +853,10 @@ def override_remove(module_id: str, scope: str):
     Example:
         amplifier module override remove tool-task
     """
-    from ..lib.app_settings import AppSettings
+    from ..lib.settings import AppSettings
 
     try:
-        config_manager = create_config_manager()
-        settings = AppSettings(config_manager)
+        settings = AppSettings()
         removed = settings.remove_module_override(
             module_id, scope=cast(ScopeType, scope)
         )
@@ -891,10 +889,9 @@ def override_list(scope: str):
 
     Shows overrides from settings.yaml. Use --scope to filter by location.
     """
-    from ..lib.app_settings import AppSettings
+    from ..lib.settings import AppSettings
 
-    config_manager = create_config_manager()
-    settings = AppSettings(config_manager)
+    settings = AppSettings()
     overrides = settings.get_module_overrides()
 
     if not overrides:

@@ -79,13 +79,12 @@ async def _get_mounted_tools_from_bundle_async(
     Returns:
         List of tool dicts with name, description, and callable status
     """
-    from ..lib.app_settings import AppSettings
+    from ..lib.settings import AppSettings
     from ..runtime.config import resolve_config_async
 
     # Load bundle via unified resolve_config_async (single source of truth)
 
-    config_manager = create_config_manager()
-    app_settings = AppSettings(config_manager)
+    app_settings = AppSettings()
 
     try:
         _config, prepared_bundle = await resolve_config_async(
@@ -152,7 +151,7 @@ async def _invoke_tool_from_bundle_async(
         ValueError: If tool not found
         Exception: If tool execution fails
     """
-    from ..lib.app_settings import AppSettings
+    from ..lib.settings import AppSettings
     from ..lib.bundle_loader import AppModuleResolver
     from ..paths import create_foundation_resolver
     from ..session_runner import register_session_spawning
@@ -160,8 +159,7 @@ async def _invoke_tool_from_bundle_async(
 
     # Load bundle via unified resolve_config_async (single source of truth)
 
-    config_manager = create_config_manager()
-    app_settings = AppSettings(config_manager)
+    app_settings = AppSettings()
 
     _config, prepared_bundle = await resolve_config_async(
         bundle_name=bundle_name,

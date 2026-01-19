@@ -8,8 +8,8 @@ from typing import Any
 
 from amplifier_app_cli.lib.config_compat import ConfigManager
 
-from .lib.app_settings import AppSettings
-from .lib.app_settings import ScopeType
+from .lib.settings import AppSettings
+from .lib.settings import ScopeType
 from .provider_loader import get_provider_info
 from .provider_sources import _get_ordered_providers
 from .provider_sources import get_effective_provider_sources
@@ -82,7 +82,7 @@ class ProviderManager:
             config: Config manager instance (required)
         """
         self.config = config
-        self._settings = AppSettings(config)
+        self._settings = AppSettings()
 
     def use_provider(
         self,

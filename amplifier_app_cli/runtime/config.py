@@ -11,10 +11,9 @@ from typing import Any
 
 from rich.console import Console
 
-from ..lib.app_settings import AppSettings
+from ..lib.settings import AppSettings
 from ..lib.merge_utils import merge_module_items
 from ..lib.merge_utils import merge_tool_configs
-
 
 
 if TYPE_CHECKING:
@@ -73,6 +72,12 @@ async def resolve_bundle_config(
     compose_behaviors = _build_notification_behaviors(
         app_settings.get_notification_config()
     )
+
+    # Add app bundles (user-configured bundles that are always composed)
+    # App bundles are explicit user configuration, composed AFTER notification behaviors
+    app_bundles = app_settings.get_app_bundles()
+    if app_bundles:
+        compose_behaviors = compose_behaviors + app_bundles
 
     # Get source overrides from unified settings
     # This enables settings.yaml overrides to take effect at prepare time

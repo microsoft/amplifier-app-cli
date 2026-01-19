@@ -17,8 +17,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from ..console import console
-from ..lib.app_settings import AppSettings
-from ..paths import create_config_manager
+from ..lib.settings import AppSettings
 from ..project_utils import get_project_slug
 from ..runtime.config import resolve_config
 from ..session_store import SessionStore, extract_session_mode
@@ -126,9 +125,7 @@ def _prepare_resume_context(
         bundle_name = saved_bundle
     # If no saved bundle, bundle_name stays None and resolve_config will use default
 
-    config_manager = create_config_manager()
-
-    app_settings = AppSettings(config_manager)
+    app_settings = AppSettings()
 
     # Check first run / auto-install providers BEFORE config resolution
     from .init import check_first_run
