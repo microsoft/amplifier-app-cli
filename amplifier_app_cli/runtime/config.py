@@ -112,22 +112,42 @@ async def resolve_bundle_config(
     bundle_config = prepared.mount_plan
 
     # Load full agent metadata via agent_loader (for descriptions)
+    # IMPORTANT: Merge loaded metadata with existing config to preserve:
+    # - Inline descriptions from bundle YAML (e.g., shadow agents)
+    # - Tool configurations and other fields from inline definitions
     if bundle_config.get("agents") and agent_loader:
         loaded_agents = {}
-        for agent_name in bundle_config["agents"]:
+        for agent_name, existing_config in bundle_config["agents"].items():
+            # Start with existing config (may have inline description, tools, etc.)
+            merged_config = (
+                dict(existing_config)
+                if isinstance(existing_config, dict)
+                else {"name": agent_name}
+            )
+
             try:
                 # Try to resolve agent from bundle's base_path first
                 # This handles namespaced names like "foundation:bug-hunter"
                 agent_path = prepared.bundle.resolve_agent_path(agent_name)
                 if agent_path:
                     agent = agent_loader.load_agent_from_path(agent_path, agent_name)
-                else:
-                    # Fall back to general agent resolution
-                    agent = agent_loader.load_agent(agent_name)
-                loaded_agents[agent_name] = agent.to_mount_plan_fragment()
+                    loaded_fragment = agent.to_mount_plan_fragment()
+
+                    # Merge: loaded metadata enhances existing config
+                    # Only override description if loaded one is non-empty
+                    for key, value in loaded_fragment.items():
+                        if key == "description":
+                            # Only use loaded description if it's non-empty
+                            if value:
+                                merged_config[key] = value
+                        else:
+                            # For other fields, loaded takes precedence
+                            merged_config[key] = value
             except Exception:  # noqa: BLE001
-                # Keep stub if agent loading fails
-                loaded_agents[agent_name] = bundle_config["agents"][agent_name]
+                # Keep existing config if agent loading fails
+                pass
+
+            loaded_agents[agent_name] = merged_config
         bundle_config["agents"] = loaded_agents
 
     # Apply provider overrides
@@ -238,9 +258,19 @@ def resolve_app_config(
             bundle_config = bundle.to_mount_plan()
 
             # Load full agent metadata via agent_loader (for descriptions)
+            # IMPORTANT: Merge loaded metadata with existing config to preserve:
+            # - Inline descriptions from bundle YAML (e.g., shadow agents)
+            # - Tool configurations and other fields from inline definitions
             if bundle_config.get("agents") and agent_loader:
                 loaded_agents = {}
-                for agent_name in bundle_config["agents"]:
+                for agent_name, existing_config in bundle_config["agents"].items():
+                    # Start with existing config (may have inline description, tools, etc.)
+                    merged_config = (
+                        dict(existing_config)
+                        if isinstance(existing_config, dict)
+                        else {"name": agent_name}
+                    )
+
                     try:
                         # Try to resolve agent from bundle's base_path first
                         # This handles namespaced names like "foundation:bug-hunter"
@@ -249,13 +279,23 @@ def resolve_app_config(
                             agent = agent_loader.load_agent_from_path(
                                 agent_path, agent_name
                             )
-                        else:
-                            # Fall back to general agent resolution
-                            agent = agent_loader.load_agent(agent_name)
-                        loaded_agents[agent_name] = agent.to_mount_plan_fragment()
+                            loaded_fragment = agent.to_mount_plan_fragment()
+
+                            # Merge: loaded metadata enhances existing config
+                            # Only override description if loaded one is non-empty
+                            for key, value in loaded_fragment.items():
+                                if key == "description":
+                                    # Only use loaded description if it's non-empty
+                                    if value:
+                                        merged_config[key] = value
+                                else:
+                                    # For other fields, loaded takes precedence
+                                    merged_config[key] = value
                     except Exception:  # noqa: BLE001
-                        # Keep stub if agent loading fails
-                        loaded_agents[agent_name] = bundle_config["agents"][agent_name]
+                        # Keep existing config if agent loading fails
+                        pass
+
+                    loaded_agents[agent_name] = merged_config
                 bundle_config["agents"] = loaded_agents
 
             # Apply provider overrides to bundle config
