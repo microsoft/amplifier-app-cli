@@ -237,14 +237,11 @@ class CommandProcessor:
     """Process slash commands and special directives."""
 
     COMMANDS = {
-        "/think": {
-            "action": "enable_plan_mode",
-            "description": "Enable read-only planning mode",
+        "/mode": {
+            "action": "handle_mode",
+            "description": "Set or toggle a mode (e.g., /mode plan)",
         },
-        "/do": {
-            "action": "disable_plan_mode",
-            "description": "Exit plan mode and allow modifications",
-        },
+        "/modes": {"action": "list_modes", "description": "List available modes"},
         "/save": {
             "action": "save_transcript",
             "description": "Save conversation transcript",
@@ -279,11 +276,27 @@ class CommandProcessor:
         },
     }
 
+    # Dynamic shortcuts for modes (populated from mode definitions)
+    MODE_SHORTCUTS: dict[str, str] = {}
+
     def __init__(self, session: AmplifierSession, bundle_name: str = "unknown"):
         self.session = session
         self.bundle_name = bundle_name
-        self.plan_mode = False
-        self.plan_mode_unregister = None  # Store unregister function
+        # Initialize session_state if not present
+        if not hasattr(self.session.coordinator, "session_state"):
+            self.session.coordinator.session_state = {}
+        if "active_mode" not in self.session.coordinator.session_state:
+            self.session.coordinator.session_state["active_mode"] = None
+        # Populate mode shortcuts from discovery (if available)
+        self._populate_mode_shortcuts()
+
+    def _populate_mode_shortcuts(self) -> None:
+        """Populate MODE_SHORTCUTS from mode discovery."""
+        discovery = self.session.coordinator.session_state.get("mode_discovery")
+        if discovery and hasattr(discovery, "get_shortcuts"):
+            shortcuts = discovery.get_shortcuts()
+            # Update class-level shortcuts dict
+            CommandProcessor.MODE_SHORTCUTS.update(shortcuts)
 
     def process_input(self, user_input: str) -> tuple[str, dict[str, Any]]:
         """
@@ -301,23 +314,26 @@ class CommandProcessor:
             if command in self.COMMANDS:
                 cmd_info = self.COMMANDS[command]
                 return cmd_info["action"], {"args": args, "command": command}
+
+            # Check for mode shortcuts (e.g., /plan -> /mode plan)
+            shortcut_name = command[1:]  # Remove leading /
+            if shortcut_name in self.MODE_SHORTCUTS:
+                return "handle_mode", {"args": shortcut_name, "command": command}
+
             return "unknown_command", {"command": command}
 
         # Regular prompt
-        return "prompt", {"text": user_input, "plan_mode": self.plan_mode}
+        active_mode = self.session.coordinator.session_state.get("active_mode")
+        return "prompt", {"text": user_input, "active_mode": active_mode}
 
     async def handle_command(self, action: str, data: dict[str, Any]) -> str:
         """Handle a command action."""
 
-        if action == "enable_plan_mode":
-            self.plan_mode = True
-            self._configure_plan_mode(True)
-            return "✓ Plan Mode enabled - all modifications disabled"
+        if action == "handle_mode":
+            return await self._handle_mode(data.get("args", ""))
 
-        if action == "disable_plan_mode":
-            self.plan_mode = False
-            self._configure_plan_mode(False)
-            return "✓ Plan Mode disabled - modifications enabled"
+        if action == "list_modes":
+            return await self._list_modes()
 
         if action == "save_transcript":
             path = await self._save_transcript(data.get("args", ""))
@@ -362,37 +378,107 @@ class CommandProcessor:
 
         return f"Unhandled action: {action}"
 
-    def _configure_plan_mode(self, enabled: bool):
-        """Configure session for plan mode."""
-        # Import HookResult here to avoid circular import
-        from amplifier_core.models import HookResult
+    async def _handle_mode(self, args: str) -> str:
+        """Handle /mode command for setting, toggling, or clearing modes."""
+        args = args.strip().lower()
+        session_state = self.session.coordinator.session_state
+        current_mode = session_state.get("active_mode")
 
-        # Access hooks via the coordinator
-        hooks = self.session.coordinator.get("hooks")
-        if hooks:
-            if enabled:
-                # Register plan mode hook that denies write operations
-                async def plan_mode_hook(
-                    _event: str, data: dict[str, Any]
-                ) -> HookResult:
-                    tool_name = data.get("tool")
-                    if tool_name in ["write", "edit", "bash", "task"]:
-                        return HookResult(
-                            action="deny",
-                            reason="Write operations disabled in Plan Mode",
-                        )
-                    return HookResult(action="continue")
+        # /mode off - clear any active mode
+        if args == "off":
+            if current_mode:
+                session_state["active_mode"] = None
+                # Reset warnings in mode hooks if present
+                mode_hooks = session_state.get("mode_hooks")
+                if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
+                    mode_hooks.reset_warnings()
+                return f"Mode off: {current_mode}"
+            return "No mode active"
 
-                # Register the hook with the hooks registry and store unregister function
-                if hasattr(hooks, "register"):
-                    self.plan_mode_unregister = hooks.register(
-                        "tool:pre", plan_mode_hook, priority=0, name="plan_mode"
-                    )
+        # /mode (no args) - show current mode
+        if not args:
+            if current_mode:
+                return f"Active mode: {current_mode}"
+            return "No mode active. Use /modes to list available modes."
+
+        # /mode <name> [on|off] - set or toggle a mode
+        parts = args.split()
+        mode_name = parts[0]
+        explicit_state = parts[1] if len(parts) > 1 else None
+
+        # Check if mode exists via discovery
+        discovery = session_state.get("mode_discovery")
+        if discovery:
+            mode_def = discovery.find(mode_name)
+            if not mode_def:
+                return f"Unknown mode: {mode_name}. Use /modes to list available modes."
+            description = mode_def.description
+        else:
+            # No discovery available - just set the mode name
+            description = ""
+
+        # Handle explicit on/off
+        if explicit_state == "on":
+            if current_mode == mode_name:
+                return f"Already in {mode_name} mode"
+            session_state["active_mode"] = mode_name
+            mode_hooks = session_state.get("mode_hooks")
+            if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
+                mode_hooks.reset_warnings()
+            return f"Mode: {mode_name}" + (f" — {description}" if description else "")
+
+        if explicit_state == "off":
+            if current_mode != mode_name:
+                return f"Not in {mode_name} mode"
+            session_state["active_mode"] = None
+            mode_hooks = session_state.get("mode_hooks")
+            if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
+                mode_hooks.reset_warnings()
+            return f"Mode off: {mode_name}"
+
+        # Toggle behavior (no explicit on/off)
+        if current_mode == mode_name:
+            session_state["active_mode"] = None
+            mode_hooks = session_state.get("mode_hooks")
+            if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
+                mode_hooks.reset_warnings()
+            return f"Mode off: {mode_name}"
+        else:
+            session_state["active_mode"] = mode_name
+            mode_hooks = session_state.get("mode_hooks")
+            if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
+                mode_hooks.reset_warnings()
+            return f"Mode: {mode_name}" + (f" — {description}" if description else "")
+
+    async def _list_modes(self) -> str:
+        """List available modes."""
+        session_state = self.session.coordinator.session_state
+        discovery = session_state.get("mode_discovery")
+
+        if not discovery:
+            return (
+                "Mode system not available. Include the modes bundle to enable modes."
+            )
+
+        modes = discovery.list_modes()
+        if not modes:
+            return "No modes found. Create modes in .amplifier/modes/ or include a bundle with modes."
+
+        current_mode = session_state.get("active_mode")
+
+        lines = ["Available modes:"]
+        for name, description in modes:
+            indicator = " *" if name == current_mode else ""
+            if description:
+                lines.append(f"  {name}{indicator} — {description}")
             else:
-                # Unregister plan mode hook if we have the unregister function
-                if self.plan_mode_unregister:
-                    self.plan_mode_unregister()
-                    self.plan_mode_unregister = None
+                lines.append(f"  {name}{indicator}")
+
+        if current_mode:
+            lines.append(f"\nActive: {current_mode}")
+
+        lines.append("\nUse /mode <name> to activate, /mode off to clear.")
+        return "\n".join(lines)
 
     async def _save_transcript(self, filename: str) -> str:
         """Save current transcript with sanitization for non-JSON-serializable objects.
@@ -462,8 +548,9 @@ class CommandProcessor:
 
         lines.append(f"  Config: {self.bundle_name}")
 
-        # Plan mode status
-        lines.append(f"  Plan Mode: {'ON' if self.plan_mode else 'OFF'}")
+        # Active mode status
+        active_mode = self.session.coordinator.session_state.get("active_mode")
+        lines.append(f"  Mode: {active_mode or 'none'}")
 
         # Context size
         context = self.session.coordinator.get("context")
@@ -536,7 +623,6 @@ class CommandProcessor:
                 fork_session,
                 count_turns,
                 get_turn_summary,
-                get_fork_preview,
             )
         except ImportError:
             return "Error: Session fork utilities not available. Install amplifier-foundation with session support."
@@ -608,12 +694,6 @@ class CommandProcessor:
         # Validate turn
         if turn < 1 or turn > max_turns:
             return f"Error: Turn {turn} out of range (1-{max_turns})"
-
-        # Show preview
-        try:
-            preview = get_fork_preview(session_dir, turn)
-        except Exception as e:
-            return f"Error getting fork preview: {e}"
 
         # Perform the fork
         try:
@@ -764,7 +844,7 @@ class CommandProcessor:
         Agents are loaded into session.config["agents"] via mount plan (compiler).
         """
         # Get pre-loaded agents from session config
-        # Note: agents can be a dict (resolved agents) or list/other format 
+        # Note: agents can be a dict (resolved agents) or list/other format
         all_agents = self.session.config.get("agents", {})
 
         if not isinstance(all_agents, dict):
@@ -1107,15 +1187,19 @@ async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> N
         await context.add_message(msg_dict)
 
 
-def _create_prompt_session() -> PromptSession:
+def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSession:
     """Create configured PromptSession for REPL.
 
     Provides:
     - Persistent history at ~/.amplifier/projects/<project-slug>/repl_history
+    - Dynamic prompt that shows [mode] indicator when a mode is active
     - Green prompt styling matching Rich console
     - History search with Ctrl-R
     - Multi-line input with Ctrl-J
     - Graceful fallback to in-memory history on errors
+
+    Args:
+        get_active_mode: Optional callable that returns the current active mode name
 
     Returns:
         Configured PromptSession instance
@@ -1159,8 +1243,18 @@ def _create_prompt_session() -> PromptSession:
         """Submit input on Enter."""
         event.current_buffer.validate_and_handle()
 
+    # Dynamic prompt that shows [mode] indicator when a mode is active
+    def get_prompt():
+        if get_active_mode:
+            active_mode = get_active_mode()
+            if active_mode:
+                return HTML(
+                    f"\n<ansicyan>[{active_mode}]</ansicyan><ansigreen><b>></b></ansigreen> "
+                )
+        return HTML("\n<ansigreen><b>></b></ansigreen> ")
+
     return PromptSession(
-        message=HTML("\n<ansigreen><b>></b></ansigreen> "),
+        message=get_prompt,  # Callable for dynamic prompt
         history=history,
         key_bindings=kb,
         multiline=True,  # Enable multi-line display
@@ -1241,7 +1335,11 @@ async def interactive_chat(
         )
 
     # Create prompt session for history and advanced editing
-    prompt_session = _create_prompt_session()
+    prompt_session = _create_prompt_session(
+        get_active_mode=lambda: command_processor.session.coordinator.session_state.get(
+            "active_mode"
+        )
+    )
 
     # Helper to extract model name from config
     def _extract_model_name() -> str:
@@ -1438,9 +1536,13 @@ async def interactive_chat(
                 await hooks.emit(SESSION_END, {"session_id": actual_session_id})
 
         await initialized.cleanup()
-        console.print("\n[yellow]Session exited - resume anytime with these commands:[/yellow]")
-        console.print(f"  [cyan]amplifier resume[/cyan]  # interactive list of sessions")
-        console.print(f"  [cyan]amplifier session resume {actual_session_id[:8]}[/cyan]  # jump directly to this session")
+        console.print(
+            "\n[yellow]Session exited - resume anytime with these commands:[/yellow]"
+        )
+        console.print("  [cyan]amplifier resume[/cyan]  # interactive list of sessions")
+        console.print(
+            f"  [cyan]amplifier session resume {actual_session_id[:8]}[/cyan]  # jump directly to this session"
+        )
         console.print()
 
 
