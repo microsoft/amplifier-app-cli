@@ -20,6 +20,7 @@ from ..console import console
 from ..lib.settings import AppSettings
 from ..project_utils import get_project_slug
 from ..runtime.config import resolve_config
+from ..runtime.agent_loader import AgentLoader
 from ..session_store import SessionStore, extract_session_mode
 from ..types import (
     ExecuteSingleProtocol,
@@ -138,7 +139,7 @@ def _prepare_resume_context(
     # Resolve configuration using unified function (single source of truth)
     config_data, prepared_bundle = resolve_config(
         bundle_name=bundle_name,
-        agent_loader=None,
+        agent_loader=AgentLoader(),
         app_settings=app_settings,
         console=console,
         session_id=session_id,

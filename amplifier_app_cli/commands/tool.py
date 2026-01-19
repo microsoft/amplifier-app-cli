@@ -22,6 +22,7 @@ from rich.table import Table
 from ..console import console
 from ..paths import create_config_manager
 from ..runtime.config import inject_user_providers
+from ..runtime.agent_loader import AgentLoader
 
 # ============================================================================
 # Bundle Detection (mirrors run.py pattern)
@@ -89,7 +90,7 @@ async def _get_mounted_tools_from_bundle_async(
     try:
         _config, prepared_bundle = await resolve_config_async(
             bundle_name=bundle_name,
-            agent_loader=None,
+            agent_loader=AgentLoader(),
             app_settings=app_settings,
             console=console,
         )
@@ -163,7 +164,7 @@ async def _invoke_tool_from_bundle_async(
 
     _config, prepared_bundle = await resolve_config_async(
         bundle_name=bundle_name,
-        agent_loader=None,
+        agent_loader=AgentLoader(),
         app_settings=app_settings,
         console=console,
     )

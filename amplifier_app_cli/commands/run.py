@@ -22,6 +22,7 @@ from ..lib.settings import AppSettings
 from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..runtime.config import resolve_config
+from ..runtime.agent_loader import AgentLoader
 from ..types import (
     ExecuteSingleProtocol,
     InteractiveChatProtocol,
@@ -162,7 +163,7 @@ def register_run_command(
         try:
             config_data, prepared_bundle = resolve_config(
                 bundle_name=bundle,
-                agent_loader=None,  # Agent loading handled via bundle preparation
+                agent_loader=AgentLoader(),
                 app_settings=app_settings,
                 console=console,
             )
