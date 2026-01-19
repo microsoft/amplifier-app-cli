@@ -92,8 +92,10 @@ def bundle_list(show_all: bool):
 def _show_user_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
     """Show bundles intended for user selection (default view)."""
     bundles = discovery.list_bundles(show_all=False)
+    app_settings = AppSettings()
+    app_bundles = app_settings.get_app_bundles()
 
-    if not bundles:
+    if not bundles and not app_bundles:
         console.print("[yellow]No bundles found.[/yellow]")
         console.print("\nBundles can be found in:")
         console.print("  • .amplifier/bundles/ (project)")
@@ -109,6 +111,7 @@ def _show_user_bundles(discovery: AppBundleDiscovery, active_bundle: str | None)
     table.add_column("Location", style="yellow")
     table.add_column("Status")
 
+    # Show regular bundles
     for bundle_name in bundles:
         uri = discovery.find(bundle_name)
         location = _format_location(uri)
@@ -119,6 +122,13 @@ def _show_user_bundles(discovery: AppBundleDiscovery, active_bundle: str | None)
 
         status = ", ".join(status_parts) if status_parts else ""
         table.add_row(bundle_name, location, status)
+
+    # Show app bundles (always composed onto sessions)
+    for app_uri in app_bundles:
+        # Extract name from URI for display
+        app_name = _extract_bundle_name_from_uri(app_uri)
+        location = _format_location(app_uri)
+        table.add_row(app_name, location, "[cyan]app[/cyan]")
 
     console.print(table)
 
@@ -235,6 +245,38 @@ def _format_location(uri: str | None) -> str:
             return "~" + path[len(home) :]
         return path
     return uri
+
+
+def _extract_bundle_name_from_uri(uri: str) -> str:
+    """Extract a display name from a bundle URI.
+
+    Examples:
+        git+https://github.com/microsoft/amplifier-bundle-modes@main -> modes
+        git+https://github.com/org/my-bundle@main -> my-bundle
+        file:///path/to/demo-app-bundle -> demo-app-bundle
+    """
+    # Handle file:// URIs
+    if uri.startswith("file://"):
+        path = uri[7:]
+        return path.rstrip("/").split("/")[-1]
+
+    # Handle git+ URIs: extract repo name, strip common prefixes
+    if "github.com" in uri or "gitlab.com" in uri:
+        # Extract repo name from URL
+        # git+https://github.com/microsoft/amplifier-bundle-modes@main
+        parts = uri.split("/")
+        for i, part in enumerate(parts):
+            if "github.com" in part or "gitlab.com" in part:
+                if i + 2 < len(parts):
+                    repo_name = parts[i + 2].split("@")[0].split("#")[0]
+                    # Strip common prefixes
+                    for prefix in ["amplifier-bundle-", "amplifier-", "bundle-"]:
+                        if repo_name.startswith(prefix):
+                            return repo_name[len(prefix) :]
+                    return repo_name
+
+    # Fallback: return last path segment
+    return uri.split("/")[-1].split("@")[0].split("#")[0]
 
 
 @bundle.command(name="show")
@@ -553,12 +595,21 @@ def _get_bundle_source_scope(app_settings: AppSettings) -> str:
     "name_override",
     help="Custom name for the bundle (default: from bundle metadata)",
 )
-def bundle_add(uri: str, name_override: str | None):
+@click.option(
+    "--app",
+    is_flag=True,
+    help="Add as app bundle (automatically composed with all sessions)",
+)
+def bundle_add(uri: str, name_override: str | None, app: bool):
     """Add a bundle to the registry for discovery.
 
     URI is the location of the bundle (git+https://, file://, etc.).
     The bundle name is automatically extracted from the bundle's metadata.
     Use --name to specify a custom alias instead.
+
+    Use --app to add as an "app bundle" that is automatically composed onto
+    every session, regardless of which primary bundle is used. This is useful
+    for team-wide behaviors, support bundles, or personal preferences.
 
     Examples:
 
@@ -573,6 +624,10 @@ def bundle_add(uri: str, name_override: str | None):
         \b
         # Local bundle
         amplifier bundle add file:///path/to/bundle
+
+        \b
+        # Add as app bundle (always active)
+        amplifier bundle add git+https://github.com/org/team-bundle@main --app
     """
     from amplifier_foundation import load_bundle
 
@@ -600,43 +655,117 @@ def bundle_add(uri: str, name_override: str | None):
     # Use override name if provided, otherwise use name from metadata
     name = name_override or bundle_name
 
-    # Check if name already exists
-    existing = user_registry.get_bundle(name)
-    if existing:
-        console.print(f"[yellow]Warning:[/yellow] Bundle '{name}' already registered")
-        console.print(f"  Current URI: {existing['uri']}")
-        console.print(f"  Added: {existing['added_at']}")
-        console.print("\nUpdating to new URI...")
+    if app:
+        # Add as app bundle (always composed onto sessions)
+        app_settings = AppSettings()
+        existing_app_bundles = app_settings.get_app_bundles()
 
-    # Add to registry
-    user_registry.add_bundle(name, uri)
-    console.print(f"[green]✓ Added bundle '{name}'[/green]")
-    console.print(f"  URI: {uri}")
-    if bundle_version:
-        console.print(f"  Version: {bundle_version}")
-    if name_override and name_override != bundle_name:
-        console.print(f"  [dim](Bundle's canonical name: {bundle_name})[/dim]")
-    console.print("\n[dim]Use 'amplifier bundle list' to see all bundles[/dim]")
-    console.print(
-        f"[dim]Use 'amplifier bundle use {name}' to activate this bundle[/dim]"
-    )
+        if uri in existing_app_bundles:
+            console.print(
+                "[yellow]Warning:[/yellow] Bundle already registered as app bundle"
+            )
+            console.print(f"  URI: {uri}")
+            return
+
+        app_settings.add_app_bundle(uri)
+        console.print(f"[green]✓ Added app bundle '{name}'[/green]")
+        console.print(f"  URI: {uri}")
+        if bundle_version:
+            console.print(f"  Version: {bundle_version}")
+        console.print(
+            "\n[dim]App bundles are automatically composed with all sessions[/dim]"
+        )
+        console.print("[dim]Use 'amplifier bundle list' to see all bundles[/dim]")
+    else:
+        # Add to regular bundle registry
+        existing = user_registry.get_bundle(name)
+        if existing:
+            console.print(
+                f"[yellow]Warning:[/yellow] Bundle '{name}' already registered"
+            )
+            console.print(f"  Current URI: {existing['uri']}")
+            console.print(f"  Added: {existing['added_at']}")
+            console.print("\nUpdating to new URI...")
+
+        user_registry.add_bundle(name, uri)
+        console.print(f"[green]✓ Added bundle '{name}'[/green]")
+        console.print(f"  URI: {uri}")
+        if bundle_version:
+            console.print(f"  Version: {bundle_version}")
+        if name_override and name_override != bundle_name:
+            console.print(f"  [dim](Bundle's canonical name: {bundle_name})[/dim]")
+        console.print("\n[dim]Use 'amplifier bundle list' to see all bundles[/dim]")
+        console.print(
+            f"[dim]Use 'amplifier bundle use {name}' to activate this bundle[/dim]"
+        )
 
 
 @bundle.command(name="remove")
 @click.argument("name")
-def bundle_remove(name: str):
+@click.option(
+    "--app",
+    is_flag=True,
+    help="Remove an app bundle by name or URI",
+)
+def bundle_remove(name: str, app: bool):
     """Remove a bundle from all registries.
 
     Removes the bundle from both the user registry and foundation registry.
     Does not delete cached files.
     Does not affect well-known bundles like 'foundation'.
 
-    Example:
+    Use --app to remove an app bundle. The NAME argument can be either:
+    - The bundle name (will search app bundles for matching URI)
+    - The full URI of the app bundle
 
+    Examples:
+
+        \b
         amplifier bundle remove recipes
+
+        \b
+        # Remove app bundle by name
+        amplifier bundle remove modes --app
+
+        \b
+        # Remove app bundle by URI
+        amplifier bundle remove git+https://github.com/org/bundle@main --app
     """
     from ..lib.bundle_loader import user_registry
     from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
+
+    if app:
+        # Remove app bundle
+        app_settings = AppSettings()
+        app_bundles = app_settings.get_app_bundles()
+
+        # Check if name is a URI directly in the list
+        if name in app_bundles:
+            app_settings.remove_app_bundle(name)
+            console.print("[green]✓ Removed app bundle[/green]")
+            console.print(f"  URI: {name}")
+            return
+
+        # Otherwise, search for a bundle with matching name in URI
+        matching_uri = None
+        for uri in app_bundles:
+            if name in uri:
+                matching_uri = uri
+                break
+
+        if matching_uri:
+            app_settings.remove_app_bundle(matching_uri)
+            console.print(f"[green]✓ Removed app bundle '{name}'[/green]")
+            console.print(f"  URI: {matching_uri}")
+        else:
+            console.print(f"[yellow]App bundle '{name}' not found[/yellow]")
+            if app_bundles:
+                console.print("\nCurrently registered app bundles:")
+                for uri in app_bundles:
+                    console.print(f"  - {uri}")
+            else:
+                console.print("\nNo app bundles registered")
+        return
 
     # Check if this is a well-known bundle
     if name in WELL_KNOWN_BUNDLES:
