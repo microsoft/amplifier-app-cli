@@ -64,11 +64,18 @@ async def resolve_bundle_config(
     if console:
         console.print(f"[dim]Preparing bundle '{bundle_name}'...[/dim]")
 
-    # Build behavior URIs from notification settings
-    # Notifications are an app-level policy: compose behavior bundles before prepare()
+    # Build behavior URIs from app-level settings
+    # These are app-level policies: compose behavior bundles before prepare()
     # so modules get properly downloaded and installed via normal bundle machinery
-    compose_behaviors = _build_notification_behaviors(
-        app_settings.get_notification_config()
+    compose_behaviors: list[str] = []
+
+    # Modes system (runtime behavior overlays like /mode plan, /mode review)
+    # Always available - users choose to use /mode commands or not
+    compose_behaviors.extend(_build_modes_behaviors())
+
+    # Notification behaviors (desktop and push notifications)
+    compose_behaviors.extend(
+        _build_notification_behaviors(app_settings.get_notification_config())
     )
 
     # Add app bundles (user-configured bundles that are always composed)
@@ -569,6 +576,18 @@ def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> No
     """
     if "providers" in config and not prepared_bundle.mount_plan.get("providers"):
         prepared_bundle.mount_plan["providers"] = config["providers"]
+
+
+def _build_modes_behaviors() -> list[str]:
+    """Return modes bundle URI for composition.
+
+    Modes are always available - users choose to use /mode commands or not.
+    No enable/disable needed since modes have no cost when unused.
+
+    Returns:
+        List containing the modes bundle URI.
+    """
+    return ["git+https://github.com/microsoft/amplifier-bundle-modes@main"]
 
 
 def _build_notification_behaviors(

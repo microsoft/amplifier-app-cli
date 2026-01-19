@@ -22,7 +22,6 @@ from pathlib import Path
 from amplifier_foundation import BundleRegistry
 
 
-
 logger = logging.getLogger(__name__)
 
 # ===========================================================================
@@ -71,6 +70,13 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str | bool]] = {
     "notify": {
         "package": "",  # No Python package - bundle with embedded modules
         "remote": "git+https://github.com/microsoft/amplifier-bundle-notify@main",
+        "show_in_list": False,  # Loaded via settings, not standalone
+    },
+    # Modes system - loaded dynamically via config.modes settings
+    # Provides runtime behavior overlays (/mode plan, /mode review, etc.)
+    "modes": {
+        "package": "",  # No Python package - bundle with embedded modules
+        "remote": "git+https://github.com/microsoft/amplifier-bundle-modes@main",
         "show_in_list": False,  # Loaded via settings, not standalone
     },
 }
@@ -594,4 +600,3 @@ class AppBundleDiscovery:
                 bundles.append(item.stem)
 
         return bundles
-
