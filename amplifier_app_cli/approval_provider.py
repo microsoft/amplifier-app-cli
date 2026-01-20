@@ -46,12 +46,13 @@ class CLIApprovalProvider:
 
         panel_content = self._format_request(request, risk_color)
 
-        # Cap width at 74 to fit 80-column terminals (emoji takes extra width)
-        max_width = min(74, self.console.width - 6) if self.console.width else 74
+        # Cap width at 76 to fit 80-column terminals
+        max_width = min(76, self.console.width - 4) if self.console.width else 76
+        # Use \u26a0 (base warning sign) without VS16 (\ufe0f) - Rich miscounts VS16 width
         self.console.print(
             Panel(
                 panel_content,
-                title="⚠️  Approval Required",
+                title="\u26a0  Approval Required",
                 border_style=risk_color,
                 padding=(1, 2),
                 width=max_width,
