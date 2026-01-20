@@ -46,26 +46,47 @@ class CLIApprovalProvider:
 
         panel_content = self._format_request(request, risk_color)
 
-        self.console.print(Panel(panel_content, title="⚠️  Approval Required", border_style=risk_color, padding=(1, 2)))
+        # Cap width at 78 to fit standard 80-column terminals
+        max_width = min(78, self.console.width - 2) if self.console.width else 78
+        self.console.print(
+            Panel(
+                panel_content,
+                title="⚠️  Approval Required",
+                border_style=risk_color,
+                padding=(1, 2),
+                width=max_width,
+            )
+        )
 
         # Handle timeout if specified
         try:
             if request.timeout is not None:
                 # Use asyncio.wait_for with timeout
-                approved = await asyncio.wait_for(self._get_user_input(), timeout=request.timeout)
+                approved = await asyncio.wait_for(
+                    self._get_user_input(), timeout=request.timeout
+                )
             else:
                 # No timeout - wait indefinitely
                 approved = await self._get_user_input()
         except TimeoutError:
-            self.console.print(f"\n[yellow]⏱️  Approval timed out after {request.timeout}s[/yellow]")
+            self.console.print(
+                f"\n[yellow]⏱️  Approval timed out after {request.timeout}s[/yellow]"
+            )
             raise TimeoutError(f"Approval timed out after {request.timeout}s")
 
         # Return response
-        return ApprovalResponse(approved=approved, reason="User approved" if approved else "User denied")
+        return ApprovalResponse(
+            approved=approved, reason="User approved" if approved else "User denied"
+        )
 
     def _get_risk_color(self, risk_level: str) -> str:
         """Get Rich color for risk level."""
-        risk_colors = {"low": "green", "medium": "yellow", "high": "red", "critical": "bold red"}
+        risk_colors = {
+            "low": "green",
+            "medium": "yellow",
+            "high": "red",
+            "critical": "bold red",
+        }
         return risk_colors.get(risk_level.lower(), "white")
 
     def _format_request(self, request: ApprovalRequest, risk_color: str) -> str:
@@ -103,5 +124,7 @@ class CLIApprovalProvider:
         """
         # Run synchronous console input in thread pool to make it async
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, lambda: Confirm.ask("\nApprove this action?", default=False))
+        result = await loop.run_in_executor(
+            None, lambda: Confirm.ask("\nApprove this action?", default=False)
+        )
         return result
