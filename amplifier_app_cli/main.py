@@ -722,10 +722,25 @@ class CommandProcessor:
             return f"Error forking session: {e}"
 
     def _format_help(self) -> str:
-        """Format help text."""
+        """Format help text with commands and dynamic modes section."""
         lines = ["Available Commands:"]
         for cmd, info in self.COMMANDS.items():
             lines.append(f"  {cmd:<12} - {info['description']}")
+
+        # Add dynamic modes section if modes are available
+        session_state = self.session.coordinator.session_state
+        discovery = session_state.get("mode_discovery")
+        if discovery:
+            modes = discovery.list_modes()
+            if modes:
+                lines.append("")
+                lines.append("Mode Shortcuts:")
+                for name, description in modes:
+                    if description:
+                        lines.append(f"  /{name:<11} - {description}")
+                    else:
+                        lines.append(f"  /{name}")
+
         return "\n".join(lines)
 
     async def _get_config_display(self) -> str:
