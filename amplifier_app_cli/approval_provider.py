@@ -46,8 +46,8 @@ class CLIApprovalProvider:
 
         panel_content = self._format_request(request, risk_color)
 
-        # Cap width at 78 to fit standard 80-column terminals
-        max_width = min(78, self.console.width - 2) if self.console.width else 78
+        # Cap width at 76 to fit standard 80-column terminals
+        max_width = min(76, self.console.width - 4) if self.console.width else 76
         self.console.print(
             Panel(
                 panel_content,
