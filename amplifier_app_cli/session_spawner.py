@@ -456,7 +456,10 @@ async def spawn_sub_session(
         logger.debug(f"Registered approval provider for child session {sub_session_id}")
 
     # Inject agent's system instruction
-    system_instruction = agent_config.get("system", {}).get("instruction")
+    # Check top-level instruction first (from agent .md file body), then nested system.instruction
+    system_instruction = agent_config.get("instruction") or agent_config.get(
+        "system", {}
+    ).get("instruction")
     if system_instruction:
         context = child_session.coordinator.get("context")
         if context and hasattr(context, "add_message"):
