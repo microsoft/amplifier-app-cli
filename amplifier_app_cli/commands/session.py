@@ -20,7 +20,7 @@ from ..console import console
 from ..lib.settings import AppSettings
 from ..project_utils import get_project_slug
 from ..runtime.config import resolve_config
-from ..session_store import SessionStore, extract_session_mode
+from ..session_store import SessionStore, extract_session_mode, find_session_global
 from ..types import (
     ExecuteSingleProtocol,
     InteractiveChatProtocol,
@@ -728,11 +728,25 @@ def register_session_commands(
     def sessions_show(session_id: str, detailed: bool):
         """Show session metadata and (optionally) transcript."""
         store = SessionStore()
+        original_partial_id = session_id
 
         try:
             session_id = store.find_session(session_id)
         except FileNotFoundError:
-            console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
+            # Session not found in current project - search all projects
+            global_result = find_session_global(original_partial_id)
+            if global_result:
+                session_id, other_sessions_dir = global_result
+                project_name = other_sessions_dir.parent.name
+                console.print(
+                    f"[yellow]Session '{original_partial_id}' found in project "
+                    f"'{project_name}' (not current directory)[/yellow]"
+                )
+                store = SessionStore(base_dir=other_sessions_dir)
+            else:
+                console.print(
+                    f"[red]Error:[/red] No session found matching '{original_partial_id}'"
+                )
             sys.exit(1)
         except ValueError as e:
             console.print(f"[red]Error:[/red] {e}")
@@ -804,12 +818,26 @@ def register_session_commands(
             sys.exit(1)
 
         store = SessionStore()
+        original_partial_id = session_id
 
         # Find the session
         try:
             session_id = store.find_session(session_id)
         except FileNotFoundError:
-            console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
+            # Session not found in current project - search all projects
+            global_result = find_session_global(original_partial_id)
+            if global_result:
+                session_id, other_sessions_dir = global_result
+                project_name = other_sessions_dir.parent.name
+                console.print(
+                    f"[yellow]Session '{original_partial_id}' found in project "
+                    f"'{project_name}' (not current directory)[/yellow]"
+                )
+                store = SessionStore(base_dir=other_sessions_dir)
+            else:
+                console.print(
+                    f"[red]Error:[/red] No session found matching '{original_partial_id}'"
+                )
             sys.exit(1)
         except ValueError as e:
             console.print(f"[red]Error:[/red] {e}")
@@ -1018,11 +1046,28 @@ def register_session_commands(
     ):
         """Resume a stored interactive session."""
         store = SessionStore()
+        original_partial_id = session_id
 
         try:
             session_id = store.find_session(session_id)
         except FileNotFoundError:
-            console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
+            # Session not found in current project - search all projects
+            global_result = find_session_global(original_partial_id)
+            if global_result:
+                session_id, other_sessions_dir = global_result
+                # Extract project name from path for display
+                project_name = other_sessions_dir.parent.name
+                console.print(
+                    f"[yellow]Session '{original_partial_id}' found in project "
+                    f"'{project_name}' (not current directory)[/yellow]"
+                )
+                console.print(f"[cyan]Resuming from that project...[/cyan]")
+                # Use the store from the other project
+                store = SessionStore(base_dir=other_sessions_dir)
+            else:
+                console.print(
+                    f"[red]Error:[/red] No session found matching '{original_partial_id}'"
+                )
             sys.exit(1)
         except ValueError as e:
             console.print(f"[red]Error:[/red] {e}")

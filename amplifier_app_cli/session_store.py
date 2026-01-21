@@ -72,6 +72,65 @@ def extract_session_mode(metadata: dict) -> tuple[str | None, None]:
     return (None, None)
 
 
+def find_session_global(
+    partial_id: str, *, top_level_only: bool = True
+) -> tuple[str, Path] | None:
+    """Search for a session across ALL projects.
+
+    When a session isn't found in the current project, this function searches
+    all project directories to find a matching session.
+
+    Args:
+        partial_id: Partial session ID (prefix match)
+        top_level_only: If True (default), only match top-level sessions
+
+    Returns:
+        Tuple of (full_session_id, sessions_dir) if found, None otherwise
+    """
+    projects_dir = Path.home() / ".amplifier" / "projects"
+    if not projects_dir.exists():
+        return None
+
+    partial_id = partial_id.strip()
+    matches: list[tuple[str, Path, float]] = []  # (session_id, sessions_dir, mtime)
+
+    for project_dir in projects_dir.iterdir():
+        if not project_dir.is_dir():
+            continue
+        sessions_dir = project_dir / "sessions"
+        if not sessions_dir.exists():
+            continue
+
+        for session_dir in sessions_dir.iterdir():
+            if not session_dir.is_dir() or session_dir.name.startswith("."):
+                continue
+
+            session_id = session_dir.name
+
+            # Filter to top-level sessions if requested
+            if top_level_only and not is_top_level_session(session_id):
+                continue
+
+            # Check for exact or prefix match
+            if session_id == partial_id or session_id.startswith(partial_id):
+                try:
+                    mtime = session_dir.stat().st_mtime
+                    matches.append((session_id, sessions_dir, mtime))
+                except Exception:
+                    matches.append((session_id, sessions_dir, 0))
+
+    if not matches:
+        return None
+
+    if len(matches) == 1:
+        return (matches[0][0], matches[0][1])
+
+    # Multiple matches - return most recently modified
+    # (Could raise ValueError for ambiguous, but user intent is likely most recent)
+    matches.sort(key=lambda x: x[2], reverse=True)
+    return (matches[0][0], matches[0][1])
+
+
 class SessionStore:
     """
     Manages session persistence to filesystem.
