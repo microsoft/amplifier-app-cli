@@ -324,9 +324,8 @@ class CommandProcessor:
                 if hasattr(registry, "is_loaded") and registry.is_loaded():
                     # Load commands into our custom_commands dict
                     for cmd_name, cmd_data in registry.get_command_dict().items():
-                        # Store with / prefix for lookup
-                        key = f"/{cmd_name}"
-                        self.custom_commands[key] = {
+                        # cmd_name already has / prefix from registry.get_command_dict()
+                        self.custom_commands[cmd_name] = {
                             "action": "execute_custom_command",
                             "description": cmd_data.get(
                                 "description", "Custom command"
@@ -362,8 +361,8 @@ class CommandProcessor:
                     cmd_name,
                     cmd_data,
                 ) in slash_cmd_tool.registry.get_command_dict().items():
-                    key = f"/{cmd_name}"
-                    self.custom_commands[key] = {
+                    # cmd_name already has / prefix from registry
+                    self.custom_commands[cmd_name] = {
                         "action": "execute_custom_command",
                         "description": cmd_data.get("description", "Custom command"),
                         "metadata": cmd_data,
