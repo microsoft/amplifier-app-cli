@@ -431,11 +431,13 @@ def register_session_spawning(session: AmplifierSession) -> None:
     ) -> dict:
         # Default to the session this capability was registered on
         effective_parent = parent_session if parent_session is not None else session
+        # Default to the session's agent configs if not provided
+        effective_configs = agent_configs if agent_configs else session.config.get("agents", {})
         return await spawn_sub_session(
             agent_name=agent_name,
             instruction=instruction,
             parent_session=effective_parent,
-            agent_configs=agent_configs or {},
+            agent_configs=effective_configs,
             sub_session_id=sub_session_id,
             tool_inheritance=tool_inheritance,
         )
