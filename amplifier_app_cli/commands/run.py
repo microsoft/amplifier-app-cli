@@ -15,13 +15,14 @@ import click
 if TYPE_CHECKING:
     pass
 
+from rich.panel import Panel
+
 from amplifier_foundation.exceptions import BundleError, BundleValidationError
 
 from ..console import console
 from ..session_store import extract_session_mode
 from ..effective_config import get_effective_config_summary
 from ..lib.settings import AppSettings
-from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..runtime.config import resolve_config
 from ..types import (
@@ -142,16 +143,6 @@ def register_run_command(
         if check_first_run() and prompt_first_run_init(console):
             pass  # First run init completed
 
-        # Create bundle registry if bundle is specified (either from CLI or settings)
-        bundle_registry = create_bundle_registry() if bundle else None
-        if bundle and bundle_registry:
-            try:
-                # Early load validates bundle exists; actual loading happens in resolve_config
-                _ = asyncio.run(bundle_registry.load(bundle))
-            except Exception as e:
-                # Log warning; full error will be handled later in resolve_app_config
-                logger.warning("Early bundle load failed for '%s': %s", bundle, e)
-
         # Agent loading is now handled via foundation's bundle.load_agent_metadata()
         app_settings = AppSettings()
 
@@ -171,11 +162,23 @@ def register_run_command(
             sys.exit(1)
         except BundleValidationError as exc:
             # Bundle validation failed (e.g., malformed YAML, missing required fields)
-            console.print(f"[red]Bundle Validation Error:[/red] {exc}")
+            console.print()
+            console.print(Panel(
+                str(exc),
+                title="[bold white on red] Bundle Validation Error [/bold white on red]",
+                border_style="red",
+                padding=(1, 2),
+            ))
             sys.exit(1)
         except BundleError as exc:
             # General bundle error (loading, resolution, etc.)
-            console.print(f"[red]Bundle Error:[/red] {exc}")
+            console.print()
+            console.print(Panel(
+                str(exc),
+                title="[bold white on red] Bundle Error [/bold white on red]",
+                border_style="red",
+                padding=(1, 2),
+            ))
             sys.exit(1)
 
         search_paths = get_module_search_paths()
