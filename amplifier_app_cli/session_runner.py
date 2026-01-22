@@ -424,16 +424,18 @@ def register_session_spawning(session: AmplifierSession) -> None:
     async def spawn_capability(
         agent_name: str,
         instruction: str,
-        parent_session: AmplifierSession,
-        agent_configs: dict[str, dict],
+        parent_session: AmplifierSession | None = None,
+        agent_configs: dict[str, dict] | None = None,
         sub_session_id: str | None = None,
         tool_inheritance: dict[str, list[str]] | None = None,
     ) -> dict:
+        # Default to the session this capability was registered on
+        effective_parent = parent_session if parent_session is not None else session
         return await spawn_sub_session(
             agent_name=agent_name,
             instruction=instruction,
-            parent_session=parent_session,
-            agent_configs=agent_configs,
+            parent_session=effective_parent,
+            agent_configs=agent_configs or {},
             sub_session_id=sub_session_id,
             tool_inheritance=tool_inheritance,
         )
