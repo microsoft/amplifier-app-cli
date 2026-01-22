@@ -15,7 +15,7 @@ from typing import Any
 if TYPE_CHECKING:
     from amplifier_core import ModelInfo  # pyright: ignore[reportAttributeAccessIssue]
 
-    from amplifier_app_cli.lib.legacy import ConfigManager
+    from amplifier_app_cli.lib.config_compat import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,11 @@ def _load_provider_module(provider_id: str) -> Any:
         ImportError: If module cannot be loaded
     """
     # Normalize to full module ID
-    module_id = provider_id if provider_id.startswith("provider-") else f"provider-{provider_id}"
+    module_id = (
+        provider_id
+        if provider_id.startswith("provider-")
+        else f"provider-{provider_id}"
+    )
 
     # Try entry point first
     try:
@@ -90,7 +94,11 @@ def load_provider_class(provider_id: str) -> type | None:
 
         # Look for provider class in module's __all__ or by convention
         # Convention: {Name}Provider (e.g., AnthropicProvider)
-        provider_name = provider_id.replace("provider-", "") if provider_id.startswith("provider-") else provider_id
+        provider_name = (
+            provider_id.replace("provider-", "")
+            if provider_id.startswith("provider-")
+            else provider_id
+        )
         class_name = f"{provider_name.title().replace('-', '')}Provider"
 
         # Try exact match first
@@ -152,7 +160,9 @@ def get_provider_models(
     # Pass collected_config so providers can use real connection values
     provider = _try_instantiate_provider(provider_class, collected_config)
     if provider is None:
-        logger.debug(f"Could not instantiate provider '{provider_id}' for model listing")
+        logger.debug(
+            f"Could not instantiate provider '{provider_id}' for model listing"
+        )
         return []
 
     # Check if provider has list_models
@@ -210,7 +220,9 @@ def _try_instantiate_provider(
 
     # Extract connection values from collected config
     # Resolve ${VAR} placeholders to actual environment values
-    raw_base_url = collected_config.get("base_url") or collected_config.get("azure_endpoint")
+    raw_base_url = collected_config.get("base_url") or collected_config.get(
+        "azure_endpoint"
+    )
     raw_host = collected_config.get("host")
     raw_api_key = collected_config.get("api_key")
 
@@ -218,40 +230,46 @@ def _try_instantiate_provider(
     host = _resolve_env_placeholder(raw_host) or "http://localhost:11434"
     api_key = _resolve_env_placeholder(raw_api_key) or ""
 
+    # Common exceptions to catch during instantiation attempts:
+    # - TypeError: wrong argument signature
+    # - ValueError: invalid argument values
+    # - RuntimeError: some providers raise this for missing dependencies (e.g., old azure-openai)
+    instantiation_errors = (TypeError, ValueError, RuntimeError)
+
     # Approach 1: Standard (api_key, config) - Anthropic, OpenAI
     try:
         return provider_class(api_key=api_key, config={})
-    except (TypeError, ValueError):
+    except instantiation_errors:
         pass
 
     # Approach 2: Azure-style (keyword-only base_url with api_key)
     try:
         return provider_class(base_url=base_url, api_key=api_key, config={})
-    except (TypeError, ValueError):
+    except instantiation_errors:
         pass
 
     # Approach 3: VLLM-style (base_url without api_key)
     try:
         return provider_class(base_url=base_url, config={})
-    except (TypeError, ValueError):
+    except instantiation_errors:
         pass
 
     # Approach 4: Ollama-style (host, config)
     try:
         return provider_class(host=host, config={})
-    except (TypeError, ValueError):
+    except instantiation_errors:
         pass
 
     # Approach 5: Just config
     try:
         return provider_class(config={})
-    except (TypeError, ValueError):
+    except instantiation_errors:
         pass
 
     # Approach 6: No args
     try:
         return provider_class()
-    except (TypeError, ValueError):
+    except instantiation_errors:
         pass
 
     return None
@@ -269,25 +287,33 @@ def get_provider_info(provider_id: str) -> dict[str, Any] | None:
     try:
         provider_class = load_provider_class(provider_id)
         if not provider_class:
-            logger.debug(f"get_provider_info: load_provider_class returned None for '{provider_id}'")
+            logger.debug(
+                f"get_provider_info: load_provider_class returned None for '{provider_id}'"
+            )
             return None
 
         # Try different instantiation approaches for different provider signatures
         provider = _try_instantiate_provider(provider_class)
         if provider is None:
-            logger.warning(f"Could not instantiate provider '{provider_id}' with any known signature")
+            logger.warning(
+                f"Could not instantiate provider '{provider_id}' with any known signature"
+            )
             return None
 
         # Check if provider has get_info
         if not hasattr(provider, "get_info"):
-            logger.debug(f"get_provider_info: provider '{provider_id}' has no get_info method")
+            logger.debug(
+                f"get_provider_info: provider '{provider_id}' has no get_info method"
+            )
             return None
 
         info = provider.get_info()
         return info.model_dump() if hasattr(info, "model_dump") else vars(info)
 
     except Exception as e:
-        logger.warning(f"get_provider_info failed for '{provider_id}': {type(e).__name__}: {e}")
+        logger.warning(
+            f"get_provider_info failed for '{provider_id}': {type(e).__name__}: {e}"
+        )
         return None
 
 

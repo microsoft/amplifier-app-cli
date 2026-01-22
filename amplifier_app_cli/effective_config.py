@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class EffectiveConfigSummary:
     """Summary of effective configuration for display."""
 
-    profile: str  # Can be profile name or "bundle:name" format
+    config_source: str  # Bundle name in "bundle:name" format
     provider_name: str  # Friendly name (e.g., "Azure OpenAI")
     provider_module: str  # Module ID (e.g., "provider-azure-openai")
     model: str
@@ -28,27 +28,26 @@ class EffectiveConfigSummary:
         """Format as single-line summary for banner display.
 
         Returns:
-            Formatted string like "Profile: dev | Provider: Azure OpenAI | gpt-5-codex"
-            or "Bundle: foundation | Provider: Anthropic | claude-sonnet-4-5"
+            Formatted string like "Bundle: foundation | Provider: Anthropic | claude-sonnet-4-5"
         """
-        # Detect if this is a bundle (format: "bundle:name") or profile
-        if self.profile.startswith("bundle:"):
-            bundle_name = self.profile.replace("bundle:", "")
-            source_label = f"Bundle: {bundle_name}"
+        # Extract bundle name from "bundle:name" format
+        if self.config_source.startswith("bundle:"):
+            bundle_name = self.config_source.replace("bundle:", "")
         else:
-            source_label = f"Profile: {self.profile}"
-        return f"{source_label} | Provider: {self.provider_name} | {self.model}"
+            # Fallback for config loading
+            bundle_name = self.config_source
+        return f"Bundle: {bundle_name} | Provider: {self.provider_name} | {self.model}"
 
 
 def get_effective_config_summary(
     config: dict[str, Any],
-    profile_name: str = "default",
+    config_source: str = "default",
 ) -> EffectiveConfigSummary:
     """Extract effective configuration summary from resolved config.
 
     Args:
         config: Resolved mount plan configuration dict
-        profile_name: Active profile name
+        config_source: Config source name (typically "bundle:<name>")
 
     Returns:
         EffectiveConfigSummary with display-friendly information
@@ -81,7 +80,7 @@ def get_effective_config_summary(
     hook_count = len(config.get("hooks", []))
 
     return EffectiveConfigSummary(
-        profile=profile_name,
+        config_source=config_source,
         provider_name=provider_name,
         provider_module=provider_module,
         model=model,
@@ -91,7 +90,9 @@ def get_effective_config_summary(
     )
 
 
-def _select_provider_by_priority(providers: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _select_provider_by_priority(
+    providers: list[dict[str, Any]],
+) -> dict[str, Any] | None:
     """Select provider with lowest priority number (highest precedence).
 
     This matches the orchestrator's _select_provider() logic where lower

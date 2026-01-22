@@ -1,16 +1,16 @@
 # Context Loading System
 
-**@mention system**: Load files anywhere (profiles, runtime input, nested files). Content loads at message stack top, @mention stays as reference.
+**@mention system**: Load files anywhere (bundles, runtime input, nested files). Content loads at message stack top, @mention stays as reference.
 
 ## Quick Start
 
-### Basic Profile with Inline Context
+### Basic Bundle with Inline Context
 
 ```markdown
-# ~/.amplifier/profiles/my-profile.md
+# ~/.amplifier/bundles/my-bundle/bundle.md
 ---
-profile:
-  name: my-profile
+bundle:
+  name: my-bundle
 ---
 
 You are a helpful Python development assistant.
@@ -20,13 +20,13 @@ Follow PEP 8 style guidelines and use type hints.
 
 The markdown body becomes the system instruction.
 
-### Profile with @Mentioned Context
+### Bundle with @Mentioned Context
 
 ```markdown
-# ~/.amplifier/profiles/dev-profile.md
+# ~/.amplifier/bundles/dev-bundle/bundle.md
 ---
-profile:
-  name: dev-profile
+bundle:
+  name: dev-bundle
 ---
 
 You are an Amplifier development assistant.
@@ -41,22 +41,22 @@ Work efficiently and follow project conventions.
 
 The @mentioned files load automatically and are added as context.
 
-## Collections and Context
+## Bundles and Context
 
-**Collections** provide organized, shareable bundles of context files. Most shared context is now organized in collections rather than standalone files.
+**Bundles** provide organized, shareable packages of context files. Most shared context is now organized in bundles rather than standalone files.
 
-**Foundation collection** provides:
+**Foundation bundle** provides:
 - `@foundation:context/IMPLEMENTATION_PHILOSOPHY.md`
 - `@foundation:context/MODULAR_DESIGN_PHILOSOPHY.md`
 - `@foundation:context/shared/common-agent-base.md`
 
-**Usage in profiles**:
+**Usage in bundles**:
 ```markdown
 @foundation:context/shared/common-agent-base.md
 @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
 ```
 
-**→ [amplifier-collections](https://github.com/microsoft/amplifier-collections)** for complete collection documentation.
+**→ [Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md)** for complete bundle documentation.
 
 ## How @Mention Loading Works
 
@@ -102,9 +102,9 @@ Reference a file with path:
 @custom/my-context.md
 ```
 
-### Collection Resource References
+### Bundle Resource References
 
-Reference files from collections using `@collection:path` syntax:
+Reference files from bundles using `@bundle:path` syntax:
 
 ```markdown
 @foundation:context/shared/common-agent-base.md
@@ -112,7 +112,7 @@ Reference files from collections using `@collection:path` syntax:
 @memory-solution:context/patterns.md
 ```
 
-Searches collection paths in precedence order (project → user → bundled).
+Searches bundle paths in precedence order (project → user → registered).
 
 ### User Home References
 
@@ -127,7 +127,7 @@ Resolves ONLY to `Path.home() / {path}` with no fallback.
 
 ### Relative References
 
-Relative to profile file location:
+Relative to bundle file location:
 
 ```markdown
 ./context/project-specific.md
@@ -140,7 +140,7 @@ Relative to profile file location:
 ┌──────────────────────────────────────────────────────────┐
 │ @mention Syntax Resolution Table                         │
 ├──────────────────────────────────────────────────────────┤
-│ @collection:path  → Collection paths (project/user/pkg)  │
+│ @bundle:path      → Bundle paths (project/user/registered)│
 │ @user:path        → ~/.amplifier/{path}                  │
 │ @project:path     → .amplifier/{path}                    │
 │ @~/path           → User home: ~/{path}                  │
@@ -150,7 +150,7 @@ Relative to profile file location:
 ```
 
 **Missing files**: Skipped gracefully (no error).
-**Path traversal**: Blocked (`..` rejected in collection refs).
+**Path traversal**: Blocked (`..` rejected in bundle refs).
 
 ## Recursive Loading
 
@@ -174,15 +174,15 @@ When AGENTS.md is loaded, its @mentions are followed recursively.
 Same content from multiple paths is loaded once:
 
 ```markdown
-# Profile A mentions @AGENTS.md
-# Profile B (extending A) also mentions @AGENTS.md
+# Bundle A mentions @AGENTS.md
+# Bundle B (extending A) also mentions @AGENTS.md
 # Context file mentions @AGENTS.md again
 ```
 
 Result: AGENTS.md content loaded once, all three paths credited:
 
 ```
-<context_file paths="AGENTS.md (from profile), AGENTS.md (from parent), AGENTS.md (from context-file.md)">
+<context_file paths="AGENTS.md (from bundle), AGENTS.md (from parent), AGENTS.md (from context-file.md)">
 [Content here - only once]
 </context_file>
 ```
@@ -197,17 +197,17 @@ Create reusable instruction files to avoid copy-pasting shared content:
 # Step 1: Create shared file
 # File: shared/common-base.md
 ---
-Core instructions for all profiles...
+Core instructions for all bundles...
 Standard practices...
 Quality guidelines...
 ---
 
-# Step 2: Reference in profiles
-# File: specialized.md
+# Step 2: Reference in bundles
+# File: specialized/bundle.md
 ---
-profile:
+bundle:
   name: specialized
-  extends: foundation:profiles/base.md  # YAML config inheritance
+  extends: foundation  # YAML config inheritance
 ---
 
 @foundation:context/shared/common-base.md
@@ -221,13 +221,13 @@ Context:
 ### Benefits
 
 - **Single source of truth** - Update shared instructions in one place
-- **Consistency** - All profiles use same base instructions
+- **Consistency** - All bundles use same base instructions
 - **Explicit** - Clear what's being included
 - **Flexible** - Can compose multiple shared files
 
-### Note on Profile Inheritance
+### Note on Bundle Inheritance
 
-The `extends:` field in YAML frontmatter inherits configuration (modules, settings) but NOT markdown body. Use @mentions to share markdown content across profiles.
+The `extends:` field in YAML frontmatter inherits configuration (modules, settings) but NOT markdown body. Use @mentions to share markdown content across bundles.
 
 ## Provider-Specific Handling
 
@@ -303,7 +303,7 @@ Amplifier ships with bundled context files in `amplifier_app_cli/data/context/`:
 - `AGENTS.md` - Project guidelines
 - `DISCOVERIES.md` - Lessons learned
 
-Reference with `@AGENTS.md` from any profile.
+Reference with `@AGENTS.md` from any bundle.
 
 ### Project Context
 
@@ -327,7 +327,7 @@ Testing:
 - 90% coverage minimum
 ```
 
-Reference with `@project-standards.md` from profiles in `.amplifier/profiles/`.
+Reference with `@project-standards.md` from bundles in `.amplifier/bundles/`.
 
 ### User Context
 
@@ -346,18 +346,18 @@ mkdir -p ~/.amplifier/context
 - Use descriptive variable names
 ```
 
-Reference with `@my-preferences.md` from any profile.
+Reference with `@my-preferences.md` from any bundle.
 
-## Context in Profiles
+## Context in Bundles
 
-### Simple Profile (Inline)
+### Simple Bundle (Inline)
 
-All context inline in profile markdown:
+All context inline in bundle markdown:
 
 ```markdown
-# simple.md
+# simple/bundle.md
 ---
-profile:
+bundle:
   name: simple
 ---
 
@@ -366,18 +366,18 @@ You are a helpful assistant.
 Be concise and clear.
 ```
 
-Distribution: Single file, easy to share.
+Distribution: Single directory, easy to share.
 
-### Profile with References
+### Bundle with References
 
 References shared context:
 
 ```markdown
-# dev.md
+# dev/bundle.md
 ---
-profile:
+bundle:
   name: dev
-  extends: foundation:profiles/base.md  # YAML config inheritance
+  extends: foundation  # YAML config inheritance
 ---
 
 @foundation:context/shared/common-base.md
@@ -404,7 +404,7 @@ Distribution: Via git (`.amplifier/` directory) or with bundled context.
 - Lessons learned → @DISCOVERIES.md
 - Philosophy docs → @ai_context/*.md
 
-**Organize by audience**:
+**Organize by purpose**:
 - System instruction: Who you are, what you do
 - Context files: How to do it, what to know
 
@@ -422,14 +422,14 @@ Distribution: Via git (`.amplifier/` directory) or with bundled context.
 ### Context Not Loading
 
 **Check**:
-1. Profile markdown body exists (not empty/whitespace)
+1. Bundle markdown body exists (not empty/whitespace)
 2. @mentions use correct syntax (`@FILENAME.md`)
 3. Referenced files exist in search paths
 
 **Debug**:
 ```bash
-# Show profile with resolved content
-amplifier profile show my-profile
+# Show bundle with resolved content
+amplifier bundle show my-bundle
 
 # Check context files exist
 ls ~/.amplifier/context/
@@ -456,11 +456,11 @@ If files reference each other in a loop, cycle detection prevents infinite recur
 
 ## Examples
 
-### Research Assistant Profile
+### Research Assistant Bundle
 
 ```markdown
 ---
-profile:
+bundle:
   name: researcher
 ---
 
@@ -473,13 +473,13 @@ Context:
 Gather information systematically and cite sources.
 ```
 
-### Team Standard Profile
+### Team Standard Bundle
 
 ```markdown
 ---
-profile:
+bundle:
   name: team-standard
-  extends: foundation:profiles/base.md  # YAML config inheritance
+  extends: foundation  # YAML config inheritance
 ---
 
 @foundation:context/shared/common-base.md
@@ -493,12 +493,11 @@ Follow team standards strictly. All code changes must align with documented arch
 
 ## Related Documentation
 
-- **→ [Profile Authoring](https://github.com/microsoft/amplifier-profiles/blob/main/docs/PROFILE_AUTHORING.md)** - Creating profiles with @mentions
-- **→ [Collections Guide](https://github.com/microsoft/amplifier-collections)** - Collection system and resources
+- **→ [Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md)** - Creating bundles with @mentions
 
 ## Using @Mentions at Runtime
 
-@mentions aren't just for profiles - use them in chat anytime:
+@mentions aren't just for bundles - use them in chat anytime:
 
 ### Runtime @Mention Example
 

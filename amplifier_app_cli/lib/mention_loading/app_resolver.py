@@ -2,7 +2,7 @@
 
 This module demonstrates the proper pattern for extending foundation mechanisms:
 - Foundation provides the mechanism (bundle namespace resolution)
-- App provides policy (shortcuts, collection support, resolution order)
+- App provides policy (shortcuts, resolution order)
 
 Per KERNEL_PHILOSOPHY: Foundation provides mechanism, app provides policy.
 """
@@ -39,8 +39,7 @@ class AppMentionResolver:
     Resolution order (app-layer policy):
     1. App shortcuts: @user:, @project:, @~/
     2. Bundle namespaces: @namespace:path (delegated to foundation)
-    3. Collections: @collection:path (DEPRECATED, profile mode only)
-    4. Relative paths: @path (CWD)
+    3. Relative paths: @path (CWD)
 
     Shortcut prefixes (app-layer policy):
     - @user:path → ~/.amplifier/{path}
@@ -50,16 +49,13 @@ class AppMentionResolver:
     Bundle namespaces (@namespace:path like @recipes:examples/...) are delegated
     to the foundation resolver, which understands bundle composition and can
     resolve paths across all composed bundles.
-
-    Collection prefix is deprecated - only enabled in legacy profile mode.
-    In bundle mode, bundle namespaces take precedence, preventing conflicts
-    if a collection and bundle share the same name.
     """
 
     def __init__(
         self,
-        foundation_resolver: BaseMentionResolver | MentionResolverProtocol | None = None,
-        enable_collections: bool = False,
+        foundation_resolver: BaseMentionResolver
+        | MentionResolverProtocol
+        | None = None,
         bundle_mappings: dict[str, Path] | None = None,
     ):
         """Initialize app mention resolver.
@@ -69,27 +65,13 @@ class AppMentionResolver:
                 In bundle mode, this should be the resolver registered by
                 PreparedBundle.create_session() which has all composed bundle
                 namespaces (e.g., foundation, recipes).
-            enable_collections: Enable @collection:path resolution.
-                DEPRECATED: Only set True for legacy profile mode.
-                Bundle mode should use False to prevent naming conflicts.
             bundle_mappings: Optional dict mapping bundle namespace to base_path.
                 Enables @namespace:path mentions to resolve from the bundle's
-                base_path. Used in profile mode when foundation_resolver is not
-                available. Supports multiple namespaces from composed bundles.
+                base_path. Supports multiple namespaces from composed bundles.
         """
         self.foundation_resolver = foundation_resolver
-        self._enable_collections = enable_collections
         self._bundle_mappings = bundle_mappings or {}
-        self._collection_resolver = None
         self.relative_to: Path | None = None  # For context-relative path resolution
-
-        if enable_collections:
-            try:
-                from ...paths import create_collection_resolver
-
-                self._collection_resolver = create_collection_resolver()
-            except ImportError:
-                logger.debug("Collection resolver not available")
 
     def resolve(self, mention: str) -> Path | None:
         """Resolve @mention to file path.
@@ -97,7 +79,7 @@ class AppMentionResolver:
         Resolution order (app-layer policy):
         1. App shortcuts: @user:, @project:, @~/
         2. Bundle namespaces: @namespace:path (via foundation)
-        3. Collections: @collection:path (DEPRECATED, profile mode only)
+        3. Bundle resources: @bundle:path
         4. Relative paths: @path (CWD)
 
         Args:
@@ -124,28 +106,20 @@ class AppMentionResolver:
 
         # === BUNDLE NAMESPACES (foundation mechanism) ===
         # Try foundation resolver first - handles @namespace:path for all composed bundles
-        # This ensures bundle namespaces take precedence over collections (no conflicts)
+        # This ensures bundle namespaces work correctly
         if self.foundation_resolver and ":" in mention[1:]:
             result = self.foundation_resolver.resolve(mention)
             if result:
                 logger.debug(f"Resolved via foundation: {mention} -> {result}")
                 return result
 
-        # === BUNDLE MAPPINGS (dict fallback for profile mode) ===
+        # === BUNDLE MAPPINGS ===
         # If no foundation resolver, try bundle_mappings dict directly
-        # This supports @namespace:path in profile mode where bundles are composed
+        # This supports @namespace:path where bundles are composed
         if self._bundle_mappings and ":" in mention[1:]:
             result = self._resolve_bundle_mapping(mention)
             if result:
                 logger.debug(f"Resolved via bundle mapping: {mention} -> {result}")
-                return result
-
-        # === COLLECTIONS (deprecated, profile mode only) ===
-        # Only try collections if bundle resolution failed AND collections enabled
-        if self._enable_collections and ":" in mention[1:]:
-            result = self._resolve_collection(mention)
-            if result:
-                logger.debug(f"Resolved via collection (deprecated): {mention} -> {result}")
                 return result
 
         # === RELATIVE PATHS ===
@@ -196,7 +170,7 @@ class AppMentionResolver:
     def _resolve_bundle_mapping(self, mention: str) -> Path | None:
         """Resolve @namespace:path via bundle_mappings dict.
 
-        Used in profile mode when foundation_resolver is not available.
+        Used when foundation_resolver is not available.
         """
         # Extract prefix and path
         prefix, path = mention[1:].split(":", 1)
@@ -224,42 +198,6 @@ class AppMentionResolver:
             return resource_path.resolve()
 
         logger.debug(f"Bundle resource not found: {resource_path}")
-        return None
-
-    def _resolve_collection(self, mention: str) -> Path | None:
-        """Resolve @collection:path (DEPRECATED).
-
-        Only used in legacy profile mode. Bundle mode should not call this.
-        """
-        if not self._collection_resolver:
-            return None
-
-        # Extract prefix and path
-        prefix, path = mention[1:].split(":", 1)
-
-        # Skip app shortcuts (already handled)
-        if prefix in ("user", "project"):
-            return None
-
-        collection_path = self._collection_resolver.resolve(prefix)
-        if collection_path:
-            resource_path = collection_path / path
-
-            # Try at collection path first
-            if resource_path.exists():
-                return resource_path.resolve()
-
-            # Hybrid packaging fallback: try parent directory
-            if (collection_path / "pyproject.toml").exists():
-                parent_resource_path = collection_path.parent / path
-                if parent_resource_path.exists():
-                    logger.debug(f"Collection resource found at parent: {parent_resource_path}")
-                    return parent_resource_path.resolve()
-
-            logger.debug(f"Collection resource not found: {resource_path}")
-            return None
-
-        logger.debug(f"Collection '{prefix}' not found")
         return None
 
     def _resolve_relative(self, mention: str) -> Path | None:

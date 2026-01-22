@@ -25,7 +25,7 @@
 
 ```bash
 # Start interactive session (requires actual TTY, not piped)
-amplifier run --profile dev --mode chat
+amplifier run --bundle dev --mode chat
 
 # Type a question
 What is the capital of Germany?
@@ -45,7 +45,7 @@ Ctrl-D
 **Purpose**: Create a test session for history testing
 
 ```bash
-echo "What is 10 * 10?" | amplifier run --profile dev
+echo "What is 10 * 10?" | amplifier run --bundle dev
 ```
 
 **Expected**: Session created, response displayed, session ID shown.
@@ -59,7 +59,7 @@ amplifier continue
 amplifier session resume <session-id>
 
 # Observe:
-# - Banner at TOP with session info (ID, time ago, profile, model)
+# - Banner at TOP with session info (ID, time ago, bundle, model)
 # - Complete conversation history below banner
 # - "You:" and "Amplifier:" labels on all messages
 # - No redundant separator after history
@@ -139,7 +139,7 @@ amplifier continue --replay --replay-speed=0.5
 
 ```bash
 # Create multi-turn session (interactive mode - requires TTY)
-amplifier run --profile dev --mode chat
+amplifier run --bundle dev --mode chat
 
 # Have a conversation:
 What is the capital of France?

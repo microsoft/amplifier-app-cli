@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import click
-from rich.table import Table
 
 from ..console import console
-from ..paths import create_agent_loader
-from ..paths import get_agent_search_paths
 
 
 @click.group(invoke_without_command=True)
@@ -20,39 +17,34 @@ def agents(ctx: click.Context):
 
 
 @agents.command("list")
-def list_agents():
-    """List available agents from all configured directories."""
-    loader = create_agent_loader()
-    agent_names = loader.list_agents()
+@click.option("--bundle", "-b", default=None, help="Bundle to list agents from")
+def list_agents(bundle: str | None):
+    """List available agents from bundles.
 
-    if not agent_names:
-        console.print("[dim]No agents found in search paths[/dim]")
-        console.print("\nUse [cyan]amplifier agents dirs[/cyan] to see search paths")
+    Agents are defined within bundles. Use --bundle to specify which bundle's
+    agents to list, or omit to see agents from the default bundle.
+    """
+    from ..paths import create_bundle_registry
+
+    registry = create_bundle_registry()
+
+    # Get well-known bundles
+    well_known = registry.list_registered()
+
+    if not well_known:
+        console.print("[dim]No bundles registered[/dim]")
+        console.print("\nUse [cyan]amplifier bundle list[/cyan] to see available bundles")
         return
 
-    table = Table(title=f"Available Agents ({len(agent_names)})", show_header=True, header_style="bold cyan")
-    table.add_column("Name", style="green")
-    table.add_column("Source", style="yellow")
-    table.add_column("Description")
+    console.print("[bold]Agents are defined within bundles.[/bold]\n")
+    console.print("To see agents for a specific bundle, load that bundle and check its configuration.")
+    console.print("Available bundles with potential agents:\n")
 
-    for name in agent_names:
-        # Get source
-        source = loader.get_agent_source(name) or "unknown"
+    for name in well_known:
+        console.print(f"  • {name}")
 
-        # Try to get description
-        try:
-            agent = loader.load_agent(name)
-            description = agent.meta.description
-            # Truncate long descriptions
-            first_line = description.split("\n")[0]
-            if len(first_line) > 60:
-                first_line = first_line[:57] + "..."
-        except Exception:
-            first_line = "[dim]<failed to load>[/dim]"
-
-        table.add_row(name, source, first_line)
-
-    console.print(table)
+    console.print("\n[dim]Use 'amplifier bundle show <name>' to see bundle details[/dim]")
+    console.print("[dim]Use 'amplifier run --bundle <name>' to start a session with that bundle[/dim]")
 
 
 @agents.command("show")
@@ -60,100 +52,48 @@ def list_agents():
 def show_agent(name: str):
     """Show detailed information about a specific agent.
 
-    NAME is the agent name (e.g., 'zen-architect' or 'developer-expertise:bug-hunter')
+    NAME is the agent name (e.g., 'foundation:zen-architect')
+
+    Agents are defined within bundles and accessed via the task tool during sessions.
     """
-    loader = create_agent_loader()
+    console.print(f"\n[bold cyan]{name}[/bold cyan]\n")
+    console.print("Agents are defined within bundles and loaded during sessions.")
+    console.print("To see an agent's configuration, examine the bundle that defines it.\n")
 
-    try:
-        agent = loader.load_agent(name)
-    except Exception as e:
-        console.print(f"[red]Error loading agent '{name}': {e}[/red]")
-        return
+    # Parse bundle:agent format
+    if ":" in name:
+        bundle_part, agent_part = name.split(":", 1)
+        console.print(f"This agent appears to be from bundle: [cyan]{bundle_part}[/cyan]")
+        console.print(f"Agent name within bundle: [green]{agent_part}[/green]\n")
+    else:
+        console.print("Agent names typically use the format: [cyan]bundle:agent-name[/cyan]\n")
 
-    source = loader.get_agent_source(name) or "unknown"
-
-    # Header
-    console.print(f"\n[bold cyan]{name}[/bold cyan]")
-    console.print(f"[dim]Source:[/dim] {source}")
-    console.print()
-
-    # Full description
-    console.print("[bold]Description[/bold]")
-    console.print(agent.meta.description)
-    console.print()
-
-    # Providers
-    if agent.providers:
-        console.print("[bold]Providers[/bold]")
-        for p in agent.providers:
-            module_name = p.module
-            config_info = ""
-            if p.config:
-                # Show key config items
-                config_items = []
-                if "model" in p.config:
-                    config_items.append(f"model={p.config['model']}")
-                if "default_model" in p.config:
-                    config_items.append(f"model={p.config['default_model']}")
-                if config_items:
-                    config_info = f" ({', '.join(config_items)})"
-            console.print(f"  {module_name}{config_info}")
-        console.print()
-
-    # Tools
-    if agent.tools:
-        console.print("[bold]Tools[/bold]")
-        for t in agent.tools:
-            console.print(f"  {t.module}")
-        console.print()
-
-    # Hooks
-    if agent.hooks:
-        console.print("[bold]Hooks[/bold]")
-        for h in agent.hooks:
-            console.print(f"  {h.module}")
-        console.print()
-
-    # Session overrides
-    if agent.session:
-        console.print("[bold]Session Overrides[/bold]")
-        for key, value in agent.session.items():
-            console.print(f"  {key}: {value}")
-        console.print()
-
-    # System instruction preview (first few lines)
-    if agent.system and agent.system.instruction:
-        instruction = agent.system.instruction
-        lines = instruction.split("\n")
-        preview_lines = lines[:5]
-        has_more = len(lines) > 5
-
-        console.print("[bold]Instruction Preview[/bold]")
-        for line in preview_lines:
-            # Truncate long lines
-            if len(line) > 100:
-                line = line[:97] + "..."
-            console.print(f"  {line}")
-        if has_more:
-            console.print(f"  [dim]... ({len(lines) - 5} more lines)[/dim]")
-        console.print()
+    console.print("[dim]Use 'amplifier bundle show <bundle>' to examine bundle configuration[/dim]")
 
 
 @agents.command("dirs")
 def show_dirs():
-    """Show agent search directories."""
+    """Show agent search directories.
+
+    Note: Agents are now primarily defined within bundles rather than
+    standalone directories.
+    """
+    from ..paths import get_agent_search_paths
+
     paths = get_agent_search_paths()
 
     console.print("\n[bold]Agent Search Paths[/bold]")
-    console.print("[dim](in order of precedence, highest first)[/dim]\n")
+    console.print("[dim](legacy - agents are now primarily defined within bundles)[/dim]\n")
 
     if not paths:
         console.print("[yellow]No search paths configured[/yellow]")
+        console.print("\nAgents are now defined within bundles.")
+        console.print("Use [cyan]amplifier bundle list[/cyan] to see available bundles.")
         return
 
     for path in reversed(paths):
         exists = path.exists()
-        status = "[green]\u2713[/green]" if exists else "[dim]\u2717[/dim]"
+        status = "[green]✓[/green]" if exists else "[dim]✗[/dim]"
 
         # Determine path type
         path_str = str(path)
@@ -162,8 +102,6 @@ def show_dirs():
                 label = "[cyan]user[/cyan]"
             else:
                 label = "[cyan]project[/cyan]"
-        elif "/collections/" in path_str:
-            label = "[magenta]collection[/magenta]"
         elif "amplifier_app_cli" in path_str:
             label = "[yellow]bundled[/yellow]"
         else:

@@ -42,53 +42,6 @@ class TestSessionConfig:
         # This is intentional - empty transcript still means resume mode
         assert config.is_resume is True
 
-    def test_is_bundle_mode_false_without_bundle(self):
-        """Profile mode when no prepared_bundle."""
-        config = SessionConfig(
-            config={},
-            search_paths=[],
-            verbose=False,
-            profile_name="dev",
-        )
-        assert config.is_bundle_mode is False
-
-    def test_is_bundle_mode_true_with_bundle_and_prefix(self):
-        """Bundle mode requires both bundle: prefix AND prepared_bundle."""
-        mock_bundle = MagicMock()
-
-        config = SessionConfig(
-            config={},
-            search_paths=[],
-            verbose=False,
-            profile_name="bundle:foundation",
-            prepared_bundle=mock_bundle,
-        )
-        assert config.is_bundle_mode is True
-
-    def test_is_bundle_mode_false_without_prefix(self):
-        """Not bundle mode if profile_name lacks 'bundle:' prefix."""
-        mock_bundle = MagicMock()
-
-        config = SessionConfig(
-            config={},
-            search_paths=[],
-            verbose=False,
-            profile_name="foundation",  # Missing bundle: prefix
-            prepared_bundle=mock_bundle,
-        )
-        assert config.is_bundle_mode is False
-
-    def test_is_bundle_mode_false_without_prepared_bundle(self):
-        """Not bundle mode if prepared_bundle is None."""
-        config = SessionConfig(
-            config={},
-            search_paths=[],
-            verbose=False,
-            profile_name="bundle:foundation",  # Has prefix
-            prepared_bundle=None,  # But no bundle
-        )
-        assert config.is_bundle_mode is False
-
     def test_default_values(self):
         """Test default values are set correctly."""
         config = SessionConfig(
@@ -97,7 +50,7 @@ class TestSessionConfig:
             verbose=True,
         )
         assert config.session_id is None
-        assert config.profile_name == "unknown"
+        assert config.bundle_name == "unknown"
         assert config.initial_transcript is None
         assert config.prepared_bundle is None
         assert config.output_format == "text"
@@ -108,30 +61,18 @@ class TestInitializedSession:
 
     @pytest.mark.anyio
     async def test_cleanup_calls_session_cleanup(self):
-        """cleanup() delegates to session.cleanup()."""
-        mock_session = MagicMock()
-        mock_session.cleanup = AsyncMock()
+        """Cleanup properly disposes the session."""
+        mock_session = AsyncMock()
+        mock_config = SessionConfig(config={}, search_paths=[], verbose=False)
 
-        config = SessionConfig(config={}, search_paths=[], verbose=False)
         initialized = InitializedSession(
             session=mock_session,
             session_id="test-123",
-            config=config,
+            config=mock_config,
+            store=MagicMock(),
         )
 
         await initialized.cleanup()
         mock_session.cleanup.assert_called_once()
 
-    def test_session_store_has_default(self):
-        """SessionStore is created by default."""
-        mock_session = MagicMock()
-        config = SessionConfig(config={}, search_paths=[], verbose=False)
 
-        initialized = InitializedSession(
-            session=mock_session,
-            session_id="test-123",
-            config=config,
-        )
-
-        # Should have a store instance (default_factory)
-        assert initialized.store is not None

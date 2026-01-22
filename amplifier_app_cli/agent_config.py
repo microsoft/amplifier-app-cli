@@ -1,13 +1,13 @@
 """Agent configuration utilities.
 
 Utilities for agent overlay merging and validation.
-Agents are loaded via profiles library (amplifier-profiles).
+Agents are loaded via bundles (amplifier-foundation).
 """
 
 import logging
 from typing import Any
 
-from .lib.legacy import merge_profile_dicts
+from .lib.merge_utils import merge_agent_dicts
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ def apply_spawn_tool_policy(parent: dict[str, Any]) -> dict[str, Any]:
     """
     spawn_config = parent.get("spawn", {})
     if not spawn_config:
-        # No spawn policy - return parent unchanged (backward compatible)
+        # No spawn policy - return parent unchanged
         return parent
 
     filtered_parent = parent.copy()
@@ -44,7 +44,9 @@ def apply_spawn_tool_policy(parent: dict[str, Any]) -> dict[str, Any]:
         if isinstance(spawn_tools, list):
             # Use explicit tool list for agents
             filtered_parent["tools"] = spawn_tools
-            logger.debug(f"Spawn policy: using explicit tools list ({len(spawn_tools)} tools)")
+            logger.debug(
+                f"Spawn policy: using explicit tools list ({len(spawn_tools)} tools)"
+            )
         return filtered_parent
 
     # Check for spawn.exclude_tools (inherit all except these)
@@ -52,11 +54,12 @@ def apply_spawn_tool_policy(parent: dict[str, Any]) -> dict[str, Any]:
     if exclude_tools and isinstance(exclude_tools, list):
         # Filter out excluded tools
         filtered_tools = [
-            tool for tool in parent_tools
-            if tool.get("module") not in exclude_tools
+            tool for tool in parent_tools if tool.get("module") not in exclude_tools
         ]
         filtered_parent["tools"] = filtered_tools
-        logger.debug(f"Spawn policy: excluded {len(parent_tools) - len(filtered_tools)} tools")
+        logger.debug(
+            f"Spawn policy: excluded {len(parent_tools) - len(filtered_tools)} tools"
+        )
 
     return filtered_parent
 
@@ -65,7 +68,7 @@ def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
     """
     Deep merge parent config with agent overlay.
 
-    Uses the same merge logic as profile inheritance:
+    Uses merge logic for bundle agent inheritance:
     - Module lists (providers, tools, hooks) merge by module ID
     - Config dicts merge recursively (child keys override parent keys)
     - Sources inherit (agent doesn't need to repeat parent's source)
@@ -89,8 +92,7 @@ def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
         Merged mount plan for child session
 
     See Also:
-        amplifier_profiles.merger.merge_profile_dicts - The underlying implementation
-        amplifier-profiles/docs/AGENT_AUTHORING.md - Merge behavior documentation
+        merge_agent_dicts - The underlying merge implementation
     """
     # Apply spawn tool policy to parent before merging
     filtered_parent = apply_spawn_tool_policy(parent)
@@ -100,7 +102,7 @@ def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
     agent_filter = overlay_copy.pop("agents", None)
 
     # Standard merge (parent's agents dict preserved since we removed it from overlay)
-    result = merge_profile_dicts(filtered_parent, overlay_copy)
+    result = merge_agent_dicts(filtered_parent, overlay_copy)
 
     # Apply agent filtering (Smart Single Value → filtered dict)
     # Note: "all" and None both mean "inherit parent's agents unchanged" (already in result)
@@ -133,7 +135,9 @@ def validate_agent_config(config: dict[str, Any]) -> bool:
     has_meta_name = "meta" in config and "name" in config.get("meta", {})
 
     if not has_top_level_name and not has_meta_name:
-        raise ValueError("Agent config must have 'name' (either at top level or in 'meta' section)")
+        raise ValueError(
+            "Agent config must have 'name' (either at top level or in 'meta' section)"
+        )
 
     # System instruction is optional but recommended
     if "system" in config and "instruction" not in config.get("system", {}):

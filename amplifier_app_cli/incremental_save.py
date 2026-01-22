@@ -32,7 +32,7 @@ class IncrementalSaveHook:
     - Thread safety: Uses SessionStore's atomic write mechanism
 
     Usage:
-        hook = IncrementalSaveHook(session, store, session_id, profile_name, config)
+        hook = IncrementalSaveHook(session, store, session_id, bundle_name, config)
         hooks.register("tool:post", hook.on_tool_post, priority=900, name="incremental_save")
     """
 
@@ -41,7 +41,7 @@ class IncrementalSaveHook:
         session: "AmplifierSession",
         store: SessionStore,
         session_id: str,
-        profile_name: str,
+        bundle_name: str,
         config: dict[str, Any],
     ):
         """Initialize incremental save hook.
@@ -50,13 +50,13 @@ class IncrementalSaveHook:
             session: The AmplifierSession to save transcripts for
             store: SessionStore instance for persistence
             session_id: Session identifier
-            profile_name: Profile or bundle name for metadata
+            bundle_name: Bundle name for metadata (e.g., "bundle:foundation")
             config: Session configuration for extracting model info
         """
         self.session = session
         self.store = store
         self.session_id = session_id
-        self.profile_name = profile_name
+        self.bundle_name = bundle_name
         self.config = config
         self._last_message_count = 0
 
@@ -86,7 +86,9 @@ class IncrementalSaveHook:
 
             # Debounce: skip if no new messages
             if current_count <= self._last_message_count:
-                logger.debug(f"Incremental save skipped: no new messages ({current_count})")
+                logger.debug(
+                    f"Incremental save skipped: no new messages ({current_count})"
+                )
                 return HookResult(action="continue")
 
             # Update debounce counter
@@ -95,11 +97,18 @@ class IncrementalSaveHook:
             # Extract model name from config
             model_name = self._extract_model_name()
 
-            # Build metadata with incremental flag
+            # Load existing metadata to preserve fields like name, description
+            # that may have been set by other hooks (e.g., session-naming)
+            existing_metadata = self.store.get_metadata(self.session_id) or {}
+
+            # Build metadata, preserving existing fields while updating dynamic ones
             metadata = {
+                **existing_metadata,  # Preserve name, description, etc.
                 "session_id": self.session_id,
-                "created": datetime.now(UTC).isoformat(),
-                "profile": self.profile_name,
+                "created": existing_metadata.get(
+                    "created", datetime.now(UTC).isoformat()
+                ),
+                "bundle": self.bundle_name,
                 "model": model_name,
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
                 "incremental": True,  # Distinguish from final saves
@@ -109,7 +118,9 @@ class IncrementalSaveHook:
             self.store.save(self.session_id, messages, metadata)
 
             tool_name = data.get("tool_name", "unknown")
-            logger.debug(f"Incremental save after {tool_name}: {current_count} messages")
+            logger.debug(
+                f"Incremental save after {tool_name}: {current_count} messages"
+            )
 
         except Exception as e:
             # Log but don't fail - incremental save is best-effort
@@ -128,7 +139,9 @@ class IncrementalSaveHook:
             first_provider = providers[0]
             if isinstance(first_provider, dict) and "config" in first_provider:
                 provider_config = first_provider["config"]
-                return provider_config.get("model") or provider_config.get("default_model", "unknown")
+                return provider_config.get("model") or provider_config.get(
+                    "default_model", "unknown"
+                )
         return "unknown"
 
 
@@ -136,7 +149,7 @@ def register_incremental_save(
     session: "AmplifierSession",
     store: SessionStore,
     session_id: str,
-    profile_name: str,
+    bundle_name: str,
     config: dict[str, Any],
 ) -> IncrementalSaveHook | None:
     """Register incremental save hook on session.
@@ -148,7 +161,7 @@ def register_incremental_save(
         session: The AmplifierSession to register on
         store: SessionStore instance for persistence
         session_id: Session identifier
-        profile_name: Profile or bundle name for metadata
+        bundle_name: Bundle name for metadata (e.g., "bundle:foundation")
         config: Session configuration
 
     Returns:
@@ -159,11 +172,13 @@ def register_incremental_save(
         logger.debug("Hooks not available, skipping incremental save registration")
         return None
 
-    hook = IncrementalSaveHook(session, store, session_id, profile_name, config)
+    hook = IncrementalSaveHook(session, store, session_id, bundle_name, config)
 
     # Register with priority 900 (high, but below trace collector at 1000)
     # This ensures tracing completes before we save
-    hooks.register("tool:post", hook.on_tool_post, priority=900, name="incremental_save")
+    hooks.register(
+        "tool:post", hook.on_tool_post, priority=900, name="incremental_save"
+    )
 
     logger.debug(f"Registered incremental save hook for session {session_id[:8]}...")
     return hook

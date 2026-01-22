@@ -7,10 +7,8 @@ name = "amplifier-app-cli"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "amplifier-collections" },
     { name = "amplifier-core" },
     { name = "amplifier-foundation" },
-    { name = "amplifier-profiles" },
     { name = "click" },
     { name = "httpx", extra = ["socks"] },
     { name = "prompt-toolkit" },
@@ -27,10 +25,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "amplifier-collections", git = "https://github.com/microsoft/amplifier-collections?branch=main" },
     { name = "amplifier-core", git = "https://github.com/microsoft/amplifier-core?branch=main" },
     { name = "amplifier-foundation", git = "https://github.com/microsoft/amplifier-foundation?branch=main" },
-    { name = "amplifier-profiles", git = "https://github.com/microsoft/amplifier-profiles?branch=main" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
@@ -43,14 +39,6 @@ requires-dist = [
 dev = [
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
-]
-
-[[package]]
-name = "amplifier-collections"
-version = "0.1.0"
-source = { git = "https://github.com/microsoft/amplifier-collections?branch=main#694daf5433cf372843a25466f820217c37f3043e" }
-dependencies = [
-    { name = "pydantic" },
 ]
 
 [[package]]
@@ -68,19 +56,10 @@ dependencies = [
 [[package]]
 name = "amplifier-foundation"
 version = "1.0.0"
-source = { git = "https://github.com/microsoft/amplifier-foundation?branch=main#3e6a8b3c85b8b5ef1d3a2eaa4ffda11e51623e9f" }
+source = { git = "https://github.com/microsoft/amplifier-foundation?branch=main#ca1322b60cc0959fedf01ea5f5668f395c725076" }
 dependencies = [
     { name = "amplifier-core" },
     { name = "pyyaml" },
-]
-
-[[package]]
-name = "amplifier-profiles"
-version = "0.1.0"
-source = { git = "https://github.com/microsoft/amplifier-profiles?branch=main#3ead9bcfbc534540f34836320864dae22d428d27" }
-dependencies = [
-    { name = "amplifier-collections" },
-    { name = "pydantic" },
 ]
 
 [[package]]

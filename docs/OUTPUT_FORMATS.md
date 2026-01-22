@@ -68,7 +68,7 @@ Here's the analysis:
   "status": "success" | "error",
   "response": "The assistant's response text (markdown string)",
   "session_id": "uuid-of-session",
-  "profile": "profile-name-used",
+  "bundle": "bundle-name-used",
   "model": "provider/model-name",
   "timestamp": "2025-11-10T12:34:56.789Z"
 }
@@ -80,7 +80,7 @@ Here's the analysis:
   "status": "success",
   "response": "Here's the analysis:\n\n1. Code structure...",
   "session_id": "abc123-def456-...",
-  "profile": "dev",
+  "bundle": "dev",
   "model": "anthropic/claude-sonnet-4-5",
   "timestamp": "2025-11-10T12:34:56.789Z"
 }
@@ -130,7 +130,7 @@ amplifier run --output-format json "prompt" 2>diagnostics.log 1>response.json
   "status": "success",
   "response": "The AI's final response text (markdown)",
   "session_id": "uuid",
-  "profile": "profile-name",
+  "bundle": "bundle-name",
   "model": "provider/model-name",
   "timestamp": "2025-11-10T12:34:56.789Z",
 

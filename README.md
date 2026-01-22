@@ -79,9 +79,14 @@ amplifier source remove <id> [--scope]
 amplifier source list
 amplifier source show <id>
 
-# Legacy commands (DEPRECATED - use bundles instead)
-# amplifier profile ...     # Use 'amplifier bundle' instead
-# amplifier collection ...  # Use 'amplifier bundle add' instead
+# Notification settings (requires notify bundle)
+amplifier notify status                              # Show current notification settings
+amplifier notify desktop --enable [--scope]          # Enable desktop/terminal notifications
+amplifier notify desktop --disable [--scope]         # Disable desktop notifications
+amplifier notify ntfy --enable --topic <topic>       # Enable ntfy.sh push notifications
+amplifier notify ntfy --disable [--scope]            # Disable push notifications
+amplifier notify reset --all [--scope]               # Clear all notification settings
+
 ```
 
 ### Session Commands
@@ -95,7 +100,7 @@ amplifier                                 # Interactive (auto-generates ID)
 amplifier run -p anthropic "prompt"              # Use specific provider
 amplifier run -m claude-sonnet-4-5 "prompt"      # Use specific model
 amplifier run --max-tokens 500 "prompt"          # Limit output tokens
-amplifier run -p openai -m gpt-4o --max-tokens 1000 "prompt"  # Combine flags
+amplifier run -p openai -m gpt-5.2 --max-tokens 1000 "prompt"  # Combine flags
 
 # Resume workflows
 amplifier continue                        # Resume most recent (interactive)
@@ -168,15 +173,15 @@ $ amplifier run --resume a1b2c3d4 "What about next week?"
 ### Tool Commands
 
 ```bash
-# List tools available in the active profile (shows actual tool names)
+# List tools available in the active bundle (shows actual tool names)
 amplifier tool list                               # Table format (mounts tools)
 amplifier tool list --modules                     # Show module names (fast, no mount)
-amplifier tool list --profile dev                 # Specify profile
+amplifier tool list --bundle my-bundle            # Specify bundle
 amplifier tool list --output json                 # JSON format
 
 # Show details about a specific tool
 amplifier tool info <tool-name>                   # Show tool info
-amplifier tool info read_file --profile dev       # With specific profile
+amplifier tool info read_file --bundle my-bundle  # With specific bundle
 amplifier tool info --module tool-filesystem      # Show module info (fast)
 
 # Invoke a tool directly with arguments
@@ -191,7 +196,7 @@ amplifier tool invoke web_fetch url="https://example.com"
 
 ```bash
 amplifier init                                     # First-time setup
-amplifier update [--check-only] [--force] [-y]    # Update Amplifier, modules, and collections
+amplifier update [--check-only] [--force] [-y]    # Update Amplifier and modules
 amplifier --install-completion                     # Set up tab completion
 amplifier --version                                # Show version
 amplifier --help                                   # Show help
@@ -244,9 +249,9 @@ Detected shell: bash
 Once active, tab completion works throughout the CLI:
 
 ```bash
-amplifier pro<TAB>         # Completes to "profile"
-amplifier profile u<TAB>   # Completes to "use"
-amplifier profile use <TAB> # Shows available profiles
+amplifier bun<TAB>         # Completes to "bundle"
+amplifier bundle u<TAB>    # Completes to "use"
+amplifier bundle use <TAB> # Shows available bundles
 amplifier run --<TAB>      # Shows all options
 ```
 
@@ -262,7 +267,6 @@ This CLI is built on top of amplifier-core and provides:
 - **Interactive mode** - REPL with slash commands
 - **Key management** - Secure API key storage
 
-> **Note**: Profile and collection systems are deprecated. Use bundles instead.
 
 ## Supported Providers
 
@@ -300,11 +304,8 @@ uv run pytest
 
 ```
 amplifier_app_cli/
-├── commands/          # CLI command implementations (provider, collection, init, logs, setup)
+├── commands/          # CLI command implementations (provider, bundle, init, logs, setup)
 ├── data/
-│   ├── collections/   # Bundled collections (foundation, developer-expertise)
-│   │   └── developer-expertise/agents/  # Default agents
-│   ├── profiles/      # Profile defaults and metadata
 │   └── context/       # Bundled context files
 ├── lib/               # Shared libraries
 │   └── mention_loading/ # @mention expansion system
@@ -328,8 +329,6 @@ toolkit/               # Standalone scenario tool utilities (at repo root)
 **Note**: Core functionality provided by libraries:
 - `amplifier-foundation` - Bundle loading and composition (primary)
 - `amplifier-config` - Settings management
-- `amplifier-profiles` - Profile loading (deprecated, for backward compatibility)
-- `amplifier-collections` - Collection system (deprecated, for backward compatibility)
 
 ## Documentation
 
@@ -341,11 +340,9 @@ toolkit/               # Standalone scenario tool utilities (at repo root)
 
 **Authoritative Guides** (external, maintained in library repos):
 - **→ [Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md)** - Creating and managing bundles
-- **→ [Migration Guide](https://github.com/microsoft/amplifier/blob/main/docs/MIGRATION_COLLECTIONS_TO_BUNDLES.md)** - Migrating from profiles/collections to bundles
 - **→ [User Onboarding](https://github.com/microsoft/amplifier/blob/main/docs/USER_ONBOARDING.md)** - Complete user guide and reference
 
 **Toolkit** (for building sophisticated tools):
-- **→ [Toolkit Guide](https://github.com/microsoft/amplifier-collection-toolkit/blob/main/docs/TOOLKIT_GUIDE.md)** - Multi-config metacognitive recipes
 
 ## Contributing
 

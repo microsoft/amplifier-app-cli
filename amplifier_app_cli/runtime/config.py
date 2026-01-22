@@ -11,10 +11,10 @@ from typing import Any
 
 from rich.console import Console
 
-from ..lib.app_settings import AppSettings
-from ..lib.legacy import compile_profile_to_mount_plan
-from ..lib.legacy import merge_module_items
+from ..lib.settings import AppSettings
+from ..lib.merge_utils import merge_module_items
 from ..lib.merge_utils import merge_tool_configs
+
 
 if TYPE_CHECKING:
     from amplifier_foundation import BundleRegistry
@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 async def resolve_bundle_config(
     bundle_name: str,
     app_settings: AppSettings,
-    agent_loader,
     console: Console | None = None,
     *,
     session_id: str | None = None,
@@ -43,7 +42,6 @@ async def resolve_bundle_config(
     Args:
         bundle_name: Bundle name to load (e.g., "foundation").
         app_settings: App settings for provider overrides.
-        agent_loader: Agent loader for resolving agent metadata.
         console: Optional console for status messages.
         session_id: Optional session ID to include session-scoped tool overrides.
         project_slug: Optional project slug (required if session_id provided).
@@ -66,37 +64,70 @@ async def resolve_bundle_config(
     if console:
         console.print(f"[dim]Preparing bundle '{bundle_name}'...[/dim]")
 
+    # Build behavior URIs from app-level settings
+    # These are app-level policies: compose behavior bundles before prepare()
+    # so modules get properly downloaded and installed via normal bundle machinery
+    compose_behaviors: list[str] = []
+
+    # Modes system (runtime behavior overlays like /mode plan, /mode review)
+    # Always available - users choose to use /mode commands or not
+    compose_behaviors.extend(_build_modes_behaviors())
+
+    # Notification behaviors (desktop and push notifications)
+    compose_behaviors.extend(
+        _build_notification_behaviors(app_settings.get_notification_config())
+    )
+
+    # Add app bundles (user-configured bundles that are always composed)
+    # App bundles are explicit user configuration, composed AFTER notification behaviors
+    app_bundles = app_settings.get_app_bundles()
+    if app_bundles:
+        compose_behaviors = compose_behaviors + app_bundles
+
+    # Get source overrides from unified settings
+    # This enables settings.yaml overrides to take effect at prepare time
+    source_overrides = app_settings.get_source_overrides()
+
+    # CRITICAL: Also extract provider sources from config.providers[]
+    # Providers are configured via 'amplifier provider use' and stored in config.providers,
+    # not in overrides section. Bundle.prepare() needs these sources to download provider modules.
+    provider_overrides = app_settings.get_provider_overrides()
+    provider_sources = {
+        provider["module"]: provider["source"]
+        for provider in provider_overrides
+        if isinstance(provider, dict) and "module" in provider and "source" in provider
+    }
+
+    # Merge provider sources with module source overrides
+    # Provider sources take precedence (more specific configuration)
+    combined_sources = {**source_overrides, **provider_sources}
+
     # Load and prepare bundle (downloads modules from git sources)
-    prepared = await load_and_prepare_bundle(bundle_name, discovery)
+    # If compose_behaviors is provided, those behaviors are composed onto the bundle
+    # BEFORE prepare() runs, so their modules get installed correctly
+    # If combined_sources is provided, module sources are resolved before download
+    prepared = await load_and_prepare_bundle(
+        bundle_name,
+        discovery,
+        compose_behaviors=compose_behaviors if compose_behaviors else None,
+        source_overrides=combined_sources if combined_sources else None,
+    )
 
-    # Get the mount plan from the prepared bundle
+    # Load full agent metadata from .md files (for descriptions)
+    # Foundation handles this via load_agent_metadata() after source_base_paths is populated
+    prepared.bundle.load_agent_metadata()
+
+    # Get the mount plan from the prepared bundle (now includes agent descriptions)
     bundle_config = prepared.mount_plan
-
-    # Load full agent metadata via agent_loader (for descriptions)
-    if bundle_config.get("agents") and agent_loader:
-        loaded_agents = {}
-        for agent_name in bundle_config["agents"]:
-            try:
-                # Try to resolve agent from bundle's base_path first
-                # This handles namespaced names like "foundation:bug-hunter"
-                agent_path = prepared.bundle.resolve_agent_path(agent_name)
-                if agent_path:
-                    agent = agent_loader.load_agent_from_path(agent_path, agent_name)
-                else:
-                    # Fall back to general agent resolution
-                    agent = agent_loader.load_agent(agent_name)
-                loaded_agents[agent_name] = agent.to_mount_plan_fragment()
-            except Exception:  # noqa: BLE001
-                # Keep stub if agent loading fails
-                loaded_agents[agent_name] = bundle_config["agents"][agent_name]
-        bundle_config["agents"] = loaded_agents
 
     # Apply provider overrides
     provider_overrides = app_settings.get_provider_overrides()
     if provider_overrides:
         if bundle_config.get("providers"):
             # Bundle has providers - merge overrides with existing
-            bundle_config["providers"] = _apply_provider_overrides(bundle_config["providers"], provider_overrides)
+            bundle_config["providers"] = _apply_provider_overrides(
+                bundle_config["providers"], provider_overrides
+            )
         else:
             # Bundle has no providers (e.g., provider-agnostic foundation bundle)
             # Use overrides directly, but inject sensible debug defaults
@@ -105,14 +136,26 @@ async def resolve_bundle_config(
 
     # Apply tool overrides from settings (e.g., allowed_write_paths for tool-filesystem)
     # Include session-scoped settings if session context provided
-    tool_overrides = app_settings.get_tool_overrides(session_id=session_id, project_slug=project_slug)
+    tool_overrides = app_settings.get_tool_overrides(
+        session_id=session_id, project_slug=project_slug
+    )
     if tool_overrides:
         if bundle_config.get("tools"):
             # Bundle has tools - merge overrides with existing
-            bundle_config["tools"] = _apply_tool_overrides(bundle_config["tools"], tool_overrides)
+            bundle_config["tools"] = _apply_tool_overrides(
+                bundle_config["tools"], tool_overrides
+            )
         else:
             # Bundle has no tools - use overrides directly
             bundle_config["tools"] = tool_overrides
+
+    # Apply hook overrides from notification settings
+    # This maps config.notifications.ntfy.* to hooks-notify-push config etc.
+    hook_overrides = app_settings.get_notification_hook_overrides()
+    if hook_overrides and bundle_config.get("hooks"):
+        bundle_config["hooks"] = _apply_hook_overrides(
+            bundle_config["hooks"], hook_overrides
+        )
 
     if console:
         console.print(f"[dim]Bundle '{bundle_name}' prepared successfully[/dim]")
@@ -121,13 +164,20 @@ async def resolve_bundle_config(
     # IMPORTANT: Must expand BEFORE syncing to mount_plan, so ${ANTHROPIC_API_KEY} etc. become actual values
     bundle_config = expand_env_vars(bundle_config)
 
-    # CRITICAL: Sync providers and tools to prepared.mount_plan so create_session() uses them
+    # CRITICAL: Sync providers, tools, and hooks to prepared.mount_plan so create_session() uses them
     # prepared.mount_plan is what create_session() uses, not bundle_config
     # This must happen AFTER env var expansion so API keys are actual values, not "${VAR}" literals
-    if provider_overrides:
+    if bundle_config.get("providers"):
         prepared.mount_plan["providers"] = bundle_config["providers"]
     if tool_overrides:
         prepared.mount_plan["tools"] = bundle_config["tools"]
+    # Sync hooks (now with notification config overrides applied)
+    if bundle_config.get("hooks"):
+        prepared.mount_plan["hooks"] = bundle_config["hooks"]
+
+    # Note: Notification hooks are now composed via compose_behaviors parameter
+    # to load_and_prepare_bundle(), so they get properly installed during prepare().
+    # The behavior bundles handle root-session-only logic internally via parent_id check.
 
     return bundle_config, prepared
 
@@ -135,23 +185,17 @@ async def resolve_bundle_config(
 def resolve_app_config(
     *,
     config_manager,
-    profile_loader,
-    agent_loader,
     app_settings: AppSettings,
     cli_config: dict[str, Any] | None = None,
-    profile_override: str | None = None,
     bundle_name: str | None = None,
     bundle_registry: BundleRegistry | None = None,
     console: Console | None = None,
 ) -> dict[str, Any]:
     """Resolve configuration with precedence, returning a mount plan dictionary.
 
-    Configuration can come from either:
-    - A profile (traditional approach via profile_loader)
-    - A bundle (new approach via bundle_registry)
-
-    If bundle_name is specified and bundle_registry is provided, bundles take
-    precedence. Otherwise, falls back to profile-based configuration.
+    Configuration comes from bundles. If bundle_name is specified and
+    bundle_registry is provided, that bundle is loaded. Otherwise, falls back
+    to the default bundle.
     """
     # 1. Base mount plan defaults
     config: dict[str, Any] = {
@@ -167,7 +211,7 @@ def resolve_app_config(
 
     provider_overrides = app_settings.get_provider_overrides()
 
-    # 2. Apply bundle OR profile (bundle takes precedence if specified)
+    # 2. Apply bundle configuration
     provider_applied_via_config = False
 
     if bundle_name and bundle_registry:
@@ -176,32 +220,22 @@ def resolve_app_config(
             # load() with a name returns a single Bundle (not dict)
             loaded = asyncio.run(bundle_registry.load(bundle_name))
             if isinstance(loaded, dict):
-                raise ValueError(f"Expected single bundle, got dict for '{bundle_name}'")
+                raise ValueError(
+                    f"Expected single bundle, got dict for '{bundle_name}'"
+                )
             bundle = loaded
-            bundle_config = bundle.to_mount_plan()
 
-            # Load full agent metadata via agent_loader (for descriptions)
-            if bundle_config.get("agents") and agent_loader:
-                loaded_agents = {}
-                for agent_name in bundle_config["agents"]:
-                    try:
-                        # Try to resolve agent from bundle's base_path first
-                        # This handles namespaced names like "foundation:bug-hunter"
-                        agent_path = bundle.resolve_agent_path(agent_name)
-                        if agent_path:
-                            agent = agent_loader.load_agent_from_path(agent_path, agent_name)
-                        else:
-                            # Fall back to general agent resolution
-                            agent = agent_loader.load_agent(agent_name)
-                        loaded_agents[agent_name] = agent.to_mount_plan_fragment()
-                    except Exception:  # noqa: BLE001
-                        # Keep stub if agent loading fails
-                        loaded_agents[agent_name] = bundle_config["agents"][agent_name]
-                bundle_config["agents"] = loaded_agents
+            # Load full agent metadata from .md files (for descriptions)
+            # Foundation handles this via load_agent_metadata()
+            bundle.load_agent_metadata()
+
+            bundle_config = bundle.to_mount_plan()
 
             # Apply provider overrides to bundle config
             if provider_overrides and bundle_config.get("providers"):
-                bundle_config["providers"] = _apply_provider_overrides(bundle_config["providers"], provider_overrides)
+                bundle_config["providers"] = _apply_provider_overrides(
+                    bundle_config["providers"], provider_overrides
+                )
                 provider_applied_via_config = True
 
             config = deep_merge(config, bundle_config)
@@ -211,26 +245,7 @@ def resolve_app_config(
                 console.print(f"[yellow]{message}[/yellow]")
             else:
                 logger.warning(message)
-    else:
-        # Use profile-based configuration (traditional approach)
-        active_profile_name = profile_override or config_manager.get_active_profile()
 
-        if active_profile_name:
-            try:
-                profile = profile_loader.load_profile(active_profile_name)
-                profile = app_settings.apply_provider_overrides_to_profile(profile, provider_overrides)
-
-                profile_config = compile_profile_to_mount_plan(profile, agent_loader=agent_loader)  # type: ignore[call-arg]
-                config = deep_merge(config, profile_config)
-                provider_applied_via_config = bool(provider_overrides)
-            except Exception as exc:  # noqa: BLE001
-                message = f"Warning: Could not load profile '{active_profile_name}': {exc}"
-                if console:
-                    console.print(f"[yellow]{message}[/yellow]")
-                else:
-                    logger.warning(message)
-
-    # If we have overrides but no config applied them (no bundle/profile or failure), apply directly
     if provider_overrides and not provider_applied_via_config:
         config["providers"] = provider_overrides
 
@@ -293,7 +308,9 @@ def _ensure_debug_defaults(providers: list[dict[str, Any]]) -> list[dict[str, An
     return result
 
 
-def _apply_provider_overrides(providers: list[dict[str, Any]], overrides: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _apply_provider_overrides(
+    providers: list[dict[str, Any]], overrides: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Apply provider overrides to bundle providers.
 
     Merges override configs into matching providers by module ID.
@@ -320,7 +337,53 @@ def _apply_provider_overrides(providers: list[dict[str, Any]], overrides: list[d
     return result
 
 
-def _apply_tool_overrides(tools: list[dict[str, Any]], overrides: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _apply_hook_overrides(
+    hooks: list[dict[str, Any]], overrides: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Apply hook overrides to bundle hooks.
+
+    Merges override configs into matching hooks by module ID.
+    This enables settings like ntfy topic for hooks-notify-push
+    to be applied from user settings.
+
+    Args:
+        hooks: List of hook configurations from bundle
+        overrides: List of hook override dicts with module and config keys
+
+    Returns:
+        Merged list of hook configurations
+    """
+    if not overrides:
+        return hooks
+
+    # Build lookup for overrides by module ID
+    override_map = {}
+    for override in overrides:
+        if isinstance(override, dict) and "module" in override:
+            override_map[override["module"]] = override
+
+    # Apply overrides to matching hooks
+    result = []
+    for hook in hooks:
+        if isinstance(hook, dict) and hook.get("module") in override_map:
+            override = override_map[hook["module"]]
+            # Merge the hook-level fields first
+            merged = merge_module_items(hook, override)
+            # Then merge configs (simple override, no special union logic needed for hooks)
+            base_config = hook.get("config", {}) or {}
+            override_config = override.get("config", {}) or {}
+            if base_config or override_config:
+                merged["config"] = {**base_config, **override_config}
+            result.append(merged)
+        else:
+            result.append(hook)
+
+    return result
+
+
+def _apply_tool_overrides(
+    tools: list[dict[str, Any]], overrides: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Apply tool overrides to bundle tools.
 
     Merges override configs into matching tools by module ID.
@@ -361,7 +424,10 @@ def _apply_tool_overrides(tools: list[dict[str, Any]], overrides: list[dict[str,
     # Add any new tools from overrides that aren't in the base
     existing_modules = {t.get("module") for t in tools if isinstance(t, dict)}
     for override in overrides:
-        if isinstance(override, dict) and override.get("module") not in existing_modules:
+        if (
+            isinstance(override, dict)
+            and override.get("module") not in existing_modules
+        ):
             result.append(override)
 
     return _ensure_cwd_in_write_paths(result)
@@ -407,7 +473,9 @@ def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
                 result[key] = _merge_module_lists(result[key], value)
             else:
                 result[key] = value
-        elif key in result and isinstance(result[key], dict) and isinstance(value, dict):
+        elif (
+            key in result and isinstance(result[key], dict) and isinstance(value, dict)
+        ):
             result[key] = deep_merge(result[key], value)
         else:
             result[key] = value
@@ -422,7 +490,7 @@ def _merge_module_lists(
     Merge module lists on module ID, with deep merging.
 
     Delegates to canonical merger.merge_module_items for DRY compliance.
-    See amplifier_profiles.merger for complete merge strategy documentation.
+    Merges module lists by module ID with deep merging.
     """
     # Build dict by ID for efficient lookup
     result_dict: dict[str, dict[str, Any]] = {}
@@ -438,7 +506,9 @@ def _merge_module_lists(
             module_id = module["module"]
             if module_id in result_dict:
                 # Module exists in base - deep merge using canonical function
-                result_dict[module_id] = merge_module_items(result_dict[module_id], module)
+                result_dict[module_id] = merge_module_items(
+                    result_dict[module_id], module
+                )
             else:
                 # New module in overlay - add it
                 result_dict[module_id] = module
@@ -504,19 +574,80 @@ def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> No
         Only injects if bundle has no providers defined (provider-agnostic design).
         Bundles with explicit providers are preserved unchanged.
     """
-    if config.get("providers") and not prepared_bundle.mount_plan.get("providers"):
+    if "providers" in config and not prepared_bundle.mount_plan.get("providers"):
         prepared_bundle.mount_plan["providers"] = config["providers"]
+
+
+def _build_modes_behaviors() -> list[str]:
+    """Return modes behavior URI for composition.
+
+    Modes are always available - users choose to use /mode commands or not.
+    No enable/disable needed since modes have no cost when unused.
+
+    Loads the behavior (not root bundle) to avoid double-loading foundation
+    and to follow the same pattern as notification behaviors.
+
+    Returns:
+        List containing the modes behavior URI.
+    """
+    return [
+        "git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=behaviors/modes.yaml"
+    ]
+
+
+def _build_notification_behaviors(
+    notifications_config: dict[str, Any] | None,
+) -> list[str]:
+    """Build list of notification behavior URIs based on settings.
+
+    Notifications are an app-level policy. Rather than injecting hooks after
+    bundle preparation, we compose notification behavior bundles BEFORE prepare()
+    so their modules get properly downloaded and installed.
+
+    Args:
+        notifications_config: Dict from settings.yaml config.notifications section
+
+    Returns:
+        List of behavior bundle URIs to compose onto the main bundle.
+        Empty list if no notifications are enabled.
+
+    Expected config structure:
+        notifications:
+          desktop:
+            enabled: true
+            ...
+          push:
+            enabled: true
+            ...
+    """
+    if not notifications_config:
+        return []
+
+    behaviors: list[str] = []
+
+    # Desktop notifications behavior
+    desktop_config = notifications_config.get("desktop", {})
+    if desktop_config.get("enabled", False):
+        behaviors.append(
+            "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/desktop-notifications.yaml"
+        )
+
+    # Push notifications behavior (includes desktop as a dependency for the event)
+    # Support both "push:" and "ntfy:" config keys for convenience
+    push_config = notifications_config.get("push", {})
+    ntfy_config = notifications_config.get("ntfy", {})
+    if push_config.get("enabled", False) or ntfy_config.get("enabled", False):
+        behaviors.append(
+            "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/push-notifications.yaml"
+        )
+
+    return behaviors
 
 
 async def resolve_config_async(
     *,
     bundle_name: str | None = None,
-    profile_override: str | None = None,
-    config_manager=None,
-    profile_loader=None,
-    agent_loader,
     app_settings: AppSettings,
-    cli_config: dict[str, Any] | None = None,
     console: Console | None = None,
     session_id: str | None = None,
     project_slug: str | None = None,
@@ -530,21 +661,14 @@ async def resolve_config_async(
     Use resolve_config() for synchronous contexts (e.g., click commands).
 
     Args:
-        bundle_name: If set, use bundle mode (resolve_bundle_config)
-        profile_override: If set (and no bundle_name), use profile mode
-        config_manager: Required for profile mode
-        profile_loader: Required for profile mode
-        agent_loader: Required for both modes
-        app_settings: Required for both modes
-        cli_config: Optional CLI overrides (profile mode only)
+        bundle_name: Bundle to load (defaults to 'foundation' if not specified)
+        app_settings: Application settings
         console: Optional console for output
         session_id: Optional session ID for session-scoped tool overrides
         project_slug: Optional project slug (required if session_id provided)
 
     Returns:
-        Tuple of (config_data dict, PreparedBundle or None)
-        - Bundle mode: returns (config, prepared_bundle)
-        - Profile mode: returns (config, None)
+        Tuple of (config_data dict, PreparedBundle)
     """
     if bundle_name:
         # Bundle mode: use resolve_bundle_config which handles:
@@ -554,40 +678,31 @@ async def resolve_config_async(
         config_data, prepared_bundle = await resolve_bundle_config(
             bundle_name=bundle_name,
             app_settings=app_settings,
-            agent_loader=agent_loader,
             console=console,
             session_id=session_id,
             project_slug=project_slug,
         )
         return config_data, prepared_bundle
     else:
-        # Profile mode: use resolve_app_config
-        if config_manager is None or profile_loader is None:
-            raise ValueError("config_manager and profile_loader required for profile mode")
-
-        config_data = resolve_app_config(
-            config_manager=config_manager,
-            profile_loader=profile_loader,
-            agent_loader=agent_loader,
+        default_bundle = "foundation"
+        if console:
+            console.print(
+                f"[dim]No bundle specified, using default: {default_bundle}[/dim]"
+            )
+        config_data, prepared_bundle = await resolve_bundle_config(
+            bundle_name=default_bundle,
             app_settings=app_settings,
-            cli_config=cli_config,
-            profile_override=profile_override,
-            bundle_name=None,
-            bundle_registry=None,
             console=console,
+            session_id=session_id,
+            project_slug=project_slug,
         )
-        return config_data, None
+        return config_data, prepared_bundle
 
 
 def resolve_config(
     *,
     bundle_name: str | None = None,
-    profile_override: str | None = None,
-    config_manager=None,
-    profile_loader=None,
-    agent_loader,
     app_settings: AppSettings,
-    cli_config: dict[str, Any] | None = None,
     console: Console | None = None,
     session_id: str | None = None,
     project_slug: str | None = None,
@@ -598,21 +713,14 @@ def resolve_config(
     For async contexts, use resolve_config_async() directly.
 
     Args:
-        bundle_name: If set, use bundle mode (resolve_bundle_config)
-        profile_override: If set (and no bundle_name), use profile mode
-        config_manager: Required for profile mode
-        profile_loader: Required for profile mode
-        agent_loader: Required for both modes
-        app_settings: Required for both modes
-        cli_config: Optional CLI overrides (profile mode only)
+        bundle_name: Bundle to load (defaults to 'foundation' if not specified)
+        app_settings: Application settings
         console: Optional console for output
         session_id: Optional session ID for session-scoped tool overrides
         project_slug: Optional project slug (required if session_id provided)
 
     Returns:
-        Tuple of (config_data dict, PreparedBundle or None)
-        - Bundle mode: returns (config, prepared_bundle)
-        - Profile mode: returns (config, None)
+        Tuple of (config_data dict, PreparedBundle)
     """
     import gc
 
@@ -628,12 +736,7 @@ def resolve_config(
         result = asyncio.run(
             resolve_config_async(
                 bundle_name=bundle_name,
-                profile_override=profile_override,
-                config_manager=config_manager,
-                profile_loader=profile_loader,
-                agent_loader=agent_loader,
                 app_settings=app_settings,
-                cli_config=cli_config,
                 console=console,
                 session_id=session_id,
                 project_slug=project_slug,
@@ -656,4 +759,5 @@ __all__ = [
     "inject_user_providers",
     "_apply_provider_overrides",
     "_ensure_debug_defaults",
+    "_build_notification_behaviors",
 ]

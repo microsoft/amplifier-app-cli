@@ -234,7 +234,7 @@ await child.initialize()
 
 - **→ [SESSION_FORK_SPECIFICATION.md](https://github.com/microsoft/amplifier-core/blob/main/docs/SESSION_FORK_SPECIFICATION.md)** - Kernel mechanism
 - **→ [Agent Delegation Implementation](https://github.com/microsoft/amplifier-app-cli/blob/main/docs/AGENT_DELEGATION_IMPLEMENTATION.md)** - App layer policy
-- **→ [Agent Authoring](https://github.com/microsoft/amplifier-profiles/blob/main/docs/AGENT_AUTHORING.md)** - Agent concepts
+- **→ [Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md)** - Bundle and agent concepts
 
 ---
 

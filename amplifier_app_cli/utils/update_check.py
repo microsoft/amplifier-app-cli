@@ -72,7 +72,7 @@ async def check_updates_background() -> UpdateReport | None:
 async def get_github_commit_sha(repo_url: str, ref: str) -> str:
     """Get SHA for ref using GitHub API.
 
-    Re-exported from source_status for backwards compatibility.
+    Re-exported from source_status.
     """
     from .source_status import _get_github_commit_sha
 
@@ -83,7 +83,7 @@ async def get_github_commit_sha(repo_url: str, ref: str) -> str:
 async def get_commit_details(repo_url: str, sha: str) -> dict:
     """Get commit details.
 
-    Re-exported from source_status for backwards compatibility.
+    Re-exported from source_status.
     """
     from .source_status import _get_commit_details
 
@@ -159,6 +159,5 @@ def _load_cached_result() -> UpdateReport | None:
     return None
 
 
-# Legacy compatibility (old functions, now point to new architecture)
 check_amplifier_updates_background = check_updates_background
 check_module_updates_background = check_updates_background

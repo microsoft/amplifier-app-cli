@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 from typing import Literal
 
-from amplifier_app_cli.lib.legacy import ConfigManager
+from amplifier_app_cli.lib.config_compat import ConfigManager
 
 from .paths import create_config_manager
 
@@ -102,7 +102,11 @@ class ModuleManager:
             settings["modules"][module_list_key] = []
 
         # Add module (avoid duplicates)
-        existing_ids = {m.get("module") for m in settings["modules"][module_list_key] if isinstance(m, dict)}
+        existing_ids = {
+            m.get("module")
+            for m in settings["modules"][module_list_key]
+            if isinstance(m, dict)
+        }
         if module_id not in existing_ids:
             settings["modules"][module_list_key].append(module_entry)
             self.settings._write_yaml(target_file, settings)
@@ -110,7 +114,12 @@ class ModuleManager:
         else:
             logger.warning(f"Module '{module_id}' already exists at {scope} scope")
 
-        return AddModuleResult(module_id=module_id, module_type=module_type, scope=scope, file=str(target_file))
+        return AddModuleResult(
+            module_id=module_id,
+            module_type=module_type,
+            scope=scope,
+            file=str(target_file),
+        )
 
     def remove_module(
         self,
@@ -137,11 +146,20 @@ class ModuleManager:
 
         # Remove from all module types
         removed = False
-        for module_type in ["tools", "hooks", "agents", "providers", "orchestrators", "contexts"]:
+        for module_type in [
+            "tools",
+            "hooks",
+            "agents",
+            "providers",
+            "orchestrators",
+            "contexts",
+        ]:
             if module_type in settings["modules"]:
                 original_len = len(settings["modules"][module_type])
                 settings["modules"][module_type] = [
-                    m for m in settings["modules"][module_type] if m.get("module") != module_id
+                    m
+                    for m in settings["modules"][module_type]
+                    if m.get("module") != module_id
                 ]
                 if len(settings["modules"][module_type]) < original_len:
                     removed = True
@@ -190,7 +208,11 @@ class ModuleManager:
                     for item in module_config[settings_key]:
                         if isinstance(item, dict) and "module" in item:
                             modules.append(
-                                ModuleInfo(module_id=item["module"], module_type=module_type, source="settings")
+                                ModuleInfo(
+                                    module_id=item["module"],
+                                    module_type=module_type,
+                                    source="settings",
+                                )
                             )
 
         return modules

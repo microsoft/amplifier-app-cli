@@ -91,11 +91,11 @@ Work according to these principles.
 
 When resolving @mentions, Amplifier searches in precedence order:
 
-**For collection references** (`@collection:path`):
+**For bundle references** (`@bundle:path`):
 
-1. Project collections (`.amplifier/collections/`)
-2. User collections (`~/.amplifier/collections/`)
-3. Bundled collections (`<package>/data/collections/`)
+1. Project bundles (`.amplifier/bundles/`)
+2. User bundles (`~/.amplifier/bundles/`)
+3. Installed bundles (via pip/uv packages)
 
 **For direct paths** (`@path`):
 

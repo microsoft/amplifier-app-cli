@@ -7,23 +7,23 @@ import logging
 import sys
 import uuid
 from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING
+from typing import Any
 
 import click
 
 if TYPE_CHECKING:
-    from amplifier_foundation.bundle import PreparedBundle
+    pass
+
+from rich.panel import Panel
+
+from amplifier_foundation.exceptions import BundleError, BundleValidationError
 
 from ..console import console
-from ..data.profiles import get_system_default_profile
 from ..session_store import extract_session_mode
 from ..effective_config import get_effective_config_summary
-from ..lib.app_settings import AppSettings
-from ..paths import create_agent_loader
-from ..paths import create_bundle_registry
+from ..lib.settings import AppSettings
 from ..paths import create_config_manager
-from ..paths import create_profile_loader
 from ..runtime.config import resolve_config
 from ..types import (
     ExecuteSingleProtocol,
@@ -47,12 +47,16 @@ def register_run_command(
 
     @cli.command()
     @click.argument("prompt", required=False)
-    @click.option("--profile", "-P", help="Profile to use for this session")
-    @click.option("--bundle", "-B", help="Bundle to use for this session (alternative to profile)")
+    @click.option("--bundle", "-B", help="Bundle to use for this session")
     @click.option("--provider", "-p", default=None, help="LLM provider to use")
     @click.option("--model", "-m", help="Model to use (provider-specific)")
     @click.option("--max-tokens", type=int, help="Maximum output tokens")
-    @click.option("--mode", type=click.Choice(["chat", "single"]), default="single", help="Execution mode")
+    @click.option(
+        "--mode",
+        type=click.Choice(["chat", "single"]),
+        default="single",
+        help="Execution mode",
+    )
     @click.option("--resume", help="Resume specific session with new prompt")
     @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
     @click.option(
@@ -63,7 +67,6 @@ def register_run_command(
     )
     def run(
         prompt: str | None,
-        profile: str | None,
         bundle: str | None,
         provider: str,
         model: str | None,
@@ -85,7 +88,9 @@ def register_run_command(
                 console.print(f"[red]Error:[/red] No session found matching '{resume}'")
                 sys.exit(1)
             except ValueError as e:
-                console.print(f"[red]Error:[/red] {e}")
+                from ..utils.error_format import format_error_message
+
+                console.print(f"[red]Error:[/red] {format_error_message(e)}")
                 sys.exit(1)
 
             try:
@@ -93,15 +98,12 @@ def register_run_command(
                 console.print(f"[green]✓[/green] Resuming session: {resume}")
                 console.print(f"  Messages: {len(transcript)}")
 
-                # Detect if this was a bundle-based or profile-based session
-                if not profile and not bundle:
-                    saved_bundle, saved_profile = extract_session_mode(metadata)
+                # Detect bundle from saved session
+                if not bundle:
+                    saved_bundle, _legacy = extract_session_mode(metadata)
                     if saved_bundle:
                         bundle = saved_bundle
                         console.print(f"  Using saved bundle: {bundle}")
-                    elif saved_profile:
-                        profile = saved_profile
-                        console.print(f"  Using saved profile: {profile}")
 
             except Exception as exc:
                 console.print(f"[red]Error loading session:[/red] {exc}")
@@ -116,13 +118,14 @@ def register_run_command(
                 if prompt is None:
                     prompt = sys.stdin.read()
                     if not prompt or not prompt.strip():
-                        console.print("[red]Error:[/red] Prompt required when resuming in single mode")
+                        console.print(
+                            "[red]Error:[/red] Prompt required when resuming in single mode"
+                        )
                         sys.exit(1)
                 mode = "single"
         else:
             transcript = None
-
-        cli_overrides = {}
+            metadata = None
 
         config_manager = create_config_manager()
 
@@ -133,91 +136,107 @@ def register_run_command(
             if isinstance(bundle_settings, dict):
                 bundle = bundle_settings.get("active")
 
-        # Check for explicit profile configuration (CLI flag or settings)
-        # Note: We intentionally don't fall back to system default yet
-        explicit_profile = profile or config_manager.get_active_profile()
-
-        # Default to foundation bundle when no explicit bundle or profile is configured
-        # This makes bundles the default for fresh installs (Phase 2 behavior)
-        if not bundle and not explicit_profile:
+        # Default to foundation bundle when no explicit bundle is configured
+        if not bundle:
             bundle = "foundation"
 
-        # Set active_profile_name only for profile-based flow (backward compatibility)
-        active_profile_name = (explicit_profile or get_system_default_profile()) if not bundle else None
+        if check_first_run() and prompt_first_run_init(console):
+            pass  # First run init completed
 
-        if check_first_run() and not profile and prompt_first_run_init(console):
-            active_profile_name = config_manager.get_active_profile() or get_system_default_profile()
+        # Agent loading is now handled via foundation's bundle.load_agent_metadata()
+        app_settings = AppSettings()
 
-        profile_loader = create_profile_loader()
-
-        # Create bundle registry if bundle is specified (either from CLI or settings),
-        # and get bundle base_path early so we can pass it to agent_loader for @mention resolution
-        bundle_registry = create_bundle_registry() if bundle else None
-        bundle_base_path = None
-        if bundle and bundle_registry:
-            try:
-                loaded = asyncio.run(bundle_registry.load(bundle))
-                # registry.load() returns Bundle | dict[str, Bundle]
-                if isinstance(loaded, dict):
-                    raise ValueError(f"Expected single bundle, got dict for '{bundle}'")
-                bundle_obj = loaded
-                bundle_base_path = bundle_obj.base_path
-            except Exception as e:
-                # Log warning; full error will be handled later in resolve_app_config
-                logger.warning("Early bundle load failed for '%s': %s", bundle, e)
-
-        # Create agent loader with appropriate mode:
-        # - Bundle mode: only load bundle agents (not profile/collection agents)
-        # - Profile mode: only load profile/collection agents (not bundle agents)
-        # Note: bundle_mappings is built from early bundle load; full source_base_paths
-        # comes later from PreparedBundle after prepare workflow completes
-        bundle_mappings = {bundle: bundle_base_path} if bundle and bundle_base_path else None
-        agent_loader = create_agent_loader(use_bundle=bool(bundle), bundle_name=bundle, bundle_mappings=bundle_mappings)
-        app_settings = AppSettings(config_manager)
-
-        # Track configuration source for display
-        # When bundle is specified, use bundle name; otherwise use profile name
-        config_source_name = f"bundle:{bundle}" if bundle else active_profile_name
-        # Invariant: either bundle is set (defaulting to "foundation") or explicit profile was configured
-        assert config_source_name is not None
+        # Track configuration source for display (always bundle mode now)
+        config_source_name = f"bundle:{bundle}"
 
         # Resolve configuration using unified function (single source of truth)
-        config_data, prepared_bundle = resolve_config(
-            bundle_name=bundle,
-            profile_override=active_profile_name,
-            config_manager=config_manager,
-            profile_loader=profile_loader,
-            agent_loader=agent_loader,
-            app_settings=app_settings,
-            cli_config=cli_overrides,
-            console=console,
-        )
+        try:
+            config_data, prepared_bundle = resolve_config(
+                bundle_name=bundle,
+                app_settings=app_settings,
+                console=console,
+            )
+        except FileNotFoundError as exc:
+            # Bundle not found - display error gracefully without traceback
+            console.print(f"[red]Error:[/red] {exc}")
+            sys.exit(1)
+        except BundleValidationError as exc:
+            # Bundle validation failed (e.g., malformed YAML, missing required fields)
+            console.print()
+            console.print(Panel(
+                str(exc),
+                title="[bold white on red] Bundle Validation Error [/bold white on red]",
+                border_style="red",
+                padding=(1, 2),
+            ))
+            sys.exit(1)
+        except BundleError as exc:
+            # General bundle error (loading, resolution, etc.)
+            console.print()
+            console.print(Panel(
+                str(exc),
+                title="[bold white on red] Bundle Error [/bold white on red]",
+                border_style="red",
+                padding=(1, 2),
+            ))
+            sys.exit(1)
 
         search_paths = get_module_search_paths()
 
-        # If a specific provider was requested, filter providers to that entry
+        # Handle provider/model CLI overrides
+        if model and not provider:
+            # Require --provider when using --model for clarity
+            console.print(
+                "[red]Error:[/red] --model requires --provider\n"
+                "Specify which provider to use: --provider anthropic --model claude-opus-4\n"
+                "Run 'amplifier provider use --help' for configuration options"
+            )
+            sys.exit(1)
+
         if provider:
-            provider_module = provider if provider.startswith("provider-") else f"provider-{provider}"
+            provider_module = (
+                provider if provider.startswith("provider-") else f"provider-{provider}"
+            )
             providers_list = config_data.get("providers", [])
 
-            matching = [
-                entry for entry in providers_list if isinstance(entry, dict) and entry.get("module") == provider_module
-            ]
+            # Find the target provider
+            target_idx = None
+            for i, entry in enumerate(providers_list):
+                if isinstance(entry, dict) and entry.get("module") == provider_module:
+                    target_idx = i
+                    break
 
-            if not matching:
-                console.print(f"[red]Error:[/red] Provider '{provider}' not available in active profile")
+            if target_idx is None:
+                console.print(
+                    f"[red]Error:[/red] Provider '{provider}' not configured\n"
+                    f"Available providers: {', '.join(p.get('module', '?').replace('provider-', '') for p in providers_list if isinstance(p, dict))}\n"
+                    f"Run 'amplifier provider use --help' for configuration options"
+                )
                 sys.exit(1)
 
-            selected_provider = {**matching[0]}
-            selected_config = dict(selected_provider.get("config") or {})
+            # Clone ALL providers (keep multi-provider setup intact)
+            updated_providers: list[dict[str, Any]] = []
+            for i, entry in enumerate(providers_list):
+                entry_copy = {**entry}
+                entry_copy["config"] = dict(entry.get("config") or {})
 
-            if model:
-                selected_config["default_model"] = model
-            if max_tokens:
-                selected_config["max_tokens"] = max_tokens
+                if i == target_idx:
+                    # Promote this provider to priority 0 (highest)
+                    entry_copy["config"]["priority"] = 0
 
-            selected_provider["config"] = selected_config
-            config_data["providers"] = [selected_provider]
+                    if model:
+                        entry_copy["config"]["default_model"] = model
+                    if max_tokens:
+                        entry_copy["config"]["max_tokens"] = max_tokens
+
+                updated_providers.append(entry_copy)
+
+            config_data["providers"] = updated_providers
+
+            # CRITICAL: Update the prepared bundle's mount plan with modified providers
+            # The bundle was already prepared with original config, we need to update it
+            if prepared_bundle and hasattr(prepared_bundle, "mount_plan"):
+                prepared_bundle.mount_plan["providers"] = updated_providers
 
             # Hint orchestrator if it supports default provider configuration
             session_cfg = config_data.setdefault("session", {})
@@ -242,29 +261,42 @@ def register_run_command(
                 meta_config = dict(orchestrator_meta.get("config") or {})
                 meta_config["default_provider"] = provider_module
                 orchestrator_meta["config"] = meta_config
-        elif model or max_tokens:
+        elif max_tokens:
+            # Allow --max-tokens without --provider (applies to priority provider)
             providers_list = config_data.get("providers", [])
             if not providers_list:
-                console.print("[yellow]Warning:[/yellow] No providers configured; ignoring CLI overrides")
+                console.print(
+                    "[yellow]Warning:[/yellow] No providers configured; ignoring --max-tokens"
+                )
             else:
-                updated_providers: list[dict[str, Any]] = []
-                override_applied = False
+                # Find provider with lowest priority number (highest precedence)
+                min_priority = float("inf")
+                target_idx = 0
+                for i, entry in enumerate(providers_list):
+                    if isinstance(entry, dict):
+                        entry_config = entry.get("config", {})
+                        priority = (
+                            entry_config.get("priority", 100)
+                            if isinstance(entry_config, dict)
+                            else 100
+                        )
+                        if priority < min_priority:
+                            min_priority = priority
+                            target_idx = i
 
-                for entry in providers_list:
-                    if not override_applied and isinstance(entry, dict) and entry.get("module"):
-                        new_entry = {**entry}
-                        merged_config = dict(new_entry.get("config") or {})
-                        if model:
-                            merged_config["default_model"] = model
-                        if max_tokens:
-                            merged_config["max_tokens"] = max_tokens
-                        new_entry["config"] = merged_config
-                        updated_providers.append(new_entry)
-                        override_applied = True
-                    else:
-                        updated_providers.append(entry)
+                updated_providers: list[dict[str, Any]] = []
+                for i, entry in enumerate(providers_list):
+                    entry_copy = {**entry}
+                    if i == target_idx:
+                        entry_copy["config"] = dict(entry.get("config") or {})
+                        entry_copy["config"]["max_tokens"] = max_tokens
+                    updated_providers.append(entry_copy)
 
                 config_data["providers"] = updated_providers
+
+                # CRITICAL: Update the prepared bundle's mount plan with modified providers
+                if prepared_bundle and hasattr(prepared_bundle, "mount_plan"):
+                    prepared_bundle.mount_plan["providers"] = updated_providers
 
         # Run update check (uses unified startup_checker with settings.yaml)
         from ..utils.startup_checker import check_and_notify
@@ -287,6 +319,7 @@ def register_run_command(
                     sys.exit(1)
                 # Display conversation history before resuming (reuse session.py's display)
                 from .session import _display_session_history
+
                 _display_session_history(transcript, metadata or {})
                 asyncio.run(
                     interactive_chat(
@@ -294,7 +327,7 @@ def register_run_command(
                         search_paths,
                         verbose,
                         session_id=resume,
-                        profile_name=config_source_name,
+                        bundle_name=config_source_name,
                         prepared_bundle=prepared_bundle,
                         initial_prompt=initial_prompt,
                         initial_transcript=transcript,
@@ -309,7 +342,7 @@ def register_run_command(
                         search_paths,
                         verbose,
                         session_id=session_id,
-                        profile_name=config_source_name,
+                        bundle_name=config_source_name,
                         prepared_bundle=prepared_bundle,
                         initial_prompt=initial_prompt,
                     )
@@ -339,7 +372,7 @@ def register_run_command(
                         search_paths,
                         verbose,
                         session_id=resume,
-                        profile_name=config_source_name,
+                        bundle_name=config_source_name,
                         output_format=output_format,
                         prepared_bundle=prepared_bundle,
                         initial_transcript=transcript,
@@ -349,7 +382,9 @@ def register_run_command(
                 # Create new session
                 session_id = str(uuid.uuid4())
                 if output_format == "text":
-                    config_summary = get_effective_config_summary(config_data, config_source_name)
+                    config_summary = get_effective_config_summary(
+                        config_data, config_source_name
+                    )
                     console.print(f"\n[dim]Session ID: {session_id}[/dim]")
                     console.print(f"[dim]{config_summary.format_banner_line()}[/dim]")
                 asyncio.run(
@@ -359,7 +394,7 @@ def register_run_command(
                         search_paths,
                         verbose,
                         session_id=session_id,
-                        profile_name=config_source_name,
+                        bundle_name=config_source_name,
                         output_format=output_format,
                         prepared_bundle=prepared_bundle,
                     )

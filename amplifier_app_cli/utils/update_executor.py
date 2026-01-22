@@ -9,10 +9,8 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
-from pathlib import Path
 
 from .source_status import CachedGitStatus
-from .source_status import CollectionStatus
 from .source_status import UpdateReport
 from .umbrella_discovery import UmbrellaInfo
 
@@ -68,7 +66,9 @@ async def execute_selective_module_update(
             # Use URL and ref from status if available
             if status.url and status.ref:
                 logger.debug(f"Updating {module_name} from {status.url}@{status.ref}")
-                await update_module(url=status.url, ref=status.ref, progress_callback=progress_callback)
+                await update_module(
+                    url=status.url, ref=status.ref, progress_callback=progress_callback
+                )
                 updated.append(f"{module_name}@{status.ref}")
                 if progress_callback:
                     progress_callback(module_name, "done")
@@ -76,7 +76,11 @@ async def execute_selective_module_update(
                 # Fallback: find module by name to get URL and ref
                 cached = find_cached_module(module_name)
                 if cached:
-                    await update_module(url=cached.url, ref=cached.ref, progress_callback=progress_callback)
+                    await update_module(
+                        url=cached.url,
+                        ref=cached.ref,
+                        progress_callback=progress_callback,
+                    )
                     updated.append(f"{module_name}@{cached.ref}")
                     if progress_callback:
                         progress_callback(module_name, "done")
@@ -97,92 +101,6 @@ async def execute_selective_module_update(
         failed=failed,
         errors=errors,
         messages=[f"Updated {len(updated)} module(s)"] if updated else [],
-    )
-
-
-# LEGACY-DELETE: execute_selective_collection_update function
-# DELETE WHEN: Profiles/collections removed in Phase 4
-async def execute_selective_collection_update(
-    collections_to_update: list[CollectionStatus],
-    progress_callback: Callable[[str, str], None] | None = None,
-) -> ExecutionResult:
-    """Selectively update only collections that have updates.
-
-    Philosophy: Only update what needs updating, consistent with module behavior.
-    Uses amplifier_collections directly for DRY compliance.
-
-    Args:
-        collections_to_update: List of CollectionStatus with has_update=True
-        progress_callback: Optional callback(collection_name, status) for progress reporting
-
-    Returns:
-        ExecutionResult with per-collection success/failure
-    """
-    import shutil
-
-    from amplifier_app_cli.lib.legacy import CollectionLock
-    from amplifier_app_cli.lib.legacy import GitSource
-    from amplifier_app_cli.lib.legacy import install_collection
-
-    from ..paths import get_collection_lock_path
-
-    if not collections_to_update:
-        return ExecutionResult(
-            success=True,
-            messages=["No collections need updating"],
-        )
-
-    # Load collection lock to find installation paths
-    lock = CollectionLock(get_collection_lock_path(local=False))
-    entries = {e.name: e for e in lock.list_entries()}
-
-    updated = []
-    failed = []
-    errors = {}
-
-    for status in collections_to_update:
-        collection_name = status.name
-        if progress_callback:
-            progress_callback(collection_name, "updating")
-
-        try:
-            # Find entry in lock file
-            entry = entries.get(collection_name)
-            if not entry:
-                failed.append(collection_name)
-                errors[collection_name] = "Not found in collection lock"
-                if progress_callback:
-                    progress_callback(collection_name, "failed")
-                continue
-
-            # Parse source and re-install
-            source = GitSource.from_uri(entry.source)
-            target_dir = Path(entry.path)
-
-            # Remove existing installation
-            if target_dir.exists():
-                shutil.rmtree(target_dir)
-
-            # Re-install
-            metadata = await install_collection(source=source, target_dir=target_dir, lock=lock)
-
-            updated.append(f"{collection_name}@{metadata.version}")
-            if progress_callback:
-                progress_callback(collection_name, "done")
-
-        except Exception as e:
-            logger.warning(f"Failed to update collection {collection_name}: {e}")
-            failed.append(collection_name)
-            errors[collection_name] = str(e)
-            if progress_callback:
-                progress_callback(collection_name, "failed")
-
-    return ExecutionResult(
-        success=len(failed) == 0,
-        updated=updated,
-        failed=failed,
-        errors=errors,
-        messages=[f"Updated {len(updated)} collection(s)"] if updated else [],
     )
 
 
@@ -224,7 +142,10 @@ async def fetch_library_git_dependencies(repo_url: str, ref: str) -> dict[str, d
             deps = {}
             for name, source_info in sources.items():
                 if isinstance(source_info, dict) and "git" in source_info:
-                    deps[name] = {"url": source_info["git"], "branch": source_info.get("branch", "main")}
+                    deps[name] = {
+                        "url": source_info["git"],
+                        "branch": source_info.get("branch", "main"),
+                    }
 
             logger.debug(f"Found {len(deps)} git dependencies in {repo_name}")
             return deps
@@ -238,7 +159,7 @@ async def check_umbrella_dependencies_for_updates(umbrella_info: UmbrellaInfo) -
     """Check if any dependencies (recursively) have updates.
 
     Checks umbrella dependencies AND their transitive git dependencies.
-    For example: umbrella → amplifier-app-cli → amplifier-profiles
+    For example: umbrella → amplifier-app-cli → amplifier-foundation
 
     Args:
         umbrella_info: Discovered umbrella source info
@@ -270,14 +191,20 @@ async def check_umbrella_dependencies_for_updates(umbrella_info: UmbrellaInfo) -
                 checked.add(dep_name)
 
                 # Fetch this dependency's git dependencies
-                transitive_deps = await fetch_library_git_dependencies(dep_info["url"], dep_info["branch"])
+                transitive_deps = await fetch_library_git_dependencies(
+                    dep_info["url"], dep_info["branch"]
+                )
 
                 for trans_name, trans_info in transitive_deps.items():
                     if trans_name not in all_deps:
                         all_deps[trans_name] = trans_info
-                        logger.debug(f"Found transitive dependency: {trans_name} (via {dep_name})")
+                        logger.debug(
+                            f"Found transitive dependency: {trans_name} (via {dep_name})"
+                        )
 
-            logger.debug(f"Checking {len(all_deps)} dependencies (including transitive) for updates")
+            logger.debug(
+                f"Checking {len(all_deps)} dependencies (including transitive) for updates"
+            )
 
             # Step 3: Check each dependency for updates
             for dep_name, dep_info in all_deps.items():
@@ -306,11 +233,15 @@ async def check_umbrella_dependencies_for_updates(umbrella_info: UmbrellaInfo) -
                         continue
 
                     # Get remote SHA
-                    remote_sha = await _get_github_commit_sha(client, dep_info["url"], dep_info["branch"])
+                    remote_sha = await _get_github_commit_sha(
+                        client, dep_info["url"], dep_info["branch"]
+                    )
 
                     # Compare
                     if installed_sha != remote_sha:
-                        logger.info(f"Dependency {dep_name} has updates: {installed_sha[:7]} → {remote_sha[:7]}")
+                        logger.info(
+                            f"Dependency {dep_name} has updates: {installed_sha[:7]} → {remote_sha[:7]}"
+                        )
                         return True
 
                 except Exception as e:
@@ -366,7 +297,9 @@ async def execute_self_update(umbrella_info: UmbrellaInfo) -> ExecutionResult:
             success=False,
             failed=["amplifier"],
             errors={"amplifier": "uv not found"},
-            messages=["uv not found. Install: curl -LsSf https://astral.sh/uv/install.sh | sh"],
+            messages=[
+                "uv not found. Install: curl -LsSf https://astral.sh/uv/install.sh | sh"
+            ],
         )
     except Exception as e:
         return ExecutionResult(
@@ -377,7 +310,9 @@ async def execute_self_update(umbrella_info: UmbrellaInfo) -> ExecutionResult:
         )
 
 
-async def execute_updates(report: UpdateReport, umbrella_info: UmbrellaInfo | None = None) -> ExecutionResult:
+async def execute_updates(
+    report: UpdateReport, umbrella_info: UmbrellaInfo | None = None
+) -> ExecutionResult:
     """Orchestrate all updates based on report.
 
     Philosophy: Sequential execution (modules first, then self) for safety.
@@ -406,21 +341,7 @@ async def execute_updates(report: UpdateReport, umbrella_info: UmbrellaInfo | No
         if not result.success:
             overall_success = False
 
-    # 2. Execute selective collection update (only collections with updates)
-    collections_needing_update = [s for s in report.collection_sources if s.has_update]
-    if collections_needing_update:
-        logger.info(f"Selectively updating {len(collections_needing_update)} collection(s)...")
-        result = await execute_selective_collection_update(collections_needing_update)
-
-        all_updated.extend(result.updated)
-        all_failed.extend(result.failed)
-        all_messages.extend(result.messages)
-        all_errors.update(result.errors)
-
-        if not result.success:
-            overall_success = False
-
-    # 3. Execute self-update if umbrella_info provided (already checked by caller)
+    # 2. Execute self-update if umbrella_info provided (already checked by caller)
     if umbrella_info:
         logger.info("Updating Amplifier (umbrella dependencies have updates)...")
         result = await execute_self_update(umbrella_info)

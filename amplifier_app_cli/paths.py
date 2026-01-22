@@ -6,22 +6,27 @@ Libraries receive paths via injection; this module provides the CLI's choices.
 
 from pathlib import Path
 from typing import TYPE_CHECKING
+from typing import Any
 from typing import Literal
 
 from amplifier_foundation import BundleRegistry
 
-from amplifier_app_cli.lib.legacy import CollectionResolver
-from amplifier_app_cli.lib.legacy import ConfigManager
-from amplifier_app_cli.lib.legacy import ConfigPaths
-from amplifier_app_cli.lib.legacy import ProfileLoader
-from amplifier_app_cli.lib.legacy import Scope
-from amplifier_app_cli.lib.legacy import StandardModuleSourceResolver
+from amplifier_app_cli.lib.config_compat import ConfigManager
+from amplifier_app_cli.lib.config_compat import ConfigPaths
+from amplifier_app_cli.lib.config_compat import Scope
+
+# LEGACY: These imports are no longer available - bundles are the only supported mode
+# CollectionResolver, ProfileLoader, StandardModuleSourceResolver, AgentLoader are removed
+# Functions that used these will raise NotImplementedError
+StandardModuleSourceResolver = None  # type: ignore[assignment,misc]
 
 if TYPE_CHECKING:
     from amplifier_core import AmplifierSession
 
     from amplifier_app_cli.lib.bundle_loader.resolvers import FoundationSettingsResolver
-    from amplifier_app_cli.lib.legacy import AgentLoader
+
+    # AgentLoader type hint only - runtime usage will fail
+    AgentLoader = Any  # type: ignore[assignment,misc]
 
 # Type alias for scope names used in CLI
 ScopeType = Literal["local", "project", "global"]
@@ -33,10 +38,16 @@ _SCOPE_MAP: dict[ScopeType, Scope] = {
     "global": Scope.USER,
 }
 
+# Type alias for scope checker - accepts ConfigManager or AppSettings
+# Both have is_scope_available() but with different parameter types
+ScopeChecker = Any  # ConfigManager | AppSettings - duck typed
+
 # ===== COMMON PATH HELPERS =====
 
 
-def _get_user_and_project_paths(resource_type: str, *, check_exists: bool = True) -> list[Path]:
+def _get_user_and_project_paths(
+    resource_type: str, *, check_exists: bool = True
+) -> list[Path]:
     """Get project and user paths for a resource type.
 
     This is a DRY helper that extracts the common pattern of:
@@ -44,7 +55,7 @@ def _get_user_and_project_paths(resource_type: str, *, check_exists: bool = True
     2. Check user ~/.amplifier/<resource_type>/
 
     Args:
-        resource_type: The subdirectory name (e.g., "profiles", "bundles", "agents")
+        resource_type: The subdirectory name (e.g., "bundles", "agents")
         check_exists: If True, only include paths that exist. If False, include all.
 
     Returns:
@@ -123,7 +134,7 @@ class ScopeNotAvailableError(Exception):
 
 def validate_scope_for_write(
     scope: ScopeType,
-    config: ConfigManager,
+    config: "ScopeChecker",
     *,
     allow_fallback: bool = False,
 ) -> ScopeType:
@@ -131,7 +142,7 @@ def validate_scope_for_write(
 
     Args:
         scope: The requested scope ("local", "project", or "global")
-        config: ConfigManager instance to check
+        config: ConfigManager or AppSettings instance to check (implements ScopeChecker)
         allow_fallback: If True, fall back to "global" when scope unavailable
 
     Returns:
@@ -140,9 +151,18 @@ def validate_scope_for_write(
     Raises:
         ScopeNotAvailableError: If scope is not available and fallback not allowed
     """
-    scope_enum = _SCOPE_MAP[scope]
+    # Check scope availability - works with both ConfigManager (Scope enum) and AppSettings (string)
+    # ConfigManager.is_scope_available takes Scope enum
+    # AppSettings.is_scope_available takes string scope
+    is_available = False
+    if isinstance(config, ConfigManager):
+        scope_enum = _SCOPE_MAP[scope]
+        is_available = config.is_scope_available(scope_enum)
+    else:
+        # AppSettings or other ScopeChecker - uses string scope
+        is_available = config.is_scope_available(scope)  # type: ignore[arg-type]
 
-    if config.is_scope_available(scope_enum):
+    if is_available:
         return scope
 
     # Scope not available - running from home directory
@@ -167,7 +187,7 @@ def validate_scope_for_write(
 
 def get_effective_scope(
     requested_scope: ScopeType | None,
-    config: ConfigManager,
+    config: "ScopeChecker",
     *,
     default_scope: ScopeType = "local",
 ) -> tuple[ScopeType, bool]:
@@ -178,7 +198,7 @@ def get_effective_scope(
 
     Args:
         requested_scope: Explicitly requested scope, or None for default
-        config: ConfigManager instance to check
+        config: ConfigManager or AppSettings instance to check (implements ScopeChecker)
         default_scope: Default scope when none requested
 
     Returns:
@@ -191,101 +211,14 @@ def get_effective_scope(
     """
     if requested_scope is not None:
         # User explicitly requested a scope - validate without fallback
-        return validate_scope_for_write(requested_scope, config, allow_fallback=False), False
+        return validate_scope_for_write(
+            requested_scope, config, allow_fallback=False
+        ), False
 
     # No explicit request - use default with fallback
     effective = validate_scope_for_write(default_scope, config, allow_fallback=True)
     was_fallback = effective != default_scope
     return effective, was_fallback
-
-
-# ===== COLLECTION PATHS =====
-# LEGACY-DELETE: This entire section (get_collection_search_paths, get_collection_lock_path)
-# DELETE WHEN: Profiles/collections removed in Phase 4
-
-
-def get_collection_search_paths() -> list[Path]:
-    """Get CLI-specific collection search paths (APP LAYER POLICY).
-
-    Search order (highest precedence first):
-    1. Project collections (.amplifier/collections/)
-    2. User collections (~/.amplifier/collections/)
-    3. Bundled collections (package data)
-
-    Returns:
-        List of paths to search for collections
-    """
-    package_dir = Path(__file__).parent
-    bundled = package_dir / "data" / "collections"
-
-    return [
-        Path.cwd() / ".amplifier" / "collections",  # Project (highest)
-        Path.home() / ".amplifier" / "collections",  # User
-        bundled,  # Bundled (lowest)
-    ]
-
-
-def get_collection_lock_path(local: bool = False) -> Path:
-    """Get CLI-specific collection lock path (APP LAYER POLICY).
-
-    Args:
-        local: If True, use project lock; if False, use user lock
-
-    Returns:
-        Path to collection lock file
-    """
-    if local:
-        return Path(".amplifier") / "collections.lock"
-    return Path.home() / ".amplifier" / "collections.lock"
-
-
-# ===== PROFILE PATHS =====
-# LEGACY-DELETE: This entire section (get_profile_search_paths)
-# DELETE WHEN: Profiles/collections removed in Phase 4
-
-
-def get_profile_search_paths() -> list[Path]:
-    """Get CLI-specific profile search paths using library mechanisms (DRY).
-
-    Per RUTHLESS_SIMPLICITY: Use library, don't duplicate logic.
-    Per DRY: CollectionResolver + discover_collection_resources are single source.
-
-    Search order (highest precedence first):
-    1. Project profiles (.amplifier/profiles/)
-    2. User profiles (~/.amplifier/profiles/)
-    3. Collection profiles (via CollectionResolver - DRY!)
-    4. Bundled profiles (package data)
-
-    Returns:
-        List of paths to search for profiles
-    """
-    from amplifier_app_cli.lib.legacy import discover_collection_resources
-
-    package_dir = Path(__file__).parent
-
-    # Project and user paths (highest precedence)
-    paths = _get_user_and_project_paths("profiles")
-
-    # Collection profiles (USE LIBRARY MECHANISMS - DRY!)
-    # This replaces manual iteration with library mechanism
-    resolver = create_collection_resolver()
-    for _metadata_name, collection_path in resolver.list_collections():
-        # Use library's resource discovery (handles ALL structures: flat, nested, hybrid)
-        resources = discover_collection_resources(collection_path)
-
-        if resources.profiles:
-            # All profiles are in same directory per convention
-            # Add the parent directory of first profile
-            profile_dir = resources.profiles[0].parent
-            if profile_dir not in paths:
-                paths.append(profile_dir)
-
-    # Bundled profiles
-    bundled_profiles = package_dir / "data" / "profiles"
-    if bundled_profiles.exists():
-        paths.append(bundled_profiles)
-
-    return paths
 
 
 # ===== MODULE RESOLUTION PATHS =====
@@ -310,59 +243,6 @@ def create_config_manager() -> ConfigManager:
         ConfigManager with CLI path policy injected
     """
     return ConfigManager(paths=get_cli_config_paths())
-
-
-# LEGACY-DELETE: create_collection_resolver function
-# DELETE WHEN: Profiles/collections removed in Phase 4
-def create_collection_resolver() -> CollectionResolver:
-    """Create CLI-configured collection resolver with source provider.
-
-    Returns:
-        CollectionResolver with CLI search paths and source provider injected
-    """
-    config = create_config_manager()
-
-    # CLI implements CollectionSourceProvider protocol
-    class CLICollectionSourceProvider:
-        """CLI implementation of CollectionSourceProvider.
-
-        Provides collection source overrides from CLI settings (3-scope system).
-        """
-
-        def get_collection_source(self, collection_name: str) -> str | None:
-            """Get collection source override from CLI settings."""
-            return config.get_collection_sources().get(collection_name)
-
-    # pyright: ignore[reportCallIssue] - source_provider param exists, pyright can't resolve from editable install
-    return CollectionResolver(
-        search_paths=get_collection_search_paths(),
-        source_provider=CLICollectionSourceProvider(),  # type: ignore[call-arg]
-    )
-
-
-# LEGACY-DELETE: create_profile_loader function
-# DELETE WHEN: Profiles/collections removed in Phase 4
-def create_profile_loader(
-    collection_resolver: CollectionResolver | None = None,
-) -> ProfileLoader:
-    """Create CLI-configured profile loader with dependencies.
-
-    Args:
-        collection_resolver: Optional collection resolver (creates one if not provided)
-
-    Returns:
-        ProfileLoader with CLI paths and protocols injected
-    """
-    if collection_resolver is None:
-        collection_resolver = create_collection_resolver()
-
-    from .lib.mention_loading import MentionLoader
-
-    return ProfileLoader(
-        search_paths=get_profile_search_paths(),
-        collection_resolver=collection_resolver,
-        mention_loader=MentionLoader(),  # CLI mention loader with default resolver
-    )
 
 
 def get_bundle_search_paths() -> list[Path]:
@@ -403,8 +283,7 @@ def create_bundle_registry(
     Well-known bundles (e.g., "foundation") are automatically registered,
     allowing plain names like "foundation" to resolve correctly.
 
-    Per DESIGN PHILOSOPHY: Bundles have independent code paths optimized for
-    their longer term future, with no coupling to profiles/collections.
+    Per DESIGN PHILOSOPHY: Bundles are the only supported configuration mode.
 
     Args:
         home: Home directory for registry state and cache (default: AMPLIFIER_HOME).
@@ -488,7 +367,7 @@ async def create_session_from_bundle(
 def get_agent_search_paths_for_bundle(bundle_name: str | None = None) -> list[Path]:
     """Get agent search paths when using BUNDLE mode.
 
-    Only includes bundle-specific agents, NOT profile/collection agents.
+    Only includes bundle-specific agents.
     This ensures clean separation: bundles use bundle stuff only.
 
     Search order (highest precedence first):
@@ -508,7 +387,7 @@ def get_agent_search_paths_for_bundle(bundle_name: str | None = None) -> list[Pa
     # Project and user paths (highest precedence) - user's own agents always included
     paths = _get_user_and_project_paths("agents")
 
-    # Bundle agents only (NO collections)
+    # Bundle agents only
     bundle_discovery = AppBundleDiscovery()
 
     if bundle_name:
@@ -536,194 +415,25 @@ def get_agent_search_paths_for_bundle(bundle_name: str | None = None) -> list[Pa
     return paths
 
 
-# LEGACY-DELETE: get_agent_search_paths_for_profile function
-# DELETE WHEN: Profiles/collections removed in Phase 4
-def get_agent_search_paths_for_profile() -> list[Path]:
-    """Get agent search paths when using PROFILE mode.
-
-    Only includes profile/collection agents, NOT bundle agents.
-    This ensures clean separation: profiles use profile/collection stuff only.
-
-    Search order (highest precedence first):
-    1. Project agents (.amplifier/agents/)
-    2. User agents (~/.amplifier/agents/)
-    3. Collection agents (via CollectionResolver)
-    4. Bundled agents (package data)
-
-    Returns:
-        List of paths to search for agents (profile/collection sources only)
-    """
-    from amplifier_app_cli.lib.legacy import discover_collection_resources
-
-    # Project and user paths (highest precedence)
-    paths = _get_user_and_project_paths("agents")
-
-    # Collection agents only (NO bundles)
-    resolver = create_collection_resolver()
-    for _metadata_name, collection_path in resolver.list_collections():
-        resources = discover_collection_resources(collection_path)
-
-        if resources.agents:
-            agent_dir = resources.agents[0].parent
-            if agent_dir not in paths:
-                paths.append(agent_dir)
-
-    return paths
-
-
-def get_agent_search_paths(use_bundle: bool = False, bundle_name: str | None = None) -> list[Path]:
-    """Get CLI-specific agent search paths based on mode.
+def get_agent_search_paths(bundle_name: str | None = None) -> list[Path]:
+    """Get CLI-specific agent search paths.
 
     Args:
-        use_bundle: If True, use bundle-only paths. If False, use profile/collection paths.
-        bundle_name: Optional specific bundle name when use_bundle=True
+        bundle_name: Optional specific bundle name to load agents from
 
     Returns:
         List of paths to search for agents
     """
-    if use_bundle:
-        return get_agent_search_paths_for_bundle(bundle_name)
-    return get_agent_search_paths_for_profile()
+    return get_agent_search_paths_for_bundle(bundle_name)
 
 
-def create_agent_loader(
-    collection_resolver: CollectionResolver | None = None,
-    *,
-    use_bundle: bool = False,
-    bundle_name: str | None = None,
-    bundle_mappings: dict[str, Path] | None = None,
-) -> "AgentLoader":
-    """Create CLI-configured agent loader with dependencies.
-
-    Args:
-        collection_resolver: Optional collection resolver (creates one if not provided)
-        use_bundle: If True, load only bundle agents (not profile/collection agents)
-        bundle_name: Specific bundle to load agents from (when use_bundle=True)
-        bundle_mappings: Dict mapping bundle namespace to base_path for @mention resolution.
-            Populated from bundle.source_base_paths after composition.
-
-    Returns:
-        AgentLoader with CLI paths and protocols injected
-    """
-    if collection_resolver is None:
-        collection_resolver = create_collection_resolver()
-
-    from .lib.legacy import AgentLoader
-    from .lib.legacy import AgentResolver
-    from .lib.mention_loading import AppMentionResolver
-    from .lib.mention_loading import MentionLoader
-
-    resolver = AgentResolver(
-        search_paths=get_agent_search_paths(use_bundle=use_bundle, bundle_name=bundle_name),
-        collection_resolver=collection_resolver,
-    )
-
-    # Create AppMentionResolver with bundle mappings for composed bundle @mentions
-    # enable_collections=True since this is profile mode
-    mention_resolver = AppMentionResolver(
-        bundle_mappings=bundle_mappings,
-        enable_collections=True,
-    )
-
-    return AgentLoader(
-        resolver=resolver,
-        mention_loader=MentionLoader(resolver=mention_resolver),
-    )
-
-
-def create_module_resolver() -> StandardModuleSourceResolver:
-    """Create CLI-configured module resolver with settings and collection providers.
-
-    Returns:
-        StandardModuleSourceResolver with CLI providers injected
-    """
-    config = create_config_manager()
-
-    # CLI implements SettingsProviderProtocol
-    class CLISettingsProvider:
-        """CLI implementation of SettingsProviderProtocol."""
-
-        def get_module_sources(self) -> dict[str, str]:
-            """Get all module sources from CLI settings.
-
-            Merges sources from multiple locations:
-            1. settings.sources (explicit source overrides)
-            2. settings.modules.providers[] (registered provider modules)
-            3. settings.modules.tools[] (registered tool modules)
-            4. settings.modules.hooks[] (registered hook modules)
-
-            Module-specific sources take precedence over explicit overrides
-            to ensure user-added modules are properly resolved.
-            """
-            # Start with explicit source overrides
-            sources = dict(config.get_module_sources())
-
-            # Extract sources from registered modules (modules.providers[], modules.tools[], etc.)
-            merged = config.get_merged_settings()
-            modules_section = merged.get("modules", {})
-
-            # Check each module type category
-            for category in ["providers", "tools", "hooks", "orchestrators", "contexts"]:
-                module_list = modules_section.get(category, [])
-                if isinstance(module_list, list):
-                    for entry in module_list:
-                        if isinstance(entry, dict):
-                            module_id = entry.get("module")
-                            source = entry.get("source")
-                            if module_id and source:
-                                # Module-specific sources override explicit overrides
-                                sources[module_id] = source
-
-            return sources
-
-        def get_module_source(self, module_id: str) -> str | None:
-            """Get module source from CLI settings."""
-            return self.get_module_sources().get(module_id)
-
-    # LEGACY-DELETE: CLICollectionModuleProvider class (entire class and collection_provider usage)
-    # DELETE WHEN: Profiles/collections removed in Phase 4
-    # CLI implements CollectionModuleProviderProtocol
-    class CLICollectionModuleProvider:
-        """CLI implementation of CollectionModuleProviderProtocol.
-
-        Uses filesystem discovery (same as profiles/agents) for consistency.
-        Lock file tracks metadata (source URLs, SHAs) for updates, not existence.
-        """
-
-        def get_collection_modules(self) -> dict[str, str]:
-            """Get module_id -> absolute_path from installed collections.
-
-            Uses filesystem discovery via CollectionResolver - same pattern as
-            profile/agent discovery for consistency across all resource types.
-            """
-            from amplifier_app_cli.lib.legacy import discover_collection_resources
-
-            resolver = create_collection_resolver()
-            modules = {}
-
-            for _metadata_name, collection_path in resolver.list_collections():
-                resources = discover_collection_resources(collection_path)
-
-                for module_path in resources.modules:
-                    # Module name is the directory name
-                    module_name = module_path.name
-                    modules[module_name] = str(module_path)
-
-            return modules
-
-    # pyright: ignore[reportCallIssue] - collection_provider param exists, pyright can't resolve from editable install
-    return StandardModuleSourceResolver(
-        settings_provider=CLISettingsProvider(),
-        collection_provider=CLICollectionModuleProvider(),  # type: ignore[call-arg]
-        workspace_dir=get_workspace_dir(),
-    )
 
 
 def create_foundation_resolver() -> "FoundationSettingsResolver":
-    """Create CLI-configured foundation resolver with settings and collection providers.
+    """Create CLI-configured foundation resolver with settings providers.
 
     This resolver uses foundation's source handlers which create the NEW cache format:
-    {repo-name}-{hash}/ instead of legacy {hash}/{ref}/ format.
+    {repo-name}-{hash}/ format.
 
     Returns:
         FoundationSettingsResolver with CLI providers injected
@@ -756,7 +466,13 @@ def create_foundation_resolver() -> "FoundationSettingsResolver":
             modules_section = merged.get("modules", {})
 
             # Check each module type category
-            for category in ["providers", "tools", "hooks", "orchestrators", "contexts"]:
+            for category in [
+                "providers",
+                "tools",
+                "hooks",
+                "orchestrators",
+                "contexts",
+            ]:
                 module_list = modules_section.get(category, [])
                 if isinstance(module_list, list):
                     for entry in module_list:
@@ -773,37 +489,8 @@ def create_foundation_resolver() -> "FoundationSettingsResolver":
             """Get module source from CLI settings."""
             return self.get_module_sources().get(module_id)
 
-    # CLI implements CollectionModuleProviderProtocol
-    class CLICollectionModuleProvider:
-        """CLI implementation of CollectionModuleProviderProtocol.
-
-        Uses filesystem discovery (same as profiles/agents) for consistency.
-        Lock file tracks metadata (source URLs, SHAs) for updates, not existence.
-        """
-
-        def get_collection_modules(self) -> dict[str, str]:
-            """Get module_id -> absolute_path from installed collections.
-
-            Uses filesystem discovery via CollectionResolver - same pattern as
-            profile/agent discovery for consistency across all resource types.
-            """
-            from amplifier_app_cli.lib.legacy import discover_collection_resources
-
-            resolver = create_collection_resolver()
-            modules = {}
-
-            for _metadata_name, collection_path in resolver.list_collections():
-                resources = discover_collection_resources(collection_path)
-
-                for module_path in resources.modules:
-                    # Module name is the directory name
-                    module_name = module_path.name
-                    modules[module_name] = str(module_path)
-
-            return modules
 
     return FoundationSettingsResolver(
         settings_provider=CLISettingsProvider(),
-        collection_provider=CLICollectionModuleProvider(),
         workspace_dir=get_workspace_dir(),
     )

@@ -1,8 +1,8 @@
-"""Source override commands - unified for modules and collections.
+"""Source override commands - unified for modules.
 
-Auto-detects whether identifier is a module or collection:
+Auto-detects whether identifier is a module or bundle:
 - Module: Has amplifier.modules entry point or name matches amplifier-module-*
-- Collection: Has profiles/, agents/, context/, scenario-tools/, or modules/ directories
+- Bundle: Has agents/, context/, skills/, or modules/ directories
 
 Per IMPLEMENTATION_PHILOSOPHY:
 - Ruthless simplicity: Single unified command, not separate hierarchies
@@ -20,17 +20,17 @@ import click
 from rich.table import Table
 
 from ..console import console
+from ..lib.settings import AppSettings
 from ..paths import ScopeNotAvailableError
 from ..paths import ScopeType
-from ..paths import create_config_manager
-from ..paths import create_module_resolver
+from ..paths import create_foundation_resolver
 from ..paths import get_effective_scope
 from ..provider_sources import DEFAULT_PROVIDER_SOURCES
 from ..provider_sources import is_local_path
 
 
 def _is_module_path(path: Path) -> bool:
-    """Check if path looks like a module (not a collection).
+    """Check if path looks like a module.
 
     Module indicators:
     - Has amplifier.modules entry point in pyproject.toml
@@ -58,30 +58,30 @@ def _is_module_path(path: Path) -> bool:
     return path.name.startswith("amplifier-module-")
 
 
-def _is_collection_path(path: Path) -> bool:
-    """Check if path looks like a collection.
+def _is_bundle_path(path: Path) -> bool:
+    """Check if path looks like a bundle.
 
-    Collection indicators:
-    - Has profiles/, agents/, context/, scenario-tools/, or modules/ directories
+    Bundle indicators:
+    - Has agents/, context/, skills/, or modules/ directories
     - Does NOT have amplifier.modules entry point
 
     Args:
         path: Path to check
 
     Returns:
-        True if path looks like a collection, False otherwise
+        True if path looks like a bundle, False otherwise
     """
     # First, exclude modules
     if _is_module_path(path):
         return False
 
-    # Check for collection resource directories
-    collection_dirs = ["profiles", "agents", "context", "scenario-tools", "modules"]
-    return any((path / dirname).is_dir() for dirname in collection_dirs)
+    # Check for bundle resource directories
+    bundle_dirs = ["agents", "context", "skills", "modules"]
+    return any((path / dirname).is_dir() for dirname in bundle_dirs)
 
 
 def _detect_source_type(identifier: str, source_uri: str) -> str:
-    """Detect whether identifier/source is a module or collection.
+    """Detect whether identifier/source is a module or bundle.
 
     Detection strategy:
     1. If source_uri is a local path, inspect directory structure
@@ -89,11 +89,11 @@ def _detect_source_type(identifier: str, source_uri: str) -> str:
     3. Check existing overrides to see if already configured
 
     Args:
-        identifier: Module ID or collection name
+        identifier: Module ID or bundle name
         source_uri: Source path or URI
 
     Returns:
-        'module' or 'collection'
+        'module' or 'bundle'
     """
     # Try to inspect source path if it's local
     source_path = Path(source_uri).expanduser()
@@ -103,8 +103,8 @@ def _detect_source_type(identifier: str, source_uri: str) -> str:
     if source_path.exists() and source_path.is_dir():
         if _is_module_path(source_path):
             return "module"
-        if _is_collection_path(source_path):
-            return "collection"
+        if _is_bundle_path(source_path):
+            return "bundle"
 
     # Fall back to identifier naming conventions
     if (
@@ -117,16 +117,16 @@ def _detect_source_type(identifier: str, source_uri: str) -> str:
     ):
         return "module"
 
-    # Default to collection (collections are more common in user space)
-    return "collection"
+    # Default to bundle (bundles are more common in user space)
+    return "bundle"
 
 
 @click.group(invoke_without_command=True)
 @click.pass_context
 def source(ctx: click.Context):
-    """Manage source overrides for modules and collections.
+    """Manage source overrides for modules.
 
-    Automatically detects whether the identifier is a module or collection
+    Automatically detects whether the identifier is a module or bundle
     based on directory structure and naming conventions.
 
     Examples:
@@ -136,12 +136,12 @@ def source(ctx: click.Context):
         amplifier source add provider-anthropic ~/dev/provider-anthropic
 
         \b
-        # Add collection source override
+        # Add bundle source override
         amplifier source add foundation ~/dev/foundation
 
         \b
         # Force type if auto-detect is wrong
-        amplifier source add my-thing ~/dev/my-thing --collection
+        amplifier source add my-thing ~/dev/my-thing --bundle
     """
     if ctx.invoked_subcommand is None:
         click.echo("\n" + ctx.get_help())
@@ -152,28 +152,49 @@ def source(ctx: click.Context):
 @click.argument("identifier")
 @click.argument("source_uri")
 @click.option(
-    "--local", "scope_flag", flag_value="local", help="Store in local settings (.amplifier/settings.local.yaml)"
+    "--local",
+    "scope_flag",
+    flag_value="local",
+    help="Store in local settings (.amplifier/settings.local.yaml)",
 )
 @click.option(
-    "--project", "scope_flag", flag_value="project", help="Store in project settings (.amplifier/settings.yaml)"
+    "--project",
+    "scope_flag",
+    flag_value="project",
+    help="Store in project settings (.amplifier/settings.yaml)",
 )
-@click.option("--global", "scope_flag", flag_value="global", help="Store in user settings (~/.amplifier/settings.yaml)")
-@click.option("--module", "force_module", is_flag=True, help="Force treating as module (skip auto-detect)")
-@click.option("--collection", "force_collection", is_flag=True, help="Force treating as collection (skip auto-detect)")
+@click.option(
+    "--global",
+    "scope_flag",
+    flag_value="global",
+    help="Store in user settings (~/.amplifier/settings.yaml)",
+)
+@click.option(
+    "--module",
+    "force_module",
+    is_flag=True,
+    help="Force treating as module (skip auto-detect)",
+)
+@click.option(
+    "--bundle",
+    "force_bundle",
+    is_flag=True,
+    help="Force treating as bundle (skip auto-detect)",
+)
 def source_add(
     identifier: str,
     source_uri: str,
     scope_flag: str | None,
     force_module: bool,
-    force_collection: bool,
+    force_bundle: bool,
 ):
-    """Add a source override for a module or collection.
+    """Add a source override for a module or bundle.
 
-    IDENTIFIER is the module ID or collection name.
+    IDENTIFIER is the module ID or bundle name.
     SOURCE_URI is the local path or git URL to use.
 
-    Auto-detects whether identifier is a module or collection.
-    Use --module or --collection flags to override auto-detection.
+    Auto-detects whether identifier is a module or bundle.
+    Use --module or --bundle flags to override auto-detection.
 
     Examples:
 
@@ -182,35 +203,33 @@ def source_add(
         amplifier source add provider-anthropic ~/dev/provider-anthropic
 
         \b
-        # Collection source override (auto-detected)
+        # Bundle source override (auto-detected)
         amplifier source add foundation ~/dev/foundation
 
         \b
-        # Force collection type
-        amplifier source add my-bundle ~/dev/my-bundle --collection
+        # Force bundle type
+        amplifier source add my-bundle ~/dev/my-bundle --bundle
     """
-    from amplifier_app_cli.lib.legacy import Scope
-
     # Handle conflicting flags
-    if force_module and force_collection:
-        console.print("[red]Cannot specify both --module and --collection[/red]")
+    if force_module and force_bundle:
+        console.print("[red]Cannot specify both --module and --bundle[/red]")
         raise click.Abort()
 
     # Determine type
     if force_module:
         source_type = "module"
-    elif force_collection:
-        source_type = "collection"
+    elif force_bundle:
+        source_type = "bundle"
     else:
         source_type = _detect_source_type(identifier, source_uri)
 
-    config_manager = create_config_manager()
+    app_settings = AppSettings()
 
     # Determine scope with validation (defaults to global when running from home)
     try:
         scope, was_fallback = get_effective_scope(
             cast(ScopeType, scope_flag) if scope_flag else None,
-            config_manager,
+            app_settings,
             default_scope="global",
         )
         if was_fallback:
@@ -221,19 +240,19 @@ def source_add(
         console.print(f"[red]Error:[/red] {e.message}")
         return
 
-    scope_enum = {"local": Scope.LOCAL, "project": Scope.PROJECT, "global": Scope.USER}[scope]
-
     if source_type == "module":
-        config_manager.add_source_override(identifier, source_uri, scope=scope_enum)
+        app_settings.add_source_override(identifier, source_uri, scope=scope)
     else:
-        config_manager.add_collection_source_override(identifier, source_uri, scope=scope_enum)  # pyright: ignore[reportAttributeAccessIssue]
+        app_settings.add_bundle_source_override(identifier, source_uri, scope=scope)
 
     scope_labels = {
         "local": "local (.amplifier/settings.local.yaml)",
         "project": "project (.amplifier/settings.yaml)",
         "global": "global (~/.amplifier/settings.yaml)",
     }
-    console.print(f"[green]✓ Added {source_type} source override for {identifier}[/green]")
+    console.print(
+        f"[green]✓ Added {source_type} source override for {identifier}[/green]"
+    )
     console.print(f"  Source: {source_uri}")
     console.print(f"  Scope: {scope_labels[scope]}")
 
@@ -241,28 +260,47 @@ def source_add(
 @source.command("remove")
 @click.argument("identifier")
 @click.option(
-    "--local", "scope_flag", flag_value="local", help="Remove from local settings (.amplifier/settings.local.yaml)"
+    "--local",
+    "scope_flag",
+    flag_value="local",
+    help="Remove from local settings (.amplifier/settings.local.yaml)",
 )
 @click.option(
-    "--project", "scope_flag", flag_value="project", help="Remove from project settings (.amplifier/settings.yaml)"
+    "--project",
+    "scope_flag",
+    flag_value="project",
+    help="Remove from project settings (.amplifier/settings.yaml)",
 )
 @click.option(
-    "--global", "scope_flag", flag_value="global", help="Remove from user settings (~/.amplifier/settings.yaml)"
+    "--global",
+    "scope_flag",
+    flag_value="global",
+    help="Remove from user settings (~/.amplifier/settings.yaml)",
 )
-@click.option("--module", "force_module", is_flag=True, help="Force treating as module (skip auto-detect)")
-@click.option("--collection", "force_collection", is_flag=True, help="Force treating as collection (skip auto-detect)")
+@click.option(
+    "--module",
+    "force_module",
+    is_flag=True,
+    help="Force treating as module (skip auto-detect)",
+)
+@click.option(
+    "--bundle",
+    "force_bundle",
+    is_flag=True,
+    help="Force treating as bundle (skip auto-detect)",
+)
 def source_remove(
     identifier: str,
     scope_flag: str | None,
     force_module: bool,
-    force_collection: bool,
+    force_bundle: bool,
 ):
-    """Remove a source override for a module or collection.
+    """Remove a source override for a module or bundle.
 
-    IDENTIFIER is the module ID or collection name to remove.
+    IDENTIFIER is the module ID or bundle name to remove.
 
-    Tries to remove from both module and collection overrides by default.
-    Use --module or --collection flags to target specifically.
+    Tries to remove from both module and bundle overrides by default.
+    Use --module or --bundle flags to target specifically.
 
     Also cleans up any provider config entries that use a local source path
     for this module, replacing them with the default git source.
@@ -277,20 +315,18 @@ def source_remove(
         # Remove global override
         amplifier source remove foundation --global
     """
-    from amplifier_app_cli.lib.legacy import Scope
-
     # Handle conflicting flags
-    if force_module and force_collection:
-        console.print("[red]Cannot specify both --module and --collection[/red]")
+    if force_module and force_bundle:
+        console.print("[red]Cannot specify both --module and --bundle[/red]")
         raise click.Abort()
 
-    config_manager = create_config_manager()
+    app_settings = AppSettings()
 
     # Determine scope with validation (defaults to global when running from home)
     try:
         scope, was_fallback = get_effective_scope(
             cast(ScopeType, scope_flag) if scope_flag else None,
-            config_manager,
+            app_settings,
             default_scope="global",
         )
         if was_fallback:
@@ -301,7 +337,6 @@ def source_remove(
         console.print(f"[red]Error:[/red] {e.message}")
         return
 
-    scope_enum = {"local": Scope.LOCAL, "project": Scope.PROJECT, "global": Scope.USER}[scope]
     scope_labels = {
         "local": "local (.amplifier/settings.local.yaml)",
         "project": "project (.amplifier/settings.yaml)",
@@ -309,30 +344,37 @@ def source_remove(
     }
 
     removed_module = False
-    removed_collection = False
+    removed_bundle = False
 
-    # Try to remove based on flags or both
-    if force_module or not force_collection:
-        removed_module = config_manager.remove_source_override(identifier, scope=scope_enum)
-    if force_collection or not force_module:
-        removed_collection = config_manager.remove_collection_source_override(identifier, scope=scope_enum)  # pyright: ignore[reportAttributeAccessIssue]
+    if force_module or not force_bundle:
+        removed_module = app_settings.remove_source_override(identifier, scope=scope)
+    if force_bundle or not force_module:
+        removed_bundle = app_settings.remove_bundle_source_override(identifier, scope=scope)
 
     # Also clean up any provider config entries with local source paths for this module
     provider_cleaned = False
-    if removed_module or not force_collection:
-        provider_cleaned = _cleanup_provider_config_source(config_manager, identifier, scope_enum)
+    if removed_module or not force_bundle:
+        provider_cleaned = _cleanup_provider_config_source(
+            app_settings, identifier, scope
+        )
 
     if removed_module:
-        console.print(f"[green]✓ Removed module source override for {identifier} ({scope_labels[scope]})[/green]")
-    if removed_collection:
-        console.print(f"[green]✓ Removed collection source override for {identifier} ({scope_labels[scope]})[/green]")
+        console.print(
+            f"[green]✓ Removed module source override for {identifier} ({scope_labels[scope]})[/green]"
+        )
+    if removed_bundle:
+        console.print(
+            f"[green]✓ Removed bundle source override for {identifier} ({scope_labels[scope]})[/green]"
+        )
     if provider_cleaned:
         console.print("[green]✓ Updated provider config to use default source[/green]")
-    if not removed_module and not removed_collection and not provider_cleaned:
+    if not removed_module and not removed_bundle and not provider_cleaned:
         console.print(f"[yellow]Source override for {identifier} not found[/yellow]")
 
 
-def _cleanup_provider_config_source(config_manager, module_id: str, scope) -> bool:
+def _cleanup_provider_config_source(
+    app_settings: AppSettings, module_id: str, scope: ScopeType
+) -> bool:
     """Clean up local source paths in provider config entries.
 
     When a source override is removed, also check if there's a provider config entry
@@ -340,19 +382,15 @@ def _cleanup_provider_config_source(config_manager, module_id: str, scope) -> bo
     update it to use the default git source.
 
     Args:
-        config_manager: ConfigManager instance
+        app_settings: AppSettings instance
         module_id: Module ID to clean up (e.g., "provider-anthropic")
-        scope: Scope enum value
+        scope: Scope string ("local", "project", or "global")
 
     Returns:
         True if a provider config was updated, False otherwise
     """
     # Read settings at this scope
-    scope_path = config_manager._scope_to_path(scope)
-    if scope_path is None:
-        return False
-
-    settings = config_manager._read_yaml(scope_path) or {}
+    settings = app_settings._read_scope(scope) or {}
     config_section = settings.get("config", {})
     providers = config_section.get("providers", [])
 
@@ -385,14 +423,14 @@ def _cleanup_provider_config_source(config_manager, module_id: str, scope) -> bo
     if updated:
         config_section["providers"] = new_providers
         settings["config"] = config_section
-        config_manager._write_yaml(scope_path, settings)
+        app_settings._write_scope(scope, settings)
 
     return updated
 
 
 @source.command("list")
 def source_list():
-    """List all source overrides (modules and collections).
+    """List all source overrides (modules and bundles).
 
     Shows merged overrides from all scopes (project + user).
 
@@ -402,11 +440,11 @@ def source_list():
         # List all source overrides
         amplifier source list
     """
-    config_manager = create_config_manager()
-    module_sources = config_manager.get_module_sources()
-    collection_sources = config_manager.get_collection_sources()  # pyright: ignore[reportAttributeAccessIssue]
+    app_settings = AppSettings()
+    module_sources = app_settings.get_module_sources()
+    bundle_sources = app_settings.get_bundle_sources()
 
-    if not module_sources and not collection_sources:
+    if not module_sources and not bundle_sources:
         console.print("[yellow]No source overrides configured[/yellow]")
         console.print("\nAdd overrides with:")
         console.print("  [cyan]amplifier source add <identifier> <uri>[/cyan]")
@@ -414,27 +452,37 @@ def source_list():
 
     # Show module overrides
     if module_sources:
-        table = Table(title="Module Source Overrides", show_header=True, header_style="bold cyan")
+        table = Table(
+            title="Module Source Overrides", show_header=True, header_style="bold cyan"
+        )
         table.add_column("Module", style="green")
         table.add_column("Source", style="magenta")
 
         for module_id, source_uri in sorted(module_sources.items()):
-            display_uri = source_uri if len(source_uri) <= 60 else source_uri[:57] + "..."
+            display_uri = (
+                source_uri if len(source_uri) <= 60 else source_uri[:57] + "..."
+            )
             table.add_row(module_id, display_uri)
 
         console.print(table)
 
-    # Show collection overrides
-    if collection_sources:
+    # Show bundle overrides
+    if bundle_sources:
         if module_sources:
             console.print()  # Separator
-        table = Table(title="Collection Source Overrides", show_header=True, header_style="bold cyan")
-        table.add_column("Collection", style="green")
+        table = Table(
+            title="Bundle Source Overrides",
+            show_header=True,
+            header_style="bold cyan",
+        )
+        table.add_column("Bundle", style="green")
         table.add_column("Source", style="magenta")
 
-        for collection_name, source_uri in sorted(collection_sources.items()):
-            display_uri = source_uri if len(source_uri) <= 60 else source_uri[:57] + "..."
-            table.add_row(collection_name, display_uri)
+        for bundle_name, source_uri in sorted(bundle_sources.items()):
+            display_uri = (
+                source_uri if len(source_uri) <= 60 else source_uri[:57] + "..."
+            )
+            table.add_row(bundle_name, display_uri)
 
         console.print(table)
 
@@ -443,7 +491,7 @@ def source_list():
 @click.argument("module_id")
 def source_show(module_id: str):
     """Show resolution path for a module."""
-    resolver = create_module_resolver()
+    resolver = create_foundation_resolver()
 
     console.print(f"[bold]Module:[/bold] {module_id}\n")
     console.print("[bold]Resolution Path:[/bold]")
@@ -454,17 +502,25 @@ def source_show(module_id: str):
     console.print(f"  1. Environment ({env_key}): {env_display}")
 
     workspace = Path(".amplifier/modules") / module_id
-    workspace_display = "[green]✓ found[/green]" if workspace.exists() else "[dim]not found[/dim]"
+    workspace_display = (
+        "[green]✓ found[/green]" if workspace.exists() else "[dim]not found[/dim]"
+    )
     console.print(f"  2. Workspace (.amplifier/modules/): {workspace_display}")
 
-    config_manager = create_config_manager()
-    merged_sources = config_manager.get_module_sources()
+    app_settings = AppSettings()
+    merged_sources = app_settings.get_module_sources()
     project_source = merged_sources.get(module_id)
-    project_display = f"[green]✓ {project_source}[/green]" if project_source else "[dim]not found[/dim]"
+    project_display = (
+        f"[green]✓ {project_source}[/green]"
+        if project_source
+        else "[dim]not found[/dim]"
+    )
     console.print(f"  3. Project (.amplifier/settings.yaml): {project_display}")
 
-    console.print("  4. User (~/.amplifier/settings.yaml): [dim](merged with project)[/dim]")
-    console.print("  5. Profile: [dim](depends on active profile)[/dim]")
+    console.print(
+        "  4. User (~/.amplifier/settings.yaml): [dim](merged with project)[/dim]"
+    )
+    console.print("  5. Profile: [dim](depends on active bundle)[/dim]")
     console.print("  6. Package: [dim](installed packages)[/dim]")
 
     try:

@@ -27,33 +27,48 @@ logger = logging.getLogger(__name__)
 BUNDLE_PREFIX = "bundle:"
 
 
-def extract_session_mode(metadata: dict) -> tuple[str | None, str | None]:
-    """Extract bundle name or profile name from session metadata.
+def is_top_level_session(session_id: str) -> bool:
+    """Check if a session ID is a top-level (main) session.
 
-    Sessions can be created with either a bundle (e.g., "foundation") or a profile.
-    When saved, bundle-based sessions store the profile as "bundle:<name>".
-    This function detects which mode was used and returns the appropriate value.
+    Spawned sub-sessions have IDs in the format: {parent_id}_{agent_name}
+    Top-level sessions are just UUIDs without underscores.
 
     Args:
-        metadata: Session metadata dict containing "profile" key
+        session_id: Session ID to check
 
     Returns:
-        (bundle_name, profile_name) tuple where exactly one is set, other is None.
-        Returns (None, None) if no valid profile/bundle is found in metadata.
+        True if this is a top-level session, False if spawned
+    """
+    return "_" not in session_id
+
+
+def extract_session_mode(metadata: dict) -> tuple[str | None, None]:
+    """Extract bundle name from session metadata.
+
+    Sessions are created with a bundle (e.g., "foundation").
+    This function extracts the bundle name for session resumption.
+
+    Args:
+        metadata: Session metadata dict containing "bundle" key
+
+    Returns:
+        (bundle_name, None) tuple. Returns (None, None) if no bundle found,
+        allowing caller to fall back to configured default bundle.
 
     Example:
-        >>> extract_session_mode({"profile": "bundle:foundation"})
+        >>> extract_session_mode({"bundle": "bundle:foundation"})
         ("foundation", None)
-        >>> extract_session_mode({"profile": "my-profile"})
-        (None, "my-profile")
-        >>> extract_session_mode({"profile": "unknown"})
+        >>> extract_session_mode({"bundle": "foundation"})
+        ("foundation", None)
+        >>> extract_session_mode({})
         (None, None)
     """
-    saved = metadata.get("profile", "unknown")
-    if saved and saved != "unknown":
-        if saved.startswith(BUNDLE_PREFIX):
-            return (saved[len(BUNDLE_PREFIX) :], None)
-        return (None, saved)
+    bundle_value = metadata.get("bundle")
+    if bundle_value and bundle_value != "unknown":
+        if bundle_value.startswith(BUNDLE_PREFIX):
+            return (bundle_value[len(BUNDLE_PREFIX) :], None)
+        return (bundle_value, None)
+
     return (None, None)
 
 
@@ -66,7 +81,7 @@ class SessionStore:
     - Outputs: Saved files or loaded data tuples
     - Side Effects: Filesystem writes to ~/.amplifier/projects/<project-slug>/sessions/<session-id>/
     - Errors: FileNotFoundError for missing sessions, IOError for disk issues
-    - Files created: transcript.jsonl, metadata.json, profile.md
+    - Files created: transcript.jsonl, metadata.json, config.md
     """
 
     def __init__(self, base_dir: Path | None = None):
@@ -78,7 +93,9 @@ class SessionStore:
         """
         if base_dir is None:
             project_slug = get_project_slug()
-            base_dir = Path.home() / ".amplifier" / "projects" / project_slug / "sessions"
+            base_dir = (
+                Path.home() / ".amplifier" / "projects" / project_slug / "sessions"
+            )
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -136,7 +153,9 @@ class SessionStore:
             sanitized_msg = sanitize_message(message)
             # Add timestamp if not present (for accurate replay timing - bd-45)
             if "timestamp" not in sanitized_msg:
-                sanitized_msg["timestamp"] = datetime.now(UTC).isoformat(timespec="milliseconds")
+                sanitized_msg["timestamp"] = datetime.now(UTC).isoformat(
+                    timespec="milliseconds"
+                )
             lines.append(json.dumps(sanitized_msg, ensure_ascii=False))
 
         content = "\n".join(lines) + "\n" if lines else ""
@@ -194,10 +213,14 @@ class SessionStore:
             session_dir: Directory for this session
 
         Returns:
-            List of message objects
+            List of message objects (empty list if no transcript exists yet)
         """
         transcript_file = session_dir / "transcript.jsonl"
         backup_file = session_dir / "transcript.jsonl.backup"
+
+        # If neither file exists, this is a new/empty session - return empty list silently
+        if not transcript_file.exists() and not backup_file.exists():
+            return []
 
         # Try main file first
         if transcript_file.exists():
@@ -237,10 +260,14 @@ class SessionStore:
             session_dir: Directory for this session
 
         Returns:
-            Metadata dictionary
+            Metadata dictionary (empty dict if no metadata exists yet)
         """
         metadata_file = session_dir / "metadata.json"
         backup_file = session_dir / "metadata.json.backup"
+
+        # If neither file exists, this is a new session - return empty dict silently
+        if not metadata_file.exists() and not backup_file.exists():
+            return {}
 
         # Try main file first
         if metadata_file.exists():
@@ -268,6 +295,69 @@ class SessionStore:
             "recovery_time": datetime.now(UTC).isoformat(),
         }
 
+    def update_metadata(self, session_id: str, updates: dict) -> dict:
+        """Update specific fields in session metadata.
+
+        Args:
+            session_id: Session identifier
+            updates: Dictionary of fields to update
+
+        Returns:
+            Updated metadata dictionary
+
+        Raises:
+            FileNotFoundError: If session does not exist
+            ValueError: If session_id is invalid
+        """
+        if not session_id or not session_id.strip():
+            raise ValueError("session_id cannot be empty")
+
+        # Sanitize session_id
+        if "/" in session_id or "\\" in session_id or session_id in (".", ".."):
+            raise ValueError(f"Invalid session_id: {session_id}")
+
+        session_dir = self.base_dir / session_id
+        if not session_dir.exists():
+            raise FileNotFoundError(f"Session '{session_id}' not found")
+
+        # Load current metadata
+        metadata = self._load_metadata(session_dir)
+
+        # Apply updates
+        metadata.update(updates)
+
+        # Save updated metadata
+        self._save_metadata(session_dir, metadata)
+
+        logger.debug(f"Session {session_id} metadata updated: {list(updates.keys())}")
+        return metadata
+
+    def get_metadata(self, session_id: str) -> dict:
+        """Get session metadata without loading transcript.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            Metadata dictionary
+
+        Raises:
+            FileNotFoundError: If session does not exist
+            ValueError: If session_id is invalid
+        """
+        if not session_id or not session_id.strip():
+            raise ValueError("session_id cannot be empty")
+
+        # Sanitize session_id
+        if "/" in session_id or "\\" in session_id or session_id in (".", ".."):
+            raise ValueError(f"Invalid session_id: {session_id}")
+
+        session_dir = self.base_dir / session_id
+        if not session_dir.exists():
+            raise FileNotFoundError(f"Session '{session_id}' not found")
+
+        return self._load_metadata(session_dir)
+
     def exists(self, session_id: str) -> bool:
         """Check if session exists.
 
@@ -287,11 +377,13 @@ class SessionStore:
         session_dir = self.base_dir / session_id
         return session_dir.exists() and session_dir.is_dir()
 
-    def find_session(self, partial_id: str) -> str:
+    def find_session(self, partial_id: str, *, top_level_only: bool = True) -> str:
         """Find session by partial ID prefix.
 
         Args:
             partial_id: Partial session ID (prefix match)
+            top_level_only: If True (default), only match top-level sessions,
+                           excluding spawned sub-sessions. Set to False to include all.
 
         Returns:
             Full session ID if exactly one match
@@ -305,13 +397,15 @@ class SessionStore:
 
         partial_id = partial_id.strip()
 
-        # Check for exact match first
+        # Check for exact match first (respecting top_level_only filter)
         if self.exists(partial_id):
-            return partial_id
+            if not top_level_only or is_top_level_session(partial_id):
+                return partial_id
 
-        # Find prefix matches
+        # Find prefix matches among filtered sessions
         matches = [
-            sid for sid in self.list_sessions()
+            sid
+            for sid in self.list_sessions(top_level_only=top_level_only)
             if sid.startswith(partial_id)
         ]
 
@@ -325,8 +419,12 @@ class SessionStore:
             )
         return matches[0]
 
-    def list_sessions(self) -> list[str]:
-        """List all session IDs.
+    def list_sessions(self, *, top_level_only: bool = True) -> list[str]:
+        """List session IDs.
+
+        Args:
+            top_level_only: If True (default), return only top-level sessions,
+                           excluding spawned sub-sessions. Set to False to include all.
 
         Returns:
             List of session identifiers, sorted by modification time (newest first)
@@ -337,28 +435,34 @@ class SessionStore:
         sessions = []
         for session_dir in self.base_dir.iterdir():
             if session_dir.is_dir() and not session_dir.name.startswith("."):
+                session_name = session_dir.name
+
+                # Filter to top-level sessions if requested
+                if top_level_only and not is_top_level_session(session_name):
+                    continue
+
                 # Include session with its modification time for sorting
                 try:
                     mtime = session_dir.stat().st_mtime
-                    sessions.append((session_dir.name, mtime))
+                    sessions.append((session_name, mtime))
                 except Exception:
                     # If we can't get mtime, include with 0
-                    sessions.append((session_dir.name, 0))
+                    sessions.append((session_name, 0))
 
         # Sort by modification time (newest first) and return just the names
         sessions.sort(key=lambda x: x[1], reverse=True)
         return [name for name, _ in sessions]
 
-    def save_profile(self, session_id: str, profile: dict) -> None:
-        """Save profile snapshot used for session.
+    def save_config_snapshot(self, session_id: str, config: dict) -> None:
+        """Save config snapshot used for session.
 
         Args:
             session_id: Session identifier
-            profile: Profile configuration dictionary
+            config: Bundle configuration dictionary
 
         Raises:
             ValueError: If session_id is invalid
-            IOError: If unable to write profile
+            IOError: If unable to write config
         """
         if not session_id or not session_id.strip():
             raise ValueError("session_id cannot be empty")
@@ -370,16 +474,18 @@ class SessionStore:
         session_dir = self.base_dir / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
 
-        profile_file = session_dir / "profile.md"
+        config_file = session_dir / "config.md"
 
-        # Convert profile dict to Markdown+YAML frontmatter
+        # Convert config dict to Markdown+YAML frontmatter
         import yaml
 
-        yaml_content = yaml.dump(profile, default_flow_style=False, sort_keys=False)
-        content = f"---\n{yaml_content}---\n\nProfile snapshot for session {session_id}\n"
-        write_with_backup(profile_file, content)
+        yaml_content = yaml.dump(config, default_flow_style=False, sort_keys=False)
+        content = (
+            f"---\n{yaml_content}---\n\nConfig snapshot for session {session_id}\n"
+        )
+        write_with_backup(config_file, content)
 
-        logger.debug(f"Profile saved for session {session_id}")
+        logger.debug(f"Config saved for session {session_id}")
 
     def cleanup_old_sessions(self, days: int = 30) -> int:
         """Remove sessions older than specified days.

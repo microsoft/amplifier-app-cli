@@ -183,13 +183,6 @@ class SettingsProviderProtocol(Protocol):
         ...
 
 
-class CollectionModuleProviderProtocol(Protocol):
-    """Interface for collection module lookup."""
-
-    def get_collection_modules(self) -> dict[str, str]:
-        """Get module_id -> absolute_path mappings from installed collections."""
-        ...
-
 
 class FoundationSettingsResolver:
     """Settings-based resolver using foundation's source handling.
@@ -203,8 +196,7 @@ class FoundationSettingsResolver:
     1. Environment variable (AMPLIFIER_MODULE_<ID>)
     2. Workspace convention (workspace_dir/<id>/)
     3. Settings provider (merges project + user settings)
-    4. Collection modules (registered via installed collections)
-    5. Profile hint
+    4. Legacy module pattern (removed)
     6. Installed package
     """
 
@@ -212,46 +204,50 @@ class FoundationSettingsResolver:
         self,
         workspace_dir: Path | None = None,
         settings_provider: SettingsProviderProtocol | None = None,
-        collection_provider: CollectionModuleProviderProtocol | None = None,
     ) -> None:
         """Initialize resolver with optional configuration.
 
         Args:
             workspace_dir: Optional workspace directory path (layer 2)
             settings_provider: Optional settings provider (layer 3)
-            collection_provider: Optional collection module provider (layer 4)
         """
         self.workspace_dir = workspace_dir
         self.settings_provider = settings_provider
-        self.collection_provider = collection_provider
 
     def resolve(
-        self, module_id: str, profile_hint: str | None = None
+        self, module_id: str, source_hint: str | None = None, profile_hint: str | None = None
     ) -> FoundationGitSource | FoundationFileSource | FoundationPackageSource:
         """Resolve module through 6-layer fallback.
 
         Args:
             module_id: Module identifier (e.g., "provider-anthropic").
-            profile_hint: Optional source URI hint from profile.
+            source_hint: Optional source URI hint.
+            profile_hint: DEPRECATED - use source_hint instead.
 
         Returns:
             Source object (FoundationGitSource, FoundationFileSource, or FoundationPackageSource).
 
         Raises:
             ModuleResolutionError: Module not found in any layer.
+            
+        FIXME: Remove profile_hint parameter after all callers migrate to source_hint.
         """
-        source, _layer = self.resolve_with_layer(module_id, profile_hint)
+        hint = profile_hint if profile_hint is not None else source_hint
+        source, _layer = self.resolve_with_layer(module_id, hint)
         return source
 
     def resolve_with_layer(
-        self, module_id: str, profile_hint: str | None = None
+        self, module_id: str, source_hint: str | None = None, profile_hint: str | None = None
     ) -> tuple[FoundationGitSource | FoundationFileSource | FoundationPackageSource, str]:
         """Resolve module and return which layer resolved it.
 
         Returns:
             Tuple of (source, layer_name).
-            layer_name is one of: env, workspace, settings, collection, profile, package
+            layer_name is one of: env, workspace, settings, source_hint, package
+            
+        FIXME: Remove profile_hint parameter after all callers migrate to source_hint.
         """
+        hint = profile_hint if profile_hint is not None else source_hint
         # Layer 1: Environment variable
         env_key = f"AMPLIFIER_MODULE_{module_id.upper().replace('-', '_')}"
         if env_value := os.getenv(env_key):
@@ -270,18 +266,10 @@ class FoundationSettingsResolver:
                 logger.debug(f"[module:resolve] {module_id} -> settings")
                 return (self._parse_source(sources[module_id], module_id), "settings")
 
-        # Layer 4: Collection modules (registered via installed collections)
-        if self.collection_provider:
-            collection_modules = self.collection_provider.get_collection_modules()
-            if module_id in collection_modules:
-                module_path = Path(collection_modules[module_id])
-                logger.debug(f"[module:resolve] {module_id} -> collection ({module_path})")
-                return (FoundationFileSource(module_path), "collection")
-
-        # Layer 5: Profile hint
-        if profile_hint:
-            logger.debug(f"[module:resolve] {module_id} -> profile")
-            return (self._parse_source(profile_hint, module_id), "profile")
+        # Layer 4: Source hint (from bundle config)
+        if hint:
+            logger.debug(f"[module:resolve] {module_id} -> source_hint")
+            return (self._parse_source(hint, module_id), "source_hint")
 
         # Layer 6: Installed package (fallback)
         logger.debug(f"[module:resolve] {module_id} -> package")
@@ -376,14 +364,12 @@ class FoundationSettingsResolver:
             f"  1. Environment: AMPLIFIER_MODULE_{module_id.upper().replace('-', '_')} (not set)\n"
             f"  2. Workspace: {self.workspace_dir / module_id if self.workspace_dir else 'N/A'} (not found)\n"
             f"  3. Settings: (no entry)\n"
-            f"  4. Collections: (no registered module)\n"
-            f"  5. Profile: (no source specified)\n"
-            f"  6. Package: Tried '{module_id}' and '{convention_name}' (neither installed)\n\n"
+            f"  4. Source hint: (no source specified)\n"
+            f"  5. Package: Tried '{module_id}' and '{convention_name}' (neither installed)\n\n"
             f"Suggestions:\n"
-            f"  - Add source to profile: source: git+https://...\n"
-            f"  - Add source override to settings\n"
-            f"  - Install package: uv pip install <package-name>\n"
-            f"  - Install collection with module: amplifier collection add <collection-url>"
+            f"  - Add source to bundle: source: git+https://...\n"
+            f"  - Add source override: amplifier source add {module_id} <source>\n"
+            f"  - Install package: uv pip install <package-name>"
         )
 
     def get_module_source(self, module_id: str) -> str | None:
@@ -402,12 +388,6 @@ class FoundationSettingsResolver:
             sources = self.settings_provider.get_module_sources()
             if module_id in sources:
                 return sources[module_id]
-
-        # Check collection provider
-        if self.collection_provider:
-            collection_modules = self.collection_provider.get_collection_modules()
-            if module_id in collection_modules:
-                return collection_modules[module_id]
 
         return None
 
@@ -466,21 +446,25 @@ class AppModuleResolver:
         self._bundle = bundle_resolver
         self._settings = settings_resolver
 
-    def resolve(self, module_id: str, hint: Any = None) -> Any:
+    def resolve(self, module_id: str, source_hint: Any = None, profile_hint: Any = None) -> Any:
         """Resolve module ID with fallback policy.
 
         Policy: Try bundle first, fall back to settings resolver.
 
         Args:
             module_id: Module identifier (e.g., "provider-anthropic").
-            hint: Optional hint for resolution.
+            source_hint: Optional hint for resolution.
+            profile_hint: DEPRECATED - use source_hint instead.
 
         Returns:
             Module source.
 
         Raises:
             ModuleNotFoundError: If module not found in bundle or settings.
+            
+        FIXME: Remove profile_hint parameter after all callers migrate to source_hint.
         """
+        hint = profile_hint if profile_hint is not None else source_hint
         # Try bundle first (primary source)
         try:
             return self._bundle.resolve(module_id, hint)

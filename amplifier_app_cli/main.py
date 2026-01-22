@@ -6,7 +6,6 @@ import logging
 import os
 import signal
 import sys
-import uuid
 from collections.abc import Callable
 from datetime import UTC
 from datetime import datetime
@@ -33,15 +32,15 @@ from rich.panel import Panel
 
 from .commands.agents import agents as agents_group
 from .commands.allowed_dirs import allowed_dirs as allowed_dirs_group
+from .commands.denied_dirs import denied_dirs as denied_dirs_group
 from .commands.bundle import bundle as bundle_group
-from .commands.cache import cache as cache_group
-from .commands.collection import collection as collection_group
 from .commands.init import check_first_run
 from .commands.init import init_cmd
 from .commands.init import prompt_first_run_init
 from .commands.module import module as module_group
-from .commands.profile import profile as profile_group
+from .commands.notify import notify as notify_group
 from .commands.provider import provider as provider_group
+from .commands.reset import reset as reset_cmd
 from .commands.run import register_run_command
 from .commands.session import register_session_commands
 from .commands.source import source as source_group
@@ -54,8 +53,6 @@ from .console import Markdown
 from .console import console
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
-from .lib.legacy import parse_markdown_body
-from .paths import create_profile_loader
 from .session_store import SessionStore
 from .ui.error_display import display_validation_error
 from .utils.version import get_version
@@ -67,8 +64,8 @@ logger = logging.getLogger(__name__)
 # This allows keys saved by 'amplifier init' or 'amplifier provider use' to be available
 _key_manager = KeyManager()
 
-# Abort flag for ESC-based cancellation
-_abort_requested = False
+# Cancel flag for ESC-based cancellation
+_cancel_requested = False
 
 
 # Placeholder for the run command; assigned after registration below
@@ -225,9 +222,13 @@ def _show_manual_instructions(shell: str, config_file: Path):
     console.print(f"\n[yellow]Add this line to {config_file}:[/yellow]")
 
     if shell == "fish":
-        console.print(f"  [cyan]_AMPLIFIER_COMPLETE=fish_source amplifier > {config_file}[/cyan]")
+        console.print(
+            f"  [cyan]_AMPLIFIER_COMPLETE=fish_source amplifier > {config_file}[/cyan]"
+        )
     else:
-        console.print(f'  [cyan]eval "$(_AMPLIFIER_COMPLETE={shell}_source amplifier)"[/cyan]')
+        console.print(
+            f'  [cyan]eval "$(_AMPLIFIER_COMPLETE={shell}_source amplifier)"[/cyan]'
+        )
 
     console.print("\n[dim]Then reload your shell or start a new terminal.[/dim]")
 
@@ -236,26 +237,66 @@ class CommandProcessor:
     """Process slash commands and special directives."""
 
     COMMANDS = {
-        "/think": {"action": "enable_plan_mode", "description": "Enable read-only planning mode"},
-        "/do": {
-            "action": "disable_plan_mode",
-            "description": "Exit plan mode and allow modifications",
+        "/mode": {
+            "action": "handle_mode",
+            "description": "Set or toggle a mode (e.g., /mode plan)",
         },
-        "/save": {"action": "save_transcript", "description": "Save conversation transcript"},
+        "/modes": {"action": "list_modes", "description": "List available modes"},
+        "/save": {
+            "action": "save_transcript",
+            "description": "Save conversation transcript",
+        },
         "/status": {"action": "show_status", "description": "Show session status"},
-        "/clear": {"action": "clear_context", "description": "Clear conversation context"},
+        "/clear": {
+            "action": "clear_context",
+            "description": "Clear conversation context",
+        },
         "/help": {"action": "show_help", "description": "Show available commands"},
-        "/config": {"action": "show_config", "description": "Show current configuration"},
+        "/config": {
+            "action": "show_config",
+            "description": "Show current configuration",
+        },
         "/tools": {"action": "list_tools", "description": "List available tools"},
         "/agents": {"action": "list_agents", "description": "List available agents"},
-        "/allowed-dirs": {"action": "manage_allowed_dirs", "description": "Manage allowed write directories"},
+        "/allowed-dirs": {
+            "action": "manage_allowed_dirs",
+            "description": "Manage allowed write directories",
+        },
+        "/denied-dirs": {
+            "action": "manage_denied_dirs",
+            "description": "Manage denied write directories",
+        },
+        "/rename": {
+            "action": "rename_session",
+            "description": "Rename current session",
+        },
+        "/fork": {
+            "action": "fork_session",
+            "description": "Fork session at turn N: /fork [turn]",
+        },
     }
 
-    def __init__(self, session: AmplifierSession, profile_name: str = "unknown"):
+    # Dynamic shortcuts for modes (populated from mode definitions)
+    MODE_SHORTCUTS: dict[str, str] = {}
+
+    def __init__(self, session: AmplifierSession, bundle_name: str = "unknown"):
         self.session = session
-        self.profile_name = profile_name
-        self.plan_mode = False
-        self.plan_mode_unregister = None  # Store unregister function
+        self.bundle_name = bundle_name
+        # Initialize session_state if not present
+        if not hasattr(self.session.coordinator, "session_state"):
+            self.session.coordinator.session_state = {}
+        if "active_mode" not in self.session.coordinator.session_state:
+            self.session.coordinator.session_state["active_mode"] = None
+        # Populate mode shortcuts from discovery (if available)
+        self._populate_mode_shortcuts()
+
+    def _populate_mode_shortcuts(self) -> None:
+        """Populate MODE_SHORTCUTS from mode discovery."""
+        discovery = self.session.coordinator.session_state.get("mode_discovery")
+        if discovery and hasattr(discovery, "get_shortcuts"):
+            shortcuts = discovery.get_shortcuts()
+            # Update class-level shortcuts dict
+            CommandProcessor.MODE_SHORTCUTS.update(shortcuts)
 
     def process_input(self, user_input: str) -> tuple[str, dict[str, Any]]:
         """
@@ -273,23 +314,26 @@ class CommandProcessor:
             if command in self.COMMANDS:
                 cmd_info = self.COMMANDS[command]
                 return cmd_info["action"], {"args": args, "command": command}
+
+            # Check for mode shortcuts (e.g., /plan -> /mode plan)
+            shortcut_name = command[1:]  # Remove leading /
+            if shortcut_name in self.MODE_SHORTCUTS:
+                return "handle_mode", {"args": shortcut_name, "command": command}
+
             return "unknown_command", {"command": command}
 
         # Regular prompt
-        return "prompt", {"text": user_input, "plan_mode": self.plan_mode}
+        active_mode = self.session.coordinator.session_state.get("active_mode")
+        return "prompt", {"text": user_input, "active_mode": active_mode}
 
     async def handle_command(self, action: str, data: dict[str, Any]) -> str:
         """Handle a command action."""
 
-        if action == "enable_plan_mode":
-            self.plan_mode = True
-            self._configure_plan_mode(True)
-            return "✓ Plan Mode enabled - all modifications disabled"
+        if action == "handle_mode":
+            return await self._handle_mode(data.get("args", ""))
 
-        if action == "disable_plan_mode":
-            self.plan_mode = False
-            self._configure_plan_mode(False)
-            return "✓ Plan Mode disabled - modifications enabled"
+        if action == "list_modes":
+            return await self._list_modes()
 
         if action == "save_transcript":
             path = await self._save_transcript(data.get("args", ""))
@@ -318,38 +362,123 @@ class CommandProcessor:
         if action == "manage_allowed_dirs":
             return await self._manage_allowed_dirs(data.get("args", ""))
 
+        if action == "manage_denied_dirs":
+            return await self._manage_denied_dirs(data.get("args", ""))
+
+        if action == "rename_session":
+            return await self._rename_session(data.get("args", ""))
+
+        if action == "fork_session":
+            return await self._fork_session(data.get("args", ""))
+
         if action == "unknown_command":
-            return f"Unknown command: {data['command']}. Use /help for available commands."
+            return (
+                f"Unknown command: {data['command']}. Use /help for available commands."
+            )
 
         return f"Unhandled action: {action}"
 
-    def _configure_plan_mode(self, enabled: bool):
-        """Configure session for plan mode."""
-        # Import HookResult here to avoid circular import
-        from amplifier_core.models import HookResult
+    async def _handle_mode(self, args: str) -> str:
+        """Handle /mode command for setting, toggling, or clearing modes."""
+        args = args.strip().lower()
+        session_state = self.session.coordinator.session_state
+        current_mode = session_state.get("active_mode")
 
-        # Access hooks via the coordinator
-        hooks = self.session.coordinator.get("hooks")
-        if hooks:
-            if enabled:
-                # Register plan mode hook that denies write operations
-                async def plan_mode_hook(_event: str, data: dict[str, Any]) -> HookResult:
-                    tool_name = data.get("tool")
-                    if tool_name in ["write", "edit", "bash", "task"]:
-                        return HookResult(
-                            action="deny",
-                            reason="Write operations disabled in Plan Mode",
-                        )
-                    return HookResult(action="continue")
+        # /mode off - clear any active mode
+        if args == "off":
+            if current_mode:
+                session_state["active_mode"] = None
+                # Reset warnings in mode hooks if present
+                mode_hooks = session_state.get("mode_hooks")
+                if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
+                    mode_hooks.reset_warnings()
+                return f"Mode off: {current_mode}"
+            return "No mode active"
 
-                # Register the hook with the hooks registry and store unregister function
-                if hasattr(hooks, "register"):
-                    self.plan_mode_unregister = hooks.register("tool:pre", plan_mode_hook, priority=0, name="plan_mode")
+        # /mode (no args) - show current mode
+        if not args:
+            if current_mode:
+                return f"Active mode: {current_mode}"
+            return "No mode active. Use /modes to list available modes."
+
+        # /mode <name> [on|off] - set or toggle a mode
+        parts = args.split()
+        mode_name = parts[0]
+        explicit_state = parts[1] if len(parts) > 1 else None
+
+        # Check if mode exists via discovery
+        discovery = session_state.get("mode_discovery")
+        if discovery:
+            mode_def = discovery.find(mode_name)
+            if not mode_def:
+                return f"Unknown mode: {mode_name}. Use /modes to list available modes."
+            description = mode_def.description
+        else:
+            # No discovery available - just set the mode name
+            description = ""
+
+        # Handle explicit on/off
+        if explicit_state == "on":
+            if current_mode == mode_name:
+                return f"Already in {mode_name} mode"
+            session_state["active_mode"] = mode_name
+            mode_hooks = session_state.get("mode_hooks")
+            if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
+                mode_hooks.reset_warnings()
+            return f"Mode: {mode_name}" + (f" — {description}" if description else "")
+
+        if explicit_state == "off":
+            if current_mode != mode_name:
+                return f"Not in {mode_name} mode"
+            session_state["active_mode"] = None
+            mode_hooks = session_state.get("mode_hooks")
+            if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
+                mode_hooks.reset_warnings()
+            return f"Mode off: {mode_name}"
+
+        # Toggle behavior (no explicit on/off)
+        if current_mode == mode_name:
+            session_state["active_mode"] = None
+            mode_hooks = session_state.get("mode_hooks")
+            if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
+                mode_hooks.reset_warnings()
+            return f"Mode off: {mode_name}"
+        else:
+            session_state["active_mode"] = mode_name
+            mode_hooks = session_state.get("mode_hooks")
+            if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
+                mode_hooks.reset_warnings()
+            return f"Mode: {mode_name}" + (f" — {description}" if description else "")
+
+    async def _list_modes(self) -> str:
+        """List available modes."""
+        session_state = self.session.coordinator.session_state
+        discovery = session_state.get("mode_discovery")
+
+        if not discovery:
+            return (
+                "Mode system not available. Include the modes bundle to enable modes."
+            )
+
+        modes = discovery.list_modes()
+        if not modes:
+            return "No modes found. Create modes in .amplifier/modes/ or include a bundle with modes."
+
+        current_mode = session_state.get("active_mode")
+
+        lines = ["Available modes:"]
+        for name, description in modes:
+            indicator = " *" if name == current_mode else ""
+            if description:
+                lines.append(f"  {name}{indicator} — {description}")
             else:
-                # Unregister plan mode hook if we have the unregister function
-                if self.plan_mode_unregister:
-                    self.plan_mode_unregister()
-                    self.plan_mode_unregister = None
+                lines.append(f"  {name}{indicator}")
+
+        if current_mode:
+            lines.append(f"\nActive: {current_mode}")
+
+        lines.append("\nUse /mode <name> to activate, /mode off to clear.")
+        return "\n".join(lines)
 
     async def _save_transcript(self, filename: str) -> str:
         """Save current transcript with sanitization for non-JSON-serializable objects.
@@ -396,11 +525,32 @@ class CommandProcessor:
     async def _get_status(self) -> str:
         """Get session status information."""
         lines = ["Session Status:"]
-        lines.append(f"  Session ID: {self.session.coordinator.session_id}")
-        lines.append(f"  Profile: {self.profile_name}")
+        session_id = self.session.coordinator.session_id
+        lines.append(f"  Session ID: {session_id}")
 
-        # Plan mode status
-        lines.append(f"  Plan Mode: {'ON' if self.plan_mode else 'OFF'}")
+        # Show session name if available
+        try:
+            from .session_store import SessionStore
+
+            store = SessionStore()
+            if store.exists(session_id):
+                metadata = store.get_metadata(session_id)
+                if metadata.get("name"):
+                    lines.append(f"  Name: {metadata['name']}")
+                if metadata.get("description"):
+                    # Truncate long descriptions
+                    desc = metadata["description"]
+                    if len(desc) > 60:
+                        desc = desc[:57] + "..."
+                    lines.append(f"  Description: {desc}")
+        except Exception:
+            pass  # Silently skip if we can't load metadata
+
+        lines.append(f"  Config: {self.bundle_name}")
+
+        # Active mode status
+        active_mode = self.session.coordinator.session_state.get("active_mode")
+        lines.append(f"  Mode: {active_mode or 'none'}")
 
         # Context size
         context = self.session.coordinator.get("context")
@@ -427,44 +577,192 @@ class CommandProcessor:
         if context and hasattr(context, "clear"):
             await context.clear()
 
+    async def _rename_session(self, new_name: str) -> str:
+        """Rename the current session."""
+        new_name = new_name.strip()
+        if not new_name:
+            return "Usage: /rename <new name>"
+
+        session_id = self.session.coordinator.session_id
+
+        try:
+            from datetime import datetime, UTC
+            from .session_store import SessionStore
+
+            store = SessionStore()
+            if not store.exists(session_id):
+                return f"Session {session_id[:8]}... not found in storage"
+
+            # Update the name in metadata
+            store.update_metadata(
+                session_id,
+                {
+                    "name": new_name[:50],  # Limit name length
+                    "name_generated_at": datetime.now(UTC).isoformat(),
+                },
+            )
+
+            return f"✓ Session renamed to: {new_name[:50]}"
+
+        except Exception as e:
+            return f"Failed to rename session: {e}"
+
+    async def _fork_session(self, args: str) -> str:
+        """Fork the current session at a specific turn.
+
+        Usage:
+            /fork          - Show conversation turns
+            /fork 3        - Fork at turn 3
+            /fork 3 myname - Fork at turn 3 with custom name
+        """
+        from .session_store import SessionStore
+
+        # Check if session fork utilities are available
+        try:
+            from amplifier_foundation.session import (
+                fork_session,
+                count_turns,
+                get_turn_summary,
+            )
+        except ImportError:
+            return "Error: Session fork utilities not available. Install amplifier-foundation with session support."
+
+        store = SessionStore()
+        session_id = self.session.coordinator.session_id
+        session_dir = store.base_dir / session_id
+
+        if not session_dir.exists():
+            return f"Error: Session directory not found: {session_dir}"
+
+        # Get current messages to count turns
+        context = self.session.coordinator.get("context")
+        if not context or not hasattr(context, "get_messages"):
+            return "Error: No context available"
+
+        messages = await context.get_messages()
+        max_turns = count_turns(messages)
+
+        if max_turns == 0:
+            return "Error: No turns to fork from (no user messages)"
+
+        # Parse arguments
+        parts = args.strip().split()
+        turn = None
+        custom_name = None
+
+        if len(parts) >= 1 and parts[0]:
+            try:
+                turn = int(parts[0])
+            except ValueError:
+                # Maybe it's a name without turn? Show help
+                return "Usage: /fork <turn> [name]\n\nRun /fork first to see your conversation turns."
+
+        if len(parts) >= 2:
+            custom_name = parts[1]
+
+        # If no turn specified, show turn previews (most recent first)
+        if turn is None:
+            lines = ["", "Your conversation turns (most recent first):", ""]
+
+            # Show turns in reverse order (most recent first)
+            turns_to_show = min(max_turns, 10)
+            for t in range(max_turns, max(0, max_turns - turns_to_show), -1):
+                try:
+                    summary = get_turn_summary(messages, t)
+                    user_preview = summary["user_content"][:55]
+                    if len(summary["user_content"]) > 55:
+                        user_preview += "..."
+                    tool_info = (
+                        f" [{summary['tool_count']} tools]"
+                        if summary["tool_count"]
+                        else ""
+                    )
+                    marker = " ← you are here" if t == max_turns else ""
+                    lines.append(f"  [{t}] {user_preview}{tool_info}{marker}")
+                except Exception:
+                    lines.append(f"  [{t}] (unable to preview)")
+
+            if max_turns > 10:
+                lines.append(f"  ... {max_turns - 10} earlier turns")
+
+            lines.append("")
+            lines.append("To fork, run: /fork <turn>")
+            lines.append("Example: /fork 3        - fork at turn 3")
+            lines.append("         /fork 3 my-fix - fork at turn 3 with name 'my-fix'")
+            return "\n".join(lines)
+
+        # Validate turn
+        if turn < 1 or turn > max_turns:
+            return f"Error: Turn {turn} out of range (1-{max_turns})"
+
+        # Perform the fork
+        try:
+            result = fork_session(
+                session_dir,
+                turn=turn,
+                new_session_id=custom_name,
+                include_events=True,
+            )
+
+            lines = [
+                f"✓ Forked session created: {result.session_id}",
+                f"  Messages: {result.message_count}",
+                f"  Forked at turn: {result.forked_from_turn} of {max_turns}",
+            ]
+            if result.events_count > 0:
+                lines.append(f"  Events copied: {result.events_count}")
+            lines.append("")
+            lines.append(
+                f"Resume with: amplifier session resume {result.session_id[:8]}"
+            )
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            return f"Error forking session: {e}"
+
     def _format_help(self) -> str:
-        """Format help text."""
+        """Format help text with commands and dynamic modes section."""
         lines = ["Available Commands:"]
         for cmd, info in self.COMMANDS.items():
             lines.append(f"  {cmd:<12} - {info['description']}")
+
+        # Add dynamic modes section if modes are available
+        session_state = self.session.coordinator.session_state
+        discovery = session_state.get("mode_discovery")
+        if discovery:
+            modes = discovery.list_modes()
+            if modes:
+                lines.append("")
+                lines.append("Mode Shortcuts:")
+                for name, description in modes:
+                    if description:
+                        lines.append(f"  /{name:<11} - {description}")
+                    else:
+                        lines.append(f"  /{name}")
+
         return "\n".join(lines)
 
     async def _get_config_display(self) -> str:
-        """Display current configuration using profile show format or bundle display."""
+        """Display current configuration using bundle display."""
         from .console import console
 
-        # Check if we're in bundle mode (profile_name is "bundle:<name>")
-        if self.profile_name.startswith("bundle:"):
-            bundle_name = self.profile_name.removeprefix("bundle:")
-            await self._render_bundle_config(bundle_name, console)
+        # Extract bundle name from config source name (format: "bundle:<name>")
+        if self.bundle_name.startswith("bundle:"):
+            bundle_name = self.bundle_name.removeprefix("bundle:")
         else:
-            # Profile mode: use inheritance chain display
-            from .commands.profile import render_effective_config
-            from .paths import create_config_manager
-            from .paths import create_profile_loader
+            bundle_name = self.bundle_name
 
-            loader = create_profile_loader()
-            config_manager = create_config_manager()
-
-            # Load inheritance chain for source tracking
-            chain_names = loader.get_inheritance_chain(self.profile_name)
-            chain_dicts = loader.load_inheritance_chain_dicts(self.profile_name)
-            source_overrides = config_manager.get_module_sources()
-
-            # render_effective_config prints directly to console with rich formatting
-            render_effective_config(chain_dicts, chain_names, source_overrides, detailed=True)
+        await self._render_bundle_config(bundle_name, console)
 
         # Also show loaded agents (available at runtime)
-        # Note: agents can be a dict (resolved agents) or list/other format (profile config)
+        # Note: agents can be a dict (resolved agents) or list/other format (config)
         loaded_agents = self.session.config.get("agents", {})
         if isinstance(loaded_agents, dict) and loaded_agents:
-            # Filter out profile config keys (dirs, include, inline) - only show resolved agent names
-            agent_names = [k for k in loaded_agents if k not in ("dirs", "include", "inline")]
+            # Filter out config keys (dirs, include, inline) - only show resolved agent names
+            agent_names = [
+                k for k in loaded_agents if k not in ("dirs", "include", "inline")
+            ]
             if agent_names:
                 console.print()  # Blank line after Agents: section
                 console.print("[bold]Loaded Agents:[/bold]")
@@ -561,19 +859,21 @@ class CommandProcessor:
         Agents are loaded into session.config["agents"] via mount plan (compiler).
         """
         # Get pre-loaded agents from session config
-        # Note: agents can be a dict (resolved agents) or list/other format (profile config)
+        # Note: agents can be a dict (resolved agents) or list/other format
         all_agents = self.session.config.get("agents", {})
 
         if not isinstance(all_agents, dict):
             return "No agents available (agents not loaded as dict)"
 
-        # Filter out profile config keys - only show resolved agent entries
+        # Filter out config keys - only show resolved agent entries
         agent_items = {
-            k: v for k, v in all_agents.items() if k not in ("dirs", "include", "inline") and isinstance(v, dict)
+            k: v
+            for k, v in all_agents.items()
+            if k not in ("dirs", "include", "inline") and isinstance(v, dict)
         }
 
         if not agent_items:
-            return "No agents available (check profile's agents configuration)"
+            return "No agents available (check bundle's agents configuration)"
 
         # Display each agent with full frontmatter (excluding instruction)
         console.print(f"\n[bold]Available Agents[/bold] ({len(agent_items)} loaded)\n")
@@ -637,11 +937,22 @@ class CommandProcessor:
         if subcommand == "list":
             paths = settings.get_allowed_write_paths()
             if not paths:
-                return "No allowed directories configured.\nUse '/allowed-dirs add <path>' to add one."
+                lines = ["No allowed directories configured."]
+            else:
+                lines = ["Allowed Write Directories:"]
+                for p, scope in paths:
+                    lines.append(f"  {p} ({scope})")
 
-            lines = ["Allowed Write Directories:"]
-            for p, scope in paths:
-                lines.append(f"  {p} ({scope})")
+            # Add help text
+            lines.append("")
+            lines.append("Usage:")
+            lines.append("  /allowed-dirs list            - List allowed directories")
+            lines.append(
+                "  /allowed-dirs add <path>      - Add directory (session scope)"
+            )
+            lines.append(
+                "  /allowed-dirs remove <path>   - Remove directory (session scope)"
+            )
             return "\n".join(lines)
 
         elif subcommand == "add":
@@ -667,6 +978,71 @@ class CommandProcessor:
   /allowed-dirs list            - List allowed directories
   /allowed-dirs add <path>      - Add directory (session scope)
   /allowed-dirs remove <path>   - Remove directory (session scope)"""
+
+    async def _manage_denied_dirs(self, args: str) -> str:
+        """Manage denied write directories (session-scoped).
+
+        Usage:
+            /denied-dirs list
+            /denied-dirs add <path>
+            /denied-dirs remove <path>
+        """
+        from .lib.settings import AppSettings
+        from .project_utils import get_project_slug
+
+        parts = args.strip().split(maxsplit=1)
+        subcommand = parts[0].lower() if parts else "list"
+        path_arg = parts[1] if len(parts) > 1 else ""
+
+        # Get session-scoped settings
+        session_id = self.session.coordinator.session_id
+        project_slug = get_project_slug()
+        settings = AppSettings().with_session(session_id, project_slug)
+
+        if subcommand == "list":
+            paths = settings.get_denied_write_paths()
+            if not paths:
+                lines = ["No denied directories configured."]
+            else:
+                lines = ["Denied Write Directories:"]
+                for p, scope in paths:
+                    lines.append(f"  {p} ({scope})")
+
+            # Add help text
+            lines.append("")
+            lines.append("Usage:")
+            lines.append("  /denied-dirs list            - List denied directories")
+            lines.append(
+                "  /denied-dirs add <path>      - Add directory (session scope)"
+            )
+            lines.append(
+                "  /denied-dirs remove <path>   - Remove directory (session scope)"
+            )
+            return "\n".join(lines)
+
+        elif subcommand == "add":
+            if not path_arg:
+                return "Usage: /denied-dirs add <path>"
+
+            resolved = Path(path_arg).expanduser().resolve()
+            settings.add_denied_write_path(str(resolved), "session")
+            return f"✓ Denied {resolved} (session scope)"
+
+        elif subcommand == "remove":
+            if not path_arg:
+                return "Usage: /denied-dirs remove <path>"
+
+            removed = settings.remove_denied_write_path(path_arg, "session")
+            if removed:
+                return f"✓ Removed {path_arg} from denied paths (session scope)"
+            else:
+                return f"Path not found in session scope: {path_arg}\nNote: /denied-dirs remove only removes from session scope."
+
+        else:
+            return """Usage:
+  /denied-dirs list            - List denied directories
+  /denied-dirs add <path>      - Add directory (session scope)
+  /denied-dirs remove <path>   - Remove directory (session scope)"""
 
 
 def get_module_search_paths() -> list[Path]:
@@ -712,8 +1088,12 @@ def cli(ctx, install_completion):
             console.print("[yellow]⚠️ Could not detect shell from $SHELL[/yellow]\n")
             console.print("Supported shells: bash, zsh, fish\n")
             console.print("Add completion manually for your shell:\n")
-            console.print('  [cyan]Bash:  eval "$(_AMPLIFIER_COMPLETE=bash_source amplifier)"[/cyan]')
-            console.print('  [cyan]Zsh:   eval "$(_AMPLIFIER_COMPLETE=zsh_source amplifier)"[/cyan]')
+            console.print(
+                '  [cyan]Bash:  eval "$(_AMPLIFIER_COMPLETE=bash_source amplifier)"[/cyan]'
+            )
+            console.print(
+                '  [cyan]Zsh:   eval "$(_AMPLIFIER_COMPLETE=zsh_source amplifier)"[/cyan]'
+            )
             console.print(
                 "  [cyan]Fish:  _AMPLIFIER_COMPLETE=fish_source amplifier > ~/.config/fish/completions/amplifier.fish[/cyan]"
             )
@@ -728,7 +1108,9 @@ def cli(ctx, install_completion):
 
         # Check if already installed (idempotent!)
         if _completion_already_installed(config_file, shell):
-            console.print(f"[green]✓ Completion already configured in {config_file}[/green]\n")
+            console.print(
+                f"[green]✓ Completion already configured in {config_file}[/green]\n"
+            )
             console.print("[dim]To use in this terminal:[/dim]")
             if shell == "fish":
                 console.print(f"  [cyan]source {config_file}[/cyan]")
@@ -754,7 +1136,7 @@ def cli(ctx, install_completion):
         _show_manual_instructions(shell, config_file)
         ctx.exit(1)
 
-    # If no command specified, launch chat mode with current profile
+    # If no command specified, launch chat mode
     # Note: Update check happens inside run command (not here, to avoid slowing other commands)
     # For initial prompt support, use: amplifier run --mode chat "prompt"
     if ctx.invoked_subcommand is None:
@@ -763,7 +1145,6 @@ def cli(ctx, install_completion):
         ctx.invoke(
             _run_command,
             prompt=None,
-            profile=None,
             bundle=None,  # Will check settings for active bundle
             provider=None,
             model=None,
@@ -799,31 +1180,41 @@ async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> N
     mention_resolver = session.coordinator.get_capability("mention_resolver")
     loader = MentionLoader(resolver=mention_resolver)
     deduplicator = session.coordinator.get_capability("mention_deduplicator")
-    context_messages = loader.load_mentions(prompt, relative_to=Path.cwd(), deduplicator=deduplicator)
+    context_messages = loader.load_mentions(
+        prompt, relative_to=Path.cwd(), deduplicator=deduplicator
+    )
 
     if not context_messages:
         logger.debug("No files found for runtime @mentions (or all already loaded)")
         return
 
-    logger.info(f"Loaded {len(context_messages)} unique context files from runtime @mentions")
+    logger.info(
+        f"Loaded {len(context_messages)} unique context files from runtime @mentions"
+    )
 
     # Add context messages to session as developer messages (before user message)
     context = session.coordinator.get("context")
     for i, msg in enumerate(context_messages):
         msg_dict = msg.model_dump()
-        logger.debug(f"Adding runtime context {i + 1}/{len(context_messages)}: {len(msg.content)} chars")
+        logger.debug(
+            f"Adding runtime context {i + 1}/{len(context_messages)}: {len(msg.content)} chars"
+        )
         await context.add_message(msg_dict)
 
 
-def _create_prompt_session() -> PromptSession:
+def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSession:
     """Create configured PromptSession for REPL.
 
     Provides:
     - Persistent history at ~/.amplifier/projects/<project-slug>/repl_history
+    - Dynamic prompt that shows [mode] indicator when a mode is active
     - Green prompt styling matching Rich console
     - History search with Ctrl-R
     - Multi-line input with Ctrl-J
     - Graceful fallback to in-memory history on errors
+
+    Args:
+        get_active_mode: Optional callable that returns the current active mode name
 
     Returns:
         Configured PromptSession instance
@@ -837,7 +1228,9 @@ def _create_prompt_session() -> PromptSession:
     from amplifier_app_cli.project_utils import get_project_slug
 
     project_slug = get_project_slug()
-    history_path = Path.home() / ".amplifier" / "projects" / project_slug / "repl_history"
+    history_path = (
+        Path.home() / ".amplifier" / "projects" / project_slug / "repl_history"
+    )
 
     # Ensure project directory exists
     history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -848,7 +1241,9 @@ def _create_prompt_session() -> PromptSession:
     except OSError as e:
         # Fallback if history file is corrupted or inaccessible
         history = InMemoryHistory()
-        logger.warning(f"Could not load history from {history_path}: {e}. Using in-memory history for this session.")
+        logger.warning(
+            f"Could not load history from {history_path}: {e}. Using in-memory history for this session."
+        )
 
     # Create key bindings for multi-line support
     kb = KeyBindings()
@@ -863,8 +1258,18 @@ def _create_prompt_session() -> PromptSession:
         """Submit input on Enter."""
         event.current_buffer.validate_and_handle()
 
+    # Dynamic prompt that shows [mode] indicator when a mode is active
+    def get_prompt():
+        if get_active_mode:
+            active_mode = get_active_mode()
+            if active_mode:
+                return HTML(
+                    f"\n<ansicyan>[{active_mode}]</ansicyan><ansigreen><b>></b></ansigreen> "
+                )
+        return HTML("\n<ansigreen><b>></b></ansigreen> ")
+
     return PromptSession(
-        message=HTML("\n<ansigreen><b>></b></ansigreen> "),
+        message=get_prompt,  # Callable for dynamic prompt
         history=history,
         key_bindings=kb,
         multiline=True,  # Enable multi-line display
@@ -878,7 +1283,7 @@ async def interactive_chat(
     search_paths: list[Path],
     verbose: bool,
     session_id: str | None = None,
-    profile_name: str = "unknown",
+    bundle_name: str = "unknown",
     prepared_bundle: "PreparedBundle | None" = None,
     initial_prompt: str | None = None,
     initial_transcript: list[dict] | None = None,
@@ -888,21 +1293,21 @@ async def interactive_chat(
     This is the unified entry point for interactive REPL sessions. It handles:
     - New sessions (initial_transcript=None)
     - Resumed sessions (initial_transcript provided)
-    - Bundle mode and profile mode (via prepared_bundle)
+    - Bundle mode (via prepared_bundle)
     - Initial prompt auto-execution
-    - Ctrl+C abort handling
+    - Ctrl+C cancellation handling
 
     Args:
         config: Resolved mount plan configuration
         search_paths: Module search paths
         verbose: Enable verbose output
         session_id: Optional session ID (generated if not provided)
-        profile_name: Profile or bundle name (e.g., "dev" or "bundle:foundation")
+        bundle_name: Bundle name (e.g., "dev" or "bundle:foundation")
         prepared_bundle: PreparedBundle from foundation's prepare workflow (bundle mode only)
         initial_prompt: Optional prompt to auto-execute before entering interactive loop
         initial_transcript: If provided, restore this transcript (resume mode)
     """
-    global _abort_requested
+    global _cancel_requested
 
     # === SESSION CREATION (unified via create_initialized_session) ===
     session_config = SessionConfig(
@@ -910,7 +1315,7 @@ async def interactive_chat(
         search_paths=search_paths,
         verbose=verbose,
         session_id=session_id,
-        profile_name=profile_name,
+        bundle_name=bundle_name,
         initial_transcript=initial_transcript,
         prepared_bundle=prepared_bundle,
     )
@@ -921,7 +1326,7 @@ async def interactive_chat(
     actual_session_id = initialized.session_id
 
     # Create command processor
-    command_processor = CommandProcessor(session, profile_name)
+    command_processor = CommandProcessor(session, bundle_name)
 
     # Create session store for saving
     store = SessionStore()
@@ -929,11 +1334,11 @@ async def interactive_chat(
     # Register incremental save hook for crash recovery between tool calls
     from .incremental_save import register_incremental_save
 
-    register_incremental_save(session, store, actual_session_id, profile_name, config)
+    register_incremental_save(session, store, actual_session_id, bundle_name, config)
 
     # Show banner only for NEW sessions (resume shows banner via history display in commands/session.py)
     if not session_config.is_resume:
-        config_summary = get_effective_config_summary(config, profile_name)
+        config_summary = get_effective_config_summary(config, bundle_name)
         console.print(
             Panel.fit(
                 f"[bold cyan]Amplifier Interactive Session[/bold cyan]\n"
@@ -945,7 +1350,11 @@ async def interactive_chat(
         )
 
     # Create prompt session for history and advanced editing
-    prompt_session = _create_prompt_session()
+    prompt_session = _create_prompt_session(
+        get_active_mode=lambda: command_processor.session.coordinator.session_state.get(
+            "active_mode"
+        )
+    )
 
     # Helper to extract model name from config
     def _extract_model_name() -> str:
@@ -953,7 +1362,9 @@ async def interactive_chat(
             first_provider = config["providers"][0]
             if isinstance(first_provider, dict) and "config" in first_provider:
                 provider_config = first_provider["config"]
-                return provider_config.get("model") or provider_config.get("default_model", "unknown")
+                return provider_config.get("model") or provider_config.get(
+                    "default_model", "unknown"
+                )
         return "unknown"
 
     # Helper to save session after each turn
@@ -961,10 +1372,16 @@ async def interactive_chat(
         context = session.coordinator.get("context")
         if context and hasattr(context, "get_messages"):
             messages = await context.get_messages()
+            # Load existing metadata to preserve fields like name, description
+            # that may have been set by other hooks (e.g., session-naming)
+            existing_metadata = store.get_metadata(actual_session_id) or {}
             metadata = {
+                **existing_metadata,  # Preserve name, description, etc.
                 "session_id": actual_session_id,
-                "created": datetime.now(UTC).isoformat(),
-                "profile": profile_name,
+                "created": existing_metadata.get(
+                    "created", datetime.now(UTC).isoformat()
+                ),
+                "bundle": bundle_name,
                 "model": _extract_model_name(),
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
             }
@@ -972,22 +1389,53 @@ async def interactive_chat(
 
     # Helper to execute a prompt with Ctrl+C handling
     async def _execute_with_interrupt(prompt_text: str) -> bool:
-        """Execute prompt with interrupt handling. Returns True if completed, False if aborted."""
-        global _abort_requested
-        _abort_requested = False
+        """Execute prompt with interrupt handling. Returns True if completed, False if cancelled."""
+        # Reset cancellation state for new execution
+        session.coordinator.cancellation.reset()
 
         def sigint_handler(signum, frame):
-            global _abort_requested
-            _abort_requested = True
+            """Handle Ctrl+C with graceful/immediate cancellation."""
+            cancellation = session.coordinator.cancellation
+
+            if cancellation.is_cancelled:
+                # Second Ctrl+C - request immediate cancellation
+                # Use call_soon_threadsafe since we're in a signal handler
+                loop = asyncio.get_event_loop()
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(
+                        session.coordinator.request_cancel(immediate=True)
+                    )
+                )
+                console.print("\n[bold red]Cancelling immediately...[/bold red]")
+            else:
+                # First Ctrl+C - request graceful cancellation
+                loop = asyncio.get_event_loop()
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(
+                        session.coordinator.request_cancel(immediate=False)
+                    )
+                )
+                # Show what's running
+                running_tools = cancellation.running_tool_names
+                if running_tools:
+                    tools_str = ", ".join(running_tools)
+                    console.print(
+                        f"\n[yellow]Cancelling after [bold]{tools_str}[/bold] completes... (Ctrl+C again to force)[/yellow]"
+                    )
+                else:
+                    console.print(
+                        "\n[yellow]Cancelling after current operation completes... (Ctrl+C again to force)[/yellow]"
+                    )
 
         original_handler = signal.signal(signal.SIGINT, sigint_handler)
 
         try:
             execute_task = asyncio.create_task(session.execute(prompt_text))
 
-            # Poll task while checking for abort flag
+            # Poll task while checking for cancellation
             while not execute_task.done():
-                if _abort_requested:
+                # Check for immediate cancellation - cancel the task
+                if session.coordinator.cancellation.is_immediate:
                     execute_task.cancel()
                     break
                 await asyncio.sleep(0.05)
@@ -1003,24 +1451,41 @@ async def interactive_chat(
                 if hooks:
                     from amplifier_core.events import PROMPT_COMPLETE
 
-                    await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt_text, "response": response})
+                    await hooks.emit(
+                        PROMPT_COMPLETE,
+                        {
+                            "prompt": prompt_text,
+                            "response": response,
+                            "session_id": actual_session_id,
+                        },
+                    )
 
-                # Save session after successful execution
+                # Save session after execution (even if cancelled - preserves state)
                 await _save_session()
+
+                # Return based on cancellation status
+                if session.coordinator.cancellation.is_cancelled:
+                    console.print("\n[yellow]Cancelled[/yellow]")
+                    return False
                 return True
 
             except asyncio.CancelledError:
-                console.print("\n[yellow]Aborted (Ctrl-C)[/yellow]")
+                # Immediate cancellation - task was force-cancelled
+                console.print("\n[yellow]Cancelled[/yellow]")
+                # Still save session to preserve any partial progress
+                await _save_session()
                 return False
 
         finally:
             signal.signal(signal.SIGINT, original_handler)
-            _abort_requested = False
+            # Don't reset cancellation here - session.py handles status
 
     # Execute initial prompt if provided
     if initial_prompt:
-        console.print(f"\n[bold cyan]>[/bold cyan] {initial_prompt[:100]}{'...' if len(initial_prompt) > 100 else ''}")
-        console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
+        console.print(
+            f"\n[bold cyan]>[/bold cyan] {initial_prompt[:100]}{'...' if len(initial_prompt) > 100 else ''}"
+        )
+        console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
 
         # Process runtime @mentions in initial prompt
         await _process_runtime_mentions(session, initial_prompt)
@@ -1042,7 +1507,7 @@ async def interactive_chat(
                     action, data = command_processor.process_input(user_input)
 
                     if action == "prompt":
-                        console.print("\n[dim]Processing... (Ctrl-C to abort)[/dim]")
+                        console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
 
                         # Process runtime @mentions in user input
                         await _process_runtime_mentions(session, data["text"])
@@ -1058,6 +1523,14 @@ async def interactive_chat(
                 console.print("\n[dim]Exiting...[/dim]")
                 break
 
+            except KeyboardInterrupt:
+                # Ctrl-C at prompt - confirm exit to prevent accidental exits when spamming Ctrl-C
+                console.print()  # New line for cleaner output
+                if click.confirm("Exit Amplifier?", default=False):
+                    console.print("[dim]Exiting...[/dim]")
+                    break
+                # Otherwise continue in the REPL
+
             except ModuleValidationError as e:
                 display_validation_error(console, e, verbose=verbose)
 
@@ -1067,8 +1540,33 @@ async def interactive_chat(
                     console.print_exception()
 
     finally:
+        # Only emit session:end if actual work occurred (at least one turn)
+        # This prevents empty sessions from being logged when user immediately exits
+        context = session.coordinator.get("context")
+        turn_count = 0
+        if context and hasattr(context, "get_messages"):
+            try:
+                messages = await context.get_messages()
+                turn_count = len([m for m in messages if m.get("role") == "user"])
+            except Exception:
+                pass  # If we can't get messages, assume no turns
+
+        if turn_count > 0:
+            hooks = session.coordinator.get("hooks")
+            if hooks:
+                from amplifier_core.events import SESSION_END
+
+                await hooks.emit(SESSION_END, {"session_id": actual_session_id})
+
         await initialized.cleanup()
-        console.print("\n[yellow]Session ended[/yellow]\n")
+        console.print(
+            "\n[yellow]Session exited - resume anytime with these commands:[/yellow]"
+        )
+        console.print("  [cyan]amplifier resume[/cyan]  # interactive list of sessions")
+        console.print(
+            f"  [cyan]amplifier session resume {actual_session_id[:8]}[/cyan]  # jump directly to this session"
+        )
+        console.print()
 
 
 async def execute_single(
@@ -1077,26 +1575,26 @@ async def execute_single(
     search_paths: list[Path],
     verbose: bool,
     session_id: str | None = None,
-    profile_name: str = "unknown",
+    bundle_name: str = "unknown",
     output_format: str = "text",
     prepared_bundle: "PreparedBundle | None" = None,
     initial_transcript: list[dict] | None = None,
 ):
     """Execute a single prompt and exit.
-    
+
     This is the unified entry point for single-shot execution. It handles:
     - New sessions (initial_transcript=None)
     - Resumed sessions (initial_transcript provided)
-    - Bundle mode and profile mode (via prepared_bundle)
+    - Bundle mode (via prepared_bundle)
     - All output formats (text, json, json-trace)
-    
+
     Args:
         prompt: The user prompt to execute
         config: Effective configuration dict
         search_paths: Paths for module resolution
         verbose: Enable verbose output
         session_id: Optional session ID (generated if None)
-        profile_name: Profile/bundle name for metadata
+        bundle_name: Bundle name for metadata
         output_format: Output format (text, json, json-trace)
         prepared_bundle: PreparedBundle for bundle mode
         initial_transcript: If provided, restore this transcript (resume mode)
@@ -1119,6 +1617,7 @@ async def execute_single(
     trace_collector = None
     if output_format == "json-trace":
         from .trace_collector import TraceCollector
+
         trace_collector = TraceCollector()
 
     # === SESSION CREATION (unified via create_initialized_session) ===
@@ -1127,12 +1626,12 @@ async def execute_single(
         search_paths=search_paths,
         verbose=verbose,
         session_id=session_id,
-        profile_name=profile_name,
+        bundle_name=bundle_name,
         initial_transcript=initial_transcript,
         prepared_bundle=prepared_bundle,
         output_format=output_format,
     )
-    
+
     # Create fully initialized session (handles all setup including resume)
     initialized = await create_initialized_session(session_config, console)
     session = initialized.session
@@ -1142,8 +1641,18 @@ async def execute_single(
         if trace_collector:
             hooks = session.coordinator.get("hooks")
             if hooks:
-                hooks.register("tool:pre", trace_collector.on_tool_pre, priority=1000, name="trace_collector_pre")
-                hooks.register("tool:post", trace_collector.on_tool_post, priority=1000, name="trace_collector_post")
+                hooks.register(
+                    "tool:pre",
+                    trace_collector.on_tool_pre,
+                    priority=1000,
+                    name="trace_collector_pre",
+                )
+                hooks.register(
+                    "tool:post",
+                    trace_collector.on_tool_post,
+                    priority=1000,
+                    name="trace_collector_post",
+                )
 
         # Process runtime @mentions in user input
         await _process_runtime_mentions(session, prompt)
@@ -1170,7 +1679,15 @@ async def execute_single(
         hooks = session.coordinator.get("hooks")
         if hooks:
             from amplifier_core.events import PROMPT_COMPLETE
-            await hooks.emit(PROMPT_COMPLETE, {"prompt": prompt, "response": response})
+
+            await hooks.emit(
+                PROMPT_COMPLETE,
+                {
+                    "prompt": prompt,
+                    "response": response,
+                    "session_id": actual_session_id,
+                },
+            )
 
         # Output response based on format
         if output_format in ["json", "json-trace"]:
@@ -1179,7 +1696,7 @@ async def execute_single(
                 "status": "success",
                 "response": response,
                 "session_id": actual_session_id,
-                "profile": profile_name,
+                "bundle": bundle_name,
                 "model": model_name,
                 "timestamp": datetime.now(UTC).isoformat(),
             }
@@ -1190,7 +1707,9 @@ async def execute_single(
         else:
             # Text output for humans
             if verbose:
-                console.print(f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]")
+                console.print(
+                    f"[dim]Response type: {type(response)}, length: {len(response) if response else 0}[/dim]"
+                )
             console.print(Markdown(response))
             console.print()  # Add blank line after output to prevent running into shell prompt
 
@@ -1199,10 +1718,16 @@ async def execute_single(
         messages = await context.get_messages() if context else []
         if messages:
             store = SessionStore()
+            # Load existing metadata to preserve fields like name, description
+            # that may have been set by other hooks (e.g., session-naming)
+            existing_metadata = store.get_metadata(actual_session_id) or {}
             metadata = {
+                **existing_metadata,  # Preserve name, description, etc.
                 "session_id": actual_session_id,
-                "created": datetime.now(UTC).isoformat(),
-                "profile": profile_name,
+                "created": existing_metadata.get(
+                    "created", datetime.now(UTC).isoformat()
+                ),
+                "bundle": bundle_name,
                 "model": model_name,
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
             }
@@ -1251,6 +1776,12 @@ async def execute_single(
         sys.exit(1)
 
     finally:
+        # Emit session:end event before cleanup to allow hooks to finish
+        hooks = session.coordinator.get("hooks")
+        if hooks:
+            from amplifier_core.events import SESSION_END
+
+            await hooks.emit(SESSION_END, {"session_id": actual_session_id})
         await initialized.cleanup()
         # Allow async tasks to complete before output
         if output_format in ["json", "json-trace"]:
@@ -1271,17 +1802,17 @@ async def execute_single(
 # Register standalone commands
 cli.add_command(agents_group)
 cli.add_command(allowed_dirs_group)
+cli.add_command(denied_dirs_group)
 cli.add_command(bundle_group)
-cli.add_command(cache_group)
-cli.add_command(collection_group)
 cli.add_command(init_cmd)
-cli.add_command(profile_group)
 cli.add_command(module_group)
+cli.add_command(notify_group)
 cli.add_command(provider_group)
 cli.add_command(source_group)
 cli.add_command(tool_group)
 cli.add_command(update_cmd)
 cli.add_command(version_cmd)
+cli.add_command(reset_cmd)
 
 
 # Note: The *_with_session variants were removed in favor of unified functions

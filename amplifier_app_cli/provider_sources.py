@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from rich.console import Console
 
 if TYPE_CHECKING:
-    from amplifier_app_cli.lib.legacy import ConfigManager
+    from amplifier_app_cli.lib.config_compat import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +23,59 @@ DEFAULT_PROVIDER_SOURCES = {
     "provider-vllm": "git+https://github.com/microsoft/amplifier-module-provider-vllm@main",
 }
 
+# Runtime dependencies between providers.
+# Some providers extend others (e.g., Azure OpenAI extends OpenAI's provider class).
+# These are runtime dependencies, NOT build dependencies, to avoid transitive
+# dependency issues with editable installs during development.
+# Format: {"dependent": ["dependency1", "dependency2", ...]}
+PROVIDER_DEPENDENCIES: dict[str, list[str]] = {
+    "provider-azure-openai": ["provider-openai"],  # AzureOpenAIProvider extends OpenAIProvider
+}
 
-def get_effective_provider_sources(config_manager: "ConfigManager | None" = None) -> dict[str, str]:
+
+def _get_ordered_providers(sources: dict[str, str]) -> list[tuple[str, str]]:
+    """Order providers so dependencies are installed first (topological sort).
+
+    Ensures providers that depend on others are installed after their dependencies.
+    For example, provider-azure-openai depends on provider-openai at runtime
+    (AzureOpenAIProvider extends OpenAIProvider), so openai must be installed first.
+
+    Args:
+        sources: Dict mapping module_id to source URI
+
+    Returns:
+        List of (module_id, source_uri) tuples in dependency-respecting order
+    """
+    ordered: list[tuple[str, str]] = []
+    remaining = set(sources.keys())
+
+    while remaining:
+        # Find providers whose dependencies are all satisfied (not in remaining)
+        ready = [
+            p
+            for p in remaining
+            if all(dep not in remaining for dep in PROVIDER_DEPENDENCIES.get(p, []))
+        ]
+
+        if not ready:
+            # No providers ready - either circular dependency or dependency not in sources.
+            # Fall back to taking any remaining provider to avoid infinite loop.
+            ready = [sorted(remaining)[0]]
+            logger.debug(
+                f"Dependency ordering: no ready providers, falling back to {ready[0]}"
+            )
+
+        # Process ready providers in sorted order for determinism
+        for provider in sorted(ready):
+            ordered.append((provider, sources[provider]))
+            remaining.remove(provider)
+
+    return ordered
+
+
+def get_effective_provider_sources(
+    config_manager: "ConfigManager | None" = None,
+) -> dict[str, str]:
     """Get provider sources with settings modules and overrides applied.
 
     Merges:
@@ -48,7 +99,9 @@ def get_effective_provider_sources(config_manager: "ConfigManager | None" = None
         for module_id in list(sources.keys()):
             if module_id in overrides:
                 sources[module_id] = overrides[module_id]
-                logger.debug(f"Using override source for {module_id}: {overrides[module_id]}")
+                logger.debug(
+                    f"Using override source for {module_id}: {overrides[module_id]}"
+                )
 
         # 2. Add user-added provider modules from settings
         # These are providers added via `amplifier module add provider-X --source ...`
@@ -154,7 +207,16 @@ def ensure_provider_installed(
         module_path = source.resolve()
 
         result = subprocess.run(
-            ["uv", "pip", "install", "-e", str(module_path), "--python", sys.executable],
+            [
+                "uv",
+                "pip",
+                "install",
+                "-e",
+                str(module_path),
+                "--python",
+                sys.executable,
+                "--refresh",  # Force fresh fetch from git sources
+            ],
             capture_output=True,
             text=True,
         )
@@ -178,7 +240,7 @@ def ensure_provider_installed(
     except Exception as e:
         logger.warning(f"Failed to install {module_id}: {e}")
         if console:
-            console.print(f" [red]✗[/red]")
+            console.print(" [red]✗[/red]")
         return False
 
 
@@ -212,7 +274,11 @@ def install_known_providers(
     # Get effective sources (with overrides applied)
     sources = get_effective_provider_sources(config_manager)
 
-    for module_id, source_uri in sources.items():
+    # Order providers so dependencies are installed first
+    # (e.g., provider-openai before provider-azure-openai)
+    ordered_providers = _get_ordered_providers(sources)
+
+    for module_id, source_uri in ordered_providers:
         try:
             if verbose and console:
                 console.print(f"  Installing {module_id}...", end="")
@@ -228,7 +294,15 @@ def install_known_providers(
             # 2. Consistent behavior with foundation's ModuleActivator
             # 3. Dependencies are properly installed from the source location
             result = subprocess.run(
-                ["uv", "pip", "install", "-e", str(module_path), "--python", sys.executable],
+                [
+                    "uv",
+                    "pip",
+                    "install",
+                    "-e",
+                    str(module_path),
+                    "--python",
+                    sys.executable,
+                ],
                 capture_output=True,
                 text=True,
             )
@@ -250,7 +324,9 @@ def install_known_providers(
                 console.print(f"[red]Failed to install {module_id}: {e}[/red]")
 
     if failed and verbose and console:
-        console.print(f"\n[yellow]Warning: {len(failed)} provider(s) failed to install[/yellow]")
+        console.print(
+            f"\n[yellow]Warning: {len(failed)} provider(s) failed to install[/yellow]"
+        )
 
     # Invalidate import caches so newly installed packages are immediately visible
     # Without this, the current Python process won't see packages installed via subprocess
