@@ -15,6 +15,8 @@ import click
 if TYPE_CHECKING:
     pass
 
+from amplifier_foundation.exceptions import BundleError, BundleValidationError
+
 from ..console import console
 from ..session_store import extract_session_mode
 from ..effective_config import get_effective_config_summary
@@ -166,6 +168,14 @@ def register_run_command(
         except FileNotFoundError as exc:
             # Bundle not found - display error gracefully without traceback
             console.print(f"[red]Error:[/red] {exc}")
+            sys.exit(1)
+        except BundleValidationError as exc:
+            # Bundle validation failed (e.g., malformed YAML, missing required fields)
+            console.print(f"[red]Bundle Validation Error:[/red] {exc}")
+            sys.exit(1)
+        except BundleError as exc:
+            # General bundle error (loading, resolution, etc.)
+            console.print(f"[red]Bundle Error:[/red] {exc}")
             sys.exit(1)
 
         search_paths = get_module_search_paths()
