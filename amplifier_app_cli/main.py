@@ -1202,7 +1202,7 @@ async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> N
         await context.add_message(msg_dict)
 
 
-def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSession:
+def _create_prompt_session(get_active_mode: Callable | None = None) -> tuple[PromptSession, list]:
     """Create configured PromptSession for REPL.
 
     Provides:
@@ -1253,6 +1253,32 @@ def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSes
         """Insert newline character for multi-line input."""
         event.current_buffer.insert_text("\n")
 
+    # Storage for pasted images (session-scoped)
+    pasted_images: list[dict] = []
+
+    @kb.add("c-v")  # Ctrl-V for clipboard paste (with image support)
+    def handle_paste(event):
+        """Handle clipboard paste - supports both text and images."""
+        from .clipboard_handler import ClipboardImageHandler
+
+        handler = ClipboardImageHandler()
+
+        # Check if clipboard has an image
+        if handler.has_image_in_clipboard():
+            # Read image data from clipboard
+            image_block = handler.read_clipboard_image()
+            if image_block:
+                # Store the ImageBlock data (no temp file!)
+                pasted_images.append(image_block)
+
+                # Insert visual indicator in the text
+                image_num = len(pasted_images)
+                event.current_buffer.insert_text(f"[📎 Image #{image_num}] ")
+                return
+
+        # No image, do normal paste (let prompt_toolkit handle it)
+        event.current_buffer.paste_clipboard_data()
+
     @kb.add("enter")  # Enter submits (even in multiline mode)
     def accept_input(event):
         """Submit input on Enter."""
@@ -1268,7 +1294,7 @@ def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSes
                 )
         return HTML("\n<ansigreen><b>></b></ansigreen> ")
 
-    return PromptSession(
+    prompt_session = PromptSession(
         message=get_prompt,  # Callable for dynamic prompt
         history=history,
         key_bindings=kb,
@@ -1276,6 +1302,9 @@ def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSes
         prompt_continuation="  ",  # Two spaces for alignment (cleaner than "... ")
         enable_history_search=True,  # Enables Ctrl-R
     )
+
+    # Return both the session and the pasted_images list
+    return prompt_session, pasted_images
 
 
 async def interactive_chat(
@@ -1350,7 +1379,8 @@ async def interactive_chat(
         )
 
     # Create prompt session for history and advanced editing
-    prompt_session = _create_prompt_session(
+    # Returns (prompt_session, pasted_images_list)
+    prompt_session, pasted_images = _create_prompt_session(
         get_active_mode=lambda: command_processor.session.coordinator.session_state.get(
             "active_mode"
         )
@@ -1511,7 +1541,43 @@ async def interactive_chat(
 
                         # Process runtime @mentions in user input
                         await _process_runtime_mentions(session, data["text"])
-                        await _execute_with_interrupt(data["text"])
+                        
+                        # If images were pasted, inject them directly into the message
+                        if pasted_images:
+                            from amplifier_core.message_models import ImageBlock, TextBlock
+                            
+                            # Build content blocks: images + text
+                            content_blocks = []
+                            
+                            # Add all pasted images
+                            for image_data in pasted_images:
+                                image_block = ImageBlock(
+                                    type="image",
+                                    source=image_data["source"]
+                                )
+                                content_blocks.append(image_block)
+                            
+                            # Add user's text
+                            if data["text"].strip():  # Only add if non-empty
+                                text_block = TextBlock(type="text", text=data["text"])
+                                content_blocks.append(text_block)
+                            
+                            # Add multimodal message directly to context
+                            context = session.coordinator.get("context")
+                            user_message = {
+                                "role": "user",
+                                "content": [block.model_dump() for block in content_blocks]
+                            }
+                            await context.add_message(user_message)
+                            
+                            # Clear pasted images for next message
+                            pasted_images.clear()
+                            
+                            # Execute with empty prompt (orchestrator uses context)
+                            await _execute_with_interrupt("")
+                        else:
+                            # Normal text-only flow
+                            await _execute_with_interrupt(data["text"])
 
                     else:
                         # Handle command
