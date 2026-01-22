@@ -596,7 +596,7 @@ class CommandProcessor:
                 return "Error: Command executor not available"
 
             # Execute the command (substitute template variables)
-            prompt = slash_cmd_tool.executor.execute(command_name, args)
+            prompt = await slash_cmd_tool.executor.execute(command_name, args)
 
             # Return special marker so the REPL knows to execute this as a prompt
             return f"__EXECUTE_PROMPT__:{prompt}"
