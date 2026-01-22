@@ -579,15 +579,20 @@ def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> No
 
 
 def _build_modes_behaviors() -> list[str]:
-    """Return modes bundle URI for composition.
+    """Return modes behavior URI for composition.
 
     Modes are always available - users choose to use /mode commands or not.
     No enable/disable needed since modes have no cost when unused.
 
+    Loads the behavior (not root bundle) to avoid double-loading foundation
+    and to follow the same pattern as notification behaviors.
+
     Returns:
-        List containing the modes bundle URI.
+        List containing the modes behavior URI.
     """
-    return ["git+https://github.com/microsoft/amplifier-bundle-modes@main"]
+    return [
+        "git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=behaviors/modes.yaml"
+    ]
 
 
 def _build_notification_behaviors(
