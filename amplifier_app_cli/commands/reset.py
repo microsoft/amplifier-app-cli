@@ -7,6 +7,7 @@ Categories:
     projects  - Session transcripts and history
     settings  - User configuration (settings.yaml)
     keys      - API keys (keys.env)
+    commands  - Custom slash commands (~/.amplifier/commands/)
     cache     - Downloaded bundles (auto-regenerates)
     registry  - Bundle mappings (auto-regenerates)
 
@@ -15,7 +16,7 @@ Example:
     amplifier reset
 
     # Scripted usage
-    amplifier reset --preserve projects,settings,keys -y
+    amplifier reset --preserve projects,settings,keys,commands -y
 """
 
 from __future__ import annotations
@@ -35,24 +36,26 @@ RESET_CATEGORIES = {
     "projects": ["projects"],
     "settings": ["settings.yaml"],
     "keys": ["keys.env"],
+    "commands": ["commands"],
     "cache": ["cache"],
     "registry": ["registry.json"],
 }
 
 # Display order for categories
-CATEGORY_ORDER = ["projects", "settings", "keys", "cache", "registry"]
+CATEGORY_ORDER = ["projects", "settings", "keys", "commands", "cache", "registry"]
 
 # Descriptions for each category (used in UI)
 CATEGORY_DESCRIPTIONS = {
     "projects": "Session transcripts and history",
     "settings": "User configuration (settings.yaml)",
     "keys": "API keys (keys.env)",
+    "commands": "Custom slash commands (~/.amplifier/commands/)",
     "cache": "Downloaded bundles (auto-regenerates)",
     "registry": "Bundle mappings (auto-regenerates)",
 }
 
 # Default categories to preserve
-DEFAULT_PRESERVE = {"projects", "settings", "keys"}
+DEFAULT_PRESERVE = {"projects", "settings", "keys", "commands"}
 
 # Default install source
 DEFAULT_INSTALL_SOURCE = "git+https://github.com/microsoft/amplifier"
@@ -386,13 +389,14 @@ def reset(
       projects   - Session transcripts and history
       settings   - User configuration (settings.yaml)
       keys       - API keys (keys.env)
+      commands   - Custom slash commands (~/.amplifier/commands/)
       cache      - Downloaded bundles (auto-regenerates)
       registry   - Bundle mappings (auto-regenerates)
 
     \b
     Examples:
       amplifier reset                      Interactive mode (default)
-      amplifier reset --preserve projects,settings,keys -y
+      amplifier reset --preserve projects,settings,keys,commands -y
                                            Scripted: preserve specific categories
       amplifier reset --remove cache,registry -y
                                            Scripted: remove specific categories
