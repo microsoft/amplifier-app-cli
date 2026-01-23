@@ -285,6 +285,13 @@ async def _create_bundle_session(
                     approval_system=approval_system,
                     display_system=display_system,
                 )
+                # Warn if retry still didn't load providers
+                providers_after_retry = session.coordinator.get("providers")
+                if not providers_after_retry:
+                    logger.warning(
+                        "Self-healing retry completed but still no providers loaded. "
+                        "Check provider configuration and credentials."
+                    )
     except (ModuleValidationError, RuntimeError) as e:
         core_logger.setLevel(original_level)
         if not display_validation_error(console, e, verbose=config.verbose):
@@ -414,23 +421,9 @@ def _should_attempt_self_healing(
         return False  # No providers expected, nothing to heal
 
     # Check if any providers are actually mounted
-    provider_manager = session.coordinator.get("provider")
-    if provider_manager is None:
-        return True  # No provider manager means no providers loaded
-
-    # Check if the provider manager has any providers
-    # The provider manager should have a way to check if providers exist
-    providers = getattr(provider_manager, "_providers", None)
-    if providers is None:
-        # Try alternative attribute names
-        providers = getattr(provider_manager, "providers", None)
-
-    if providers is None:
-        # Can't determine - be conservative and don't heal
-        logger.debug("Cannot determine if providers are mounted - skipping self-healing")
-        return False
-
-    if len(providers) == 0:
+    # coordinator.get("providers") returns the providers dict directly (public API)
+    providers = session.coordinator.get("providers")
+    if not providers:
         return True  # Config specified providers but none loaded
 
     return False
