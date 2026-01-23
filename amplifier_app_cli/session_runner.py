@@ -254,6 +254,9 @@ async def _create_bundle_session(
     inject_user_providers(config.config, prepared_bundle)
 
     # Step 4c: Create session (foundation handles init internally)
+    # Self-healing: The kernel intentionally swallows module load errors to be resilient.
+    # If providers fail to load due to stale install state (missing dependencies),
+    # the session is created but with no providers mounted. We detect this and retry.
     core_logger = logging.getLogger("amplifier_core")
     original_level = core_logger.level
     if not config.verbose:
@@ -266,6 +269,22 @@ async def _create_bundle_session(
                 approval_system=approval_system,
                 display_system=display_system,
             )
+
+            # Self-healing check: if config specified providers but none loaded,
+            # this likely indicates stale install state (missing dependencies).
+            # Invalidate all install state and retry once.
+            if _should_attempt_self_healing(session, prepared_bundle):
+                logger.warning(
+                    "No providers mounted despite config specifying providers. "
+                    "Likely stale install state - invalidating and retrying..."
+                )
+                _invalidate_all_install_state(prepared_bundle)
+                # Retry once - if it fails again, it's a real error
+                session = await prepared_bundle.create_session(
+                    session_id=session_id,
+                    approval_system=approval_system,
+                    display_system=display_system,
+                )
     except (ModuleValidationError, RuntimeError) as e:
         core_logger.setLevel(original_level)
         if not display_validation_error(console, e, verbose=config.verbose):
@@ -362,3 +381,95 @@ def register_session_spawning(session: AmplifierSession) -> None:
 
     session.coordinator.register_capability("session.spawn", spawn_capability)
     session.coordinator.register_capability("session.resume", resume_capability)
+
+
+# =============================================================================
+# Self-healing helpers for stale install state
+# =============================================================================
+
+
+def _should_attempt_self_healing(
+    session: AmplifierSession, prepared_bundle: "PreparedBundle"
+) -> bool:
+    """Check if self-healing should be attempted for a session.
+
+    Self-healing is needed when:
+    1. The config specified providers (user expects them to load)
+    2. No providers are actually mounted (they failed to load)
+
+    This typically happens when install-state.json says modules are installed,
+    but dependencies are missing (e.g., after uv tool reinstall).
+
+    Args:
+        session: The created session to check.
+        prepared_bundle: The bundle that was used to create the session.
+
+    Returns:
+        True if self-healing should be attempted.
+    """
+    # Check if config specified any providers
+    mount_plan = prepared_bundle.mount_plan
+    configured_providers = mount_plan.get("providers", [])
+    if not configured_providers:
+        return False  # No providers expected, nothing to heal
+
+    # Check if any providers are actually mounted
+    provider_manager = session.coordinator.get("provider")
+    if provider_manager is None:
+        return True  # No provider manager means no providers loaded
+
+    # Check if the provider manager has any providers
+    # The provider manager should have a way to check if providers exist
+    providers = getattr(provider_manager, "_providers", None)
+    if providers is None:
+        # Try alternative attribute names
+        providers = getattr(provider_manager, "providers", None)
+
+    if providers is None:
+        # Can't determine - be conservative and don't heal
+        logger.debug("Cannot determine if providers are mounted - skipping self-healing")
+        return False
+
+    if len(providers) == 0:
+        return True  # Config specified providers but none loaded
+
+    return False
+
+
+def _invalidate_all_install_state(prepared_bundle: "PreparedBundle") -> None:
+    """Invalidate all install state to force reinstall of all modules.
+
+    This is a more aggressive approach than invalidating specific modules,
+    but necessary when we can't determine exactly which module failed
+    (because the kernel swallows errors).
+
+    Args:
+        prepared_bundle: The PreparedBundle containing the resolver.
+    """
+    try:
+        resolver = prepared_bundle.resolver
+        # Access the activator (BundleModuleResolver stores it as _activator)
+        activator = getattr(resolver, "_activator", None)
+        if not activator:
+            logger.warning("No activator found - cannot invalidate install state")
+            return
+
+        # Access install state manager
+        install_state = getattr(activator, "_install_state", None)
+        if not install_state:
+            logger.warning("No install state manager found - cannot invalidate")
+            return
+
+        # Invalidate all modules
+        install_state.invalidate(None)
+        install_state.save()
+        logger.info("Invalidated all install state for self-healing")
+
+        # Clear the activator's activated set so it will re-activate all modules
+        activated = getattr(activator, "_activated", None)
+        if activated:
+            activated.clear()
+            logger.debug("Cleared activator's activated set")
+
+    except Exception as e:
+        logger.warning(f"Failed to invalidate install state: {e}")
