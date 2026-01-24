@@ -1277,7 +1277,8 @@ def _create_prompt_session(get_active_mode: Callable | None = None) -> tuple[Pro
                 return
 
         # No image, do normal paste (let prompt_toolkit handle it)
-        event.current_buffer.paste_clipboard_data()
+        clipboard_data = event.app.clipboard.get_data()
+        event.current_buffer.paste_clipboard_data(clipboard_data)
 
     @kb.add("enter")  # Enter submits (even in multiline mode)
     def accept_input(event):
