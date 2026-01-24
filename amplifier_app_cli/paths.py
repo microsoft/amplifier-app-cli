@@ -359,6 +359,7 @@ async def create_session_from_bundle(
         session_id=session_id,
         approval_system=approval_system,
         display_system=display_system,
+        session_cwd=Path.cwd(),  # CLI uses CWD for local @-mentions
     )
 
     return session

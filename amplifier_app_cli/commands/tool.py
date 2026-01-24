@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 import click
@@ -101,7 +102,7 @@ async def _get_mounted_tools_from_bundle_async(
     inject_user_providers(_config, prepared_bundle)
 
     # Create session from prepared bundle
-    session = await prepared_bundle.create_session()
+    session = await prepared_bundle.create_session(session_cwd=Path.cwd())
     await session.initialize()
 
     try:
@@ -181,7 +182,7 @@ async def _invoke_tool_from_bundle_async(
     inject_user_providers(_config, prepared_bundle)
 
     # Create session from prepared bundle
-    session = await prepared_bundle.create_session()
+    session = await prepared_bundle.create_session(session_cwd=Path.cwd())
     await session.initialize()
 
     # Register session spawning (enables tools like recipes to spawn sub-sessions)
