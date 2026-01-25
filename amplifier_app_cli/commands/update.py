@@ -1,7 +1,7 @@
 """Update command for Amplifier CLI."""
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 from rich.console import Console
@@ -263,6 +263,8 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
     from amplifier_foundation.sources.protocol import SourceStatus
     from amplifier_foundation.updates import BundleStatus
 
+    from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
+
     discovery = AppBundleDiscovery()
     registry = create_bundle_registry()
     cache_dir = get_amplifier_home() / "cache"
@@ -281,6 +283,24 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
 
             # Check status directly from URI
             parsed = parse_uri(uri)
+
+            # For file:// URIs (editable installs), check if this is a well-known
+            # bundle with a remote URI we can use for update checking
+            if parsed.is_file and bundle_name in WELL_KNOWN_BUNDLES:
+                well_known_info = WELL_KNOWN_BUNDLES[bundle_name]
+                remote_uri_value = well_known_info.get("remote")
+                if remote_uri_value and isinstance(remote_uri_value, str):
+                    # Use remote URI for status checking, but get local SHA from file path
+                    source_status = await _get_file_bundle_status(
+                        bundle_name, uri, remote_uri_value, git_handler, cache_dir
+                    )
+                    results[bundle_name] = BundleStatus(
+                        bundle_name=bundle_name,
+                        bundle_source=uri,
+                        sources=[source_status],
+                    )
+                    continue
+
             if git_handler.can_handle(parsed):
                 source_status: SourceStatus = await git_handler.get_status(
                     parsed, cache_dir
@@ -308,6 +328,97 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
             continue  # Skip bundles that fail status check
 
     return results
+
+
+async def _get_file_bundle_status(
+    bundle_name: str,
+    file_uri: str,
+    remote_uri: str,
+    git_handler: Any,
+    cache_dir: Any,
+) -> Any:
+    """Get status for a file:// bundle by comparing local git SHA to remote.
+
+    For well-known bundles that are editable-installed (file:// URI), we can
+    still check for updates by:
+    1. Getting the local git SHA from the file path
+    2. Getting the remote SHA from the well-known remote URI
+
+    This allows `amplifier update` to show meaningful version info for
+    editable installs like foundation.
+
+    Args:
+        bundle_name: Name of the bundle
+        file_uri: The file:// URI pointing to local path
+        remote_uri: The git+ remote URI from WELL_KNOWN_BUNDLES
+        git_handler: GitSourceHandler for remote checks
+        cache_dir: Cache directory for git operations
+
+    Returns:
+        SourceStatus with local and remote commit info
+    """
+    import subprocess
+
+    from amplifier_foundation.paths.resolution import parse_uri
+    from amplifier_foundation.sources.protocol import SourceStatus
+
+    # Extract local path from file:// URI
+    local_path = file_uri.replace("file://", "")
+
+    # Get local git SHA
+    local_sha = None
+    has_local_changes = False
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=local_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            local_sha = result.stdout.strip()
+
+        # Check for uncommitted changes
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=local_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            has_local_changes = True
+    except Exception:
+        pass  # Failed to get local SHA, will show as unknown
+
+    # Get remote SHA using the git handler
+    remote_sha = None
+    try:
+        remote_parsed = parse_uri(remote_uri)
+        if git_handler.can_handle(remote_parsed):
+            remote_status = await git_handler.get_status(remote_parsed, cache_dir)
+            remote_sha = remote_status.remote_commit
+    except Exception:
+        pass  # Failed to get remote SHA, will show as unknown
+
+    # Determine if there's an update available
+    has_update = None
+    if local_sha and remote_sha:
+        has_update = local_sha != remote_sha
+
+    summary = "Local editable install"
+    if has_local_changes:
+        summary = "Local editable install (with uncommitted changes)"
+
+    return SourceStatus(
+        source_uri=file_uri,
+        is_cached=True,
+        has_update=has_update,
+        cached_commit=local_sha,
+        remote_commit=remote_sha,
+        summary=summary,
+    )
 
 
 def _get_active_bundle_name() -> str | None:

@@ -579,19 +579,23 @@ def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> No
 
 
 def _build_modes_behaviors() -> list[str]:
-    """Return modes behavior URI for composition.
+    """Return modes behavior URIs for composition.
 
     Modes are always available - users choose to use /mode commands or not.
     No enable/disable needed since modes have no cost when unused.
 
-    Loads the behavior (not root bundle) to avoid double-loading foundation
-    and to follow the same pattern as notification behaviors.
+    Returns the ROOT bundle first (for proper SHA tracking during updates),
+    then the specific behavior. The root bundle is minimal and just identifies
+    the repo; the actual mode functionality comes from the subdirectory behavior.
 
     Returns:
-        List containing the modes behavior URI.
+        List containing the modes bundle URIs.
     """
     return [
-        "git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=behaviors/modes.yaml"
+        # Root bundle for proper SHA tracking in `amplifier update`
+        "git+https://github.com/microsoft/amplifier-bundle-modes@main",
+        # Actual behavior with mode functionality
+        "git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=behaviors/modes.yaml",
     ]
 
 
@@ -625,18 +629,35 @@ def _build_notification_behaviors(
 
     behaviors: list[str] = []
 
-    # Desktop notifications behavior
+    # Check if any notification type is enabled
     desktop_config = notifications_config.get("desktop", {})
-    if desktop_config.get("enabled", False):
+    desktop_enabled = desktop_config.get("enabled", False)
+
+    push_config = notifications_config.get("push", {})
+    ntfy_config = notifications_config.get("ntfy", {})
+    push_enabled = push_config.get("enabled", False) or ntfy_config.get(
+        "enabled", False
+    )
+
+    # If any notification is enabled, add the ROOT bundle first.
+    # This ensures the root bundle gets cached with proper SHA metadata,
+    # fixing the "unknown" version issue during `amplifier update`.
+    # The root bundle is a minimal marker that just identifies the repo;
+    # the actual functionality comes from the subdirectory behaviors below.
+    if desktop_enabled or push_enabled:
+        behaviors.append(
+            "git+https://github.com/microsoft/amplifier-bundle-notify@main"
+        )
+
+    # Desktop notifications behavior
+    if desktop_enabled:
         behaviors.append(
             "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/desktop-notifications.yaml"
         )
 
     # Push notifications behavior (includes desktop as a dependency for the event)
     # Support both "push:" and "ntfy:" config keys for convenience
-    push_config = notifications_config.get("push", {})
-    ntfy_config = notifications_config.get("ntfy", {})
-    if push_config.get("enabled", False) or ntfy_config.get("enabled", False):
+    if push_enabled:
         behaviors.append(
             "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/push-notifications.yaml"
         )
