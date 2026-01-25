@@ -884,10 +884,9 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
                 check_umbrella_dependencies_for_updates(umbrella_info)
             )
 
-    # Check modules and bundles
+    # Check modules
     if not force:
         console.print("  Checking modules...")
-        console.print("  Checking bundles...")
 
     async def _check_sources():
         import httpx
