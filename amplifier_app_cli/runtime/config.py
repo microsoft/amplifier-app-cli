@@ -584,17 +584,11 @@ def _build_modes_behaviors() -> list[str]:
     Modes are always available - users choose to use /mode commands or not.
     No enable/disable needed since modes have no cost when unused.
 
-    Returns the ROOT bundle first (for proper SHA tracking during updates),
-    then the specific behavior. The root bundle is minimal and just identifies
-    the repo; the actual mode functionality comes from the subdirectory behavior.
-
     Returns:
-        List containing the modes bundle URIs.
+        List containing the modes behavior URI.
     """
     return [
-        # Root bundle for proper SHA tracking in `amplifier update`
-        "git+https://github.com/microsoft/amplifier-bundle-modes@main",
-        # Actual behavior with mode functionality
+        # Only load the behavior, NOT the root bundle (which includes foundation)
         "git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=behaviors/modes.yaml",
     ]
 
