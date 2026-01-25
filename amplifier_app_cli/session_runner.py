@@ -266,6 +266,7 @@ async def _create_bundle_session(
                 approval_system=approval_system,
                 display_system=display_system,
                 session_cwd=Path.cwd(),  # CLI uses CWD for local @-mentions
+                is_resumed=config.is_resume,  # Pass resume flag to kernel
             )
     except (ModuleValidationError, RuntimeError) as e:
         core_logger.setLevel(original_level)
