@@ -441,6 +441,17 @@ async def spawn_sub_session(
             "mention_deduplicator", ContentDeduplicator()
         )
 
+    # Working directory - inherit from parent for consistent path resolution
+    # This ensures child sessions use the same project directory as parent
+    # (critical for server/web deployments where process cwd differs from user's project)
+    parent_working_dir = parent_session.coordinator.get_capability(
+        "session.working_dir"
+    )
+    if parent_working_dir:
+        child_session.coordinator.register_capability(
+            "session.working_dir", parent_working_dir
+        )
+
     # Approval provider (for hooks-approval module, if active)
     register_provider_fn = child_session.coordinator.get_capability(
         "approval.register_provider"
