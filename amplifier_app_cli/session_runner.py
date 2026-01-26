@@ -338,9 +338,11 @@ def register_session_spawning(session: AmplifierSession) -> None:
         hook_inheritance: dict[str, list[str]] | None = None,
         orchestrator_config: dict | None = None,
         parent_messages: list[dict] | None = None,
-        # Provider/model override for recipe steps
+        # Provider/model override (legacy - use provider_preferences instead)
         provider_override: str | None = None,
         model_override: str | None = None,
+        # Provider preferences (ordered fallback chain)
+        provider_preferences: list | None = None,
     ) -> dict:
         return await spawn_sub_session(
             agent_name=agent_name,
@@ -354,6 +356,7 @@ def register_session_spawning(session: AmplifierSession) -> None:
             parent_messages=parent_messages,
             provider_override=provider_override,
             model_override=model_override,
+            provider_preferences=provider_preferences,
         )
 
     async def resume_capability(sub_session_id: str, instruction: str) -> dict:

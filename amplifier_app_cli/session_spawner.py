@@ -243,6 +243,7 @@ async def spawn_sub_session(
     parent_messages: list[dict] | None = None,
     provider_override: str | None = None,
     model_override: str | None = None,
+    provider_preferences: list | None = None,
 ) -> dict:
     """
     Spawn sub-session with agent configuration overlay.
@@ -266,8 +267,14 @@ async def spawn_sub_session(
             reference parent's conversation history.
         provider_override: Optional provider ID to use for this session
             (e.g., "anthropic", "openai"). Promotes the provider to priority 0.
+            LEGACY: Use provider_preferences instead for ordered fallback chains.
         model_override: Optional model name to use with the provider
             (e.g., "claude-sonnet-4-5-20250514", "gpt-4o").
+            LEGACY: Use provider_preferences instead for ordered fallback chains.
+        provider_preferences: Optional ordered list of ProviderPreference objects.
+            Each preference has provider and model. System tries each in order
+            until finding an available provider. Model names support glob patterns.
+            Takes precedence over provider_override/model_override if both specified.
 
     Returns:
         Dict with "output" (response) and "session_id" (for multi-turn)
@@ -292,8 +299,14 @@ async def spawn_sub_session(
     if hook_inheritance and "hooks" in merged_config:
         merged_config = _filter_hooks(merged_config, hook_inheritance)
 
-    # Apply provider override if specified (recipe-level provider selection)
-    if provider_override or model_override:
+    # Apply provider preferences if specified (ordered fallback chain)
+    # Takes precedence over legacy provider_override/model_override
+    if provider_preferences:
+        from amplifier_foundation import apply_provider_preferences
+
+        merged_config = apply_provider_preferences(merged_config, provider_preferences)
+    elif provider_override or model_override:
+        # Legacy: Apply single provider/model override
         merged_config = _apply_provider_override(
             merged_config, provider_override, model_override
         )
