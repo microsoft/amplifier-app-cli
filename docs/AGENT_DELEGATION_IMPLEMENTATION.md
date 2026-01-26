@@ -262,10 +262,30 @@ result = tool_execute({
     "agent": str,          # Optional - required for spawn, not needed for resume
     "instruction": str,     # Required - task for agent to execute
     "session_id": str,     # Optional - when provided, triggers resume instead of spawn
+    "provider_preferences": list,  # Optional - ordered fallback chain for provider/model
 }
 ```
 
 **Routing Logic**: If `session_id` provided → `resume_sub_session()`, else → `spawn_sub_session()`
+
+#### Provider Preferences
+
+Control which provider/model a spawned agent uses via `provider_preferences`:
+
+```python
+result = await task_tool.execute({
+    "agent": "foundation:explorer",
+    "instruction": "Quick analysis",
+    "provider_preferences": [
+        {"provider": "anthropic", "model": "claude-haiku-*"},
+        {"provider": "openai", "model": "gpt-4o-mini"},
+    ]
+})
+```
+
+- System tries each preference in order until finding an available provider
+- Model names support glob patterns (e.g., `claude-haiku-*` → latest haiku)
+- See [amplifier-foundation](https://github.com/microsoft/amplifier-foundation) for `ProviderPreference` details
 
 #### Multi-Turn Example
 
