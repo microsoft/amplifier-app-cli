@@ -141,16 +141,29 @@ def _show_plan(
 
 
 def _clean_uv_cache(dry_run: bool = False) -> bool:
-    """Run 'uv cache clean'."""
+    """Run 'uv cache clean --force'.
+
+    The --force flag is required because amplifier itself runs as a uv-installed tool.
+    Without --force, uv cache clean waits indefinitely for an exclusive lock that
+    can never be acquired while the current process is running.
+    """
     console.print("[bold]>>>[/bold] Cleaning UV cache...")
 
     if dry_run:
-        console.print("    [dim][dry-run] Would run: uv cache clean[/dim]")
+        console.print("    [dim][dry-run] Would run: uv cache clean --force[/dim]")
         return True
 
     try:
-        subprocess.run(["uv", "cache", "clean"], check=True, capture_output=True)
+        subprocess.run(
+            ["uv", "cache", "clean", "--force"],
+            check=True,
+            capture_output=True,
+            timeout=60,  # Safeguard timeout
+        )
         return True
+    except subprocess.TimeoutExpired:
+        console.print("[yellow]Warning:[/yellow] UV cache clean timed out")
+        return False
     except subprocess.CalledProcessError as e:
         console.print(f"[yellow]Warning:[/yellow] Failed to clean UV cache: {e}")
         return False
