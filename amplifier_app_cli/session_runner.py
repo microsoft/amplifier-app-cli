@@ -270,12 +270,12 @@ async def _create_bundle_session(
                 display_system=display_system,
             )
 
-            # Self-healing check: if config specified providers but none loaded,
+            # Self-healing check: if configured modules failed to load,
             # this likely indicates stale install state (missing dependencies).
             # Invalidate all install state and retry once.
             if _should_attempt_self_healing(session, prepared_bundle):
                 logger.warning(
-                    "No providers mounted despite config specifying providers. "
+                    "Some modules failed to load despite being configured. "
                     "Likely stale install state - invalidating and retrying..."
                 )
                 _invalidate_all_install_state(prepared_bundle)
@@ -285,12 +285,11 @@ async def _create_bundle_session(
                     approval_system=approval_system,
                     display_system=display_system,
                 )
-                # Warn if retry still didn't load providers
-                providers_after_retry = session.coordinator.get("providers")
-                if not providers_after_retry:
+                # Warn if retry still has issues
+                if _should_attempt_self_healing(session, prepared_bundle):
                     logger.warning(
-                        "Self-healing retry completed but still no providers loaded. "
-                        "Check provider configuration and credentials."
+                        "Self-healing retry completed but some modules still failed to load. "
+                        "Check module configuration, credentials, and dependencies."
                     )
     except (ModuleValidationError, RuntimeError) as e:
         core_logger.setLevel(original_level)
@@ -400,12 +399,19 @@ def _should_attempt_self_healing(
 ) -> bool:
     """Check if self-healing should be attempted for a session.
 
-    Self-healing is needed when:
-    1. The config specified providers (user expects them to load)
-    2. No providers are actually mounted (they failed to load)
+    Self-healing is needed when modules were configured but failed to load.
+    The kernel intentionally swallows module load errors for resilience,
+    so we detect "configured but not loaded" by comparing mount plan to
+    actually mounted modules.
 
     This typically happens when install-state.json says modules are installed,
     but dependencies are missing (e.g., after uv tool reinstall).
+
+    Module types checked:
+    - providers: coordinator.get("providers") returns dict
+    - tools: coordinator.get("tools") returns dict
+    - orchestrator/context: Required, raise RuntimeError on failure (no check needed)
+    - hooks: HookRegistry always exists, individual failures hard to detect (skipped)
 
     Args:
         session: The created session to check.
@@ -414,17 +420,46 @@ def _should_attempt_self_healing(
     Returns:
         True if self-healing should be attempted.
     """
-    # Check if config specified any providers
     mount_plan = prepared_bundle.mount_plan
-    configured_providers = mount_plan.get("providers", [])
-    if not configured_providers:
-        return False  # No providers expected, nothing to heal
+    coordinator = session.coordinator
 
-    # Check if any providers are actually mounted
-    # coordinator.get("providers") returns the providers dict directly (public API)
-    providers = session.coordinator.get("providers")
-    if not providers:
-        return True  # Config specified providers but none loaded
+    # --- Providers ---
+    # coordinator.get("providers") returns dict (public API)
+    configured_providers = mount_plan.get("providers", [])
+    mounted_providers = coordinator.get("providers") or {}
+
+    if configured_providers and not mounted_providers:
+        logger.debug("No providers loaded despite configuration - likely stale install")
+        return True
+
+    # Partial provider failure (some loaded, some failed)
+    if len(mounted_providers) < len(configured_providers):
+        logger.debug(
+            f"Only {len(mounted_providers)}/{len(configured_providers)} providers loaded"
+        )
+        return True
+
+    # --- Tools ---
+    # coordinator.get("tools") returns dict (public API)
+    configured_tools = mount_plan.get("tools", [])
+    mounted_tools = coordinator.get("tools") or {}
+
+    if configured_tools and not mounted_tools:
+        logger.debug("No tools loaded despite configuration - likely stale install")
+        return True
+
+    # Partial tool failure (some loaded, some failed)
+    if len(mounted_tools) < len(configured_tools):
+        logger.debug(f"Only {len(mounted_tools)}/{len(configured_tools)} tools loaded")
+        return True
+
+    # --- Hooks ---
+    # HookRegistry always exists at coordinator.get("hooks"), individual hook
+    # failures are swallowed and hard to detect via public API. Skipped for now.
+
+    # --- Orchestrator/Context ---
+    # These are required and raise RuntimeError on failure during session.initialize().
+    # If we reach this point, they loaded successfully. No check needed.
 
     return False
 
