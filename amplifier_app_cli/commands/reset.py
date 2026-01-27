@@ -288,11 +288,12 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
 
         # CRITICAL: Clear install-state.json when cache is being removed
         # The install state tracks module dependency fingerprints. When cache is cleared,
-        # modules are removed but install-state.json persists (it's in ~/.amplifier/).
-        # On next run, the state says "installed" but packages are gone → import errors.
+        # modules are removed but install-state.json persists. On next run, the state
+        # says "installed" but packages are gone → import errors.
         # This fixes Issue #11: tool-web missing aiohttp after upgrade.
+        # Note: install-state.json lives in cache/ dir (see InstallStateManager in foundation)
         if clearing_cache and not dry_run:
-            install_state_file = amplifier_dir / "install-state.json"
+            install_state_file = amplifier_dir / "cache" / "install-state.json"
             if install_state_file.exists():
                 install_state_file.unlink()
                 console.print("    [dim]Cleared install state[/dim]")
