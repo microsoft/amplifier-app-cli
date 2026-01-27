@@ -124,7 +124,9 @@ class FoundationFileSource:
         if not self.path.is_dir():
             raise ModuleResolutionError(f"Module path is not a directory: {self.path}")
         if not any(self.path.glob("**/*.py")):
-            raise ModuleResolutionError(f"Path does not contain a valid Python module: {self.path}")
+            raise ModuleResolutionError(
+                f"Path does not contain a valid Python module: {self.path}"
+            )
         return self.path
 
     def __repr__(self) -> str:
@@ -155,7 +157,11 @@ class FoundationPackageSource:
             dist = metadata.distribution(self.package_name)
             if dist.files:
                 package_files = [
-                    f for f in dist.files if not any(part.endswith((".dist-info", ".data")) for part in f.parts)
+                    f
+                    for f in dist.files
+                    if not any(
+                        part.endswith((".dist-info", ".data")) for part in f.parts
+                    )
                 ]
                 if package_files:
                     return Path(str(dist.locate_file(package_files[0]))).parent
@@ -181,7 +187,6 @@ class SettingsProviderProtocol(Protocol):
     def get_module_sources(self) -> dict[str, str]:
         """Get module source overrides from settings."""
         ...
-
 
 
 class FoundationSettingsResolver:
@@ -215,39 +220,38 @@ class FoundationSettingsResolver:
         self.settings_provider = settings_provider
 
     def resolve(
-        self, module_id: str, source_hint: str | None = None, profile_hint: str | None = None
+        self, module_id: str, source_hint: str | None = None
     ) -> FoundationGitSource | FoundationFileSource | FoundationPackageSource:
         """Resolve module through 6-layer fallback.
 
         Args:
             module_id: Module identifier (e.g., "provider-anthropic").
             source_hint: Optional source URI hint.
-            profile_hint: DEPRECATED - use source_hint instead.
 
         Returns:
             Source object (FoundationGitSource, FoundationFileSource, or FoundationPackageSource).
 
         Raises:
             ModuleResolutionError: Module not found in any layer.
-            
-        FIXME: Remove profile_hint parameter after all callers migrate to source_hint.
         """
-        hint = profile_hint if profile_hint is not None else source_hint
-        source, _layer = self.resolve_with_layer(module_id, hint)
+        source, _layer = self.resolve_with_layer(module_id, source_hint)
         return source
 
     def resolve_with_layer(
-        self, module_id: str, source_hint: str | None = None, profile_hint: str | None = None
-    ) -> tuple[FoundationGitSource | FoundationFileSource | FoundationPackageSource, str]:
+        self, module_id: str, source_hint: str | None = None
+    ) -> tuple[
+        FoundationGitSource | FoundationFileSource | FoundationPackageSource, str
+    ]:
         """Resolve module and return which layer resolved it.
+
+        Args:
+            module_id: Module identifier (e.g., "provider-anthropic").
+            source_hint: Optional source URI hint.
 
         Returns:
             Tuple of (source, layer_name).
             layer_name is one of: env, workspace, settings, source_hint, package
-            
-        FIXME: Remove profile_hint parameter after all callers migrate to source_hint.
         """
-        hint = profile_hint if profile_hint is not None else source_hint
         # Layer 1: Environment variable
         env_key = f"AMPLIFIER_MODULE_{module_id.upper().replace('-', '_')}"
         if env_value := os.getenv(env_key):
@@ -255,7 +259,9 @@ class FoundationSettingsResolver:
             return (self._parse_source(env_value, module_id), "env")
 
         # Layer 2: Workspace convention
-        if self.workspace_dir and (workspace_source := self._check_workspace(module_id)):
+        if self.workspace_dir and (
+            workspace_source := self._check_workspace(module_id)
+        ):
             logger.debug(f"[module:resolve] {module_id} -> workspace")
             return (workspace_source, "workspace")
 
@@ -267,9 +273,9 @@ class FoundationSettingsResolver:
                 return (self._parse_source(sources[module_id], module_id), "settings")
 
         # Layer 4: Source hint (from bundle config)
-        if hint:
+        if source_hint:
             logger.debug(f"[module:resolve] {module_id} -> source_hint")
-            return (self._parse_source(hint, module_id), "source_hint")
+            return (self._parse_source(source_hint, module_id), "source_hint")
 
         # Layer 6: Installed package (fallback)
         logger.debug(f"[module:resolve] {module_id} -> package")
@@ -302,14 +308,20 @@ class FoundationSettingsResolver:
                 return FoundationFileSource(source["path"])
             if source_type == "package":
                 return FoundationPackageSource(source["name"])
-            raise ValueError(f"Invalid source type '{source_type}' for module '{module_id}'")
+            raise ValueError(
+                f"Invalid source type '{source_type}' for module '{module_id}'"
+            )
 
         # String format
         source = str(source)
 
         if source.startswith("git+"):
             return FoundationGitSource(source)
-        if source.startswith("file://") or source.startswith("/") or source.startswith("."):
+        if (
+            source.startswith("file://")
+            or source.startswith("/")
+            or source.startswith(".")
+        ):
             return FoundationFileSource(source)
         # Assume package name
         return FoundationPackageSource(source)
@@ -325,12 +337,16 @@ class FoundationSettingsResolver:
 
         # Check for empty submodule
         if self._is_empty_submodule(workspace_path):
-            logger.debug(f"Module {module_id} workspace dir is empty submodule, skipping")
+            logger.debug(
+                f"Module {module_id} workspace dir is empty submodule, skipping"
+            )
             return None
 
         # Check if valid module
         if not any(workspace_path.glob("**/*.py")):
-            logger.warning(f"Module {module_id} in workspace but contains no Python files, skipping")
+            logger.warning(
+                f"Module {module_id} in workspace but contains no Python files, skipping"
+            )
             return None
 
         return FoundationFileSource(workspace_path)
@@ -338,7 +354,9 @@ class FoundationSettingsResolver:
     def _is_empty_submodule(self, path: Path) -> bool:
         """Check if directory is uninitialized git submodule."""
         git_file = path / ".git"
-        return git_file.exists() and git_file.is_file() and not any(path.glob("**/*.py"))
+        return (
+            git_file.exists() and git_file.is_file() and not any(path.glob("**/*.py"))
+        )
 
     def _resolve_package(self, module_id: str) -> FoundationPackageSource:
         """Resolve to installed package using fallback logic."""
@@ -392,9 +410,7 @@ class FoundationSettingsResolver:
         return None
 
     def __repr__(self) -> str:
-        return (
-            f"FoundationSettingsResolver(workspace={self.workspace_dir}, settings={self.settings_provider is not None})"
-        )
+        return f"FoundationSettingsResolver(workspace={self.workspace_dir}, settings={self.settings_provider is not None})"
 
 
 @runtime_checkable
@@ -446,7 +462,7 @@ class AppModuleResolver:
         self._bundle = bundle_resolver
         self._settings = settings_resolver
 
-    def resolve(self, module_id: str, source_hint: Any = None, profile_hint: Any = None) -> Any:
+    def resolve(self, module_id: str, source_hint: Any = None) -> Any:
         """Resolve module ID with fallback policy.
 
         Policy: Try bundle first, fall back to settings resolver.
@@ -454,27 +470,23 @@ class AppModuleResolver:
         Args:
             module_id: Module identifier (e.g., "provider-anthropic").
             source_hint: Optional hint for resolution.
-            profile_hint: DEPRECATED - use source_hint instead.
 
         Returns:
             Module source.
 
         Raises:
             ModuleNotFoundError: If module not found in bundle or settings.
-            
-        FIXME: Remove profile_hint parameter after all callers migrate to source_hint.
         """
-        hint = profile_hint if profile_hint is not None else source_hint
         # Try bundle first (primary source)
         try:
-            return self._bundle.resolve(module_id, hint)
+            return self._bundle.resolve(module_id, source_hint)
         except ModuleNotFoundError:
             pass  # Fall through to settings resolver
 
         # Try settings resolver (fallback)
         if self._settings is not None:
             try:
-                result = self._settings.resolve(module_id, hint)
+                result = self._settings.resolve(module_id, source_hint)
                 logger.debug(f"Resolved '{module_id}' from settings fallback")
                 return result
             except Exception as e:
