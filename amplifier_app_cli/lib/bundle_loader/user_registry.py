@@ -1,110 +1,124 @@
-"""User bundle registry for storing user-added bundles.
+"""User bundle registry - DEPRECATED.
 
-Stores user-added bundles in ~/.amplifier/bundle-registry.yaml
-for discovery by AppBundleDiscovery.
+This module is deprecated. User-added bundles are now stored in
+~/.amplifier/settings.yaml under bundle.added, consolidating all
+user configuration in one place.
 
-Per IMPLEMENTATION_PHILOSOPHY: Minimal implementation - just YAML read/write.
-Per KERNEL_PHILOSOPHY: This is app-layer policy (where to store user bundles).
+Migration happens automatically when get_added_bundles() is called.
+
+Use AppSettings instead:
+    from amplifier_app_cli.lib.settings import AppSettings
+
+    settings = AppSettings()
+    settings.add_bundle(name, uri)           # Add bundle
+    settings.remove_added_bundle(name)       # Remove bundle
+    settings.get_added_bundles()             # Get all added bundles
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import UTC
-from datetime import datetime
+import warnings
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 logger = logging.getLogger(__name__)
 
-# Registry location (app-layer policy)
+# Legacy registry location (kept for migration)
 REGISTRY_PATH = Path.home() / ".amplifier" / "bundle-registry.yaml"
 
 
+def _emit_deprecation_warning(func_name: str) -> None:
+    """Emit deprecation warning for legacy function usage."""
+    warnings.warn(
+        f"user_registry.{func_name}() is deprecated. "
+        "Use AppSettings().add_bundle() or get_added_bundles() instead. "
+        "User bundles are now stored in settings.yaml under bundle.added.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
 def load_user_registry() -> dict[str, dict[str, Any]]:
-    """Load user bundle registry from disk.
+    """Load user bundle registry - DEPRECATED.
 
-    Returns:
-        Dict mapping bundle names to info dicts with 'uri' and 'added_at' keys.
-        Returns empty dict if registry doesn't exist.
+    Returns data from settings.yaml bundle.added, converted to legacy format.
     """
-    if not REGISTRY_PATH.exists():
-        return {}
+    _emit_deprecation_warning("load_user_registry")
 
-    try:
-        with open(REGISTRY_PATH, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        return data.get("bundles", {})
-    except Exception as e:
-        logger.warning(f"Failed to load user registry: {e}")
-        return {}
+    from amplifier_app_cli.lib.settings import AppSettings
+
+    app_settings = AppSettings()
+    added_bundles = app_settings.get_added_bundles()
+
+    # Convert to legacy format: {name: {"uri": uri, "added_at": None}}
+    return {name: {"uri": uri, "added_at": None} for name, uri in added_bundles.items()}
 
 
 def save_user_registry(bundles: dict[str, dict[str, Any]]) -> None:
-    """Save user bundle registry to disk.
+    """Save user bundle registry - DEPRECATED.
 
-    Args:
-        bundles: Dict mapping bundle names to info dicts.
+    Writes to settings.yaml bundle.added instead of bundle-registry.yaml.
     """
-    REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _emit_deprecation_warning("save_user_registry")
 
-    data = {
-        "version": 1,
-        "bundles": bundles,
-    }
+    from amplifier_app_cli.lib.settings import AppSettings
 
-    with open(REGISTRY_PATH, "w", encoding="utf-8") as f:
-        yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+    app_settings = AppSettings()
+
+    # Clear existing and add new bundles
+    existing = app_settings.get_added_bundles()
+    for name in list(existing.keys()):
+        app_settings.remove_added_bundle(name)
+
+    for name, info in bundles.items():
+        uri = info.get("uri") if isinstance(info, dict) else None
+        if uri:
+            app_settings.add_bundle(name, uri)
 
 
 def add_bundle(name: str, uri: str) -> None:
-    """Add a bundle to the user registry.
+    """Add a bundle to the user registry - DEPRECATED.
 
-    Args:
-        name: Bundle name to register.
-        uri: URI for the bundle (git+https://, file://, etc.).
+    Use AppSettings().add_bundle(name, uri) instead.
     """
-    bundles = load_user_registry()
-    bundles[name] = {
-        "uri": uri,
-        "added_at": datetime.now(UTC).isoformat(),
-    }
-    save_user_registry(bundles)
-    logger.debug(f"Added bundle '{name}' → {uri} to user registry")
+    _emit_deprecation_warning("add_bundle")
+
+    from amplifier_app_cli.lib.settings import AppSettings
+
+    AppSettings().add_bundle(name, uri)
+    logger.debug(f"Added bundle '{name}' → {uri} to settings.yaml")
 
 
 def remove_bundle(name: str) -> bool:
-    """Remove a bundle from the user registry.
+    """Remove a bundle from the user registry - DEPRECATED.
 
-    Args:
-        name: Bundle name to remove.
-
-    Returns:
-        True if bundle was found and removed, False if not found.
+    Use AppSettings().remove_added_bundle(name) instead.
     """
-    bundles = load_user_registry()
-    if name not in bundles:
-        return False
+    _emit_deprecation_warning("remove_bundle")
 
-    del bundles[name]
-    save_user_registry(bundles)
-    logger.debug(f"Removed bundle '{name}' from user registry")
-    return True
+    from amplifier_app_cli.lib.settings import AppSettings
+
+    result = AppSettings().remove_added_bundle(name)
+    if result:
+        logger.debug(f"Removed bundle '{name}' from settings.yaml")
+    return result
 
 
 def get_bundle(name: str) -> dict[str, Any] | None:
-    """Get a bundle entry from the user registry.
+    """Get a bundle entry from the user registry - DEPRECATED.
 
-    Args:
-        name: Bundle name to look up.
-
-    Returns:
-        Info dict with 'uri' and 'added_at' keys, or None if not found.
+    Use AppSettings().get_added_bundles().get(name) instead.
     """
-    bundles = load_user_registry()
-    return bundles.get(name)
+    _emit_deprecation_warning("get_bundle")
+
+    from amplifier_app_cli.lib.settings import AppSettings
+
+    added = AppSettings().get_added_bundles()
+    uri = added.get(name)
+    if uri:
+        return {"uri": uri, "added_at": None}
+    return None
 
 
 __all__ = [

@@ -631,8 +631,6 @@ def bundle_add(uri: str, name_override: str | None, app: bool):
     """
     from amplifier_foundation import load_bundle
 
-    from ..lib.bundle_loader import user_registry
-
     # Fetch and parse bundle to extract name from metadata
     console.print(f"[dim]Fetching bundle from {uri}...[/dim]")
 
@@ -655,9 +653,12 @@ def bundle_add(uri: str, name_override: str | None, app: bool):
     # Use override name if provided, otherwise use name from metadata
     name = name_override or bundle_name
 
+    # All bundles are now stored in settings.yaml under bundle.added
+    # App bundles additionally go in bundle.app for composition policy
+    app_settings = AppSettings()
+
     if app:
         # Add as app bundle (always composed onto sessions)
-        app_settings = AppSettings()
         existing_app_bundles = app_settings.get_app_bundles()
 
         if uri in existing_app_bundles:
@@ -667,7 +668,9 @@ def bundle_add(uri: str, name_override: str | None, app: bool):
             console.print(f"  URI: {uri}")
             return
 
+        # Add to bundle.app (composition policy) AND bundle.added (for updates)
         app_settings.add_app_bundle(uri)
+        app_settings.add_bundle(name, uri)
         console.print(f"[green]✓ Added app bundle '{name}'[/green]")
         console.print(f"  URI: {uri}")
         if bundle_version:
@@ -677,17 +680,16 @@ def bundle_add(uri: str, name_override: str | None, app: bool):
         )
         console.print("[dim]Use 'amplifier bundle list' to see all bundles[/dim]")
     else:
-        # Add to regular bundle registry
-        existing = user_registry.get_bundle(name)
-        if existing:
+        # Add to bundle.added in settings.yaml
+        existing = app_settings.get_added_bundles()
+        if name in existing:
             console.print(
                 f"[yellow]Warning:[/yellow] Bundle '{name}' already registered"
             )
-            console.print(f"  Current URI: {existing['uri']}")
-            console.print(f"  Added: {existing['added_at']}")
+            console.print(f"  Current URI: {existing[name]}")
             console.print("\nUpdating to new URI...")
 
-        user_registry.add_bundle(name, uri)
+        app_settings.add_bundle(name, uri)
         console.print(f"[green]✓ Added bundle '{name}'[/green]")
         console.print(f"  URI: {uri}")
         if bundle_version:
@@ -731,17 +733,19 @@ def bundle_remove(name: str, app: bool):
         # Remove app bundle by URI
         amplifier bundle remove git+https://github.com/org/bundle@main --app
     """
-    from ..lib.bundle_loader import user_registry
     from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
+
+    app_settings = AppSettings()
 
     if app:
         # Remove app bundle
-        app_settings = AppSettings()
         app_bundles = app_settings.get_app_bundles()
 
         # Check if name is a URI directly in the list
         if name in app_bundles:
             app_settings.remove_app_bundle(name)
+            # Also remove from bundle.added (keeps settings in sync)
+            app_settings.remove_added_bundle(name)
             console.print("[green]✓ Removed app bundle[/green]")
             console.print(f"  URI: {name}")
             return
@@ -755,6 +759,8 @@ def bundle_remove(name: str, app: bool):
 
         if matching_uri:
             app_settings.remove_app_bundle(matching_uri)
+            # Also remove from bundle.added (keeps settings in sync)
+            app_settings.remove_added_bundle(name)
             console.print(f"[green]✓ Removed app bundle '{name}'[/green]")
             console.print(f"  URI: {matching_uri}")
         else:
@@ -773,10 +779,10 @@ def bundle_remove(name: str, app: bool):
         console.print("  Well-known bundles are built into amplifier")
         sys.exit(1)
 
-    # Remove from user registry (app-layer)
-    user_removed = user_registry.remove_bundle(name)
+    # Remove from settings.yaml bundle.added
+    settings_removed = app_settings.remove_added_bundle(name)
 
-    # Remove from foundation registry (foundation-layer)
+    # Remove from foundation registry (foundation-layer cache)
     foundation_removed = False
     try:
         registry = create_bundle_registry()
@@ -784,21 +790,21 @@ def bundle_remove(name: str, app: bool):
             registry.save()
             foundation_removed = True
     except Exception as e:
-        # Log but don't fail - user registry removal is primary concern
+        # Log but don't fail - settings removal is primary concern
         console.print(
             f"[yellow]Warning:[/yellow] Failed to remove from foundation registry: {e}"
         )
 
-    if user_removed or foundation_removed:
+    if settings_removed or foundation_removed:
         console.print(f"[green]✓ Removed bundle '{name}' from registry[/green]")
-        if user_removed and foundation_removed:
+        if settings_removed and foundation_removed:
             console.print(
-                "  [dim](Removed from both user and foundation registries)[/dim]"
+                "  [dim](Removed from both settings and cache registry)[/dim]"
             )
-        elif user_removed:
-            console.print("  [dim](Removed from user registry only)[/dim]")
+        elif settings_removed:
+            console.print("  [dim](Removed from settings only)[/dim]")
         elif foundation_removed:
-            console.print("  [dim](Removed from foundation registry only)[/dim]")
+            console.print("  [dim](Removed from cache registry only)[/dim]")
     else:
         console.print(f"[yellow]Bundle '{name}' not found in any registry[/yellow]")
         console.print("\nUser-added bundles can be seen with 'amplifier bundle list'")

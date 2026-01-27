@@ -185,6 +185,113 @@ class AppSettings:
             return True
         return False
 
+    # ----- Added bundle settings (bundle.added) -----
+    # User-added bundles via `bundle add` - name → URI mappings
+    # This replaces the separate bundle-registry.yaml file
+
+    def get_added_bundles(self) -> dict[str, str]:
+        """Get user-added bundle mappings (name → URI).
+
+        Returns merged bundle.added from all scopes.
+        Also migrates from legacy bundle-registry.yaml if present.
+        """
+        # First, check for legacy bundle-registry.yaml and migrate if needed
+        self._migrate_legacy_registry()
+
+        settings = self.get_merged_settings()
+        bundle_settings = settings.get("bundle") or {}
+        added = bundle_settings.get("added", {})
+        return added if isinstance(added, dict) else {}
+
+    def add_bundle(self, name: str, uri: str, scope: Scope = "global") -> None:
+        """Add a bundle to bundle.added at specified scope.
+
+        Args:
+            name: Bundle name (e.g., "my-custom-bundle")
+            uri: Bundle URI (e.g., "git+https://github.com/org/bundle@main")
+            scope: Where to store (global, project, local)
+        """
+        settings = self._read_scope(scope)
+        if "bundle" not in settings:
+            settings["bundle"] = {}
+        if "added" not in settings["bundle"]:
+            settings["bundle"]["added"] = {}
+
+        settings["bundle"]["added"][name] = uri
+        self._write_scope(scope, settings)
+
+    def remove_added_bundle(self, name: str, scope: Scope = "global") -> bool:
+        """Remove a bundle from bundle.added at specified scope.
+
+        Returns True if found and removed, False otherwise.
+        """
+        settings = self._read_scope(scope)
+        added = settings.get("bundle", {}).get("added", {})
+
+        if name in added:
+            del added[name]
+            # Clean up empty structures
+            if not added:
+                settings.get("bundle", {}).pop("added", None)
+            if not settings.get("bundle"):
+                settings.pop("bundle", None)
+            self._write_scope(scope, settings)
+            return True
+        return False
+
+    def _migrate_legacy_registry(self) -> None:
+        """Migrate bundles from legacy bundle-registry.yaml to settings.yaml.
+
+        This is a one-time migration that:
+        1. Reads bundle-registry.yaml if it exists
+        2. Adds entries to bundle.added in global settings.yaml
+        3. Renames bundle-registry.yaml to bundle-registry.yaml.migrated
+
+        Migration is idempotent - skipped if already migrated.
+        """
+        legacy_path = Path.home() / ".amplifier" / "bundle-registry.yaml"
+        migrated_marker = Path.home() / ".amplifier" / "bundle-registry.yaml.migrated"
+
+        # Skip if no legacy file or already migrated
+        if not legacy_path.exists() or migrated_marker.exists():
+            return
+
+        try:
+            import logging
+
+            logger = logging.getLogger(__name__)
+
+            with open(legacy_path, encoding="utf-8") as f:
+                legacy_data = yaml.safe_load(f) or {}
+
+            legacy_bundles = legacy_data.get("bundles", {})
+            if not legacy_bundles:
+                # Empty registry, just rename and done
+                legacy_path.rename(migrated_marker)
+                return
+
+            # Migrate each bundle to settings.yaml
+            migrated_count = 0
+            for name, info in legacy_bundles.items():
+                uri = info.get("uri") if isinstance(info, dict) else None
+                if uri:
+                    self.add_bundle(name, uri, scope="global")
+                    migrated_count += 1
+
+            # Rename legacy file to mark migration complete
+            legacy_path.rename(migrated_marker)
+            logger.info(
+                f"Migrated {migrated_count} bundles from bundle-registry.yaml to settings.yaml"
+            )
+
+        except Exception as e:
+            # Don't fail on migration errors - just log and continue
+            import logging
+
+            logging.getLogger(__name__).warning(
+                f"Failed to migrate bundle-registry.yaml: {e}"
+            )
+
     # ----- Provider settings -----
 
     def get_provider(self) -> dict[str, Any] | None:

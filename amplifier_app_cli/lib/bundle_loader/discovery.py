@@ -126,14 +126,13 @@ class AppBundleDiscovery:
         User bundles have higher priority than well-known bundles,
         allowing users to override or shadow built-in bundles.
         """
-        from amplifier_app_cli.lib.bundle_loader import user_registry
+        from amplifier_app_cli.lib.settings import AppSettings
 
-        bundles = user_registry.load_user_registry()
-        for name, info in bundles.items():
-            uri = info.get("uri")
-            if uri:
-                self._registry.register({name: uri})
-                logger.debug(f"Loaded user bundle '{name}' → {uri}")
+        app_settings = AppSettings()
+        added_bundles = app_settings.get_added_bundles()
+        for name, uri in added_bundles.items():
+            self._registry.register({name: uri})
+            logger.debug(f"Loaded user bundle '{name}' → {uri}")
 
     def _register_well_known_bundles(self) -> None:
         """Register well-known bundles with the registry.
@@ -345,11 +344,12 @@ class AppBundleDiscovery:
         for base_path in self._search_paths:
             bundles.update(self._scan_path_for_bundles(base_path))
 
-        # Add user-added bundles from user registry
-        from amplifier_app_cli.lib.bundle_loader import user_registry
+        # Add user-added bundles from settings.yaml (bundle.added)
+        from amplifier_app_cli.lib.settings import AppSettings
 
-        user_bundles = user_registry.load_user_registry()
-        bundles.update(user_bundles.keys())
+        app_settings = AppSettings()
+        added_bundles = app_settings.get_added_bundles()
+        bundles.update(added_bundles.keys())
 
         return sorted(bundles)
 
@@ -477,15 +477,16 @@ class AppBundleDiscovery:
                 }
             )
 
-        # User-added bundles
-        from amplifier_app_cli.lib.bundle_loader import user_registry
+        # User-added bundles from settings.yaml (bundle.added)
+        from amplifier_app_cli.lib.settings import AppSettings
 
-        user_bundles = user_registry.load_user_registry()
-        for name, info in user_bundles.items():
+        app_settings = AppSettings()
+        added_bundles = app_settings.get_added_bundles()
+        for name, uri in added_bundles.items():
             categories["user_added"].append(
                 {
                     "name": name,
-                    "uri": info.get("uri", ""),
+                    "uri": uri,
                 }
             )
 
@@ -497,7 +498,7 @@ class AppBundleDiscovery:
                     data = json.load(f)
 
                 well_known_names = set(WELL_KNOWN_BUNDLES.keys())
-                user_added_names = set(user_bundles.keys())
+                user_added_names = set(added_bundles.keys())
 
                 for name, bundle_data in data.get("bundles", {}).items():
                     # Skip if already categorized
