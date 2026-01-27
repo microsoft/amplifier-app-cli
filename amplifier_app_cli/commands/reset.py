@@ -291,9 +291,12 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
         # modules are removed but install-state.json persists. On next run, the state
         # says "installed" but packages are gone → import errors.
         # This fixes Issue #11: tool-web missing aiohttp after upgrade.
-        # Note: install-state.json lives in cache/ dir (see InstallStateManager in foundation)
+        # TODO: Consider consolidating with InstallStateManager from amplifier-foundation.
+        # See: amplifier_foundation.modules.install_state
         if clearing_cache and not dry_run:
-            install_state_file = amplifier_dir / "cache" / "install-state.json"
+            from amplifier_app_cli.paths import get_install_state_path
+
+            install_state_file = get_install_state_path()
             if install_state_file.exists():
                 install_state_file.unlink()
                 console.print("    [dim]Cleared install state[/dim]")

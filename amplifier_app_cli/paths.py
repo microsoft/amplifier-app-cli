@@ -42,6 +42,22 @@ _SCOPE_MAP: dict[ScopeType, Scope] = {
 # Both have is_scope_available() but with different parameter types
 ScopeChecker = Any  # ConfigManager | AppSettings - duck typed
 
+# ===== CACHE PATHS =====
+
+
+def get_install_state_path() -> Path:
+    """Get path to the module install state file.
+
+    This file tracks which modules have been installed to avoid redundant
+    `uv pip install` calls on startup. Lives in the cache directory since
+    it's derived state that can be safely regenerated.
+
+    Returns:
+        Path to ~/.amplifier/cache/install-state.json
+    """
+    return Path.home() / ".amplifier" / "cache" / "install-state.json"
+
+
 # ===== COMMON PATH HELPERS =====
 
 
