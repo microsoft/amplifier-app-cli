@@ -462,7 +462,9 @@ class AppModuleResolver:
         self._bundle = bundle_resolver
         self._settings = settings_resolver
 
-    def resolve(self, module_id: str, source_hint: Any = None) -> Any:
+    def resolve(
+        self, module_id: str, source_hint: Any = None, profile_hint: Any = None
+    ) -> Any:
         """Resolve module ID with fallback policy.
 
         Policy: Try bundle first, fall back to settings resolver.
@@ -470,6 +472,7 @@ class AppModuleResolver:
         Args:
             module_id: Module identifier (e.g., "provider-anthropic").
             source_hint: Optional hint for resolution.
+            profile_hint: DEPRECATED - use source_hint instead (for backward compat only).
 
         Returns:
             Module source.
@@ -477,16 +480,19 @@ class AppModuleResolver:
         Raises:
             ModuleNotFoundError: If module not found in bundle or settings.
         """
+        # FIXME: Remove profile_hint parameter after all callers migrate to source_hint (target: v2.0).
+        hint = profile_hint if profile_hint is not None else source_hint
+
         # Try bundle first (primary source)
         try:
-            return self._bundle.resolve(module_id, source_hint)
+            return self._bundle.resolve(module_id, hint)
         except ModuleNotFoundError:
             pass  # Fall through to settings resolver
 
         # Try settings resolver (fallback)
         if self._settings is not None:
             try:
-                result = self._settings.resolve(module_id, source_hint)
+                result = self._settings.resolve(module_id, hint)
                 logger.debug(f"Resolved '{module_id}' from settings fallback")
                 return result
             except Exception as e:
