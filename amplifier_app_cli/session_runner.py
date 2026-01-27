@@ -254,6 +254,9 @@ async def _create_bundle_session(
     inject_user_providers(config.config, prepared_bundle)
 
     # Step 4c: Create session (foundation handles init internally)
+    # Self-healing: The kernel intentionally swallows module load errors to be resilient.
+    # If providers fail to load due to stale install state (missing dependencies),
+    # the session is created but with no providers mounted. We detect this and retry.
     core_logger = logging.getLogger("amplifier_core")
     original_level = core_logger.level
     if not config.verbose:
@@ -268,6 +271,28 @@ async def _create_bundle_session(
                 session_cwd=Path.cwd(),  # CLI uses CWD for local @-mentions
                 is_resumed=config.is_resume,  # Pass resume flag to kernel
             )
+
+            # Self-healing check: if configured modules failed to load,
+            # this likely indicates stale install state (missing dependencies).
+            # Invalidate all install state and retry once.
+            if _should_attempt_self_healing(session, prepared_bundle):
+                logger.warning(
+                    "Some modules failed to load despite being configured. "
+                    "Likely stale install state - invalidating and retrying..."
+                )
+                _invalidate_all_install_state(prepared_bundle)
+                # Retry once - if it fails again, it's a real error
+                session = await prepared_bundle.create_session(
+                    session_id=session_id,
+                    approval_system=approval_system,
+                    display_system=display_system,
+                )
+                # Warn if retry still has issues
+                if _should_attempt_self_healing(session, prepared_bundle):
+                    logger.warning(
+                        "Self-healing retry completed but some modules still failed to load. "
+                        "Check module configuration, credentials, and dependencies."
+                    )
     except (ModuleValidationError, RuntimeError) as e:
         core_logger.setLevel(original_level)
         if not display_validation_error(console, e, verbose=config.verbose):
@@ -367,3 +392,117 @@ def register_session_spawning(session: AmplifierSession) -> None:
 
     session.coordinator.register_capability("session.spawn", spawn_capability)
     session.coordinator.register_capability("session.resume", resume_capability)
+
+
+# =============================================================================
+# Self-healing helpers for stale install state
+# =============================================================================
+
+
+def _should_attempt_self_healing(
+    session: AmplifierSession, prepared_bundle: "PreparedBundle"
+) -> bool:
+    """Check if self-healing should be attempted for a session.
+
+    Self-healing is needed when modules were configured but failed to load.
+    The kernel intentionally swallows module load errors for resilience,
+    so we detect "configured but not loaded" by comparing mount plan to
+    actually mounted modules.
+
+    This typically happens when install-state.json says modules are installed,
+    but dependencies are missing (e.g., after uv tool reinstall).
+
+    Module types checked:
+    - providers: coordinator.get("providers") returns dict
+    - tools: coordinator.get("tools") returns dict
+    - orchestrator/context: Required, raise RuntimeError on failure (no check needed)
+    - hooks: HookRegistry always exists, individual failures hard to detect (skipped)
+
+    Args:
+        session: The created session to check.
+        prepared_bundle: The bundle that was used to create the session.
+
+    Returns:
+        True if self-healing should be attempted.
+    """
+    mount_plan = prepared_bundle.mount_plan
+    coordinator = session.coordinator
+
+    # --- Providers ---
+    # coordinator.get("providers") returns dict (public API)
+    configured_providers = mount_plan.get("providers", [])
+    mounted_providers = coordinator.get("providers") or {}
+
+    if configured_providers and not mounted_providers:
+        logger.debug("No providers loaded despite configuration - likely stale install")
+        return True
+
+    # Partial provider failure (some loaded, some failed)
+    if len(mounted_providers) < len(configured_providers):
+        logger.debug(
+            f"Only {len(mounted_providers)}/{len(configured_providers)} providers loaded"
+        )
+        return True
+
+    # --- Tools ---
+    # coordinator.get("tools") returns dict (public API)
+    configured_tools = mount_plan.get("tools", [])
+    mounted_tools = coordinator.get("tools") or {}
+
+    if configured_tools and not mounted_tools:
+        logger.debug("No tools loaded despite configuration - likely stale install")
+        return True
+
+    # Partial tool failure (some loaded, some failed)
+    if len(mounted_tools) < len(configured_tools):
+        logger.debug(f"Only {len(mounted_tools)}/{len(configured_tools)} tools loaded")
+        return True
+
+    # --- Hooks ---
+    # HookRegistry always exists at coordinator.get("hooks"), individual hook
+    # failures are swallowed and hard to detect via public API. Skipped for now.
+
+    # --- Orchestrator/Context ---
+    # These are required and raise RuntimeError on failure during session.initialize().
+    # If we reach this point, they loaded successfully. No check needed.
+
+    return False
+
+
+def _invalidate_all_install_state(prepared_bundle: "PreparedBundle") -> None:
+    """Invalidate all install state to force reinstall of all modules.
+
+    This is a more aggressive approach than invalidating specific modules,
+    but necessary when we can't determine exactly which module failed
+    (because the kernel swallows errors).
+
+    Args:
+        prepared_bundle: The PreparedBundle containing the resolver.
+    """
+    try:
+        resolver = prepared_bundle.resolver
+        # Access the activator (BundleModuleResolver stores it as _activator)
+        activator = getattr(resolver, "_activator", None)
+        if not activator:
+            logger.warning("No activator found - cannot invalidate install state")
+            return
+
+        # Access install state manager
+        install_state = getattr(activator, "_install_state", None)
+        if not install_state:
+            logger.warning("No install state manager found - cannot invalidate")
+            return
+
+        # Invalidate all modules
+        install_state.invalidate(None)
+        install_state.save()
+        logger.info("Invalidated all install state for self-healing")
+
+        # Clear the activator's activated set so it will re-activate all modules
+        activated = getattr(activator, "_activated", None)
+        if activated:
+            activated.clear()
+            logger.debug("Cleared activator's activated set")
+
+    except Exception as e:
+        logger.warning(f"Failed to invalidate install state: {e}")
