@@ -9,6 +9,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
+from pathlib import Path
 
 from .source_status import CachedGitStatus
 from .source_status import UpdateReport
@@ -256,10 +257,170 @@ async def check_umbrella_dependencies_for_updates(umbrella_info: UmbrellaInfo) -
         return False
 
 
+def _extract_dependencies_from_pyproject(pyproject_path: Path) -> list[str]:
+    """Extract dependency package names from a pyproject.toml file.
+
+    Args:
+        pyproject_path: Path to pyproject.toml file.
+
+    Returns:
+        List of dependency package names (preserving original case for metadata lookup).
+    """
+    import re
+    import tomllib
+
+    if not pyproject_path.exists():
+        return []
+
+    try:
+        with open(pyproject_path, "rb") as f:
+            config = tomllib.load(f)
+    except Exception as e:
+        logger.debug(f"Could not parse {pyproject_path}: {e}")
+        return []
+
+    deps = []
+
+    # Get dependencies from [project.dependencies]
+    project_deps = config.get("project", {}).get("dependencies", [])
+    for dep in project_deps:
+        # Parse dependency string like "aiohttp>=3.8", "requests[security]", or "zope.interface>=5.0"
+        # Extract the full package name including dots (for namespace packages)
+        # Stops at: whitespace, extras [...], version specifiers [<>=!~], markers [;], URL [@]
+        match = re.match(r"^([a-zA-Z0-9._-]+?)(?:\s|\[|[<>=!~;@]|$)", dep)
+        if match:
+            deps.append(match.group(1))
+
+    return deps
+
+
+def _check_dependency_installed(dep_name: str) -> bool:
+    """Check if a dependency is installed in the current environment.
+
+    Uses importlib.metadata to check by distribution name, which correctly
+    handles packages where the import name differs from the package name
+    (e.g., Pillow → PIL, beautifulsoup4 → bs4, scikit-learn → sklearn).
+
+    Args:
+        dep_name: Package/distribution name (e.g., "aiohttp", "Pillow").
+
+    Returns:
+        True if the package is installed, False otherwise.
+    """
+    import importlib.metadata
+
+    # Normalize for comparison: PEP 503 says package names are case-insensitive
+    # and treats hyphens/underscores as equivalent
+    normalized = dep_name.lower().replace("-", "_").replace(".", "_")
+
+    try:
+        # Try exact name first
+        importlib.metadata.distribution(dep_name)
+        return True
+    except importlib.metadata.PackageNotFoundError:
+        pass
+
+    # Try normalized variations (handles case differences and hyphen/underscore)
+    for variation in [normalized, normalized.replace("_", "-")]:
+        try:
+            importlib.metadata.distribution(variation)
+            return True
+        except importlib.metadata.PackageNotFoundError:
+            continue
+
+    return False
+
+
+def _invalidate_modules_with_missing_deps() -> tuple[int, int]:
+    """Surgically invalidate only modules whose dependencies are missing.
+
+    After `uv tool install --force` recreates the Python environment, previously
+    installed module dependencies (like aiohttp for tool-web) may be removed.
+    This function checks each module's dependencies and only invalidates entries
+    for modules that have missing dependencies.
+
+    Returns:
+        Tuple of (modules_checked, modules_invalidated).
+
+    Note:
+        TODO: Consider consolidating with InstallStateManager from amplifier-foundation.
+        Currently manipulates the JSON file directly for simplicity, but a shared
+        API would be cleaner. See: amplifier_foundation.modules.install_state
+    """
+    import json
+
+    from amplifier_app_cli.paths import get_install_state_path
+
+    install_state_file = get_install_state_path()
+
+    if not install_state_file.exists():
+        logger.debug("No install-state.json to check")
+        return (0, 0)
+
+    try:
+        with open(install_state_file) as f:
+            state = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.debug(f"Could not read install-state.json: {e}")
+        return (0, 0)
+
+    modules = state.get("modules", {})
+    if not modules:
+        logger.debug("No modules in install-state.json")
+        return (0, 0)
+
+    modules_checked = 0
+    modules_to_invalidate = []
+
+    for module_path_str in modules:
+        module_path = Path(module_path_str)
+        if not module_path.exists():
+            # Module directory no longer exists - mark for invalidation
+            modules_to_invalidate.append(module_path_str)
+            continue
+
+        pyproject_path = module_path / "pyproject.toml"
+        deps = _extract_dependencies_from_pyproject(pyproject_path)
+        modules_checked += 1
+
+        # Check if all dependencies are installed (by distribution name)
+        missing_deps = []
+        for dep in deps:
+            if not _check_dependency_installed(dep):
+                missing_deps.append(dep)
+
+        if missing_deps:
+            logger.debug(
+                f"Module {module_path.name} has missing deps: {missing_deps}"
+            )
+            modules_to_invalidate.append(module_path_str)
+
+    # Remove invalidated entries
+    if modules_to_invalidate:
+        for path_str in modules_to_invalidate:
+            del state["modules"][path_str]
+            module_name = Path(path_str).name
+            logger.info(f"Invalidated install state for {module_name} (missing dependencies)")
+
+        # Write back the modified state
+        try:
+            with open(install_state_file, "w") as f:
+                json.dump(state, f, indent=2)
+        except OSError as e:
+            logger.warning(f"Failed to update install-state.json: {e}")
+
+    return (modules_checked, len(modules_to_invalidate))
+
+
 async def execute_self_update(umbrella_info: UmbrellaInfo) -> ExecutionResult:
     """Delegate to 'uv tool install --force'.
 
     Philosophy: uv is designed for this, use it.
+
+    After successful update, surgically invalidates only modules whose
+    dependencies are no longer available in the new Python environment.
+    This avoids unnecessary reinstallation of modules whose dependencies
+    are still satisfied.
     """
     url = f"git+{umbrella_info.url}@{umbrella_info.ref}"
 
@@ -272,6 +433,17 @@ async def execute_self_update(umbrella_info: UmbrellaInfo) -> ExecutionResult:
         )
 
         if result.returncode == 0:
+            # Surgically invalidate only modules with missing dependencies.
+            # The --force flag may recreate the Python environment, wiping
+            # some module dependencies. Rather than clearing all install state,
+            # we check which modules actually have missing deps and only
+            # invalidate those entries.
+            checked, invalidated = _invalidate_modules_with_missing_deps()
+            if invalidated > 0:
+                logger.info(
+                    f"Invalidated {invalidated}/{checked} modules with missing dependencies"
+                )
+
             return ExecutionResult(
                 success=True,
                 updated=["amplifier"],
