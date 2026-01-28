@@ -140,6 +140,9 @@ def register_run_command(
         if not bundle:
             bundle = "foundation"
 
+        # Check if first run init is needed
+        # This runs unconditionally - --provider just selects from configured providers,
+        # it doesn't bypass the need for configuration
         if check_first_run() and prompt_first_run_init(console):
             pass  # First run init completed
 
@@ -163,22 +166,26 @@ def register_run_command(
         except BundleValidationError as exc:
             # Bundle validation failed (e.g., malformed YAML, missing required fields)
             console.print()
-            console.print(Panel(
-                str(exc),
-                title="[bold white on red] Bundle Validation Error [/bold white on red]",
-                border_style="red",
-                padding=(1, 2),
-            ))
+            console.print(
+                Panel(
+                    str(exc),
+                    title="[bold white on red] Bundle Validation Error [/bold white on red]",
+                    border_style="red",
+                    padding=(1, 2),
+                )
+            )
             sys.exit(1)
         except BundleError as exc:
             # General bundle error (loading, resolution, etc.)
             console.print()
-            console.print(Panel(
-                str(exc),
-                title="[bold white on red] Bundle Error [/bold white on red]",
-                border_style="red",
-                padding=(1, 2),
-            ))
+            console.print(
+                Panel(
+                    str(exc),
+                    title="[bold white on red] Bundle Error [/bold white on red]",
+                    border_style="red",
+                    padding=(1, 2),
+                )
+            )
             sys.exit(1)
 
         search_paths = get_module_search_paths()

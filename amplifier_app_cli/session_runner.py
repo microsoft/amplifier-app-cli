@@ -404,13 +404,20 @@ def _should_attempt_self_healing(
 ) -> bool:
     """Check if self-healing should be attempted for a session.
 
-    Self-healing is needed when modules were configured but failed to load.
+    Self-healing is needed when modules were configured but COMPLETELY failed to load.
     The kernel intentionally swallows module load errors for resilience,
     so we detect "configured but not loaded" by comparing mount plan to
     actually mounted modules.
 
     This typically happens when install-state.json says modules are installed,
     but dependencies are missing (e.g., after uv tool reinstall).
+
+    IMPORTANT: We only trigger self-healing on COMPLETE failure (no modules loaded),
+    not partial failure (some modules loaded). Partial failures are often benign
+    (e.g., Azure OpenAI failing if user doesn't need it) and the session can
+    continue with the providers that did load. Self-healing on partial failures
+    causes more problems than it solves because it can't actually fix the issue
+    (would need to re-prepare the bundle).
 
     Module types checked:
     - providers: coordinator.get("providers") returns dict
@@ -423,7 +430,7 @@ def _should_attempt_self_healing(
         prepared_bundle: The bundle that was used to create the session.
 
     Returns:
-        True if self-healing should be attempted.
+        True if self-healing should be attempted (only on complete failure).
     """
     mount_plan = prepared_bundle.mount_plan
     coordinator = session.coordinator
@@ -433,30 +440,70 @@ def _should_attempt_self_healing(
     configured_providers = mount_plan.get("providers", [])
     mounted_providers = coordinator.get("providers") or {}
 
-    if configured_providers and not mounted_providers:
-        logger.debug("No providers loaded despite configuration - likely stale install")
-        return True
+    # Extract provider IDs for logging
+    configured_provider_ids = [
+        p.get("module", p) if isinstance(p, dict) else str(p)
+        for p in configured_providers
+    ]
+    mounted_provider_ids = list(mounted_providers.keys())
 
-    # Partial provider failure (some loaded, some failed)
-    if len(mounted_providers) < len(configured_providers):
-        logger.debug(
-            f"Only {len(mounted_providers)}/{len(configured_providers)} providers loaded"
+    logger.debug(
+        f"self_healing_check: configured_providers={configured_provider_ids}, "
+        f"mounted_providers={mounted_provider_ids}"
+    )
+
+    # Only heal on COMPLETE failure - no providers loaded at all
+    if configured_providers and not mounted_providers:
+        logger.info(
+            f"COMPLETE provider failure detected: {len(configured_providers)} configured, "
+            f"0 loaded. Configured: {configured_provider_ids}. Triggering self-healing."
         )
         return True
+
+    # Partial provider failure - log warning but continue with what loaded
+    # Don't trigger self-healing for partial failures (often benign)
+    if len(mounted_providers) < len(configured_providers):
+        failed_providers = set(configured_provider_ids) - set(mounted_provider_ids)
+        logger.warning(
+            f"Partial provider failure: {len(mounted_providers)}/{len(configured_providers)} loaded. "
+            f"Failed: {failed_providers}. Loaded: {mounted_provider_ids}. "
+            "Session continuing with available providers (self-healing NOT triggered for partial failure)."
+        )
+        # Don't return True - let session continue with partial providers
 
     # --- Tools ---
     # coordinator.get("tools") returns dict (public API)
     configured_tools = mount_plan.get("tools", [])
     mounted_tools = coordinator.get("tools") or {}
 
+    # Extract tool IDs for logging
+    configured_tool_ids = [
+        t.get("module", t) if isinstance(t, dict) else str(t) for t in configured_tools
+    ]
+    mounted_tool_ids = list(mounted_tools.keys())
+
+    logger.debug(
+        f"self_healing_check: configured_tools={len(configured_tool_ids)}, "
+        f"mounted_tools={len(mounted_tool_ids)}"
+    )
+
+    # Only heal on COMPLETE failure - no tools loaded at all
     if configured_tools and not mounted_tools:
-        logger.debug("No tools loaded despite configuration - likely stale install")
+        logger.info(
+            f"COMPLETE tool failure detected: {len(configured_tools)} configured, "
+            f"0 loaded. Triggering self-healing."
+        )
         return True
 
-    # Partial tool failure (some loaded, some failed)
+    # Partial tool failure - log warning but continue with what loaded
     if len(mounted_tools) < len(configured_tools):
-        logger.debug(f"Only {len(mounted_tools)}/{len(configured_tools)} tools loaded")
-        return True
+        failed_tools = set(configured_tool_ids) - set(mounted_tool_ids)
+        logger.warning(
+            f"Partial tool failure: {len(mounted_tools)}/{len(configured_tools)} loaded. "
+            f"Failed: {failed_tools}. "
+            "Session continuing with available tools (self-healing NOT triggered for partial failure)."
+        )
+        # Don't return True - let session continue with partial tools
 
     # --- Hooks ---
     # HookRegistry always exists at coordinator.get("hooks"), individual hook
@@ -466,6 +513,9 @@ def _should_attempt_self_healing(
     # These are required and raise RuntimeError on failure during session.initialize().
     # If we reach this point, they loaded successfully. No check needed.
 
+    logger.debug(
+        "self_healing_check: no complete failures detected, self-healing not needed"
+    )
     return False
 
 
@@ -481,28 +531,74 @@ def _invalidate_all_install_state(prepared_bundle: "PreparedBundle") -> None:
     """
     try:
         resolver = prepared_bundle.resolver
-        # Access the activator (BundleModuleResolver stores it as _activator)
+        resolver_type = type(resolver).__name__
+        logger.debug(f"invalidate_install_state: resolver type is {resolver_type}")
+
+        # Access the activator - handle both direct BundleModuleResolver
+        # and AppModuleResolver (which wraps BundleModuleResolver in _bundle)
         activator = getattr(resolver, "_activator", None)
+        if activator:
+            logger.debug(
+                f"invalidate_install_state: found activator directly on {resolver_type}"
+            )
+        else:
+            # Try unwrapping AppModuleResolver to get underlying BundleModuleResolver
+            bundle_resolver = getattr(resolver, "_bundle", None)
+            if bundle_resolver:
+                bundle_resolver_type = type(bundle_resolver).__name__
+                logger.debug(
+                    f"invalidate_install_state: unwrapping {resolver_type} -> {bundle_resolver_type}"
+                )
+                activator = getattr(bundle_resolver, "_activator", None)
+                if activator:
+                    logger.debug(
+                        f"invalidate_install_state: found activator on wrapped {bundle_resolver_type}"
+                    )
+            else:
+                logger.debug(
+                    f"invalidate_install_state: no _bundle attribute on {resolver_type}"
+                )
+
         if not activator:
-            logger.warning("No activator found - cannot invalidate install state")
+            logger.warning(
+                f"No activator found on resolver ({resolver_type}) - cannot invalidate install state. "
+                "This may happen if the bundle was not prepared with an activator."
+            )
             return
+
+        activator_type = type(activator).__name__
+        logger.debug(f"invalidate_install_state: activator type is {activator_type}")
 
         # Access install state manager
         install_state = getattr(activator, "_install_state", None)
         if not install_state:
-            logger.warning("No install state manager found - cannot invalidate")
+            logger.warning(
+                f"No install state manager found on activator ({activator_type}) - cannot invalidate. "
+                "This may happen if ModuleActivator was created without install state tracking."
+            )
             return
+
+        install_state_type = type(install_state).__name__
+        logger.debug(
+            f"invalidate_install_state: install_state type is {install_state_type}"
+        )
 
         # Invalidate all modules
         install_state.invalidate(None)
         install_state.save()
-        logger.info("Invalidated all install state for self-healing")
+        logger.info(
+            "Successfully invalidated all install state for self-healing. "
+            "Modules will be reinstalled on next activation."
+        )
 
         # Clear the activator's activated set so it will re-activate all modules
         activated = getattr(activator, "_activated", None)
         if activated:
+            num_activated = len(activated)
             activated.clear()
-            logger.debug("Cleared activator's activated set")
+            logger.debug(
+                f"Cleared activator's activated set ({num_activated} modules were marked as activated)"
+            )
 
     except Exception as e:
         logger.warning(f"Failed to invalidate install state: {e}")
