@@ -481,8 +481,11 @@ def _invalidate_all_install_state(prepared_bundle: "PreparedBundle") -> None:
     """
     try:
         resolver = prepared_bundle.resolver
+        # Unwrap AppModuleResolver if present (app layer wraps BundleModuleResolver)
+        # Pattern from session_spawner.py - handle both wrapped and direct cases
+        bundle_resolver = getattr(resolver, "_bundle", resolver)
         # Access the activator (BundleModuleResolver stores it as _activator)
-        activator = getattr(resolver, "_activator", None)
+        activator = getattr(bundle_resolver, "_activator", None)
         if not activator:
             logger.warning("No activator found - cannot invalidate install state")
             return
