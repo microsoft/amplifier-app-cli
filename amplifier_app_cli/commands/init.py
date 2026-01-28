@@ -86,33 +86,54 @@ def check_first_run() -> bool:
     provider_mgr = ProviderManager(config)
     current_provider = provider_mgr.get_current_provider()
 
+    logger.debug(
+        f"check_first_run: current_provider={current_provider.module_id if current_provider else None}"
+    )
+
     # No provider configured = MUST run init
     # Do NOT silently pick defaults from env vars - user must explicitly configure
     if current_provider is None:
-        logger.info("No provider configured - init required")
+        logger.info(
+            "No provider configured in settings - init required. "
+            "User must explicitly configure a provider via 'amplifier init'."
+        )
         return True
 
     # Provider is configured - check if its module is actually installed
-    if not _is_provider_module_installed(current_provider.module_id):
+    module_installed = _is_provider_module_installed(current_provider.module_id)
+    logger.debug(
+        f"check_first_run: provider={current_provider.module_id}, "
+        f"module_installed={module_installed}"
+    )
+
+    if not module_installed:
         # Post-update scenario: settings exist but provider modules were wiped
         # Auto-fix by reinstalling ALL known providers (bundles may need multiple)
         logger.info(
-            f"Provider {current_provider.module_id} is configured but not installed. "
-            "Auto-installing providers (this can happen after `amplifier update`)..."
+            f"Provider {current_provider.module_id} is configured but module not installed. "
+            "Auto-installing providers (this can happen after 'amplifier update')..."
         )
         console.print("[dim]Installing provider modules...[/dim]")
 
         installed = install_known_providers(config, console, verbose=True)
         if installed:
             # Successfully reinstalled - no need for full init
+            logger.debug("check_first_run: auto-install succeeded, no init needed")
             console.print()
             return False
         else:
             # Auto-fix failed - fall back to full init
-            logger.warning("Failed to auto-install providers, will prompt for init")
+            logger.warning(
+                "Failed to auto-install providers after detecting missing modules. "
+                "Will prompt user for init."
+            )
             return True
 
     # Provider configured and module installed - no init needed
+    logger.debug(
+        f"check_first_run: provider {current_provider.module_id} configured and installed, "
+        "no init needed"
+    )
     return False
 
 
