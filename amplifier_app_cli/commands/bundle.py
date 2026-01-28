@@ -64,7 +64,7 @@ def bundle(ctx: click.Context):
     "-a",
     "show_all",
     is_flag=True,
-    help="Show all bundles including dependencies and sub-bundles",
+    help="Show all bundles including dependencies and nested bundles",
 )
 def bundle_list(show_all: bool):
     """List available bundles.
@@ -76,7 +76,7 @@ def bundle_list(show_all: bool):
 
     Use --all to see everything including:
     - Dependencies loaded transitively
-    - Sub-bundles (behaviors, providers, etc.)
+    - Nested bundles (behaviors, providers, etc.)
     """
     app_settings = AppSettings()
     discovery = AppBundleDiscovery()
@@ -139,7 +139,7 @@ def _show_user_bundles(discovery: AppBundleDiscovery, active_bundle: str | None)
         console.print("\n[dim]Mode: No bundle active (default)[/dim]")
 
     console.print(
-        "[dim]Use --all to see all bundles including dependencies and sub-bundles.[/dim]"
+        "[dim]Use --all to see all bundles including dependencies and nested bundles.[/dim]"
     )
 
 
@@ -204,10 +204,10 @@ def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
         console.print(table)
         console.print()
 
-    # Sub-bundles (behaviors, providers, etc.)
-    if categories["sub_bundles"]:
+    # Nested bundles (behaviors, providers, etc.)
+    if categories["nested_bundles"]:
         table = Table(
-            title="Sub-Bundles (behaviors, providers, etc.)",
+            title="Nested Bundles (behaviors, providers, etc.)",
             show_header=True,
             header_style="bold magenta",
         )
@@ -215,7 +215,7 @@ def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
         table.add_column("Root Bundle", style="dim cyan")
         table.add_column("Location", style="dim yellow")
 
-        for bundle_info in sorted(categories["sub_bundles"], key=lambda x: x["name"]):
+        for bundle_info in sorted(categories["nested_bundles"], key=lambda x: x["name"]):
             table.add_row(
                 bundle_info["name"],
                 bundle_info.get("root", ""),

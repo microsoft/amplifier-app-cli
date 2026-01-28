@@ -315,10 +315,10 @@ class AppBundleDiscovery:
         With show_all=True, shows ALL discovered bundles including:
         - Dependencies loaded transitively
         - Well-known bundles with show_in_list=False
-        - Sub-bundles (behaviors, providers, etc.)
+        - Nested bundles (behaviors, providers, etc.)
 
         Args:
-            show_all: If True, show all bundles including dependencies and sub-bundles.
+            show_all: If True, show all bundles including dependencies and nested bundles.
 
         Returns:
             List of bundle names found in all search paths.
@@ -354,7 +354,7 @@ class AppBundleDiscovery:
         return sorted(bundles)
 
     def _list_all_bundles(self) -> list[str]:
-        """List ALL bundles including dependencies and sub-bundles."""
+        """List ALL bundles including dependencies and nested bundles."""
         bundles: set[str] = set()
 
         # Add ALL registered bundles (includes well-known bundles registered on init)
@@ -364,7 +364,7 @@ class AppBundleDiscovery:
         for base_path in self._search_paths:
             bundles.update(self._scan_path_for_bundles(base_path))
 
-        # Read ALL from persisted registry (includes dependencies and sub-bundles)
+        # Read ALL from persisted registry (includes dependencies and nested bundles)
         bundles.update(self._read_all_from_registry())
 
         return sorted(bundles)
@@ -411,7 +411,7 @@ class AppBundleDiscovery:
         """List all cached ROOT bundles for update checking.
 
         Returns bundles that are:
-        - is_root=True (not sub-bundles like behaviors)
+        - is_root=True (not nested bundles like behaviors)
         - NOT subdirectory bundles (#subdirectory= in URI) since those share
           a repo with their parent and updating the parent updates them too
 
@@ -433,7 +433,7 @@ class AppBundleDiscovery:
 
             root_bundles: list[str] = []
             for name, bundle_data in data.get("bundles", {}).items():
-                # Skip sub-bundles (behaviors, providers, etc.)
+                # Skip nested bundles (behaviors, providers, etc.)
                 if not bundle_data.get("is_root", True):
                     continue
 
@@ -454,7 +454,7 @@ class AppBundleDiscovery:
         """Get all bundles categorized by type for detailed display.
 
         Returns:
-            Dict with categories: well_known, user_added, dependencies, sub_bundles
+            Dict with categories: well_known, user_added, dependencies, nested_bundles
             Each category contains list of {name, uri, ...} dicts.
         """
         import json
@@ -463,7 +463,7 @@ class AppBundleDiscovery:
             "well_known": [],
             "user_added": [],
             "dependencies": [],
-            "sub_bundles": [],
+            "nested_bundles": [],
         }
 
         # Well-known bundles
@@ -490,7 +490,7 @@ class AppBundleDiscovery:
                 }
             )
 
-        # Read persisted registry for dependencies and sub-bundles
+        # Read persisted registry for dependencies and nested bundles
         registry_path = Path.home() / ".amplifier" / "registry.json"
         if registry_path.exists():
             try:
@@ -511,9 +511,9 @@ class AppBundleDiscovery:
                     }
 
                     if not bundle_data.get("is_root", True):
-                        # Sub-bundle (behavior, provider, etc.)
+                        # Nested bundle (behavior, provider, etc.)
                         entry["root"] = bundle_data.get("root_name", "")
-                        categories["sub_bundles"].append(entry)
+                        categories["nested_bundles"].append(entry)
                     elif not bundle_data.get("explicitly_requested", False):
                         # Dependency (loaded transitively)
                         included_by = bundle_data.get("included_by", [])
@@ -527,14 +527,14 @@ class AppBundleDiscovery:
 
         return categories
 
-    def _get_root_and_sub_bundles(self) -> tuple[set[str], set[str]]:
-        """Get sets of root bundles and sub-bundles from persisted registry.
+    def _get_root_and_nested_bundles(self) -> tuple[set[str], set[str]]:
+        """Get sets of root bundles and nested bundles from persisted registry.
 
         Uses foundation's persisted registry as the authority for which bundles
-        are roots vs sub-bundles.
+        are roots vs nested bundles.
 
         Returns:
-            Tuple of (root_bundle_names, sub_bundle_names)
+            Tuple of (root_bundle_names, nested_bundle_names)
         """
         import json
 
@@ -547,18 +547,18 @@ class AppBundleDiscovery:
                 data = json.load(f)
 
             root_bundles: set[str] = set()
-            sub_bundles: set[str] = set()
+            nested_bundles: set[str] = set()
 
             for name, bundle_data in data.get("bundles", {}).items():
                 if bundle_data.get("is_root", True):
                     root_bundles.add(name)
                 else:
-                    sub_bundles.add(name)
+                    nested_bundles.add(name)
 
             logger.debug(
-                f"Registry has {len(root_bundles)} root bundles, {len(sub_bundles)} sub-bundles"
+                f"Registry has {len(root_bundles)} root bundles, {len(nested_bundles)} nested bundles"
             )
-            return root_bundles, sub_bundles
+            return root_bundles, nested_bundles
         except Exception as e:
             logger.debug(f"Could not read persisted registry: {e}")
             return set(), set()
@@ -567,14 +567,14 @@ class AppBundleDiscovery:
         """Read root bundle names from foundation's persisted registry.
 
         This discovers bundles that were loaded during previous sessions.
-        Only returns ROOT bundles (not sub-bundles like behaviors/providers).
-        Sub-bundles are tracked but filtered out since they're part of their
+        Only returns ROOT bundles (not nested bundles like behaviors/providers).
+        Nested bundles are tracked but filtered out since they're part of their
         root bundle's git repository.
 
         Returns:
             List of root bundle names from persisted registry.
         """
-        root_bundles, _ = self._get_root_and_sub_bundles()
+        root_bundles, _ = self._get_root_and_nested_bundles()
         return list(root_bundles)
 
     def _scan_path_for_bundles(self, base_path: Path) -> list[str]:
