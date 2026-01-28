@@ -404,13 +404,20 @@ def _should_attempt_self_healing(
 ) -> bool:
     """Check if self-healing should be attempted for a session.
 
-    Self-healing is needed when modules were configured but failed to load.
+    Self-healing is needed when modules were configured but COMPLETELY failed to load.
     The kernel intentionally swallows module load errors for resilience,
     so we detect "configured but not loaded" by comparing mount plan to
     actually mounted modules.
 
     This typically happens when install-state.json says modules are installed,
     but dependencies are missing (e.g., after uv tool reinstall).
+
+    IMPORTANT: We only trigger self-healing on COMPLETE failure (no modules loaded),
+    not partial failure (some modules loaded). Partial failures are often benign
+    (e.g., Azure OpenAI failing if user doesn't need it) and the session can
+    continue with the providers that did load. Self-healing on partial failures
+    causes more problems than it solves because it can't actually fix the issue
+    (would need to re-prepare the bundle).
 
     Module types checked:
     - providers: coordinator.get("providers") returns dict
@@ -423,7 +430,7 @@ def _should_attempt_self_healing(
         prepared_bundle: The bundle that was used to create the session.
 
     Returns:
-        True if self-healing should be attempted.
+        True if self-healing should be attempted (only on complete failure).
     """
     mount_plan = prepared_bundle.mount_plan
     coordinator = session.coordinator
@@ -433,30 +440,39 @@ def _should_attempt_self_healing(
     configured_providers = mount_plan.get("providers", [])
     mounted_providers = coordinator.get("providers") or {}
 
+    # Only heal on COMPLETE failure - no providers loaded at all
     if configured_providers and not mounted_providers:
-        logger.debug("No providers loaded despite configuration - likely stale install")
-        return True
-
-    # Partial provider failure (some loaded, some failed)
-    if len(mounted_providers) < len(configured_providers):
         logger.debug(
-            f"Only {len(mounted_providers)}/{len(configured_providers)} providers loaded"
+            "No providers loaded despite configuration - triggering self-healing"
         )
         return True
+
+    # Partial provider failure - log warning but continue with what loaded
+    # Don't trigger self-healing for partial failures (often benign)
+    if len(mounted_providers) < len(configured_providers):
+        logger.warning(
+            f"Only {len(mounted_providers)}/{len(configured_providers)} providers loaded. "
+            "Some providers may have missing dependencies. Session continuing with available providers."
+        )
+        # Don't return True - let session continue with partial providers
 
     # --- Tools ---
     # coordinator.get("tools") returns dict (public API)
     configured_tools = mount_plan.get("tools", [])
     mounted_tools = coordinator.get("tools") or {}
 
+    # Only heal on COMPLETE failure - no tools loaded at all
     if configured_tools and not mounted_tools:
-        logger.debug("No tools loaded despite configuration - likely stale install")
+        logger.debug("No tools loaded despite configuration - triggering self-healing")
         return True
 
-    # Partial tool failure (some loaded, some failed)
+    # Partial tool failure - log warning but continue with what loaded
     if len(mounted_tools) < len(configured_tools):
-        logger.debug(f"Only {len(mounted_tools)}/{len(configured_tools)} tools loaded")
-        return True
+        logger.warning(
+            f"Only {len(mounted_tools)}/{len(configured_tools)} tools loaded. "
+            "Some tools may have missing dependencies. Session continuing with available tools."
+        )
+        # Don't return True - let session continue with partial tools
 
     # --- Hooks ---
     # HookRegistry always exists at coordinator.get("hooks"), individual hook
@@ -481,8 +497,16 @@ def _invalidate_all_install_state(prepared_bundle: "PreparedBundle") -> None:
     """
     try:
         resolver = prepared_bundle.resolver
-        # Access the activator (BundleModuleResolver stores it as _activator)
+
+        # Access the activator - handle both direct BundleModuleResolver
+        # and AppModuleResolver (which wraps BundleModuleResolver in _bundle)
         activator = getattr(resolver, "_activator", None)
+        if not activator:
+            # Try unwrapping AppModuleResolver to get underlying BundleModuleResolver
+            bundle_resolver = getattr(resolver, "_bundle", None)
+            if bundle_resolver:
+                activator = getattr(bundle_resolver, "_activator", None)
+
         if not activator:
             logger.warning("No activator found - cannot invalidate install state")
             return

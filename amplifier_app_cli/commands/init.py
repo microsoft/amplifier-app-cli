@@ -70,6 +70,13 @@ def check_first_run() -> bool:
     API key presence, since not all providers require API keys (e.g., Ollama, vLLM,
     Azure OpenAI with CLI auth).
 
+    IMPORTANT: If no provider is configured, init MUST be run. We do NOT silently
+    pick a default provider based on environment variables - the user must explicitly
+    configure their provider via `amplifier init`. This ensures:
+    1. User explicitly chooses their provider
+    2. No surprise defaults that may not match bundle requirements
+    3. Clear error path when nothing is configured
+
     If a provider is configured but its module is missing (post-update scenario where
     `amplifier update` wiped the venv), this function will automatically reinstall
     all known provider modules without user interaction. We install ALL providers
@@ -79,18 +86,10 @@ def check_first_run() -> bool:
     provider_mgr = ProviderManager(config)
     current_provider = provider_mgr.get_current_provider()
 
-    # No provider configured = true first run, need interactive init
+    # No provider configured = MUST run init
+    # Do NOT silently pick defaults from env vars - user must explicitly configure
     if current_provider is None:
-        # Check if any provider's credentials are in environment
-        from ..provider_env_detect import detect_provider_from_env
-
-        detected_provider = detect_provider_from_env()
-        if detected_provider is not None:
-            # Provider credentials found in env - auto-configure it
-            logger.info(f"Auto-configuring provider from env vars: {detected_provider}")
-            # Auto-configure with minimal config (credentials from env)
-            provider_mgr.use_provider(detected_provider, scope="global", config={})
-            return False
+        logger.info("No provider configured - init required")
         return True
 
     # Provider is configured - check if its module is actually installed
@@ -306,7 +305,7 @@ def init_cmd(non_interactive: bool = False):
 
     # Save provider configuration to user's global settings (~/.amplifier/settings.yaml)
     # This is first-time setup, so it should be available across all projects
-    
+
     provider_mgr.use_provider(
         module_id, scope="global", config=provider_config, source=None
     )

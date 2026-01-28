@@ -635,11 +635,24 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
         # Restore BundleModuleResolver with saved module paths
         from amplifier_foundation.bundle import BundleModuleResolver
 
+        from amplifier_app_cli.lib.bundle_loader import AppModuleResolver
+
         module_paths = {k: Path(v) for k, v in bundle_context["module_paths"].items()}
-        resolver = BundleModuleResolver(module_paths=module_paths)
+        bundle_resolver = BundleModuleResolver(module_paths=module_paths)
         logger.debug(
             f"Restored BundleModuleResolver with {len(module_paths)} module paths"
         )
+
+        # Wrap with AppModuleResolver to provide fallback to settings resolver
+        # This is critical for modules (like providers) that may not be in the saved
+        # module_paths but are available via user settings/installed providers.
+        # Mirrors the wrapping done in session_runner.py and tool.py
+        fallback_resolver = create_foundation_resolver()
+        resolver = AppModuleResolver(
+            bundle_resolver=bundle_resolver,
+            settings_resolver=fallback_resolver,
+        )
+        logger.debug("Wrapped with AppModuleResolver for settings fallback")
     else:
         # Fallback to FoundationSettingsResolver
         resolver = create_foundation_resolver()
