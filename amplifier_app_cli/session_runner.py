@@ -447,6 +447,18 @@ def _should_attempt_self_healing(
     ]
     mounted_provider_ids = list(mounted_providers.keys())
 
+    # Normalize module IDs to provider names for accurate comparison
+    # Module IDs are like "provider-anthropic", provider names are like "anthropic"
+    def _normalize_to_provider_name(module_id: str) -> str:
+        """Convert module ID to provider name by stripping 'provider-' prefix."""
+        if module_id.startswith("provider-"):
+            return module_id[9:]  # Strip "provider-" prefix
+        return module_id
+
+    configured_provider_names = [
+        _normalize_to_provider_name(pid) for pid in configured_provider_ids
+    ]
+
     logger.debug(
         f"self_healing_check: configured_providers={configured_provider_ids}, "
         f"mounted_providers={mounted_provider_ids}"
@@ -463,7 +475,7 @@ def _should_attempt_self_healing(
     # Partial provider failure - log warning but continue with what loaded
     # Don't trigger self-healing for partial failures (often benign)
     if len(mounted_providers) < len(configured_providers):
-        failed_providers = set(configured_provider_ids) - set(mounted_provider_ids)
+        failed_providers = set(configured_provider_names) - set(mounted_provider_ids)
         logger.warning(
             f"Partial provider failure: {len(mounted_providers)}/{len(configured_providers)} loaded. "
             f"Failed: {failed_providers}. Loaded: {mounted_provider_ids}. "
