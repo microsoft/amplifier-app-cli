@@ -1,7 +1,9 @@
 """Canonical sources for provider modules."""
 
 import importlib
+import importlib.metadata
 import logging
+import site
 import subprocess
 import sys
 from typing import TYPE_CHECKING
@@ -29,7 +31,9 @@ DEFAULT_PROVIDER_SOURCES = {
 # dependency issues with editable installs during development.
 # Format: {"dependent": ["dependency1", "dependency2", ...]}
 PROVIDER_DEPENDENCIES: dict[str, list[str]] = {
-    "provider-azure-openai": ["provider-openai"],  # AzureOpenAIProvider extends OpenAIProvider
+    "provider-azure-openai": [
+        "provider-openai"
+    ],  # AzureOpenAIProvider extends OpenAIProvider
 }
 
 
@@ -328,10 +332,19 @@ def install_known_providers(
             f"\n[yellow]Warning: {len(failed)} provider(s) failed to install[/yellow]"
         )
 
-    # Invalidate import caches so newly installed packages are immediately visible
-    # Without this, the current Python process won't see packages installed via subprocess
+    # Refresh Python's view of installed packages so they're immediately importable.
+    # Without this, the current Python process won't see packages installed via subprocess.
+    # This must be thorough - just invalidate_caches() is not enough for subprocess installs.
     if installed:
         importlib.invalidate_caches()
+
+        # Re-add site directories to ensure newly installed packages are found
+        for site_dir in site.getsitepackages():
+            site.addsitedir(site_dir)
+
+        # Force refresh of importlib.metadata distributions cache
+        if hasattr(importlib.metadata, "distributions"):
+            list(importlib.metadata.distributions())
 
     return installed
 
