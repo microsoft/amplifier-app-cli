@@ -410,9 +410,12 @@ class AppBundleDiscovery:
     def list_cached_root_bundles(self) -> list[str]:
         """List all cached ROOT bundles for update checking.
 
-        Returns bundles that are:
-        - is_root=True (not nested bundles like behaviors)
-        - NOT subdirectory bundles (#subdirectory= in URI) since those share
+        Returns bundles from:
+        - Well-known bundles (foundation, recipes, etc.)
+        - User-added bundles from settings.yaml
+
+        Filters out:
+        - Subdirectory bundles (#subdirectory= in URI) since those share
           a repo with their parent and updating the parent updates them too
 
         This is used by `amplifier update` to show locally cached bundles
@@ -421,34 +424,34 @@ class AppBundleDiscovery:
         Returns:
             List of root bundle names that are cached locally.
         """
-        import json
+        from ..settings import AppSettings
 
-        registry_path = Path.home() / ".amplifier" / "registry.json"
-        if not registry_path.exists():
-            return []
+        root_bundles: set[str] = set()
 
+        # 1. Include well-known bundles (that are shown in list)
+        for name, info in WELL_KNOWN_BUNDLES.items():
+            if not info.get("show_in_list", True):
+                continue
+            # Skip subdirectory bundles
+            remote = info.get("remote", "")
+            if isinstance(remote, str) and "#subdirectory=" in remote:
+                continue
+            root_bundles.add(name)
+
+        # 2. Include user-added bundles from settings.yaml
         try:
-            with open(registry_path, encoding="utf-8") as f:
-                data = json.load(f)
+            app_settings = AppSettings()
+            added_bundles = app_settings.get_added_bundles()  # Returns dict {name: uri}
 
-            root_bundles: list[str] = []
-            for name, bundle_data in data.get("bundles", {}).items():
-                # Skip nested bundles (behaviors, providers, etc.)
-                if not bundle_data.get("is_root", True):
-                    continue
-
-                # Skip subdirectory bundles - they share a repo with their parent
-                # and updating the parent updates them too
-                uri = bundle_data.get("uri", "")
+            for name, uri in added_bundles.items():
+                # Skip subdirectory bundles
                 if "#subdirectory=" in uri:
                     continue
-
-                root_bundles.append(name)
-
-            return sorted(root_bundles)
+                root_bundles.add(name)
         except Exception as e:
-            logger.debug(f"Could not read persisted registry: {e}")
-            return []
+            logger.debug(f"Could not read bundles from settings: {e}")
+
+        return sorted(root_bundles)
 
     def get_bundle_categories(self) -> dict[str, list[dict[str, str]]]:
         """Get all bundles categorized by type for detailed display.
