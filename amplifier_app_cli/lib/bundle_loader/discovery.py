@@ -59,6 +59,18 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str | bool]] = {
         "remote": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/delegation-only",
         "show_in_list": True,
     },
+    # Experimental foundation with new delegate tool (two-param context, short session IDs)
+    "exp-foundation": {
+        "package": "",  # Experimental bundle in foundation/experiments/
+        "remote": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/exp-foundation.md",
+        "show_in_list": True,
+    },
+    # Experimental amplifier-dev with new delegate tool
+    "exp-amplifier-dev": {
+        "package": "",  # Experimental bundle in foundation/experiments/
+        "remote": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/exp-amplifier-dev.md",
+        "show_in_list": True,
+    },
     # Amplifier ecosystem development bundle - multi-repo workflows, shadow environments
     "amplifier-dev": {
         "package": "",  # Bundle in foundation/bundles/
