@@ -82,24 +82,24 @@ def _get_key() -> str:
     else:
         # Windows
         ch = msvcrt.getch()
-        if ch == b'\\xe0':  # Arrow key prefix
+        if ch == b"\\xe0":  # Arrow key prefix
             ch2 = msvcrt.getch()
-            if ch2 == b'H':
+            if ch2 == b"H":
                 return "UP"
-            elif ch2 == b'P':
+            elif ch2 == b"P":
                 return "DOWN"
-            elif ch2 == b'M':
+            elif ch2 == b"M":
                 return "RIGHT"
-            elif ch2 == b'K':
+            elif ch2 == b"K":
                 return "LEFT"
-        
-        if ch in (b'\\r', b'\\n'):
+
+        if ch in (b"\\r", b"\\n"):
             return "ENTER"
-        if ch == b' ':
+        if ch == b" ":
             return " "
-        if ch == b'\\x03':
+        if ch == b"\\x03":
             raise KeyboardInterrupt
-        
+
         return ch.decode("utf-8", errors="ignore")
 
 
@@ -149,7 +149,10 @@ def _render_checklist(
     lines.append(title)
     lines.append("=" * len(title))
     lines.append("")
-    lines.append("Select what to PRESERVE (↑↓ navigate, space toggle, enter confirm):")
+    lines.append("Your transcripts and settings are preserved by default.")
+    lines.append("Only cache/registry are removed (they auto-regenerate).")
+    lines.append("")
+    lines.append("Adjust if needed (↑↓ navigate, space toggle, enter confirm):")
     lines.append("")
 
     # Items
