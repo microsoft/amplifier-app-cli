@@ -125,11 +125,16 @@ class AppSettings:
     def clear_active_bundle(self, scope: Scope = "global") -> None:
         """Clear active bundle at specified scope.
 
-        Removes the bundle key entirely to allow inheritance from lower-priority scopes.
+        Only removes bundle.active, preserving bundle.added and bundle.app.
+        This allows inheritance from lower-priority scopes while keeping
+        user-added bundles intact.
         """
         settings = self._read_scope(scope)
-        if "bundle" in settings:
-            del settings["bundle"]
+        if "bundle" in settings and "active" in settings["bundle"]:
+            del settings["bundle"]["active"]
+            # Clean up empty bundle section
+            if not settings["bundle"]:
+                del settings["bundle"]
             self._write_scope(scope, settings)
 
     # ----- App bundle settings -----

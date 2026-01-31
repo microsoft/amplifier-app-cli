@@ -30,18 +30,22 @@ if TYPE_CHECKING:
 
 
 def _remove_bundle_from_settings(app_settings: AppSettings, scope: ScopeType) -> bool:
-    """Remove the bundle key entirely from a settings file.
+    """Remove the active bundle setting from a settings file.
 
-    This is better than setting bundle: null because it allows proper
-    inheritance from lower-priority scopes.
+    Only removes bundle.active, preserving bundle.added and bundle.app.
+    This allows proper inheritance from lower-priority scopes while
+    keeping user-added bundles intact.
 
     Returns:
-        True if bundle was removed, False if not present or error
+        True if bundle.active was removed, False if not present or error
     """
     try:
         settings = app_settings._read_scope(scope)
-        if settings and "bundle" in settings:
-            del settings["bundle"]
+        if settings and "bundle" in settings and "active" in settings["bundle"]:
+            del settings["bundle"]["active"]
+            # Clean up empty bundle section
+            if not settings["bundle"]:
+                del settings["bundle"]
             app_settings._write_scope(scope, settings)
             return True
     except Exception:
