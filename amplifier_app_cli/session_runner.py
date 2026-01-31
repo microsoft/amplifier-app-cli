@@ -368,6 +368,7 @@ def register_session_spawning(session: AmplifierSession) -> None:
         model_override: str | None = None,
         # Provider preferences (ordered fallback chain)
         provider_preferences: list | None = None,
+        self_delegation_depth: int = 0,
     ) -> dict:
         return await spawn_sub_session(
             agent_name=agent_name,
@@ -382,6 +383,7 @@ def register_session_spawning(session: AmplifierSession) -> None:
             provider_override=provider_override,
             model_override=model_override,
             provider_preferences=provider_preferences,
+            self_delegation_depth=self_delegation_depth,
         )
 
     async def resume_capability(sub_session_id: str, instruction: str) -> dict:
