@@ -575,7 +575,9 @@ class AppBundleDiscovery:
             nested_bundles: set[str] = set()
 
             for name, bundle_data in data.get("bundles", {}).items():
-                if bundle_data.get("is_root", True):
+                # Default to False (not root) if is_root not explicitly set
+                # This prevents bundles with missing is_root from appearing in user list
+                if bundle_data.get("is_root", False):
                     root_bundles.add(name)
                 else:
                     nested_bundles.add(name)
