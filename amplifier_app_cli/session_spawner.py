@@ -283,10 +283,14 @@ async def spawn_sub_session(
         ValueError: If agent not found or config invalid
     """
     # Get agent configuration
-    if agent_name not in agent_configs:
+    # Special handling for "self" - spawn with parent's config (no agent overlay)
+    if agent_name == "self":
+        agent_config = {}  # Empty overlay = inherit parent config as-is
+        logger.debug("Self-delegation: using parent config without agent overlay")
+    elif agent_name not in agent_configs:
         raise ValueError(f"Agent '{agent_name}' not found in configuration")
-
-    agent_config = agent_configs[agent_name]
+    else:
+        agent_config = agent_configs[agent_name]
 
     # Merge parent config with agent overlay
     merged_config = merge_configs(parent_session.config, agent_config)
