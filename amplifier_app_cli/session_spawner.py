@@ -339,6 +339,7 @@ async def spawn_sub_session(
             parent_session_id=parent_session.session_id,
             parent_trace_id=getattr(parent_session, "trace_id", None),
         )
+    assert sub_session_id is not None  # Always generated above if not provided
 
     # Create child session with parent_id and inherited UX systems (kernel mechanism)
     # NOTE: We intentionally do NOT share parent's loader here.
@@ -509,11 +510,19 @@ async def spawn_sub_session(
     # Root session ID is the trace_id, propagate it to all children
     parent_trace_id = getattr(parent_session, "trace_id", parent_session.session_id)
 
+    # Extract child_span from sub_session_id for short_id resolution
+    # Format: {parent_id}-{child_span}_{agent_name}
+    child_span: str | None = None
+    if sub_session_id and "_" in sub_session_id and "-" in sub_session_id:
+        base = sub_session_id.rsplit("_", 1)[0]  # Remove agent name
+        child_span = base.rsplit("-", 1)[-1]  # Get child_span (16 hex chars)
+
     metadata = {
         "session_id": sub_session_id,
         "parent_id": parent_session.session_id,
         "trace_id": parent_trace_id,  # W3C Trace Context: trace entire conversation
         "agent_name": agent_name,
+        "child_span": child_span,  # For short_id resolution (first 8 chars = short_id)
         "created": datetime.now(UTC).isoformat(),
         "config": merged_config,
         "agent_overlay": agent_config,
