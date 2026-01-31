@@ -244,6 +244,7 @@ async def spawn_sub_session(
     provider_override: str | None = None,
     model_override: str | None = None,
     provider_preferences: list | None = None,
+    self_delegation_depth: int = 0,
 ) -> dict:
     """
     Spawn sub-session with agent configuration overlay.
@@ -275,6 +276,9 @@ async def spawn_sub_session(
             Each preference has provider and model. System tries each in order
             until finding an available provider. Model names support glob patterns.
             Takes precedence over provider_override/model_override if both specified.
+        self_delegation_depth: Current depth in the self-delegation chain (default: 0).
+            Incremented for self-delegation, reset to 0 for named agents.
+            Used to prevent infinite recursion.
 
     Returns:
         Dict with "output" (response) and "session_id" (for multi-turn)
@@ -470,6 +474,12 @@ async def spawn_sub_session(
             "session.working_dir", parent_working_dir
         )
 
+    # Self-delegation depth tracking (for recursion limits)
+    # This is a simple value capability, not a function
+    child_session.coordinator.register_capability(
+        "self_delegation_depth", self_delegation_depth
+    )
+
     # Approval provider (for hooks-approval module, if active)
     register_provider_fn = child_session.coordinator.get_capability(
         "approval.register_provider"
@@ -528,6 +538,7 @@ async def spawn_sub_session(
         "agent_overlay": agent_config,
         "turn_count": 1,
         "bundle_context": _extract_bundle_context(parent_session),
+        "self_delegation_depth": self_delegation_depth,  # For recursion limit tracking
     }
 
     store = SessionStore()
@@ -697,6 +708,12 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     # Mention deduplicator - create fresh (deduplication state doesn't persist across resumes)
     child_session.coordinator.register_capability(
         "mention_deduplicator", ContentDeduplicator()
+    )
+
+    # Self-delegation depth - restore from metadata for recursion limit tracking
+    self_delegation_depth = metadata.get("self_delegation_depth", 0)
+    child_session.coordinator.register_capability(
+        "self_delegation_depth", self_delegation_depth
     )
 
     # Approval provider (for hooks-approval module, if active)
