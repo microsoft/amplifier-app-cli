@@ -344,7 +344,6 @@ class AppBundleDiscovery:
         bundles: set[str] = set()
 
         # Add well-known bundles that should be shown
-        well_known_names = set(WELL_KNOWN_BUNDLES.keys())
         for name, info in WELL_KNOWN_BUNDLES.items():
             if info.get("show_in_list", True):
                 bundles.add(name)
@@ -353,14 +352,10 @@ class AppBundleDiscovery:
         explicitly_requested = self._get_explicitly_requested_bundles()
         bundles.update(explicitly_requested)
 
-        # Add ROOT bundles from registry that were loaded during sessions
-        # These may have been added via `bundle use` or loaded transitively
-        # but not explicitly added via `bundle add`. They should still appear
-        # in the list so users know what bundles they have available.
-        root_bundles, _ = self._get_root_and_nested_bundles()
-        # Exclude well-known bundles (already handled above) and nested bundles
-        user_root_bundles = root_bundles - well_known_names
-        bundles.update(user_root_bundles)
+        # NOTE: We intentionally do NOT add all root bundles from registry here.
+        # Bundles loaded as namespace roots (e.g., 'lsp' when loading 'lsp:behaviors/...')
+        # are registered with is_root=True but were not explicitly requested by the user.
+        # Only show: well-known, explicitly_requested, filesystem, and settings.yaml bundles.
 
         # Scan filesystem paths (user's local bundles)
         for base_path in self._search_paths:
