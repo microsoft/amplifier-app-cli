@@ -480,6 +480,53 @@ async def spawn_sub_session(
         "self_delegation_depth", self_delegation_depth
     )
 
+    # Register session spawning capabilities on child session
+    # This enables nested agent delegation (child can spawn grandchildren)
+    # The capabilities are closures that reference the spawn/resume functions
+    async def child_spawn_capability(
+        agent_name: str,
+        instruction: str,
+        parent_session: AmplifierSession,
+        agent_configs: dict[str, dict],
+        sub_session_id: str | None = None,
+        tool_inheritance: dict[str, list[str]] | None = None,
+        hook_inheritance: dict[str, list[str]] | None = None,
+        orchestrator_config: dict | None = None,
+        parent_messages: list[dict] | None = None,
+        provider_override: str | None = None,
+        model_override: str | None = None,
+        provider_preferences: list | None = None,
+        self_delegation_depth: int = 0,
+    ) -> dict:
+        return await spawn_sub_session(
+            agent_name=agent_name,
+            instruction=instruction,
+            parent_session=parent_session,
+            agent_configs=agent_configs,
+            sub_session_id=sub_session_id,
+            tool_inheritance=tool_inheritance,
+            hook_inheritance=hook_inheritance,
+            orchestrator_config=orchestrator_config,
+            parent_messages=parent_messages,
+            provider_override=provider_override,
+            model_override=model_override,
+            provider_preferences=provider_preferences,
+            self_delegation_depth=self_delegation_depth,
+        )
+
+    async def child_resume_capability(sub_session_id: str, instruction: str) -> dict:
+        return await resume_sub_session(
+            sub_session_id=sub_session_id,
+            instruction=instruction,
+        )
+
+    child_session.coordinator.register_capability(
+        "session.spawn", child_spawn_capability
+    )
+    child_session.coordinator.register_capability(
+        "session.resume", child_resume_capability
+    )
+
     # Approval provider (for hooks-approval module, if active)
     register_provider_fn = child_session.coordinator.get_capability(
         "approval.register_provider"
