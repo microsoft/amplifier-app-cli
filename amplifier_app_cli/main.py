@@ -1384,6 +1384,8 @@ async def interactive_chat(
                 "bundle": bundle_name,
                 "model": _extract_model_name(),
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
+                # Store working_dir for session sync between CLI and web
+                "working_dir": str(Path.cwd().resolve()),
             }
             store.save(actual_session_id, messages, metadata)
 
@@ -1730,6 +1732,8 @@ async def execute_single(
                 "bundle": bundle_name,
                 "model": model_name,
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
+                # Store working_dir for session sync between CLI and web
+                "working_dir": str(Path.cwd().resolve()),
             }
             store.save(actual_session_id, messages, metadata)
             if verbose and output_format == "text":

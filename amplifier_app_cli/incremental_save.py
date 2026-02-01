@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
 
@@ -112,6 +113,8 @@ class IncrementalSaveHook:
                 "model": model_name,
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
                 "incremental": True,  # Distinguish from final saves
+                # Store working_dir for session sync between CLI and web
+                "working_dir": str(Path.cwd().resolve()),
             }
 
             # Save via SessionStore (atomic writes)
