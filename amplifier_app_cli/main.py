@@ -1394,27 +1394,27 @@ async def interactive_chat(
         session.coordinator.cancellation.reset()
 
         def sigint_handler(signum, frame):
-            """Handle Ctrl+C with graceful/immediate cancellation."""
+            """Handle Ctrl+C with graceful/immediate cancellation.
+
+            CRITICAL: State updates must be SYNCHRONOUS to avoid race conditions.
+            If we used async scheduling (call_soon_threadsafe + create_task), rapid
+            double Ctrl+C could be mishandled because the first state update might
+            not complete before the second signal arrives.
+
+            The CancellationToken's request_graceful() and request_immediate() methods
+            are synchronous, so we call them directly here.
+            """
             cancellation = session.coordinator.cancellation
 
             if cancellation.is_cancelled:
                 # Second Ctrl+C - request immediate cancellation
-                # Use call_soon_threadsafe since we're in a signal handler
-                loop = asyncio.get_event_loop()
-                loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(
-                        session.coordinator.request_cancel(immediate=True)
-                    )
-                )
+                # SYNC state update to avoid race condition with rapid double Ctrl+C
+                cancellation.request_immediate()
                 console.print("\n[bold red]Cancelling immediately...[/bold red]")
             else:
                 # First Ctrl+C - request graceful cancellation
-                loop = asyncio.get_event_loop()
-                loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(
-                        session.coordinator.request_cancel(immediate=False)
-                    )
-                )
+                # SYNC state update to ensure state is set before any second signal
+                cancellation.request_graceful()
                 # Show what's running
                 running_tools = cancellation.running_tool_names
                 if running_tools:
