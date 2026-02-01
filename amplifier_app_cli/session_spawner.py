@@ -59,7 +59,11 @@ def _extract_bundle_context(session: "AmplifierSession") -> dict | None:
     }
 
 
-def _filter_tools(config: dict, tool_inheritance: dict[str, list[str]]) -> dict:
+def _filter_tools(
+    config: dict,
+    tool_inheritance: dict[str, list[str]],
+    agent_explicit_tools: list[str] | None = None,
+) -> dict:
     """Filter tools in config based on tool inheritance policy.
 
     Args:
@@ -67,6 +71,9 @@ def _filter_tools(config: dict, tool_inheritance: dict[str, list[str]]) -> dict:
         tool_inheritance: Policy dict with either:
             - "exclude_tools": list of tool module names to exclude
             - "inherit_tools": list of tool module names to include (allowlist)
+        agent_explicit_tools: Optional list of tool module names explicitly declared
+            by the agent. These are preserved even if they would be excluded.
+            Formula: final_tools = (inherited - excluded) + explicit
 
     Returns:
         New config dict with filtered tools list
@@ -78,12 +85,24 @@ def _filter_tools(config: dict, tool_inheritance: dict[str, list[str]]) -> dict:
     exclude_tools = tool_inheritance.get("exclude_tools", [])
     inherit_tools = tool_inheritance.get("inherit_tools")
 
+    # Get explicit tool module names (these are always preserved)
+    explicit_modules = set(agent_explicit_tools or [])
+
     if inherit_tools is not None:
-        # Allowlist mode: only include specified tools
-        filtered_tools = [t for t in tools if t.get("module") in inherit_tools]
+        # Allowlist mode: only include specified tools OR explicit
+        filtered_tools = [
+            t
+            for t in tools
+            if t.get("module") in inherit_tools or t.get("module") in explicit_modules
+        ]
     elif exclude_tools:
-        # Blocklist mode: exclude specified tools
-        filtered_tools = [t for t in tools if t.get("module") not in exclude_tools]
+        # Blocklist mode: exclude specified tools UNLESS explicit
+        filtered_tools = [
+            t
+            for t in tools
+            if t.get("module") not in exclude_tools
+            or t.get("module") in explicit_modules
+        ]
     else:
         # No filtering
         return config
@@ -187,7 +206,11 @@ def _apply_provider_override(
     return {**config, "providers": new_providers}
 
 
-def _filter_hooks(config: dict, hook_inheritance: dict[str, list[str]]) -> dict:
+def _filter_hooks(
+    config: dict,
+    hook_inheritance: dict[str, list[str]],
+    agent_explicit_hooks: list[str] | None = None,
+) -> dict:
     """Filter hooks in config based on hook inheritance policy.
 
     Args:
@@ -195,6 +218,9 @@ def _filter_hooks(config: dict, hook_inheritance: dict[str, list[str]]) -> dict:
         hook_inheritance: Policy dict with either:
             - "exclude_hooks": list of hook module names to exclude
             - "inherit_hooks": list of hook module names to include (allowlist)
+        agent_explicit_hooks: Optional list of hook module names explicitly declared
+            by the agent. These are preserved even if they would be excluded.
+            Formula: final_hooks = (inherited - excluded) + explicit
 
     Returns:
         New config dict with filtered hooks list
@@ -206,12 +232,24 @@ def _filter_hooks(config: dict, hook_inheritance: dict[str, list[str]]) -> dict:
     exclude_hooks = hook_inheritance.get("exclude_hooks", [])
     inherit_hooks = hook_inheritance.get("inherit_hooks")
 
+    # Get explicit hook module names (these are always preserved)
+    explicit_modules = set(agent_explicit_hooks or [])
+
     if inherit_hooks is not None:
-        # Allowlist mode: only include specified hooks
-        filtered_hooks = [h for h in hooks if h.get("module") in inherit_hooks]
+        # Allowlist mode: only include specified hooks OR explicit
+        filtered_hooks = [
+            h
+            for h in hooks
+            if h.get("module") in inherit_hooks or h.get("module") in explicit_modules
+        ]
     elif exclude_hooks:
-        # Blocklist mode: exclude specified hooks
-        filtered_hooks = [h for h in hooks if h.get("module") not in exclude_hooks]
+        # Blocklist mode: exclude specified hooks UNLESS explicit
+        filtered_hooks = [
+            h
+            for h in hooks
+            if h.get("module") not in exclude_hooks
+            or h.get("module") in explicit_modules
+        ]
     else:
         # No filtering
         return config
@@ -301,11 +339,19 @@ async def spawn_sub_session(
 
     # Apply tool inheritance filtering if specified
     if tool_inheritance and "tools" in merged_config:
-        merged_config = _filter_tools(merged_config, tool_inheritance)
+        # Get agent's explicit tool modules to preserve them
+        agent_tool_modules = [t.get("module") for t in agent_config.get("tools", [])]
+        merged_config = _filter_tools(
+            merged_config, tool_inheritance, agent_tool_modules
+        )
 
     # Apply hook inheritance filtering if specified
     if hook_inheritance and "hooks" in merged_config:
-        merged_config = _filter_hooks(merged_config, hook_inheritance)
+        # Get agent's explicit hook modules to preserve them
+        agent_hook_modules = [h.get("module") for h in agent_config.get("hooks", [])]
+        merged_config = _filter_hooks(
+            merged_config, hook_inheritance, agent_hook_modules
+        )
 
     # Apply provider preferences if specified (ordered fallback chain)
     # Takes precedence over legacy provider_override/model_override
