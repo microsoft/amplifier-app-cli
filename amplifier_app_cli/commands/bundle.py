@@ -151,14 +151,16 @@ def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
     """Show all bundles categorized by type (--all view)."""
     categories = discovery.get_bundle_categories()
 
-    # Well-known bundles
+    # Well-known bundles (built-in, always available)
     if categories["well_known"]:
         table = Table(
-            title="Well-Known Bundles", show_header=True, header_style="bold cyan"
+            title="Built-in Bundles (always available)",
+            show_header=True,
+            header_style="bold cyan",
         )
         table.add_column("Name", style="green")
         table.add_column("Location", style="yellow")
-        table.add_column("Show in List", style="dim")
+        table.add_column("In Default List", style="dim")
         table.add_column("Status")
 
         for bundle_info in sorted(categories["well_known"], key=lambda x: x["name"]):
@@ -187,16 +189,16 @@ def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
         console.print(table)
         console.print()
 
-    # Dependencies (loaded transitively)
+    # Discovered root bundles (loaded via includes/namespaces)
     if categories["dependencies"]:
         table = Table(
-            title="Dependencies (loaded transitively)",
+            title="Discovered Root Bundles (loaded via includes/namespaces)",
             show_header=True,
             header_style="bold yellow",
         )
-        table.add_column("Name", style="dim green")
-        table.add_column("Location", style="dim yellow")
-        table.add_column("Included By", style="dim")
+        table.add_column("Name", style="green")
+        table.add_column("Location", style="yellow")
+        table.add_column("Loaded By", style="dim")
 
         for bundle_info in sorted(categories["dependencies"], key=lambda x: x["name"]):
             table.add_row(
@@ -208,10 +210,10 @@ def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
         console.print(table)
         console.print()
 
-    # Nested bundles (behaviors, providers, etc.)
+    # Nested bundles (behaviors, providers - part of a root bundle)
     if categories["nested_bundles"]:
         table = Table(
-            title="Nested Bundles (behaviors, providers, etc.)",
+            title="Nested Bundles (behaviors, providers - part of a root bundle)",
             show_header=True,
             header_style="bold magenta",
         )
@@ -234,6 +236,15 @@ def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
         console.print(f"[dim]Mode: Bundle ({active_bundle})[/dim]")
     else:
         console.print("[dim]Mode: No bundle active (default)[/dim]")
+
+    # Footer note explaining relationship to `amplifier update`
+    console.print()
+    console.print(
+        "[dim]ℹ️  Root bundles (Built-in + Discovered) are checked by `amplifier update`.[/dim]"
+    )
+    console.print(
+        "[dim]   Nested bundles are updated when their root bundle is updated.[/dim]"
+    )
 
 
 def _format_location(uri: str | None) -> str:
