@@ -428,34 +428,44 @@ class AppBundleDiscovery:
         """List all cached ROOT bundles for update checking.
 
         Returns bundles from:
-        - Well-known bundles (foundation, recipes, etc.)
+        - ALL root bundles from registry.json (bundles loaded in any session)
+        - Well-known bundles (ensures they're always checked)
         - User-added bundles from settings.yaml
 
         Filters out:
         - Subdirectory bundles (#subdirectory= in URI) since those share
           a repo with their parent and updating the parent updates them too
 
-        This is used by `amplifier update` to show locally cached bundles
-        that can be independently updated.
+        This is used by `amplifier update` to check for updates on ALL locally
+        cached root bundles, not just the filtered list shown to users.
+        Unlike list_bundles() which only shows user-relevant bundles, this
+        returns everything that needs update checking.
 
         Returns:
             List of root bundle names that are cached locally.
         """
+        import json
+
         from ..settings import AppSettings
 
         root_bundles: set[str] = set()
 
-        # 1. Include well-known bundles (that are shown in list)
+        # 1. Include ALL root bundles from registry.json
+        # This captures bundles loaded as namespace roots, transitively via includes,
+        # or explicitly requested - all need update checking
+        registry_roots, _ = self._get_root_and_nested_bundles()
+        root_bundles.update(registry_roots)
+
+        # 2. Include ALL well-known bundles (not just show_in_list=True)
+        # These should always be checked for updates regardless of show_in_list
         for name, info in WELL_KNOWN_BUNDLES.items():
-            if not info.get("show_in_list", True):
-                continue
-            # Skip subdirectory bundles
+            # Skip subdirectory bundles - they share repo with parent
             remote = info.get("remote", "")
             if isinstance(remote, str) and "#subdirectory=" in remote:
                 continue
             root_bundles.add(name)
 
-        # 2. Include user-added bundles from settings.yaml
+        # 3. Include user-added bundles from settings.yaml
         try:
             app_settings = AppSettings()
             added_bundles = app_settings.get_added_bundles()  # Returns dict {name: uri}
@@ -467,6 +477,21 @@ class AppBundleDiscovery:
                 root_bundles.add(name)
         except Exception as e:
             logger.debug(f"Could not read bundles from settings: {e}")
+
+        # 4. Filter out subdirectory bundles from registry roots
+        # (registry stores URI, check it for subdirectory marker)
+        registry_path = Path.home() / ".amplifier" / "registry.json"
+        if registry_path.exists():
+            try:
+                with open(registry_path, encoding="utf-8") as f:
+                    data = json.load(f)
+                for name in list(root_bundles):
+                    bundle_data = data.get("bundles", {}).get(name, {})
+                    uri = bundle_data.get("uri", "")
+                    if "#subdirectory=" in uri:
+                        root_bundles.discard(name)
+            except Exception as e:
+                logger.debug(f"Could not filter subdirectory bundles: {e}")
 
         return sorted(root_bundles)
 
