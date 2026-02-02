@@ -31,16 +31,18 @@ from .reset_interactive import ChecklistItem, run_checklist
 
 
 # Category definitions: category name -> list of files/dirs in ~/.amplifier
+# Note: "other" is a special dynamic category - see _get_other_files()
 RESET_CATEGORIES = {
     "projects": ["projects"],
     "settings": ["settings.yaml"],
     "keys": ["keys.env"],
     "cache": ["cache"],
     "registry": ["registry.json"],
+    "other": [],  # Dynamic - populated at runtime with uncategorized files
 }
 
 # Display order for categories
-CATEGORY_ORDER = ["projects", "settings", "keys", "cache", "registry"]
+CATEGORY_ORDER = ["projects", "settings", "keys", "cache", "registry", "other"]
 
 # Descriptions for each category (used in UI)
 CATEGORY_DESCRIPTIONS = {
@@ -49,10 +51,11 @@ CATEGORY_DESCRIPTIONS = {
     "keys": "API keys (keys.env)",
     "cache": "Downloaded bundles (auto-regenerates)",
     "registry": "Bundle mappings (auto-regenerates)",
+    "other": "Other files (custom configs, plugins, etc.)",
 }
 
-# Default categories to preserve
-DEFAULT_PRESERVE = {"projects", "settings", "keys"}
+# Default categories to preserve - safe by default, only remove auto-regenerating items
+DEFAULT_PRESERVE = {"projects", "settings", "keys", "other"}
 
 # Default install source
 DEFAULT_INSTALL_SOURCE = "git+https://github.com/microsoft/amplifier"
@@ -63,11 +66,41 @@ def _get_amplifier_dir() -> Path:
     return Path.home() / ".amplifier"
 
 
+def _get_known_files() -> set[str]:
+    """Get all file/directory names covered by non-dynamic categories."""
+    known = set()
+    for category, files in RESET_CATEGORIES.items():
+        if category != "other":  # Skip dynamic category
+            known.update(files)
+    return known
+
+
+def _get_other_files() -> list[str]:
+    """Get list of files in ~/.amplifier not covered by any category.
+
+    These are user-created files like custom configs, plugins, etc.
+    Returns empty list if directory doesn't exist.
+    """
+    amplifier_dir = _get_amplifier_dir()
+    if not amplifier_dir.exists():
+        return []
+
+    known = _get_known_files()
+    other = []
+    for item in amplifier_dir.iterdir():
+        if item.name not in known:
+            other.append(item.name)
+    return sorted(other)
+
+
 def _get_preserve_paths(preserve: set[str]) -> set[str]:
     """Convert category names to actual file/directory names."""
     paths = set()
     for category in preserve:
-        if category in RESET_CATEGORIES:
+        if category == "other":
+            # Dynamic category - include all uncategorized files
+            paths.update(_get_other_files())
+        elif category in RESET_CATEGORIES:
             paths.update(RESET_CATEGORIES[category])
     return paths
 
@@ -118,6 +151,13 @@ def _show_plan(
     if dry_run:
         console.print("[yellow]DRY RUN - No changes will be made[/yellow]\n")
 
+    # Upfront reassurance about what's safe
+    if "projects" in preserve:
+        console.print(
+            "[green]Your session transcripts are safe[/green] - "
+            "projects/ will be preserved.\n"
+        )
+
     console.print("[bold]Reset Plan:[/bold]")
     console.print("  1. Clean UV cache")
     console.print("  2. Uninstall amplifier (if installed)")
@@ -125,17 +165,29 @@ def _show_plan(
     preserve_names = sorted(preserve) if preserve else []
     remove_names = sorted(set(RESET_CATEGORIES.keys()) - preserve)
 
+    # Show what "other" actually contains if present
+    other_files = _get_other_files()
+
     if not preserve:
         console.print(f"  3. Remove {amplifier_dir} [red](ALL contents)[/red]")
     else:
-        console.print(f"  3. Remove {amplifier_dir}")
-        console.print(f"       [green]Preserving:[/green] {', '.join(preserve_names)}")
+        console.print(f"  3. Clean parts of {amplifier_dir}")
+        # Build preserve display with "other" expansion
+        preserve_display = []
+        for name in preserve_names:
+            if name == "other" and other_files:
+                preserve_display.append(f"other ({', '.join(other_files)})")
+            else:
+                preserve_display.append(name)
+        console.print(
+            f"       [green]Preserving:[/green] {', '.join(preserve_display)}"
+        )
         console.print(f"       [red]Removing:[/red] {', '.join(remove_names)}")
 
     if no_install:
         console.print("  4. [dim]Skip reinstall (--no-install)[/dim]")
     else:
-        console.print(f"  4. Install amplifier from: {DEFAULT_INSTALL_SOURCE}")
+        console.print(f"  4. Reinstall amplifier from: {DEFAULT_INSTALL_SOURCE}")
 
     console.print()
 
@@ -393,28 +445,30 @@ def reset(
     dry_run: bool,
     no_install: bool,
 ) -> None:
-    """Reset Amplifier installation with category-based preservation.
+    """Reinstall Amplifier while preserving your data.
 
-    By default, runs in interactive mode where you can select which
-    categories to preserve using arrow keys and space to toggle.
+    Safe by default: Your session transcripts, settings, API keys, and any
+    custom files are preserved. Only the cache and registry are cleared
+    (they auto-regenerate on next run).
+
+    Runs in interactive mode by default where you can adjust what to keep.
 
     \b
     Categories:
-      projects   - Session transcripts and history
-      settings   - User configuration (settings.yaml)
-      keys       - API keys (keys.env)
+      projects   - Session transcripts and history [preserved by default]
+      settings   - User configuration (settings.yaml) [preserved by default]
+      keys       - API keys (keys.env) [preserved by default]
+      other      - Custom files you've added [preserved by default]
       cache      - Downloaded bundles (auto-regenerates)
       registry   - Bundle mappings (auto-regenerates)
 
     \b
     Examples:
-      amplifier reset                      Interactive mode (default)
-      amplifier reset --preserve projects,settings,keys -y
-                                           Scripted: preserve specific categories
-      amplifier reset --remove cache,registry -y
-                                           Scripted: remove specific categories
-      amplifier reset --full -y            Remove everything (nuclear option)
-      amplifier reset --dry-run            Preview what would be removed
+      amplifier reset                      Interactive mode (recommended)
+      amplifier reset -y                   Quick reset with safe defaults
+      amplifier reset --dry-run            Preview what would happen
+      amplifier reset --remove cache -y    Remove only cache
+      amplifier reset --full -y            Remove everything (use with caution)
     """
     # Check for mutually exclusive options
     exclusive_count = sum(
