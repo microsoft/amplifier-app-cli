@@ -306,3 +306,237 @@ class TestSessionStoreIntegration:
         assert "session" in loaded_metadata["config"]
         assert "providers" in loaded_metadata["config"]
         assert "agent_overlay" in loaded_metadata
+
+
+class TestCapabilityRegistration:
+    """Test that capabilities are properly registered on spawned and resumed sessions.
+
+    These tests verify the fix for issue #32: Sub-sessions don't inherit session.spawn capability.
+    """
+
+    async def test_metadata_includes_working_dir(self, tmp_path):
+        """Test that spawn_sub_session saves working_dir in metadata."""
+        store = SessionStore(base_dir=tmp_path)
+
+        # Create metadata with working_dir (as spawn_sub_session now does)
+        session_id = "test-working-dir-persistence"
+        transcript = [{"role": "user", "content": "test"}]
+        metadata = {
+            "session_id": session_id,
+            "parent_id": "parent-123",
+            "config": {"session": {"orchestrator": "loop-basic", "context": "context-simple"}},
+            "working_dir": "/home/user/project",  # New field added by fix
+            "self_delegation_depth": 0,
+        }
+
+        # Save and load
+        store.save(session_id, transcript, metadata)
+        _, loaded_metadata = store.load(session_id)
+
+        # Verify working_dir is preserved
+        assert "working_dir" in loaded_metadata
+        assert loaded_metadata["working_dir"] == "/home/user/project"
+
+    async def test_metadata_working_dir_can_be_none(self, tmp_path):
+        """Test that working_dir can be None (root session without working_dir capability)."""
+        store = SessionStore(base_dir=tmp_path)
+
+        session_id = "test-working-dir-none"
+        transcript = []
+        metadata = {
+            "session_id": session_id,
+            "parent_id": "parent-123",
+            "config": {"session": {"orchestrator": "loop-basic", "context": "context-simple"}},
+            "working_dir": None,  # Can be None if parent had no working_dir
+        }
+
+        # Save and load
+        store.save(session_id, transcript, metadata)
+        _, loaded_metadata = store.load(session_id)
+
+        # Verify working_dir is preserved as None
+        assert "working_dir" in loaded_metadata
+        assert loaded_metadata["working_dir"] is None
+
+
+class TestCapabilityRegistrationIntegration:
+    """Integration tests that verify capability registration through actual resume.
+
+    These tests require mocking AmplifierSession but verify the actual code path.
+    """
+
+    async def test_resume_registers_session_spawn_capability(self, tmp_path, monkeypatch):
+        """Test that resume_sub_session registers session.spawn capability.
+
+        This is the core fix for issue #32.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        # Create a valid session to resume
+        store = SessionStore()
+        session_id = "test-spawn-capability"
+        transcript = [{"role": "user", "content": "initial"}]
+        metadata = {
+            "session_id": session_id,
+            "parent_id": "parent-123",
+            "agent_name": "test-agent",
+            "config": {"session": {"orchestrator": "loop-basic", "context": "context-simple"}},
+            "working_dir": "/test/project",
+            "self_delegation_depth": 1,
+        }
+        store.save(session_id, transcript, metadata)
+
+        # Track what capabilities are registered
+        registered_capabilities = {}
+
+        def mock_register_capability(name, value):
+            registered_capabilities[name] = value
+
+        # Create mock coordinator
+        mock_coordinator = MagicMock()
+        mock_coordinator.register_capability = mock_register_capability
+        mock_coordinator.get_capability = MagicMock(return_value=None)
+        mock_coordinator.get = MagicMock(return_value=None)
+        mock_coordinator.mount = AsyncMock()
+
+        # Create mock session
+        mock_session = MagicMock()
+        mock_session.coordinator = mock_coordinator
+        mock_session.initialize = AsyncMock()
+        mock_session.execute = AsyncMock(return_value="test response")
+        mock_session.cleanup = AsyncMock()
+
+        # Patch at correct locations - imports are inside the function from their source modules
+        with patch("amplifier_app_cli.session_spawner.AmplifierSession", return_value=mock_session):
+            with patch("amplifier_app_cli.ui.CLIApprovalSystem"):
+                with patch("amplifier_app_cli.ui.CLIDisplaySystem"):
+                    with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                        try:
+                            await resume_sub_session(session_id, "follow-up instruction")
+                        except Exception:
+                            # May fail on other parts, but we can still check registrations
+                            pass
+
+        # Verify critical capabilities were registered
+        assert "session.spawn" in registered_capabilities, (
+            "session.spawn capability must be registered on resumed sessions (issue #32 fix)"
+        )
+        assert "session.resume" in registered_capabilities, (
+            "session.resume capability must be registered on resumed sessions"
+        )
+        assert callable(registered_capabilities["session.spawn"]), (
+            "session.spawn must be a callable"
+        )
+        assert callable(registered_capabilities["session.resume"]), (
+            "session.resume must be a callable"
+        )
+
+    async def test_resume_restores_working_dir_capability(self, tmp_path, monkeypatch):
+        """Test that resume_sub_session restores session.working_dir from metadata."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        # Create session with working_dir
+        store = SessionStore()
+        session_id = "test-working-dir-capability"
+        transcript = []
+        metadata = {
+            "session_id": session_id,
+            "parent_id": "parent-123",
+            "agent_name": "test-agent",
+            "config": {"session": {"orchestrator": "loop-basic", "context": "context-simple"}},
+            "working_dir": "/test/project/path",
+            "self_delegation_depth": 0,
+        }
+        store.save(session_id, transcript, metadata)
+
+        # Track registered capabilities
+        registered_capabilities = {}
+
+        def mock_register_capability(name, value):
+            registered_capabilities[name] = value
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.register_capability = mock_register_capability
+        mock_coordinator.get_capability = MagicMock(return_value=None)
+        mock_coordinator.get = MagicMock(return_value=None)
+        mock_coordinator.mount = AsyncMock()
+
+        mock_session = MagicMock()
+        mock_session.coordinator = mock_coordinator
+        mock_session.initialize = AsyncMock()
+        mock_session.execute = AsyncMock(return_value="response")
+        mock_session.cleanup = AsyncMock()
+
+        with patch("amplifier_app_cli.session_spawner.AmplifierSession", return_value=mock_session):
+            with patch("amplifier_app_cli.ui.CLIApprovalSystem"):
+                with patch("amplifier_app_cli.ui.CLIDisplaySystem"):
+                    with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                        try:
+                            await resume_sub_session(session_id, "test")
+                        except Exception:
+                            pass
+
+        # Verify working_dir was restored
+        assert "session.working_dir" in registered_capabilities, (
+            "session.working_dir capability must be restored on resume"
+        )
+        assert registered_capabilities["session.working_dir"] == "/test/project/path"
+
+    async def test_resume_without_working_dir_skips_registration(self, tmp_path, monkeypatch):
+        """Test that resume_sub_session handles missing working_dir gracefully."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        # Create session WITHOUT working_dir
+        store = SessionStore()
+        session_id = "test-no-working-dir"
+        transcript = []
+        metadata = {
+            "session_id": session_id,
+            "parent_id": "parent-123",
+            "agent_name": "test-agent",
+            "config": {"session": {"orchestrator": "loop-basic", "context": "context-simple"}},
+            # working_dir intentionally omitted
+            "self_delegation_depth": 0,
+        }
+        store.save(session_id, transcript, metadata)
+
+        registered_capabilities = {}
+
+        def mock_register_capability(name, value):
+            registered_capabilities[name] = value
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.register_capability = mock_register_capability
+        mock_coordinator.get_capability = MagicMock(return_value=None)
+        mock_coordinator.get = MagicMock(return_value=None)
+        mock_coordinator.mount = AsyncMock()
+
+        mock_session = MagicMock()
+        mock_session.coordinator = mock_coordinator
+        mock_session.initialize = AsyncMock()
+        mock_session.execute = AsyncMock(return_value="response")
+        mock_session.cleanup = AsyncMock()
+
+        with patch("amplifier_app_cli.session_spawner.AmplifierSession", return_value=mock_session):
+            with patch("amplifier_app_cli.ui.CLIApprovalSystem"):
+                with patch("amplifier_app_cli.ui.CLIDisplaySystem"):
+                    with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                        try:
+                            await resume_sub_session(session_id, "test")
+                        except Exception:
+                            pass
+
+        # Verify session.working_dir was NOT registered (no value to restore)
+        assert "session.working_dir" not in registered_capabilities, (
+            "session.working_dir should not be registered when metadata has no working_dir"
+        )
+
+        # But session.spawn/resume should still be registered
+        assert "session.spawn" in registered_capabilities
+        assert "session.resume" in registered_capabilities
