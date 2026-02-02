@@ -632,6 +632,7 @@ async def spawn_sub_session(
         "turn_count": 1,
         "bundle_context": _extract_bundle_context(parent_session),
         "self_delegation_depth": self_delegation_depth,  # For recursion limit tracking
+        "working_dir": str(parent_working_dir) if parent_working_dir else None,  # For path resolution on resume
     }
 
     store = SessionStore()
@@ -807,6 +808,62 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     self_delegation_depth = metadata.get("self_delegation_depth", 0)
     child_session.coordinator.register_capability(
         "self_delegation_depth", self_delegation_depth
+    )
+
+    # Working directory - restore from metadata for consistent path resolution
+    # This ensures resumed sessions use the same project directory as original spawn
+    saved_working_dir = metadata.get("working_dir")
+    if saved_working_dir:
+        child_session.coordinator.register_capability(
+            "session.working_dir", saved_working_dir
+        )
+
+    # Register session spawning capabilities on resumed child session
+    # This enables nested agent delegation (resumed session can spawn children)
+    # Critical for recipes with agent steps that run in sub-sessions
+    # The capabilities are closures that reference the spawn/resume functions
+    async def child_spawn_capability(
+        agent_name: str,
+        instruction: str,
+        parent_session: AmplifierSession,
+        agent_configs: dict[str, dict],
+        sub_session_id: str | None = None,
+        tool_inheritance: dict[str, list[str]] | None = None,
+        hook_inheritance: dict[str, list[str]] | None = None,
+        orchestrator_config: dict | None = None,
+        parent_messages: list[dict] | None = None,
+        provider_override: str | None = None,
+        model_override: str | None = None,
+        provider_preferences: list | None = None,
+        self_delegation_depth: int = 0,
+    ) -> dict:
+        return await spawn_sub_session(
+            agent_name=agent_name,
+            instruction=instruction,
+            parent_session=parent_session,
+            agent_configs=agent_configs,
+            sub_session_id=sub_session_id,
+            tool_inheritance=tool_inheritance,
+            hook_inheritance=hook_inheritance,
+            orchestrator_config=orchestrator_config,
+            parent_messages=parent_messages,
+            provider_override=provider_override,
+            model_override=model_override,
+            provider_preferences=provider_preferences,
+            self_delegation_depth=self_delegation_depth,
+        )
+
+    async def child_resume_capability(sub_session_id: str, instruction: str) -> dict:
+        return await resume_sub_session(
+            sub_session_id=sub_session_id,
+            instruction=instruction,
+        )
+
+    child_session.coordinator.register_capability(
+        "session.spawn", child_spawn_capability
+    )
+    child_session.coordinator.register_capability(
+        "session.resume", child_resume_capability
     )
 
     # Approval provider (for hooks-approval module, if active)
