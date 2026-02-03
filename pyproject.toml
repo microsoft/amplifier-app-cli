@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "amplifier-core",
     "amplifier-foundation",
+    "amplifier-session-storage[cosmos]",
     "pyyaml>=6.0.3",
     "prompt-toolkit>=3.0.52",
     "httpx[socks]>=0.28.1",
@@ -39,6 +40,9 @@ dev = ["pytest>=8.4.2", "pytest-asyncio>=0.24.0"]
 [tool.uv.sources]
 amplifier-core = { git = "https://github.com/microsoft/amplifier-core", branch = "main" }
 amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", branch = "main" }
+# Using local path during development - switch to git URL for release:
+# amplifier-session-storage = { git = "https://github.com/colombod/amplifier-session-storage", branch = "main" }
+amplifier-session-storage = { path = "../amplifier-session-storage", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

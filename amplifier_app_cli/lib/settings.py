@@ -946,6 +946,138 @@ class AppSettings:
 
         return result
 
+    # ----- Storage settings (storage section) -----
+
+    def get_storage_config(self) -> dict[str, Any]:
+        """Return merged storage configuration.
+
+        Expected structure:
+            storage:
+              mode: hybrid  # hybrid | local | cloud
+              exclusions:
+                - "~/work/private/**"
+                - "**/confidential/**"
+              cosmos:
+                endpoint: ${AMPLIFIER_COSMOS_ENDPOINT}
+                database: amplifier-sessions
+                container: blocks
+                auth_method: default_credential
+        """
+        settings = self.get_merged_settings()
+        storage = settings.get("storage", {})
+        return storage if isinstance(storage, dict) else {}
+
+    def get_storage_mode(self) -> str:
+        """Get storage mode: 'hybrid', 'local', or 'cloud'.
+
+        Defaults to 'local' if not configured (backward compatible).
+        """
+        config = self.get_storage_config()
+        return config.get("mode", "local")
+
+    def set_storage_mode(self, mode: str, scope: Scope = "global") -> None:
+        """Set storage mode at specified scope.
+
+        Args:
+            mode: 'hybrid', 'local', or 'cloud'
+            scope: Where to store the setting
+        """
+        if mode not in ("hybrid", "local", "cloud"):
+            raise ValueError(
+                f"Invalid storage mode: {mode}. Must be 'hybrid', 'local', or 'cloud'"
+            )
+
+        settings = self._read_scope(scope)
+        if "storage" not in settings:
+            settings["storage"] = {}
+        settings["storage"]["mode"] = mode
+        self._write_scope(scope, settings)
+
+    def get_storage_exclusions(self) -> list[str]:
+        """Get list of directory exclusion patterns.
+
+        Patterns use glob syntax and match against working directories.
+        Sessions started in matching directories use local-only storage.
+        """
+        config = self.get_storage_config()
+        exclusions = config.get("exclusions", [])
+        return exclusions if isinstance(exclusions, list) else []
+
+    def add_storage_exclusion(self, pattern: str, scope: Scope = "global") -> None:
+        """Add a directory exclusion pattern.
+
+        Args:
+            pattern: Glob pattern (e.g., "~/work/private/**", "**/test-*")
+            scope: Where to store the setting
+        """
+        settings = self._read_scope(scope)
+        if "storage" not in settings:
+            settings["storage"] = {}
+        if "exclusions" not in settings["storage"]:
+            settings["storage"]["exclusions"] = []
+
+        if pattern not in settings["storage"]["exclusions"]:
+            settings["storage"]["exclusions"].append(pattern)
+
+        self._write_scope(scope, settings)
+
+    def remove_storage_exclusion(self, pattern: str, scope: Scope = "global") -> bool:
+        """Remove a directory exclusion pattern.
+
+        Args:
+            pattern: Pattern to remove
+            scope: Which scope to remove from
+
+        Returns:
+            True if found and removed, False otherwise.
+        """
+        settings = self._read_scope(scope)
+        exclusions = settings.get("storage", {}).get("exclusions", [])
+
+        if pattern in exclusions:
+            exclusions.remove(pattern)
+            # Clean up empty structures
+            if not exclusions:
+                settings.get("storage", {}).pop("exclusions", None)
+            if not settings.get("storage"):
+                settings.pop("storage", None)
+            self._write_scope(scope, settings)
+            return True
+        return False
+
+    def get_cosmos_config(self) -> dict[str, Any]:
+        """Get Cosmos DB configuration for cloud storage.
+
+        Returns dict with keys: endpoint, database, container, auth_method, etc.
+        """
+        config = self.get_storage_config()
+        cosmos = config.get("cosmos", {})
+        return cosmos if isinstance(cosmos, dict) else {}
+
+    def set_cosmos_config(
+        self, cosmos_config: dict[str, Any], scope: Scope = "global"
+    ) -> None:
+        """Set Cosmos DB configuration.
+
+        Args:
+            cosmos_config: Dict with endpoint, database, container, auth_method, etc.
+            scope: Where to store the setting
+        """
+        settings = self._read_scope(scope)
+        if "storage" not in settings:
+            settings["storage"] = {}
+        settings["storage"]["cosmos"] = cosmos_config
+        self._write_scope(scope, settings)
+
+    def clear_cosmos_config(self, scope: Scope = "global") -> None:
+        """Clear Cosmos DB configuration at specified scope."""
+        settings = self._read_scope(scope)
+        if "storage" in settings and "cosmos" in settings["storage"]:
+            del settings["storage"]["cosmos"]
+            if not settings["storage"]:
+                del settings["storage"]
+            self._write_scope(scope, settings)
+
     # ----- Module override settings (overrides section) -----
 
     def get_module_overrides(self) -> dict[str, dict[str, Any]]:

@@ -53,7 +53,6 @@ from .console import Markdown
 from .console import console
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
-from .session_store import SessionStore
 from .ui.error_display import display_validation_error
 from .utils.version import get_version
 
@@ -1328,8 +1327,8 @@ async def interactive_chat(
     # Create command processor
     command_processor = CommandProcessor(session, bundle_name)
 
-    # Create session store for saving
-    store = SessionStore()
+    # Use the store from the initialized session (supports hybrid storage)
+    store = initialized.store
 
     # Register incremental save hook for crash recovery between tool calls
     from .incremental_save import register_incremental_save
@@ -1637,6 +1636,7 @@ async def execute_single(
     # Create fully initialized session (handles all setup including resume)
     initialized = await create_initialized_session(session_config, console)
     session = initialized.session
+    store = initialized.store  # Use hybrid-capable store from initialized session
 
     try:
         # Register trace collector hooks if in json-trace mode
@@ -1719,7 +1719,8 @@ async def execute_single(
         context = session.coordinator.get("context")
         messages = await context.get_messages() if context else []
         if messages:
-            store = SessionStore()
+            # Use the store from initialized session (supports hybrid storage)
+            # store variable is already set from initialized.store earlier
             # Load existing metadata to preserve fields like name, description
             # that may have been set by other hooks (e.g., session-naming)
             existing_metadata = store.get_metadata(actual_session_id) or {}

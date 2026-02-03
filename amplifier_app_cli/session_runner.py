@@ -37,6 +37,12 @@ from amplifier_core import AmplifierSession
 from amplifier_core import ModuleValidationError
 
 from .session_store import SessionStore
+from .storage import (
+    SessionStoreProtocol,
+    create_session_store,
+    start_store_if_hybrid,
+    stop_store_if_hybrid,
+)
 from .ui.error_display import display_validation_error
 
 if TYPE_CHECKING:
@@ -92,10 +98,12 @@ class InitializedSession:
     session: AmplifierSession
     session_id: str
     config: SessionConfig
-    store: SessionStore = field(default_factory=SessionStore)
+    store: SessionStoreProtocol = field(default_factory=SessionStore)
 
     async def cleanup(self):
         """Clean up session resources."""
+        # Stop hybrid storage if applicable (flushes pending sync)
+        await stop_store_if_hybrid(self.store)
         await self.session.cleanup()
 
 
@@ -213,10 +221,26 @@ async def create_initialized_session(
         register_provider(approval_provider)
         logger.debug("Registered CLIApprovalProvider for interactive approvals")
 
+    # Step 11: Create session store (local or hybrid based on settings)
+    from .lib.settings import get_settings
+    from .project_utils import get_project_slug
+
+    settings = get_settings()
+    project_slug = get_project_slug()
+    store = create_session_store(
+        settings=settings,
+        working_dir=Path.cwd(),
+        project_slug=project_slug,
+    )
+
+    # Start hybrid storage if applicable (enables background sync)
+    await start_store_if_hybrid(store)
+
     return InitializedSession(
         session=session,
         session_id=session_id,
         config=config,
+        store=store,
     )
 
 

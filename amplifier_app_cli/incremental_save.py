@@ -18,7 +18,7 @@ from typing import Any
 if TYPE_CHECKING:
     from amplifier_core import AmplifierSession
 
-from .session_store import SessionStore
+from .storage import SessionStoreProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class IncrementalSaveHook:
     def __init__(
         self,
         session: "AmplifierSession",
-        store: SessionStore,
+        store: SessionStoreProtocol,
         session_id: str,
         bundle_name: str,
         config: dict[str, Any],
@@ -150,7 +150,7 @@ class IncrementalSaveHook:
 
 def register_incremental_save(
     session: "AmplifierSession",
-    store: SessionStore,
+    store: SessionStoreProtocol,
     session_id: str,
     bundle_name: str,
     config: dict[str, Any],
