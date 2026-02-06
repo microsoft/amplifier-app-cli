@@ -221,7 +221,9 @@ def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
         table.add_column("Root Bundle", style="dim cyan")
         table.add_column("Location", style="dim yellow")
 
-        for bundle_info in sorted(categories["nested_bundles"], key=lambda x: x["name"]):
+        for bundle_info in sorted(
+            categories["nested_bundles"], key=lambda x: x["name"]
+        ):
             table.add_row(
                 bundle_info["name"],
                 bundle_info.get("root", ""),
@@ -797,6 +799,22 @@ def bundle_remove(name: str, app: bool):
     # Remove from settings.yaml bundle.added
     settings_removed = app_settings.remove_added_bundle(name)
 
+    # Also check if bundle exists in bundle.app and remove it
+    # This fixes the issue where app bundles continue running after removal
+    app_removed = False
+    app_bundles = app_settings.get_app_bundles()
+
+    # Search for bundle URI that matches the name
+    matching_app_uri = None
+    for uri in app_bundles:
+        if name in uri:
+            matching_app_uri = uri
+            break
+
+    if matching_app_uri:
+        app_settings.remove_app_bundle(matching_app_uri)
+        app_removed = True
+
     # Remove from foundation registry (foundation-layer cache)
     foundation_removed = False
     try:
@@ -810,16 +828,22 @@ def bundle_remove(name: str, app: bool):
             f"[yellow]Warning:[/yellow] Failed to remove from foundation registry: {e}"
         )
 
-    if settings_removed or foundation_removed:
+    if settings_removed or foundation_removed or app_removed:
         console.print(f"[green]✓ Removed bundle '{name}' from registry[/green]")
-        if settings_removed and foundation_removed:
+
+        # Show detailed removal information
+        removal_locations = []
+        if settings_removed:
+            removal_locations.append("bundle.added")
+        if app_removed:
+            removal_locations.append("bundle.app")
+        if foundation_removed:
+            removal_locations.append("cache registry")
+
+        if removal_locations:
             console.print(
-                "  [dim](Removed from both settings and cache registry)[/dim]"
+                f"  [dim](Removed from: {', '.join(removal_locations)})[/dim]"
             )
-        elif settings_removed:
-            console.print("  [dim](Removed from settings only)[/dim]")
-        elif foundation_removed:
-            console.print("  [dim](Removed from cache registry only)[/dim]")
     else:
         console.print(f"[yellow]Bundle '{name}' not found in any registry[/yellow]")
         console.print("\nUser-added bundles can be seen with 'amplifier bundle list'")
