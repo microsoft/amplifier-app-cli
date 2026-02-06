@@ -195,7 +195,7 @@ def register_run_command(
             # Require --provider when using --model for clarity
             console.print(
                 "[red]Error:[/red] --model requires --provider\n"
-                "Specify which provider to use: --provider anthropic --model claude-opus-4\n"
+                "Specify which provider to use: --provider anthropic --model claude-opus-4-6\n"
                 "Run 'amplifier provider use --help' for configuration options"
             )
             sys.exit(1)

@@ -178,7 +178,7 @@ def provider_use(
     """Configure provider.
 
     Examples:
-      amplifier provider use anthropic --model claude-opus-4-1 --local
+      amplifier provider use anthropic --model claude-opus-4-6 --local
       amplifier provider use openai --model gpt-5.1 --project
       amplifier provider use azure-openai --endpoint https://... --deployment gpt-5.1-codex --use-azure-cli
       amplifier provider use ollama --model llama3
