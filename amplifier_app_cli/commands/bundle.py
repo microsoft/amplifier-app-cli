@@ -804,16 +804,25 @@ def bundle_remove(name: str, app: bool):
     app_removed = False
     app_bundles = app_settings.get_app_bundles()
 
-    # Search for bundle URI that matches the name
-    matching_app_uri = None
+    # Search for all bundle URIs that match the name (exact match)
+    matching_app_uris = []
     for uri in app_bundles:
-        if name in uri:
-            matching_app_uri = uri
-            break
+        # Extract bundle name from URI and compare exactly
+        bundle_name = _extract_bundle_name_from_uri(uri)
+        if bundle_name == name:
+            matching_app_uris.append(uri)
 
-    if matching_app_uri:
-        app_settings.remove_app_bundle(matching_app_uri)
+    # Remove all matching URIs
+    if matching_app_uris:
+        for uri in matching_app_uris:
+            app_settings.remove_app_bundle(uri)
         app_removed = True
+
+        # Warn if multiple bundles were found
+        if len(matching_app_uris) > 1:
+            console.print(
+                f"[yellow]Note: Removed {len(matching_app_uris)} matching app bundles[/yellow]"
+            )
 
     # Remove from foundation registry (foundation-layer cache)
     foundation_removed = False
