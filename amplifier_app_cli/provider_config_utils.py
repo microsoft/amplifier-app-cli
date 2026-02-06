@@ -39,7 +39,11 @@ def _prompt_model_selection(
     Returns:
         Selected model name
     """
-    models = get_provider_models(provider_id, collected_config=collected_config)
+    try:
+        models = get_provider_models(provider_id, collected_config=collected_config)
+    except (ConnectionError, OSError) as e:
+        logger.debug(f"Could not connect to provider '{provider_id}': {e}")
+        models = []
 
     if not models:
         # No models available - show helpful message and prompt for custom input

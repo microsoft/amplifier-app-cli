@@ -88,6 +88,9 @@ async def resolve_bundle_config(
     # This enables settings.yaml overrides to take effect at prepare time
     source_overrides = app_settings.get_source_overrides()
 
+    # Get module sources from 'amplifier source add' (sources.modules in settings.yaml)
+    module_sources = app_settings.get_module_sources()
+
     # CRITICAL: Also extract provider sources from config.providers[]
     # Providers are configured via 'amplifier provider use' and stored in config.providers,
     # not in overrides section. Bundle.prepare() needs these sources to download provider modules.
@@ -98,9 +101,9 @@ async def resolve_bundle_config(
         if isinstance(provider, dict) and "module" in provider and "source" in provider
     }
 
-    # Merge provider sources with module source overrides
-    # Provider sources take precedence (more specific configuration)
-    combined_sources = {**source_overrides, **provider_sources}
+    # Merge all source overrides with proper precedence:
+    # sources.modules (general) < overrides.<id>.source (specific) < config.providers[].source (most specific)
+    combined_sources = {**module_sources, **source_overrides, **provider_sources}
 
     # Load and prepare bundle (downloads modules from git sources)
     # If compose_behaviors is provided, those behaviors are composed onto the bundle
