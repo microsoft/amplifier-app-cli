@@ -126,7 +126,9 @@ def _should_show_field(field: dict[str, Any], collected_config: dict[str, Any]) 
     Supported patterns for expected_value:
         - "exact-value" - Exact match (case-insensitive)
         - "contains:substring" - Match if actual value contains substring
+        - "not_contains:substring" - Match if actual value does NOT contain substring
         - "startswith:prefix" - Match if actual value starts with prefix
+        - "not_startswith:prefix" - Match if actual value does NOT start with prefix
     """
     show_when = field.get("show_when")
     if not show_when:
@@ -139,9 +141,17 @@ def _should_show_field(field: dict[str, Any], collected_config: dict[str, Any]) 
         expected_str = str(expected_value).lower()
 
         # Check for pattern matching prefixes
-        if expected_str.startswith("contains:"):
+        if expected_str.startswith("not_contains:"):
+            pattern = expected_str[13:]  # Remove "not_contains:" prefix
+            if pattern in actual_value:
+                return False
+        elif expected_str.startswith("contains:"):
             pattern = expected_str[9:]  # Remove "contains:" prefix
             if pattern not in actual_value:
+                return False
+        elif expected_str.startswith("not_startswith:"):
+            pattern = expected_str[15:]  # Remove "not_startswith:" prefix
+            if actual_value.startswith(pattern):
                 return False
         elif expected_str.startswith("startswith:"):
             pattern = expected_str[11:]  # Remove "startswith:" prefix
