@@ -221,7 +221,9 @@ def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
         table.add_column("Root Bundle", style="dim cyan")
         table.add_column("Location", style="dim yellow")
 
-        for bundle_info in sorted(categories["nested_bundles"], key=lambda x: x["name"]):
+        for bundle_info in sorted(
+            categories["nested_bundles"], key=lambda x: x["name"]
+        ):
             table.add_row(
                 bundle_info["name"],
                 bundle_info.get("root", ""),
@@ -794,8 +796,27 @@ def bundle_remove(name: str, app: bool):
         console.print("  Well-known bundles are built into amplifier")
         sys.exit(1)
 
+    # Look up the bundle URI before removal (needed for app bundle cleanup)
+    added_bundles = app_settings.get_added_bundles()
+    bundle_uri = added_bundles.get(name)
+
     # Remove from settings.yaml bundle.added
     settings_removed = app_settings.remove_added_bundle(name)
+
+    # Also remove from bundle.app if this bundle was registered as an app bundle
+    # This prevents "ghost" bundles that continue running hooks after removal
+    app_removed = False
+    if bundle_uri:
+        app_bundles = app_settings.get_app_bundles()
+        if bundle_uri in app_bundles:
+            app_removed = app_settings.remove_app_bundle(bundle_uri)
+    else:
+        # No URI in bundle.added - try matching by name in app bundle URIs
+        app_bundles = app_settings.get_app_bundles()
+        for uri in app_bundles:
+            if name in uri:
+                app_removed = app_settings.remove_app_bundle(uri)
+                break
 
     # Remove from foundation registry (foundation-layer cache)
     foundation_removed = False
@@ -810,16 +831,16 @@ def bundle_remove(name: str, app: bool):
             f"[yellow]Warning:[/yellow] Failed to remove from foundation registry: {e}"
         )
 
-    if settings_removed or foundation_removed:
+    if settings_removed or foundation_removed or app_removed:
         console.print(f"[green]✓ Removed bundle '{name}' from registry[/green]")
-        if settings_removed and foundation_removed:
-            console.print(
-                "  [dim](Removed from both settings and cache registry)[/dim]"
-            )
-        elif settings_removed:
-            console.print("  [dim](Removed from settings only)[/dim]")
-        elif foundation_removed:
-            console.print("  [dim](Removed from cache registry only)[/dim]")
+        locations = []
+        if settings_removed:
+            locations.append("settings")
+        if app_removed:
+            locations.append("app bundles")
+        if foundation_removed:
+            locations.append("cache registry")
+        console.print(f"  [dim](Removed from: {', '.join(locations)})[/dim]")
     else:
         console.print(f"[yellow]Bundle '{name}' not found in any registry[/yellow]")
         console.print("\nUser-added bundles can be seen with 'amplifier bundle list'")
