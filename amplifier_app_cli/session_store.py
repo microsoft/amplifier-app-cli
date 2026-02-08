@@ -151,11 +151,8 @@ class SessionStore:
 
             # Sanitize message to ensure it's JSON-serializable
             sanitized_msg = sanitize_message(message)
-            # Add timestamp if not present (for accurate replay timing - bd-45)
-            if "timestamp" not in sanitized_msg:
-                sanitized_msg["timestamp"] = datetime.now(UTC).isoformat(
-                    timespec="milliseconds"
-                )
+            # Timestamps are added by context module at creation time (metadata.timestamp)
+            # No fallback needed - replay handles missing timestamps via content-based timing
             lines.append(json.dumps(sanitized_msg, ensure_ascii=False))
 
         content = "\n".join(lines) + "\n" if lines else ""
