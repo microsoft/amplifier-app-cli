@@ -292,7 +292,9 @@ async def _replay_session_history(
                 continue
 
             # Calculate delay (uses timestamps if available, else content-based)
-            curr_timestamp = message.get("timestamp")
+            # Timestamps are stored in metadata.timestamp (context-simple convention)
+            metadata = message.get("metadata", {})
+            curr_timestamp = metadata.get("timestamp") if metadata else None
             content = message.get("content", "")
             content_str = content if isinstance(content, str) else str(content)
 
