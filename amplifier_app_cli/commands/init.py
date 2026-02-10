@@ -148,7 +148,8 @@ def prompt_first_run_init(console_arg: Console) -> bool:
     console_arg.print()
     console_arg.print("Amplifier needs an AI provider. Let's set that up quickly.")
     console_arg.print(
-        "[dim]Tip: Set ANTHROPIC_API_KEY, OPENAI_API_KEY, etc. to skip this.[/dim]"
+        "[dim]Tip: Run [bold]amplifier init --yes[/bold] to auto-configure "
+        "from environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.)[/dim]"
     )
     console_arg.print()
 
