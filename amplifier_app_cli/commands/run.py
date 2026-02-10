@@ -143,8 +143,15 @@ def register_run_command(
         # Check if first run init is needed
         # This runs unconditionally - --provider just selects from configured providers,
         # it doesn't bypass the need for configuration
-        if check_first_run() and prompt_first_run_init(console):
-            pass  # First run init completed
+        if check_first_run():
+            if sys.stdin.isatty():
+                prompt_first_run_init(console)
+            else:
+                # Non-interactive context (CI, Docker, shadow env)
+                # Auto-init from environment variables
+                from .init import auto_init_from_env
+
+                auto_init_from_env(console)
 
         # Agent loading is now handled via foundation's bundle.load_agent_metadata()
         app_settings = AppSettings()
