@@ -20,51 +20,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _has_import_error_in_chain(exc: BaseException) -> bool:
-    """Check if an exception chain contains an ImportError/ModuleNotFoundError.
-
-    Provider modules may use lazy imports for their SDK dependencies.
-    When the SDK is missing, the ImportError can be wrapped in a
-    provider-specific exception (e.g., CopilotConnectionError).  This
-    walks the ``__cause__`` chain to detect that case.
-    """
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        if isinstance(current, (ImportError, ModuleNotFoundError)):
-            return True
-        seen.add(id(current))
-        current = current.__cause__
-    return False
-
-
-def _try_auto_install_provider(provider_id: str, config_manager: Any = None) -> bool:
-    """Attempt to auto-install a provider module and its dependencies.
-
-    Creates a ConfigManager lazily when the caller doesn't supply one so
-    that ``get_provider_models`` can self-heal without requiring every
-    call-site to thread config_manager through.
-    """
-    try:
-        from amplifier_app_cli.provider_sources import ensure_provider_installed
-
-        if config_manager is None:
-            from amplifier_app_cli.paths import create_config_manager
-
-            config_manager = create_config_manager()
-
-        module_id = (
-            provider_id
-            if provider_id.startswith("provider-")
-            else f"provider-{provider_id}"
-        )
-        logger.info(f"Auto-installing {module_id} and its dependencies...")
-        return ensure_provider_installed(module_id, config_manager=config_manager)
-    except Exception as e:
-        logger.debug(f"Auto-install failed for {provider_id}: {e}")
-        return False
-
-
 def _get_provider_module_name(provider_id: str) -> str:
     """Convert provider ID to Python module name.
 
@@ -199,11 +154,7 @@ def get_provider_models(
     """
     provider_class = load_provider_class(provider_id)
     if not provider_class:
-        # Module failed to load entirely — try auto-installing
-        if _try_auto_install_provider(provider_id, config_manager):
-            provider_class = load_provider_class(provider_id)
-        if not provider_class:
-            return []
+        return []
 
     # Try different instantiation approaches for different provider signatures
     # Pass collected_config so providers can use real connection values
@@ -223,20 +174,9 @@ def get_provider_models(
     # Let exceptions propagate - auth errors, API errors, connection errors
     # should be shown to the user, not silently swallowed
     list_models_fn = provider.list_models
-    try:
-        if asyncio.iscoroutinefunction(list_models_fn):
-            return asyncio.run(list_models_fn())
-        return list_models_fn()
-    except Exception as e:
-        # Module loaded (lazy imports) but SDK dependency is missing at runtime.
-        # Walk the __cause__ chain to detect wrapped ImportErrors and attempt
-        # a one-shot auto-install before re-raising.
-        if _has_import_error_in_chain(e):
-            if _try_auto_install_provider(provider_id, config_manager):
-                if asyncio.iscoroutinefunction(list_models_fn):
-                    return asyncio.run(list_models_fn())
-                return list_models_fn()
-        raise
+    if asyncio.iscoroutinefunction(list_models_fn):
+        return asyncio.run(list_models_fn())
+    return list_models_fn()
 
 
 def _resolve_env_placeholder(value: str | None) -> str | None:
