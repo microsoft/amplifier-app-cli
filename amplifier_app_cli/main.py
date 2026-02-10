@@ -313,18 +313,78 @@ class CommandProcessor:
 
             if command in self.COMMANDS:
                 cmd_info = self.COMMANDS[command]
-                return cmd_info["action"], {"args": args, "command": command}
+                data = {"args": args, "command": command}
+                # For mode commands, extract trailing prompt text
+                if cmd_info["action"] == "handle_mode" and args.strip():
+                    mode_args, trailing = self._split_mode_trailing(args)
+                    data["args"] = mode_args
+                    if trailing:
+                        data["trailing_prompt"] = trailing
+                return cmd_info["action"], data
 
             # Check for mode shortcuts (e.g., /plan -> /mode plan)
             shortcut_name = command[1:]  # Remove leading /
             if shortcut_name in self.MODE_SHORTCUTS:
-                return "handle_mode", {"args": shortcut_name, "command": command}
+                data = {"args": shortcut_name, "command": command}
+                trailing = args.strip()
+                if trailing:
+                    if trailing.lower() in ("on", "off"):
+                        # Exact "on"/"off" → mode control, not trailing prompt
+                        data["args"] = f"{shortcut_name} {trailing}"
+                    else:
+                        # Trailing text → force activation + queue as prompt
+                        data["args"] = f"{shortcut_name} on"
+                        data["trailing_prompt"] = trailing
+                return "handle_mode", data
 
             return "unknown_command", {"command": command}
 
         # Regular prompt
         active_mode = self.session.coordinator.session_state.get("active_mode")
         return "prompt", {"text": user_input, "active_mode": active_mode}
+
+    def _split_mode_trailing(self, args: str) -> tuple[str, str | None]:
+        """Split /mode args into control portion and optional trailing prompt.
+
+        "on"/"off" are only treated as control words when they are the ENTIRE
+        text after the mode name.  This prevents natural-language phrases like
+        "on that note, let's do X" from being partially consumed as a control
+        word.
+
+        Returns:
+            (mode_args, trailing_prompt) where mode_args goes to _handle_mode
+            and trailing_prompt (if any) is executed as a follow-up prompt.
+
+        Examples:
+            "brainstorm"                            → ("brainstorm", None)
+            "brainstorm on"                         → ("brainstorm on", None)
+            "brainstorm off"                        → ("brainstorm off", None)
+            "brainstorm my great idea"              → ("brainstorm on", "my great idea")
+            "brainstorm on that note, do X"         → ("brainstorm on", "on that note, do X")
+            "off"                                   → ("off", None)
+        """
+        if not args.strip():
+            return args, None
+
+        words = args.split(maxsplit=1)
+        first_word = words[0].strip()
+        rest = words[1].strip() if len(words) > 1 else ""
+
+        # "/mode off" — special deactivation syntax (exact match only)
+        if first_word.lower() == "off" and not rest:
+            return "off", None
+
+        # "/mode <name> ..."
+        mode_name = first_word
+        if not rest:
+            return mode_name, None
+
+        # Only treat "on"/"off" as control words when they stand alone
+        if rest.strip().lower() in ("on", "off"):
+            return f"{mode_name} {rest.strip()}", None
+
+        # Everything else is trailing prompt — force activation
+        return f"{mode_name} on", rest
 
     async def handle_command(self, action: str, data: dict[str, Any]) -> str:
         """Handle a command action."""
@@ -1519,6 +1579,15 @@ async def interactive_chat(
                         # Handle command
                         result = await command_processor.handle_command(action, data)
                         console.print(f"[cyan]{result}[/cyan]")
+
+                        # If command included trailing text, execute it as a prompt
+                        trailing_prompt = data.get("trailing_prompt")
+                        if trailing_prompt:
+                            console.print(
+                                "\n[dim]Processing... (Ctrl+C to cancel)[/dim]"
+                            )
+                            await _process_runtime_mentions(session, trailing_prompt)
+                            await _execute_with_interrupt(trailing_prompt)
 
             except EOFError:
                 # Ctrl-D - graceful exit
