@@ -143,7 +143,14 @@ async def create_initialized_session(
         # For new interactive sessions, prompt for setup
         # For resume/single-shot, check_first_run() handles auto-fix internally
         if not config.is_resume:
-            prompt_first_run_init(console)
+            if sys.stdin.isatty():
+                prompt_first_run_init(console)
+            else:
+                # Non-interactive context (CI, Docker, shadow env)
+                # Auto-init from environment variables
+                from .commands.init import auto_init_from_env
+
+                auto_init_from_env(console)
 
     # Step 2: Generate session ID if not provided
     session_id = config.session_id or str(uuid.uuid4())

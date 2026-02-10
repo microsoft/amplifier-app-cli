@@ -49,7 +49,13 @@ def anyio_backend():
 
 
 class TestGenerateSubSessionId:
-    def _assert_format(self, result: str, expected_suffix: str, expected_parent: str, expected_child: str) -> None:
+    def _assert_format(
+        self,
+        result: str,
+        expected_suffix: str,
+        expected_parent: str,
+        expected_child: str,
+    ) -> None:
         # Format: {parent-span}-{child-span}_{agent-name}
         spans_part, suffix = result.rsplit("_", 1)
         parent_span, child_span = spans_part.split("-", 1)
@@ -217,7 +223,9 @@ class TestResumeErrorHandling:
         store.save(session_id, transcript, metadata)
 
         # Try to resume - should fail with clear error
-        with pytest.raises(RuntimeError, match="Corrupted session metadata.*Cannot reconstruct"):
+        with pytest.raises(
+            RuntimeError, match="Corrupted session metadata.*Cannot reconstruct"
+        ):
             await resume_sub_session(session_id, "Follow-up")
 
     async def test_resume_with_corrupted_metadata_file(self, tmp_path, monkeypatch):
@@ -232,7 +240,9 @@ class TestResumeErrorHandling:
         metadata = {
             "session_id": session_id,
             "parent_id": "parent-123",
-            "config": {"session": {"orchestrator": "loop-basic", "context": "context-simple"}},
+            "config": {
+                "session": {"orchestrator": "loop-basic", "context": "context-simple"}
+            },
         }
         store.save(session_id, transcript, metadata)
 
@@ -264,7 +274,9 @@ class TestSessionStoreIntegration:
             "session_id": session_id,
             "parent_id": "parent-123",
             "agent_name": "zen-architect",
-            "config": {"session": {"orchestrator": "loop-basic", "context": "context-simple"}},
+            "config": {
+                "session": {"orchestrator": "loop-basic", "context": "context-simple"}
+            },
         }
 
         # Save and verify
@@ -287,13 +299,20 @@ class TestSessionStoreIntegration:
             "session_id": session_id,
             "config": {
                 "session": {"orchestrator": "loop-basic", "context": "context-simple"},
-                "providers": [{"module": "provider-anthropic", "config": {"model": "claude-sonnet-4-5"}}],
+                "providers": [
+                    {
+                        "module": "provider-anthropic",
+                        "config": {"model": "claude-sonnet-4-5"},
+                    }
+                ],
                 "tools": [{"module": "tool-filesystem"}],
                 "hooks": [{"module": "hooks-logging"}],
             },
             "agent_overlay": {
                 "description": "Test agent",
-                "providers": [{"module": "provider-anthropic", "config": {"temperature": 0.7}}],
+                "providers": [
+                    {"module": "provider-anthropic", "config": {"temperature": 0.7}}
+                ],
             },
         }
 
@@ -324,7 +343,9 @@ class TestCapabilityRegistration:
         metadata = {
             "session_id": session_id,
             "parent_id": "parent-123",
-            "config": {"session": {"orchestrator": "loop-basic", "context": "context-simple"}},
+            "config": {
+                "session": {"orchestrator": "loop-basic", "context": "context-simple"}
+            },
             "working_dir": "/home/user/project",  # New field added by fix
             "self_delegation_depth": 0,
         }
@@ -346,7 +367,9 @@ class TestCapabilityRegistration:
         metadata = {
             "session_id": session_id,
             "parent_id": "parent-123",
-            "config": {"session": {"orchestrator": "loop-basic", "context": "context-simple"}},
+            "config": {
+                "session": {"orchestrator": "loop-basic", "context": "context-simple"}
+            },
             "working_dir": None,  # Can be None if parent had no working_dir
         }
 
@@ -365,7 +388,9 @@ class TestCapabilityRegistrationIntegration:
     These tests require mocking AmplifierSession but verify the actual code path.
     """
 
-    async def test_resume_registers_session_spawn_capability(self, tmp_path, monkeypatch):
+    async def test_resume_registers_session_spawn_capability(
+        self, tmp_path, monkeypatch
+    ):
         """Test that resume_sub_session registers session.spawn capability.
 
         This is the core fix for issue #32.
@@ -382,7 +407,9 @@ class TestCapabilityRegistrationIntegration:
             "session_id": session_id,
             "parent_id": "parent-123",
             "agent_name": "test-agent",
-            "config": {"session": {"orchestrator": "loop-basic", "context": "context-simple"}},
+            "config": {
+                "session": {"orchestrator": "loop-basic", "context": "context-simple"}
+            },
             "working_dir": "/test/project",
             "self_delegation_depth": 1,
         }
@@ -409,12 +436,17 @@ class TestCapabilityRegistrationIntegration:
         mock_session.cleanup = AsyncMock()
 
         # Patch at correct locations - imports are inside the function from their source modules
-        with patch("amplifier_app_cli.session_spawner.AmplifierSession", return_value=mock_session):
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            return_value=mock_session,
+        ):
             with patch("amplifier_app_cli.ui.CLIApprovalSystem"):
                 with patch("amplifier_app_cli.ui.CLIDisplaySystem"):
                     with patch("amplifier_app_cli.paths.create_foundation_resolver"):
                         try:
-                            await resume_sub_session(session_id, "follow-up instruction")
+                            await resume_sub_session(
+                                session_id, "follow-up instruction"
+                            )
                         except Exception:
                             # May fail on other parts, but we can still check registrations
                             pass
@@ -447,7 +479,9 @@ class TestCapabilityRegistrationIntegration:
             "session_id": session_id,
             "parent_id": "parent-123",
             "agent_name": "test-agent",
-            "config": {"session": {"orchestrator": "loop-basic", "context": "context-simple"}},
+            "config": {
+                "session": {"orchestrator": "loop-basic", "context": "context-simple"}
+            },
             "working_dir": "/test/project/path",
             "self_delegation_depth": 0,
         }
@@ -471,7 +505,10 @@ class TestCapabilityRegistrationIntegration:
         mock_session.execute = AsyncMock(return_value="response")
         mock_session.cleanup = AsyncMock()
 
-        with patch("amplifier_app_cli.session_spawner.AmplifierSession", return_value=mock_session):
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            return_value=mock_session,
+        ):
             with patch("amplifier_app_cli.ui.CLIApprovalSystem"):
                 with patch("amplifier_app_cli.ui.CLIDisplaySystem"):
                     with patch("amplifier_app_cli.paths.create_foundation_resolver"):
@@ -486,7 +523,9 @@ class TestCapabilityRegistrationIntegration:
         )
         assert registered_capabilities["session.working_dir"] == "/test/project/path"
 
-    async def test_resume_without_working_dir_skips_registration(self, tmp_path, monkeypatch):
+    async def test_resume_without_working_dir_skips_registration(
+        self, tmp_path, monkeypatch
+    ):
         """Test that resume_sub_session handles missing working_dir gracefully."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -500,7 +539,9 @@ class TestCapabilityRegistrationIntegration:
             "session_id": session_id,
             "parent_id": "parent-123",
             "agent_name": "test-agent",
-            "config": {"session": {"orchestrator": "loop-basic", "context": "context-simple"}},
+            "config": {
+                "session": {"orchestrator": "loop-basic", "context": "context-simple"}
+            },
             # working_dir intentionally omitted
             "self_delegation_depth": 0,
         }
@@ -523,7 +564,10 @@ class TestCapabilityRegistrationIntegration:
         mock_session.execute = AsyncMock(return_value="response")
         mock_session.cleanup = AsyncMock()
 
-        with patch("amplifier_app_cli.session_spawner.AmplifierSession", return_value=mock_session):
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            return_value=mock_session,
+        ):
             with patch("amplifier_app_cli.ui.CLIApprovalSystem"):
                 with patch("amplifier_app_cli.ui.CLIDisplaySystem"):
                     with patch("amplifier_app_cli.paths.create_foundation_resolver"):
@@ -540,3 +584,325 @@ class TestCapabilityRegistrationIntegration:
         # But session.spawn/resume should still be registered
         assert "session.spawn" in registered_capabilities
         assert "session.resume" in registered_capabilities
+
+
+class TestSpawnEnrichment:
+    """Test that spawn/resume results include orchestrator completion data.
+
+    The spawn enrichment fix captures orchestrator:complete hook data and
+    surfaces status, turn_count, and metadata in the spawn/resume return dict.
+    """
+
+    async def test_spawn_result_includes_status_and_turn_count(
+        self, tmp_path, monkeypatch
+    ):
+        """Test that spawn_sub_session returns status and turn_count from orchestrator:complete."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from amplifier_app_cli.session_spawner import spawn_sub_session
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        # --- parent session mock ---
+        parent_coordinator = MagicMock()
+        parent_coordinator.get.return_value = None
+        parent_coordinator.get_capability.return_value = None
+        parent_coordinator.display_system = MagicMock()
+        parent_coordinator.cancellation = MagicMock()
+        parent_coordinator.cancellation.register_child = MagicMock()
+        parent_coordinator.cancellation.unregister_child = MagicMock()
+
+        parent_session = MagicMock()
+        parent_session.coordinator = parent_coordinator
+        parent_session.config = {
+            "session": {"orchestrator": "loop-basic", "context": "context-simple"},
+        }
+        parent_session.session_id = "parent-123"
+        parent_session.trace_id = "trace-abc"
+        parent_session.loader = None
+
+        # --- child session mock ---
+        # We need the hooks register to actually invoke the callback during execute
+        captured_handler = None
+
+        class FakeHooks:
+            def register(self, event, handler, priority=0, name=None):
+                nonlocal captured_handler
+                captured_handler = handler
+
+                def _unregister():
+                    nonlocal captured_handler
+                    captured_handler = None
+
+                return _unregister
+
+            async def emit(self, event, data):
+                pass
+
+        fake_hooks = FakeHooks()
+
+        child_coordinator = MagicMock()
+        child_coordinator.register_capability = MagicMock()
+        child_coordinator.get_capability.return_value = None
+        child_coordinator.display_system = MagicMock()
+
+        # Return fake_hooks for coordinator.get("hooks")
+        def child_get(name):
+            if name == "hooks":
+                return fake_hooks
+            if name == "context":
+                ctx = AsyncMock()
+                ctx.get_messages = AsyncMock(return_value=[])
+                ctx.add_message = AsyncMock()
+                return ctx
+            return None
+
+        child_coordinator.get = child_get
+        child_coordinator.mount = AsyncMock()
+
+        async def mock_execute(instruction):
+            # Simulate orchestrator emitting orchestrator:complete during execute
+            if captured_handler:
+                await captured_handler(
+                    "orchestrator:complete",
+                    {
+                        "status": "success",
+                        "turn_count": 5,
+                        "metadata": {"orchestrator": "loop-basic"},
+                    },
+                )
+            return "agent response"
+
+        child_session = MagicMock()
+        child_session.coordinator = child_coordinator
+        child_session.initialize = AsyncMock()
+        child_session.execute = AsyncMock(side_effect=mock_execute)
+        child_session.cleanup = AsyncMock()
+        child_session.session_id = "child-001"
+
+        agent_configs = {
+            "test-agent": {
+                "description": "A test agent",
+            },
+        }
+
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            return_value=child_session,
+        ):
+            with patch(
+                "amplifier_app_cli.session_spawner.generate_sub_session_id",
+                return_value="child-001",
+            ):
+                with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                    with patch("amplifier_app_cli.session_store.SessionStore.save"):
+                        result = await spawn_sub_session(
+                            agent_name="test-agent",
+                            instruction="Do something",
+                            parent_session=parent_session,
+                            agent_configs=agent_configs,
+                        )
+
+        # Verify enriched fields from orchestrator:complete
+        assert result["output"] == "agent response"
+        assert result["session_id"] == "child-001"
+        assert result["status"] == "success"
+        assert result["turn_count"] == 5
+        assert result["metadata"] == {"orchestrator": "loop-basic"}
+
+    async def test_spawn_result_defaults_when_no_hook_fires(
+        self, tmp_path, monkeypatch
+    ):
+        """Test that spawn returns sensible defaults when orchestrator:complete never fires."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from amplifier_app_cli.session_spawner import spawn_sub_session
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        # --- parent session mock ---
+        parent_coordinator = MagicMock()
+        parent_coordinator.get.return_value = None
+        parent_coordinator.get_capability.return_value = None
+        parent_coordinator.display_system = MagicMock()
+        parent_coordinator.cancellation = MagicMock()
+        parent_coordinator.cancellation.register_child = MagicMock()
+        parent_coordinator.cancellation.unregister_child = MagicMock()
+
+        parent_session = MagicMock()
+        parent_session.coordinator = parent_coordinator
+        parent_session.config = {
+            "session": {"orchestrator": "loop-basic", "context": "context-simple"},
+        }
+        parent_session.session_id = "parent-123"
+        parent_session.trace_id = "trace-abc"
+        parent_session.loader = None
+
+        # --- child session mock (hooks.register is never called back) ---
+        class FakeHooks:
+            def register(self, event, handler, priority=0, name=None):
+                # Don't store handler - orchestrator:complete never fires
+                def _unregister():
+                    pass
+
+                return _unregister
+
+            async def emit(self, event, data):
+                pass
+
+        fake_hooks = FakeHooks()
+
+        child_coordinator = MagicMock()
+        child_coordinator.register_capability = MagicMock()
+        child_coordinator.get_capability.return_value = None
+        child_coordinator.display_system = MagicMock()
+
+        def child_get(name):
+            if name == "hooks":
+                return fake_hooks
+            if name == "context":
+                ctx = AsyncMock()
+                ctx.get_messages = AsyncMock(return_value=[])
+                ctx.add_message = AsyncMock()
+                return ctx
+            return None
+
+        child_coordinator.get = child_get
+        child_coordinator.mount = AsyncMock()
+
+        child_session = MagicMock()
+        child_session.coordinator = child_coordinator
+        child_session.initialize = AsyncMock()
+        child_session.execute = AsyncMock(return_value="agent response")
+        child_session.cleanup = AsyncMock()
+        child_session.session_id = "child-002"
+
+        agent_configs = {
+            "test-agent": {"description": "A test agent"},
+        }
+
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            return_value=child_session,
+        ):
+            with patch(
+                "amplifier_app_cli.session_spawner.generate_sub_session_id",
+                return_value="child-002",
+            ):
+                with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                    with patch("amplifier_app_cli.session_store.SessionStore.save"):
+                        result = await spawn_sub_session(
+                            agent_name="test-agent",
+                            instruction="Do something",
+                            parent_session=parent_session,
+                            agent_configs=agent_configs,
+                        )
+
+        # Should still have output and session_id
+        assert result["output"] == "agent response"
+        assert result["session_id"] == "child-002"
+        # Defaults when orchestrator:complete never fires
+        assert result["status"] == "success"
+        assert result["turn_count"] == 1
+        assert result["metadata"] == {}
+
+    async def test_resume_result_includes_status_and_turn_count(
+        self, tmp_path, monkeypatch
+    ):
+        """Test that resume_sub_session returns status and turn_count from orchestrator:complete."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        # Create a valid session to resume
+        store = SessionStore()
+        session_id = "test-enriched-resume"
+        transcript = [{"role": "user", "content": "initial"}]
+        metadata = {
+            "session_id": session_id,
+            "parent_id": "parent-123",
+            "agent_name": "test-agent",
+            "config": {
+                "session": {"orchestrator": "loop-basic", "context": "context-simple"}
+            },
+            "working_dir": "/test/project",
+            "self_delegation_depth": 0,
+        }
+        store.save(session_id, transcript, metadata)
+
+        # --- child session mock with hook capture ---
+        captured_handler = None
+
+        class FakeHooks:
+            def register(self, event, handler, priority=0, name=None):
+                nonlocal captured_handler
+                captured_handler = handler
+
+                def _unregister():
+                    nonlocal captured_handler
+                    captured_handler = None
+
+                return _unregister
+
+            async def emit(self, event, data):
+                pass
+
+        fake_hooks = FakeHooks()
+
+        child_coordinator = MagicMock()
+        child_coordinator.register_capability = MagicMock()
+        child_coordinator.get_capability.return_value = None
+
+        def child_get(name):
+            if name == "hooks":
+                return fake_hooks
+            if name == "context":
+                ctx = AsyncMock()
+                ctx.get_messages = AsyncMock(
+                    return_value=[
+                        {"role": "user", "content": "initial"},
+                        {"role": "assistant", "content": "response"},
+                        {"role": "user", "content": "follow-up"},
+                    ]
+                )
+                ctx.add_message = AsyncMock()
+                return ctx
+            return None
+
+        child_coordinator.get = child_get
+        child_coordinator.mount = AsyncMock()
+
+        async def mock_execute(instruction):
+            if captured_handler:
+                await captured_handler(
+                    "orchestrator:complete",
+                    {
+                        "status": "incomplete",
+                        "turn_count": 3,
+                        "metadata": {"reason": "max_turns"},
+                    },
+                )
+            return "resumed response"
+
+        child_session = MagicMock()
+        child_session.coordinator = child_coordinator
+        child_session.initialize = AsyncMock()
+        child_session.execute = AsyncMock(side_effect=mock_execute)
+        child_session.cleanup = AsyncMock()
+
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            return_value=child_session,
+        ):
+            with patch("amplifier_app_cli.ui.CLIApprovalSystem"):
+                with patch("amplifier_app_cli.ui.CLIDisplaySystem"):
+                    with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                        result = await resume_sub_session(
+                            session_id, "follow-up instruction"
+                        )
+
+        assert result["output"] == "resumed response"
+        assert result["session_id"] == session_id
+        assert result["status"] == "incomplete"
+        assert result["turn_count"] == 3
+        assert result["metadata"] == {"reason": "max_turns"}

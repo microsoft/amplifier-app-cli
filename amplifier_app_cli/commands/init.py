@@ -12,6 +12,7 @@ from ..key_manager import KeyManager
 from ..paths import create_config_manager
 from ..provider_config_utils import configure_provider
 from ..provider_manager import ProviderManager
+from ..provider_env_detect import detect_provider_from_env
 from ..provider_sources import install_known_providers
 
 console = Console()
@@ -148,7 +149,8 @@ def prompt_first_run_init(console_arg: Console) -> bool:
     console_arg.print()
     console_arg.print("Amplifier needs an AI provider. Let's set that up quickly.")
     console_arg.print(
-        "[dim]Tip: Set ANTHROPIC_API_KEY, OPENAI_API_KEY, etc. to skip this.[/dim]"
+        "[dim]Tip: Run [bold]amplifier init --yes[/bold] to auto-configure "
+        "from environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.)[/dim]"
     )
     console_arg.print()
 
@@ -167,6 +169,78 @@ def prompt_first_run_init(console_arg: Console) -> bool:
     console_arg.print('  [cyan]export ANTHROPIC_API_KEY="your-key"[/cyan]')
     console_arg.print()
     return False
+
+
+def auto_init_from_env(console_arg: Console | None = None) -> bool:
+    """Auto-configure from environment variables in non-interactive contexts.
+
+    Equivalent to 'amplifier init --yes' but called programmatically.
+    Used when check_first_run() returns True and stdin is not a TTY
+    (Docker containers, CI pipelines, shadow environments).
+
+    Returns True if a provider was configured, False otherwise.
+    This is best-effort — failures are logged but never raised.
+    """
+    try:
+        logger.info(
+            "Non-interactive environment detected, "
+            "attempting auto-init from environment variables"
+        )
+
+        config = create_config_manager()
+
+        # Install providers quietly
+        install_known_providers(config_manager=config, console=None, verbose=False)
+
+        # Detect provider from environment
+        module_id = detect_provider_from_env()
+        if module_id is None:
+            msg = (
+                "No provider credentials found in environment. "
+                "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, etc. "
+                "or run 'amplifier init' interactively."
+            )
+            logger.warning(msg)
+            if console_arg:
+                console_arg.print(f"[yellow]{msg}[/yellow]")
+            return False
+
+        # Configure provider non-interactively
+        key_manager = KeyManager()
+        provider_mgr = ProviderManager(config)
+
+        provider_config = configure_provider(
+            module_id, key_manager, non_interactive=True
+        )
+        if provider_config is None:
+            logger.warning("Auto-init: provider configuration failed")
+            if console_arg:
+                console_arg.print(
+                    "[yellow]Auto-init failed. Run 'amplifier init' manually.[/yellow]"
+                )
+            return False
+
+        # Save provider configuration
+        provider_mgr.use_provider(
+            module_id, scope="global", config=provider_config, source=None
+        )
+
+        display_name = module_id.removeprefix("provider-")
+        logger.info(f"Auto-configured {display_name} from environment")
+        if console_arg:
+            console_arg.print(
+                f"[green]\u2713 Auto-configured {display_name} from environment[/green]"
+            )
+        return True
+
+    except Exception as e:
+        logger.warning(f"Auto-init failed: {e}")
+        if console_arg:
+            console_arg.print(
+                f"[yellow]Auto-init failed: {e}. "
+                f"Run 'amplifier init --yes' manually.[/yellow]"
+            )
+        return False
 
 
 @click.command("init")
@@ -190,18 +264,15 @@ def init_cmd(non_interactive: bool = False):
     import sys
 
     # Check for TTY if interactive mode requested
+    # Auto-upgrade to non-interactive mode instead of erroring
     if not non_interactive and not sys.stdin.isatty():
         console.print(
-            "[red]Error:[/red] Interactive mode requires a TTY. "
-            "Use --yes flag for non-interactive setup."
+            "[yellow]Non-interactive context detected. "
+            "Auto-configuring from environment variables...[/yellow]"
         )
-        console.print("\nExample:")
-        console.print("  amplifier init --yes")
-        return
+        non_interactive = True  # Fall through to non-interactive path
     # Non-interactive mode: use env detection and defaults
     if non_interactive:
-        from ..provider_env_detect import detect_provider_from_env
-
         key_manager = KeyManager()
         config = create_config_manager()
         provider_mgr = ProviderManager(config)

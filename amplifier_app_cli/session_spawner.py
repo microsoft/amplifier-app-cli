@@ -598,8 +598,31 @@ async def spawn_sub_session(
         if context and hasattr(context, "add_message"):
             await context.add_message({"role": "system", "content": system_instruction})
 
+    # Register temporary hook to capture orchestrator:complete data
+    # This gives us status, turn_count, and metadata from the orchestrator
+    completion_data: dict = {}
+    hooks = child_session.coordinator.get("hooks")
+    unregister_hook = None
+    if hooks:
+        from amplifier_core.hooks import HookResult
+
+        async def _capture_completion(event: str, data: dict) -> HookResult:
+            completion_data.update(data)
+            return HookResult()
+
+        unregister_hook = hooks.register(
+            "orchestrator:complete",
+            _capture_completion,
+            priority=999,
+            name="_spawn_capture",
+        )
+
     # Execute instruction in child session
-    response = await child_session.execute(instruction)
+    try:
+        response = await child_session.execute(instruction)
+    finally:
+        if unregister_hook:
+            unregister_hook()
 
     # Persist state for multi-turn resumption
     from datetime import UTC
@@ -655,7 +678,14 @@ async def spawn_sub_session(
     await child_session.cleanup()
 
     # Return response and session ID for potential multi-turn
-    return {"output": response, "session_id": sub_session_id}
+    # Include enriched fields from orchestrator:complete hook
+    return {
+        "output": response,
+        "session_id": sub_session_id,
+        "status": completion_data.get("status", "success"),
+        "turn_count": completion_data.get("turn_count", 1),
+        "metadata": completion_data.get("metadata", {}),
+    }
 
 
 async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
@@ -812,6 +842,61 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
         "self_delegation_depth", self_delegation_depth
     )
 
+    # Working directory - restore from metadata for consistent path resolution
+    # (critical for server/web deployments where process cwd differs from user's project)
+    saved_working_dir = metadata.get("working_dir")
+    if saved_working_dir:
+        child_session.coordinator.register_capability(
+            "session.working_dir", saved_working_dir
+        )
+
+    # Register session spawning capabilities on resumed child session
+    # This enables nested agent delegation (child can spawn grandchildren)
+    # The capabilities are closures that reference the spawn/resume functions
+    async def child_spawn_capability(
+        agent_name: str,
+        instruction: str,
+        parent_session: "AmplifierSession",
+        agent_configs: dict[str, dict],
+        sub_session_id: str | None = None,
+        tool_inheritance: dict[str, list[str]] | None = None,
+        hook_inheritance: dict[str, list[str]] | None = None,
+        orchestrator_config: dict | None = None,
+        parent_messages: list[dict] | None = None,
+        provider_override: str | None = None,
+        model_override: str | None = None,
+        provider_preferences: list | None = None,
+        self_delegation_depth: int = 0,
+    ) -> dict:
+        return await spawn_sub_session(
+            agent_name=agent_name,
+            instruction=instruction,
+            parent_session=parent_session,
+            agent_configs=agent_configs,
+            sub_session_id=sub_session_id,
+            tool_inheritance=tool_inheritance,
+            hook_inheritance=hook_inheritance,
+            orchestrator_config=orchestrator_config,
+            parent_messages=parent_messages,
+            provider_override=provider_override,
+            model_override=model_override,
+            provider_preferences=provider_preferences,
+            self_delegation_depth=self_delegation_depth,
+        )
+
+    async def child_resume_capability(sub_session_id: str, instruction: str) -> dict:
+        return await resume_sub_session(
+            sub_session_id=sub_session_id,
+            instruction=instruction,
+        )
+
+    child_session.coordinator.register_capability(
+        "session.spawn", child_spawn_capability
+    )
+    child_session.coordinator.register_capability(
+        "session.resume", child_resume_capability
+    )
+
     # Approval provider (for hooks-approval module, if active)
     register_provider_fn = child_session.coordinator.get_capability(
         "approval.register_provider"
@@ -851,8 +936,31 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
             f"Context module does not support add_message() - transcript not restored for session {sub_session_id}"
         )
 
+    # Register temporary hook to capture orchestrator:complete data
+    # This gives us status, turn_count, and metadata from the orchestrator
+    completion_data: dict = {}
+    hooks = child_session.coordinator.get("hooks")
+    unregister_hook = None
+    if hooks:
+        from amplifier_core.hooks import HookResult
+
+        async def _capture_completion(event: str, data: dict) -> HookResult:
+            completion_data.update(data)
+            return HookResult()
+
+        unregister_hook = hooks.register(
+            "orchestrator:complete",
+            _capture_completion,
+            priority=999,
+            name="_spawn_capture",
+        )
+
     # Execute new instruction with full context
-    response = await child_session.execute(instruction)
+    try:
+        response = await child_session.execute(instruction)
+    finally:
+        if unregister_hook:
+            unregister_hook()
 
     # Update state for next resumption
     updated_transcript = await context.get_messages() if context else []
@@ -868,4 +976,11 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     await child_session.cleanup()
 
     # Return response and same session ID
-    return {"output": response, "session_id": sub_session_id}
+    # Include enriched fields from orchestrator:complete hook
+    return {
+        "output": response,
+        "session_id": sub_session_id,
+        "status": completion_data.get("status", "success"),
+        "turn_count": completion_data.get("turn_count", 1),
+        "metadata": completion_data.get("metadata", {}),
+    }
