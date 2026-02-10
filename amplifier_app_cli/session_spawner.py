@@ -598,8 +598,31 @@ async def spawn_sub_session(
         if context and hasattr(context, "add_message"):
             await context.add_message({"role": "system", "content": system_instruction})
 
+    # Register temporary hook to capture orchestrator:complete data
+    # This gives us status, turn_count, and metadata from the orchestrator
+    completion_data: dict = {}
+    hooks = child_session.coordinator.get("hooks")
+    unregister_hook = None
+    if hooks:
+        from amplifier_core.hooks import HookResult
+
+        async def _capture_completion(event: str, data: dict) -> HookResult:
+            completion_data.update(data)
+            return HookResult()
+
+        unregister_hook = hooks.register(
+            "orchestrator:complete",
+            _capture_completion,
+            priority=999,
+            name="_spawn_capture",
+        )
+
     # Execute instruction in child session
-    response = await child_session.execute(instruction)
+    try:
+        response = await child_session.execute(instruction)
+    finally:
+        if unregister_hook:
+            unregister_hook()
 
     # Persist state for multi-turn resumption
     from datetime import UTC
@@ -655,7 +678,14 @@ async def spawn_sub_session(
     await child_session.cleanup()
 
     # Return response and session ID for potential multi-turn
-    return {"output": response, "session_id": sub_session_id}
+    # Include enriched fields from orchestrator:complete hook
+    return {
+        "output": response,
+        "session_id": sub_session_id,
+        "status": completion_data.get("status", "success"),
+        "turn_count": completion_data.get("turn_count", 1),
+        "metadata": completion_data.get("metadata", {}),
+    }
 
 
 async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
@@ -906,8 +936,31 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
             f"Context module does not support add_message() - transcript not restored for session {sub_session_id}"
         )
 
+    # Register temporary hook to capture orchestrator:complete data
+    # This gives us status, turn_count, and metadata from the orchestrator
+    completion_data: dict = {}
+    hooks = child_session.coordinator.get("hooks")
+    unregister_hook = None
+    if hooks:
+        from amplifier_core.hooks import HookResult
+
+        async def _capture_completion(event: str, data: dict) -> HookResult:
+            completion_data.update(data)
+            return HookResult()
+
+        unregister_hook = hooks.register(
+            "orchestrator:complete",
+            _capture_completion,
+            priority=999,
+            name="_spawn_capture",
+        )
+
     # Execute new instruction with full context
-    response = await child_session.execute(instruction)
+    try:
+        response = await child_session.execute(instruction)
+    finally:
+        if unregister_hook:
+            unregister_hook()
 
     # Update state for next resumption
     updated_transcript = await context.get_messages() if context else []
@@ -923,4 +976,11 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
     await child_session.cleanup()
 
     # Return response and same session ID
-    return {"output": response, "session_id": sub_session_id}
+    # Include enriched fields from orchestrator:complete hook
+    return {
+        "output": response,
+        "session_id": sub_session_id,
+        "status": completion_data.get("status", "success"),
+        "turn_count": completion_data.get("turn_count", 1),
+        "metadata": completion_data.get("metadata", {}),
+    }
