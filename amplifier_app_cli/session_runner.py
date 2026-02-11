@@ -168,6 +168,9 @@ async def create_initialized_session(
         console=console,
     )
 
+    # Set root session ID (propagates to child sessions via config deep-merge)
+    session.config["root_session_id"] = session_id
+
     # Step 7: Restore transcript (resume only)
     if config.is_resume and config.initial_transcript:
         context = session.coordinator.get("context")
