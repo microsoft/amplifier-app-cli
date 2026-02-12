@@ -511,7 +511,9 @@ class CommandProcessor:
             return f"Mode: {mode_name}" + (f" — {description}" if description else "")
 
     async def _list_modes(self) -> str:
-        """List available modes."""
+        """List available modes, grouped by source bundle."""
+        from collections import defaultdict
+
         session_state = self.session.coordinator.session_state
         discovery = session_state.get("mode_discovery")
 
@@ -526,13 +528,36 @@ class CommandProcessor:
 
         current_mode = session_state.get("active_mode")
 
-        lines = ["Available modes:"]
-        for name, description in modes:
-            indicator = " *" if name == current_mode else ""
-            if description:
-                lines.append(f"  {name}{indicator} — {description}")
+        # Group by source (supports both 2-tuple and 3-tuple formats)
+        groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for item in modes:
+            if len(item) >= 3:
+                name, description, source = item[0], item[1], item[2]
             else:
-                lines.append(f"  {name}{indicator}")
+                name, description = item[0], item[1]
+                source = ""
+            groups[source or "other"].append((name, description))
+
+        lines = ["Available modes:"]
+
+        if len(groups) == 1 and "" in groups:
+            # No source info — flat list (backward compat with old hooks-mode)
+            for name, description in groups[""]:
+                indicator = " *" if name == current_mode else ""
+                if description:
+                    lines.append(f"  {name}{indicator} — {description}")
+                else:
+                    lines.append(f"  {name}{indicator}")
+        else:
+            # Grouped display
+            for source, source_modes in sorted(groups.items()):
+                lines.append(f"\n  {source}:")
+                for name, description in source_modes:
+                    indicator = " *" if name == current_mode else ""
+                    if description:
+                        lines.append(f"    {name}{indicator} — {description}")
+                    else:
+                        lines.append(f"    {name}{indicator}")
 
         if current_mode:
             lines.append(f"\nActive: {current_mode}")
@@ -795,7 +820,9 @@ class CommandProcessor:
             if modes:
                 lines.append("")
                 lines.append("Mode Shortcuts:")
-                for name, description in modes:
+                for item in modes:
+                    # Support both 2-tuple (name, desc) and 3-tuple (name, desc, source)
+                    name, description = item[0], item[1]
                     if description:
                         lines.append(f"  /{name:<11} - {description}")
                     else:
