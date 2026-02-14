@@ -168,8 +168,15 @@ async def create_initialized_session(
         console=console,
     )
 
-    # Set root session ID (propagates to child sessions via config deep-merge)
+    # Set root session metadata (propagates to child sessions via config deep-merge)
+    # These enable hook modules to create rich context metadata
     session.config["root_session_id"] = session_id
+    if getattr(config, "bundle_name", None):
+        session.config["bundle_name"] = config.bundle_name
+    try:
+        session.config["working_dir"] = str(Path.cwd().resolve())
+    except OSError:
+        pass  # CWD may be unavailable in sandboxed/container environments
 
     # Step 7: Restore transcript (resume only)
     if config.is_resume and config.initial_transcript:
