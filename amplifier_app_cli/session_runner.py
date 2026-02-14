@@ -174,7 +174,13 @@ async def create_initialized_session(
     if getattr(config, "bundle_name", None):
         session.config["bundle_name"] = config.bundle_name
     try:
-        session.config["working_dir"] = str(Path.cwd().resolve())
+        cwd = str(Path.cwd().resolve())
+        session.config["working_dir"] = cwd
+        # Project identity: slug for deterministic lookups, dir name for display
+        from .project_utils import get_project_slug
+
+        session.config["project_slug"] = get_project_slug()
+        session.config["project_dir"] = cwd.rsplit("/", 1)[-1] if "/" in cwd else cwd
     except OSError:
         pass  # CWD may be unavailable in sandboxed/container environments
 
