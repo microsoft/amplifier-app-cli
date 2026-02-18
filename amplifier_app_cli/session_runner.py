@@ -171,6 +171,7 @@ async def create_initialized_session(
     # Set root session metadata (propagates to child sessions via config deep-merge)
     # These enable hook modules to create rich context metadata
     session.config["root_session_id"] = session_id
+    session.config["application_host"] = "Amplifier CLI"
     if getattr(config, "bundle_name", None):
         session.config["bundle_name"] = config.bundle_name
     try:
