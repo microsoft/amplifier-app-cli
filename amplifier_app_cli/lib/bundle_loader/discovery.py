@@ -490,7 +490,6 @@ class AppBundleDiscovery:
             Dict with categories: well_known, user_added, dependencies, nested_bundles
             Each category contains list of {name, uri, ...} dicts.
         """
-        import json
 
         categories: dict[str, list[dict[str, str]]] = {
             "well_known": [],
@@ -523,40 +522,33 @@ class AppBundleDiscovery:
                 }
             )
 
-        # Read persisted registry for dependencies and nested bundles
-        registry_path = Path.home() / ".amplifier" / "registry.json"
-        if registry_path.exists():
-            try:
-                with open(registry_path, encoding="utf-8") as f:
-                    data = json.load(f)
+        # Read from in-memory registry for dependencies and nested bundles.
+        # This ensures URIs reflect current overrides (e.g., local path overrides
+        # from settings.local.yaml) rather than stale persisted data.
+        well_known_names = set(WELL_KNOWN_BUNDLES.keys())
+        user_added_names = set(added_bundles.keys())
 
-                well_known_names = set(WELL_KNOWN_BUNDLES.keys())
-                user_added_names = set(added_bundles.keys())
+        all_states = self._registry.get_state()
+        if isinstance(all_states, dict):
+            for name, state in all_states.items():
+                # Skip if already categorized
+                if name in well_known_names or name in user_added_names:
+                    continue
 
-                for name, bundle_data in data.get("bundles", {}).items():
-                    # Skip if already categorized
-                    if name in well_known_names or name in user_added_names:
-                        continue
+                entry = {
+                    "name": name,
+                    "uri": state.uri,
+                }
 
-                    entry = {
-                        "name": name,
-                        "uri": bundle_data.get("uri", ""),
-                    }
-
-                    if not bundle_data.get("is_root", True):
-                        # Nested bundle (behavior, provider, etc.)
-                        entry["root"] = bundle_data.get("root_name", "")
-                        categories["nested_bundles"].append(entry)
-                    elif not bundle_data.get("explicitly_requested", False):
-                        # Dependency (loaded transitively)
-                        included_by = bundle_data.get("included_by", [])
-                        entry["included_by"] = (
-                            ", ".join(included_by) if included_by else ""
-                        )
-                        categories["dependencies"].append(entry)
-
-            except Exception as e:
-                logger.debug(f"Could not read persisted registry: {e}")
+                if not state.is_root:
+                    # Nested bundle (behavior, provider, etc.)
+                    entry["root"] = state.root_name or ""
+                    categories["nested_bundles"].append(entry)
+                elif not state.explicitly_requested:
+                    # Dependency (loaded transitively)
+                    included_by = state.included_by or []
+                    entry["included_by"] = ", ".join(included_by) if included_by else ""
+                    categories["dependencies"].append(entry)
 
         return categories
 
