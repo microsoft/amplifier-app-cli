@@ -99,6 +99,40 @@ class InitializedSession:
         await self.session.cleanup()
 
 
+def _stamp_runtime_context(
+    mount_plan: dict, project_slug: str, project_dir: str
+) -> None:
+    """Stamp runtime context values into every module config in the mount plan.
+
+    Must be called before ``prepared_bundle.create_session()`` so that values
+    are available when each module's ``mount()`` is invoked during initialization.
+
+    Only non-empty values are injected. Pre-existing non-empty values set in
+    the bundle YAML are NOT overwritten, so explicit overrides take precedence.
+    """
+    runtime_ctx = {
+        key: value
+        for key, value in {
+            "project_slug": project_slug,
+            "project_dir": project_dir,
+        }.items()
+        if value  # skip empty strings — treat as "not available"
+    }
+    if not runtime_ctx:
+        return
+
+    for section in ("tools", "hooks", "providers"):
+        for entry in mount_plan.get(section) or []:
+            if not isinstance(entry, dict):
+                continue
+            if not entry.get("config") or not isinstance(entry["config"], dict):
+                entry["config"] = {}
+            for key, value in runtime_ctx.items():
+                # Do not overwrite an explicitly configured non-empty value.
+                if not entry["config"].get(key):
+                    entry["config"][key] = value
+
+
 async def create_initialized_session(
     config: SessionConfig,
     console: "Console",
@@ -276,6 +310,24 @@ async def _create_bundle_session(
 
     # Step 4b: Inject user providers
     inject_user_providers(config.config, prepared_bundle)
+
+    # Step 4b.5: Stamp runtime context into all module configs before session init.
+    # project_slug and project_dir must be present at mount() time — modules like
+    # cxdb-session-storage use them during initialization (e.g. log path scoping).
+    # OSError guard: CWD may be unavailable in sandboxed/container environments.
+    try:
+        from .project_utils import get_project_slug
+
+        _stamp_runtime_context(
+            prepared_bundle.mount_plan,
+            project_slug=get_project_slug(),
+            project_dir=str(Path.cwd().resolve()),
+        )
+    except OSError:
+        logger.warning(
+            "Could not determine project context for module config stamping "
+            "(CWD unavailable); project_slug and project_dir will be empty"
+        )
 
     # Step 4c: Create session (foundation handles init internally)
     # Self-healing: The kernel intentionally swallows module load errors to be resilient.
