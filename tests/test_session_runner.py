@@ -197,4 +197,16 @@ class TestStampRuntimeContext:
         _stamp_runtime_context(mount_plan, "slug", "/path")
         assert mount_plan["tools"][2]["config"]["project_slug"] == "slug"
 
+    def test_stamps_into_provider_entries(self):
+        """project_slug and project_dir are injected into providers config."""
+        from amplifier_app_cli.session_runner import _stamp_runtime_context
+
+        mount_plan = {
+            "providers": [
+                {"module": "provider-openai", "config": {}},
+            ]
+        }
+        _stamp_runtime_context(mount_plan, "my-project", "/home/user/my-project")
+        assert mount_plan["providers"][0]["config"]["project_slug"] == "my-project"
+        assert mount_plan["providers"][0]["config"]["project_dir"] == "/home/user/my-project"
 
