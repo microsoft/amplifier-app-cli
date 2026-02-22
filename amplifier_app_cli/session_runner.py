@@ -25,8 +25,6 @@ Philosophy:
 from __future__ import annotations
 
 import logging
-from logging import config
-from logging import config
 import sys
 import uuid
 from dataclasses import dataclass
@@ -157,9 +155,12 @@ async def create_initialized_session(
     # Step 2: Generate session ID if not provided
     session_id = config.session_id or str(uuid.uuid4())
 
-    # Set root session metadata once — propagates to all child sessions via config deep-merge
-    # Guards ensure values are only stamped on first creation (root bundle); never overwrite
-    # values already present from a parent or a prior initialization pass.
+    # Set root session metadata once — propagates to all child sessions via config deep-merge.
+    # Guards ensure values are only stamped on first creation (root session); child sessions
+    # inherit parent values via config deep-merge and the guards prevent overwriting them.
+    # cwd is initialised before the try so the post-session block can always reference it
+    # (empty string is the safe fallback for sandboxed/container environments).
+    cwd = ""
     try:
         from .project_utils import get_project_slug
 
@@ -192,6 +193,33 @@ async def create_initialized_session(
         display_system=display_system,
         console=console,
     )
+
+    # Belt-and-suspenders: ensure session.config (== coordinator.config) carries the same
+    # root-level metadata that was written into config.config above.  This matters because
+    # the foundation layer may copy config.config into a fresh dict when building the
+    # coordinator, so session.config and config.config are not guaranteed to be the same
+    # object.  Hooks read from coordinator.config, so we must ensure the values are there.
+    # Guards mirror the pre-session guards: child sessions inherit values from the parent
+    # via config deep-merge, so we only fill in missing values, never overwrite.
+    session.config["working_dir"] = cwd
+    if "root_session_id" not in session.config:
+        session.config["root_session_id"] = config.config.get(
+            "root_session_id", session_id
+        )
+    if "application_host" not in session.config:
+        session.config["application_host"] = config.config.get(
+            "application_host", "Amplifier CLI"
+        )
+    if "bundle_name" not in session.config:
+        session.config["bundle_name"] = config.bundle_name
+    if "project_slug" not in session.config:
+        session.config["project_slug"] = config.config.get("project_slug", "")
+    if "project_dir" not in session.config:
+        session.config["project_dir"] = config.config.get("project_dir", cwd)
+    if "project_name" not in session.config:
+        session.config["project_name"] = config.config.get(
+            "project_name", Path(cwd).name if cwd else ""
+        )
 
     # Step 7: Restore transcript (resume only)
     if config.is_resume and config.initial_transcript:
