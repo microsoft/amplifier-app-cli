@@ -1,11 +1,53 @@
 """Tests for session_runner module - unified session initialization."""
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from amplifier_app_cli.session_runner import InitializedSession, SessionConfig
+from amplifier_app_cli.session_runner import (
+    InitializedSession,
+    SessionConfig,
+    create_initialized_session,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers shared across tests
+# ---------------------------------------------------------------------------
+
+_MODULE = "amplifier_app_cli.session_runner"
+
+
+def _make_session_config(session_config_initial=None, **kwargs):
+    """Return a minimal SessionConfig with a PreparedBundle mock."""
+    prepared_bundle = MagicMock()
+    prepared_bundle.mount_plan = {"providers": [], "tools": []}
+    return SessionConfig(
+        config=dict(session_config_initial or {}),
+        search_paths=[],
+        verbose=False,
+        prepared_bundle=prepared_bundle,
+        bundle_name="test-bundle",
+        **kwargs,
+    )
+
+
+def _make_mock_session(initial_session_config=None):
+    """Return a mock AmplifierSession with a real dict for session.config.
+
+    Using a real dict means we can assert on its contents after the call.
+    """
+    mock_sess = MagicMock()
+    mock_sess.config = dict(initial_session_config or {})
+    mock_sess.coordinator.get_capability.return_value = None
+    mock_sess.coordinator.register_capability = MagicMock()
+    mock_sess.coordinator.get.return_value = None
+    return mock_sess
+
+
+# ---------------------------------------------------------------------------
+# SessionConfig tests
+# ---------------------------------------------------------------------------
 
 
 class TestSessionConfig:
@@ -56,6 +98,11 @@ class TestSessionConfig:
         assert config.output_format == "text"
 
 
+# ---------------------------------------------------------------------------
+# InitializedSession tests
+# ---------------------------------------------------------------------------
+
+
 class TestInitializedSession:
     """Test InitializedSession container."""
 
@@ -76,137 +123,176 @@ class TestInitializedSession:
         mock_session.cleanup.assert_called_once()
 
 
-# --- Runtime context stamping ---
+# ---------------------------------------------------------------------------
+# Post-session metadata stamping tests
+# ---------------------------------------------------------------------------
 
 
-class TestStampRuntimeContext:
-    """Tests for _stamp_runtime_context helper."""
+class TestPostSessionMetadataStamping:
+    """Tests for the two-phase root-level metadata stamping.
 
-    def test_stamps_into_tool_entries(self):
-        """project_slug and project_dir are injected into tools config."""
-        from amplifier_app_cli.session_runner import _stamp_runtime_context
+    create_initialized_session writes root-level metadata into config.config
+    BEFORE session creation (to propagate via deep-merge to child sessions)
+    and then into session.config AFTER creation (belt-and-suspenders: the
+    foundation layer may copy config.config into a fresh dict when building
+    the coordinator, so session.config and config.config are not guaranteed
+    to be the same object — hooks read coordinator.config, so we must ensure
+    the values are present there too).
 
-        mount_plan = {
-            "tools": [
-                {"module": "tool-bash", "config": {}},
-                {"module": "tool-filesystem", "config": {}},
-            ]
-        }
-        _stamp_runtime_context(mount_plan, "my-project", "/home/user/my-project")
+    Bugs fixed in this batch:
+    - project_dir / project_name guards checked ``config.config`` (always
+      False after the pre-session write) instead of ``session.config``.
+    - ``cwd`` was only defined inside the try block, causing NameError in
+      the post-session block when Path.cwd() raised OSError.
+    """
 
-        for entry in mount_plan["tools"]:
-            assert entry["config"]["project_slug"] == "my-project"
-            assert entry["config"]["project_dir"] == "/home/user/my-project"
+    @pytest.mark.anyio
+    async def test_project_dir_written_to_session_config(self):
+        """project_dir is written to session.config after session creation.
 
-    def test_stamps_into_hook_entries(self):
-        """project_slug and project_dir are injected into hooks config."""
-        from amplifier_app_cli.session_runner import _stamp_runtime_context
+        Before the fix the guard was:
+            if "project_dir" not in config.config:   # always False after pre-session write
+        Because config.config already has project_dir from the pre-session block.
+        The fix checks session.config instead, which starts empty when the
+        foundation layer copies the config dict into a fresh coordinator dict.
+        """
+        mock_sess = _make_mock_session()  # session.config starts empty
+        cfg = _make_session_config()
+        console = MagicMock()
 
-        mount_plan = {
-            "hooks": [
-                {"module": "hooks-logging", "config": {}},
-                {"module": "cxdb-session-storage", "config": {}},
-            ]
-        }
-        _stamp_runtime_context(mount_plan, "my-project", "/home/user/my-project")
+        with (
+            patch(f"{_MODULE}._create_bundle_session", new_callable=AsyncMock, return_value=mock_sess),
+            patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
+            patch("amplifier_app_cli.project_utils.get_project_slug", return_value="test-slug"),
+            patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+            patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+        ):
+            result = await create_initialized_session(cfg, console)
 
-        for entry in mount_plan["hooks"]:
-            assert entry["config"]["project_slug"] == "my-project"
-            assert entry["config"]["project_dir"] == "/home/user/my-project"
+        assert "project_dir" in result.session.config
+        # project_dir should be a non-empty path (CWD)
+        assert result.session.config["project_dir"] != ""
 
-    def test_creates_config_dict_if_absent(self):
-        """Creates entry['config'] if the key is missing entirely."""
-        from amplifier_app_cli.session_runner import _stamp_runtime_context
+    @pytest.mark.anyio
+    async def test_project_name_written_to_session_config(self):
+        """project_name is written to session.config after session creation.
 
-        mount_plan = {"tools": [{"module": "tool-bash"}]}
-        _stamp_runtime_context(mount_plan, "slug", "/path")
-        assert mount_plan["tools"][0]["config"]["project_slug"] == "slug"
-        assert mount_plan["tools"][0]["config"]["project_dir"] == "/path"
+        Same copy-paste bug as project_dir — the guard now checks session.config.
+        """
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()
+        console = MagicMock()
 
-    def test_does_not_overwrite_explicitly_set_values(self):
-        """Pre-existing non-empty bundle YAML values are not overwritten."""
-        from amplifier_app_cli.session_runner import _stamp_runtime_context
+        with (
+            patch(f"{_MODULE}._create_bundle_session", new_callable=AsyncMock, return_value=mock_sess),
+            patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
+            patch("amplifier_app_cli.project_utils.get_project_slug", return_value="test-slug"),
+            patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+            patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+        ):
+            result = await create_initialized_session(cfg, console)
 
-        mount_plan = {
-            "tools": [
-                {
-                    "module": "cxdb-session-storage",
-                    "config": {
-                        "project_slug": "explicit-slug",
-                        "project_dir": "/explicit/path",
-                    },
-                }
-            ]
-        }
-        _stamp_runtime_context(mount_plan, "runtime-slug", "/runtime/path")
+        assert "project_name" in result.session.config
+        assert result.session.config["project_name"] != ""
 
-        assert mount_plan["tools"][0]["config"]["project_slug"] == "explicit-slug"
-        assert mount_plan["tools"][0]["config"]["project_dir"] == "/explicit/path"
+    @pytest.mark.anyio
+    async def test_root_session_id_stamped_for_root_session(self):
+        """root_session_id in session.config equals the generated session_id."""
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()
+        console = MagicMock()
 
-    def test_skips_empty_project_slug(self):
-        """Empty project_slug is not stamped."""
-        from amplifier_app_cli.session_runner import _stamp_runtime_context
+        with (
+            patch(f"{_MODULE}._create_bundle_session", new_callable=AsyncMock, return_value=mock_sess),
+            patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
+            patch("amplifier_app_cli.project_utils.get_project_slug", return_value="test-slug"),
+            patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+            patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+        ):
+            result = await create_initialized_session(cfg, console)
 
-        mount_plan = {"tools": [{"module": "tool-bash", "config": {}}]}
-        _stamp_runtime_context(mount_plan, project_slug="", project_dir="/some/path")
+        assert result.session.config["root_session_id"] == result.session_id
 
-        assert "project_slug" not in mount_plan["tools"][0]["config"]
-        assert mount_plan["tools"][0]["config"]["project_dir"] == "/some/path"
+    @pytest.mark.anyio
+    async def test_child_session_root_session_id_not_overwritten(self):
+        """Child sessions: inherited root_session_id in session.config is preserved.
 
-    def test_skips_empty_project_dir(self):
-        """Empty project_dir is not stamped."""
-        from amplifier_app_cli.session_runner import _stamp_runtime_context
+        When a child session is spawned, the coordinator config inherits
+        root_session_id from the parent via config deep-merge.  The
+        post-session guard must not overwrite this value with the child's
+        own session_id.
+        """
+        parent_root_id = "parent-root-aaaa-bbbb-cccc"
+        # Simulate coordinator config that already has the parent's root_session_id
+        mock_sess = _make_mock_session(
+            initial_session_config={"root_session_id": parent_root_id}
+        )
+        # config.config also carries it (from deep-merge during spawn_sub_session)
+        cfg = _make_session_config(
+            session_config_initial={"root_session_id": parent_root_id},
+            session_id="child-abc-def",
+        )
+        console = MagicMock()
 
-        mount_plan = {"tools": [{"module": "tool-bash", "config": {}}]}
-        _stamp_runtime_context(mount_plan, project_slug="my-project", project_dir="")
+        with (
+            patch(f"{_MODULE}._create_bundle_session", new_callable=AsyncMock, return_value=mock_sess),
+            patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
+            patch("amplifier_app_cli.project_utils.get_project_slug", return_value="test-slug"),
+            patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+            patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+        ):
+            result = await create_initialized_session(cfg, console)
 
-        assert mount_plan["tools"][0]["config"]["project_slug"] == "my-project"
-        assert "project_dir" not in mount_plan["tools"][0]["config"]
+        # Must keep the parent's root_session_id, NOT overwrite with child's session_id
+        assert result.session.config["root_session_id"] == parent_root_id
 
-    def test_both_empty_is_noop(self):
-        """Both empty values — no config keys are added at all."""
-        from amplifier_app_cli.session_runner import _stamp_runtime_context
+    @pytest.mark.anyio
+    async def test_child_session_project_dir_not_overwritten(self):
+        """Child sessions: project_dir inherited in session.config is not overwritten."""
+        parent_project_dir = "/home/user/parent-project"
+        mock_sess = _make_mock_session(
+            initial_session_config={"project_dir": parent_project_dir}
+        )
+        cfg = _make_session_config(
+            session_config_initial={"project_dir": parent_project_dir}
+        )
+        console = MagicMock()
 
-        mount_plan = {"tools": [{"module": "tool-bash", "config": {}}]}
-        _stamp_runtime_context(mount_plan, project_slug="", project_dir="")
+        with (
+            patch(f"{_MODULE}._create_bundle_session", new_callable=AsyncMock, return_value=mock_sess),
+            patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
+            patch("amplifier_app_cli.project_utils.get_project_slug", return_value="test-slug"),
+            patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+            patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+        ):
+            result = await create_initialized_session(cfg, console)
 
-        assert mount_plan["tools"][0]["config"] == {}
+        assert result.session.config["project_dir"] == parent_project_dir
 
-    def test_handles_none_config_entry(self):
-        """None config value is replaced with a new dict and stamped."""
-        from amplifier_app_cli.session_runner import _stamp_runtime_context
+    @pytest.mark.anyio
+    async def test_cwd_empty_fallback_on_os_error_no_name_error(self):
+        """cwd = '' before try block prevents NameError when Path.cwd() raises OSError.
 
-        mount_plan = {"tools": [{"module": "tool-bash", "config": None}]}
-        _stamp_runtime_context(mount_plan, "slug", "/path")
-        assert mount_plan["tools"][0]["config"]["project_slug"] == "slug"
+        Before the fix, cwd was only defined inside the try block.  If OSError
+        fired (e.g. sandboxed environment with no working directory), the
+        post-session ``session.config["working_dir"] = cwd`` line would raise
+        NameError.  The fix initialises cwd = "" before the try block.
+        """
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()
+        console = MagicMock()
 
-    def test_handles_missing_sections(self):
-        """Mount plan without tools/hooks/providers sections does not raise."""
-        from amplifier_app_cli.session_runner import _stamp_runtime_context
+        with (
+            patch(f"{_MODULE}._create_bundle_session", new_callable=AsyncMock, return_value=mock_sess),
+            patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
+            patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+            patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+            # Simulate no working directory available
+            patch(f"{_MODULE}.Path") as mock_path_cls,
+        ):
+            mock_path_cls.cwd.side_effect = OSError("no cwd in sandbox")
+            # Must NOT raise NameError — cwd falls back to ""
+            result = await create_initialized_session(cfg, console)
 
-        mount_plan = {}
-        _stamp_runtime_context(mount_plan, "slug", "/path")  # must not raise
-
-    def test_handles_non_dict_entries_gracefully(self):
-        """Non-dict entries in a section are skipped without error."""
-        from amplifier_app_cli.session_runner import _stamp_runtime_context
-
-        mount_plan = {
-            "tools": ["not-a-dict", None, {"module": "tool-bash", "config": {}}]
-        }
-        _stamp_runtime_context(mount_plan, "slug", "/path")
-        assert mount_plan["tools"][2]["config"]["project_slug"] == "slug"
-
-    def test_stamps_into_provider_entries(self):
-        """project_slug and project_dir are injected into providers config."""
-        from amplifier_app_cli.session_runner import _stamp_runtime_context
-
-        mount_plan = {
-            "providers": [
-                {"module": "provider-openai", "config": {}},
-            ]
-        }
-        _stamp_runtime_context(mount_plan, "my-project", "/home/user/my-project")
-        assert mount_plan["providers"][0]["config"]["project_slug"] == "my-project"
-        assert mount_plan["providers"][0]["config"]["project_dir"] == "/home/user/my-project"
-
+        # working_dir is the empty-string fallback
+        assert result.session.config.get("working_dir") == ""

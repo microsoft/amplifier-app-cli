@@ -99,40 +99,6 @@ class InitializedSession:
         await self.session.cleanup()
 
 
-def _stamp_runtime_context(
-    mount_plan: dict, project_slug: str, project_dir: str
-) -> None:
-    """Stamp runtime context values into every module config in the mount plan.
-
-    Must be called before ``prepared_bundle.create_session()`` so that values
-    are available when each module's ``mount()`` is invoked during initialization.
-
-    Only non-empty values are injected. Pre-existing non-empty values set in
-    the bundle YAML are NOT overwritten, so explicit overrides take precedence.
-    """
-    runtime_ctx = {
-        key: value
-        for key, value in {
-            "project_slug": project_slug,
-            "project_dir": project_dir,
-        }.items()
-        if value  # skip empty strings — treat as "not available"
-    }
-    if not runtime_ctx:
-        return
-
-    for section in ("tools", "hooks", "providers"):
-        for entry in mount_plan.get(section) or []:
-            if not isinstance(entry, dict):
-                continue
-            if not entry.get("config") or not isinstance(entry["config"], dict):
-                entry["config"] = {}
-            for key, value in runtime_ctx.items():
-                # Do not overwrite an explicitly configured non-empty value.
-                if not entry["config"].get(key):
-                    entry["config"][key] = value
-
-
 async def create_initialized_session(
     config: SessionConfig,
     console: "Console",
@@ -189,6 +155,32 @@ async def create_initialized_session(
     # Step 2: Generate session ID if not provided
     session_id = config.session_id or str(uuid.uuid4())
 
+    # Set root session metadata once — propagates to all child sessions via config deep-merge.
+    # Guards ensure values are only stamped on first creation (root session); child sessions
+    # inherit parent values via config deep-merge and the guards prevent overwriting them.
+    # cwd is initialised before the try so the post-session block can always reference it
+    # (empty string is the safe fallback for sandboxed/container environments).
+    cwd = ""
+    try:
+        from .project_utils import get_project_slug
+
+        cwd = str(Path.cwd().resolve())
+        config.config["working_dir"] = cwd
+        if "root_session_id" not in config.config:
+            config.config["root_session_id"] = session_id
+        if "application_host" not in config.config:
+            config.config["application_host"] = "Amplifier CLI"
+        if "bundle_name" not in config.config:
+            config.config["bundle_name"] = config.bundle_name
+        if "project_slug" not in config.config:
+            config.config["project_slug"] = get_project_slug()
+        if "project_dir" not in config.config:
+            config.config["project_dir"] = cwd
+        if "project_name" not in config.config:
+            config.config["project_name"] = Path(cwd).name
+    except OSError:
+        pass  # CWD may be unavailable in sandboxed/container environments
+
     # Step 3: Create CLI UX systems (app-layer policy)
     approval_system = CLIApprovalSystem()
     display_system = CLIDisplaySystem()
@@ -202,22 +194,32 @@ async def create_initialized_session(
         console=console,
     )
 
-    # Set root session metadata (propagates to child sessions via config deep-merge)
-    # These enable hook modules to create rich context metadata
-    session.config["root_session_id"] = session_id
-    session.config["application_host"] = "Amplifier CLI"
-    if getattr(config, "bundle_name", None):
+    # Belt-and-suspenders: ensure session.config (== coordinator.config) carries the same
+    # root-level metadata that was written into config.config above.  This matters because
+    # the foundation layer may copy config.config into a fresh dict when building the
+    # coordinator, so session.config and config.config are not guaranteed to be the same
+    # object.  Hooks read from coordinator.config, so we must ensure the values are there.
+    # Guards mirror the pre-session guards: child sessions inherit values from the parent
+    # via config deep-merge, so we only fill in missing values, never overwrite.
+    session.config["working_dir"] = cwd
+    if "root_session_id" not in session.config:
+        session.config["root_session_id"] = config.config.get(
+            "root_session_id", session_id
+        )
+    if "application_host" not in session.config:
+        session.config["application_host"] = config.config.get(
+            "application_host", "Amplifier CLI"
+        )
+    if "bundle_name" not in session.config:
         session.config["bundle_name"] = config.bundle_name
-    try:
-        cwd = str(Path.cwd().resolve())
-        session.config["working_dir"] = cwd
-        # Project identity: slug for deterministic lookups, dir name for display
-        from .project_utils import get_project_slug
-
-        session.config["project_slug"] = get_project_slug()
-        session.config["project_dir"] = cwd.rsplit("/", 1)[-1] if "/" in cwd else cwd
-    except OSError:
-        pass  # CWD may be unavailable in sandboxed/container environments
+    if "project_slug" not in session.config:
+        session.config["project_slug"] = config.config.get("project_slug", "")
+    if "project_dir" not in session.config:
+        session.config["project_dir"] = config.config.get("project_dir", cwd)
+    if "project_name" not in session.config:
+        session.config["project_name"] = config.config.get(
+            "project_name", Path(cwd).name if cwd else ""
+        )
 
     # Step 7: Restore transcript (resume only)
     if config.is_resume and config.initial_transcript:
@@ -310,24 +312,6 @@ async def _create_bundle_session(
 
     # Step 4b: Inject user providers
     inject_user_providers(config.config, prepared_bundle)
-
-    # Step 4b.5: Stamp runtime context into all module configs before session init.
-    # project_slug and project_dir must be present at mount() time — modules like
-    # cxdb-session-storage use them during initialization (e.g. log path scoping).
-    # OSError guard: CWD may be unavailable in sandboxed/container environments.
-    try:
-        from .project_utils import get_project_slug
-
-        _stamp_runtime_context(
-            prepared_bundle.mount_plan,
-            project_slug=get_project_slug(),
-            project_dir=str(Path.cwd().resolve()),
-        )
-    except OSError:
-        logger.warning(
-            "Could not determine project context for module config stamping "
-            "(CWD unavailable); project_slug and project_dir will be empty"
-        )
 
     # Step 4c: Create session (foundation handles init internally)
     # Self-healing: The kernel intentionally swallows module load errors to be resilient.
