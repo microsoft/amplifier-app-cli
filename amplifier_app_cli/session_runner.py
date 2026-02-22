@@ -155,6 +155,20 @@ async def create_initialized_session(
     # Step 2: Generate session ID if not provided
     session_id = config.session_id or str(uuid.uuid4())
 
+    # Set root session metadata once — propagates to all child sessions via config deep-merge
+    try:
+        from .project_utils import get_project_slug
+
+        cwd = str(Path.cwd().resolve())
+        config.config["root_session_id"] = session_id
+        config.config["application_host"] = "Amplifier CLI"
+        config.config["bundle_name"] = config.bundle_name
+        config.config["working_dir"] = cwd
+        config.config["project_slug"] = get_project_slug()
+        config.config["project_dir"] = cwd
+    except OSError:
+        pass  # CWD may be unavailable in sandboxed/container environments
+
     # Step 3: Create CLI UX systems (app-layer policy)
     approval_system = CLIApprovalSystem()
     display_system = CLIDisplaySystem()
@@ -167,23 +181,6 @@ async def create_initialized_session(
         display_system=display_system,
         console=console,
     )
-
-    # Set root session metadata (propagates to child sessions via config deep-merge)
-    # These enable hook modules to create rich context metadata
-    session.config["root_session_id"] = session_id
-    session.config["application_host"] = "Amplifier CLI"
-    if getattr(config, "bundle_name", None):
-        session.config["bundle_name"] = config.bundle_name
-    try:
-        cwd = str(Path.cwd().resolve())
-        session.config["working_dir"] = cwd
-        # Project identity: slug for deterministic lookups, full path for filesystem context
-        from .project_utils import get_project_slug
-
-        session.config["project_slug"] = get_project_slug()
-        session.config["project_dir"] = cwd
-    except OSError:
-        pass  # CWD may be unavailable in sandboxed/container environments
 
     # Step 7: Restore transcript (resume only)
     if config.is_resume and config.initial_transcript:
