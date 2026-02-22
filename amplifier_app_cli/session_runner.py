@@ -177,7 +177,7 @@ async def create_initialized_session(
     try:
         cwd = str(Path.cwd().resolve())
         session.config["working_dir"] = cwd
-        # Project identity: slug for deterministic lookups, dir name for display
+        # Project identity: slug for deterministic lookups, full path for filesystem context
         from .project_utils import get_project_slug
 
         session.config["project_slug"] = get_project_slug()
