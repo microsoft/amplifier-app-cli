@@ -25,6 +25,8 @@ Philosophy:
 from __future__ import annotations
 
 import logging
+from logging import config
+from logging import config
 import sys
 import uuid
 from dataclasses import dataclass
@@ -156,16 +158,25 @@ async def create_initialized_session(
     session_id = config.session_id or str(uuid.uuid4())
 
     # Set root session metadata once — propagates to all child sessions via config deep-merge
+    # Guards ensure values are only stamped on first creation (root bundle); never overwrite
+    # values already present from a parent or a prior initialization pass.
     try:
         from .project_utils import get_project_slug
 
         cwd = str(Path.cwd().resolve())
-        config.config["root_session_id"] = session_id
-        config.config["application_host"] = "Amplifier CLI"
-        config.config["bundle_name"] = config.bundle_name
         config.config["working_dir"] = cwd
-        config.config["project_slug"] = get_project_slug()
-        config.config["project_dir"] = cwd
+        if "root_session_id" not in config.config:
+            config.config["root_session_id"] = session_id
+        if "application_host" not in config.config:
+            config.config["application_host"] = "Amplifier CLI"
+        if "bundle_name" not in config.config:
+            config.config["bundle_name"] = config.bundle_name
+        if "project_slug" not in config.config:
+            config.config["project_slug"] = get_project_slug()
+        if "project_dir" not in config.config:
+            config.config["project_dir"] = cwd
+        if "project_name" not in config.config:
+            config.config["project_name"] = Path(cwd).name
     except OSError:
         pass  # CWD may be unavailable in sandboxed/container environments
 
