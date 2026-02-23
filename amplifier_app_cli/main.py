@@ -1733,6 +1733,7 @@ async def execute_single(
     # Create fully initialized session (handles all setup including resume)
     initialized = await create_initialized_session(session_config, console)
     session = initialized.session
+    actual_session_id = initialized.session_id
 
     try:
         # Register trace collector hooks if in json-trace mode
