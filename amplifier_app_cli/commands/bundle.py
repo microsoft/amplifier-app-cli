@@ -648,6 +648,18 @@ def bundle_add(uri: str, name_override: str | None, app: bool):
     """
     from amplifier_foundation import load_bundle
 
+    from ..lib.bundle_loader.discovery import AppBundleDiscovery
+
+    # Resolve bare names to canonical URIs before storing.
+    # This follows the same pattern as load_and_prepare_bundle() in prepare.py
+    # which uses discovery.find() to resolve names that aren't already URIs.
+    uri_prefixes = ("git+", "file://", "http://", "https://", "zip+")
+    if not uri.startswith(uri_prefixes):
+        discovery = AppBundleDiscovery()
+        resolved = discovery.find(uri)
+        if resolved:
+            uri = resolved
+
     # Fetch and parse bundle to extract name from metadata
     console.print(f"[dim]Fetching bundle from {uri}...[/dim]")
 
