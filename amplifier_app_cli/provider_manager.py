@@ -26,6 +26,7 @@ _PROVIDER_DISPLAY_NAMES = {
     "azure-openai": "Azure OpenAI",
     "gemini": "Google Gemini",
     "ollama": "Ollama",
+    "github-copilot": "GitHub Copilot",
     "vllm": "vLLM",
 }
 

@@ -20,6 +20,7 @@ DEFAULT_PROVIDER_SOURCES = {
     "provider-anthropic": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
     "provider-azure-openai": "git+https://github.com/microsoft/amplifier-module-provider-azure-openai@main",
     "provider-gemini": "git+https://github.com/microsoft/amplifier-module-provider-gemini@main",
+    "provider-github-copilot": "git+https://github.com/microsoft/amplifier-module-provider-github-copilot@main",
     "provider-ollama": "git+https://github.com/microsoft/amplifier-module-provider-ollama@main",
     "provider-openai": "git+https://github.com/microsoft/amplifier-module-provider-openai@main",
     "provider-vllm": "git+https://github.com/microsoft/amplifier-module-provider-vllm@main",
