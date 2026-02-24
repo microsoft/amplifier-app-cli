@@ -24,6 +24,7 @@ from ..paths import get_effective_scope
 from ..utils.display import create_sha_text
 from ..utils.display import create_status_symbol
 from ..utils.display import print_legend
+from ..utils.error_format import escape_markup
 
 if TYPE_CHECKING:
     from amplifier_foundation import BundleStatus
@@ -313,7 +314,7 @@ def bundle_show(name: str, detailed: bool):
         console.print(f"[red]Error:[/red] Bundle '{name}' not found")
         sys.exit(1)
     except Exception as exc:
-        console.print(f"[red]Error:[/red] Failed to load bundle: {exc}")
+        console.print(f"[red]Error:[/red] Failed to load bundle: {escape_markup(exc)}")
         sys.exit(1)
 
     # Basic info
@@ -431,7 +432,7 @@ def bundle_use(name: str, scope_flag: str | None):
                 "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
             )
     except ScopeNotAvailableError as e:
-        console.print(f"[red]Error:[/red] {e.message}")
+        console.print(f"[red]Error:[/red] {escape_markup(e.message)}")
         sys.exit(1)
 
     # Set the bundle
@@ -512,7 +513,7 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
                     "[yellow]Note:[/yellow] Running from home directory, using global scope"
                 )
         except ScopeNotAvailableError as e:
-            console.print(f"[red]Error:[/red] {e.message}")
+            console.print(f"[red]Error:[/red] {escape_markup(e.message)}")
             sys.exit(1)
 
     bundle_removed = _remove_bundle_from_settings(app_settings, scope)
@@ -675,7 +676,7 @@ def bundle_add(uri: str, name_override: str | None, app: bool):
             sys.exit(1)
 
     except Exception as e:
-        console.print(f"[red]Error:[/red] Failed to fetch bundle: {e}")
+        console.print(f"[red]Error:[/red] Failed to fetch bundle: {escape_markup(e)}")
         console.print("  Check the URI and try again")
         sys.exit(1)
 
@@ -956,7 +957,7 @@ async def _bundle_update_async(
         console.print(f"[red]Error:[/red] Bundle '{bundle_name}' not found")
         sys.exit(1)
     except Exception as exc:
-        console.print(f"[red]Error:[/red] Failed to load bundle: {exc}")
+        console.print(f"[red]Error:[/red] Failed to load bundle: {escape_markup(exc)}")
         sys.exit(1)
 
     # Check status
@@ -1006,7 +1007,7 @@ async def _bundle_update_async(
                 f"[green]✓ Updated {len(status.updateable_sources)} source(s)[/green]"
             )
     except Exception as exc:
-        console.print(f"[red]Error during update:[/red] {exc}")
+        console.print(f"[red]Error during update:[/red] {escape_markup(exc)}")
         sys.exit(1)
 
     console.print("\n[green]Bundle update complete![/green]")
@@ -1098,7 +1099,7 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
         elif bundle_name in errors:
             console.print()
             console.print(f"[red]Bundle: {bundle_name}[/red]")
-            console.print(f"  [red]Error:[/red] {errors[bundle_name]}")
+            console.print(f"  [red]Error:[/red] {escape_markup(errors[bundle_name])}")
 
     console.print()
     print_legend()
@@ -1107,7 +1108,7 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
     if errors:
         console.print()
         for name, error in errors.items():
-            console.print(f"[red]Error checking {name}:[/red] {error}")
+            console.print(f"[red]Error checking {name}:[/red] {escape_markup(error)}")
 
     # Summary
     total_updates = len(bundles_with_updates)
@@ -1160,7 +1161,7 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
             console.print(f"[green]✓[/green] {bundle_name}")
         except Exception as exc:
             update_errors[bundle_name] = str(exc)
-            console.print(f"[red]✗[/red] {bundle_name}: {exc}")
+            console.print(f"[red]✗[/red] {bundle_name}: {escape_markup(exc)}")
 
     # Final summary
     console.print()

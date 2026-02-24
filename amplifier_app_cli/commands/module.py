@@ -16,6 +16,7 @@ from rich.table import Table
 from ..console import console
 from ..module_manager import ModuleManager
 from ..paths import ScopeNotAvailableError
+from ..utils.error_format import escape_markup
 from ..paths import ScopeType
 from ..paths import create_config_manager
 from ..paths import create_foundation_resolver
@@ -218,7 +219,7 @@ def module_add(module_id: str, source: str | None, scope_flag: str | None):
                 "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
             )
     except ScopeNotAvailableError as e:
-        console.print(f"[red]Error:[/red] {e.message}")
+        console.print(f"[red]Error:[/red] {escape_markup(e.message)}")
         return
 
     module_mgr = ModuleManager(config_manager)
@@ -237,7 +238,9 @@ def module_add(module_id: str, source: str | None, scope_flag: str | None):
             console.print(" [green]✓[/green]")
         except Exception as e:
             console.print(" [yellow]⚠[/yellow]")
-            console.print(f"  [yellow]Warning: Could not download module: {e}[/yellow]")
+            console.print(
+                f"  [yellow]Warning: Could not download module: {escape_markup(str(e))}[/yellow]"
+            )
             console.print("  [dim]Module will be downloaded on first use.[/dim]")
     console.print(f"  Type: {module_type}")
     console.print(f"  Scope: {scope}")
@@ -269,7 +272,7 @@ def module_remove(module_id: str, scope_flag: str | None):
                 "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
             )
     except ScopeNotAvailableError as e:
-        console.print(f"[red]Error:[/red] {e.message}")
+        console.print(f"[red]Error:[/red] {escape_markup(e.message)}")
         return
 
     module_mgr = ModuleManager(config_manager)
@@ -434,7 +437,9 @@ def module_update(module_id: str | None, check_only: bool, mutable_only: bool):
             )
             console.print(f"[green]✓ Updated {module_id}@{cached_module.ref}[/green]")
         except Exception as e:
-            console.print(f"[red]✗ Failed to update {module_id}: {e}[/red]")
+            console.print(
+                f"[red]✗ Failed to update {module_id}: {escape_markup(str(e))}[/red]"
+            )
     else:
         # Update all modules - clear cache, modules will re-download on next use
         # For "all modules" case, we just clear (immediate re-download would take too long)
@@ -629,7 +634,7 @@ def _run_behavioral_tests(module_path: str, module_type: str) -> bool:
     if result.stdout:
         console.print(result.stdout)
     if result.stderr:
-        console.print(f"[red]{result.stderr}[/red]")
+        console.print(f"[red]{escape_markup(result.stderr)}[/red]")
     return False
 
 
@@ -835,7 +840,9 @@ def override_set(
     except Exception as e:
         from ..utils.error_format import format_error_message
 
-        console.print(f"[red]Error setting override:[/red] {format_error_message(e)}")
+        console.print(
+            f"[red]Error setting override:[/red] {escape_markup(format_error_message(e))}"
+        )
         raise SystemExit(1)
 
 
@@ -873,7 +880,9 @@ def override_remove(module_id: str, scope: str):
     except Exception as e:
         from ..utils.error_format import format_error_message
 
-        console.print(f"[red]Error removing override:[/red] {format_error_message(e)}")
+        console.print(
+            f"[red]Error removing override:[/red] {escape_markup(format_error_message(e))}"
+        )
         raise SystemExit(1)
 
 
