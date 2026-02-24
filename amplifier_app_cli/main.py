@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from amplifier_foundation.bundle import PreparedBundle
 from amplifier_core import AmplifierSession
 from amplifier_core import ModuleValidationError  # pyright: ignore[reportAttributeAccessIssue]
+from amplifier_core.llm_errors import LLMError
 from amplifier_foundation import sanitize_message
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
@@ -54,6 +55,7 @@ from .console import console
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
 from .session_store import SessionStore
+from .ui.error_display import display_llm_error
 from .ui.error_display import display_validation_error
 from .utils.version import get_version
 
@@ -1632,6 +1634,9 @@ async def interactive_chat(
             except ModuleValidationError as e:
                 display_validation_error(console, e, verbose=verbose)
 
+            except LLMError as e:
+                display_llm_error(console, e, verbose=verbose)
+
             except Exception as e:
                 console.print(f"[red]Error:[/red] {e}")
                 if verbose:
@@ -1852,6 +1857,22 @@ async def execute_single(
         else:
             # Clean display for module validation errors
             display_validation_error(console, e, verbose=verbose)
+        sys.exit(1)
+
+    except LLMError as e:
+        if output_format in ["json", "json-trace"]:
+            if original_stdout is not None:
+                sys.stdout = original_stdout
+            error_output = {
+                "status": "error",
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "session_id": session.session_id,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            print(json.dumps(error_output, indent=2))
+        else:
+            display_llm_error(console, e, verbose=verbose)
         sys.exit(1)
 
     except Exception as e:
