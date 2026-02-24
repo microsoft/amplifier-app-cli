@@ -357,9 +357,11 @@ async def spawn_sub_session(
     # Apply provider preferences if specified (ordered fallback chain)
     # Takes precedence over legacy provider_override/model_override
     if provider_preferences:
-        from amplifier_foundation import apply_provider_preferences
+        from amplifier_foundation import apply_provider_preferences_with_resolution
 
-        merged_config = apply_provider_preferences(merged_config, provider_preferences)
+        merged_config = await apply_provider_preferences_with_resolution(
+            merged_config, provider_preferences, parent_session.coordinator
+        )
     elif provider_override or model_override:
         # Legacy: Apply single provider/model override
         merged_config = _apply_provider_override(
