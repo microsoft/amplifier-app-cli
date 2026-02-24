@@ -11,6 +11,7 @@ PROVIDER_CREDENTIAL_VARS: dict[str, list[str]] = {
     "provider-openai": ["OPENAI_API_KEY"],
     "provider-azure-openai": ["AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT"],
     "provider-gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    "provider-github-copilot": ["GITHUB_TOKEN"],
     "provider-ollama": [],  # Ollama doesn't require credentials
 }
 
