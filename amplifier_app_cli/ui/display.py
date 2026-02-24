@@ -11,6 +11,33 @@ logger = logging.getLogger(__name__)
 NESTING_INDENT = "    "  # 4 spaces per nesting level
 
 
+def format_throttle_warning(payload: dict) -> str:
+    """Format a provider:throttle event payload into a human-readable warning.
+
+    Args:
+        payload: Event payload with keys: provider, model, reason, dimension,
+                remaining, limit, delay
+
+    Returns:
+        Formatted warning string suitable for show_message()
+    """
+    provider = payload.get("provider", "unknown")
+    dimension = payload.get("dimension", "unknown")
+    remaining = payload.get("remaining")
+    limit = payload.get("limit")
+    delay = payload.get("delay", "?")
+
+    if remaining is not None and limit is not None and limit > 0:
+        pct = (remaining / limit) * 100
+        return (
+            f"Approaching {provider} rate limit "
+            f"({dimension}: {pct:.0f}% remaining) "
+            f"— throttling for {delay}s"
+        )
+    else:
+        return f"Approaching {provider} rate limit — throttling for {delay}s"
+
+
 class CLIDisplaySystem:
     """Terminal-based display with Rich formatting.
 
