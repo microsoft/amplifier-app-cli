@@ -16,6 +16,7 @@ from ..lib.settings import Scope
 from ..paths import create_config_manager
 from ..paths import get_effective_scope
 from ..paths import ScopeNotAvailableError
+from ..utils.error_format import escape_markup
 
 console = Console()
 
@@ -37,10 +38,18 @@ def denied_dirs():
 
 
 @denied_dirs.command("list")
-@click.option("--local", "scope_filter", flag_value="local", help="Show only local paths")
-@click.option("--project", "scope_filter", flag_value="project", help="Show only project paths")
-@click.option("--global", "scope_filter", flag_value="global", help="Show only global paths")
-@click.option("--session", "scope_filter", flag_value="session", help="Show only session paths")
+@click.option(
+    "--local", "scope_filter", flag_value="local", help="Show only local paths"
+)
+@click.option(
+    "--project", "scope_filter", flag_value="project", help="Show only project paths"
+)
+@click.option(
+    "--global", "scope_filter", flag_value="global", help="Show only global paths"
+)
+@click.option(
+    "--session", "scope_filter", flag_value="session", help="Show only session paths"
+)
 def list_dirs(scope_filter: str | None):
     """List denied write directories.
 
@@ -54,13 +63,19 @@ def list_dirs(scope_filter: str | None):
 
     if not paths:
         if scope_filter:
-            console.print(f"[yellow]No denied directories at {scope_filter} scope[/yellow]")
+            console.print(
+                f"[yellow]No denied directories at {scope_filter} scope[/yellow]"
+            )
         else:
             console.print("[yellow]No denied directories configured[/yellow]")
-            console.print("\n[dim]Add directories with: amplifier denied-dirs add <path>[/dim]")
+            console.print(
+                "\n[dim]Add directories with: amplifier denied-dirs add <path>[/dim]"
+            )
         return
 
-    table = Table(title="Denied Write Directories", show_header=True, header_style="bold cyan")
+    table = Table(
+        title="Denied Write Directories", show_header=True, header_style="bold cyan"
+    )
     table.add_column("Path", style="red")
     table.add_column("Scope", style="yellow")
 
@@ -73,8 +88,12 @@ def list_dirs(scope_filter: str | None):
 @denied_dirs.command("add")
 @click.argument("path")
 @click.option("--local", "scope_flag", flag_value="local", help="Add to local scope")
-@click.option("--project", "scope_flag", flag_value="project", help="Add to project scope")
-@click.option("--global", "scope_flag", flag_value="global", help="Add to global scope (default)")
+@click.option(
+    "--project", "scope_flag", flag_value="project", help="Add to project scope"
+)
+@click.option(
+    "--global", "scope_flag", flag_value="global", help="Add to global scope (default)"
+)
 def add_dir(path: str, scope_flag: str | None):
     """Add a directory to denied write paths.
 
@@ -106,7 +125,7 @@ def add_dir(path: str, scope_flag: str | None):
                 "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
             )
     except ScopeNotAvailableError as e:
-        console.print(f"[red]Error:[/red] {e.message}")
+        console.print(f"[red]Error:[/red] {escape_markup(e.message)}")
         return
 
     # Add the path
@@ -119,9 +138,18 @@ def add_dir(path: str, scope_flag: str | None):
 
 @denied_dirs.command("remove")
 @click.argument("path")
-@click.option("--local", "scope_flag", flag_value="local", help="Remove from local scope")
-@click.option("--project", "scope_flag", flag_value="project", help="Remove from project scope")
-@click.option("--global", "scope_flag", flag_value="global", help="Remove from global scope (default)")
+@click.option(
+    "--local", "scope_flag", flag_value="local", help="Remove from local scope"
+)
+@click.option(
+    "--project", "scope_flag", flag_value="project", help="Remove from project scope"
+)
+@click.option(
+    "--global",
+    "scope_flag",
+    flag_value="global",
+    help="Remove from global scope (default)",
+)
 def remove_dir(path: str, scope_flag: str | None):
     """Remove a directory from denied write paths.
 
@@ -144,7 +172,7 @@ def remove_dir(path: str, scope_flag: str | None):
                 "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
             )
     except ScopeNotAvailableError as e:
-        console.print(f"[red]Error:[/red] {e.message}")
+        console.print(f"[red]Error:[/red] {escape_markup(e.message)}")
         return
 
     settings = AppSettings()
@@ -155,7 +183,9 @@ def remove_dir(path: str, scope_flag: str | None):
         console.print(f"  Scope: {scope}")
     else:
         console.print(f"[yellow]Path not found at {scope} scope:[/yellow] {path}")
-        console.print("\n[dim]Use 'amplifier denied-dirs list' to see configured paths[/dim]")
+        console.print(
+            "\n[dim]Use 'amplifier denied-dirs list' to see configured paths[/dim]"
+        )
 
 
 __all__ = ["denied_dirs"]

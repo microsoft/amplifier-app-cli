@@ -14,6 +14,8 @@ import asyncio
 import traceback
 from typing import TYPE_CHECKING
 
+from rich.markup import escape as _escape_markup
+
 if TYPE_CHECKING:
     from rich.console import Console
 
@@ -79,7 +81,7 @@ def print_error(console: "Console", e: BaseException, *, verbose: bool = False) 
         verbose: If True, also print the traceback
     """
     error_msg = format_error_message(e)
-    console.print(f"[red]Error:[/red] {error_msg}")
+    console.print(f"[red]Error:[/red] {_escape_markup(error_msg)}")
 
     if verbose:
         console.print_exception()
@@ -102,3 +104,18 @@ def get_error_context(e: BaseException) -> dict:
         "error_repr": repr(e),
         "traceback": traceback.format_exc(),
     }
+
+
+def escape_markup(value: object) -> str:
+    """Escape a value for safe interpolation into Rich markup strings.
+
+    Prevents Rich from interpreting brackets in exception messages,
+    file paths, or other dynamic content as markup tags.
+
+    Args:
+        value: Any value to escape (will be converted to str)
+
+    Returns:
+        String safe for interpolation into Rich markup f-strings
+    """
+    return _escape_markup(str(value))

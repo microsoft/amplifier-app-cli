@@ -22,6 +22,7 @@ from rich.table import Table
 from ..console import console
 from ..lib.settings import AppSettings
 from ..paths import ScopeNotAvailableError
+from ..utils.error_format import escape_markup
 from ..paths import ScopeType
 from ..paths import create_foundation_resolver
 from ..paths import get_effective_scope
@@ -237,7 +238,7 @@ def source_add(
                 "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
             )
     except ScopeNotAvailableError as e:
-        console.print(f"[red]Error:[/red] {e.message}")
+        console.print(f"[red]Error:[/red] {escape_markup(e.message)}")
         return
 
     if source_type == "module":
@@ -334,7 +335,7 @@ def source_remove(
                 "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
             )
     except ScopeNotAvailableError as e:
-        console.print(f"[red]Error:[/red] {e.message}")
+        console.print(f"[red]Error:[/red] {escape_markup(e.message)}")
         return
 
     scope_labels = {
@@ -349,7 +350,9 @@ def source_remove(
     if force_module or not force_bundle:
         removed_module = app_settings.remove_source_override(identifier, scope=scope)
     if force_bundle or not force_module:
-        removed_bundle = app_settings.remove_bundle_source_override(identifier, scope=scope)
+        removed_bundle = app_settings.remove_bundle_source_override(
+            identifier, scope=scope
+        )
 
     # Also clean up any provider config entries with local source paths for this module
     provider_cleaned = False
@@ -528,7 +531,7 @@ def source_show(module_id: str):
         console.print(f"\n[bold green]✓ Resolved via:[/bold green] {layer}")
         console.print(f"[bold green]Source:[/bold green] {source_obj}")
     except Exception as exc:
-        console.print(f"\n[bold red]✗ Failed:[/bold red] {exc}")
+        console.print(f"\n[bold red]✗ Failed:[/bold red] {escape_markup(exc)}")
 
 
 __all__ = ["source"]

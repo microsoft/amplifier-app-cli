@@ -3,6 +3,7 @@
 from rich.console import Console
 from rich.console import ConsoleOptions
 from rich.console import RenderResult
+from rich.errors import MarkupError
 from rich.markdown import Heading as RichHeading
 from rich.markdown import Markdown as RichMarkdown
 from rich.text import Text
@@ -11,7 +12,9 @@ from rich.text import Text
 class LeftAlignedHeading(RichHeading):
     """Heading with left alignment and Claude-style hierarchical styling."""
 
-    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
         """Render heading with Claude UI-style emphasis.
 
         H1: Italic + underlined + spacing
@@ -50,5 +53,23 @@ class Markdown(RichMarkdown):
 
 
 console = Console()
+
+# Defense-in-depth: catch MarkupError from unescaped dynamic content
+# (e.g., file paths like [/Users/...] interpreted as closing tags).
+# Primary fix is escape_markup() at interpolation sites; this is the safety net.
+# Patches at class level so ALL Console instances are covered (shared + standalone).
+if not getattr(Console.print, "_is_safe_wrapper", False):
+    _original_console_print = Console.print
+
+    def _safe_console_print(self, *args, **kwargs):
+        try:
+            _original_console_print(self, *args, **kwargs)
+        except MarkupError:
+            kwargs["markup"] = False
+            kwargs["highlight"] = False
+            _original_console_print(self, *args, **kwargs)
+
+    _safe_console_print._is_safe_wrapper = True  # type: ignore[attr-defined]
+    Console.print = _safe_console_print  # type: ignore[assignment]
 
 __all__ = ["console", "Markdown"]

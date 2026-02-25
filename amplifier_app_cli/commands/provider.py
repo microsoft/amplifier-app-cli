@@ -18,6 +18,7 @@ from ..provider_manager import ScopeType
 from ..provider_sources import ensure_provider_installed
 from ..provider_sources import get_effective_provider_sources
 from ..provider_sources import install_known_providers
+from ..utils.error_format import escape_markup
 
 console = Console()
 
@@ -247,7 +248,7 @@ def provider_use(
                 "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
             )
     except ScopeNotAvailableError as e:
-        console.print(f"[red]Error:[/red] {e.message}")
+        console.print(f"[red]Error:[/red] {escape_markup(e.message)}")
         return
 
     # Configure provider
@@ -345,7 +346,7 @@ def provider_reset(scope_flag: str | None):
                 "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
             )
     except ScopeNotAvailableError as e:
-        console.print(f"[red]Error:[/red] {e.message}")
+        console.print(f"[red]Error:[/red] {escape_markup(e.message)}")
         return
 
     provider_mgr = ProviderManager(config_manager)
@@ -408,7 +409,9 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
             module_id, config_manager, collected_config=stored_config
         )
     except Exception as e:
-        console.print(f"[red]Failed to load provider '{display_name}': {e}[/]")
+        console.print(
+            f"[red]Failed to load provider '{display_name}': {escape_markup(str(e))}[/]"
+        )
         # Provide helpful next steps based on whether provider is configured
         if stored_config:
             console.print(

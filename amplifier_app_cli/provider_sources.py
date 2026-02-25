@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 
+from .utils.error_format import escape_markup
+
 if TYPE_CHECKING:
     from amplifier_app_cli.lib.config_compat import ConfigManager
 
@@ -326,7 +328,9 @@ def install_known_providers(
             logger.warning(f"Failed to install {module_id}: {e}")
 
             if verbose and console:
-                console.print(f"[red]Failed to install {module_id}: {e}[/red]")
+                console.print(
+                    f"[red]Failed to install {module_id}: {escape_markup(e)}[/red]"
+                )
 
     if failed and verbose and console:
         console.print(
