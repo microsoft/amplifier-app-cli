@@ -1,5 +1,6 @@
 """Clean error display for module validation and LLM errors."""
 
+import json
 import re
 from typing import NamedTuple
 
@@ -203,6 +204,28 @@ def _truncate(message: str, limit: int = _MAX_MESSAGE_LEN) -> str:
     return message[:limit] + "…"
 
 
+def _extract_message(raw: str) -> str:
+    """Extract a human-readable message from a raw error string.
+
+    Tries to parse *raw* as JSON and looks for a ``message`` field
+    (nested under ``error`` first, then top-level).  Falls back to
+    a truncated version of the raw string when JSON parsing fails.
+    """
+    try:
+        parsed = json.loads(raw)
+        nested = parsed.get("error", {})
+        if isinstance(nested, dict):
+            msg = nested.get("message")
+            if msg:
+                return str(msg)
+        top = parsed.get("message")
+        if top:
+            return str(top)
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        pass
+    return _truncate(raw)
+
+
 def display_llm_error(
     console: Console, error: Exception, verbose: bool = False
 ) -> bool:
@@ -223,39 +246,45 @@ def display_llm_error(
     if isinstance(error, RateLimitError):
         title = "Rate Limited"
         border_style = "yellow"
-        tip = _get_llm_error_tip(error)
     elif isinstance(error, AuthenticationError):
         title = "Authentication Failed"
         border_style = "red"
-        tip = _get_llm_error_tip(error)
     elif isinstance(error, ContextLengthError):
         title = "Context Length Exceeded"
         border_style = "red"
-        tip = _get_llm_error_tip(error)
     elif isinstance(error, ContentFilterError):
         title = "Content Filtered"
         border_style = "red"
-        tip = _get_llm_error_tip(error)
     else:
         title = "LLM Error"
         border_style = "red"
-        tip = _get_llm_error_tip(error)
+
+    tip = _get_llm_error_tip(error)
 
     # Build the panel content
     content = Text()
 
+    # Compact provider / model line (no labels)
+    provider_model_parts: list[str] = []
     if error.provider:
-        content.append("Provider: ", style="dim")
-        content.append(error.provider, style="bold cyan")
+        provider_model_parts.append(error.provider)
+    if error.model:
+        provider_model_parts.append(error.model)
+    if provider_model_parts:
+        content.append(" / ".join(provider_model_parts), style="bold cyan")
         content.append("\n")
 
-    if isinstance(error, RateLimitError) and error.retry_after is not None:
-        content.append("Retry after: ", style="dim")
-        content.append(f"{error.retry_after}s", style="bold yellow")
-        content.append("\n")
-
+    # Extracted human-readable message
+    raw = str(error)
     content.append("\n")
-    content.append(_truncate(str(error)), style="white")
+    content.append(_extract_message(raw), style="white")
+    content.append("\n")
+
+    # Raw Details section
+    content.append("\n")
+    content.append("── Raw Details ──", style="dim")
+    content.append("\n")
+    content.append(raw, style="dim")
 
     # Print the panel
     console.print()

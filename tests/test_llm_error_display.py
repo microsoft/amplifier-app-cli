@@ -1,5 +1,6 @@
 """Tests for display_llm_error() Rich panel formatter."""
 
+import json
 from io import StringIO
 
 from rich.console import Console
@@ -23,6 +24,9 @@ def _capture_output(error: Exception, verbose: bool = False) -> tuple[bool, str]
     buf.seek(0)
     output = buf.read()
     return result, output
+
+
+# ── Return value tests ───────────────────────────────────────────────
 
 
 class TestDisplayLlmErrorReturnValue:
@@ -64,82 +68,142 @@ class TestDisplayLlmErrorReturnValue:
         assert result is False
 
 
-class TestRateLimitErrorDisplay:
-    """RateLimitError shows yellow border, provider, retry-after, and tip."""
+# ── Provider / model line tests ──────────────────────────────────────
 
-    def test_shows_provider_name(self) -> None:
-        error = RateLimitError("rate limited", provider="anthropic", retry_after=30.0)
+
+class TestProviderModelLine:
+    """Compact provider/model line: no labels, slash-separated."""
+
+    def test_shows_provider_and_model(self) -> None:
+        error = LLMError("boom", provider="anthropic", model="claude-opus-4-6")
         _, output = _capture_output(error)
-        assert "anthropic" in output.lower()
+        assert "anthropic / claude-opus-4-6" in output
 
-    def test_shows_retry_after_value(self) -> None:
-        error = RateLimitError("rate limited", provider="anthropic", retry_after=42.0)
+    def test_shows_only_provider_when_no_model(self) -> None:
+        error = LLMError("boom", provider="anthropic")
         _, output = _capture_output(error)
-        assert "42" in output
+        assert "anthropic" in output
+        # Must NOT have a trailing " / " when model is absent
+        assert "anthropic / " not in output
 
-    def test_shows_actionable_tip(self) -> None:
-        error = RateLimitError("rate limited", provider="anthropic", retry_after=30.0)
+    def test_skips_line_when_neither_provider_nor_model(self) -> None:
+        error = LLMError("boom")
         _, output = _capture_output(error)
-        # Should contain some guidance text
-        assert "tip" in output.lower() or "retry" in output.lower()
-
-    def test_shows_rate_limited_title(self) -> None:
-        error = RateLimitError("rate limited", provider="anthropic", retry_after=30.0)
-        _, output = _capture_output(error)
-        assert "Rate Limited" in output or "rate limit" in output.lower()
+        # Neither "Provider" label nor a slash-separated line should appear
+        assert "Provider" not in output
+        assert " / " not in output
 
 
-class TestAuthenticationErrorDisplay:
-    """AuthenticationError shows auth-specific guidance."""
+# ── Extracted message tests ──────────────────────────────────────────
 
-    def test_shows_auth_guidance(self) -> None:
-        error = AuthenticationError("invalid api key", provider="openai")
-        _, output = _capture_output(error)
-        # Should mention API key or credentials
-        assert (
-            "key" in output.lower()
-            or "credential" in output.lower()
-            or "auth" in output.lower()
+
+class TestExtractedMessage:
+    """_extract_message pulls human-readable text from JSON error bodies."""
+
+    def test_extracts_nested_json_message(self) -> None:
+        raw = json.dumps(
+            {"error": {"message": "Overloaded", "type": "overloaded_error"}}
         )
-
-
-class TestContextLengthErrorDisplay:
-    """ContextLengthError shows context reduction guidance."""
-
-    def test_shows_context_guidance(self) -> None:
-        error = ContextLengthError("context too long", provider="anthropic")
+        error = LLMError(raw, provider="anthropic")
         _, output = _capture_output(error)
-        assert (
-            "context" in output.lower()
-            or "conversation" in output.lower()
-            or "reduce" in output.lower()
-        )
+        assert "Overloaded" in output
 
-
-class TestContentFilterErrorDisplay:
-    """ContentFilterError shows rephrasing guidance."""
-
-    def test_shows_rephrase_guidance(self) -> None:
-        error = ContentFilterError(
-            "content blocked by safety filter", provider="anthropic"
-        )
+    def test_extracts_top_level_json_message(self) -> None:
+        raw = json.dumps({"message": "Something went wrong"})
+        error = LLMError(raw, provider="anthropic")
         _, output = _capture_output(error)
-        assert (
-            "rephras" in output.lower()
-            or "content" in output.lower()
-            or "filter" in output.lower()
-        )
+        assert "Something went wrong" in output
 
+    def test_shows_raw_when_not_json(self) -> None:
+        error = LLMError("plain text error", provider="anthropic")
+        _, output = _capture_output(error)
+        assert "plain text error" in output
 
-class TestMessageTruncation:
-    """Very long error messages are truncated to ~200 chars."""
-
-    def test_long_message_is_truncated(self) -> None:
+    def test_truncates_long_non_json_message(self) -> None:
         long_msg = "x" * 500
         error = LLMError(long_msg, provider="anthropic")
         _, output = _capture_output(error)
-        # The full 500-char message should NOT appear verbatim in the output
+        # Full 500-char string should NOT appear verbatim (truncated to ~200)
         assert long_msg not in output
+        # But the truncated prefix should appear
+        assert "x" * 50 in output
+
+
+# ── Raw details tests ────────────────────────────────────────────────
+
+
+class TestRawDetails:
+    """Raw Details section shows full error string below a separator."""
+
+    def test_shows_raw_details_separator(self) -> None:
+        raw = json.dumps(
+            {
+                "type": "error",
+                "error": {"message": "Overloaded", "type": "overloaded_error"},
+                "request_id": "req_011CYUvo1pVm9nBQDESemmf5",
+            }
+        )
+        error = LLMError(raw, provider="anthropic")
+        _, output = _capture_output(error)
+        assert "Raw Details" in output
+
+    def test_shows_full_error_string(self) -> None:
+        raw = json.dumps(
+            {
+                "type": "error",
+                "error": {"message": "Overloaded", "type": "overloaded_error"},
+                "request_id": "req_011CYUvo1pVm9nBQDESemmf5",
+            }
+        )
+        error = LLMError(raw, provider="anthropic")
+        _, output = _capture_output(error)
+        assert "req_011CYUvo1pVm9nBQDESemmf5" in output
+
+
+# ── Title and tip tests ──────────────────────────────────────────────
+
+
+class TestTitleAndTip:
+    """Panel title matches error type; tip line provides guidance."""
+
+    def test_rate_limit_title(self) -> None:
+        error = RateLimitError("limited", provider="anthropic", retry_after=30.0)
+        _, output = _capture_output(error)
+        assert "Rate Limited" in output
+
+    def test_rate_limit_tip_includes_retry_after(self) -> None:
+        error = RateLimitError("limited", provider="anthropic", retry_after=30.0)
+        _, output = _capture_output(error)
+        assert "30" in output
+        assert "Tip" in output
+
+    def test_auth_error_title(self) -> None:
+        error = AuthenticationError("bad key", provider="openai")
+        _, output = _capture_output(error)
+        assert "Authentication Failed" in output
+
+    def test_auth_error_tip_mentions_credentials(self) -> None:
+        error = AuthenticationError("bad key", provider="openai")
+        _, output = _capture_output(error)
+        assert "key" in output.lower() or "credential" in output.lower()
+
+    def test_context_length_title(self) -> None:
+        error = ContextLengthError("too long", provider="anthropic")
+        _, output = _capture_output(error)
+        assert "Context Length Exceeded" in output
+
+    def test_content_filter_title(self) -> None:
+        error = ContentFilterError("blocked", provider="anthropic")
+        _, output = _capture_output(error)
+        assert "Content Filtered" in output
+
+    def test_generic_llm_error_title(self) -> None:
+        error = LLMError("unexpected", provider="anthropic")
+        _, output = _capture_output(error)
+        assert "LLM Error" in output
+
+
+# ── Verbose mode tests ───────────────────────────────────────────────
 
 
 class TestVerboseMode:
@@ -153,5 +217,4 @@ class TestVerboseMode:
     def test_non_verbose_omits_traceback(self) -> None:
         error = RateLimitError("rate limited", provider="anthropic", retry_after=30.0)
         _, output = _capture_output(error, verbose=False)
-        # "Traceback" as a section header should not appear without verbose
         assert "Traceback" not in output
