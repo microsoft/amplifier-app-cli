@@ -22,6 +22,7 @@ from rich.table import Table
 
 from ..console import console
 from ..paths import create_config_manager
+from ..utils.error_format import escape_markup
 from ..runtime.config import inject_user_providers
 
 # ============================================================================
@@ -273,7 +274,7 @@ def tool_list(bundle: str | None, output: str, modules: bool):
         try:
             tools = asyncio.run(_get_mounted_tools_from_bundle_async(bundle_name))
         except Exception as e:
-            console.print(f"[red]Error mounting tools:[/red] {e}")
+            console.print(f"[red]Error mounting tools:[/red] {escape_markup(e)}")
             sys.exit(1)
 
         if not tools:
@@ -359,7 +360,7 @@ def tool_info(tool_name: str, bundle: str | None, output: str, module: bool):
         try:
             tools = asyncio.run(_get_mounted_tools_from_bundle_async(bundle_name))
         except Exception as e:
-            console.print(f"[red]Error mounting tools:[/red] {e}")
+            console.print(f"[red]Error mounting tools:[/red] {escape_markup(e)}")
             sys.exit(1)
 
         found_tool = next((t for t in tools if t["name"] == tool_name), None)
@@ -444,7 +445,7 @@ def tool_invoke(tool_name: str, args: tuple[str, ...], bundle: str | None, outpu
             error_output = {"status": "error", "error": str(e), "tool": tool_name}
             print(json.dumps(error_output, indent=2))
         else:
-            console.print(f"[red]Error:[/red] {e}")
+            console.print(f"[red]Error:[/red] {escape_markup(e)}")
         sys.exit(1)
 
     # Output result

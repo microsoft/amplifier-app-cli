@@ -20,6 +20,7 @@ from ..lib.settings import ScopeType
 from ..paths import create_config_manager
 from ..paths import get_effective_scope
 from ..paths import ScopeNotAvailableError
+from ..utils.error_format import escape_markup
 
 console = Console()
 
@@ -193,7 +194,7 @@ def desktop_cmd(
                 "[yellow]Note:[/yellow] Running from home directory, using global scope"
             )
     except ScopeNotAvailableError as e:
-        console.print(f"[red]Error:[/red] {e.message}")
+        console.print(f"[red]Error:[/red] {escape_markup(e.message)}")
         return
 
     # Build config from provided options
@@ -297,7 +298,7 @@ def ntfy_cmd(
                 "[yellow]Note:[/yellow] Running from home directory, using global scope"
             )
     except ScopeNotAvailableError as e:
-        console.print(f"[red]Error:[/red] {e.message}")
+        console.print(f"[red]Error:[/red] {escape_markup(e.message)}")
         return
 
     settings = _get_app_settings()
@@ -404,7 +405,7 @@ def reset_cmd(reset_type: str | None, scope_flag: str | None):
                 "[yellow]Note:[/yellow] Running from home directory, using global scope"
             )
     except ScopeNotAvailableError as e:
-        console.print(f"[red]Error:[/red] {e.message}")
+        console.print(f"[red]Error:[/red] {escape_markup(e.message)}")
         return
 
     settings = _get_app_settings()

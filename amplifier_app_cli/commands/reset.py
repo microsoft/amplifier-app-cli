@@ -27,6 +27,7 @@ from pathlib import Path
 import click
 
 from ..console import console
+from ..utils.error_format import escape_markup
 from .reset_interactive import ChecklistItem, run_checklist
 
 
@@ -212,7 +213,9 @@ def _clean_uv_cache(dry_run: bool = False) -> bool:
         console.print("[yellow]Warning:[/yellow] UV cache clean timed out")
         return False
     except subprocess.CalledProcessError as e:
-        console.print(f"[yellow]Warning:[/yellow] Failed to clean UV cache: {e}")
+        console.print(
+            f"[yellow]Warning:[/yellow] Failed to clean UV cache: {escape_markup(str(e))}"
+        )
         return False
     except FileNotFoundError:
         console.print("[yellow]Warning:[/yellow] uv not found, skipping cache clean")
@@ -252,7 +255,9 @@ def _uninstall_amplifier(dry_run: bool = False) -> bool:
         )
         return True
     except subprocess.CalledProcessError as e:
-        console.print(f"[yellow]Warning:[/yellow] Failed to uninstall amplifier: {e}")
+        console.print(
+            f"[yellow]Warning:[/yellow] Failed to uninstall amplifier: {escape_markup(str(e))}"
+        )
         return False
 
 

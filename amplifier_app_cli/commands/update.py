@@ -14,6 +14,7 @@ from ..paths import create_config_manager
 from ..utils.display import create_sha_text
 from ..utils.display import create_status_symbol
 from ..utils.display import print_legend
+from ..utils.error_format import escape_markup
 from ..utils.settings_manager import save_update_last_check
 from ..utils.source_status import check_all_sources
 from ..utils.update_executor import execute_updates
@@ -1047,10 +1048,12 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             console.print(f"  [green]✓[/green] Bundle: {bundle_name}")
         for item in result.failed:
             error = result.errors.get(item, "Unknown error")
-            console.print(f"  [red]✗[/red] {item}: {error}")
+            console.print(f"  [red]✗[/red] {item}: {escape_markup(error)}")
         for bundle_name in bundle_failed:
             error = bundle_errors.get(bundle_name, "Unknown error")
-            console.print(f"  [red]✗[/red] Bundle: {bundle_name}: {error}")
+            console.print(
+                f"  [red]✗[/red] Bundle: {bundle_name}: {escape_markup(error)}"
+            )
 
     # Update last check timestamp
     from datetime import datetime

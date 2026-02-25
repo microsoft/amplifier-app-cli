@@ -58,6 +58,7 @@ from .session_store import SessionStore
 from .ui.error_display import display_llm_error
 from .ui.error_display import display_validation_error
 from .ui.log_filter import LLMErrorLogFilter
+from .utils.error_format import escape_markup
 from .utils.version import get_version
 
 logger = logging.getLogger(__name__)
@@ -1647,7 +1648,7 @@ async def interactive_chat(
                 display_llm_error(console, e, verbose=verbose)
 
             except Exception as e:
-                console.print(f"[red]Error:[/red] {e}")
+                console.print(f"[red]Error:[/red] {escape_markup(e)}")
                 if verbose:
                     console.print_exception()
 
@@ -1901,7 +1902,7 @@ async def execute_single(
             # Try clean display for module validation errors (including wrapped ones)
             if not display_validation_error(console, e, verbose=verbose):
                 # Fall back to generic error output
-                console.print(f"[red]Error:[/red] {e}")
+                console.print(f"[red]Error:[/red] {escape_markup(e)}")
                 if verbose:
                     console.print_exception()
         sys.exit(1)
