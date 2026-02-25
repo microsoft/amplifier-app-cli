@@ -57,9 +57,18 @@ from .key_manager import KeyManager
 from .session_store import SessionStore
 from .ui.error_display import display_llm_error
 from .ui.error_display import display_validation_error
+from .ui.log_filter import LLMErrorLogFilter
 from .utils.version import get_version
 
 logger = logging.getLogger(__name__)
+
+# Suppress duplicate LLM error lines from console output.
+# The CLI renders LLM errors as Rich panels — the logger.error() calls
+# from the provider ("[PROVIDER] Anthropic API error: ...") and session
+# ("Execution failed: ...") would duplicate the same info as raw text.
+# This filter drops those specific patterns at the root logger level.
+# Log file handlers managed by hooks use their own loggers and are unaffected.
+logging.getLogger().addFilter(LLMErrorLogFilter())
 
 
 # Load API keys from ~/.amplifier/keys.env on startup
