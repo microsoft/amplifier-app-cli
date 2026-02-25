@@ -57,18 +57,19 @@ console = Console()
 # Defense-in-depth: catch MarkupError from unescaped dynamic content
 # (e.g., file paths like [/Users/...] interpreted as closing tags).
 # Primary fix is escape_markup() at interpolation sites; this is the safety net.
-_original_console_print = Console.print
+# Patches at class level so ALL Console instances are covered (shared + standalone).
+if not getattr(Console.print, "_is_safe_wrapper", False):
+    _original_console_print = Console.print
 
+    def _safe_console_print(self, *args, **kwargs):
+        try:
+            _original_console_print(self, *args, **kwargs)
+        except MarkupError:
+            kwargs["markup"] = False
+            kwargs["highlight"] = False
+            _original_console_print(self, *args, **kwargs)
 
-def _safe_console_print(self, *args, **kwargs):
-    try:
-        _original_console_print(self, *args, **kwargs)
-    except MarkupError:
-        kwargs["markup"] = False
-        kwargs["highlight"] = False
-        _original_console_print(self, *args, **kwargs)
-
-
-Console.print = _safe_console_print
+    _safe_console_print._is_safe_wrapper = True  # type: ignore[attr-defined]
+    Console.print = _safe_console_print  # type: ignore[assignment]
 
 __all__ = ["console", "Markdown"]

@@ -28,8 +28,6 @@ import logging
 import sys
 import uuid
 from dataclasses import dataclass
-
-from .utils.error_format import escape_markup
 from dataclasses import field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -40,6 +38,7 @@ from amplifier_core import ModuleValidationError
 
 from .session_store import SessionStore
 from .ui.error_display import display_validation_error
+from .utils.error_format import escape_markup
 
 if TYPE_CHECKING:
     from amplifier_foundation.bundle import PreparedBundle
