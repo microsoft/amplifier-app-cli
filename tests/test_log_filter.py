@@ -72,7 +72,7 @@ class TestHandlerLevelFiltering:
             name="amplifier_module_provider_anthropic",
             level=logging.ERROR,
             pathname="__init__.py",
-            lineno=1462,
+            lineno=1,
             msg="[PROVIDER] Anthropic API error: %s",
             args=('{"type":"error","error":{"message":"Overloaded"}}',),
             exc_info=None,
