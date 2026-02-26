@@ -62,6 +62,39 @@ class TestLLMErrorLogFilter:
         assert self.f.filter(record) is True
 
 
+class TestHandlerLevelFiltering:
+    """Verify the filter works when attached to a handler (not just a logger)."""
+
+    def test_handler_filter_suppresses_child_logger_provider_error(self) -> None:
+        handler = logging.StreamHandler()
+        handler.addFilter(LLMErrorLogFilter())
+        record = logging.LogRecord(
+            name="amplifier_module_provider_anthropic",
+            level=logging.ERROR,
+            pathname="__init__.py",
+            lineno=1462,
+            msg="[PROVIDER] Anthropic API error: %s",
+            args=('{"type":"error","error":{"message":"Overloaded"}}',),
+            exc_info=None,
+        )
+        assert handler.filter(record) is False
+
+    def test_handler_filter_passes_unrelated_child_logger_error(self) -> None:
+        handler = logging.StreamHandler()
+        handler.addFilter(LLMErrorLogFilter())
+        record = logging.LogRecord(
+            name="amplifier_module_provider_anthropic",
+            level=logging.ERROR,
+            pathname="__init__.py",
+            lineno=100,
+            msg="Connection pool exhausted",
+            args=(),
+            exc_info=None,
+        )
+        # Handler.filter() returns the LogRecord (truthy) on Python 3.12+
+        assert handler.filter(record)
+
+
 def _run_filter_attachment_logic() -> tuple[LLMErrorLogFilter, bool]:
     """Execute the same attachment logic as main.py and return (filter, attached_to_handler).
 
