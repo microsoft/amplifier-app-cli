@@ -91,8 +91,11 @@ class TestHandlerLevelFiltering:
             args=(),
             exc_info=None,
         )
-        # Handler.filter() returns the LogRecord (truthy) on Python 3.12+
-        assert handler.filter(record)
+        # Handler.filter() returns bool on Python <3.12, LogRecord (truthy) on 3.12+
+        assert handler.filter(record), (
+            "Unrelated error should pass through filter "
+            "(note: Handler.filter() returns LogRecord on Python 3.12+, bool on earlier)"
+        )
 
 
 def _run_filter_attachment_logic() -> tuple[LLMErrorLogFilter, bool]:
@@ -100,6 +103,12 @@ def _run_filter_attachment_logic() -> tuple[LLMErrorLogFilter, bool]:
 
     This is an exact copy of the logic from main.py lines 73-88, used to verify
     the algorithm works correctly under controlled conditions.
+
+    NOTE: Keep in sync with main.py's module-level attachment code.
+    If the production logic changes, update this helper to match.
+    test_main_module_has_correct_attachment_code() guards against drift
+    by checking key patterns in the source, but this helper must also be
+    updated manually.
     """
     root = logging.getLogger()
     _llm_error_filter = LLMErrorLogFilter()
