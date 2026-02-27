@@ -62,8 +62,12 @@ def get_effective_config_summary(
         provider_config = selected_provider.get("config", {})
         model = provider_config.get("default_model", "default")
 
-        # Try to get friendly provider name
-        provider_name = _get_provider_display_name(provider_module)
+        # Use explicit 'name' from settings if set, otherwise derive from module ID
+        instance_name = selected_provider.get("name")
+        if instance_name:
+            provider_name = instance_name.replace("-", " ").title()
+        else:
+            provider_name = _get_provider_display_name(provider_module)
     else:
         provider_module = "none"
         provider_name = "None"
