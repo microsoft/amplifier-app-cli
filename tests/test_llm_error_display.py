@@ -102,11 +102,35 @@ class TestExtractedMessage:
 
     def test_extracts_nested_json_message(self) -> None:
         raw = json.dumps(
-            {"error": {"message": "Overloaded", "type": "overloaded_error"}}
+            {
+                "type": "error",
+                "error": {
+                    "message": "Overloaded",
+                    "type": "overloaded_error",
+                    "details": None,
+                },
+                "request_id": "req_011CYWrZR1v1VKRA5jpGruM9",
+            }
         )
-        error = LLMError(raw, provider="anthropic")
+        error = LLMError(raw, provider="anthropic", model="claude-opus-4-6")
         _, output = _capture_output(error)
         assert "Overloaded" in output
+        assert "req_011CYWrZR1v1VKRA5jpGruM9" in output
+
+    def test_extracts_openai_style_json_message(self) -> None:
+        raw = json.dumps(
+            {
+                "error": {
+                    "message": "Rate limit reached for model",
+                    "type": "tokens",
+                    "param": None,
+                    "code": "rate_limit_exceeded",
+                }
+            }
+        )
+        error = LLMError(raw, provider="openai", model="gpt-4")
+        _, output = _capture_output(error)
+        assert "Rate limit reached for model" in output
 
     def test_extracts_top_level_json_message(self) -> None:
         raw = json.dumps({"message": "Something went wrong"})
