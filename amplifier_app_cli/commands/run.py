@@ -216,17 +216,28 @@ def register_run_command(
             )
             providers_list = config_data.get("providers", [])
 
-            # Find the target provider
+            # Find the target provider by name first, then by module
             target_idx = None
             for i, entry in enumerate(providers_list):
-                if isinstance(entry, dict) and entry.get("module") == provider_module:
+                if isinstance(entry, dict) and entry.get("name") == provider:
                     target_idx = i
+                    provider_module = entry.get("module", provider_module)
                     break
+            if target_idx is None:
+                for i, entry in enumerate(providers_list):
+                    if isinstance(entry, dict) and entry.get("module") == provider_module:
+                        target_idx = i
+                        break
 
             if target_idx is None:
+                def _provider_label(p: dict) -> str:
+                    name = p.get("name")
+                    module = p.get("module", "?").replace("provider-", "")
+                    return f"{name} ({module})" if name else module
+
                 console.print(
                     f"[red]Error:[/red] Provider '{provider}' not configured\n"
-                    f"Available providers: {', '.join(p.get('module', '?').replace('provider-', '') for p in providers_list if isinstance(p, dict))}\n"
+                    f"Available providers: {', '.join(_provider_label(p) for p in providers_list if isinstance(p, dict))}\n"
                     f"Run 'amplifier provider use --help' for configuration options"
                 )
                 sys.exit(1)
