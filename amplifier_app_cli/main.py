@@ -71,21 +71,26 @@ logger = logging.getLogger(__name__)
 # so it intercepts records propagated from child loggers like provider modules.
 # Log file handlers managed by hooks use their own loggers and are unaffected.
 _llm_error_filter = LLMErrorLogFilter()
-_filter_attached = False
-for _handler in logging.getLogger().handlers:
-    if (
-        isinstance(_handler, logging.StreamHandler)
-        and hasattr(_handler, "stream")
-        and _handler.stream is sys.stderr
-    ):
-        _handler.addFilter(_llm_error_filter)
-        _filter_attached = True
-        break
-if not _filter_attached:
-    # Belt-and-suspenders: if no stderr handler exists yet (e.g., at import
-    # time before logging is fully configured), attach to root logger as
-    # fallback. This is the old behaviour — better than no filtering at all.
-    logging.getLogger().addFilter(_llm_error_filter)
+
+
+def _attach_llm_error_filter() -> None:
+    """Attach the LLM error filter to the stderr StreamHandler at runtime.
+
+    Must be called after logging is configured (i.e., from main()) so that
+    handlers actually exist on the root logger.  Falls back to attaching
+    directly to the root logger if no stderr StreamHandler is found.
+    """
+    root = logging.getLogger()
+    for _handler in root.handlers:
+        if (
+            isinstance(_handler, logging.StreamHandler)
+            and hasattr(_handler, "stream")
+            and _handler.stream is sys.stderr
+        ):
+            _handler.addFilter(_llm_error_filter)
+            return
+    # Fallback: no stderr handler found — attach to root logger.
+    root.addFilter(_llm_error_filter)
 
 
 # Load API keys from ~/.amplifier/keys.env on startup
@@ -1986,6 +1991,7 @@ register_session_commands(
 
 def main():
     """Main entry point."""
+    _attach_llm_error_filter()
     cli()
 
 
