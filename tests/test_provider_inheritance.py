@@ -18,10 +18,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
-
 from amplifier_app_cli.agent_config import merge_configs
-from amplifier_app_cli.lib.merge_utils import merge_agent_dicts, merge_module_lists
+from amplifier_app_cli.lib.merge_utils import merge_module_lists
 from amplifier_app_cli.runtime.config import _sync_overrides_to_bundle
 
 
@@ -264,7 +262,9 @@ class TestProviderInheritanceViaMerge:
 
         # Still 3 providers (no duplication)
         assert len(merged["providers"]) == 3
-        openai = next(p for p in merged["providers"] if p["module"] == "provider-openai")
+        openai = next(
+            p for p in merged["providers"] if p["module"] == "provider-openai"
+        )
         # Child's model override wins
         assert openai["config"]["default_model"] == "gpt-5"
         # Parent's api_key preserved (deep merge)
@@ -298,7 +298,9 @@ class TestMergeModuleListsProviders:
 
     def test_same_module_merges_config(self) -> None:
         """Same module ID in both should deep merge (overlay wins)."""
-        base = [{"module": "provider-openai", "config": {"model": "gpt-4o", "key": "a"}}]
+        base = [
+            {"module": "provider-openai", "config": {"model": "gpt-4o", "key": "a"}}
+        ]
         overlay = [{"module": "provider-openai", "config": {"model": "gpt-5"}}]
         result = merge_module_lists(base, overlay)
         assert len(result) == 1

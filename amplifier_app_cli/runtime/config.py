@@ -191,7 +191,7 @@ async def resolve_bundle_config(
     # providers, causing coordinator.get("providers") to return empty and tool
     # modules that depend on providers (e.g., image generation) to fail.
     #
-    # See: https://github.com/microsoft/amplifier-app-cli/issues/XXX
+    # See: https://github.com/microsoft/amplifier-app-cli/pull/110
     _sync_overrides_to_bundle(prepared, bundle_config, sync_tools=bool(tool_overrides))
 
     # Note: Notification hooks are now composed via compose_behaviors parameter
