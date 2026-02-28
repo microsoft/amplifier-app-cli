@@ -467,7 +467,7 @@ def register_session_spawning(session: AmplifierSession) -> None:
             routing_config = RoutingConfig.from_dict(routing_dict)
             session.coordinator.register_capability("session.routing", routing_config)
     except Exception:
-        pass  # Don't fail session creation for routing config issues
+        logger.debug("Failed to load routing config from settings", exc_info=True)
 
 
 # =============================================================================
