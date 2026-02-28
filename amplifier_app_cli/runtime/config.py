@@ -178,11 +178,70 @@ async def resolve_bundle_config(
     if bundle_config.get("hooks"):
         prepared.mount_plan["hooks"] = bundle_config["hooks"]
 
+    # CRITICAL: Also sync settings.yaml overrides back to the Bundle dataclass.
+    #
+    # PreparedBundle holds two representations:
+    #   - mount_plan (dict): used by create_session() for the root session
+    #   - bundle (Bundle dataclass): used by PreparedBundle.spawn() for child sessions
+    #
+    # Without this sync, settings.yaml providers exist in mount_plan but NOT in
+    # bundle.providers. When foundation's PreparedBundle.spawn() builds a child
+    # session, it calls self.bundle.compose(child_bundle).to_mount_plan() — reading
+    # from the Bundle dataclass, not mount_plan. Child sessions then get zero
+    # providers, causing coordinator.get("providers") to return empty and tool
+    # modules that depend on providers (e.g., image generation) to fail.
+    _sync_overrides_to_bundle(prepared, bundle_config, sync_tools=bool(tool_overrides))
+
     # Note: Notification hooks are now composed via compose_behaviors parameter
     # to load_and_prepare_bundle(), so they get properly installed during prepare().
     # The behavior bundles handle root-session-only logic internally via parent_id check.
 
     return bundle_config, prepared
+
+
+def _sync_overrides_to_bundle(
+    prepared: "PreparedBundle",
+    bundle_config: dict[str, Any],
+    *,
+    sync_tools: bool = False,
+) -> None:
+    """Sync settings.yaml overrides from mount_plan back to the Bundle dataclass.
+
+    PreparedBundle holds two representations of the session configuration:
+      - ``mount_plan`` (dict) — used by ``create_session()`` for the root session
+      - ``bundle`` (Bundle dataclass) — used by ``PreparedBundle.spawn()`` to
+        build child sessions via ``bundle.compose(child).to_mount_plan()``
+
+    After ``resolve_bundle_config()`` injects settings.yaml providers, tools, and
+    hooks into ``prepared.mount_plan``, this function copies those overrides into
+    ``prepared.bundle`` so that child sessions spawned through the foundation
+    layer inherit them correctly.
+
+    Without this sync, ``coordinator.get("providers")`` returns an empty dict in
+    child sessions because ``bundle.providers`` was never populated with the
+    settings.yaml provider modules.
+    """
+    bundle = getattr(prepared, "bundle", None)
+    if bundle is None:
+        return
+
+    providers = bundle_config.get("providers")
+    if providers and hasattr(bundle, "providers"):
+        bundle.providers = list(providers)
+        logger.debug(
+            "Synced %d provider(s) from settings to bundle.providers: %s",
+            len(providers),
+            [p.get("module", "?") for p in providers],
+        )
+
+    if sync_tools:
+        tools = bundle_config.get("tools")
+        if tools and hasattr(bundle, "tools"):
+            bundle.tools = list(tools)
+
+    hooks = bundle_config.get("hooks")
+    if hooks and hasattr(bundle, "hooks"):
+        bundle.hooks = list(hooks)
 
 
 def resolve_app_config(
