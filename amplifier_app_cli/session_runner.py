@@ -456,6 +456,19 @@ def register_session_spawning(session: AmplifierSession) -> None:
     session.coordinator.register_capability("session.spawn", spawn_capability)
     session.coordinator.register_capability("session.resume", resume_capability)
 
+    # Register routing config if present in settings
+    try:
+        from amplifier_foundation import RoutingConfig
+
+        from .lib.settings import AppSettings
+
+        routing_dict = AppSettings().get_routing_config()
+        if routing_dict:
+            routing_config = RoutingConfig.from_dict(routing_dict)
+            session.coordinator.register_capability("session.routing", routing_config)
+    except Exception:
+        pass  # Don't fail session creation for routing config issues
+
 
 # =============================================================================
 # Self-healing helpers for stale install state
