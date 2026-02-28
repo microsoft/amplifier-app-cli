@@ -102,7 +102,11 @@ class TestAttachLlmErrorFilter:
     """Verify that _attach_llm_error_filter targets the stderr handler at runtime."""
 
     def setup_method(self) -> None:
-        """Save root logger state."""
+        """Save root logger state and import attachment utilities."""
+        from amplifier_app_cli.main import _attach_llm_error_filter, _llm_error_filter
+
+        self.attach = _attach_llm_error_filter
+        self.llm_filter = _llm_error_filter
         self.root = logging.getLogger()
         self._orig_handlers = self.root.handlers[:]
         self._orig_filters = self.root.filters[:]
@@ -114,47 +118,41 @@ class TestAttachLlmErrorFilter:
 
     def test_attaches_to_stderr_handler_when_present(self) -> None:
         """When a stderr StreamHandler exists, the filter goes on it, not root."""
-        from amplifier_app_cli.main import _attach_llm_error_filter, _llm_error_filter
-
         stderr_handler = logging.StreamHandler(sys.stderr)
         self.root.handlers = [stderr_handler]
         self.root.filters = []
 
-        _attach_llm_error_filter()
+        self.attach()
 
-        assert _llm_error_filter in stderr_handler.filters, (
+        assert self.llm_filter in stderr_handler.filters, (
             "LLMErrorLogFilter must be in the stderr handler's filters"
         )
-        assert _llm_error_filter not in self.root.filters, (
+        assert self.llm_filter not in self.root.filters, (
             "LLMErrorLogFilter should not be on the root logger when stderr handler exists"
         )
 
     def test_falls_back_to_root_when_no_stderr_handler(self) -> None:
         """When no stderr handler exists, fallback attaches to root logger."""
-        from amplifier_app_cli.main import _attach_llm_error_filter, _llm_error_filter
-
         self.root.handlers = []
         self.root.filters = []
 
-        _attach_llm_error_filter()
+        self.attach()
 
-        assert _llm_error_filter in self.root.filters, (
+        assert self.llm_filter in self.root.filters, (
             "LLMErrorLogFilter must fall back to root logger when no stderr handler"
         )
 
     def test_ignores_non_stderr_stream_handler(self) -> None:
         """A StreamHandler writing to stdout should NOT get the filter."""
-        from amplifier_app_cli.main import _attach_llm_error_filter, _llm_error_filter
-
         stdout_handler = logging.StreamHandler(sys.stdout)
         self.root.handlers = [stdout_handler]
         self.root.filters = []
 
-        _attach_llm_error_filter()
+        self.attach()
 
-        assert _llm_error_filter not in stdout_handler.filters, (
+        assert self.llm_filter not in stdout_handler.filters, (
             "stdout handler should not receive the filter"
         )
-        assert _llm_error_filter in self.root.filters, (
+        assert self.llm_filter in self.root.filters, (
             "LLMErrorLogFilter must fall back to root when only stdout handler exists"
         )

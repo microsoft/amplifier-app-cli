@@ -87,10 +87,12 @@ def _attach_llm_error_filter() -> None:
             and hasattr(_handler, "stream")
             and _handler.stream is sys.stderr
         ):
-            _handler.addFilter(_llm_error_filter)
+            if _llm_error_filter not in _handler.filters:
+                _handler.addFilter(_llm_error_filter)
             return
     # Fallback: no stderr handler found — attach to root logger.
-    root.addFilter(_llm_error_filter)
+    if _llm_error_filter not in root.filters:
+        root.addFilter(_llm_error_filter)
 
 
 # Load API keys from ~/.amplifier/keys.env on startup
