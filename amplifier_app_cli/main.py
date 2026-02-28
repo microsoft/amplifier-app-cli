@@ -1661,7 +1661,10 @@ async def interactive_chat(
                 # Otherwise continue in the REPL
 
             except ModuleValidationError as e:
-                display_validation_error(console, e, verbose=verbose)
+                if not display_validation_error(console, e, verbose=verbose):
+                    console.print(f"[red]Error:[/red] {escape_markup(e)}")
+                    if verbose:
+                        console.print_exception()
 
             except LLMError as e:
                 display_llm_error(console, e, verbose=verbose)
@@ -1884,8 +1887,10 @@ async def execute_single(
             }
             print(json.dumps(error_output, indent=2))
         else:
-            # Clean display for module validation errors
-            display_validation_error(console, e, verbose=verbose)
+            if not display_validation_error(console, e, verbose=verbose):
+                console.print(f"[red]Error:[/red] {escape_markup(e)}")
+                if verbose:
+                    console.print_exception()
         sys.exit(1)
 
     except LLMError as e:

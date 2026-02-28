@@ -355,7 +355,6 @@ async def _create_bundle_session(
                         "Check module configuration, credentials, and dependencies."
                     )
     except (ModuleValidationError, RuntimeError) as e:
-        core_logger.setLevel(original_level)
         if not display_validation_error(console, e, verbose=config.verbose):
             console.print(f"[red]Error:[/red] {escape_markup(e)}")
             if config.verbose:
