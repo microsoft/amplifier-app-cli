@@ -387,17 +387,6 @@ class AppSettings:
         settings = self.get_merged_settings()
         return settings.get("overrides", {})
 
-    # ----- Routing settings -----
-
-    def get_routing_config(self) -> dict[str, Any]:
-        """Get routing configuration section.
-
-        Returns the 'routing' section from merged settings, used for
-        model-class routing strategy configuration.
-        """
-        settings = self.get_merged_settings()
-        return settings.get("routing", {})
-
     # ----- Source override settings -----
 
     def get_module_sources(self) -> dict[str, str]:
