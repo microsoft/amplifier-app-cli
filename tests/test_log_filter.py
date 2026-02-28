@@ -156,3 +156,84 @@ class TestAttachLlmErrorFilter:
         assert self.llm_filter in self.root.filters, (
             "LLMErrorLogFilter must fall back to root when only stdout handler exists"
         )
+
+
+class TestFilterIntegrationChildLogger:
+    """Integration test: filter suppresses child logger records on stderr handler.
+
+    Simulates the production bug where a child logger (e.g. the provider module)
+    emits an ERROR record matching filter patterns, and verifies the filter
+    suppresses it from the stderr handler.
+    """
+
+    def setup_method(self) -> None:
+        """Save root logger state, clear it, and add a fresh stderr handler."""
+        self.root = logging.getLogger()
+        self._orig_handlers = self.root.handlers[:]
+        self._orig_filters = self.root.filters[:]
+        self._orig_level = self.root.level
+
+        self.root.handlers.clear()
+        self.root.filters.clear()
+        self.root.setLevel(logging.DEBUG)
+
+        self.stderr_handler = logging.StreamHandler(sys.stderr)
+        self.stderr_handler.setLevel(logging.DEBUG)
+        self.root.addHandler(self.stderr_handler)
+
+    def teardown_method(self) -> None:
+        """Restore original root logger state."""
+        self.root.handlers = self._orig_handlers
+        self.root.filters = self._orig_filters
+        self.root.setLevel(self._orig_level)
+
+    def test_child_logger_provider_error_suppressed(self) -> None:
+        from amplifier_app_cli.main import _attach_llm_error_filter
+
+        _attach_llm_error_filter()
+
+        child = logging.getLogger("amplifier_module_provider_anthropic")
+        record = child.makeRecord(
+            name=child.name,
+            level=logging.ERROR,
+            fn="__init__.py",
+            lno=1507,
+            msg='[PROVIDER] Anthropic API error: {"type":"error","error":{"type":"overloaded_error"}}',
+            args=(),
+            exc_info=None,
+        )
+        assert self.stderr_handler.filter(record) is False
+
+    def test_child_logger_execution_failed_suppressed(self) -> None:
+        from amplifier_app_cli.main import _attach_llm_error_filter
+
+        _attach_llm_error_filter()
+
+        child = logging.getLogger("amplifier_core.session")
+        record = child.makeRecord(
+            name=child.name,
+            level=logging.ERROR,
+            fn="session.py",
+            lno=454,
+            msg='Execution failed: {"type":"error","error":{"type":"overloaded_error"}}',
+            args=(),
+            exc_info=None,
+        )
+        assert self.stderr_handler.filter(record) is False
+
+    def test_child_logger_unrelated_error_passes_through(self) -> None:
+        from amplifier_app_cli.main import _attach_llm_error_filter
+
+        _attach_llm_error_filter()
+
+        child = logging.getLogger("amplifier_module_provider_anthropic")
+        record = child.makeRecord(
+            name=child.name,
+            level=logging.ERROR,
+            fn="__init__.py",
+            lno=1507,
+            msg="Connection pool exhausted",
+            args=(),
+            exc_info=None,
+        )
+        assert self.stderr_handler.filter(record)
