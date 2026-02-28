@@ -523,11 +523,6 @@ async def spawn_sub_session(
             "session.working_dir", parent_working_dir
         )
 
-    # Routing config - inherit from parent for consistent model-class routing
-    parent_routing = parent_session.coordinator.get_capability("session.routing")
-    if parent_routing is not None:
-        child_session.coordinator.register_capability("session.routing", parent_routing)
-
     # Self-delegation depth tracking (for recursion limits)
     # This is a simple value capability, not a function
     child_session.coordinator.register_capability(
