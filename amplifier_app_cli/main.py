@@ -1283,12 +1283,8 @@ async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> N
         session: Active session to add context messages to
         prompt: User's input that may contain @mentions
     """
-    import logging
-
     from .lib.mention_loading import MentionLoader
     from .utils.mentions import has_mentions
-
-    logger = logging.getLogger(__name__)
 
     if not has_mentions(prompt):
         return

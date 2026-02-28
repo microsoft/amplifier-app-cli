@@ -308,8 +308,6 @@ def display_llm_error(
         console.print("[dim]——— Traceback ———[/dim]")
         if sys.exc_info()[0] is not None:
             console.print_exception()
-        else:
-            console.print(f"[dim]{error!r}[/dim]")
 
     return True
 
