@@ -36,7 +36,6 @@ from .commands.allowed_dirs import allowed_dirs as allowed_dirs_group
 from .commands.denied_dirs import denied_dirs as denied_dirs_group
 from .commands.bundle import bundle as bundle_group
 from .commands.init import check_first_run
-from .commands.init import init_cmd
 from .commands.init import prompt_first_run_init
 from .commands.module import module as module_group
 from .commands.notify import notify as notify_group
@@ -1947,7 +1946,6 @@ cli.add_command(agents_group)
 cli.add_command(allowed_dirs_group)
 cli.add_command(denied_dirs_group)
 cli.add_command(bundle_group)
-cli.add_command(init_cmd)
 cli.add_command(module_group)
 cli.add_command(notify_group)
 cli.add_command(provider_group)
