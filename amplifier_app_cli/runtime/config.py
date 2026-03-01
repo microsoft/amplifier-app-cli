@@ -213,6 +213,51 @@ async def resolve_bundle_config(
     return bundle_config, prepared
 
 
+def _sync_overrides_to_bundle(
+    prepared: "PreparedBundle",
+    bundle_config: dict[str, Any],
+    *,
+    sync_tools: bool = False,
+) -> None:
+    """Sync settings.yaml overrides from mount_plan back to the Bundle dataclass.
+
+    PreparedBundle holds two representations of the session configuration:
+      - ``mount_plan`` (dict) — used by ``create_session()`` for the root session
+      - ``bundle`` (Bundle dataclass) — used by ``PreparedBundle.spawn()`` to
+        build child sessions via ``bundle.compose(child).to_mount_plan()``
+
+    After ``resolve_bundle_config()`` injects settings.yaml providers, tools, and
+    hooks into ``prepared.mount_plan``, this function copies those overrides into
+    ``prepared.bundle`` so that child sessions spawned through the foundation
+    layer inherit them correctly.
+
+    Without this sync, ``coordinator.get("providers")`` returns an empty dict in
+    child sessions because ``bundle.providers`` was never populated with the
+    settings.yaml provider modules.
+    """
+    bundle = getattr(prepared, "bundle", None)
+    if bundle is None:
+        return
+
+    providers = bundle_config.get("providers")
+    if providers and hasattr(bundle, "providers"):
+        bundle.providers = list(providers)
+        logger.debug(
+            "Synced %d provider(s) from settings to bundle.providers: %s",
+            len(providers),
+            [p.get("module", "?") for p in providers],
+        )
+
+    if sync_tools:
+        tools = bundle_config.get("tools")
+        if tools and hasattr(bundle, "tools"):
+            bundle.tools = list(tools)
+
+    hooks = bundle_config.get("hooks")
+    if hooks and hasattr(bundle, "hooks"):
+        bundle.hooks = list(hooks)
+
+
 def _ensure_debug_defaults(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Ensure debug defaults are present when using provider overrides directly.
 
