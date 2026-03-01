@@ -262,6 +262,7 @@ result = tool_execute({
     "agent": str,          # Optional - required for spawn, not needed for resume
     "instruction": str,     # Required - task for agent to execute
     "session_id": str,     # Optional - when provided, triggers resume instead of spawn
+    "model_role": str,     # Optional - semantic role override (e.g., "coding", "fast")
     "provider_preferences": list,  # Optional - ordered fallback chain for provider/model
 }
 ```
@@ -286,6 +287,40 @@ result = await task_tool.execute({
 - System tries each preference in order until finding an available provider
 - Model names support glob patterns (e.g., `claude-haiku-*` → latest haiku)
 - See [amplifier-foundation](https://github.com/microsoft/amplifier-foundation) for `ProviderPreference` details
+
+#### Model Role Override
+
+The `model_role` parameter lets the caller override the agent's default model role for a specific delegation. The routing matrix resolves the role to a concrete provider/model based on installed providers.
+
+```python
+# Delegate with a model role override
+result = await task_tool.execute({
+    "agent": "foundation:explorer",
+    "instruction": "Analyze these UI screenshots and suggest improvements",
+    "model_role": "coding-image"
+})
+```
+
+**Precedence** (highest to lowest):
+
+1. `provider_preferences` on the delegation call — explicit provider/model pinning
+2. `model_role` on the delegation call — semantic role override
+3. Agent frontmatter `model_role` — the agent's own declared preference
+4. No preference — session default (resolved from the `general` role)
+
+If both `model_role` and `provider_preferences` are provided in the same call, `provider_preferences` wins.
+
+**Available roles** are injected into session context by the routing hook at session start. The standard roles are:
+
+| Role | Use for |
+|------|---------|
+| `coding` | Code generation, implementation, debugging |
+| `coding-image` | Image-related code work (UI, diagrams, vision tasks) |
+| `planning` | Architecture, design, complex multi-step reasoning |
+| `fast` | Quick parsing, classification, utility work |
+| `general` | Balanced catch-all for unspecialized tasks |
+| `research` | Deep analysis, web search, long-horizon investigation |
+| `agentic` | Multi-turn autonomous tool use and task execution |
 
 #### Multi-Turn Example
 
