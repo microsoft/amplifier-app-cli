@@ -157,11 +157,15 @@ def _apply_provider_override(
     target_idx = None
     for i, p in enumerate(providers):
         module_id = p.get("module", "")
-        # Match: "anthropic", "provider-anthropic", or full module ID
-        if provider_id and provider_id in (
-            module_id,
-            module_id.replace("provider-", ""),
-            f"provider-{provider_id}",
+        entry_name = p.get("name", "")
+        # Match: config name, module shorthand, full module ID
+        if provider_id and (
+            provider_id == entry_name
+            or provider_id in (
+                module_id,
+                module_id.replace("provider-", ""),
+                f"provider-{provider_id}",
+            )
         ):
             target_idx = i
             break
@@ -178,10 +182,15 @@ def _apply_provider_override(
                 target_idx = i
 
     if target_idx is None:
+        available = []
+        for p in providers:
+            name = p.get("name")
+            mod = p.get("module", "?").replace("provider-", "")
+            available.append(name if name and name != mod else mod)
         logger.warning(
             "Provider '%s' not found in config. Available: %s",
             provider_id,
-            ", ".join(p.get("module", "?") for p in providers),
+            ", ".join(available),
         )
         return config
 
