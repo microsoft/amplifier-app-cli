@@ -98,40 +98,15 @@ class TestHandlerLevelFiltering:
         )
 
 
-def _run_filter_attachment_logic() -> tuple[LLMErrorLogFilter, bool]:
-    """Execute the same attachment logic as main.py and return (filter, attached_to_handler).
-
-    This is an exact copy of the logic from main.py lines 73-88, used to verify
-    the algorithm works correctly under controlled conditions.
-
-    NOTE: Keep in sync with main.py's module-level attachment code.
-    If the production logic changes, update this helper to match.
-    test_main_module_has_correct_attachment_code() guards against drift
-    by checking key patterns in the source, but this helper must also be
-    updated manually.
-    """
-    root = logging.getLogger()
-    _llm_error_filter = LLMErrorLogFilter()
-    _filter_attached = False
-    for _handler in root.handlers:
-        if (
-            isinstance(_handler, logging.StreamHandler)
-            and hasattr(_handler, "stream")
-            and _handler.stream is sys.stderr
-        ):
-            _handler.addFilter(_llm_error_filter)
-            _filter_attached = True
-            break
-    if not _filter_attached:
-        root.addFilter(_llm_error_filter)
-    return _llm_error_filter, _filter_attached
-
-
-class TestFilterAttachmentLogic:
-    """Verify that the filter attachment logic targets the stderr handler."""
+class TestAttachLlmErrorFilter:
+    """Verify that _attach_llm_error_filter targets the stderr handler at runtime."""
 
     def setup_method(self) -> None:
-        """Save root logger state and clean up any existing LLMErrorLogFilter."""
+        """Save root logger state and import attachment utilities."""
+        from amplifier_app_cli.main import _attach_llm_error_filter, _llm_error_filter
+
+        self.attach = _attach_llm_error_filter
+        self.llm_filter = _llm_error_filter
         self.root = logging.getLogger()
         self._orig_handlers = self.root.handlers[:]
         self._orig_filters = self.root.filters[:]
@@ -141,66 +116,124 @@ class TestFilterAttachmentLogic:
         self.root.handlers = self._orig_handlers
         self.root.filters = self._orig_filters
 
-    def test_filter_attaches_to_stderr_handler_when_present(self) -> None:
+    def test_attaches_to_stderr_handler_when_present(self) -> None:
         """When a stderr StreamHandler exists, the filter goes on it, not root."""
-        # Set up a stderr StreamHandler on root
         stderr_handler = logging.StreamHandler(sys.stderr)
         self.root.handlers = [stderr_handler]
         self.root.filters = []
 
-        filt, attached_to_handler = _run_filter_attachment_logic()
+        self.attach()
 
-        # Filter must be on the handler
-        assert attached_to_handler, "Filter should have been attached to handler"
-        assert filt in stderr_handler.filters, (
+        assert self.llm_filter in stderr_handler.filters, (
             "LLMErrorLogFilter must be in the stderr handler's filters"
         )
-        # Filter must NOT be on root logger
-        assert filt not in self.root.filters, (
+        assert self.llm_filter not in self.root.filters, (
             "LLMErrorLogFilter should not be on the root logger when stderr handler exists"
         )
 
-    def test_filter_falls_back_to_root_when_no_stderr_handler(self) -> None:
+    def test_falls_back_to_root_when_no_stderr_handler(self) -> None:
         """When no stderr handler exists, fallback attaches to root logger."""
         self.root.handlers = []
         self.root.filters = []
 
-        filt, attached_to_handler = _run_filter_attachment_logic()
+        self.attach()
 
-        assert not attached_to_handler, "No handler to attach to"
-        assert filt in self.root.filters, (
+        assert self.llm_filter in self.root.filters, (
             "LLMErrorLogFilter must fall back to root logger when no stderr handler"
         )
 
-    def test_filter_ignores_non_stderr_stream_handler(self) -> None:
+    def test_ignores_non_stderr_stream_handler(self) -> None:
         """A StreamHandler writing to stdout should NOT get the filter."""
         stdout_handler = logging.StreamHandler(sys.stdout)
         self.root.handlers = [stdout_handler]
         self.root.filters = []
 
-        filt, attached_to_handler = _run_filter_attachment_logic()
+        self.attach()
 
-        assert not attached_to_handler, "stdout handler should not receive the filter"
-        assert filt not in stdout_handler.filters
-        # Falls back to root instead
-        assert filt in self.root.filters
-
-    def test_main_module_has_correct_attachment_code(self) -> None:
-        """Verify main.py contains handler-level attachment, not root-level."""
-        from pathlib import Path
-
-        main_mod = sys.modules["amplifier_app_cli.main"]
-        main_file = main_mod.__file__
-        assert main_file is not None, "main module must have a __file__"
-        source = Path(main_file).read_text(encoding="utf-8")
-
-        # The new code should iterate handlers and check for stderr
-        assert "_llm_error_filter = LLMErrorLogFilter()" in source, (
-            "main.py must create a named filter instance"
+        assert self.llm_filter not in stdout_handler.filters, (
+            "stdout handler should not receive the filter"
         )
-        assert "_handler.addFilter(_llm_error_filter)" in source, (
-            "main.py must attach filter to handler"
+        assert self.llm_filter in self.root.filters, (
+            "LLMErrorLogFilter must fall back to root when only stdout handler exists"
         )
-        assert "_handler.stream is sys.stderr" in source, (
-            "main.py must check for stderr stream"
+
+
+class TestFilterIntegrationChildLogger:
+    """Integration test: filter suppresses child logger records on stderr handler.
+
+    Simulates the production bug where a child logger (e.g. the provider module)
+    emits an ERROR record matching filter patterns, and verifies the filter
+    suppresses it from the stderr handler.
+    """
+
+    def setup_method(self) -> None:
+        """Save root logger state, clear it, and add a fresh stderr handler."""
+        self.root = logging.getLogger()
+        self._orig_handlers = self.root.handlers[:]
+        self._orig_filters = self.root.filters[:]
+        self._orig_level = self.root.level
+
+        self.root.handlers.clear()
+        self.root.filters.clear()
+        self.root.setLevel(logging.DEBUG)
+
+        self.stderr_handler = logging.StreamHandler(sys.stderr)
+        self.stderr_handler.setLevel(logging.DEBUG)
+        self.root.addHandler(self.stderr_handler)
+
+    def teardown_method(self) -> None:
+        """Restore original root logger state."""
+        self.root.handlers = self._orig_handlers
+        self.root.filters = self._orig_filters
+        self.root.setLevel(self._orig_level)
+
+    def test_child_logger_provider_error_suppressed(self) -> None:
+        from amplifier_app_cli.main import _attach_llm_error_filter
+
+        _attach_llm_error_filter()
+
+        child = logging.getLogger("amplifier_module_provider_anthropic")
+        record = child.makeRecord(
+            name=child.name,
+            level=logging.ERROR,
+            fn="__init__.py",
+            lno=1507,
+            msg='[PROVIDER] Anthropic API error: {"type":"error","error":{"type":"overloaded_error"}}',
+            args=(),
+            exc_info=None,
         )
+        assert self.stderr_handler.filter(record) is False
+
+    def test_child_logger_execution_failed_suppressed(self) -> None:
+        from amplifier_app_cli.main import _attach_llm_error_filter
+
+        _attach_llm_error_filter()
+
+        child = logging.getLogger("amplifier_core.session")
+        record = child.makeRecord(
+            name=child.name,
+            level=logging.ERROR,
+            fn="session.py",
+            lno=454,
+            msg='Execution failed: {"type":"error","error":{"type":"overloaded_error"}}',
+            args=(),
+            exc_info=None,
+        )
+        assert self.stderr_handler.filter(record) is False
+
+    def test_child_logger_unrelated_error_passes_through(self) -> None:
+        from amplifier_app_cli.main import _attach_llm_error_filter
+
+        _attach_llm_error_filter()
+
+        child = logging.getLogger("amplifier_module_provider_anthropic")
+        record = child.makeRecord(
+            name=child.name,
+            level=logging.ERROR,
+            fn="__init__.py",
+            lno=1507,
+            msg="Connection pool exhausted",
+            args=(),
+            exc_info=None,
+        )
+        assert self.stderr_handler.filter(record)

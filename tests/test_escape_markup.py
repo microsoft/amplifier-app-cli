@@ -1,9 +1,8 @@
 """Tests for Rich markup escaping in CLI error handlers.
 
-Covers the three layers of the fix for Rich markup injection:
+Covers the two layers of the fix for Rich markup injection:
 1. escape_markup() helper — prevents brackets from being parsed as markup
 2. Console.print safety net — catches MarkupError as defense-in-depth
-3. print_error() integration — end-to-end with pathological exceptions
 
 See: https://github.com/microsoft/amplifier-app-cli/pull/101
 """
@@ -15,7 +14,6 @@ from io import StringIO
 from rich.console import Console
 
 from amplifier_app_cli.utils.error_format import escape_markup
-from amplifier_app_cli.utils.error_format import print_error
 
 
 # ---------------------------------------------------------------------------
@@ -97,40 +95,3 @@ class TestConsoleSafetyNet:
         c.print("[bold]hello[/bold]")
         assert "hello" in buf.getvalue()
 
-
-# ---------------------------------------------------------------------------
-# Layer 3: print_error() integration
-# ---------------------------------------------------------------------------
-
-
-class TestPrintErrorEscaping:
-    """End-to-end tests for print_error() with pathological exceptions."""
-
-    def test_exception_with_path_brackets(self):
-        """Exception containing file path does not crash."""
-        buf = StringIO()
-        c = Console(file=buf, force_terminal=False, no_color=True)
-        exc = FileNotFoundError("[/Users/salil/.amplifier/config.yaml]")
-        print_error(c, exc)
-        output = buf.getvalue()
-        assert "Error" in output
-        assert "config.yaml" in output
-
-    def test_exception_with_markup_like_content(self):
-        """Exception with bracket content is not silently eaten."""
-        buf = StringIO()
-        c = Console(file=buf, force_terminal=False, no_color=True)
-        exc = ValueError("Missing key [database/primary] in config")
-        print_error(c, exc)
-        output = buf.getvalue()
-        assert "database/primary" in output
-
-    def test_exception_inside_rich_tags(self):
-        """Exception that would break enclosing markup tags."""
-        buf = StringIO()
-        c = Console(file=buf, force_terminal=False, no_color=True)
-        escaped = escape_markup("[Errno 2] No such file or directory")
-        c.print(f"[red]Failed: {escaped}[/red]")
-        output = buf.getvalue()
-        assert "Errno 2" in output
-        assert "No such file or directory" in output

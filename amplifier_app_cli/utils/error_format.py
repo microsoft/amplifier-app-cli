@@ -11,13 +11,7 @@ like "Error: " with nothing after the colon.
 from __future__ import annotations
 
 import asyncio
-import traceback
-from typing import TYPE_CHECKING
-
 from rich.markup import escape as _escape_markup
-
-if TYPE_CHECKING:
-    from rich.console import Console
 
 
 # Friendly messages for specific exception types known to have empty str()
@@ -70,40 +64,6 @@ def format_error_message(e: BaseException, *, include_type: bool = True) -> str:
 
     # Last resort: just the type name with indicator
     return f"{error_type}: (no additional details)"
-
-
-def print_error(console: "Console", e: BaseException, *, verbose: bool = False) -> None:
-    """Print an error to the console with proper formatting.
-
-    Args:
-        console: Rich console for output
-        e: The exception to display
-        verbose: If True, also print the traceback
-    """
-    error_msg = format_error_message(e)
-    console.print(f"[red]Error:[/red] {_escape_markup(error_msg)}")
-
-    if verbose:
-        console.print_exception()
-
-
-def get_error_context(e: BaseException) -> dict:
-    """Extract context from an exception for logging/events.
-
-    Useful for emitting error events with structured data.
-
-    Args:
-        e: The exception to extract context from
-
-    Returns:
-        Dict with error_type, error_message, and traceback info
-    """
-    return {
-        "error_type": type(e).__name__,
-        "error_message": format_error_message(e, include_type=False),
-        "error_repr": repr(e),
-        "traceback": traceback.format_exc(),
-    }
 
 
 def escape_markup(value: object) -> str:

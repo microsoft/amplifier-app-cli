@@ -192,6 +192,20 @@ async def resolve_bundle_config(
     if bundle_config.get("hooks"):
         prepared.mount_plan["hooks"] = bundle_config["hooks"]
 
+    # CRITICAL: Also sync settings.yaml overrides back to the Bundle dataclass.
+    #
+    # PreparedBundle holds two representations:
+    #   - mount_plan (dict): used by create_session() for the root session
+    #   - bundle (Bundle dataclass): used by PreparedBundle.spawn() for child sessions
+    #
+    # Without this sync, settings.yaml providers exist in mount_plan but NOT in
+    # bundle.providers. When foundation's PreparedBundle.spawn() builds a child
+    # session, it calls self.bundle.compose(child_bundle).to_mount_plan() — reading
+    # from the Bundle dataclass, not mount_plan. Child sessions then get zero
+    # providers, causing coordinator.get("providers") to return empty and tool
+    # modules that depend on providers (e.g., image generation) to fail.
+    _sync_overrides_to_bundle(prepared, bundle_config, sync_tools=bool(tool_overrides))
+
     # Note: Notification hooks are now composed via compose_behaviors parameter
     # to load_and_prepare_bundle(), so they get properly installed during prepare().
     # The behavior bundles handle root-session-only logic internally via parent_id check.

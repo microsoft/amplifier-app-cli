@@ -7,13 +7,9 @@ import logging
 import sys
 import uuid
 from collections.abc import Callable
-from typing import TYPE_CHECKING
 from typing import Any
 
 import click
-
-if TYPE_CHECKING:
-    pass
 
 from rich.panel import Panel
 
