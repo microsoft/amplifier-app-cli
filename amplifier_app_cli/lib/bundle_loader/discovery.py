@@ -290,7 +290,6 @@ class AppBundleDiscovery:
             return f"file://{md_file.resolve()}"
 
         return None
-        return None
 
     def register(self, name: str, uri: str) -> None:
         """Register a bundle name to URI mapping.

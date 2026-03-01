@@ -6,8 +6,6 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
-from amplifier_app_cli.lib.config_compat import ConfigManager
-
 from .lib.settings import AppSettings
 from .lib.settings import ScopeType
 from .provider_loader import get_provider_info
@@ -76,13 +74,15 @@ class ResetResult:
 class ProviderManager:
     """Manage provider configuration across scopes."""
 
-    def __init__(self, config: ConfigManager):
+    def __init__(self, config: "AppSettings | None" = None):
         """Initialize provider manager.
 
         Args:
-            config: Config manager instance (required)
+            config: AppSettings instance (creates default if None).
+                Legacy callers may pass any object with get_module_sources()
+                and get_merged_settings() — duck-typed for backward compat.
         """
-        self.config = config
+        self.config = config or AppSettings()
         self._settings = AppSettings()
 
     def use_provider(

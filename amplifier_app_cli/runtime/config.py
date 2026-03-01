@@ -17,7 +17,6 @@ from ..lib.merge_utils import merge_tool_configs
 
 
 if TYPE_CHECKING:
-    from amplifier_foundation import BundleRegistry
     from amplifier_foundation.bundle import PreparedBundle
 
 logger = logging.getLogger(__name__)
@@ -163,7 +162,7 @@ async def resolve_bundle_config(
     if console:
         console.print(f"[dim]Bundle '{bundle_name}' prepared successfully[/dim]")
 
-    # Expand environment variables (same as resolve_app_config)
+    # Expand environment variables
     # IMPORTANT: Must expand BEFORE syncing to mount_plan, so ${ANTHROPIC_API_KEY} etc. become actual values
     bundle_config = expand_env_vars(bundle_config)
 
@@ -183,94 +182,6 @@ async def resolve_bundle_config(
     # The behavior bundles handle root-session-only logic internally via parent_id check.
 
     return bundle_config, prepared
-
-
-def resolve_app_config(
-    *,
-    config_manager,
-    app_settings: AppSettings,
-    cli_config: dict[str, Any] | None = None,
-    bundle_name: str | None = None,
-    bundle_registry: BundleRegistry | None = None,
-    console: Console | None = None,
-) -> dict[str, Any]:
-    """Resolve configuration with precedence, returning a mount plan dictionary.
-
-    Configuration comes from bundles. If bundle_name is specified and
-    bundle_registry is provided, that bundle is loaded. Otherwise, falls back
-    to the default bundle.
-    """
-    # 1. Base mount plan defaults
-    config: dict[str, Any] = {
-        "session": {
-            "orchestrator": "loop-basic",
-            "context": "context-simple",
-        },
-        "providers": [],
-        "tools": [],
-        "agents": [],
-        "hooks": [],
-    }
-
-    provider_overrides = app_settings.get_provider_overrides()
-
-    # 2. Apply bundle configuration
-    provider_applied_via_config = False
-
-    if bundle_name and bundle_registry:
-        # Use bundle-based configuration
-        try:
-            # load() with a name returns a single Bundle (not dict)
-            loaded = asyncio.run(bundle_registry.load(bundle_name))
-            if isinstance(loaded, dict):
-                raise ValueError(
-                    f"Expected single bundle, got dict for '{bundle_name}'"
-                )
-            bundle = loaded
-
-            # Load full agent metadata from .md files (for descriptions)
-            # Foundation handles this via load_agent_metadata()
-            bundle.load_agent_metadata()
-
-            bundle_config = bundle.to_mount_plan()
-
-            # Apply provider overrides to bundle config
-            if provider_overrides and bundle_config.get("providers"):
-                bundle_config["providers"] = _apply_provider_overrides(
-                    bundle_config["providers"], provider_overrides
-                )
-                provider_applied_via_config = True
-
-            config = deep_merge(config, bundle_config)
-        except Exception as exc:  # noqa: BLE001
-            message = f"Warning: Could not load bundle '{bundle_name}': {exc}"
-            if console:
-                console.print(f"[yellow]{message}[/yellow]")
-            else:
-                logger.warning(message)
-
-    if provider_overrides and not provider_applied_via_config:
-        config["providers"] = provider_overrides
-
-    # 3. Apply merged settings (user → project → local)
-    merged_settings = config_manager.get_merged_settings()
-
-    modules_config = merged_settings.get("modules", {})
-    settings_overlay: dict[str, Any] = {}
-
-    for key in ("tools", "hooks", "agents"):
-        if key in modules_config:
-            settings_overlay[key] = modules_config[key]
-
-    if settings_overlay:
-        config = deep_merge(config, settings_overlay)
-
-    # 4. Apply CLI overrides
-    if cli_config:
-        config = deep_merge(config, cli_config)
-
-    # 5. Expand environment variables
-    return expand_env_vars(config)
 
 
 def _ensure_debug_defaults(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -566,7 +477,7 @@ def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> No
     For provider-agnostic bundles (like foundation), the bundle provides mechanism
     (tools, agents, context) while the app layer provides policy (which provider).
 
-    This function merges the user's provider settings from resolve_app_config()
+    This function merges the user's provider settings from resolve_bundle_config()
     into the bundle's mount_plan before session creation.
 
     Args:
@@ -770,7 +681,6 @@ def resolve_config(
 __all__ = [
     "resolve_config",
     "resolve_config_async",
-    "resolve_app_config",
     "resolve_bundle_config",
     "deep_merge",
     "expand_env_vars",

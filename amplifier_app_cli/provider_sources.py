@@ -13,7 +13,7 @@ from rich.console import Console
 from .utils.error_format import escape_markup
 
 if TYPE_CHECKING:
-    from amplifier_app_cli.lib.config_compat import ConfigManager
+    from amplifier_app_cli.lib.settings import AppSettings
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ def _get_ordered_providers(sources: dict[str, str]) -> list[tuple[str, str]]:
 
 
 def get_effective_provider_sources(
-    config_manager: "ConfigManager | None" = None,
+    config_manager: "AppSettings | None" = None,
 ) -> dict[str, str]:
     """Get provider sources with settings modules and overrides applied.
 
@@ -172,7 +172,7 @@ def source_from_uri(source_uri: str):
 
 def ensure_provider_installed(
     module_id: str,
-    config_manager: "ConfigManager | None" = None,
+    config_manager: "AppSettings | None" = None,
     console: Console | None = None,
 ) -> bool:
     """Ensure a single provider module is installed.
@@ -252,7 +252,7 @@ def ensure_provider_installed(
 
 
 def install_known_providers(
-    config_manager: "ConfigManager | None" = None,
+    config_manager: "AppSettings | None" = None,
     console: Console | None = None,
     verbose: bool = True,
 ) -> list[str]:

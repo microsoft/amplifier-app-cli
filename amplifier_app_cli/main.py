@@ -90,10 +90,7 @@ if not _filter_attached:
 
 # Load API keys from ~/.amplifier/keys.env on startup
 # This allows keys saved by 'amplifier init' or 'amplifier provider use' to be available
-_key_manager = KeyManager()
-
-# Cancel flag for ESC-based cancellation
-_cancel_requested = False
+KeyManager()
 
 
 # Placeholder for the run command; assigned after registration below
@@ -1422,8 +1419,6 @@ async def interactive_chat(
         initial_prompt: Optional prompt to auto-execute before entering interactive loop
         initial_transcript: If provided, restore this transcript (resume mode)
     """
-    global _cancel_requested
-
     # === SESSION CREATION (unified via create_initialized_session) ===
     session_config = SessionConfig(
         config=config,

@@ -424,10 +424,6 @@ def register_session_spawning(session: AmplifierSession) -> None:
         hook_inheritance: dict[str, list[str]] | None = None,
         orchestrator_config: dict | None = None,
         parent_messages: list[dict] | None = None,
-        # Provider/model override (legacy - use provider_preferences instead)
-        provider_override: str | None = None,
-        model_override: str | None = None,
-        # Provider preferences (ordered fallback chain)
         provider_preferences: list | None = None,
         self_delegation_depth: int = 0,
     ) -> dict:
@@ -441,8 +437,6 @@ def register_session_spawning(session: AmplifierSession) -> None:
             hook_inheritance=hook_inheritance,
             orchestrator_config=orchestrator_config,
             parent_messages=parent_messages,
-            provider_override=provider_override,
-            model_override=model_override,
             provider_preferences=provider_preferences,
             self_delegation_depth=self_delegation_depth,
         )

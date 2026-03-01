@@ -15,8 +15,6 @@ from typing import Any
 if TYPE_CHECKING:
     from amplifier_core import ModelInfo  # pyright: ignore[reportAttributeAccessIssue]
 
-    from amplifier_app_cli.lib.config_compat import ConfigManager
-
 logger = logging.getLogger(__name__)
 
 
@@ -130,7 +128,7 @@ def load_provider_class(provider_id: str) -> type | None:
 
 def get_provider_models(
     provider_id: str,
-    config_manager: "ConfigManager | None" = None,
+    config_manager: object | None = None,
     collected_config: dict[str, Any] | None = None,
 ) -> list["ModelInfo"]:
     """Get available models for a provider.
