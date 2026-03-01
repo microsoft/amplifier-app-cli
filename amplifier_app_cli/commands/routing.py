@@ -22,19 +22,28 @@ def _get_settings() -> AppSettings:
 
 
 def _discover_matrix_files() -> list[Path]:
-    """Discover available routing matrix YAML files from the bundle cache.
+    """Discover available routing matrix YAML files.
 
-    Looks in ~/.amplifier/cache/amplifier-bundle-routing-matrix-*/routing/*.yaml
+    Looks in:
+    1. ~/.amplifier/cache/amplifier-bundle-routing-matrix-*/routing/*.yaml (bundle)
+    2. ~/.amplifier/routing/*.yaml (custom user matrices)
     """
-    cache_base = Path.home() / ".amplifier" / "cache"
-    if not cache_base.exists():
-        return []
-
+    home = Path.home()
     files: list[Path] = []
-    for bundle_dir in cache_base.glob("amplifier-bundle-routing-matrix-*"):
-        routing_dir = bundle_dir / "routing"
-        if routing_dir.is_dir():
-            files.extend(routing_dir.glob("*.yaml"))
+
+    # Bundle cache matrices
+    cache_base = home / ".amplifier" / "cache"
+    if cache_base.exists():
+        for bundle_dir in cache_base.glob("amplifier-bundle-routing-matrix-*"):
+            routing_dir = bundle_dir / "routing"
+            if routing_dir.is_dir():
+                files.extend(routing_dir.glob("*.yaml"))
+
+    # Custom user matrices
+    custom_dir = home / ".amplifier" / "routing"
+    if custom_dir.is_dir():
+        files.extend(custom_dir.glob("*.yaml"))
+
     return sorted(files)
 
 
@@ -449,3 +458,329 @@ def routing_manage():
     """Interactive routing matrix management dashboard."""
     settings = _get_settings()
     routing_manage_loop(settings)
+
+
+# ============================================================
+# Helpers: role discovery + custom matrix saving
+# ============================================================
+
+
+def discover_roles_from_matrices(matrix_files: list[Path]) -> dict[str, str]:
+    """Discover all unique roles and descriptions from matrix files.
+
+    Loads each YAML file, extracts role names and descriptions.
+    First description wins when a role appears in multiple matrices.
+
+    Returns:
+        Dict mapping role_name -> description.
+    """
+    roles: dict[str, str] = {}
+    for path in matrix_files:
+        data = _load_matrix(path)
+        if not data:
+            continue
+        for role_name, role_config in data.get("roles", {}).items():
+            if role_name not in roles:
+                desc = role_config.get("description", "")
+                roles[role_name] = desc
+    return roles
+
+
+def save_custom_matrix(
+    name: str,
+    assignments: dict[str, dict[str, str]],
+    output_dir: Path,
+) -> Path:
+    """Save a custom routing matrix to YAML.
+
+    Args:
+        name: Matrix name (used as filename and in YAML).
+        assignments: Dict of role_name -> {description, provider, model}.
+        output_dir: Directory to write the YAML file.
+
+    Returns:
+        Path to the saved file.
+    """
+    import datetime
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    roles: dict[str, Any] = {}
+    for role_name, info in assignments.items():
+        roles[role_name] = {
+            "description": info["description"],
+            "candidates": [
+                {
+                    "provider": info["provider"],
+                    "model": info["model"],
+                },
+            ],
+        }
+
+    matrix_data = {
+        "name": name,
+        "description": f"Custom matrix: {name}",
+        "updated": datetime.date.today().isoformat(),
+        "roles": roles,
+    }
+
+    output_path = output_dir / f"{name}.yaml"
+    with open(output_path, "w", encoding="utf-8") as f:
+        yaml.dump(matrix_data, f, default_flow_style=False, sort_keys=False)
+
+    return output_path
+
+
+# ============================================================
+# routing create — interactive matrix creator
+# ============================================================
+
+
+def _get_provider_names(settings: AppSettings) -> list[str]:
+    """Get list of configured provider type names."""
+    providers = settings.get_provider_overrides()
+    names: list[str] = []
+    for p in providers:
+        module = p.get("module", "")
+        if module.startswith("provider-"):
+            names.append(module.removeprefix("provider-"))
+        else:
+            names.append(module)
+    return names
+
+
+def _list_models_for_provider(provider_name: str) -> list[str]:
+    """List available models for a provider. Returns model name strings."""
+    try:
+        from ..provider_loader import get_provider_models
+
+        models = get_provider_models(provider_name)
+        return [m.name if hasattr(m, "name") else str(m) for m in models]
+    except Exception:
+        return []
+
+
+def _prompt_provider_and_model(
+    role_name: str,
+    role_desc: str,
+    provider_names: list[str],
+) -> tuple[str, str] | None:
+    """Prompt user to select a provider and model for a role.
+
+    Returns (provider, model) or None if skipped.
+    """
+    console.print(f"\n  [bold cyan]{role_name}[/bold cyan]: {role_desc}")
+
+    # Show providers as numbered list + skip option
+    for i, pname in enumerate(provider_names, 1):
+        console.print(f"    [{i}] {pname}")
+    console.print("    [s] Skip")
+
+    try:
+        choice = Prompt.ask("    Provider", default="s").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+    if choice == "s":
+        return None
+
+    try:
+        idx = int(choice)
+        if idx < 1 or idx > len(provider_names):
+            console.print("    [red]Invalid choice.[/red]")
+            return None
+        provider = provider_names[idx - 1]
+    except ValueError:
+        console.print("    [red]Invalid choice.[/red]")
+        return None
+
+    # Try listing models from the provider
+    console.print(f"    [dim]Loading models for {provider}...[/dim]")
+    models = _list_models_for_provider(provider)
+
+    if models:
+        for i, m in enumerate(models, 1):
+            console.print(f"      [{i}] {m}")
+        try:
+            model_choice = Prompt.ask("    Model number or name").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+
+        try:
+            midx = int(model_choice)
+            if 1 <= midx <= len(models):
+                model = models[midx - 1]
+            else:
+                model = model_choice
+        except ValueError:
+            model = model_choice
+    else:
+        console.print("    [dim]Could not list models. Enter model name manually.[/dim]")
+        try:
+            model = Prompt.ask("    Model name").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+
+    if not model:
+        return None
+
+    return provider, model
+
+
+@routing_group.command("create")
+def routing_create():
+    """Interactively create a custom routing matrix."""
+    settings = _get_settings()
+    provider_names = _get_provider_names(settings)
+
+    if not provider_names:
+        console.print(
+            "[yellow]No providers configured. Run: amplifier provider add[/yellow]"
+        )
+        return
+
+    # Discover roles from existing matrices
+    matrix_files = _discover_matrix_files()
+    roles = discover_roles_from_matrices(matrix_files)
+
+    if not roles:
+        # Minimal default roles
+        roles = {
+            "general": "Balanced catch-all for unspecialized tasks",
+            "fast": "Quick parsing, classification, utility work",
+        }
+
+    console.print("\n[bold]Create Custom Routing Matrix[/bold]")
+    console.print(f"[dim]Providers: {', '.join(provider_names)}[/dim]\n")
+
+    # Walk through each role
+    assignments: dict[str, dict[str, str]] = {}
+    for role_name, role_desc in roles.items():
+        result = _prompt_provider_and_model(role_name, role_desc, provider_names)
+        if result:
+            provider, model = result
+            assignments[role_name] = {
+                "description": role_desc,
+                "provider": provider,
+                "model": model,
+            }
+            console.print(
+                f"    [green]\u2713 {role_name} \u2192 {provider} / {model}[/green]"
+            )
+
+    # Ensure required roles
+    for required in ("general", "fast"):
+        if required not in assignments:
+            console.print(
+                f"\n[yellow]Required role '{required}' was skipped. "
+                f"Please assign it.[/yellow]"
+            )
+            result = _prompt_provider_and_model(
+                required, roles.get(required, ""), provider_names
+            )
+            if result:
+                provider, model = result
+                assignments[required] = {
+                    "description": roles.get(required, ""),
+                    "provider": provider,
+                    "model": model,
+                }
+                console.print(
+                    f"    [green]\u2713 {required} \u2192 {provider} / {model}[/green]"
+                )
+            else:
+                console.print("[red]Cannot create matrix without required roles.[/red]")
+                return
+
+    # Summary table
+    console.print("\n")
+    summary = Table(title="Matrix Summary")
+    summary.add_column("Role", style="cyan")
+    summary.add_column("Provider")
+    summary.add_column("Model", style="green")
+    for rname, rinfo in assignments.items():
+        summary.add_row(rname, rinfo["provider"], rinfo["model"])
+    console.print(summary)
+
+    # Post-summary menu loop
+    while True:
+        console.print("\n  [a] Add a custom role")
+        console.print("  [r] Remove a custom-added role")
+        console.print("  [e] Edit a role's assignment")
+        console.print("  [s] Save")
+        console.print("  [q] Quit without saving")
+
+        try:
+            action = Prompt.ask("  Action", default="s").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Cancelled.[/dim]")
+            return
+
+        if action == "q":
+            console.print("[dim]Cancelled.[/dim]")
+            return
+        elif action == "s":
+            break
+        elif action == "a":
+            try:
+                new_name = Prompt.ask("  Role name").strip()
+                new_desc = Prompt.ask("  Description").strip()
+            except (EOFError, KeyboardInterrupt):
+                continue
+            result = _prompt_provider_and_model(new_name, new_desc, provider_names)
+            if result:
+                provider, model = result
+                assignments[new_name] = {
+                    "description": new_desc,
+                    "provider": provider,
+                    "model": model,
+                }
+                console.print(
+                    f"    [green]\u2713 {new_name} \u2192 {provider} / {model}[/green]"
+                )
+        elif action == "r":
+            try:
+                rm_name = Prompt.ask("  Role to remove").strip()
+            except (EOFError, KeyboardInterrupt):
+                continue
+            if rm_name in ("general", "fast"):
+                console.print(f"  [red]Cannot remove required role '{rm_name}'.[/red]")
+            elif rm_name in assignments:
+                del assignments[rm_name]
+                console.print(f"  [green]Removed '{rm_name}'.[/green]")
+            else:
+                console.print(f"  [yellow]Role '{rm_name}' not found.[/yellow]")
+        elif action == "e":
+            try:
+                edit_name = Prompt.ask("  Role to edit").strip()
+            except (EOFError, KeyboardInterrupt):
+                continue
+            if edit_name in assignments:
+                desc = assignments[edit_name]["description"]
+                result = _prompt_provider_and_model(
+                    edit_name, desc, provider_names
+                )
+                if result:
+                    provider, model = result
+                    assignments[edit_name]["provider"] = provider
+                    assignments[edit_name]["model"] = model
+                    console.print(
+                        f"    [green]\u2713 {edit_name} \u2192 {provider} / {model}[/green]"
+                    )
+            else:
+                console.print(f"  [yellow]Role '{edit_name}' not found.[/yellow]")
+
+    # Save
+    try:
+        matrix_name = Prompt.ask("  Matrix name").strip()
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n[dim]Cancelled.[/dim]")
+        return
+
+    if not matrix_name:
+        console.print("[red]Name cannot be empty.[/red]")
+        return
+
+    output_dir = Path.home() / ".amplifier" / "routing"
+    saved = save_custom_matrix(matrix_name, assignments, output_dir)
+    console.print(f"\n[green]\u2713 Saved to {saved}[/green]")
