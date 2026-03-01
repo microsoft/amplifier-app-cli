@@ -736,12 +736,12 @@ def provider_manage_loop(settings: AppSettings) -> None:
 
         # 2. Show actions menu
         console.print("  Actions:")
-        console.print("    [a] Add a provider")
-        console.print("    [e] Edit a provider (enter number)")
-        console.print("    [r] Remove a provider (enter number)")
-        console.print("    [p] Reorder priorities")
-        console.print("    [t] Test connections")
-        console.print("    [d] Done")
+        console.print("    \\[a] Add a provider")
+        console.print("    \\[e] Edit a provider (enter number)")
+        console.print("    \\[r] Remove a provider (enter number)")
+        console.print("    \\[p] Reorder priorities")
+        console.print("    \\[t] Test connections")
+        console.print("    \\[d] Done")
         console.print()
 
         try:
