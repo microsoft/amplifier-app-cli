@@ -1546,7 +1546,10 @@ async def interactive_chat(
         original_handler = signal.signal(signal.SIGINT, sigint_handler)
 
         try:
-            execute_task = asyncio.create_task(session.execute(prompt_text))
+            async def _run():
+                return await session.execute(prompt_text)
+
+            execute_task = asyncio.create_task(_run())
 
             # Poll task while checking for cancellation
             while not execute_task.done():
