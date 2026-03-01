@@ -38,8 +38,7 @@ build-backend = "hatchling.build"
 dev = ["pytest>=8.4.2", "pytest-asyncio>=0.24.0"]
 
 [tool.uv.sources]
-amplifier-core = { git = "https://github.com/microsoft/amplifier-core", branch = "main" }
-amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", branch = "main" }
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", branch = "rust-core" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
