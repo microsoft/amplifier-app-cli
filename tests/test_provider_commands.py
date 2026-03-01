@@ -483,14 +483,14 @@ class TestProviderTest:
 class TestOldCommandsRemoved:
     """Tests that old commands are removed."""
 
-    def test_init_command_removed(self):
-        """amplifier init should no longer be registered."""
+    def test_init_command_exists(self):
+        """amplifier init should be registered as combined dashboard."""
 
         # init is a top-level command, not on provider group
-        # Check that init_cmd is no longer in commands/__init__.py exports
+        # Check that init_cmd IS in commands/__init__.py exports
         from amplifier_app_cli.commands import __all__ as cmd_exports
 
-        assert "init_cmd" not in cmd_exports
+        assert "init_cmd" in cmd_exports
 
     def test_provider_use_removed(self):
         """provider use command should no longer exist."""

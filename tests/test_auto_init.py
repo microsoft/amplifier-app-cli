@@ -157,13 +157,13 @@ class TestRunCommandNonTTY:
         )
 
 
-class TestInitCmdRemoved:
-    """Test that init command has been removed (replaced by provider add)."""
+class TestInitCmdExists:
+    """Test that init command exists as combined dashboard."""
 
-    def test_init_cmd_no_longer_exported(self):
-        """init_cmd should no longer be importable from commands.init."""
+    def test_init_cmd_is_exported(self):
+        """init_cmd should be importable from commands.init."""
         import amplifier_app_cli.commands.init as init_module
 
-        assert not hasattr(init_module, "init_cmd"), (
-            "init_cmd should be removed — replaced by 'amplifier provider add'"
+        assert hasattr(init_module, "init_cmd"), (
+            "init_cmd should exist — it's the combined setup dashboard"
         )
