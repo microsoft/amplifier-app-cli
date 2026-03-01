@@ -554,3 +554,76 @@ class TestCustomMatrixDiscovery:
         filenames = [f.name for f in files]
         assert "balanced.yaml" in filenames
         assert "my-custom.yaml" in filenames
+
+
+# ============================================================
+# routing manage loop: [c] Create a custom matrix option
+# ============================================================
+
+
+class TestRoutingManageCreateOption:
+    """Tests that routing manage loop exposes [c] Create a custom matrix."""
+
+    def test_routing_create_interactive_exists_and_callable(self):
+        """_routing_create_interactive is importable and callable."""
+        from amplifier_app_cli.commands.routing import _routing_create_interactive
+
+        assert callable(_routing_create_interactive)
+
+    def test_routing_manage_loop_shows_create_option(self, tmp_path):
+        """routing_manage_loop prints [c] Create a custom matrix in its menu."""
+        from amplifier_app_cli.commands.routing import routing_manage_loop
+
+        cache_dir = _make_matrix_dir(tmp_path)
+        settings = _make_settings(tmp_path)
+        _seed_providers(settings)
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing.Prompt.ask",
+                return_value="d",  # immediately quit
+            ),
+        ):
+            from io import StringIO
+
+            from rich.console import Console as RichConsole
+
+            buf = StringIO()
+            test_console = RichConsole(file=buf, width=120)
+            with patch(
+                "amplifier_app_cli.commands.routing.console", test_console
+            ):
+                routing_manage_loop(settings)
+
+            output = buf.getvalue()
+
+        assert "Create a custom matrix" in output
+
+    def test_routing_manage_loop_c_calls_create_interactive(self, tmp_path):
+        """Pressing 'c' in manage loop calls _routing_create_interactive."""
+        from amplifier_app_cli.commands.routing import routing_manage_loop
+
+        cache_dir = _make_matrix_dir(tmp_path)
+        settings = _make_settings(tmp_path)
+        _seed_providers(settings)
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing.Prompt.ask",
+                side_effect=["c", "d"],  # press c, then d to quit
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._routing_create_interactive",
+            ) as mock_create,
+        ):
+            routing_manage_loop(settings)
+
+        mock_create.assert_called_once_with(settings)
