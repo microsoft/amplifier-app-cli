@@ -378,6 +378,7 @@ def routing_manage_loop(settings: AppSettings) -> None:
         console.print("\n  Actions:")
         console.print("    \\[s] Select a different matrix (enter number)")
         console.print("    \\[v] View resolution for a specific matrix")
+        console.print("    \\[c] Create a custom matrix")
         console.print("    \\[d] Done")
         console.print()
 
@@ -392,6 +393,8 @@ def routing_manage_loop(settings: AppSettings) -> None:
             _manage_select_matrix(settings, choice, matrices)
         elif choice.startswith("v"):
             _manage_view_matrix(settings, choice, matrices)
+        elif choice == "c":
+            _routing_create_interactive(settings)
 
 
 def _manage_select_matrix(
@@ -627,10 +630,8 @@ def _prompt_provider_and_model(
     return provider, model
 
 
-@routing_group.command("create")
-def routing_create():
-    """Interactively create a custom routing matrix."""
-    settings = _get_settings()
+def _routing_create_interactive(settings: AppSettings) -> None:
+    """Interactive custom matrix creation. Callable from CLI or manage loop."""
     provider_names = _get_provider_names(settings)
 
     if not provider_names:
@@ -784,3 +785,10 @@ def routing_create():
     output_dir = Path.home() / ".amplifier" / "routing"
     saved = save_custom_matrix(matrix_name, assignments, output_dir)
     console.print(f"\n[green]\u2713 Saved to {saved}[/green]")
+
+
+@routing_group.command("create")
+def routing_create():
+    """Interactively create a custom routing matrix."""
+    settings = _get_settings()
+    _routing_create_interactive(settings)
