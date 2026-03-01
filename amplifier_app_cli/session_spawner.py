@@ -123,90 +123,6 @@ def _filter_tools(
     return new_config
 
 
-def _apply_provider_override(
-    config: dict,
-    provider_id: str | None,
-    model: str | None,
-) -> dict:
-    """Apply provider/model override to config.
-
-    If provider_id is specified and exists in configured providers,
-    promotes it to priority 0 (highest precedence).
-    If provider not found, logs warning and returns config unchanged.
-
-    Args:
-        config: Session config containing "providers" list
-        provider_id: Provider to promote (e.g., "anthropic")
-        model: Model to use with the provider
-
-    Returns:
-        New config with provider priority adjusted
-    """
-    if not provider_id and not model:
-        return config
-
-    providers = config.get("providers", [])
-    if not providers:
-        logger.warning(
-            "Provider override '%s' specified but no providers in config",
-            provider_id,
-        )
-        return config
-
-    # Find target provider (flexible matching)
-    target_idx = None
-    for i, p in enumerate(providers):
-        module_id = p.get("module", "")
-        # Match: "anthropic", "provider-anthropic", or full module ID
-        if provider_id and provider_id in (
-            module_id,
-            module_id.replace("provider-", ""),
-            f"provider-{provider_id}",
-        ):
-            target_idx = i
-            break
-
-    # If only model specified (no provider), apply to first/priority provider
-    if provider_id is None and model:
-        # Find lowest priority provider (current default)
-        min_priority = float("inf")
-        for i, p in enumerate(providers):
-            p_config = p.get("config", {})
-            priority = p_config.get("priority", 100)
-            if priority < min_priority:
-                min_priority = priority
-                target_idx = i
-
-    if target_idx is None:
-        logger.warning(
-            "Provider '%s' not found in config. Available: %s",
-            provider_id,
-            ", ".join(p.get("module", "?") for p in providers),
-        )
-        return config
-
-    # Clone providers list
-    new_providers = []
-    for i, p in enumerate(providers):
-        p_copy = dict(p)
-        p_copy["config"] = dict(p.get("config", {}))
-
-        if i == target_idx:
-            # Promote to priority 0 (highest)
-            p_copy["config"]["priority"] = 0
-            if model:
-                p_copy["config"]["model"] = model
-            logger.info(
-                "Provider override applied: %s (priority=0, model=%s)",
-                p_copy.get("module"),
-                model or "default",
-            )
-
-        new_providers.append(p_copy)
-
-    return {**config, "providers": new_providers}
-
-
 def _filter_hooks(
     config: dict,
     hook_inheritance: dict[str, list[str]],
@@ -280,8 +196,6 @@ async def spawn_sub_session(
     hook_inheritance: dict[str, list[str]] | None = None,
     orchestrator_config: dict | None = None,
     parent_messages: list[dict] | None = None,
-    provider_override: str | None = None,
-    model_override: str | None = None,
     provider_preferences: list | None = None,
     self_delegation_depth: int = 0,
 ) -> dict:
@@ -305,16 +219,9 @@ async def spawn_sub_session(
         parent_messages: Optional list of messages from parent session to inject
             into child's context. Enables context inheritance where child can
             reference parent's conversation history.
-        provider_override: Optional provider ID to use for this session
-            (e.g., "anthropic", "openai"). Promotes the provider to priority 0.
-            LEGACY: Use provider_preferences instead for ordered fallback chains.
-        model_override: Optional model name to use with the provider
-            (e.g., "claude-sonnet-4-5-20250514", "gpt-4o").
-            LEGACY: Use provider_preferences instead for ordered fallback chains.
         provider_preferences: Optional ordered list of ProviderPreference objects.
             Each preference has provider and model. System tries each in order
             until finding an available provider. Model names support glob patterns.
-            Takes precedence over provider_override/model_override if both specified.
         self_delegation_depth: Current depth in the self-delegation chain (default: 0).
             Incremented for self-delegation, reset to 0 for named agents.
             Used to prevent infinite recursion.
@@ -355,17 +262,11 @@ async def spawn_sub_session(
         )
 
     # Apply provider preferences if specified (ordered fallback chain)
-    # Takes precedence over legacy provider_override/model_override
     if provider_preferences:
         from amplifier_foundation import apply_provider_preferences_with_resolution
 
         merged_config = await apply_provider_preferences_with_resolution(
             merged_config, provider_preferences, parent_session.coordinator
-        )
-    elif provider_override or model_override:
-        # Legacy: Apply single provider/model override
-        merged_config = _apply_provider_override(
-            merged_config, provider_override, model_override
         )
 
     # Apply orchestrator config override if specified (recipe-level rate limiting)
@@ -542,8 +443,6 @@ async def spawn_sub_session(
         hook_inheritance: dict[str, list[str]] | None = None,
         orchestrator_config: dict | None = None,
         parent_messages: list[dict] | None = None,
-        provider_override: str | None = None,
-        model_override: str | None = None,
         provider_preferences: list | None = None,
         self_delegation_depth: int = 0,
     ) -> dict:
@@ -557,8 +456,6 @@ async def spawn_sub_session(
             hook_inheritance=hook_inheritance,
             orchestrator_config=orchestrator_config,
             parent_messages=parent_messages,
-            provider_override=provider_override,
-            model_override=model_override,
             provider_preferences=provider_preferences,
             self_delegation_depth=self_delegation_depth,
         )
@@ -865,8 +762,6 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
         hook_inheritance: dict[str, list[str]] | None = None,
         orchestrator_config: dict | None = None,
         parent_messages: list[dict] | None = None,
-        provider_override: str | None = None,
-        model_override: str | None = None,
         provider_preferences: list | None = None,
         self_delegation_depth: int = 0,
     ) -> dict:
@@ -880,8 +775,6 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
             hook_inheritance=hook_inheritance,
             orchestrator_config=orchestrator_config,
             parent_messages=parent_messages,
-            provider_override=provider_override,
-            model_override=model_override,
             provider_preferences=provider_preferences,
             self_delegation_depth=self_delegation_depth,
         )

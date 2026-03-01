@@ -1,12 +1,13 @@
-"""Interactive initialization command for Amplifier."""
+"""First-run detection and auto-initialization for Amplifier.
+
+The `amplifier init` command has been removed. First-run detection now
+triggers the `amplifier provider add` flow instead.
+"""
 
 import logging
 
-import click
 from rich.console import Console
-from rich.panel import Panel
 from rich.prompt import Confirm
-from rich.prompt import Prompt
 
 from ..key_manager import KeyManager
 from ..paths import create_config_manager
@@ -65,15 +66,16 @@ def _is_provider_module_installed(provider_id: str) -> bool:
 def check_first_run() -> bool:
     """Check if this appears to be first run (no provider configured).
 
-    Returns True if user should run `amplifier init` before starting a session.
+    Returns True if the user needs to add a provider before starting a session.
 
     Detection is based on whether a provider is configured in settings - NOT on
     API key presence, since not all providers require API keys (e.g., Ollama, vLLM,
     Azure OpenAI with CLI auth).
 
-    IMPORTANT: If no provider is configured, init MUST be run. We do NOT silently
-    pick a default provider based on environment variables - the user must explicitly
-    configure their provider via `amplifier init`. This ensures:
+    IMPORTANT: If no provider is configured, the user must run
+    `amplifier provider add`. We do NOT silently pick a default provider based
+    on environment variables - the user must explicitly configure their provider.
+    This ensures:
     1. User explicitly chooses their provider
     2. No surprise defaults that may not match bundle requirements
     3. Clear error path when nothing is configured
@@ -91,12 +93,12 @@ def check_first_run() -> bool:
         f"check_first_run: current_provider={current_provider.module_id if current_provider else None}"
     )
 
-    # No provider configured = MUST run init
+    # No provider configured = MUST add one
     # Do NOT silently pick defaults from env vars - user must explicitly configure
     if current_provider is None:
         logger.info(
-            "No provider configured in settings - init required. "
-            "User must explicitly configure a provider via 'amplifier init'."
+            "No provider configured in settings. "
+            "User must explicitly configure a provider via 'amplifier provider add'."
         )
         return True
 
@@ -123,10 +125,10 @@ def check_first_run() -> bool:
             console.print()
             return False
         else:
-            # Auto-fix failed - fall back to full init
+            # Auto-fix failed - fall back to provider add prompt
             logger.warning(
                 "Failed to auto-install providers after detecting missing modules. "
-                "Will prompt user for init."
+                "Will prompt user to add a provider."
             )
             return True
 
@@ -139,7 +141,10 @@ def check_first_run() -> bool:
 
 
 def prompt_first_run_init(console_arg: Console) -> bool:
-    """Prompt user to run init on first run. Returns True if init was run.
+    """Prompt user to add a provider on first run. Returns True if provider was added.
+
+    When no providers are configured, auto-triggers the provider add flow
+    with a friendly message.
 
     Note: Post-update scenarios (settings exist but module missing) are auto-fixed
     in check_first_run() and won't reach this function.
@@ -147,23 +152,24 @@ def prompt_first_run_init(console_arg: Console) -> bool:
     console_arg.print()
     console_arg.print("[yellow]⚠️  No provider configured![/yellow]")
     console_arg.print()
-    console_arg.print("Amplifier needs an AI provider. Let's set that up quickly.")
+    console_arg.print("Amplifier needs an AI provider. Let's set one up:")
     console_arg.print(
-        "[dim]Tip: Run [bold]amplifier init --yes[/bold] to auto-configure "
-        "from environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.)[/dim]"
+        "[dim]Tip: Run [bold]amplifier provider add[/bold] to configure a provider[/dim]"
     )
     console_arg.print()
 
-    if Confirm.ask("Run interactive setup now?", default=True):
+    if Confirm.ask("Run provider add now?", default=True):
         # Import here to avoid circular dependency
         import click
 
+        from .provider import provider_add
+
         ctx = click.get_current_context()
-        ctx.invoke(init_cmd)
+        ctx.invoke(provider_add)
         return True
     console_arg.print()
     console_arg.print("[yellow]Setup skipped.[/yellow] To configure later, run:")
-    console_arg.print("  [cyan]amplifier init[/cyan]")
+    console_arg.print("  [cyan]amplifier provider add[/cyan]")
     console_arg.print()
     console_arg.print("Or set an API key manually:")
     console_arg.print('  [cyan]export ANTHROPIC_API_KEY="your-key"[/cyan]')
@@ -174,7 +180,7 @@ def prompt_first_run_init(console_arg: Console) -> bool:
 def auto_init_from_env(console_arg: Console | None = None) -> bool:
     """Auto-configure from environment variables in non-interactive contexts.
 
-    Equivalent to 'amplifier init --yes' but called programmatically.
+    Equivalent to 'amplifier provider add --yes' but called programmatically.
     Used when check_first_run() returns True and stdin is not a TTY
     (Docker containers, CI pipelines, shadow environments).
 
@@ -198,7 +204,7 @@ def auto_init_from_env(console_arg: Console | None = None) -> bool:
             msg = (
                 "No provider credentials found in environment. "
                 "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, etc. "
-                "or run 'amplifier init' interactively."
+                "or run 'amplifier provider add' interactively."
             )
             logger.warning(msg)
             if console_arg:
@@ -216,7 +222,7 @@ def auto_init_from_env(console_arg: Console | None = None) -> bool:
             logger.warning("Auto-init: provider configuration failed")
             if console_arg:
                 console_arg.print(
-                    "[yellow]Auto-init failed. Run 'amplifier init' manually.[/yellow]"
+                    "[yellow]Auto-init failed. Run 'amplifier provider add' manually.[/yellow]"
                 )
             return False
 
@@ -238,175 +244,6 @@ def auto_init_from_env(console_arg: Console | None = None) -> bool:
         if console_arg:
             console_arg.print(
                 f"[yellow]Auto-init failed: {e}. "
-                f"Run 'amplifier init --yes' manually.[/yellow]"
+                f"Run 'amplifier provider add' manually.[/yellow]"
             )
         return False
-
-
-@click.command("init")
-@click.option(
-    "--yes",
-    "-y",
-    "non_interactive",
-    is_flag=True,
-    help="Non-interactive mode: use env vars and defaults, skip prompts",
-)
-def init_cmd(non_interactive: bool = False):
-    """Interactive first-time setup wizard.
-
-    Auto-runs on first invocation if no configuration exists.
-    Configures provider credentials and model.
-
-    Use --yes/-y for non-interactive mode (CI/CD, shadow containers).
-    In non-interactive mode, providers are configured from environment
-    variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) without prompts.
-    """
-    import sys
-
-    # Check for TTY if interactive mode requested
-    # Auto-upgrade to non-interactive mode instead of erroring
-    if not non_interactive and not sys.stdin.isatty():
-        console.print(
-            "[yellow]Non-interactive context detected. "
-            "Auto-configuring from environment variables...[/yellow]"
-        )
-        non_interactive = True  # Fall through to non-interactive path
-    # Non-interactive mode: use env detection and defaults
-    if non_interactive:
-        key_manager = KeyManager()
-        config = create_config_manager()
-        provider_mgr = ProviderManager(config)
-
-        # Install providers quietly
-        install_known_providers(config_manager=config, console=None, verbose=False)
-
-        # Detect provider from environment
-        # detect_provider_from_env() returns the full module_id (e.g., "provider-anthropic")
-        module_id = detect_provider_from_env()
-        if module_id is None:
-            console.print(
-                "[red]Error:[/red] No provider credentials found in environment."
-            )
-            console.print("\nSet one of these environment variables:")
-            console.print("  ANTHROPIC_API_KEY")
-            console.print("  OPENAI_API_KEY")
-            console.print("  AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT")
-            return
-
-        # Extract display name (e.g., "anthropic" from "provider-anthropic")
-        display_name = module_id.removeprefix("provider-")
-
-        # Configure provider non-interactively
-        provider_config = configure_provider(
-            module_id, key_manager, non_interactive=True
-        )
-        if provider_config is None:
-            console.print("[red]Configuration failed.[/red]")
-            return
-
-        # Save provider configuration
-        provider_mgr.use_provider(
-            module_id, scope="global", config=provider_config, source=None
-        )
-
-        console.print(f"[green]✓ Configured {display_name} from environment[/green]")
-        return
-
-    # Interactive mode
-    console.print()
-    console.print(
-        Panel.fit("[bold cyan]Welcome to Amplifier![/bold cyan]", border_style="cyan")
-    )
-    console.print()
-
-    key_manager = KeyManager()
-    config = create_config_manager()
-    provider_mgr = ProviderManager(config)
-
-    # Step 0: Install known providers (downloads if not cached)
-    console.print("[bold]Installing providers...[/bold]")
-    install_known_providers(config_manager=config, console=console, verbose=True)
-    console.print()
-
-    # Refresh Python's view of installed packages after uv pip install
-    # The subprocess install adds .pth files and metadata that the current
-    # Python process doesn't see until we explicitly refresh
-    import importlib
-    import importlib.metadata
-    import site
-
-    # Invalidate import caches
-    importlib.invalidate_caches()
-
-    # Re-process site-packages to pick up new .pth files from editable installs
-    # This updates sys.path with any new package locations
-    for site_dir in site.getsitepackages():
-        site.addsitedir(site_dir)
-
-    # Also clear importlib.metadata's internal cache by forcing fresh distribution discovery
-    # In Python 3.12+, this is the only way to see newly installed packages
-    if hasattr(importlib.metadata, "distributions"):
-        # Force fresh iteration of distributions to clear any caching
-        list(importlib.metadata.distributions())
-
-    # Step 1: Provider selection - discover installed providers dynamically
-    console.print("[bold]Step 1: Provider[/bold]")
-
-    # Get discovered providers
-    providers = provider_mgr.list_providers()
-
-    if not providers:
-        console.print(
-            "[red]Error: No providers available. Installation may have failed.[/red]"
-        )
-        return
-
-    # Build dynamic menu from discovered providers
-    provider_map: dict[str, str] = {}
-    reverse_map: dict[str, str] = {}  # module_id -> menu number
-    for idx, (module_id, name, _desc) in enumerate(providers, 1):
-        provider_map[str(idx)] = module_id
-        reverse_map[module_id] = str(idx)
-        console.print(f"  [{idx}] {name}")
-
-    console.print()
-
-    choices = list(provider_map.keys())
-
-    # Determine default based on currently configured provider
-    default = "1"  # Fallback to first provider
-    current_provider = provider_mgr.get_current_provider()
-    if current_provider and current_provider.module_id in reverse_map:
-        default = reverse_map[current_provider.module_id]
-
-    provider_choice = Prompt.ask("Which provider?", choices=choices, default=default)
-    module_id = provider_map[provider_choice]
-
-    # Get existing config for this provider (if re-configuring)
-    # This allows previous values to be used as defaults
-    # Read from global (USER) scope since init is for global first-time setup
-    existing_config = provider_mgr.get_provider_config(module_id, scope="global")
-
-    # Step 2: Provider-specific configuration using unified dispatcher
-    provider_config = configure_provider(
-        module_id, key_manager, existing_config=existing_config
-    )
-    if provider_config is None:
-        console.print("[red]Configuration cancelled.[/red]")
-        return
-
-    # Save provider configuration to user's global settings (~/.amplifier/settings.yaml)
-    # This is first-time setup, so it should be available across all projects
-
-    provider_mgr.use_provider(
-        module_id, scope="global", config=provider_config, source=None
-    )
-
-    console.print()
-    console.print(
-        Panel.fit(
-            "[bold green]✓ Ready![/bold green]\n\nStart an interactive session:\n  [cyan]amplifier[/cyan]\n\nThen ask:\n  [dim]Tell me about the Amplifier ecosystem[/dim]",
-            border_style="green",
-        )
-    )
-    console.print()

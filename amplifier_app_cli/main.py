@@ -36,11 +36,11 @@ from .commands.allowed_dirs import allowed_dirs as allowed_dirs_group
 from .commands.denied_dirs import denied_dirs as denied_dirs_group
 from .commands.bundle import bundle as bundle_group
 from .commands.init import check_first_run
-from .commands.init import init_cmd
 from .commands.init import prompt_first_run_init
 from .commands.module import module as module_group
 from .commands.notify import notify as notify_group
 from .commands.provider import provider as provider_group
+from .commands.routing import routing_group
 from .commands.reset import reset as reset_cmd
 from .commands.run import register_run_command
 from .commands.session import register_session_commands
@@ -97,10 +97,7 @@ def _attach_llm_error_filter() -> None:
 
 # Load API keys from ~/.amplifier/keys.env on startup
 # This allows keys saved by 'amplifier init' or 'amplifier provider use' to be available
-_key_manager = KeyManager()
-
-# Cancel flag for ESC-based cancellation
-_cancel_requested = False
+KeyManager()
 
 
 # Placeholder for the run command; assigned after registration below
@@ -1425,8 +1422,6 @@ async def interactive_chat(
         initial_prompt: Optional prompt to auto-execute before entering interactive loop
         initial_transcript: If provided, restore this transcript (resume mode)
     """
-    global _cancel_requested
-
     # === SESSION CREATION (unified via create_initialized_session) ===
     session_config = SessionConfig(
         config=config,
@@ -1960,10 +1955,10 @@ cli.add_command(agents_group)
 cli.add_command(allowed_dirs_group)
 cli.add_command(denied_dirs_group)
 cli.add_command(bundle_group)
-cli.add_command(init_cmd)
 cli.add_command(module_group)
 cli.add_command(notify_group)
 cli.add_command(provider_group)
+cli.add_command(routing_group)
 cli.add_command(source_group)
 cli.add_command(tool_group)
 cli.add_command(update_cmd)

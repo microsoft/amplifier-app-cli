@@ -157,15 +157,13 @@ class TestRunCommandNonTTY:
         )
 
 
-class TestInitCmdNonTTY:
-    """Test that init command auto-upgrades to non-interactive when no TTY."""
+class TestInitCmdRemoved:
+    """Test that init command has been removed (replaced by provider add)."""
 
-    def test_init_cmd_no_tty_auto_upgrades(self):
-        """init command should set non_interactive = True when no TTY, not error out."""
-        from amplifier_app_cli.commands.init import init_cmd
+    def test_init_cmd_no_longer_exported(self):
+        """init_cmd should no longer be importable from commands.init."""
+        import amplifier_app_cli.commands.init as init_module
 
-        source = inspect.getsource(init_cmd.callback)
-        # Should set non_interactive = True when stdin is not a TTY
-        assert "non_interactive = True" in source, (
-            "init_cmd should set non_interactive = True when stdin is not a TTY"
+        assert not hasattr(init_module, "init_cmd"), (
+            "init_cmd should be removed — replaced by 'amplifier provider add'"
         )

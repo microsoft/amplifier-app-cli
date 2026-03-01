@@ -1,26 +1,31 @@
 """Provider management commands."""
 
-from typing import Literal
-from typing import cast
+import time
+from typing import Any
 
 import click
 from rich.console import Console
+from rich.prompt import Confirm
 from rich.prompt import Prompt
 from rich.table import Table
 
 from ..key_manager import KeyManager
-from ..paths import ScopeNotAvailableError
+from ..lib.settings import AppSettings
 from ..paths import create_config_manager
-from ..paths import get_effective_scope
 from ..provider_config_utils import configure_provider
+from ..provider_loader import get_provider_models
 from ..provider_manager import ProviderManager
-from ..provider_manager import ScopeType
 from ..provider_sources import ensure_provider_installed
 from ..provider_sources import get_effective_provider_sources
 from ..provider_sources import install_known_providers
 from ..utils.error_format import escape_markup
 
 console = Console()
+
+
+def _get_settings() -> AppSettings:
+    """Get AppSettings instance. Extracted for testability."""
+    return AppSettings()
 
 
 def _ensure_providers_ready() -> None:
@@ -34,12 +39,64 @@ def _ensure_providers_ready() -> None:
     check_first_run()
 
 
+def _normalize_module_id(provider_id: str) -> str:
+    """Normalize provider ID to full module ID."""
+    if provider_id.startswith("provider-"):
+        return provider_id
+    return f"provider-{provider_id}"
+
+
+def _display_name(module_id: str) -> str:
+    """Get display name from module ID (strip provider- prefix)."""
+    return module_id.replace("provider-", "")
+
+
+def _find_provider_entry(
+    providers: list[dict[str, Any]], name: str
+) -> dict[str, Any] | None:
+    """Find a provider entry by name/id.
+
+    Matches against:
+    - 'id' field (for multi-instance providers)
+    - 'module' field stripped of 'provider-' prefix
+    - full 'module' field
+    """
+    for p in providers:
+        # Match by id field
+        if p.get("id") == name:
+            return p
+        # Match by module name (with or without prefix)
+        module = p.get("module", "")
+        if (
+            module == name
+            or module == f"provider-{name}"
+            or _display_name(module) == name
+        ):
+            return p
+    return None
+
+
+def _get_max_priority(providers: list[dict[str, Any]]) -> int:
+    """Get the maximum priority value from configured providers."""
+    max_pri = 0
+    for p in providers:
+        config = p.get("config", {})
+        if isinstance(config, dict):
+            pri = config.get("priority", 0)
+            if isinstance(pri, int) and pri > max_pri:
+                max_pri = pri
+    return max_pri
+
+
 @click.group()
 def provider():
     """Manage AI providers."""
-    # Note: check_first_run() is called by subcommands that need providers.
-    # The 'install' subcommand skips this since it IS the install.
     pass
+
+
+# ============================================================
+# provider install (kept from original)
+# ============================================================
 
 
 @provider.command("install")
@@ -91,7 +148,7 @@ def provider_install(
         # Install specific providers
         failed: list[str] = []
         for module_id in normalized_ids:
-            display_name = module_id.replace("provider-", "")
+            display = module_id.replace("provider-", "")
 
             # Check if already installed (unless --force)
             if not force:
@@ -103,7 +160,7 @@ def provider_install(
                     if already_installed:
                         if not quiet:
                             console.print(
-                                f"[dim]{display_name} already installed (use --force to reinstall)[/dim]"
+                                f"[dim]{display} already installed (use --force to reinstall)[/dim]"
                             )
                         continue
                 except Exception:
@@ -115,7 +172,7 @@ def provider_install(
                 console=None if quiet else console,
             )
             if not success:
-                failed.append(display_name)
+                failed.append(display)
 
         if failed:
             if not quiet:
@@ -142,221 +199,405 @@ def provider_install(
             console.print(f"\n[green]✓ Installed {len(installed)} provider(s)[/green]")
 
 
-@provider.command("use")
-@click.argument("provider_id")
-@click.option("--model", help="Model name (Anthropic/OpenAI/Ollama)")
-@click.option("--deployment", help="Deployment name (Azure OpenAI)")
-@click.option("--endpoint", help="Azure endpoint URL")
-@click.option("--use-azure-cli", is_flag=True, help="Use Azure CLI auth (Azure OpenAI)")
-@click.option(
-    "--local", "scope_flag", flag_value="local", help="Configure locally (just you)"
-)
-@click.option(
-    "--project", "scope_flag", flag_value="project", help="Configure for project (team)"
-)
-@click.option(
-    "--global",
-    "scope_flag",
-    flag_value="global",
-    help="Configure globally (all projects)",
-)
-@click.option(
-    "--yes",
-    "-y",
-    "non_interactive",
-    is_flag=True,
-    help="Non-interactive mode: use CLI values and env vars, skip prompts",
-)
-def provider_use(
-    provider_id: str,
-    model: str | None,
-    deployment: str | None,
-    endpoint: str | None,
-    use_azure_cli: bool,
-    scope_flag: str | None,
-    non_interactive: bool = False,
-):
-    """Configure provider.
+# ============================================================
+# Task 7: provider add [type]
+# ============================================================
+
+
+@provider.command("add")
+@click.argument("provider_type", required=False)
+def provider_add(provider_type: str | None) -> None:
+    """Add and configure a provider.
+
+    If PROVIDER_TYPE is not specified, shows an interactive picker.
 
     Examples:
-      amplifier provider use anthropic --model claude-opus-4-6 --local
-      amplifier provider use openai --model gpt-5.1 --project
-      amplifier provider use azure-openai --endpoint https://... --deployment gpt-5.1-codex --use-azure-cli
-      amplifier provider use ollama --model llama3
-
-    Use --yes/-y for non-interactive mode (CI/CD, shadow containers).
-    In non-interactive mode, credentials are read from environment variables.
+      amplifier provider add anthropic
+      amplifier provider add openai
+      amplifier provider add          # interactive picker
     """
-    import sys
-
-    # Check for TTY if interactive mode requested
-    if not non_interactive and not sys.stdin.isatty():
-        console.print(
-            "[red]Error:[/red] Interactive mode requires a TTY. "
-            "Use --yes flag for non-interactive setup."
-        )
-        console.print("\nExample:")
-        console.print(f"  amplifier provider use {provider_id} --model <model> --yes")
-        return
-    # Ensure providers are installed (post-update fix)
     _ensure_providers_ready()
 
-    # Build module ID (handle both "anthropic" and "provider-anthropic")
-    module_id = (
-        provider_id
-        if provider_id.startswith("provider-")
-        else f"provider-{provider_id}"
-    )
+    settings = _get_settings()
+    provider_mgr = ProviderManager(settings)
 
-    # Validate provider exists
-    config_manager = create_config_manager()
-    provider_mgr = ProviderManager(config_manager)
+    # If type not provided, show picker
+    if provider_type is None:
+        available = provider_mgr.list_providers()
+        if not available:
+            console.print(
+                "[red]No providers available. Run: amplifier provider install[/red]"
+            )
+            return
 
-    valid_providers = {p[0]: p[1] for p in provider_mgr.list_providers()}
-    if module_id not in valid_providers:
-        console.print(f"[red]Error:[/red] Unknown provider '{provider_id}'")
-        console.print("\nAvailable providers:")
-        for pid, name, _ in provider_mgr.list_providers():
-            console.print(f"  • {pid.replace('provider-', '')} ({name})")
-        return
+        console.print("\n[bold]Available providers:[/bold]")
+        provider_map: dict[str, str] = {}
+        for idx, (module_id, name, _desc) in enumerate(available, 1):
+            provider_map[str(idx)] = module_id
+            console.print(f"  [{idx}] {name}")
 
-    # Use unified configuration dispatcher
+        choice = Prompt.ask("Which provider?", choices=list(provider_map.keys()))
+        module_id = provider_map[choice]
+    else:
+        module_id = _normalize_module_id(provider_type)
+
+    display = _display_name(module_id)
+
+    # Check for multi-instance: is there already a provider with this module?
+    existing_providers = settings.get_provider_overrides()
+    same_module = [p for p in existing_providers if p.get("module") == module_id]
+    instance_id: str | None = None
+
+    if same_module:
+        console.print(f"\n[yellow]A {display} provider is already configured.[/yellow]")
+        suggested_id = f"{display}-{len(same_module) + 1}"
+        instance_id = Prompt.ask("Enter an ID for this instance", default=suggested_id)
+
+    # Run the configuration wizard
     key_manager = KeyManager()
-    config = configure_provider(
-        module_id,
-        key_manager,
-        model=model,
-        endpoint=endpoint,
-        deployment=deployment,
-        use_azure_cli=use_azure_cli if use_azure_cli else None,
-        non_interactive=non_interactive,
-    )
+    config = configure_provider(module_id, key_manager)
 
     if config is None:
         console.print("[red]Configuration cancelled.[/red]")
         return
 
-    # Determine scope with validation
-    try:
-        scope, was_fallback = get_effective_scope(
-            cast(ScopeType, scope_flag) if scope_flag else None,
-            config_manager,
-            default_scope="global",
-        )
-        if was_fallback:
-            console.print(
-                "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
-            )
-    except ScopeNotAvailableError as e:
-        console.print(f"[red]Error:[/red] {escape_markup(e.message)}")
-        return
+    # Determine priority: first provider = 1, subsequent = max_existing + 1
+    if not existing_providers:
+        priority = 1
+    else:
+        priority = _get_max_priority(existing_providers) + 1
 
-    # Configure provider
-    result = provider_mgr.use_provider(
-        module_id, cast(ScopeType, scope), config, source=None
-    )
+    config_with_priority = {**config, "priority": priority}
 
-    # Display result
-    console.print(f"\n[green]✓ Configured {provider_id}[/green]")
-    console.print(f"  Scope: {scope}")
-    console.print(f"  File: {result.file}")
-    if "default_model" in config:
-        console.print(f"  Model: {config['default_model']}")
-    elif "default_deployment" in config:
-        console.print(f"  Deployment: {config['default_deployment']}")
+    # Build provider entry
+    provider_entry: dict[str, Any] = {
+        "module": module_id,
+        "config": config_with_priority,
+    }
+    if instance_id:
+        provider_entry["id"] = instance_id
+
+    # Determine source
+    effective_sources = get_effective_provider_sources(settings)
+    source = effective_sources.get(module_id)
+    if source:
+        provider_entry["source"] = source
+
+    # Save to settings — use raw write to preserve priority properly
+    # We append to the existing providers list rather than using set_provider_override
+    # which would demote existing providers
+    scope_providers = settings.get_scope_provider_overrides("global")
+
+    # For multi-instance, just append. For single instance, replace matching module.
+    if instance_id:
+        scope_providers.append(provider_entry)
+    else:
+        # Replace any existing entry with same module
+        scope_providers = [p for p in scope_providers if p.get("module") != module_id]
+        scope_providers.append(provider_entry)
+
+    # Write back
+    scope_settings = settings._read_scope("global")
+    if "config" not in scope_settings:
+        scope_settings["config"] = {}
+    scope_settings["config"]["providers"] = scope_providers
+    settings._write_scope("global", scope_settings)
+
+    # Show confirmation
+    model = config.get("default_model", "")
+    model_display = f" ({model})" if model else ""
+    name_display = instance_id or display
+    console.print(f"\n[green]✓ Provider added: {name_display}{model_display}[/green]")
 
 
-@provider.command("current")
-def provider_current():
-    """Show currently active provider."""
-    config = create_config_manager()
-    provider_mgr = ProviderManager(config)
-
-    info = provider_mgr.get_current_provider()
-
-    if not info:
-        console.print("[yellow]No provider configured[/yellow]")
-        console.print("\nConfigure a provider with:")
-        console.print("  [cyan]amplifier init[/cyan]")
-        console.print("  or")
-        console.print("  [cyan]amplifier provider use <provider>[/cyan]")
-        return
-
-    console.print(
-        f"\n[bold]Active provider:[/bold] {info.module_id.replace('provider-', '')}"
-    )
-    console.print(f"  Source: {info.source}")
-
-    if "default_model" in info.config:
-        console.print(f"  Model: {info.config['default_model']}")
-    elif "default_deployment" in info.config:
-        console.print(f"  Deployment: {info.config['default_deployment']}")
+# ============================================================
+# Task 8: provider list (redesigned)
+# ============================================================
 
 
 @provider.command("list")
-def provider_list():
-    """List available providers."""
-    # Ensure providers are installed (post-update fix)
+def provider_list() -> None:
+    """List configured providers.
+
+    Shows all configured providers with their type, model, priority, and status.
+    The primary provider (lowest priority) is marked with ★.
+    """
     _ensure_providers_ready()
 
-    config = create_config_manager()
-    provider_mgr = ProviderManager(config)
+    settings = _get_settings()
+    providers = settings.get_provider_overrides()
 
-    providers = provider_mgr.list_providers()
+    if not providers:
+        console.print("[yellow]No providers configured.[/yellow]")
+        console.print("Run: [cyan]amplifier provider add[/cyan]")
+        return
 
-    table = Table(title="Available Providers")
-    table.add_column("ID", style="green")
-    table.add_column("Name", style="cyan")
-    table.add_column("Description")
+    table = Table(title="Configured Providers")
+    table.add_column("Name/ID", style="cyan")
+    table.add_column("Type", style="green")
+    table.add_column("Default Model")
+    table.add_column("Priority", justify="right")
+    table.add_column("Status")
 
-    for module_id, name, desc in providers:
-        # Remove provider- prefix for display
-        display_id = module_id.replace("provider-", "")
-        table.add_row(display_id, name, desc)
+    # Find min priority for star marker
+    priorities = []
+    for p in providers:
+        config = p.get("config", {})
+        pri = config.get("priority", 100) if isinstance(config, dict) else 100
+        priorities.append(pri)
+    min_priority = min(priorities) if priorities else 0
+
+    for idx, p in enumerate(providers):
+        module = p.get("module", "unknown")
+        display = p.get("id") or _display_name(module)
+        ptype = _display_name(module)
+        config = p.get("config", {})
+        model = config.get("default_model", "-") if isinstance(config, dict) else "-"
+        pri = config.get("priority", 100) if isinstance(config, dict) else 100
+
+        # Star marker for primary (lowest priority)
+        is_primary = pri == min_priority
+        name_col = f"★ {display}" if is_primary else f"  {display}"
+        status = "configured"
+
+        table.add_row(name_col, ptype, model, str(pri), status)
 
     console.print(table)
 
 
-@provider.command("reset")
-@click.option(
-    "--local", "scope_flag", flag_value="local", help="Reset local configuration"
-)
-@click.option(
-    "--project", "scope_flag", flag_value="project", help="Reset project configuration"
-)
-@click.option(
-    "--global", "scope_flag", flag_value="global", help="Reset global configuration"
-)
-def provider_reset(scope_flag: str | None):
-    """Remove provider override.
+# ============================================================
+# Task 9: provider remove and provider edit
+# ============================================================
 
-    Resets to default provider.
+
+@provider.command("remove")
+@click.argument("name")
+def provider_remove(name: str) -> None:
+    """Remove a configured provider.
+
+    NAME can be a provider type (e.g., 'anthropic') or instance ID.
+
+    Examples:
+      amplifier provider remove anthropic
+      amplifier provider remove anthropic-2
     """
-    config_manager = create_config_manager()
+    _ensure_providers_ready()
 
-    # Determine scope with validation
-    try:
-        scope, was_fallback = get_effective_scope(
-            cast(ScopeType, scope_flag) if scope_flag else None,
-            config_manager,
-            default_scope="global",
-        )
-        if was_fallback:
-            console.print(
-                "[yellow]Note:[/yellow] Running from home directory, using global scope (~/.amplifier/settings.yaml)"
-            )
-    except ScopeNotAvailableError as e:
-        console.print(f"[red]Error:[/red] {escape_markup(e.message)}")
+    settings = _get_settings()
+    providers = settings.get_provider_overrides()
+
+    entry = _find_provider_entry(providers, name)
+    if entry is None:
+        console.print(f"[red]Provider '{name}' not found.[/red]")
+        if providers:
+            console.print("\nConfigured providers:")
+            for p in providers:
+                display = p.get("id") or _display_name(p.get("module", ""))
+                console.print(f"  • {display}")
         return
 
-    provider_mgr = ProviderManager(config_manager)
-    result = provider_mgr.reset_provider(cast(ScopeType, scope))
+    # Show what will be removed
+    module = entry.get("module", "unknown")
+    display = entry.get("id") or _display_name(module)
+    config = entry.get("config", {})
+    model = config.get("default_model", "") if isinstance(config, dict) else ""
+    console.print(f"\nWill remove: [bold]{display}[/bold]")
+    if model:
+        console.print(f"  Model: {model}")
 
-    if result.removed:
-        console.print(f"[green]✓ Removed provider override at {scope} scope[/green]")
-        console.print("  Now using default provider")
+    if not Confirm.ask("Continue?", default=False):
+        console.print("[dim]Cancelled.[/dim]")
+        return
+
+    # Remove from settings — remove from all scopes
+    for scope in ("local", "project", "global"):
+        scope_providers = settings.get_scope_provider_overrides(scope)  # type: ignore[arg-type]
+        original_len = len(scope_providers)
+
+        # Filter out the matching entry
+        filtered = []
+        for p in scope_providers:
+            if p.get("id") == entry.get("id") and entry.get("id"):
+                continue  # Remove by id match
+            if p.get("module") == entry.get("module") and not entry.get("id"):
+                continue  # Remove by module match (no id = first instance)
+            filtered.append(p)
+
+        if len(filtered) < original_len:
+            scope_settings = settings._read_scope(scope)  # type: ignore[arg-type]
+            config_section = scope_settings.get("config", {})
+            if filtered:
+                config_section["providers"] = filtered
+            else:
+                config_section.pop("providers", None)
+            if config_section:
+                scope_settings["config"] = config_section
+            elif "config" in scope_settings:
+                scope_settings.pop("config", None)
+            settings._write_scope(scope, scope_settings)  # type: ignore[arg-type]
+
+    console.print(f"\n[green]✓ Removed provider: {display}[/green]")
+
+
+@provider.command("edit")
+@click.argument("name")
+def provider_edit(name: str) -> None:
+    """Re-configure an existing provider.
+
+    Opens the configuration wizard with current values as defaults.
+
+    Examples:
+      amplifier provider edit anthropic
+      amplifier provider edit anthropic-2
+    """
+    _ensure_providers_ready()
+
+    settings = _get_settings()
+    providers = settings.get_provider_overrides()
+
+    entry = _find_provider_entry(providers, name)
+    if entry is None:
+        console.print(f"[red]Provider '{name}' not found.[/red]")
+        if providers:
+            console.print("\nConfigured providers:")
+            for p in providers:
+                display = p.get("id") or _display_name(p.get("module", ""))
+                console.print(f"  • {display}")
+        return
+
+    module_id = entry.get("module", "")
+    existing_config = entry.get("config", {})
+    display = entry.get("id") or _display_name(module_id)
+
+    # Run configure_provider with existing config as defaults
+    key_manager = KeyManager()
+    new_config = configure_provider(
+        module_id, key_manager, existing_config=existing_config
+    )
+
+    if new_config is None:
+        console.print("[red]Configuration cancelled.[/red]")
+        return
+
+    # Preserve priority from existing config
+    priority = (
+        existing_config.get("priority", 1) if isinstance(existing_config, dict) else 1
+    )
+    new_config_with_priority = {**new_config, "priority": priority}
+
+    # Build updated entry
+    updated_entry: dict[str, Any] = {
+        "module": module_id,
+        "config": new_config_with_priority,
+    }
+    if entry.get("id"):
+        updated_entry["id"] = entry["id"]
+    if entry.get("source"):
+        updated_entry["source"] = entry["source"]
+
+    # Update in settings — replace the matching entry in global scope
+    scope_providers = settings.get_scope_provider_overrides("global")
+    new_list = []
+    replaced = False
+    for p in scope_providers:
+        if not replaced and _find_provider_entry([p], name) is not None:
+            new_list.append(updated_entry)
+            replaced = True
+        else:
+            new_list.append(p)
+
+    if not replaced:
+        new_list.append(updated_entry)
+
+    scope_settings = settings._read_scope("global")
+    if "config" not in scope_settings:
+        scope_settings["config"] = {}
+    scope_settings["config"]["providers"] = new_list
+    settings._write_scope("global", scope_settings)
+
+    model = new_config.get("default_model", "")
+    model_display = f" ({model})" if model else ""
+    console.print(f"\n[green]✓ Provider updated: {display}{model_display}[/green]")
+
+
+# ============================================================
+# Task 10: provider test [name]
+# ============================================================
+
+
+@provider.command("test")
+@click.argument("name", required=False)
+def provider_test(name: str | None) -> None:
+    """Test provider connectivity.
+
+    Tests one or all configured providers by calling list_models().
+
+    Examples:
+      amplifier provider test              # test all
+      amplifier provider test anthropic    # test specific
+    """
+    _ensure_providers_ready()
+
+    settings = _get_settings()
+    providers = settings.get_provider_overrides()
+
+    if not providers:
+        console.print("[yellow]No providers configured.[/yellow]")
+        console.print("Run: [cyan]amplifier provider add[/cyan]")
+        return
+
+    # Determine which providers to test
+    if name:
+        entry = _find_provider_entry(providers, name)
+        if entry is None:
+            console.print(f"[red]Provider '{name}' not found.[/red]")
+            return
+        to_test = [entry]
     else:
-        console.print(f"[yellow]No provider override at {scope} scope[/yellow]")
+        to_test = providers
+
+    table = Table(title="Provider Test Results")
+    table.add_column("Name", style="cyan")
+    table.add_column("Status")
+    table.add_column("Latency", justify="right")
+    table.add_column("Details")
+
+    for p in to_test:
+        module_id = p.get("module", "unknown")
+        display = p.get("id") or _display_name(module_id)
+        config = p.get("config", {})
+
+        start = time.time()
+        try:
+            models = get_provider_models(module_id, collected_config=config)
+            elapsed = time.time() - start
+            latency = f"{elapsed:.1f}s"
+            model_count = len(models)
+            table.add_row(
+                display,
+                "[green]✓[/green]",
+                latency,
+                f"{model_count} model(s) available",
+            )
+        except Exception as e:
+            elapsed = time.time() - start
+            latency = f"{elapsed:.1f}s"
+            error_msg = f"{type(e).__name__}: {e}"
+            if len(error_msg) > 60:
+                error_msg = error_msg[:57] + "..."
+            table.add_row(
+                display,
+                "[red]✗[/red]",
+                latency,
+                escape_markup(error_msg),
+            )
+
+    console.print(table)
+
+
+# ============================================================
+# provider models (kept from original)
+# ============================================================
 
 
 @provider.command("models")
@@ -375,8 +616,6 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
     # Ensure providers are installed (post-update fix)
     _ensure_providers_ready()
 
-    from ..provider_loader import get_provider_models
-
     config_manager = create_config_manager()
 
     # Determine which provider to query
@@ -385,19 +624,15 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
         current = manager.get_current_provider()
         if current is None:
             console.print(
-                "[yellow]No active provider. Run 'amplifier provider use' first "
+                "[yellow]No active provider. Run 'amplifier provider add' first "
                 "or specify a provider ID.[/]"
             )
             ctx.exit(1)
         provider_id = current.module_id
 
     # Normalize provider ID (handle both "anthropic" and "provider-anthropic")
-    module_id = (
-        provider_id
-        if provider_id.startswith("provider-")
-        else f"provider-{provider_id}"
-    )
-    display_name = module_id.replace("provider-", "")
+    module_id = _normalize_module_id(provider_id)
+    display = _display_name(module_id)
 
     # Get stored provider config (for credentials/endpoints)
     manager = ProviderManager(config_manager)
@@ -410,28 +645,27 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
         )
     except Exception as e:
         console.print(
-            f"[red]Failed to load provider '{display_name}': {escape_markup(str(e))}[/]"
+            f"[red]Failed to load provider '{display}': {escape_markup(str(e))}[/]"
         )
-        # Provide helpful next steps based on whether provider is configured
+        # Provide helpful next steps
         if stored_config:
             console.print(
-                f"\nRe-configure with: [cyan]amplifier provider use {display_name}[/]"
+                f"\nRe-configure with: [cyan]amplifier provider edit {display}[/]"
             )
         else:
             console.print(
-                f"\nConfigure first with: [cyan]amplifier provider use {display_name}[/]"
+                f"\nConfigure first with: [cyan]amplifier provider add {display}[/]"
             )
-            console.print("Or run: [cyan]amplifier init[/]")
         ctx.exit(1)
 
     # Handle empty list
     if not model_list:
-        console.print(f"[yellow]No models available for provider '{display_name}'.[/]")
+        console.print(f"[yellow]No models available for provider '{display}'.[/]")
         console.print("This provider may require manual model specification.")
         return
 
     # Build and display table
-    table = Table(title=f"Models for {display_name}")
+    table = Table(title=f"Models for {display}")
     table.add_column("Model ID", style="cyan")
     table.add_column("Display Name")
     table.add_column("Context", justify="right")
@@ -448,23 +682,3 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
         )
 
     console.print(table)
-
-
-def prompt_scope() -> Literal["local", "project", "global"]:
-    """Interactive scope selection.
-
-    Returns:
-        Scope string (local/project/global)
-    """
-    console.print("\nConfigure for:")
-    console.print("  [1] Just you (local)")
-    console.print("  [2] Whole team (project)")
-    console.print("  [3] All your projects (global)")
-
-    choice = Prompt.ask("Choice", choices=["1", "2", "3"], default="1")
-    mapping: dict[str, Literal["local", "project", "global"]] = {
-        "1": "local",
-        "2": "project",
-        "3": "global",
-    }
-    return mapping[choice]
