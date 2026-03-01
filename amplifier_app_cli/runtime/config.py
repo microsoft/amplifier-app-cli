@@ -154,6 +154,21 @@ async def resolve_bundle_config(
     # Apply hook overrides from notification settings
     # This maps config.notifications.ntfy.* to hooks-notify-push config etc.
     hook_overrides = app_settings.get_notification_hook_overrides()
+
+    # Routing matrix config injection
+    routing_config = app_settings.get_routing_config()
+    if routing_config:
+        routing_hook_override: dict[str, Any] = {
+            "module": "hooks-routing",
+            "config": {},
+        }
+        if "matrix" in routing_config:
+            routing_hook_override["config"]["default_matrix"] = routing_config["matrix"]
+        if "overrides" in routing_config:
+            routing_hook_override["config"]["overrides"] = routing_config["overrides"]
+        if routing_hook_override["config"]:
+            hook_overrides.append(routing_hook_override)
+
     if hook_overrides and bundle_config.get("hooks"):
         bundle_config["hooks"] = _apply_hook_overrides(
             bundle_config["hooks"], hook_overrides
