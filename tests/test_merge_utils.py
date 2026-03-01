@@ -1,6 +1,5 @@
 """Tests for merge utilities and CLI policy functions."""
 
-import pytest
 from amplifier_app_cli.runtime.config import _ensure_cwd_in_write_paths
 
 

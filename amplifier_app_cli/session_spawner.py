@@ -248,7 +248,9 @@ async def spawn_sub_session(
     # Apply tool inheritance filtering if specified
     if tool_inheritance and "tools" in merged_config:
         # Get agent's explicit tool modules to preserve them
-        agent_tool_modules = [t.get("module") for t in agent_config.get("tools", []) if isinstance(t, dict)]
+        agent_tool_modules = [
+            t.get("module") for t in agent_config.get("tools", []) if isinstance(t, dict)
+        ]
         merged_config = _filter_tools(
             merged_config, tool_inheritance, agent_tool_modules
         )
@@ -256,7 +258,9 @@ async def spawn_sub_session(
     # Apply hook inheritance filtering if specified
     if hook_inheritance and "hooks" in merged_config:
         # Get agent's explicit hook modules to preserve them
-        agent_hook_modules = [h.get("module") for h in agent_config.get("hooks", []) if isinstance(h, dict)]
+        agent_hook_modules = [
+            h.get("module") for h in agent_config.get("hooks", []) if isinstance(h, dict)
+        ]
         merged_config = _filter_hooks(
             merged_config, hook_inheritance, agent_hook_modules
         )
