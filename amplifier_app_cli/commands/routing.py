@@ -367,9 +367,9 @@ def routing_manage_loop(settings: AppSettings) -> None:
 
         # 4. Actions menu
         console.print("\n  Actions:")
-        console.print("    [s] Select a different matrix (enter number)")
-        console.print("    [v] View resolution for a specific matrix")
-        console.print("    [d] Done")
+        console.print("    \\[s] Select a different matrix (enter number)")
+        console.print("    \\[v] View resolution for a specific matrix")
+        console.print("    \\[d] Done")
         console.print()
 
         try:

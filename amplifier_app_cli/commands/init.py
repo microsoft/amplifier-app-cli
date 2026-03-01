@@ -348,9 +348,9 @@ def init_dashboard_loop(settings: AppSettings) -> None:
 
         # 3. Actions
         console.print("\n  Actions:")
-        console.print("    [p] Manage providers")
-        console.print("    [r] Manage routing")
-        console.print("    [d] Done")
+        console.print("    \\[p] Manage providers")
+        console.print("    \\[r] Manage routing")
+        console.print("    \\[d] Done")
         console.print()
 
         try:
