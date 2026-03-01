@@ -10,6 +10,7 @@ from .lib.settings import AppSettings
 from .lib.settings import ScopeType
 from .provider_loader import get_provider_info
 from .provider_sources import _get_ordered_providers
+from .provider_sources import ensure_provider_installed
 from .provider_sources import get_effective_provider_sources
 from .provider_sources import is_local_path
 from .provider_sources import source_from_uri
@@ -388,7 +389,61 @@ class ProviderManager:
                             f"Provider: {provider_name} (install failed - check pyproject.toml)",
                         )
                 else:
-                    logger.debug(f"Could not resolve/import provider {module_id}: {e}")
+                    # Git source: install with deps on-demand, then retry import.
+                    # On a clean install none of the provider SDK dependencies
+                    # (anthropic, openai, google-generativeai, …) are present, so
+                    # the initial import always fails.  Installing here makes all 7
+                    # well-known providers appear in the picker regardless of
+                    # installation state.
+                    logger.debug(
+                        f"Git provider {module_id} not importable, attempting install: {e}"
+                    )
+                    installed = ensure_provider_installed(
+                        module_id, config_manager=self.config
+                    )
+                    if installed:
+                        # Refresh Python's view of newly installed packages
+                        importlib.invalidate_caches()
+                        info = get_provider_info(module_id)
+                        if info:
+                            display_name = info.get(
+                                "display_name", _get_provider_display_name(module_id)
+                            )
+                            description = info.get(
+                                "description", f"Provider: {module_id}"
+                            )
+                            providers[module_id] = (
+                                module_id,
+                                display_name,
+                                description,
+                            )
+                            logger.debug(
+                                f"Discovered git provider after install: {module_id}"
+                            )
+                        else:
+                            # Installed but still can't get info — use display name
+                            display_name = _get_provider_display_name(module_id)
+                            providers[module_id] = (
+                                module_id,
+                                display_name,
+                                f"Provider: {module_id}",
+                            )
+                            logger.debug(
+                                f"Discovered git provider after install (no info): {module_id}"
+                            )
+                    else:
+                        # Install failed — still show provider with display name so
+                        # it appears in the picker rather than silently vanishing.
+                        logger.warning(
+                            f"Could not install git provider {module_id}, "
+                            f"showing with fallback display name"
+                        )
+                        display_name = _get_provider_display_name(module_id)
+                        providers[module_id] = (
+                            module_id,
+                            display_name,
+                            f"Provider: {module_id}",
+                        )
 
         return providers
 
