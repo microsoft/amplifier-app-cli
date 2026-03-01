@@ -682,3 +682,418 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
         )
 
     console.print(table)
+
+
+# ============================================================
+# Task 1: provider manage — interactive dashboard
+# ============================================================
+
+
+def provider_manage_loop(settings: AppSettings) -> None:
+    """Interactive provider management loop.
+
+    Callable from CLI command or from init dashboard.
+    """
+    while True:
+        # 1. Display provider table
+        providers = settings.get_provider_overrides()
+        if not providers:
+            console.print("\n  [dim]No providers configured.[/dim]\n")
+        else:
+            table = Table(title="Configured Providers")
+            table.add_column("#", justify="right", width=3)
+            table.add_column("Name/ID", style="cyan")
+            table.add_column("Type", style="green")
+            table.add_column("Default Model")
+            table.add_column("Priority", justify="right")
+
+            # Find min priority for star marker
+            priorities = []
+            for p in providers:
+                config = p.get("config", {})
+                pri = config.get("priority", 100) if isinstance(config, dict) else 100
+                priorities.append(pri)
+            min_priority = min(priorities) if priorities else 0
+
+            for i, p in enumerate(providers, 1):
+                module = p.get("module", "unknown")
+                display = p.get("id") or _display_name(module)
+                ptype = _display_name(module)
+                config = p.get("config", {})
+                model = (
+                    config.get("default_model", "-")
+                    if isinstance(config, dict)
+                    else "-"
+                )
+                pri = config.get("priority", 100) if isinstance(config, dict) else 100
+
+                is_primary = pri == min_priority
+                name_col = f"★ {display}" if is_primary else f"  {display}"
+
+                table.add_row(str(i), name_col, ptype, model, str(pri))
+
+            console.print(table)
+
+        # 2. Show actions menu
+        console.print("  Actions:")
+        console.print("    [a] Add a provider")
+        console.print("    [e] Edit a provider (enter number)")
+        console.print("    [r] Remove a provider (enter number)")
+        console.print("    [p] Reorder priorities")
+        console.print("    [t] Test connections")
+        console.print("    [d] Done")
+        console.print()
+
+        try:
+            choice = Prompt.ask("  Choice", default="d").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        if choice == "d":
+            break
+        elif choice == "a":
+            _manage_add_provider(settings)
+        elif choice.startswith("e"):
+            _manage_edit_provider(settings, choice, providers)
+        elif choice.startswith("r"):
+            _manage_remove_provider(settings, choice, providers)
+        elif choice == "p":
+            _manage_reorder_providers(settings, providers)
+        elif choice == "t":
+            _manage_test_providers(settings, providers)
+
+
+def _parse_number_from_choice(choice: str, prefix: str, count: int) -> int | None:
+    """Parse a provider number from a choice string like 'e2' or 'r 3'.
+
+    Returns 0-based index or None if invalid.
+    """
+    num_str = choice[len(prefix) :].strip()
+    if not num_str:
+        try:
+            num_str = Prompt.ask("  Enter number").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+    try:
+        num = int(num_str)
+        if 1 <= num <= count:
+            return num - 1
+        console.print(f"  [red]Invalid number. Enter 1-{count}.[/red]")
+        return None
+    except ValueError:
+        console.print("  [red]Invalid input. Enter a number.[/red]")
+        return None
+
+
+def _manage_add_provider(settings: AppSettings) -> None:
+    """Add a provider from the manage loop."""
+    try:
+        _ensure_providers_ready()
+    except SystemExit:
+        return
+
+    provider_mgr = ProviderManager(settings)
+    available = provider_mgr.list_providers()
+    if not available:
+        console.print(
+            "  [red]No providers available. Run: amplifier provider install[/red]"
+        )
+        return
+
+    console.print("\n  [bold]Available providers:[/bold]")
+    provider_map: dict[str, str] = {}
+    for idx, (module_id, name, _desc) in enumerate(available, 1):
+        provider_map[str(idx)] = module_id
+        console.print(f"    [{idx}] {name}")
+
+    try:
+        choice = Prompt.ask("  Which provider?", choices=list(provider_map.keys()))
+    except (EOFError, KeyboardInterrupt):
+        return
+
+    module_id = provider_map[choice]
+    display = _display_name(module_id)
+
+    # Check for multi-instance
+    existing_providers = settings.get_provider_overrides()
+    same_module = [p for p in existing_providers if p.get("module") == module_id]
+    instance_id: str | None = None
+
+    if same_module:
+        console.print(
+            f"\n  [yellow]A {display} provider is already configured.[/yellow]"
+        )
+        try:
+            suggested_id = f"{display}-{len(same_module) + 1}"
+            instance_id = Prompt.ask(
+                "  Enter an ID for this instance", default=suggested_id
+            )
+        except (EOFError, KeyboardInterrupt):
+            return
+
+    # Run configuration wizard
+    key_manager = KeyManager()
+    config = configure_provider(module_id, key_manager)
+
+    if config is None:
+        console.print("  [red]Configuration cancelled.[/red]")
+        return
+
+    # Determine priority
+    if not existing_providers:
+        priority = 1
+    else:
+        priority = _get_max_priority(existing_providers) + 1
+
+    config_with_priority = {**config, "priority": priority}
+
+    # Build provider entry
+    provider_entry: dict[str, Any] = {
+        "module": module_id,
+        "config": config_with_priority,
+    }
+    if instance_id:
+        provider_entry["id"] = instance_id
+
+    # Determine source
+    effective_sources = get_effective_provider_sources(settings)
+    source = effective_sources.get(module_id)
+    if source:
+        provider_entry["source"] = source
+
+    # Save to settings
+    scope_providers = settings.get_scope_provider_overrides("global")
+    if instance_id:
+        scope_providers.append(provider_entry)
+    else:
+        scope_providers = [p for p in scope_providers if p.get("module") != module_id]
+        scope_providers.append(provider_entry)
+
+    scope_settings = settings._read_scope("global")
+    if "config" not in scope_settings:
+        scope_settings["config"] = {}
+    scope_settings["config"]["providers"] = scope_providers
+    settings._write_scope("global", scope_settings)
+
+    model = config.get("default_model", "")
+    model_display = f" ({model})" if model else ""
+    name_display = instance_id or display
+    console.print(f"\n  [green]✓ Provider added: {name_display}{model_display}[/green]")
+
+
+def _manage_edit_provider(
+    settings: AppSettings, choice: str, providers: list[dict[str, Any]]
+) -> None:
+    """Edit a provider from the manage loop."""
+    if not providers:
+        console.print("  [yellow]No providers to edit.[/yellow]")
+        return
+    idx = _parse_number_from_choice(choice, "e", len(providers))
+    if idx is None:
+        return
+
+    entry = providers[idx]
+    module_id = entry.get("module", "")
+    existing_config = entry.get("config", {})
+    display = entry.get("id") or _display_name(module_id)
+
+    key_manager = KeyManager()
+    new_config = configure_provider(
+        module_id, key_manager, existing_config=existing_config
+    )
+
+    if new_config is None:
+        console.print("  [red]Configuration cancelled.[/red]")
+        return
+
+    priority = (
+        existing_config.get("priority", 1) if isinstance(existing_config, dict) else 1
+    )
+    new_config_with_priority = {**new_config, "priority": priority}
+
+    updated_entry: dict[str, Any] = {
+        "module": module_id,
+        "config": new_config_with_priority,
+    }
+    if entry.get("id"):
+        updated_entry["id"] = entry["id"]
+    if entry.get("source"):
+        updated_entry["source"] = entry["source"]
+
+    name = entry.get("id") or _display_name(module_id)
+    scope_providers = settings.get_scope_provider_overrides("global")
+    new_list = []
+    replaced = False
+    for p in scope_providers:
+        if not replaced and _find_provider_entry([p], name) is not None:
+            new_list.append(updated_entry)
+            replaced = True
+        else:
+            new_list.append(p)
+    if not replaced:
+        new_list.append(updated_entry)
+
+    scope_settings = settings._read_scope("global")
+    if "config" not in scope_settings:
+        scope_settings["config"] = {}
+    scope_settings["config"]["providers"] = new_list
+    settings._write_scope("global", scope_settings)
+
+    model = new_config.get("default_model", "")
+    model_display = f" ({model})" if model else ""
+    console.print(f"\n  [green]✓ Provider updated: {display}{model_display}[/green]")
+
+
+def _manage_remove_provider(
+    settings: AppSettings, choice: str, providers: list[dict[str, Any]]
+) -> None:
+    """Remove a provider from the manage loop."""
+    if not providers:
+        console.print("  [yellow]No providers to remove.[/yellow]")
+        return
+    idx = _parse_number_from_choice(choice, "r", len(providers))
+    if idx is None:
+        return
+
+    entry = providers[idx]
+    module = entry.get("module", "unknown")
+    display = entry.get("id") or _display_name(module)
+
+    try:
+        if not Confirm.ask(f"  Remove {display}?", default=False):
+            console.print("  [dim]Cancelled.[/dim]")
+            return
+    except (EOFError, KeyboardInterrupt):
+        return
+
+    # Remove from all scopes
+    for scope in ("local", "project", "global"):
+        scope_providers = settings.get_scope_provider_overrides(scope)  # type: ignore[arg-type]
+        original_len = len(scope_providers)
+
+        filtered = []
+        for p in scope_providers:
+            if p.get("id") == entry.get("id") and entry.get("id"):
+                continue
+            if p.get("module") == entry.get("module") and not entry.get("id"):
+                continue
+            filtered.append(p)
+
+        if len(filtered) < original_len:
+            scope_settings = settings._read_scope(scope)  # type: ignore[arg-type]
+            config_section = scope_settings.get("config", {})
+            if filtered:
+                config_section["providers"] = filtered
+            else:
+                config_section.pop("providers", None)
+            if config_section:
+                scope_settings["config"] = config_section
+            elif "config" in scope_settings:
+                scope_settings.pop("config", None)
+            settings._write_scope(scope, scope_settings)  # type: ignore[arg-type]
+
+    console.print(f"\n  [green]✓ Removed provider: {display}[/green]")
+
+
+def _manage_reorder_providers(
+    settings: AppSettings, providers: list[dict[str, Any]]
+) -> None:
+    """Reorder provider priorities from the manage loop."""
+    if len(providers) < 2:
+        console.print("  [dim]Need at least 2 providers to reorder.[/dim]")
+        return
+
+    console.print("\n  Current order:")
+    for i, p in enumerate(providers, 1):
+        module = p.get("module", "unknown")
+        display = p.get("id") or _display_name(module)
+        console.print(f"    [{i}] {display}")
+
+    try:
+        order_str = Prompt.ask("  Enter new order (e.g., 2 1 3)").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+
+    try:
+        new_order = [int(x) for x in order_str.split()]
+    except ValueError:
+        console.print("  [red]Invalid input. Enter numbers separated by spaces.[/red]")
+        return
+
+    if sorted(new_order) != list(range(1, len(providers) + 1)):
+        console.print(
+            f"  [red]Please enter all numbers from 1 to {len(providers)}.[/red]"
+        )
+        return
+
+    # Reorder and reassign priorities
+    reordered = []
+    for priority, num in enumerate(new_order, 1):
+        entry = dict(providers[num - 1])  # shallow copy
+        config = dict(entry.get("config", {}))
+        config["priority"] = priority
+        entry["config"] = config
+        reordered.append(entry)
+
+    scope_settings = settings._read_scope("global")
+    if "config" not in scope_settings:
+        scope_settings["config"] = {}
+    scope_settings["config"]["providers"] = reordered
+    settings._write_scope("global", scope_settings)
+
+    console.print("\n  [green]✓ Priorities updated.[/green]")
+
+
+def _manage_test_providers(
+    settings: AppSettings, providers: list[dict[str, Any]]
+) -> None:
+    """Test provider connections from the manage loop."""
+    if not providers:
+        console.print("  [yellow]No providers to test.[/yellow]")
+        return
+
+    table = Table(title="Provider Test Results")
+    table.add_column("Name", style="cyan")
+    table.add_column("Status")
+    table.add_column("Latency", justify="right")
+    table.add_column("Details")
+
+    for p in providers:
+        module_id = p.get("module", "unknown")
+        display = p.get("id") or _display_name(module_id)
+        config = p.get("config", {})
+
+        start = time.time()
+        try:
+            models = get_provider_models(module_id, collected_config=config)
+            elapsed = time.time() - start
+            latency = f"{elapsed:.1f}s"
+            model_count = len(models)
+            table.add_row(
+                display,
+                "[green]✓[/green]",
+                latency,
+                f"{model_count} model(s) available",
+            )
+        except Exception as e:
+            elapsed = time.time() - start
+            latency = f"{elapsed:.1f}s"
+            error_msg = f"{type(e).__name__}: {e}"
+            if len(error_msg) > 60:
+                error_msg = error_msg[:57] + "..."
+            table.add_row(
+                display,
+                "[red]✗[/red]",
+                latency,
+                escape_markup(error_msg),
+            )
+
+    console.print(table)
+
+
+@provider.command("manage")
+def provider_manage():
+    """Interactive provider management dashboard."""
+    _ensure_providers_ready()
+    settings = _get_settings()
+    provider_manage_loop(settings)
