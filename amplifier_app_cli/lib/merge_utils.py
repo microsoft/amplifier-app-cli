@@ -37,15 +37,26 @@ def merge_module_lists(
 
     If a module appears in both lists, configs are deep-merged (overlay wins).
     Modules only in overlay are appended.
+
+    String items in the overlay (shorthand tool/hook name references written in
+    agent YAML frontmatter as ``tools: [generate_image, load_skill]``) are
+    silently skipped — they carry intent/documentation but are not full module
+    specs and cannot be merged by ID.  Parent modules are inherited unchanged
+    for any such items; no crash, no silent data loss.
     """
     # Index base by key
     base_by_key: dict[str, dict[str, Any]] = {}
     for item in base:
-        if key_field in item:
+        if isinstance(item, dict) and key_field in item:
             base_by_key[item[key_field]] = item.copy()
 
     # Merge overlay
     for item in overlay:
+        if not isinstance(item, dict):
+            # Skip shorthand string names (e.g. "generate_image").
+            # Agent YAML may list tool names as bare strings to express intent;
+            # treat them as no-ops here so parent modules are inherited as-is.
+            continue
         key = item.get(key_field)
         if key and key in base_by_key:
             # Merge configs
