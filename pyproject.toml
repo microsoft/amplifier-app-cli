@@ -12,7 +12,7 @@ dependencies = [
     "pygments>=2.13.0",
     "pydantic>=2.0.0",
     "amplifier-core",
-    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main",
+    "amplifier-foundation",
     "pyyaml>=6.0.3",
     "prompt-toolkit>=3.0.52",
     "httpx[socks]>=0.28.1",
