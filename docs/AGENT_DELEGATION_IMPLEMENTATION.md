@@ -297,7 +297,7 @@ The `model_role` parameter lets the caller override the agent's default model ro
 result = await task_tool.execute({
     "agent": "foundation:explorer",
     "instruction": "Analyze these UI screenshots and suggest improvements",
-    "model_role": "coding-image"
+    "model_role": "vision"
 })
 ```
 
@@ -314,13 +314,19 @@ If both `model_role` and `provider_preferences` are provided in the same call, `
 
 | Role | Use for |
 |------|---------|
+| `general` | Versatile catch-all, no specialization needed |
+| `fast` | Quick parsing, classification, file ops, bulk work |
 | `coding` | Code generation, implementation, debugging |
-| `coding-image` | Image-related code work (UI, diagrams, vision tasks) |
-| `planning` | Architecture, design, complex multi-step reasoning |
-| `fast` | Quick parsing, classification, utility work |
-| `general` | Balanced catch-all for unspecialized tasks |
-| `research` | Deep analysis, web search, long-horizon investigation |
-| `agentic` | Multi-turn autonomous tool use and task execution |
+| `ui-coding` | Frontend/UI code — components, layouts, styling, spatial reasoning |
+| `security-audit` | Vulnerability assessment, attack surface analysis, code auditing |
+| `reasoning` | Deep architectural reasoning, system design, complex multi-step analysis |
+| `critique` | Analytical evaluation — finding flaws in existing work |
+| `creative` | Design direction, aesthetic judgment, high-quality creative output |
+| `writing` | Long-form content — documentation, marketing, case studies, storytelling |
+| `research` | Deep investigation, information synthesis across multiple sources |
+| `vision` | Understanding visual input — screenshots, diagrams, UI mockups |
+| `image-gen` | Image generation, visual mockup creation, visual ideation |
+| `critical-ops` | High-reliability operational tasks — infrastructure, orchestration |
 
 #### Multi-Turn Example
 
