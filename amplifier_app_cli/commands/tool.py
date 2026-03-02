@@ -25,6 +25,33 @@ from ..paths import create_config_manager
 from ..utils.error_format import escape_markup
 from ..runtime.config import inject_user_providers
 
+
+# ============================================================================
+# First-run provider guard (mirrors run.py:142-153)
+# ============================================================================
+
+
+def _ensure_provider_configured() -> None:
+    """Check if first run init is needed and handle it.
+
+    This runs unconditionally - --provider just selects from configured providers,
+    it doesn't bypass the need for configuration.
+    """
+    from .init import check_first_run
+
+    if check_first_run():
+        if sys.stdin.isatty():
+            from .init import prompt_first_run_init
+
+            prompt_first_run_init(console)
+        else:
+            # Non-interactive context (CI, Docker, shadow env)
+            # Auto-init from environment variables
+            from .init import auto_init_from_env
+
+            auto_init_from_env(console)
+
+
 # ============================================================================
 # Bundle Detection (mirrors run.py pattern)
 # ============================================================================
@@ -250,6 +277,8 @@ def tool_list(bundle: str | None, output: str, modules: bool):
     By default, shows the actual tool names that can be invoked (e.g., read_file,
     write_file). Use --modules to see tool module names instead (e.g., tool-filesystem).
     """
+    _ensure_provider_configured()
+
     # Determine bundle to use
     use_bundle, default_bundle, _unused = _should_use_bundle()
 
@@ -336,6 +365,8 @@ def tool_info(tool_name: str, bundle: str | None, output: str, module: bool):
     By default, looks up the actual mounted tool by name (e.g., read_file).
     Use --module to look up by module name instead (e.g., tool-filesystem).
     """
+    _ensure_provider_configured()
+
     # Determine bundle to use
     use_bundle, default_bundle, _unused = _should_use_bundle()
 
@@ -412,6 +443,8 @@ def tool_invoke(tool_name: str, args: tuple[str, ...], bundle: str | None, outpu
 
         amplifier tool invoke some_tool data='{"key": "value"}'
     """
+    _ensure_provider_configured()
+
     # Parse key=value arguments first (before session creation)
     tool_args: dict[str, Any] = {}
     for arg in args:
