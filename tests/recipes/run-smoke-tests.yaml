@@ -22,7 +22,7 @@ steps:
     type: "recipe"
     foreach: "{{smoke_tests}}"
     as: "test_recipe"
-    parallel: true
+    parallel: 3
     collect: "test_results"
     recipe: "{{test_recipe}}"
     context: {}

@@ -26,7 +26,7 @@ steps:
     type: "recipe"
     foreach: "{{feature_tests}}"
     as: "test_recipe"
-    parallel: true
+    parallel: 3
     collect: "test_results"
     recipe: "{{test_recipe}}"
     context: {}
