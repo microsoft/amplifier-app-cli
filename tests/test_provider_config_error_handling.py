@@ -87,3 +87,190 @@ class TestPromptModelSelectionErrorHandling:
 
         assert result == "fallback-model", f"Expected 'fallback-model', got '{result}'"
         mock_prompt.assert_called_once()
+
+
+# ============================================================
+# Task 2: Safety net in _manage_add_provider() and provider_add
+# ============================================================
+
+
+def _make_settings(tmp_path):
+    """Create AppSettings with isolated paths for testing."""
+    from amplifier_app_cli.lib.settings import AppSettings, SettingsPaths
+
+    paths = SettingsPaths(
+        global_settings=tmp_path / "global" / "settings.yaml",
+        project_settings=tmp_path / "project" / "settings.yaml",
+        local_settings=tmp_path / "local" / "settings.local.yaml",
+    )
+    return AppSettings(paths=paths)
+
+
+class TestManageAddProviderSafetyNet:
+    """Tests for the safety net around configure_provider() in _manage_add_provider()."""
+
+    def test_exception_prints_error_and_returns(self, tmp_path):
+        """When configure_provider() raises an arbitrary Exception,
+        _manage_add_provider() should print a friendly error and return
+        (not crash with a traceback)."""
+        from amplifier_app_cli.commands.provider import _manage_add_provider
+
+        settings = _make_settings(tmp_path)
+        mock_console = MagicMock()
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._ensure_providers_ready",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.ProviderManager",
+            ) as MockPM,
+            patch(
+                "amplifier_app_cli.commands.provider.Prompt.ask",
+                return_value="1",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.KeyManager",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                side_effect=Exception("Unexpected kaboom during config"),
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.console",
+                mock_console,
+            ),
+        ):
+            mock_pm = MagicMock()
+            mock_pm.list_providers.return_value = [
+                ("provider-anthropic", "Anthropic", "Anthropic provider"),
+            ]
+            MockPM.return_value = mock_pm
+
+            # Should NOT raise — should print error and return
+            _manage_add_provider(settings)
+
+        # Verify a friendly error was printed
+        printed_texts = [str(call) for call in mock_console.print.call_args_list]
+        joined = " ".join(printed_texts)
+        assert "Unexpected kaboom" in joined, (
+            f"Expected error message in console output, got: {printed_texts}"
+        )
+
+    def test_click_abort_propagates(self, tmp_path):
+        """When configure_provider() raises click.Abort,
+        it should propagate (not be caught by the safety net)."""
+        from amplifier_app_cli.commands.provider import _manage_add_provider
+
+        settings = _make_settings(tmp_path)
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._ensure_providers_ready",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.ProviderManager",
+            ) as MockPM,
+            patch(
+                "amplifier_app_cli.commands.provider.Prompt.ask",
+                return_value="1",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.KeyManager",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                side_effect=click.Abort(),
+            ),
+            patch("amplifier_app_cli.commands.provider.console"),
+        ):
+            mock_pm = MagicMock()
+            mock_pm.list_providers.return_value = [
+                ("provider-anthropic", "Anthropic", "Anthropic provider"),
+            ]
+            MockPM.return_value = mock_pm
+
+            with pytest.raises(click.Abort):
+                _manage_add_provider(settings)
+
+
+class TestProviderAddSafetyNet:
+    """Tests for the safety net around configure_provider() in the provider_add command."""
+
+    def test_exception_exits_with_code_1(self, tmp_path):
+        """When configure_provider() raises an arbitrary Exception,
+        provider_add should show a friendly error and exit with code 1."""
+        from click.testing import CliRunner
+
+        from amplifier_app_cli.commands.provider import provider
+
+        settings = _make_settings(tmp_path)
+        runner = CliRunner()
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                side_effect=Exception("Auth token invalid"),
+            ),
+            patch("amplifier_app_cli.commands.provider.KeyManager"),
+            patch("amplifier_app_cli.commands.provider.ProviderManager") as MockPM,
+        ):
+            mock_pm = MagicMock()
+            mock_pm.list_providers.return_value = [
+                ("provider-anthropic", "Anthropic", "Anthropic provider"),
+            ]
+            MockPM.return_value = mock_pm
+
+            result = runner.invoke(provider, ["add", "anthropic"])
+
+        assert result.exit_code == 1, (
+            f"Expected exit code 1, got {result.exit_code}. Output: {result.output}"
+        )
+        assert "Auth token invalid" in result.output, (
+            f"Expected error message in output, got: {result.output}"
+        )
+
+    def test_click_abort_propagates_cleanly(self, tmp_path):
+        """When configure_provider() raises click.Abort,
+        provider_add should let Click handle it (exit code 1, no traceback)."""
+        from click.testing import CliRunner
+
+        from amplifier_app_cli.commands.provider import provider
+
+        settings = _make_settings(tmp_path)
+        runner = CliRunner()
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                side_effect=click.Abort(),
+            ),
+            patch("amplifier_app_cli.commands.provider.KeyManager"),
+            patch("amplifier_app_cli.commands.provider.ProviderManager") as MockPM,
+        ):
+            mock_pm = MagicMock()
+            mock_pm.list_providers.return_value = [
+                ("provider-anthropic", "Anthropic", "Anthropic provider"),
+            ]
+            MockPM.return_value = mock_pm
+
+            result = runner.invoke(provider, ["add", "anthropic"])
+
+        # click.Abort produces exit code 1 and prints "Aborted!" by default
+        assert result.exit_code == 1, (
+            f"Expected exit code 1, got {result.exit_code}. Output: {result.output}"
+        )
+        # Should NOT contain a Python traceback
+        assert "Traceback" not in result.output, (
+            f"Expected no traceback, got: {result.output}"
+        )
