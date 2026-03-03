@@ -60,6 +60,7 @@ from .ui.error_display import display_llm_error
 from .ui.error_display import display_validation_error
 from .ui.log_filter import LLMErrorLogFilter
 from .utils.error_format import escape_markup
+from .utils.version import get_core_version
 from .utils.version import get_version
 
 logger = logging.getLogger(__name__)
@@ -1188,7 +1189,10 @@ def get_module_search_paths() -> list[Path]:
 
 
 @click.group(cls=AmplifierGroup, invoke_without_command=True)
-@click.version_option(version=get_version(), prog_name="amplifier")
+@click.version_option(
+    version=f"{get_version()} (core {get_core_version()})",
+    prog_name="amplifier",
+)
 @click.option(
     "--install-completion",
     is_flag=False,
@@ -1457,6 +1461,7 @@ async def interactive_chat(
             Panel.fit(
                 f"[bold cyan]Amplifier Interactive Session[/bold cyan]\n"
                 f"[dim]Session ID: [/dim][dim bright_yellow]{actual_session_id}[/dim bright_yellow]\n"
+                f"[dim]amplifier {get_version()} | core {get_core_version()}[/dim]\n"
                 f"[dim]{config_summary.format_banner_line()}[/dim]\n"
                 f"Commands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D",
                 border_style="cyan",
