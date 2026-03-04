@@ -1075,35 +1075,36 @@ def _manage_test_providers(
     table.add_column("Latency", justify="right")
     table.add_column("Details")
 
-    for p in providers:
-        module_id = p.get("module", "unknown")
-        display = p.get("id") or _display_name(module_id)
-        config = p.get("config", {})
+    with console.status("[dim]Testing provider connections...[/dim]", spinner="dots"):
+        for p in providers:
+            module_id = p.get("module", "unknown")
+            display = p.get("id") or _display_name(module_id)
+            config = p.get("config", {})
 
-        start = time.time()
-        try:
-            models = get_provider_models(module_id, collected_config=config)
-            elapsed = time.time() - start
-            latency = f"{elapsed:.1f}s"
-            model_count = len(models)
-            table.add_row(
-                display,
-                "[green]✓[/green]",
-                latency,
-                f"{model_count} model(s) available",
-            )
-        except Exception as e:
-            elapsed = time.time() - start
-            latency = f"{elapsed:.1f}s"
-            error_msg = f"{type(e).__name__}: {e}"
-            if len(error_msg) > 60:
-                error_msg = error_msg[:57] + "..."
-            table.add_row(
-                display,
-                "[red]✗[/red]",
-                latency,
-                escape_markup(error_msg),
-            )
+            start = time.time()
+            try:
+                models = get_provider_models(module_id, collected_config=config)
+                elapsed = time.time() - start
+                latency = f"{elapsed:.1f}s"
+                model_count = len(models)
+                table.add_row(
+                    display,
+                    "[green]✓[/green]",
+                    latency,
+                    f"{model_count} model(s) available",
+                )
+            except Exception as e:
+                elapsed = time.time() - start
+                latency = f"{elapsed:.1f}s"
+                error_msg = f"{type(e).__name__}: {e}"
+                if len(error_msg) > 60:
+                    error_msg = error_msg[:57] + "..."
+                table.add_row(
+                    display,
+                    "[red]✗[/red]",
+                    latency,
+                    escape_markup(error_msg),
+                )
 
     console.print(table)
 
