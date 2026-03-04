@@ -206,7 +206,8 @@ def provider_install(
 
 @provider.command("add")
 @click.argument("provider_type", required=False)
-def provider_add(provider_type: str | None) -> None:
+@click.pass_context
+def provider_add(ctx: click.Context, provider_type: str | None) -> None:
     """Add and configure a provider.
 
     If PROVIDER_TYPE is not specified, shows an interactive picker.
@@ -255,7 +256,15 @@ def provider_add(provider_type: str | None) -> None:
 
     # Run the configuration wizard
     key_manager = KeyManager()
-    config = configure_provider(module_id, key_manager)
+    try:
+        config = configure_provider(module_id, key_manager)
+    except (click.Abort, click.ClickException):
+        raise  # Let Click handle aborts and CLI errors cleanly
+    except Exception as e:
+        console.print(
+            f"\n  [red]⚠  Provider configuration failed:[/red]\n\n  {escape_markup(str(e))}\n"
+        )
+        ctx.exit(1)
 
     if config is None:
         console.print("[red]Configuration cancelled.[/red]")
@@ -833,7 +842,15 @@ def _manage_add_provider(settings: AppSettings) -> None:
 
     # Run configuration wizard
     key_manager = KeyManager()
-    config = configure_provider(module_id, key_manager)
+    try:
+        config = configure_provider(module_id, key_manager)
+    except (click.Abort, click.ClickException):
+        raise  # Let Click handle aborts and CLI errors cleanly
+    except Exception as e:
+        console.print(
+            f"\n  [red]⚠  Provider configuration failed:[/red]\n\n  {escape_markup(str(e))}\n"
+        )
+        return  # Return to provider management loop
 
     if config is None:
         console.print("  [red]Configuration cancelled.[/red]")

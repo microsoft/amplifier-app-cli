@@ -8,6 +8,9 @@ import logging
 import os
 from typing import Any
 
+import click
+from rich.markup import escape
+
 from rich.console import Console
 from rich.prompt import Confirm
 from rich.prompt import Prompt
@@ -44,6 +47,12 @@ def _prompt_model_selection(
     except (ConnectionError, OSError) as e:
         logger.debug(f"Could not connect to provider '{provider_id}': {e}")
         models = []
+    except Exception as e:
+        console.print(
+            f"\n  [red]⚠  Could not fetch models for '{escape(str(provider_id))}':[/red]"
+            f"\n\n  {escape(str(e))}\n"
+        )
+        raise click.ClickException(str(e))
 
     if not models:
         # No models available - show helpful message and prompt for custom input
