@@ -446,3 +446,77 @@ class TestModelFetchingSpinner:
 
         mock_status_ctx.__enter__.assert_called_once()
         mock_status_ctx.__exit__.assert_called_once()
+
+
+# ============================================================
+# Task 7: _manage_test_providers() spinner
+# ============================================================
+
+
+class TestProviderTestSpinner:
+    """Tests for spinner display during provider connection testing."""
+
+    def test_spinner_shown_during_provider_testing(self):
+        """Spinner should be shown while providers are being tested."""
+        from amplifier_app_cli.commands.provider import _manage_test_providers
+
+        mock_console = MagicMock()
+        mock_status_ctx = MagicMock()
+        mock_console.status.return_value = mock_status_ctx
+
+        provider = {"module": "test-mod", "id": "test-provider", "config": {}}
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider.console",
+                mock_console,
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.get_provider_models",
+                return_value=["model-a"],
+            ),
+        ):
+            _manage_test_providers(MagicMock(), [provider])
+
+        mock_console.status.assert_called_once()
+        mock_status_ctx.__enter__.assert_called_once()
+        mock_status_ctx.__exit__.assert_called_once()
+
+    def test_spinner_not_shown_when_no_providers(self):
+        """Spinner should NOT be shown when provider list is empty."""
+        from amplifier_app_cli.commands.provider import _manage_test_providers
+
+        mock_console = MagicMock()
+
+        with patch(
+            "amplifier_app_cli.commands.provider.console",
+            mock_console,
+        ):
+            _manage_test_providers(MagicMock(), [])
+
+        mock_console.status.assert_not_called()
+
+    def test_spinner_exits_on_provider_test_failure(self):
+        """Spinner should exit cleanly even when a provider test fails."""
+        from amplifier_app_cli.commands.provider import _manage_test_providers
+
+        mock_console = MagicMock()
+        mock_status_ctx = MagicMock()
+        mock_console.status.return_value = mock_status_ctx
+
+        provider = {"module": "bad-mod", "id": "bad-provider", "config": {}}
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider.console",
+                mock_console,
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.get_provider_models",
+                side_effect=ConnectionError("Connection refused"),
+            ),
+        ):
+            _manage_test_providers(MagicMock(), [provider])
+
+        mock_status_ctx.__enter__.assert_called_once()
+        mock_status_ctx.__exit__.assert_called_once()
