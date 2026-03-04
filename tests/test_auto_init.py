@@ -157,13 +157,15 @@ class TestRunCommandNonTTY:
         )
 
 
-class TestInitCmdExists:
-    """Test that init command exists as combined dashboard."""
+class TestInitCmdNonTTY:
+    """Test that init command auto-upgrades to non-interactive when no TTY."""
 
-    def test_init_cmd_is_exported(self):
-        """init_cmd should be importable from commands.init."""
-        import amplifier_app_cli.commands.init as init_module
+    def test_init_cmd_no_tty_auto_upgrades(self):
+        """init command should set non_interactive = True when no TTY, not error out."""
+        from amplifier_app_cli.commands.init import init_cmd
 
-        assert hasattr(init_module, "init_cmd"), (
-            "init_cmd should exist — it's the combined setup dashboard"
+        source = inspect.getsource(init_cmd.callback)
+        # Should set non_interactive = True when stdin is not a TTY
+        assert "non_interactive = True" in source, (
+            "init_cmd should set non_interactive = True when stdin is not a TTY"
         )

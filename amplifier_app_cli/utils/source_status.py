@@ -154,6 +154,7 @@ async def check_all_sources(
     return UpdateReport(
         local_file_sources=local_statuses,
         cached_git_sources=git_statuses,
+        
         cached_modules_checked=cached_modules_checked,
     )
 
@@ -480,20 +481,8 @@ async def _check_all_cached_modules(
                 )
             )
 
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                # Private repos return 404 on unauthenticated Atom feed requests.
-                # Actionable: user can set GITHUB_TOKEN or run gh auth login.
-                logger.warning(
-                    f"Skipping {module.module_id} "
-                    f"(private repo or not found - set GITHUB_TOKEN or run "
-                    f"gh auth login to enable update checks)"
-                )
-            else:
-                logger.warning(f"Could not check {module.module_id}: {e}")
-            continue
         except (httpx.HTTPError, httpx.TimeoutException) as e:
-            # Network/timeout errors - log but continue checking other modules
+            # Network/API errors - log but continue checking other modules
             logger.warning(f"Could not check {module.module_id}: {e}")
             continue
         except Exception as e:
@@ -547,15 +536,10 @@ async def _get_github_commit_sha(
 
     owner, repo = parts[0], parts[1]
 
-    # Fetch Atom feed (no auth for public repos, retry with auth on 404)
+    # Fetch Atom feed (public, no auth, no rate limits)
     atom_url = f"https://github.com/{owner}/{repo}/commits/{ref}.atom"
 
     response = await client.get(atom_url)
-    if response.status_code == 404:
-        # May be a private repo - retry with auth if available
-        auth_headers = _get_github_auth_headers()
-        if auth_headers:
-            response = await client.get(atom_url, headers=auth_headers)
     response.raise_for_status()
 
     # Parse XML for first commit SHA

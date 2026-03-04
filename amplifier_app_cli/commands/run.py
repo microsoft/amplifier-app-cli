@@ -7,9 +7,13 @@ import logging
 import sys
 import uuid
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 from typing import Any
 
 import click
+
+if TYPE_CHECKING:
+    pass
 
 from rich.panel import Panel
 
@@ -17,7 +21,6 @@ from amplifier_foundation.exceptions import BundleError, BundleValidationError
 
 from ..console import console
 from ..session_store import extract_session_mode
-from ..utils.error_format import escape_markup
 from ..effective_config import get_effective_config_summary
 from ..lib.settings import AppSettings
 from ..paths import create_config_manager
@@ -87,9 +90,7 @@ def register_run_command(
             except ValueError as e:
                 from ..utils.error_format import format_error_message
 
-                console.print(
-                    f"[red]Error:[/red] {escape_markup(format_error_message(e))}"
-                )
+                console.print(f"[red]Error:[/red] {format_error_message(e)}")
                 sys.exit(1)
 
             try:
@@ -105,7 +106,7 @@ def register_run_command(
                         console.print(f"  Using saved bundle: {bundle}")
 
             except Exception as exc:
-                console.print(f"[red]Error loading session:[/red] {escape_markup(exc)}")
+                console.print(f"[red]Error loading session:[/red] {exc}")
                 sys.exit(1)
 
             # Determine mode based on prompt presence
@@ -167,7 +168,7 @@ def register_run_command(
             )
         except FileNotFoundError as exc:
             # Bundle not found - display error gracefully without traceback
-            console.print(f"[red]Error:[/red] {escape_markup(exc)}")
+            console.print(f"[red]Error:[/red] {exc}")
             sys.exit(1)
         except BundleValidationError as exc:
             # Bundle validation failed (e.g., malformed YAML, missing required fields)

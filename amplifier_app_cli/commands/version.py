@@ -4,7 +4,6 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from ..utils.version import get_core_version
 from ..utils.version import get_version_info
 
 console = Console()
@@ -24,7 +23,7 @@ def version(verbose: bool):
 
     if not verbose:
         # Simple output
-        console.print(f"amplifier {info.display} (core {get_core_version()})")
+        console.print(f"amplifier {info.display}")
         return
 
     # Verbose output with details
@@ -37,7 +36,6 @@ def version(verbose: bool):
     table.add_column("Value")
 
     table.add_row("Version", f"[bold]{info.display}[/bold]")
-    table.add_row("Core Version", f"[bold]{get_core_version()}[/bold]")
 
     if info.sha:
         table.add_row("Commit SHA", info.sha)

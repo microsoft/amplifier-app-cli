@@ -454,32 +454,6 @@ class AppSettings:
             return True
         return False
 
-    # ----- Routing settings -----
-
-    def get_routing_config(self) -> dict[str, Any]:
-        """Read routing: section from merged settings.
-
-        Expected structure:
-            routing:
-              matrix: balanced
-              overrides:
-                coding: special-config
-        """
-        merged = self.get_merged_settings()
-        routing = merged.get("routing", {})
-        return routing if isinstance(routing, dict) else {}
-
-    def set_routing_matrix(self, matrix_name: str, scope: Scope = "global") -> None:
-        """Write routing: {matrix: <name>} to settings at specified scope.
-
-        Preserves other routing settings (e.g., overrides) at that scope.
-        """
-        settings = self._read_scope(scope)
-        if "routing" not in settings:
-            settings["routing"] = {}
-        settings["routing"]["matrix"] = matrix_name
-        self._write_scope(scope, settings)
-
     # ----- Notification settings (config.notifications) -----
 
     def get_notification_config(self) -> dict[str, Any]:

@@ -11,7 +11,9 @@ from typing import Literal
 
 from amplifier_foundation import BundleRegistry
 
-from .lib.settings import AppSettings
+from amplifier_app_cli.lib.config_compat import ConfigManager
+from amplifier_app_cli.lib.config_compat import ConfigPaths
+from amplifier_app_cli.lib.config_compat import Scope
 
 # LEGACY: These imports are no longer available - bundles are the only supported mode
 # CollectionResolver, ProfileLoader, StandardModuleSourceResolver, AgentLoader are removed
@@ -29,8 +31,16 @@ if TYPE_CHECKING:
 # Type alias for scope names used in CLI
 ScopeType = Literal["local", "project", "global"]
 
-# Type alias for scope checker - accepts AppSettings or duck-typed equivalent
-ScopeChecker = Any  # AppSettings - duck typed
+# Map CLI scope names to Scope enum
+_SCOPE_MAP: dict[ScopeType, Scope] = {
+    "local": Scope.LOCAL,
+    "project": Scope.PROJECT,
+    "global": Scope.USER,
+}
+
+# Type alias for scope checker - accepts ConfigManager or AppSettings
+# Both have is_scope_available() but with different parameter types
+ScopeChecker = Any  # ConfigManager | AppSettings - duck typed
 
 # ===== CACHE PATHS =====
 
@@ -85,6 +95,41 @@ def _get_user_and_project_paths(
 # ===== CONFIG PATHS =====
 
 
+def get_cli_config_paths() -> ConfigPaths:
+    """Get CLI-specific configuration paths (APP LAYER POLICY).
+
+    Returns:
+        ConfigPaths with CLI conventions:
+        - User: ~/.amplifier/settings.yaml (always enabled)
+        - Project: .amplifier/settings.yaml (disabled when cwd is home)
+        - Local: .amplifier/settings.local.yaml (disabled when cwd is home)
+
+    Note:
+        When running from the home directory (~), project and local scopes are
+        disabled (set to None) to prevent confusion. In ~/.amplifier/, there
+        should only ever be settings.yaml (user scope), never settings.local.yaml.
+        This prevents the confusing case where ~/.amplifier/settings.local.yaml
+        would only apply when running from exactly ~ but not from anywhere else.
+    """
+    home = Path.home()
+    cwd = Path.cwd()
+
+    # When cwd is home directory, disable project/local scopes
+    # This prevents ~/.amplifier/settings.local.yaml confusion
+    if cwd == home:
+        return ConfigPaths(
+            user=home / ".amplifier" / "settings.yaml",
+            project=None,
+            local=None,
+        )
+
+    return ConfigPaths(
+        user=home / ".amplifier" / "settings.yaml",
+        project=Path(".amplifier") / "settings.yaml",
+        local=Path(".amplifier") / "settings.local.yaml",
+    )
+
+
 def is_running_from_home() -> bool:
     """Check if running from the home directory.
 
@@ -113,7 +158,7 @@ def validate_scope_for_write(
 
     Args:
         scope: The requested scope ("local", "project", or "global")
-        config: AppSettings instance (or duck-typed equivalent with is_scope_available)
+        config: ConfigManager or AppSettings instance to check (implements ScopeChecker)
         allow_fallback: If True, fall back to "global" when scope unavailable
 
     Returns:
@@ -122,7 +167,16 @@ def validate_scope_for_write(
     Raises:
         ScopeNotAvailableError: If scope is not available and fallback not allowed
     """
-    is_available = config.is_scope_available(scope)
+    # Check scope availability - works with both ConfigManager (Scope enum) and AppSettings (string)
+    # ConfigManager.is_scope_available takes Scope enum
+    # AppSettings.is_scope_available takes string scope
+    is_available = False
+    if isinstance(config, ConfigManager):
+        scope_enum = _SCOPE_MAP[scope]
+        is_available = config.is_scope_available(scope_enum)
+    else:
+        # AppSettings or other ScopeChecker - uses string scope
+        is_available = config.is_scope_available(scope)  # type: ignore[arg-type]
 
     if is_available:
         return scope
@@ -160,7 +214,7 @@ def get_effective_scope(
 
     Args:
         requested_scope: Explicitly requested scope, or None for default
-        config: AppSettings instance (or duck-typed equivalent with is_scope_available)
+        config: ConfigManager or AppSettings instance to check (implements ScopeChecker)
         default_scope: Default scope when none requested
 
     Returns:
@@ -198,16 +252,13 @@ def get_workspace_dir() -> Path:
 # ===== DEPENDENCY FACTORIES =====
 
 
-def create_config_manager() -> AppSettings:
-    """Create CLI-configured settings manager.
-
-    Returns an AppSettings instance with default CLI path policy.
-    Kept as create_config_manager() for backward compatibility with callers.
+def create_config_manager() -> ConfigManager:
+    """Create CLI-configured config manager.
 
     Returns:
-        AppSettings with CLI path policy
+        ConfigManager with CLI path policy injected
     """
-    return AppSettings()
+    return ConfigManager(paths=get_cli_config_paths())
 
 
 def get_bundle_search_paths() -> list[Path]:
@@ -393,6 +444,8 @@ def get_agent_search_paths(bundle_name: str | None = None) -> list[Path]:
     return get_agent_search_paths_for_bundle(bundle_name)
 
 
+
+
 def create_foundation_resolver() -> "FoundationSettingsResolver":
     """Create CLI-configured foundation resolver with settings providers.
 
@@ -404,7 +457,7 @@ def create_foundation_resolver() -> "FoundationSettingsResolver":
     """
     from amplifier_app_cli.lib.bundle_loader.resolvers import FoundationSettingsResolver
 
-    settings = AppSettings()
+    config = create_config_manager()
 
     # CLI implements SettingsProviderProtocol
     class CLISettingsProvider:
@@ -423,10 +476,10 @@ def create_foundation_resolver() -> "FoundationSettingsResolver":
             to ensure user-added modules are properly resolved.
             """
             # Start with explicit source overrides
-            sources = dict(settings.get_module_sources())
+            sources = dict(config.get_module_sources())
 
             # Extract sources from registered modules (modules.providers[], modules.tools[], etc.)
-            merged = settings.get_merged_settings()
+            merged = config.get_merged_settings()
             modules_section = merged.get("modules", {})
 
             # Check each module type category
@@ -452,6 +505,7 @@ def create_foundation_resolver() -> "FoundationSettingsResolver":
         def get_module_source(self, module_id: str) -> str | None:
             """Get module source from CLI settings."""
             return self.get_module_sources().get(module_id)
+
 
     return FoundationSettingsResolver(
         settings_provider=CLISettingsProvider(),

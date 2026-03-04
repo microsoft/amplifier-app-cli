@@ -19,13 +19,12 @@ uv tool install git+https://github.com/microsoft/amplifier
 ## Quick Start
 
 ```bash
-# First-time setup — opens a combined dashboard to add providers,
-# select a routing matrix, and verify configuration (auto-runs if no config)
+# First-time setup (auto-runs if no config)
 amplifier init
 
 # Tip: Set environment variables for faster setup
 # export ANTHROPIC_API_KEY="your-key"
-# The dashboard detects env vars and shows them as defaults
+# The wizard detects env vars and shows them as defaults
 
 # Install shell completion (optional, one-time setup)
 amplifier --install-completion
@@ -60,18 +59,10 @@ amplifier bundle remove <name>                        # Unregister a bundle
 amplifier bundle clear                                # Reset to default (foundation)
 
 # Provider management
-amplifier provider add <name> [--local|--project|--global]  # Add/configure a provider
-amplifier provider list                                      # List configured providers
-amplifier provider remove <name> [--scope]                   # Remove a provider
-amplifier provider edit <name>                               # Edit provider configuration
-amplifier provider test [<name>]                             # Test provider connectivity
-amplifier provider manage                                    # Interactive provider dashboard
-
-# Routing matrix management
-amplifier routing list                                       # List available matrices
-amplifier routing use <name> [--local|--project|--global]    # Select active matrix
-amplifier routing show [<name>]                              # Show resolved roles for a matrix
-amplifier routing manage                                     # Interactive routing dashboard
+amplifier provider use <name> [--local|--project|--global]
+amplifier provider current
+amplifier provider list
+amplifier provider reset [--scope]
 
 # Module management
 amplifier module add <name> [--local|--project|--global]
@@ -204,7 +195,7 @@ amplifier tool invoke web_fetch url="https://example.com"
 ### Utility Commands
 
 ```bash
-amplifier init                                     # First-time setup (combined dashboard)
+amplifier init                                     # First-time setup
 amplifier update [--check-only] [--force] [-y]    # Update Amplifier and modules
 amplifier --install-completion                     # Set up tab completion
 amplifier --version                                # Show version
@@ -287,7 +278,7 @@ This CLI is built on top of amplifier-core and provides:
 
 ### Provider sources
 
-`amplifier provider add …` pins the canonical module source for each
+`amplifier provider use …` pins the canonical module source for each
 first-party provider (for example, the OpenAI provider resolves to
 `git+https://github.com/microsoft/amplifier-module-provider-openai@main`).
 Existing installations inherit these canonical URIs at runtime as well, so

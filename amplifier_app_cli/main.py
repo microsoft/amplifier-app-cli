@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     from amplifier_foundation.bundle import PreparedBundle
 from amplifier_core import AmplifierSession
 from amplifier_core import ModuleValidationError  # pyright: ignore[reportAttributeAccessIssue]
-from amplifier_core.llm_errors import LLMError
 from amplifier_foundation import sanitize_message
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
@@ -41,7 +40,6 @@ from .commands.init import prompt_first_run_init
 from .commands.module import module as module_group
 from .commands.notify import notify as notify_group
 from .commands.provider import provider as provider_group
-from .commands.routing import routing_group
 from .commands.reset import reset as reset_cmd
 from .commands.run import register_run_command
 from .commands.session import register_session_commands
@@ -56,50 +54,18 @@ from .console import console
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
 from .session_store import SessionStore
-from .ui.error_display import display_llm_error
 from .ui.error_display import display_validation_error
-from .ui.log_filter import LLMErrorLogFilter
-from .utils.error_format import escape_markup
-from .utils.version import get_core_version
 from .utils.version import get_version
 
 logger = logging.getLogger(__name__)
 
-# Suppress duplicate LLM error lines from console output.
-# The CLI renders LLM errors as Rich panels — the logger.error() calls
-# from the provider ("[PROVIDER] Anthropic API error: ...") and session
-# ("Execution failed: ...") would duplicate the same info as raw text.
-# This filter must be attached to the console HANDLER (not the root logger)
-# so it intercepts records propagated from child loggers like provider modules.
-# Log file handlers managed by hooks use their own loggers and are unaffected.
-_llm_error_filter = LLMErrorLogFilter()
-
-
-def _attach_llm_error_filter() -> None:
-    """Attach the LLM error filter to the stderr StreamHandler at runtime.
-
-    Must be called after logging is configured (i.e., from main()) so that
-    handlers actually exist on the root logger.  Falls back to attaching
-    directly to the root logger if no stderr StreamHandler is found.
-    """
-    root = logging.getLogger()
-    for _handler in root.handlers:
-        if (
-            isinstance(_handler, logging.StreamHandler)
-            and hasattr(_handler, "stream")
-            and _handler.stream is sys.stderr
-        ):
-            if _llm_error_filter not in _handler.filters:
-                _handler.addFilter(_llm_error_filter)
-            return
-    # Fallback: no stderr handler found — attach to root logger.
-    if _llm_error_filter not in root.filters:
-        root.addFilter(_llm_error_filter)
-
 
 # Load API keys from ~/.amplifier/keys.env on startup
 # This allows keys saved by 'amplifier init' or 'amplifier provider use' to be available
-KeyManager()
+_key_manager = KeyManager()
+
+# Cancel flag for ESC-based cancellation
+_cancel_requested = False
 
 
 # Placeholder for the run command; assigned after registration below
@@ -545,9 +511,7 @@ class CommandProcessor:
             return f"Mode: {mode_name}" + (f" — {description}" if description else "")
 
     async def _list_modes(self) -> str:
-        """List available modes, grouped by source bundle."""
-        from collections import defaultdict
-
+        """List available modes."""
         session_state = self.session.coordinator.session_state
         discovery = session_state.get("mode_discovery")
 
@@ -562,36 +526,13 @@ class CommandProcessor:
 
         current_mode = session_state.get("active_mode")
 
-        # Group by source (supports both 2-tuple and 3-tuple formats)
-        groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
-        for item in modes:
-            if len(item) >= 3:
-                name, description, source = item[0], item[1], item[2]
-            else:
-                name, description = item[0], item[1]
-                source = ""
-            groups[source or "other"].append((name, description))
-
         lines = ["Available modes:"]
-
-        if len(groups) == 1 and "" in groups:
-            # No source info — flat list (backward compat with old hooks-mode)
-            for name, description in groups[""]:
-                indicator = " *" if name == current_mode else ""
-                if description:
-                    lines.append(f"  {name}{indicator} — {description}")
-                else:
-                    lines.append(f"  {name}{indicator}")
-        else:
-            # Grouped display
-            for source, source_modes in sorted(groups.items()):
-                lines.append(f"\n  {source}:")
-                for name, description in source_modes:
-                    indicator = " *" if name == current_mode else ""
-                    if description:
-                        lines.append(f"    {name}{indicator} — {description}")
-                    else:
-                        lines.append(f"    {name}{indicator}")
+        for name, description in modes:
+            indicator = " *" if name == current_mode else ""
+            if description:
+                lines.append(f"  {name}{indicator} — {description}")
+            else:
+                lines.append(f"  {name}{indicator}")
 
         if current_mode:
             lines.append(f"\nActive: {current_mode}")
@@ -854,9 +795,7 @@ class CommandProcessor:
             if modes:
                 lines.append("")
                 lines.append("Mode Shortcuts:")
-                for item in modes:
-                    # Support both 2-tuple (name, desc) and 3-tuple (name, desc, source)
-                    name, description = item[0], item[1]
+                for name, description in modes:
                     if description:
                         lines.append(f"  /{name:<11} - {description}")
                     else:
@@ -1189,10 +1128,7 @@ def get_module_search_paths() -> list[Path]:
 
 
 @click.group(cls=AmplifierGroup, invoke_without_command=True)
-@click.version_option(
-    version=f"{get_version()} (core {get_core_version()})",
-    prog_name="amplifier",
-)
+@click.version_option(version=get_version(), prog_name="amplifier")
 @click.option(
     "--install-completion",
     is_flag=False,
@@ -1285,8 +1221,12 @@ async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> N
         session: Active session to add context messages to
         prompt: User's input that may contain @mentions
     """
+    import logging
+
     from .lib.mention_loading import MentionLoader
     from .utils.mentions import has_mentions
+
+    logger = logging.getLogger(__name__)
 
     if not has_mentions(prompt):
         return
@@ -1427,6 +1367,8 @@ async def interactive_chat(
         initial_prompt: Optional prompt to auto-execute before entering interactive loop
         initial_transcript: If provided, restore this transcript (resume mode)
     """
+    global _cancel_requested
+
     # === SESSION CREATION (unified via create_initialized_session) ===
     session_config = SessionConfig(
         config=config,
@@ -1461,7 +1403,6 @@ async def interactive_chat(
             Panel.fit(
                 f"[bold cyan]Amplifier Interactive Session[/bold cyan]\n"
                 f"[dim]Session ID: [/dim][dim bright_yellow]{actual_session_id}[/dim bright_yellow]\n"
-                f"[dim]amplifier {get_version()} | core {get_core_version()}[/dim]\n"
                 f"[dim]{config_summary.format_banner_line()}[/dim]\n"
                 f"Commands: /help | Multi-line: Ctrl-J | Exit: Ctrl-D",
                 border_style="cyan",
@@ -1662,16 +1603,10 @@ async def interactive_chat(
                 # Otherwise continue in the REPL
 
             except ModuleValidationError as e:
-                if not display_validation_error(console, e, verbose=verbose):
-                    console.print(f"[red]Error:[/red] {escape_markup(e)}")
-                    if verbose:
-                        console.print_exception()
-
-            except LLMError as e:
-                display_llm_error(console, e, verbose=verbose)
+                display_validation_error(console, e, verbose=verbose)
 
             except Exception as e:
-                console.print(f"[red]Error:[/red] {escape_markup(e)}")
+                console.print(f"[red]Error:[/red] {e}")
                 if verbose:
                     console.print_exception()
 
@@ -1771,7 +1706,6 @@ async def execute_single(
     # Create fully initialized session (handles all setup including resume)
     initialized = await create_initialized_session(session_config, console)
     session = initialized.session
-    actual_session_id = initialized.session_id
 
     try:
         # Register trace collector hooks if in json-trace mode
@@ -1888,26 +1822,8 @@ async def execute_single(
             }
             print(json.dumps(error_output, indent=2))
         else:
-            if not display_validation_error(console, e, verbose=verbose):
-                console.print(f"[red]Error:[/red] {escape_markup(e)}")
-                if verbose:
-                    console.print_exception()
-        sys.exit(1)
-
-    except LLMError as e:
-        if output_format in ["json", "json-trace"]:
-            if original_stdout is not None:
-                sys.stdout = original_stdout
-            error_output = {
-                "status": "error",
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "session_id": session.session_id,
-                "timestamp": datetime.now(UTC).isoformat(),
-            }
-            print(json.dumps(error_output, indent=2))
-        else:
-            display_llm_error(console, e, verbose=verbose)
+            # Clean display for module validation errors
+            display_validation_error(console, e, verbose=verbose)
         sys.exit(1)
 
     except Exception as e:
@@ -1927,7 +1843,7 @@ async def execute_single(
             # Try clean display for module validation errors (including wrapped ones)
             if not display_validation_error(console, e, verbose=verbose):
                 # Fall back to generic error output
-                console.print(f"[red]Error:[/red] {escape_markup(e)}")
+                console.print(f"[red]Error:[/red] {e}")
                 if verbose:
                     console.print_exception()
         sys.exit(1)
@@ -1965,7 +1881,6 @@ cli.add_command(init_cmd)
 cli.add_command(module_group)
 cli.add_command(notify_group)
 cli.add_command(provider_group)
-cli.add_command(routing_group)
 cli.add_command(source_group)
 cli.add_command(tool_group)
 cli.add_command(update_cmd)
@@ -1996,7 +1911,6 @@ register_session_commands(
 
 def main():
     """Main entry point."""
-    _attach_llm_error_filter()
     cli()
 
 

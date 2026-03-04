@@ -234,21 +234,6 @@ def _get_commit_date_from_api(git_url: str, commit_sha: str) -> str | None:
     return None
 
 
-def get_core_version() -> str:
-    """Get the installed amplifier-core package version.
-
-    amplifier-core is published to PyPI with semantic versions (e.g., "1.0.9").
-    This reads the installed package metadata at runtime.
-
-    Returns:
-        Version string like "1.0.9", or "unknown" if not installed.
-    """
-    try:
-        return importlib.metadata.version("amplifier-core")
-    except importlib.metadata.PackageNotFoundError:
-        return "unknown"
-
-
 def get_version() -> str:
     """Get the display version string.
 

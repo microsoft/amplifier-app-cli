@@ -11,7 +11,11 @@ like "Error: " with nothing after the colon.
 from __future__ import annotations
 
 import asyncio
-from rich.markup import escape as _escape_markup
+import traceback
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rich.console import Console
 
 
 # Friendly messages for specific exception types known to have empty str()
@@ -66,16 +70,35 @@ def format_error_message(e: BaseException, *, include_type: bool = True) -> str:
     return f"{error_type}: (no additional details)"
 
 
-def escape_markup(value: object) -> str:
-    """Escape a value for safe interpolation into Rich markup strings.
-
-    Prevents Rich from interpreting brackets in exception messages,
-    file paths, or other dynamic content as markup tags.
+def print_error(console: "Console", e: BaseException, *, verbose: bool = False) -> None:
+    """Print an error to the console with proper formatting.
 
     Args:
-        value: Any value to escape (will be converted to str)
+        console: Rich console for output
+        e: The exception to display
+        verbose: If True, also print the traceback
+    """
+    error_msg = format_error_message(e)
+    console.print(f"[red]Error:[/red] {error_msg}")
+
+    if verbose:
+        console.print_exception()
+
+
+def get_error_context(e: BaseException) -> dict:
+    """Extract context from an exception for logging/events.
+
+    Useful for emitting error events with structured data.
+
+    Args:
+        e: The exception to extract context from
 
     Returns:
-        String safe for interpolation into Rich markup f-strings
+        Dict with error_type, error_message, and traceback info
     """
-    return _escape_markup(str(value))
+    return {
+        "error_type": type(e).__name__,
+        "error_message": format_error_message(e, include_type=False),
+        "error_repr": repr(e),
+        "traceback": traceback.format_exc(),
+    }

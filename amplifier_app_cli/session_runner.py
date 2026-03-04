@@ -38,7 +38,6 @@ from amplifier_core import ModuleValidationError
 
 from .session_store import SessionStore
 from .ui.error_display import display_validation_error
-from .utils.error_format import escape_markup
 
 if TYPE_CHECKING:
     from amplifier_foundation.bundle import PreparedBundle
@@ -156,32 +155,6 @@ async def create_initialized_session(
     # Step 2: Generate session ID if not provided
     session_id = config.session_id or str(uuid.uuid4())
 
-    # Set root session metadata once — propagates to all child sessions via config deep-merge.
-    # Guards ensure values are only stamped on first creation (root session); child sessions
-    # inherit parent values via config deep-merge and the guards prevent overwriting them.
-    # cwd is initialised before the try so the post-session block can always reference it
-    # (empty string is the safe fallback for sandboxed/container environments).
-    cwd = ""
-    try:
-        from .project_utils import get_project_slug
-
-        cwd = str(Path.cwd().resolve())
-        config.config["working_dir"] = cwd
-        if "root_session_id" not in config.config:
-            config.config["root_session_id"] = session_id
-        if "application_host" not in config.config:
-            config.config["application_host"] = "Amplifier CLI"
-        if "bundle_name" not in config.config:
-            config.config["bundle_name"] = config.bundle_name
-        if "project_slug" not in config.config:
-            config.config["project_slug"] = get_project_slug()
-        if "project_dir" not in config.config:
-            config.config["project_dir"] = cwd
-        if "project_name" not in config.config:
-            config.config["project_name"] = Path(cwd).name
-    except OSError:
-        pass  # CWD may be unavailable in sandboxed/container environments
-
     # Step 3: Create CLI UX systems (app-layer policy)
     approval_system = CLIApprovalSystem()
     display_system = CLIDisplaySystem()
@@ -195,32 +168,8 @@ async def create_initialized_session(
         console=console,
     )
 
-    # Belt-and-suspenders: ensure session.config (== coordinator.config) carries the same
-    # root-level metadata that was written into config.config above.  This matters because
-    # the foundation layer may copy config.config into a fresh dict when building the
-    # coordinator, so session.config and config.config are not guaranteed to be the same
-    # object.  Hooks read from coordinator.config, so we must ensure the values are there.
-    # Guards mirror the pre-session guards: child sessions inherit values from the parent
-    # via config deep-merge, so we only fill in missing values, never overwrite.
-    session.config["working_dir"] = cwd
-    if "root_session_id" not in session.config:
-        session.config["root_session_id"] = config.config.get(
-            "root_session_id", session_id
-        )
-    if "application_host" not in session.config:
-        session.config["application_host"] = config.config.get(
-            "application_host", "Amplifier CLI"
-        )
-    if "bundle_name" not in session.config:
-        session.config["bundle_name"] = config.bundle_name
-    if "project_slug" not in session.config:
-        session.config["project_slug"] = config.config.get("project_slug", "")
-    if "project_dir" not in session.config:
-        session.config["project_dir"] = config.config.get("project_dir", cwd)
-    if "project_name" not in session.config:
-        session.config["project_name"] = config.config.get(
-            "project_name", Path(cwd).name if cwd else ""
-        )
+    # Set root session ID (propagates to child sessions via config deep-merge)
+    session.config["root_session_id"] = session_id
 
     # Step 7: Restore transcript (resume only)
     if config.is_resume and config.initial_transcript:
@@ -355,8 +304,9 @@ async def _create_bundle_session(
                         "Check module configuration, credentials, and dependencies."
                     )
     except (ModuleValidationError, RuntimeError) as e:
+        core_logger.setLevel(original_level)
         if not display_validation_error(console, e, verbose=config.verbose):
-            console.print(f"[red]Error:[/red] {escape_markup(e)}")
+            console.print(f"[red]Error:[/red] {e}")
             if config.verbose:
                 console.print_exception()
         sys.exit(1)
@@ -423,6 +373,10 @@ def register_session_spawning(session: AmplifierSession) -> None:
         hook_inheritance: dict[str, list[str]] | None = None,
         orchestrator_config: dict | None = None,
         parent_messages: list[dict] | None = None,
+        # Provider/model override (legacy - use provider_preferences instead)
+        provider_override: str | None = None,
+        model_override: str | None = None,
+        # Provider preferences (ordered fallback chain)
         provider_preferences: list | None = None,
         self_delegation_depth: int = 0,
     ) -> dict:
@@ -436,6 +390,8 @@ def register_session_spawning(session: AmplifierSession) -> None:
             hook_inheritance=hook_inheritance,
             orchestrator_config=orchestrator_config,
             parent_messages=parent_messages,
+            provider_override=provider_override,
+            model_override=model_override,
             provider_preferences=provider_preferences,
             self_delegation_depth=self_delegation_depth,
         )

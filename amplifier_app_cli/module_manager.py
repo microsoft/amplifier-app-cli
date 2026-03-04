@@ -5,20 +5,14 @@ from dataclasses import dataclass
 from typing import Any
 from typing import Literal
 
-from .lib.settings import AppSettings
-from .lib.settings import Scope
+from amplifier_app_cli.lib.config_compat import ConfigManager
+
+from .paths import create_config_manager
 
 logger = logging.getLogger(__name__)
 
 ScopeType = Literal["local", "project", "global"]
 ModuleType = Literal["tool", "hook", "agent", "provider", "orchestrator", "context"]
-
-# Map CLI scope names to AppSettings Scope literals
-_SCOPE_MAP: dict[ScopeType, Scope] = {
-    "local": "local",
-    "project": "project",
-    "global": "global",
-}
 
 
 @dataclass
@@ -51,16 +45,13 @@ class RemoveModuleResult:
 class ModuleManager:
     """Manage module configuration."""
 
-    def __init__(self, config_manager: "AppSettings | None" = None):
+    def __init__(self, config_manager: ConfigManager | None = None):
         """Initialize module manager.
 
         Args:
-            config_manager: AppSettings instance (creates new if None).
-                Parameter kept as config_manager for backward compat with callers.
+            config_manager: Config manager instance (creates new if None)
         """
-        self.settings: AppSettings = (
-            config_manager if isinstance(config_manager, AppSettings) else AppSettings()
-        )
+        self.settings = config_manager or create_config_manager()
 
     def add_module(
         self,
@@ -99,9 +90,12 @@ class ModuleManager:
         }
         module_list_key = type_to_key[module_type]
 
-        # Read settings at the target scope
-        settings_scope = _SCOPE_MAP[scope]
-        settings = self.settings._read_scope(settings_scope) or {}
+        # Get current modules list
+        scope_map = {"local": "local", "project": "project", "global": "user"}
+        settings_scope = scope_map[scope]
+        target_file = self._get_file_for_scope(settings_scope)
+
+        settings = self.settings._read_yaml(target_file) or {}
         if "modules" not in settings:
             settings["modules"] = {}
         if module_list_key not in settings["modules"]:
@@ -115,17 +109,16 @@ class ModuleManager:
         }
         if module_id not in existing_ids:
             settings["modules"][module_list_key].append(module_entry)
-            self.settings._write_scope(settings_scope, settings)
+            self.settings._write_yaml(target_file, settings)
             logger.info(f"Added {module_type} '{module_id}' at {scope} scope")
         else:
             logger.warning(f"Module '{module_id}' already exists at {scope} scope")
 
-        target_file = str(self.settings._get_scope_path(settings_scope))
         return AddModuleResult(
             module_id=module_id,
             module_type=module_type,
             scope=scope,
-            file=target_file,
+            file=str(target_file),
         )
 
     def remove_module(
@@ -142,8 +135,11 @@ class ModuleManager:
         Returns:
             RemoveModuleResult with details
         """
-        settings_scope = _SCOPE_MAP[scope]
-        settings = self.settings._read_scope(settings_scope)
+        scope_map = {"local": "local", "project": "project", "global": "user"}
+        settings_scope = scope_map[scope]
+        target_file = self._get_file_for_scope(settings_scope)
+
+        settings = self.settings._read_yaml(target_file)
         if not settings or "modules" not in settings:
             logger.warning(f"No modules configured at {scope} scope")
             return RemoveModuleResult(module_id=module_id, scope=scope)
@@ -177,7 +173,7 @@ class ModuleManager:
             del settings["modules"]
 
         if removed:
-            self.settings._write_scope(settings_scope, settings)
+            self.settings._write_yaml(target_file, settings)
             logger.info(f"Removed module '{module_id}' from {scope} scope")
         else:
             logger.warning(f"Module '{module_id}' not found at {scope} scope")
@@ -220,3 +216,12 @@ class ModuleManager:
                             )
 
         return modules
+
+    def _get_file_for_scope(self, scope: str):
+        """Get settings file path for scope."""
+        if scope == "user":
+            return self.settings.paths.user
+        if scope == "project":
+            return self.settings.paths.project
+        # local
+        return self.settings.paths.local

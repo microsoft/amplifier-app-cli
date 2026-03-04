@@ -1,6 +1,5 @@
-"""Clean error display for module validation and LLM errors."""
+"""Clean error display for module validation failures."""
 
-import json
 import re
 from typing import NamedTuple
 
@@ -8,14 +7,6 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-
-from amplifier_core.llm_errors import (
-    AuthenticationError,
-    ContentFilterError,
-    ContextLengthError,
-    LLMError,
-    RateLimitError,
-)
 
 
 class ParsedValidationError(NamedTuple):
@@ -83,9 +74,7 @@ def parse_validation_error(error: Exception) -> ParsedValidationError | None:
     return None
 
 
-def display_validation_error(
-    console: Console, error: Exception, verbose: bool = False
-) -> bool:
+def display_validation_error(console: Console, error: Exception, verbose: bool = False) -> bool:
     """
     Display a ModuleValidationError with clean Rich formatting.
 
@@ -191,146 +180,3 @@ def _get_actionable_tip(parsed: ParsedValidationError) -> str:
 
     # Default tip
     return f"Review the module at: amplifier-module-{parsed.module_id}"
-
-
-# ---- Maximum message length before truncation ----
-_MAX_MESSAGE_LEN = 200
-
-
-def _truncate(message: str, limit: int = _MAX_MESSAGE_LEN) -> str:
-    """Truncate a long error message, adding an ellipsis if shortened."""
-    if len(message) <= limit:
-        return message
-    return message[:limit] + "…"
-
-
-def _extract_message(raw: str) -> str:
-    """Extract a human-readable message from a raw error string.
-
-    Tries to parse *raw* as JSON and looks for a ``message`` field
-    (nested under ``error`` first, then top-level).  Falls back to
-    a truncated version of the raw string when JSON parsing fails.
-    """
-    try:
-        parsed = json.loads(raw)
-        nested = parsed.get("error", {})
-        if isinstance(nested, dict):
-            msg = nested.get("message")
-            if msg:
-                return str(msg)
-        top = parsed.get("message")
-        if top:
-            return str(top)
-    except (json.JSONDecodeError, TypeError, AttributeError):
-        pass
-    return _truncate(raw)
-
-
-def display_llm_error(
-    console: Console, error: Exception, verbose: bool = False
-) -> bool:
-    """Display an LLMError with clean Rich formatting.
-
-    Args:
-        console: Rich console for output.
-        error: The error to display.
-        verbose: If True, also print traceback.
-
-    Returns:
-        True if error was handled as an LLMError, False if not (caller should handle).
-    """
-    if not isinstance(error, LLMError):
-        return False
-
-    # Determine title, border colour, and actionable tip based on error type.
-    if isinstance(error, RateLimitError):
-        title = "Rate Limited"
-        border_style = "yellow"
-    elif isinstance(error, AuthenticationError):
-        title = "Authentication Failed"
-        border_style = "red"
-    elif isinstance(error, ContextLengthError):
-        title = "Context Length Exceeded"
-        border_style = "red"
-    elif isinstance(error, ContentFilterError):
-        title = "Content Filtered"
-        border_style = "red"
-    else:
-        title = "LLM Error"
-        border_style = "red"
-
-    tip = _get_llm_error_tip(error)
-
-    # Build the panel content
-    content = Text()
-
-    # Compact provider / model line (no labels)
-    provider_model_parts: list[str] = []
-    if error.provider:
-        provider_model_parts.append(error.provider)
-    if error.model:
-        provider_model_parts.append(error.model)
-    if provider_model_parts:
-        content.append(" / ".join(provider_model_parts), style="bold cyan")
-        content.append("\n")
-
-    # Extracted human-readable message
-    raw = str(error)
-    content.append("\n")
-    content.append(_extract_message(raw), style="white")
-    content.append("\n")
-
-    # Raw Details section
-    content.append("\n")
-    content.append("── Raw Details ──", style="dim")
-    content.append("\n")
-    content.append(raw, style="dim")
-
-    # Print the panel
-    console.print()
-    console.print(
-        Panel(
-            content,
-            title=f"[bold {border_style}]{title}[/bold {border_style}]",
-            border_style=border_style,
-            padding=(1, 2),
-        )
-    )
-
-    # Actionable tip
-    console.print(f"[dim]Tip: {tip}[/dim]")
-    console.print()
-
-    # Verbose mode: show traceback
-    if verbose:
-        import sys
-
-        console.print("[dim]——— Traceback ———[/dim]")
-        if sys.exc_info()[0] is not None:
-            console.print_exception()
-
-    return True
-
-
-def _get_llm_error_tip(error: LLMError) -> str:
-    """Return an actionable tip based on the LLM error type."""
-    if isinstance(error, RateLimitError):
-        if error.retry_after is not None:
-            return (
-                f"The provider will accept requests again in ~{error.retry_after:.0f}s. "
-                "Retry automatically or wait and try again."
-            )
-        return "You've hit a rate limit. Wait a moment and retry, or reduce request frequency."
-
-    if isinstance(error, AuthenticationError):
-        provider = error.provider or "your provider"
-        return f"Check that your API key or credentials for {provider} are valid and not expired."
-
-    if isinstance(error, ContextLengthError):
-        return "Reduce conversation length or context size. Try starting a new conversation."
-
-    if isinstance(error, ContentFilterError):
-        return "Your request was blocked by the provider's content filter. Try rephrasing your message."
-
-    # Generic LLMError
-    return "An unexpected LLM error occurred. Check the error details above."

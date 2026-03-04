@@ -17,7 +17,6 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from ..console import console
-from ..utils.error_format import escape_markup
 from ..lib.settings import AppSettings
 from ..project_utils import get_project_slug
 from ..runtime.config import resolve_config
@@ -517,7 +516,7 @@ def register_session_commands(
                 )
 
         except Exception as exc:
-            console.print(f"[red]Error resuming session:[/red] {escape_markup(exc)}")
+            console.print(f"[red]Error resuming session:[/red] {exc}")
             sys.exit(1)
 
     @cli.group(invoke_without_command=True)
@@ -562,7 +561,7 @@ def register_session_commands(
                 )
                 sys.exit(1)
             except ValueError as e:
-                console.print(f"[red]Error:[/red] {escape_markup(e)}")
+                console.print(f"[red]Error:[/red] {e}")
                 sys.exit(1)
 
             session_dir = store.base_dir / session_id
@@ -741,13 +740,13 @@ def register_session_commands(
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
         except ValueError as e:
-            console.print(f"[red]Error:[/red] {escape_markup(e)}")
+            console.print(f"[red]Error:[/red] {e}")
             sys.exit(1)
 
         try:
             transcript, metadata = store.load(session_id)
         except Exception as exc:
-            console.print(f"[red]Error loading session:[/red] {escape_markup(exc)}")
+            console.print(f"[red]Error loading session:[/red] {exc}")
             sys.exit(1)
 
         panel_content = [
@@ -818,7 +817,7 @@ def register_session_commands(
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
         except ValueError as e:
-            console.print(f"[red]Error:[/red] {escape_markup(e)}")
+            console.print(f"[red]Error:[/red] {e}")
             sys.exit(1)
 
         session_dir = store.base_dir / session_id
@@ -908,7 +907,7 @@ def register_session_commands(
                 )
             console.print()
         except ValueError as e:
-            console.print(f"[red]Error:[/red] {escape_markup(e)}")
+            console.print(f"[red]Error:[/red] {e}")
             sys.exit(1)
 
         # Perform the fork
@@ -951,7 +950,7 @@ def register_session_commands(
                 )
 
         except Exception as e:
-            console.print(f"[red]Error forking session:[/red] {escape_markup(e)}")
+            console.print(f"[red]Error forking session:[/red] {e}")
             sys.exit(1)
 
     @session.command(name="delete")
@@ -967,7 +966,7 @@ def register_session_commands(
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
         except ValueError as e:
-            console.print(f"[red]Error:[/red] {escape_markup(e)}")
+            console.print(f"[red]Error:[/red] {e}")
             sys.exit(1)
 
         if not force:
@@ -983,7 +982,7 @@ def register_session_commands(
             shutil.rmtree(session_path)
             console.print(f"[green]✓[/green] Deleted session: {session_id}")
         except Exception as exc:
-            console.print(f"[red]Error deleting session:[/red] {escape_markup(exc)}")
+            console.print(f"[red]Error deleting session:[/red] {exc}")
             sys.exit(1)
 
     @session.command(name="resume")
@@ -1031,7 +1030,7 @@ def register_session_commands(
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
         except ValueError as e:
-            console.print(f"[red]Error:[/red] {escape_markup(e)}")
+            console.print(f"[red]Error:[/red] {e}")
             sys.exit(1)
 
         try:
@@ -1089,7 +1088,7 @@ def register_session_commands(
                 )
             )
         except Exception as exc:
-            console.print(f"[red]Error resuming session:[/red] {escape_markup(exc)}")
+            console.print(f"[red]Error resuming session:[/red] {exc}")
             sys.exit(1)
 
     @session.command(name="cleanup")
@@ -1146,7 +1145,7 @@ def register_session_commands(
                 )
                 sys.exit(1)
             except ValueError as e:
-                console.print(f"[red]Error:[/red] {escape_markup(e)}")
+                console.print(f"[red]Error:[/red] {e}")
                 sys.exit(1)
 
             # Delegate to sessions_resume

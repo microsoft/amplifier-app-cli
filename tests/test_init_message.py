@@ -1,8 +1,8 @@
-"""Regression test for the first-run tip message.
+"""Regression test for the init tip message.
 
-The tip message should NOT claim that setting API keys skips setup,
+The tip message should NOT claim that setting API keys skips init,
 because check_first_run() only checks ~/.amplifier/settings.yaml,
-not environment variables. Instead it should recommend 'amplifier provider add'.
+not environment variables. Instead it should recommend 'amplifier init --yes'.
 
 See: upstream-fix-6-cli-init-message.md
 """
@@ -20,9 +20,9 @@ def test_init_tip_message_does_not_say_skip():
     )
 
 
-def test_init_tip_message_recommends_provider_add():
-    """The tip message should recommend 'amplifier provider add'."""
+def test_init_tip_message_recommends_init_yes():
+    """The tip message should recommend 'amplifier init --yes'."""
     source = inspect.getsource(init_module.prompt_first_run_init)
-    assert "amplifier provider add" in source, (
-        "Tip should mention 'amplifier provider add'"
+    assert "amplifier init --yes" in source, (
+        "Tip should mention 'amplifier init --yes'"
     )

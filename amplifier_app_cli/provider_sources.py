@@ -10,10 +10,8 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 
-from .utils.error_format import escape_markup
-
 if TYPE_CHECKING:
-    from amplifier_app_cli.lib.settings import AppSettings
+    from amplifier_app_cli.lib.config_compat import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +20,6 @@ DEFAULT_PROVIDER_SOURCES = {
     "provider-anthropic": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
     "provider-azure-openai": "git+https://github.com/microsoft/amplifier-module-provider-azure-openai@main",
     "provider-gemini": "git+https://github.com/microsoft/amplifier-module-provider-gemini@main",
-    "provider-github-copilot": "git+https://github.com/microsoft/amplifier-module-provider-github-copilot@main",
     "provider-ollama": "git+https://github.com/microsoft/amplifier-module-provider-ollama@main",
     "provider-openai": "git+https://github.com/microsoft/amplifier-module-provider-openai@main",
     "provider-vllm": "git+https://github.com/microsoft/amplifier-module-provider-vllm@main",
@@ -81,7 +78,7 @@ def _get_ordered_providers(sources: dict[str, str]) -> list[tuple[str, str]]:
 
 
 def get_effective_provider_sources(
-    config_manager: "AppSettings | None" = None,
+    config_manager: "ConfigManager | None" = None,
 ) -> dict[str, str]:
     """Get provider sources with settings modules and overrides applied.
 
@@ -172,7 +169,7 @@ def source_from_uri(source_uri: str):
 
 def ensure_provider_installed(
     module_id: str,
-    config_manager: "AppSettings | None" = None,
+    config_manager: "ConfigManager | None" = None,
     console: Console | None = None,
 ) -> bool:
     """Ensure a single provider module is installed.
@@ -252,7 +249,7 @@ def ensure_provider_installed(
 
 
 def install_known_providers(
-    config_manager: "AppSettings | None" = None,
+    config_manager: "ConfigManager | None" = None,
     console: Console | None = None,
     verbose: bool = True,
 ) -> list[str]:
@@ -328,9 +325,7 @@ def install_known_providers(
             logger.warning(f"Failed to install {module_id}: {e}")
 
             if verbose and console:
-                console.print(
-                    f"[red]Failed to install {module_id}: {escape_markup(e)}[/red]"
-                )
+                console.print(f"[red]Failed to install {module_id}: {e}[/red]")
 
     if failed and verbose and console:
         console.print(
