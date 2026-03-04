@@ -258,10 +258,12 @@ def provider_add(ctx: click.Context, provider_type: str | None) -> None:
     key_manager = KeyManager()
     try:
         config = configure_provider(module_id, key_manager)
-    except click.Abort:
-        raise  # Let Click handle aborts cleanly (from _prompt_model_selection)
+    except (click.Abort, click.ClickException):
+        raise  # Let Click handle aborts and CLI errors cleanly
     except Exception as e:
-        console.print(f"\n  [red]⚠  Provider configuration failed:[/red]\n\n  {e}\n")
+        console.print(
+            f"\n  [red]⚠  Provider configuration failed:[/red]\n\n  {escape_markup(str(e))}\n"
+        )
         ctx.exit(1)
 
     if config is None:
@@ -842,10 +844,12 @@ def _manage_add_provider(settings: AppSettings) -> None:
     key_manager = KeyManager()
     try:
         config = configure_provider(module_id, key_manager)
-    except click.Abort:
-        raise  # Let Click handle aborts cleanly (from _prompt_model_selection)
+    except (click.Abort, click.ClickException):
+        raise  # Let Click handle aborts and CLI errors cleanly
     except Exception as e:
-        console.print(f"\n  [red]⚠  Provider configuration failed:[/red]\n\n  {e}\n")
+        console.print(
+            f"\n  [red]⚠  Provider configuration failed:[/red]\n\n  {escape_markup(str(e))}\n"
+        )
         return  # Return to provider management loop
 
     if config is None:

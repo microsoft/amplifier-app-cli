@@ -18,9 +18,9 @@ from unittest.mock import MagicMock, patch
 class TestPromptModelSelectionErrorHandling:
     """Tests for widened exception handling in _prompt_model_selection()."""
 
-    def test_generic_exception_prints_error_and_aborts(self):
+    def test_generic_exception_prints_error_and_raises_click_exception(self):
         """When get_provider_models() raises a generic Exception,
-        _prompt_model_selection() should print the error and raise click.Abort."""
+        _prompt_model_selection() should print the error and raise click.ClickException."""
         from amplifier_app_cli.provider_config_utils import _prompt_model_selection
 
         mock_console = MagicMock()
@@ -35,7 +35,7 @@ class TestPromptModelSelectionErrorHandling:
                 mock_console,
             ),
         ):
-            with pytest.raises(click.Abort):
+            with pytest.raises(click.ClickException):
                 _prompt_model_selection("test-provider")
 
         # Verify the error message was printed (at least one call contains the error text)
@@ -193,6 +193,42 @@ class TestManageAddProviderSafetyNet:
             with pytest.raises(click.Abort):
                 _manage_add_provider(settings)
 
+    def test_click_exception_propagates(self, tmp_path):
+        """When configure_provider() raises click.ClickException,
+        it should propagate (not be caught by the safety net)."""
+        from amplifier_app_cli.commands.provider import _manage_add_provider
+
+        settings = _make_settings(tmp_path)
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._ensure_providers_ready",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.ProviderManager",
+            ) as MockPM,
+            patch(
+                "amplifier_app_cli.commands.provider.Prompt.ask",
+                return_value="1",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.KeyManager",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                side_effect=click.ClickException("Auth failed"),
+            ),
+            patch("amplifier_app_cli.commands.provider.console"),
+        ):
+            mock_pm = MagicMock()
+            mock_pm.list_providers.return_value = [
+                ("provider-anthropic", "Anthropic", "Anthropic provider"),
+            ]
+            MockPM.return_value = mock_pm
+
+            with pytest.raises(click.ClickException):
+                _manage_add_provider(settings)
+
 
 class TestProviderAddSafetyNet:
     """Tests for the safety net around configure_provider() in the provider_add command."""
@@ -271,6 +307,47 @@ class TestProviderAddSafetyNet:
             f"Expected exit code 1, got {result.exit_code}. Output: {result.output}"
         )
         # Should NOT contain a Python traceback
+        assert "Traceback" not in result.output, (
+            f"Expected no traceback, got: {result.output}"
+        )
+
+    def test_click_exception_shows_error_message(self, tmp_path):
+        """When configure_provider() raises click.ClickException (from _prompt_model_selection),
+        provider_add should let Click render it (exit code 1, error message shown, no traceback)."""
+        from click.testing import CliRunner
+
+        from amplifier_app_cli.commands.provider import provider
+
+        settings = _make_settings(tmp_path)
+        runner = CliRunner()
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                side_effect=click.ClickException("Auth failed: run gh auth login"),
+            ),
+            patch("amplifier_app_cli.commands.provider.KeyManager"),
+            patch("amplifier_app_cli.commands.provider.ProviderManager") as MockPM,
+        ):
+            mock_pm = MagicMock()
+            mock_pm.list_providers.return_value = [
+                ("provider-anthropic", "Anthropic", "Anthropic provider"),
+            ]
+            MockPM.return_value = mock_pm
+
+            result = runner.invoke(provider, ["add", "anthropic"])
+
+        assert result.exit_code == 1, (
+            f"Expected exit code 1, got {result.exit_code}. Output: {result.output}"
+        )
+        assert "Auth failed" in result.output, (
+            f"Expected error message in output, got: {result.output}"
+        )
         assert "Traceback" not in result.output, (
             f"Expected no traceback, got: {result.output}"
         )
