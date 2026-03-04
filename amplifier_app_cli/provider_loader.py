@@ -173,7 +173,18 @@ def get_provider_models(
     # should be shown to the user, not silently swallowed
     list_models_fn = provider.list_models
     if asyncio.iscoroutinefunction(list_models_fn):
-        return asyncio.run(list_models_fn())
+
+        async def _list_and_cleanup():
+            try:
+                return await list_models_fn()
+            finally:
+                if hasattr(provider, "close") and callable(provider.close):
+                    try:
+                        await provider.close()  # pyright: ignore[reportGeneralTypeIssues]
+                    except Exception:
+                        pass  # Best-effort cleanup
+
+        return asyncio.run(_list_and_cleanup())
     return list_models_fn()
 
 

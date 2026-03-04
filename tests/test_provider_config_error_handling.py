@@ -351,3 +351,98 @@ class TestProviderAddSafetyNet:
         assert "Traceback" not in result.output, (
             f"Expected no traceback, got: {result.output}"
         )
+
+
+# ============================================================
+# Task 3: Spinner wraps model fetching
+# ============================================================
+
+
+class TestModelFetchingSpinner:
+    """Tests that _prompt_model_selection() wraps model fetching in a spinner."""
+
+    def test_spinner_context_manager_entered_during_fetch(self):
+        """console.status() should be entered as a context manager during model fetching."""
+        from amplifier_app_cli.provider_config_utils import _prompt_model_selection
+
+        mock_console = MagicMock()
+        mock_status_ctx = MagicMock()
+        mock_console.status.return_value = mock_status_ctx
+
+        mock_model = MagicMock()
+        mock_model.id = "test-model"
+        mock_model.display_name = "Test Model"
+        mock_model.capabilities = []
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_models",
+                return_value=[mock_model],
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.console",
+                mock_console,
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                return_value="1",
+            ),
+        ):
+            result = _prompt_model_selection("test-provider")
+
+        assert result == "test-model", f"Expected 'test-model', got '{result}'"
+        mock_console.status.assert_called_once()
+        mock_status_ctx.__enter__.assert_called_once()
+        mock_status_ctx.__exit__.assert_called_once()
+
+    def test_spinner_exits_on_connection_error(self):
+        """Spinner should exit cleanly when get_provider_models() raises ConnectionError."""
+        from amplifier_app_cli.provider_config_utils import _prompt_model_selection
+
+        mock_console = MagicMock()
+        mock_status_ctx = MagicMock()
+        mock_console.status.return_value = mock_status_ctx
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_models",
+                side_effect=ConnectionError("refused"),
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.console",
+                mock_console,
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                return_value="fallback-model",
+            ),
+        ):
+            result = _prompt_model_selection("test-provider")
+
+        assert result == "fallback-model", f"Expected 'fallback-model', got '{result}'"
+        mock_status_ctx.__enter__.assert_called_once()
+        mock_status_ctx.__exit__.assert_called_once()
+
+    def test_spinner_exits_on_generic_exception(self):
+        """Spinner should exit cleanly when get_provider_models() raises a generic Exception."""
+        from amplifier_app_cli.provider_config_utils import _prompt_model_selection
+
+        mock_console = MagicMock()
+        mock_status_ctx = MagicMock()
+        mock_console.status.return_value = mock_status_ctx
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_models",
+                side_effect=Exception("Token expired"),
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.console",
+                mock_console,
+            ),
+        ):
+            with pytest.raises(click.ClickException):
+                _prompt_model_selection("test-provider")
+
+        mock_status_ctx.__enter__.assert_called_once()
+        mock_status_ctx.__exit__.assert_called_once()
