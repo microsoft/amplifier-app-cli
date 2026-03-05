@@ -10,7 +10,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from ..key_manager import KeyManager
-from ..lib.settings import AppSettings
+from ..lib.settings import AppSettings, Scope
 from ..paths import create_config_manager
 from ..provider_config_utils import configure_provider
 from ..provider_loader import get_provider_models
@@ -18,6 +18,12 @@ from ..provider_manager import ProviderManager
 from ..provider_sources import ensure_provider_installed
 from ..provider_sources import get_effective_provider_sources
 from ..provider_sources import install_known_providers
+from ..ui.scope import (
+    is_scope_change_available,
+    print_scope_indicator,
+    prompt_scope_change,
+    validate_scope_cli,
+)
 from ..utils.error_format import escape_markup
 
 console = Console()
@@ -698,11 +704,13 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
 # ============================================================
 
 
-def provider_manage_loop(settings: AppSettings) -> None:
+def provider_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scope:
     """Interactive provider management loop.
 
     Callable from CLI command or from init dashboard.
+    Tracks current_scope internally, returns it when done.
     """
+    current_scope: Scope = scope
     while True:
         # 1. Display provider table
         providers = settings.get_provider_overrides()
@@ -742,6 +750,7 @@ def provider_manage_loop(settings: AppSettings) -> None:
                 table.add_row(str(i), name_col, ptype, model, str(pri))
 
             console.print(table)
+            print_scope_indicator(current_scope, console=console)  # type: ignore[arg-type]
 
         # 2. Show actions menu
         console.print("  Actions:")
@@ -750,26 +759,30 @@ def provider_manage_loop(settings: AppSettings) -> None:
         console.print("    \\[r] Remove a provider (enter number)")
         console.print("    \\[p] Reorder priorities")
         console.print("    \\[t] Test connections")
+        if is_scope_change_available():
+            console.print("    \\[w] Change write scope")
         console.print("    \\[d] Done")
         console.print()
 
         try:
             choice = Prompt.ask("  Choice", default="d").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            break
+            return current_scope
 
         if choice == "d":
-            break
+            return current_scope
         elif choice == "a":
             _manage_add_provider(settings)
         elif choice.startswith("e"):
-            _manage_edit_provider(settings, choice, providers)
+            _manage_edit_provider(settings, choice, providers, scope=current_scope)
         elif choice.startswith("r"):
             _manage_remove_provider(settings, choice, providers)
         elif choice == "p":
-            _manage_reorder_providers(settings, providers)
+            _manage_reorder_providers(settings, providers, scope=current_scope)
         elif choice == "t":
             _manage_test_providers(settings, providers)
+        elif choice == "w" and is_scope_change_available():
+            current_scope = prompt_scope_change(current_scope, console=console)  # type: ignore[arg-type]
 
 
 def _parse_number_from_choice(choice: str, prefix: str, count: int) -> int | None:
@@ -899,7 +912,10 @@ def _manage_add_provider(settings: AppSettings) -> None:
 
 
 def _manage_edit_provider(
-    settings: AppSettings, choice: str, providers: list[dict[str, Any]]
+    settings: AppSettings,
+    choice: str,
+    providers: list[dict[str, Any]],
+    scope: Scope = "global",
 ) -> None:
     """Edit a provider from the manage loop."""
     if not providers:
@@ -938,7 +954,7 @@ def _manage_edit_provider(
         updated_entry["source"] = entry["source"]
 
     name = entry.get("id") or _display_name(module_id)
-    scope_providers = settings.get_scope_provider_overrides("global")
+    scope_providers = settings.get_scope_provider_overrides(scope)
     new_list = []
     replaced = False
     for p in scope_providers:
@@ -950,11 +966,11 @@ def _manage_edit_provider(
     if not replaced:
         new_list.append(updated_entry)
 
-    scope_settings = settings._read_scope("global")
+    scope_settings = settings._read_scope(scope)
     if "config" not in scope_settings:
         scope_settings["config"] = {}
     scope_settings["config"]["providers"] = new_list
-    settings._write_scope("global", scope_settings)
+    settings._write_scope(scope, scope_settings)
 
     model = new_config.get("default_model", "")
     model_display = f" ({model})" if model else ""
@@ -1013,7 +1029,9 @@ def _manage_remove_provider(
 
 
 def _manage_reorder_providers(
-    settings: AppSettings, providers: list[dict[str, Any]]
+    settings: AppSettings,
+    providers: list[dict[str, Any]],
+    scope: Scope = "global",
 ) -> None:
     """Reorder provider priorities from the manage loop."""
     if len(providers) < 2:
@@ -1052,11 +1070,11 @@ def _manage_reorder_providers(
         entry["config"] = config
         reordered.append(entry)
 
-    scope_settings = settings._read_scope("global")
+    scope_settings = settings._read_scope(scope)
     if "config" not in scope_settings:
         scope_settings["config"] = {}
     scope_settings["config"]["providers"] = reordered
-    settings._write_scope("global", scope_settings)
+    settings._write_scope(scope, scope_settings)
 
     console.print("\n  [green]✓ Priorities updated.[/green]")
 
@@ -1110,8 +1128,14 @@ def _manage_test_providers(
 
 
 @provider.command("manage")
-def provider_manage():
+@click.option(
+    "--scope",
+    default="global",
+    type=click.Choice(["global", "project", "local"]),
+)
+def provider_manage(scope: str):
     """Interactive provider management dashboard."""
+    validate_scope_cli(scope)  # type: ignore[arg-type]
     _ensure_providers_ready()
     settings = _get_settings()
-    provider_manage_loop(settings)
+    provider_manage_loop(settings, scope=scope)  # type: ignore[arg-type]
