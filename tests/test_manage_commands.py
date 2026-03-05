@@ -668,6 +668,83 @@ class TestInitDashboard:
         # Should show routing info
         assert "balanced" in rendered.lower()
 
+    def test_init_dashboard_shows_scope_indicator(self, tmp_path):
+        """Scope indicator should appear unconditionally in init dashboard."""
+        from amplifier_app_cli.commands.init import init_dashboard_loop
+
+        settings = _make_settings(tmp_path)
+        # No providers seeded — indicator must still appear
+        cache_dir = _make_matrix_dir(tmp_path)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.init.console", test_console),
+            patch("amplifier_app_cli.commands.init.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.commands.init._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+        ):
+            MockPrompt.ask.return_value = "d"
+            init_dashboard_loop(settings)
+
+        rendered = output.getvalue()
+        assert "Saving to" in rendered
+
+    def test_init_dashboard_passes_scope_to_provider_manage(self, tmp_path):
+        """init_dashboard_loop should pass scope= to provider_manage_loop."""
+        from amplifier_app_cli.commands.init import init_dashboard_loop
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet-4-6"},
+            priority=1,
+        )
+        cache_dir = _make_matrix_dir(tmp_path)
+
+        from io import StringIO
+        from unittest.mock import MagicMock
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        # Simulate: user picks "p" (provider), then "d" (done)
+        responses = iter(["p", "d"])
+        mock_provider_loop = MagicMock(return_value="global")
+
+        with (
+            patch("amplifier_app_cli.commands.init.console", test_console),
+            patch("amplifier_app_cli.commands.init.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.commands.init._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.provider_manage_loop",
+                mock_provider_loop,
+            ),
+        ):
+            MockPrompt.ask.side_effect = lambda *args, **kwargs: next(responses)
+            init_dashboard_loop(settings)
+
+        # Verify provider_manage_loop was called with scope= keyword
+        assert mock_provider_loop.called, "provider_manage_loop was never called"
+        call_kwargs = mock_provider_loop.call_args.kwargs
+        assert "scope" in call_kwargs, (
+            f"provider_manage_loop was not called with scope= kwarg; "
+            f"got kwargs={call_kwargs}"
+        )
+
 
 # ============================================================
 # Task 4: First-run updates
