@@ -1,132 +1,118 @@
-"""Shared Scope UI helpers for interactive commands.
-
-Provides reusable functions for scope indicator display, scope change prompts,
-scope availability checks, and CLI scope validation guards.
-"""
+"""Shared scope UI helpers for interactive dashboards and CLI commands."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from typing import Literal
-
-    ScopeValue = Literal["global", "project", "local"]
-
 import click
-from rich.console import Console
 from rich.prompt import Prompt
 
-from amplifier_app_cli.paths import is_running_from_home
+from ..lib.settings import Scope
+from ..paths import is_running_from_home
 
-# Scope metadata: display_name, file_hint, description, parenthetical
-_SCOPE_INFO: dict[str, dict[str, str]] = {
-    "global": {
-        "display_name": "Global",
-        "file_hint": "~/.amplifier/settings.yaml",
-        "description": "User-wide defaults",
-        "parenthetical": "all projects",
-    },
-    "project": {
-        "display_name": "Project",
-        "file_hint": ".amplifier/settings.yaml",
-        "description": "Team-shared project settings",
-        "parenthetical": "committed",
-    },
-    "local": {
-        "display_name": "Local",
-        "file_hint": ".amplifier/settings.local.yaml",
-        "description": "Machine-specific overrides",
-        "parenthetical": "gitignored",
-    },
+if TYPE_CHECKING:
+    from rich.console import Console
+
+    from ..lib.settings import AppSettings
+
+_SCOPE_INFO: dict[str, tuple[str, str, str, str]] = {
+    "global": (
+        "global",
+        "~/.amplifier/settings.yaml",
+        "Your defaults across all projects",
+        "",
+    ),
+    "project": (
+        "project",
+        ".amplifier/settings.yaml",
+        "Team settings, committed to git",
+        "(team-shared, committed)",
+    ),
+    "local": (
+        "local",
+        ".amplifier/settings.local.yaml",
+        "This machine only, gitignored",
+        "(this machine only, gitignored)",
+    ),
 }
 
-_SCOPE_ORDER: list[ScopeValue] = ["global", "project", "local"]
+_SCOPE_ORDER: list[str] = ["global", "project", "local"]
+
+_HOME_DIR_ERROR = (
+    "Your home directory is your global scope — project and local scopes "
+    "apply to specific project directories. Run this command from a project "
+    "folder to use those scopes."
+)
 
 
 def print_scope_indicator(
-    scope: ScopeValue,
-    *,
-    console: Console | None = None,
+    console: Console,
+    settings: AppSettings,
+    current_scope: Scope,
 ) -> None:
-    """Render a 'Saving to: ...' line with scope-appropriate styling.
-
-    Global scope gets dim treatment; project and local scopes get yellow treatment.
-    """
-    if console is None:
-        console = Console()
-
-    # Fallback to global for unknown scopes
-    info = _SCOPE_INFO.get(scope, _SCOPE_INFO["global"])
-    label = info["display_name"]
-    hint = info["file_hint"]
-
-    if scope == "global":
-        console.print(f"[dim]Saving to: {label} ({hint})[/dim]")
+    _name, file_hint, _desc, parenthetical = _SCOPE_INFO[current_scope]
+    if current_scope == "global":
+        console.print(
+            f"  [dim]Saving to:[/dim] [bold]{current_scope}[/bold]"
+            f"  [dim]{file_hint}[/dim]"
+        )
     else:
-        console.print(f"[yellow]Saving to: {label} ({hint})[/yellow]")
+        console.print(
+            f"  [yellow]Saving to:[/yellow] [bold yellow]{current_scope}[/bold yellow]"
+            f"  [dim]{file_hint}[/dim]"
+            f"  [yellow]{parenthetical}[/yellow]"
+        )
 
 
 def is_scope_change_available() -> bool:
-    """Return whether scope change is available.
-
-    Returns False when cwd is the home directory (only global scope makes sense).
-    """
     return not is_running_from_home()
 
 
 def prompt_scope_change(
-    current_scope: ScopeValue,
-    *,
-    console: Console | None = None,
-) -> ScopeValue:
-    """Interactive submenu for switching scope.
-
-    Shows a numbered list of scopes with an arrow marker on the current one.
-    Uses Prompt.ask() with choices validation. Shows confirmation on change.
-
-    Returns the selected scope name.
-    """
-    if console is None:
-        console = Console()
-
-    console.print()
-    console.print("[bold]Select scope:[/bold]")
-
-    for idx, scope_key in enumerate(_SCOPE_ORDER, start=1):
-        info = _SCOPE_INFO[scope_key]
-        marker = " ← current" if scope_key == current_scope else ""
+    console: Console,
+    settings: AppSettings,
+    current_scope: Scope,
+) -> Scope:
+    console.print("\n  Write scope:")
+    for i, scope_name in enumerate(_SCOPE_ORDER, 1):
+        _name, file_hint, description, _paren = _SCOPE_INFO[scope_name]
+        marker = "\u25b8" if scope_name == current_scope else " "
+        default_tag = " (default)" if scope_name == "global" else ""
         console.print(
-            f"  {idx}. {info['display_name']}"
-            f" — {info['description']} ({info['parenthetical']}){marker}"
+            f"  {marker} [{i}] {scope_name:<8} {file_hint:<40} {description}{default_tag}"
         )
-
     console.print()
-    choices = [str(i) for i in range(1, len(_SCOPE_ORDER) + 1)]
-    choice = Prompt.ask("Choice", choices=choices, default="1")
-    selected = _SCOPE_ORDER[int(choice) - 1]
 
-    if selected != current_scope:
-        new_info = _SCOPE_INFO[selected]
+    scope_map = {str(i): name for i, name in enumerate(_SCOPE_ORDER, 1)}
+    current_number = str(_SCOPE_ORDER.index(current_scope) + 1)
+
+    try:
+        choice = Prompt.ask(
+            "  Scope",
+            choices=list(scope_map.keys()),
+            default=current_number,
+        )
+    except (EOFError, KeyboardInterrupt):
+        return current_scope
+
+    new_scope: Scope = scope_map[choice]  # type: ignore[assignment]
+
+    if new_scope != current_scope:
+        _name, file_hint, _desc, _paren = _SCOPE_INFO[new_scope]
+        if new_scope == "project":
+            extra = " (shared via git)"
+        elif new_scope == "local":
+            extra = " (gitignored)"
+        else:
+            extra = ""
         console.print(
-            f"\n[green]Scope changed to {new_info['display_name']}"
-            f" ({new_info['file_hint']})[/green]"
+            f"  [green]\u2713 Switched to {new_scope} scope. "
+            f"Changes save to {file_hint}{extra}.[/green]"
         )
 
-    return selected
+    return new_scope
 
 
-def validate_scope_cli(scope: ScopeValue) -> None:
-    """Guard for --scope CLI flags.
-
-    Raises click.UsageError if a non-global scope is requested from the
-    home directory.
-    """
-    if scope == "global":
-        return
-
-    if is_running_from_home():
-        raise click.UsageError(
-            f"The '{scope}' scope is not available from your home directory. "
-            f"Use --scope=global or cd into a project directory."
-        )
+def validate_scope_cli(scope: str) -> None:
+    if scope != "global" and is_running_from_home():
+        raise click.UsageError(_HOME_DIR_ERROR)

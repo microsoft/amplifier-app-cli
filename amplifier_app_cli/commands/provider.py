@@ -750,7 +750,7 @@ def provider_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scop
                 table.add_row(str(i), name_col, ptype, model, str(pri))
 
             console.print(table)
-            print_scope_indicator(current_scope, console=console)  # type: ignore[arg-type]
+            print_scope_indicator(console, settings, current_scope)
 
         # 2. Show actions menu
         console.print("  Actions:")
@@ -782,7 +782,7 @@ def provider_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scop
         elif choice == "t":
             _manage_test_providers(settings, providers)
         elif choice == "w" and is_scope_change_available():
-            current_scope = prompt_scope_change(current_scope, console=console)  # type: ignore[arg-type]
+            current_scope = prompt_scope_change(console, settings, current_scope)
 
 
 def _parse_number_from_choice(choice: str, prefix: str, count: int) -> int | None:
