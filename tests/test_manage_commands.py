@@ -489,6 +489,122 @@ class TestRoutingManage:
         rendered = output.getvalue()
         assert "balanced" in rendered.lower()
 
+    # --------------------------------------------------------
+    # Scope integration tests (task-3-routing-manage-scope)
+    # --------------------------------------------------------
+
+    def test_routing_manage_loop_shows_scope_indicator(self, tmp_path):
+        """Scope indicator should appear in routing manage loop output."""
+        from amplifier_app_cli.commands.routing import routing_manage_loop
+
+        settings = _make_settings(tmp_path)
+        cache_dir = _make_matrix_dir(tmp_path)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", test_console),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+        ):
+            MockPrompt.ask.return_value = "d"
+            routing_manage_loop(settings)
+
+        rendered = output.getvalue()
+        assert "Saving to" in rendered
+
+    def test_routing_manage_loop_returns_scope(self, tmp_path):
+        """routing_manage_loop should return the current scope when done."""
+        from amplifier_app_cli.commands.routing import routing_manage_loop
+
+        settings = _make_settings(tmp_path)
+        cache_dir = _make_matrix_dir(tmp_path)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", test_console),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+        ):
+            MockPrompt.ask.return_value = "d"
+            result = routing_manage_loop(settings, scope="project")
+
+        assert result == "project"
+
+    def test_routing_manage_select_writes_to_scope(self, tmp_path):
+        """Selecting a matrix in the manage loop should write to current scope."""
+        from amplifier_app_cli.commands.routing import routing_manage_loop
+
+        settings = _make_settings(tmp_path)
+        cache_dir = _make_matrix_dir(tmp_path)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        # Simulate: select matrix "s1" (balanced is #1), then done
+        responses = iter(["s1", "d"])
+        with (
+            patch("amplifier_app_cli.commands.routing.console", test_console),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+        ):
+            MockPrompt.ask.side_effect = lambda *args, **kwargs: next(responses)
+            routing_manage_loop(settings, scope="project")
+
+        # Verify write went to project scope
+        project_settings = settings._read_scope("project")
+        assert project_settings.get("routing", {}).get("matrix") == "balanced"
+
+    def test_routing_manage_cli_accepts_scope(self, tmp_path):
+        """CLI command `routing manage --scope project` should be accepted."""
+        from amplifier_app_cli.commands.routing import routing_group
+
+        settings = _make_settings(tmp_path)
+        cache_dir = _make_matrix_dir(tmp_path)
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.routing._get_settings",
+                return_value=settings,
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing.validate_scope_cli",
+            ),
+        ):
+            result = runner.invoke(
+                routing_group, ["manage", "--scope", "project"], input="d\n"
+            )
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+
 
 # ============================================================
 # Task 3: init dashboard

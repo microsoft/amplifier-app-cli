@@ -11,7 +11,13 @@ from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
 
-from ..lib.settings import AppSettings
+from ..lib.settings import AppSettings, Scope
+from ..ui.scope import (
+    is_scope_change_available,
+    print_scope_indicator,
+    prompt_scope_change,
+    validate_scope_cli,
+)
 
 console = Console()
 
@@ -311,16 +317,20 @@ def _show_matrix_resolution(matrix_data: dict[str, Any], settings: AppSettings) 
 # ============================================================
 
 
-def routing_manage_loop(settings: AppSettings) -> None:
+def routing_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scope:
     """Interactive routing management loop.
 
     Callable from CLI command or from init dashboard.
+    Tracks current_scope internally, returns it when done.
     """
+    current_scope: Scope = scope
     while True:
         # 1. Show active matrix name
         routing_config = settings.get_routing_config()
         active_matrix = routing_config.get("matrix", "balanced")
         console.print(f"\n  Active Routing Matrix: [bold]{active_matrix}[/bold]\n")
+        print_scope_indicator(console, settings, current_scope)
+        console.print()
 
         # 2. Show available matrices table
         matrix_files = _discover_matrix_files()
@@ -379,18 +389,22 @@ def routing_manage_loop(settings: AppSettings) -> None:
         console.print("    \\[s] Select a different matrix (enter number)")
         console.print("    \\[v] View resolution for a specific matrix")
         console.print("    \\[c] Create a custom matrix")
+        if is_scope_change_available():
+            console.print("    \\[w] Change write scope")
         console.print("    \\[d] Done")
         console.print()
 
         try:
             choice = Prompt.ask("  Choice", default="d").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            break
+            return current_scope
 
         if choice == "d":
-            break
+            return current_scope
+        elif choice == "w" and is_scope_change_available():
+            current_scope = prompt_scope_change(console, settings, current_scope)
         elif choice.startswith("s"):
-            _manage_select_matrix(settings, choice, matrices)
+            _manage_select_matrix(settings, choice, matrices, scope=current_scope)
         elif choice.startswith("v"):
             _manage_view_matrix(settings, choice, matrices)
         elif choice == "c":
@@ -401,6 +415,7 @@ def _manage_select_matrix(
     settings: AppSettings,
     choice: str,
     matrices: dict[str, dict[str, Any]],
+    scope: Scope = "global",
 ) -> None:
     """Select a routing matrix from the manage loop."""
     if not matrices:
@@ -419,7 +434,7 @@ def _manage_select_matrix(
         num = int(num_str)
         if 1 <= num <= len(matrix_names):
             name = matrix_names[num - 1]
-            settings.set_routing_matrix(name, scope="global")
+            settings.set_routing_matrix(name, scope=scope)
             console.print(f"\n  [green]✓ Routing matrix set to '{name}'[/green]")
         else:
             console.print(f"  [red]Invalid number. Enter 1-{len(matrix_names)}.[/red]")
@@ -457,10 +472,17 @@ def _manage_view_matrix(
 
 
 @routing_group.command("manage")
-def routing_manage():
+@click.option(
+    "--scope",
+    default="global",
+    type=click.Choice(["global", "project", "local"]),
+    help="Initial write scope for settings.",
+)
+def routing_manage(scope: str):
     """Interactive routing matrix management dashboard."""
+    validate_scope_cli(scope)
     settings = _get_settings()
-    routing_manage_loop(settings)
+    routing_manage_loop(settings, scope=scope)  # type: ignore[arg-type]
 
 
 # ============================================================
@@ -618,7 +640,9 @@ def _prompt_provider_and_model(
         except ValueError:
             model = model_choice
     else:
-        console.print("    [dim]Could not list models. Enter model name manually.[/dim]")
+        console.print(
+            "    [dim]Could not list models. Enter model name manually.[/dim]"
+        )
         try:
             model = Prompt.ask("    Model name").strip()
         except (EOFError, KeyboardInterrupt):
@@ -758,9 +782,7 @@ def _routing_create_interactive(settings: AppSettings) -> None:
                 continue
             if edit_name in assignments:
                 desc = assignments[edit_name]["description"]
-                result = _prompt_provider_and_model(
-                    edit_name, desc, provider_names
-                )
+                result = _prompt_provider_and_model(edit_name, desc, provider_names)
                 if result:
                     provider, model = result
                     assignments[edit_name]["provider"] = provider
