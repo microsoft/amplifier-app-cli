@@ -6,6 +6,13 @@ scope availability checks, and CLI scope validation guards.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Literal
+
+    ScopeValue = Literal["global", "project", "local"]
+
 import click
 from rich.console import Console
 from rich.prompt import Prompt
@@ -34,11 +41,11 @@ _SCOPE_INFO: dict[str, dict[str, str]] = {
     },
 }
 
-_SCOPE_ORDER: list[str] = ["global", "project", "local"]
+_SCOPE_ORDER: list[ScopeValue] = ["global", "project", "local"]
 
 
 def print_scope_indicator(
-    scope: str,
+    scope: ScopeValue,
     *,
     console: Console | None = None,
 ) -> None:
@@ -69,10 +76,10 @@ def is_scope_change_available() -> bool:
 
 
 def prompt_scope_change(
-    current_scope: str,
+    current_scope: ScopeValue,
     *,
     console: Console | None = None,
-) -> str:
+) -> ScopeValue:
     """Interactive submenu for switching scope.
 
     Shows a numbered list of scopes with an arrow marker on the current one.
@@ -109,7 +116,7 @@ def prompt_scope_change(
     return selected
 
 
-def validate_scope_cli(scope: str) -> None:
+def validate_scope_cli(scope: ScopeValue) -> None:
     """Guard for --scope CLI flags.
 
     Raises click.UsageError if a non-global scope is requested from the

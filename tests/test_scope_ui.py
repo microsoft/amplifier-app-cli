@@ -115,12 +115,7 @@ class TestPromptScopeChange:
             prompt_scope_change("global", console=console)
         output = buf.getvalue()
         # The arrow marker should appear on the current scope line
-        assert (
-            "←" in output
-            or "<-" in output
-            or "◀" in output
-            or "current" in output.lower()
-        )
+        assert "← current" in output
 
     def test_returns_selected_scope(self):
         """Should return the scope corresponding to user's choice."""
