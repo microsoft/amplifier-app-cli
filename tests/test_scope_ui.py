@@ -4,6 +4,7 @@ Tests print_scope_indicator, is_scope_change_available, prompt_scope_change,
 and validate_scope_cli across 4 test classes with 12 tests total.
 """
 
+import re
 from io import StringIO
 from unittest.mock import patch
 
@@ -17,6 +18,11 @@ from amplifier_app_cli.ui.scope import (
     prompt_scope_change,
     validate_scope_cli,
 )
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from text for cleaner assertions."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 # ============================================================
@@ -95,11 +101,11 @@ class TestPromptScopeChange:
         console = Console(file=buf, force_terminal=True, width=120)
         with patch("amplifier_app_cli.ui.scope.Prompt.ask", return_value="1"):
             prompt_scope_change("global", console=console)
-        output = buf.getvalue()
-        # Should show numbered items
-        assert "1" in output
-        assert "2" in output
-        assert "3" in output
+        output = _strip_ansi(buf.getvalue())
+        # Should show numbered items in "N." format
+        assert "1." in output
+        assert "2." in output
+        assert "3." in output
 
     def test_current_scope_has_arrow_marker(self):
         """Current scope should be marked with an arrow indicator."""
@@ -133,6 +139,9 @@ class TestPromptScopeChange:
         with patch("amplifier_app_cli.ui.scope.Prompt.ask", return_value="1"):
             result = prompt_scope_change("global", console=console)
         assert result == "global"
+        # Confirmation message should NOT appear when scope didn't change
+        output = buf.getvalue()
+        assert "scope changed" not in output.lower()
 
     def test_shows_confirmation_on_change(self):
         """Should print a confirmation message when scope actually changes."""
@@ -143,7 +152,7 @@ class TestPromptScopeChange:
             prompt_scope_change("global", console=console)
         output = buf.getvalue()
         # Should contain confirmation text about the change
-        assert "project" in output.lower()
+        assert "scope changed" in output.lower()
 
 
 # ============================================================
