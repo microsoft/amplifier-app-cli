@@ -909,6 +909,7 @@ def _manage_add_provider(settings: AppSettings) -> None:
     model_display = f" ({model})" if model else ""
     name_display = instance_id or display
     console.print(f"\n  [green]✓ Provider added: {name_display}{model_display}[/green]")
+    console.print("  [dim]Credentials saved to global settings.[/dim]")
 
 
 def _manage_edit_provider(

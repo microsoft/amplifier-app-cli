@@ -383,6 +383,39 @@ class TestProviderManage:
         project_providers = project_settings.get("config", {}).get("providers", [])
         assert len(project_providers) == 2
 
+    def test_add_provider_shows_global_info(self, tmp_path):
+        """_manage_add_provider should show info that credentials are saved to global."""
+        from amplifier_app_cli.commands.provider import _manage_add_provider
+
+        settings = _make_settings(tmp_path)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.provider.console", test_console),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch("amplifier_app_cli.commands.provider.ProviderManager") as MockPM,
+            patch("amplifier_app_cli.commands.provider.Prompt") as MockPrompt,
+            patch("amplifier_app_cli.commands.provider.KeyManager"),
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                return_value={"default_model": "test-model"},
+            ),
+        ):
+            MockPM.return_value.list_providers.return_value = [
+                ("provider-test", "Test Provider", "A test provider")
+            ]
+            MockPrompt.ask.return_value = "1"
+            _manage_add_provider(settings)
+
+        rendered = output.getvalue()
+        assert "global" in rendered.lower()
+
     def test_cli_scope_option_accepted(self, tmp_path):
         """CLI command `provider manage --scope=project` should be accepted."""
         from amplifier_app_cli.commands.provider import provider
