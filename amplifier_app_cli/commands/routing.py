@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import click
 import yaml
@@ -226,7 +226,7 @@ def routing_use(matrix_name: str, scope: str):
         )
         return
 
-    settings.set_routing_matrix(matrix_name, scope=scope)  # type: ignore[arg-type]
+    settings.set_routing_matrix(matrix_name, scope=cast(Scope, scope))
     console.print(
         f"[green]✓ Routing matrix set to '{matrix_name}' ({scope} scope)[/green]"
     )
@@ -482,7 +482,7 @@ def routing_manage(scope: str):
     """Interactive routing matrix management dashboard."""
     validate_scope_cli(scope)
     settings = _get_settings()
-    routing_manage_loop(settings, scope=scope)  # type: ignore[arg-type]
+    routing_manage_loop(settings, scope=cast(Scope, scope))
 
 
 # ============================================================
@@ -580,7 +580,7 @@ def _list_models_for_provider(provider_name: str) -> list[str]:
         from ..provider_loader import get_provider_models
 
         models = get_provider_models(provider_name)
-        return [m.name if hasattr(m, "name") else str(m) for m in models]
+        return [str(getattr(m, "name", m)) for m in models]
     except Exception:
         return []
 
