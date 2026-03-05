@@ -345,6 +345,87 @@ class TestProviderList:
         # The global provider should NOT appear (it's not in project scope)
         assert "anthropic" not in result.output.lower()
 
+    # ---- Task 5 spec-compliance tests ----
+
+    def test_provider_list_default_title_includes_cwd(self, tmp_path):
+        """Default merged view title must include the current working directory."""
+        import os
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet-4-6"},
+            priority=1,
+        )
+
+        from amplifier_app_cli.commands.provider import provider
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+        ):
+            result = runner.invoke(provider, ["list"])
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+        cwd = os.getcwd()
+        # Title must contain "effective from <cwd>"
+        assert "effective from" in result.output
+        assert cwd in result.output
+
+    def test_provider_list_merged_view_no_status_column(self, tmp_path):
+        """Default merged view must NOT include a 'Status' column."""
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet-4-6"},
+            priority=1,
+        )
+
+        from amplifier_app_cli.commands.provider import provider
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+        ):
+            result = runner.invoke(provider, ["list"])
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+        # "Status" column header must not appear in merged view
+        assert "Status" not in result.output
+
+    def test_provider_list_single_scope_empty_includes_path(self, tmp_path):
+        """Single-scope empty state must include the scope path."""
+        settings = _make_settings(tmp_path)
+
+        from amplifier_app_cli.commands.provider import provider
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+        ):
+            result = runner.invoke(provider, ["list", "--scope", "global"])
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+        # Rich may wrap long paths across lines — join to check as one string
+        output_joined = result.output.replace("\n", "")
+        scope_path = settings._get_scope_path("global")
+        assert str(scope_path) in output_joined
+        assert "No providers in global scope" in result.output
+
     def test_provider_list_scope_guard(self, tmp_path):
         """provider list --scope project from home directory should show an error."""
         settings = _make_settings(tmp_path)

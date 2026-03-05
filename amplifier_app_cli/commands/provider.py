@@ -1,5 +1,6 @@
 """Provider management commands."""
 
+import os
 import time
 from typing import Any, cast
 
@@ -360,7 +361,9 @@ def provider_list(scope: str | None) -> None:
         title = f"Providers in {scope} scope ({scope_path})"
 
         if not providers:
-            console.print(f"[yellow]No providers configured in {scope} scope.[/yellow]")
+            console.print(
+                f"[yellow]No providers in {scope} scope ({scope_path}).[/yellow]"
+            )
             console.print("Run: [cyan]amplifier provider add[/cyan]")
             return
 
@@ -408,12 +411,12 @@ def provider_list(scope: str | None) -> None:
                 if key and key not in source_map:
                     source_map[key] = check_scope
 
-        table = Table(title="Configured Providers (effective)")
+        cwd = os.getcwd()
+        table = Table(title=f"Configured Providers (effective from {cwd})")
         table.add_column("Name/ID", style="cyan")
         table.add_column("Type", style="green")
         table.add_column("Default Model")
         table.add_column("Priority", justify="right")
-        table.add_column("Status")
         table.add_column("Source", style="dim")
 
         priorities = []
@@ -434,10 +437,9 @@ def provider_list(scope: str | None) -> None:
             pri = config.get("priority", 100) if isinstance(config, dict) else 100
             is_primary = pri == min_priority
             name_col = f"★ {display}" if is_primary else f"  {display}"
-            status = "configured"
             key = p.get("id") or module
             source = source_map.get(key, "global")
-            table.add_row(name_col, ptype, model, str(pri), status, source)
+            table.add_row(name_col, ptype, model, str(pri), source)
 
         console.print(table)
 
