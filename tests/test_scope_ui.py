@@ -11,6 +11,13 @@ import click
 import pytest
 from rich.console import Console
 
+from amplifier_app_cli.ui.scope import (
+    is_scope_change_available,
+    print_scope_indicator,
+    prompt_scope_change,
+    validate_scope_cli,
+)
+
 
 # ============================================================
 # TestPrintScopeIndicator — 3 tests
@@ -22,33 +29,33 @@ class TestPrintScopeIndicator:
 
     def test_global_scope_renders_dim(self):
         """Global scope should render with dim treatment."""
-        from amplifier_app_cli.ui.scope import print_scope_indicator
-
         buf = StringIO()
         console = Console(file=buf, force_terminal=True, width=120)
         print_scope_indicator("global", console=console)
         output = buf.getvalue()
-        assert "global" in output.lower() or "Global" in output
+        assert "Global" in output
+        # Verify dim ANSI escape is present (SGR code 2)
+        assert "\x1b[2m" in output
 
     def test_project_scope_renders_yellow(self):
         """Project scope should render with yellow treatment."""
-        from amplifier_app_cli.ui.scope import print_scope_indicator
-
         buf = StringIO()
         console = Console(file=buf, force_terminal=True, width=120)
         print_scope_indicator("project", console=console)
         output = buf.getvalue()
-        assert "project" in output.lower() or "Project" in output
+        assert "Project" in output
+        # Verify yellow ANSI escape is present (SGR code 33)
+        assert "\x1b[33m" in output
 
     def test_local_scope_renders_yellow(self):
         """Local scope should render with yellow treatment."""
-        from amplifier_app_cli.ui.scope import print_scope_indicator
-
         buf = StringIO()
         console = Console(file=buf, force_terminal=True, width=120)
         print_scope_indicator("local", console=console)
         output = buf.getvalue()
-        assert "local" in output.lower() or "Local" in output
+        assert "Local" in output
+        # Verify yellow ANSI escape is present (SGR code 33)
+        assert "\x1b[33m" in output
 
 
 # ============================================================
@@ -61,8 +68,6 @@ class TestIsScopeChangeAvailable:
 
     def test_returns_false_when_at_home(self):
         """Should return False when cwd is home directory."""
-        from amplifier_app_cli.ui.scope import is_scope_change_available
-
         with patch(
             "amplifier_app_cli.ui.scope.is_running_from_home", return_value=True
         ):
@@ -70,8 +75,6 @@ class TestIsScopeChangeAvailable:
 
     def test_returns_true_when_not_at_home(self):
         """Should return True when cwd is not the home directory."""
-        from amplifier_app_cli.ui.scope import is_scope_change_available
-
         with patch(
             "amplifier_app_cli.ui.scope.is_running_from_home", return_value=False
         ):
@@ -88,8 +91,6 @@ class TestPromptScopeChange:
 
     def test_shows_numbered_scope_list(self):
         """Should display numbered list of scopes."""
-        from amplifier_app_cli.ui.scope import prompt_scope_change
-
         buf = StringIO()
         console = Console(file=buf, force_terminal=True, width=120)
         with patch("amplifier_app_cli.ui.scope.Prompt.ask", return_value="1"):
@@ -102,8 +103,6 @@ class TestPromptScopeChange:
 
     def test_current_scope_has_arrow_marker(self):
         """Current scope should be marked with an arrow indicator."""
-        from amplifier_app_cli.ui.scope import prompt_scope_change
-
         buf = StringIO()
         console = Console(file=buf, force_terminal=True, width=120)
         with patch("amplifier_app_cli.ui.scope.Prompt.ask", return_value="1"):
@@ -119,8 +118,6 @@ class TestPromptScopeChange:
 
     def test_returns_selected_scope(self):
         """Should return the scope corresponding to user's choice."""
-        from amplifier_app_cli.ui.scope import prompt_scope_change
-
         buf = StringIO()
         console = Console(file=buf, force_terminal=True, width=120)
         # Choose "2" which should be project
@@ -130,8 +127,6 @@ class TestPromptScopeChange:
 
     def test_returns_current_scope_when_same_selected(self):
         """Selecting the already-current scope should return it unchanged."""
-        from amplifier_app_cli.ui.scope import prompt_scope_change
-
         buf = StringIO()
         console = Console(file=buf, force_terminal=True, width=120)
         # Choose "1" which is global (the current)
@@ -141,8 +136,6 @@ class TestPromptScopeChange:
 
     def test_shows_confirmation_on_change(self):
         """Should print a confirmation message when scope actually changes."""
-        from amplifier_app_cli.ui.scope import prompt_scope_change
-
         buf = StringIO()
         console = Console(file=buf, force_terminal=True, width=120)
         # Switch from global to project (choice "2")
@@ -163,8 +156,6 @@ class TestValidateScopeCli:
 
     def test_global_scope_always_passes(self):
         """Global scope should pass regardless of directory."""
-        from amplifier_app_cli.ui.scope import validate_scope_cli
-
         with patch(
             "amplifier_app_cli.ui.scope.is_running_from_home", return_value=True
         ):
@@ -173,8 +164,6 @@ class TestValidateScopeCli:
 
     def test_project_scope_passes_outside_home(self):
         """Project scope should pass when not at home directory."""
-        from amplifier_app_cli.ui.scope import validate_scope_cli
-
         with patch(
             "amplifier_app_cli.ui.scope.is_running_from_home", return_value=False
         ):
@@ -183,8 +172,6 @@ class TestValidateScopeCli:
 
     def test_project_scope_raises_at_home(self):
         """Project scope from home directory should raise click.UsageError."""
-        from amplifier_app_cli.ui.scope import validate_scope_cli
-
         with patch(
             "amplifier_app_cli.ui.scope.is_running_from_home", return_value=True
         ):
@@ -193,8 +180,6 @@ class TestValidateScopeCli:
 
     def test_local_scope_raises_at_home(self):
         """Local scope from home directory should raise click.UsageError."""
-        from amplifier_app_cli.ui.scope import validate_scope_cli
-
         with patch(
             "amplifier_app_cli.ui.scope.is_running_from_home", return_value=True
         ):

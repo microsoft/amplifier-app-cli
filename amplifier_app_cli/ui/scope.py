@@ -49,6 +49,7 @@ def print_scope_indicator(
     if console is None:
         console = Console()
 
+    # Fallback to global for unknown scopes
     info = _SCOPE_INFO.get(scope, _SCOPE_INFO["global"])
     label = info["display_name"]
     hint = info["file_hint"]
