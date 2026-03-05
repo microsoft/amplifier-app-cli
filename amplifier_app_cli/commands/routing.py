@@ -215,6 +215,7 @@ def routing_list():
 )
 def routing_use(matrix_name: str, scope: str):
     """Select a routing matrix."""
+    validate_scope_cli(scope)
     settings = _get_settings()
     matrix_files = _discover_matrix_files()
     matrices = _load_all_matrices(matrix_files)

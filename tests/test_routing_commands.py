@@ -268,6 +268,38 @@ class TestRoutingUse:
         assert result.exit_code == 0, f"Output: {result.output}"
         assert "not found" in result.output.lower()
 
+    def test_routing_use_scope_guard(self, tmp_path):
+        """routing use rejects non-global scope when run from home directory."""
+        cache_dir = _make_matrix_dir(tmp_path)
+        settings = _make_settings(tmp_path)
+
+        from amplifier_app_cli.commands.routing import routing_group
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.routing._get_settings",
+                return_value=settings,
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+            patch(
+                "amplifier_app_cli.ui.scope.is_running_from_home",
+                return_value=True,
+            ),
+        ):
+            result = runner.invoke(
+                routing_group, ["use", "balanced", "--scope", "project"]
+            )
+
+        # Should fail with a usage error referencing home directory
+        assert result.exit_code != 0 or "home" in result.output.lower()
+        assert "home" in result.output.lower() or (
+            result.exception is not None and "home" in str(result.exception).lower()
+        )
+
 
 # ============================================================
 # Task 15: routing show
@@ -523,8 +555,11 @@ class TestCustomMatrixDiscovery:
 
         # Set up bundle cache at tmp_path/.amplifier/cache/...
         cache_dir = (
-            tmp_path / ".amplifier" / "cache"
-            / "amplifier-bundle-routing-matrix-abc123" / "routing"
+            tmp_path
+            / ".amplifier"
+            / "cache"
+            / "amplifier-bundle-routing-matrix-abc123"
+            / "routing"
         )
         cache_dir.mkdir(parents=True)
         balanced = {
@@ -594,9 +629,7 @@ class TestRoutingManageCreateOption:
 
             buf = StringIO()
             test_console = RichConsole(file=buf, width=120)
-            with patch(
-                "amplifier_app_cli.commands.routing.console", test_console
-            ):
+            with patch("amplifier_app_cli.commands.routing.console", test_console):
                 routing_manage_loop(settings)
 
             output = buf.getvalue()
