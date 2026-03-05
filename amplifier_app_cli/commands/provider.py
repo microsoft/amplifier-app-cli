@@ -750,7 +750,8 @@ def provider_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scop
                 table.add_row(str(i), name_col, ptype, model, str(pri))
 
             console.print(table)
-            print_scope_indicator(console, settings, current_scope)
+
+        print_scope_indicator(console, settings, current_scope)
 
         # 2. Show actions menu
         console.print("  Actions:")
@@ -1133,6 +1134,7 @@ def _manage_test_providers(
     "--scope",
     default="global",
     type=click.Choice(["global", "project", "local"]),
+    help="Initial write scope for settings.",
 )
 def provider_manage(scope: str):
     """Interactive provider management dashboard."""

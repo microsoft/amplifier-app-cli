@@ -215,16 +215,11 @@ class TestProviderManage:
     # --------------------------------------------------------
 
     def test_scope_indicator_displayed(self, tmp_path):
-        """Scope indicator should appear after the provider table."""
+        """Scope indicator should appear even when no providers are configured."""
         from amplifier_app_cli.commands.provider import provider_manage_loop
 
         settings = _make_settings(tmp_path)
-        _seed_provider(
-            settings,
-            "provider-anthropic",
-            {"default_model": "claude-sonnet-4-6"},
-            priority=1,
-        )
+        # No providers seeded — indicator must still appear (Issue 1 compliance)
 
         from io import StringIO
 
@@ -236,15 +231,29 @@ class TestProviderManage:
         with (
             patch("amplifier_app_cli.commands.provider.console", test_console),
             patch("amplifier_app_cli.commands.provider.Prompt") as MockPrompt,
-            patch(
-                "amplifier_app_cli.commands.provider.print_scope_indicator"
-            ) as mock_indicator,
         ):
             MockPrompt.ask.return_value = "d"
             provider_manage_loop(settings)
 
-        # print_scope_indicator should have been called
-        mock_indicator.assert_called()
+        rendered = output.getvalue()
+        # "Saving to" is emitted by print_scope_indicator for every scope value
+        assert "Saving to" in rendered
+
+    def test_scope_option_has_help_text(self):
+        """--scope option on provider manage should have a help string."""
+        import click
+
+        from amplifier_app_cli.commands.provider import provider_manage
+
+        scope_param = next(
+            (p for p in provider_manage.params if p.name == "scope"), None
+        )
+        assert scope_param is not None, "--scope option not found on provider_manage"
+        assert isinstance(scope_param, click.Option), "--scope should be a click.Option"
+        assert scope_param.help, "--scope option is missing a help string"
+        assert "scope" in scope_param.help.lower(), (
+            f"help text '{scope_param.help}' does not mention 'scope'"
+        )
 
     def test_scope_param_accepted(self, tmp_path):
         """provider_manage_loop should accept a scope parameter."""
