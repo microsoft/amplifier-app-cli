@@ -276,6 +276,101 @@ class TestProviderList:
         assert "No providers configured" in result.output
         assert "provider add" in result.output
 
+    # ---- Task 5: --scope flag tests ----
+
+    def test_provider_list_shows_source_column(self, tmp_path):
+        """Default merged view should include a 'Source' column showing which scope
+        contributed each provider."""
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet-4-6"},
+            priority=1,
+        )
+
+        from amplifier_app_cli.commands.provider import provider
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+        ):
+            result = runner.invoke(provider, ["list"])
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+        assert "Source" in result.output
+        assert "global" in result.output.lower()
+
+    def test_provider_list_scope_filter(self, tmp_path):
+        """provider list --scope project should show only providers from project scope."""
+        settings = _make_settings(tmp_path)
+        # Seed a provider in global scope
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet-4-6"},
+            priority=1,
+        )
+        # Seed a different provider in project scope
+        project_settings = settings._read_scope("project")
+        if "config" not in project_settings:
+            project_settings["config"] = {}
+        project_settings["config"]["providers"] = [
+            {
+                "module": "provider-openai",
+                "config": {"default_model": "gpt-4o", "priority": 1},
+            }
+        ]
+        settings._write_scope("project", project_settings)
+
+        from amplifier_app_cli.commands.provider import provider
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+        ):
+            result = runner.invoke(provider, ["list", "--scope", "project"])
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+        # Only the project provider should appear
+        assert "openai" in result.output.lower()
+        # The global provider should NOT appear (it's not in project scope)
+        assert "anthropic" not in result.output.lower()
+
+    def test_provider_list_scope_guard(self, tmp_path):
+        """provider list --scope project from home directory should show an error."""
+        settings = _make_settings(tmp_path)
+
+        from amplifier_app_cli.commands.provider import provider
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch(
+                "amplifier_app_cli.ui.scope.is_running_from_home",
+                return_value=True,
+            ),
+        ):
+            result = runner.invoke(provider, ["list", "--scope", "project"])
+
+        # Should fail with a usage error referencing home directory
+        assert result.exit_code != 0 or "home" in result.output.lower()
+        assert "home" in result.output.lower() or (
+            result.exception is not None and "home" in str(result.exception).lower()
+        )
+
 
 # ============================================================
 # Task 9: provider remove and provider edit

@@ -1,7 +1,7 @@
 """Provider management commands."""
 
 import time
-from typing import Any
+from typing import Any, cast
 
 import click
 from rich.console import Console
@@ -331,53 +331,115 @@ def provider_add(ctx: click.Context, provider_type: str | None) -> None:
 
 
 @provider.command("list")
-def provider_list() -> None:
+@click.option(
+    "--scope",
+    default=None,
+    type=click.Choice(["global", "project", "local"]),
+    help="Show providers from a specific scope only.",
+)
+def provider_list(scope: str | None) -> None:
     """List configured providers.
 
     Shows all configured providers with their type, model, priority, and status.
     The primary provider (lowest priority) is marked with ★.
+
+    Without --scope, shows the effective merged view with a Source column indicating
+    which scope contributed each provider.  With --scope, shows only that scope's
+    providers.
     """
     _ensure_providers_ready()
 
     settings = _get_settings()
-    providers = settings.get_provider_overrides()
 
-    if not providers:
-        console.print("[yellow]No providers configured.[/yellow]")
-        console.print("Run: [cyan]amplifier provider add[/cyan]")
-        return
+    if scope is not None:
+        # ---- Single-scope view ----
+        validate_scope_cli(scope)
+        typed_scope = cast(Scope, scope)
+        providers = settings.get_scope_provider_overrides(typed_scope)
+        scope_path = settings._get_scope_path(typed_scope)  # type: ignore[attr-defined]
+        title = f"Providers in {scope} scope ({scope_path})"
 
-    table = Table(title="Configured Providers")
-    table.add_column("Name/ID", style="cyan")
-    table.add_column("Type", style="green")
-    table.add_column("Default Model")
-    table.add_column("Priority", justify="right")
-    table.add_column("Status")
+        if not providers:
+            console.print(f"[yellow]No providers configured in {scope} scope.[/yellow]")
+            console.print("Run: [cyan]amplifier provider add[/cyan]")
+            return
 
-    # Find min priority for star marker
-    priorities = []
-    for p in providers:
-        config = p.get("config", {})
-        pri = config.get("priority", 100) if isinstance(config, dict) else 100
-        priorities.append(pri)
-    min_priority = min(priorities) if priorities else 0
+        table = Table(title=title)
+        table.add_column("Name/ID", style="cyan")
+        table.add_column("Type", style="green")
+        table.add_column("Default Model")
+        table.add_column("Priority", justify="right")
 
-    for idx, p in enumerate(providers):
-        module = p.get("module", "unknown")
-        display = p.get("id") or _display_name(module)
-        ptype = _display_name(module)
-        config = p.get("config", {})
-        model = config.get("default_model", "-") if isinstance(config, dict) else "-"
-        pri = config.get("priority", 100) if isinstance(config, dict) else 100
+        priorities = [
+            (p.get("config", {}) or {}).get("priority", 100) for p in providers
+        ]
+        min_priority = min(priorities) if priorities else 0
 
-        # Star marker for primary (lowest priority)
-        is_primary = pri == min_priority
-        name_col = f"★ {display}" if is_primary else f"  {display}"
-        status = "configured"
+        for p in providers:
+            module = p.get("module", "unknown")
+            display = p.get("id") or _display_name(module)
+            ptype = _display_name(module)
+            config = p.get("config", {})
+            model = (
+                config.get("default_model", "-") if isinstance(config, dict) else "-"
+            )
+            pri = config.get("priority", 100) if isinstance(config, dict) else 100
+            is_primary = pri == min_priority
+            name_col = f"★ {display}" if is_primary else f"  {display}"
+            table.add_row(name_col, ptype, model, str(pri))
 
-        table.add_row(name_col, ptype, model, str(pri), status)
+        console.print(table)
 
-    console.print(table)
+    else:
+        # ---- Default merged view with Source column ----
+        providers = settings.get_provider_overrides()
+
+        if not providers:
+            console.print("[yellow]No providers configured.[/yellow]")
+            console.print("Run: [cyan]amplifier provider add[/cyan]")
+            return
+
+        # Build source_map: highest-priority scope (local > project > global) wins
+        source_map: dict[str, str] = {}
+        for check_scope in ("local", "project", "global"):
+            scope_providers = settings.get_scope_provider_overrides(check_scope)
+            for p in scope_providers:
+                key = p.get("id") or p.get("module", "")
+                if key and key not in source_map:
+                    source_map[key] = check_scope
+
+        table = Table(title="Configured Providers (effective)")
+        table.add_column("Name/ID", style="cyan")
+        table.add_column("Type", style="green")
+        table.add_column("Default Model")
+        table.add_column("Priority", justify="right")
+        table.add_column("Status")
+        table.add_column("Source", style="dim")
+
+        priorities = []
+        for p in providers:
+            config = p.get("config", {})
+            pri = config.get("priority", 100) if isinstance(config, dict) else 100
+            priorities.append(pri)
+        min_priority = min(priorities) if priorities else 0
+
+        for p in providers:
+            module = p.get("module", "unknown")
+            display = p.get("id") or _display_name(module)
+            ptype = _display_name(module)
+            config = p.get("config", {})
+            model = (
+                config.get("default_model", "-") if isinstance(config, dict) else "-"
+            )
+            pri = config.get("priority", 100) if isinstance(config, dict) else 100
+            is_primary = pri == min_priority
+            name_col = f"★ {display}" if is_primary else f"  {display}"
+            status = "configured"
+            key = p.get("id") or module
+            source = source_map.get(key, "global")
+            table.add_row(name_col, ptype, model, str(pri), status, source)
+
+        console.print(table)
 
 
 # ============================================================
