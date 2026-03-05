@@ -520,7 +520,13 @@ def provider_remove(name: str) -> None:
 
 @provider.command("edit")
 @click.argument("name")
-def provider_edit(name: str) -> None:
+@click.option(
+    "--scope",
+    default="global",
+    type=click.Choice(["global", "project", "local"]),
+    help="Settings scope to write to.",
+)
+def provider_edit(name: str, scope: str) -> None:
     """Re-configure an existing provider.
 
     Opens the configuration wizard with current values as defaults.
@@ -529,6 +535,7 @@ def provider_edit(name: str) -> None:
       amplifier provider edit anthropic
       amplifier provider edit anthropic-2
     """
+    validate_scope_cli(scope)
     _ensure_providers_ready()
 
     settings = _get_settings()
@@ -574,8 +581,9 @@ def provider_edit(name: str) -> None:
     if entry.get("source"):
         updated_entry["source"] = entry["source"]
 
-    # Update in settings — replace the matching entry in global scope
-    scope_providers = settings.get_scope_provider_overrides("global")
+    # Update in settings — replace the matching entry in the target scope
+    target_scope = cast(Scope, scope)
+    scope_providers = settings.get_scope_provider_overrides(target_scope)
     new_list = []
     replaced = False
     for p in scope_providers:
@@ -588,11 +596,11 @@ def provider_edit(name: str) -> None:
     if not replaced:
         new_list.append(updated_entry)
 
-    scope_settings = settings._read_scope("global")
+    scope_settings = settings._read_scope(target_scope)
     if "config" not in scope_settings:
         scope_settings["config"] = {}
     scope_settings["config"]["providers"] = new_list
-    settings._write_scope("global", scope_settings)
+    settings._write_scope(target_scope, scope_settings)
 
     model = new_config.get("default_model", "")
     model_display = f" ({model})" if model else ""

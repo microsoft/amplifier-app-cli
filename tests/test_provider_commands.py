@@ -565,6 +565,76 @@ class TestProviderEdit:
             len(call_kwargs[0]) > 0  # positional args
         )
 
+    def test_provider_edit_accepts_scope(self, tmp_path):
+        """provider edit --scope project should write the updated entry to project scope."""
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet-4-6"},
+            priority=1,
+        )
+
+        from amplifier_app_cli.commands.provider import provider
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                return_value={"default_model": "claude-opus-4-6"},
+            ),
+            patch("amplifier_app_cli.commands.provider.KeyManager"),
+        ):
+            result = runner.invoke(
+                provider, ["edit", "anthropic", "--scope", "project"]
+            )
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+        # The updated entry should appear in project scope
+        project_providers = settings.get_scope_provider_overrides("project")
+        assert len(project_providers) == 1
+        assert project_providers[0]["module"] == "provider-anthropic"
+        assert project_providers[0]["config"]["default_model"] == "claude-opus-4-6"
+
+    def test_provider_edit_scope_guard(self, tmp_path):
+        """provider edit --scope project from home directory should show an error."""
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet-4-6"},
+            priority=1,
+        )
+
+        from amplifier_app_cli.commands.provider import provider
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch(
+                "amplifier_app_cli.ui.scope.is_running_from_home",
+                return_value=True,
+            ),
+        ):
+            result = runner.invoke(
+                provider, ["edit", "anthropic", "--scope", "project"]
+            )
+
+        # Should fail with a usage error referencing home directory
+        assert result.exit_code != 0 or "home" in result.output.lower()
+        assert "home" in result.output.lower() or (
+            result.exception is not None and "home" in str(result.exception).lower()
+        )
+
 
 # ============================================================
 # Task 10: provider test
