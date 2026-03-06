@@ -1,7 +1,36 @@
 """Tests for merge utilities and CLI policy functions."""
 
-import pytest
+from amplifier_app_cli.lib.merge_utils import _provider_key
 from amplifier_app_cli.runtime.config import _ensure_cwd_in_write_paths
+
+
+class TestProviderKey:
+    """Tests for _provider_key() identity helper."""
+
+    def test_provider_key_returns_id_when_present(self):
+        """Should return 'id' when both 'id' and 'module' are present."""
+        entry = {"module": "provider-openai", "id": "openai-2"}
+        assert _provider_key(entry) == "openai-2"
+
+    def test_provider_key_returns_module_when_no_id(self):
+        """Should fall back to 'module' when 'id' is absent."""
+        entry = {"module": "provider-anthropic"}
+        assert _provider_key(entry) == "provider-anthropic"
+
+    def test_provider_key_returns_module_when_id_is_none(self):
+        """Should fall back to 'module' when 'id' is explicitly None."""
+        entry = {"module": "provider-openai", "id": None}
+        assert _provider_key(entry) == "provider-openai"
+
+    def test_provider_key_returns_empty_string_for_empty_dict(self):
+        """Should return empty string when dict has neither 'id' nor 'module'."""
+        entry = {}
+        assert _provider_key(entry) == ""
+
+    def test_provider_key_prefers_id_over_module(self):
+        """'id' should always win over 'module' when both are truthy."""
+        entry = {"module": "provider-openai", "id": "my-custom-openai"}
+        assert _provider_key(entry) == "my-custom-openai"
 
 
 class TestEnsureCwdInWritePaths:
@@ -12,9 +41,7 @@ class TestEnsureCwdInWritePaths:
         tools = [
             {
                 "module": "tool-filesystem",
-                "config": {
-                    "allowed_write_paths": ["/some/path", "/other/path"]
-                }
+                "config": {"allowed_write_paths": ["/some/path", "/other/path"]},
             }
         ]
         result = _ensure_cwd_in_write_paths(tools)
@@ -27,9 +54,7 @@ class TestEnsureCwdInWritePaths:
         tools = [
             {
                 "module": "tool-filesystem",
-                "config": {
-                    "allowed_write_paths": [".", "/some/path"]
-                }
+                "config": {"allowed_write_paths": [".", "/some/path"]},
             }
         ]
         result = _ensure_cwd_in_write_paths(tools)
@@ -44,12 +69,7 @@ class TestEnsureCwdInWritePaths:
 
     def test_handles_empty_allowed_write_paths(self):
         """Should handle empty allowed_write_paths list."""
-        tools = [
-            {
-                "module": "tool-filesystem",
-                "config": {"allowed_write_paths": []}
-            }
-        ]
+        tools = [{"module": "tool-filesystem", "config": {"allowed_write_paths": []}}]
         result = _ensure_cwd_in_write_paths(tools)
         assert result[0]["config"]["allowed_write_paths"] == ["."]
 
@@ -71,7 +91,7 @@ class TestEnsureCwdInWritePaths:
         tools = [
             {
                 "module": "tool-filesystem",
-                "config": {"allowed_write_paths": original_paths}
+                "config": {"allowed_write_paths": original_paths},
             }
         ]
         _ensure_cwd_in_write_paths(tools)

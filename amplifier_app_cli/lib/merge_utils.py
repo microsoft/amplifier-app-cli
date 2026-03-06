@@ -9,6 +9,18 @@ This module provides app-level policy for how configs should be merged:
 from typing import Any
 
 
+# ===== Provider Identity =====
+
+
+def _provider_key(entry: dict[str, Any]) -> str:
+    """Return the identity key for a provider entry.
+
+    Uses 'id' if present (multi-instance providers like openai + openai-2),
+    falls back to 'module' for single-instance providers.
+    """
+    return entry.get("id") or entry.get("module", "")
+
+
 # ===== Deep Merge Utilities =====
 
 
@@ -89,9 +101,7 @@ def merge_module_items(
     return merged
 
 
-def merge_agent_dicts(
-    parent: dict[str, Any], child: dict[str, Any]
-) -> dict[str, Any]:
+def merge_agent_dicts(parent: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
     """Deep merge child agent dictionary into parent.
 
     Merge rules by key:
