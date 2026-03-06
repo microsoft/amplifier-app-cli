@@ -132,9 +132,10 @@ async def resolve_bundle_config(
             )
         else:
             # Bundle has no providers (e.g., provider-agnostic foundation bundle)
-            # Use overrides directly, but inject sensible debug defaults
-            # This ensures observability when using provider-agnostic bundles
-            bundle_config["providers"] = _ensure_debug_defaults(provider_overrides)
+            # Use overrides directly, but inject sensible raw payload default.
+            # This ensures llm:request/response events carry full payloads for
+            # observability when using provider-agnostic bundles.
+            bundle_config["providers"] = _ensure_raw_defaults(provider_overrides)
 
     # Apply tool overrides from settings (e.g., allowed_write_paths for tool-filesystem)
     # Include session-scoped settings if session context provided
@@ -258,24 +259,28 @@ def _sync_overrides_to_bundle(
         bundle.hooks = list(hooks)
 
 
-def _ensure_debug_defaults(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Ensure debug defaults are present when using provider overrides directly.
+def _ensure_raw_defaults(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure raw payload default is present when using provider overrides directly.
 
     When a provider-agnostic bundle (like foundation) uses provider overrides
-    from user settings, those settings typically lack debug flags since
-    configure_provider() doesn't add them. This function injects sensible
-    defaults for observability:
-    - debug: true (enables INFO-level llm:request/response summaries)
-    - raw_debug: true (enables complete API I/O for llm:request:raw/response:raw)
+    from user settings, those settings typically lack the ``raw`` flag since
+    configure_provider() doesn't add it. This function injects a sensible
+    default for observability:
+    - raw: true (includes full redacted API payload on llm:request/response events)
 
-    Users who explicitly set debug: false will have that respected (we only
-    set defaults, not overrides).
+    Users who explicitly set ``raw: false`` will have that respected (we only
+    set a default, not an override).
+
+    Stale flags from the old 3-tier verbosity system (``debug``, ``raw_debug``)
+    are stripped unconditionally — providers no longer read them, and leaving
+    them in the config causes the ``/config`` display to show misleading keys.
 
     Args:
         providers: Provider configurations from user settings.
 
     Returns:
-        Provider configurations with debug defaults injected.
+        Provider configurations with ``raw`` default injected and stale
+        ``debug``/``raw_debug`` flags removed.
     """
     result = []
     for provider in providers:
@@ -284,11 +289,13 @@ def _ensure_debug_defaults(providers: list[dict[str, Any]]) -> list[dict[str, An
             config = provider_copy.get("config", {})
             if isinstance(config, dict):
                 config = config.copy()
-                # Only set defaults if not explicitly configured
-                if "debug" not in config:
-                    config["debug"] = True
-                if "raw_debug" not in config:
-                    config["raw_debug"] = True
+                # Remove stale flags from the old 3-tier verbosity system;
+                # providers no longer read them.
+                config.pop("debug", None)
+                config.pop("raw_debug", None)
+                # Inject raw: true as the default unless explicitly set.
+                if "raw" not in config:
+                    config["raw"] = True
                 provider_copy["config"] = config
             result.append(provider_copy)
         else:
@@ -760,6 +767,6 @@ __all__ = [
     "expand_env_vars",
     "inject_user_providers",
     "_apply_provider_overrides",
-    "_ensure_debug_defaults",
+    "_ensure_raw_defaults",
     "_build_notification_behaviors",
 ]
