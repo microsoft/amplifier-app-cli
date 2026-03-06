@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from amplifier_app_cli.lib.merge_utils import _provider_key
+from amplifier_app_cli.lib.merge_utils import _provider_key, merge_module_lists
 from amplifier_app_cli.lib.settings import AppSettings, SettingsPaths
 from amplifier_app_cli.runtime.config import _ensure_cwd_in_write_paths
 
@@ -25,6 +25,58 @@ def _write_providers_to_scope(
     scope_settings = settings._read_scope(scope)  # type: ignore[arg-type]
     scope_settings.setdefault("config", {})["providers"] = providers
     settings._write_scope(scope, scope_settings)  # type: ignore[arg-type]
+
+
+class TestMergeModuleLists:
+    """Tests for merge_module_lists() multi-instance provider behavior."""
+
+    def test_merge_preserves_multi_instance_providers(self):
+        """Base with two entries sharing a module but different ids should both be kept."""
+        base = [
+            {"module": "provider-openai", "config": {"model": "gpt-5.2"}},
+            {
+                "module": "provider-openai",
+                "id": "openai-2",
+                "config": {"model": "gpt-5.4"},
+            },
+        ]
+        overlay: list[dict] = []
+        result = merge_module_lists(base, overlay)
+        assert len(result) == 2
+
+    def test_merge_updates_correct_instance_by_id(self):
+        """Overlay entry with id should update only the matching base entry."""
+        base = [
+            {"module": "provider-openai", "config": {"model": "gpt-5.2"}},
+            {
+                "module": "provider-openai",
+                "id": "openai-2",
+                "config": {"model": "gpt-5.4"},
+            },
+        ]
+        overlay = [
+            {
+                "module": "provider-openai",
+                "id": "openai-2",
+                "config": {"model": "gpt-5.5"},
+            },
+        ]
+        result = merge_module_lists(base, overlay)
+        assert len(result) == 2
+
+        openai2 = next(r for r in result if r.get("id") == "openai-2")
+        assert openai2["config"]["model"] == "gpt-5.5"
+
+        unnamed = next(r for r in result if r.get("id") is None)
+        assert unnamed["config"]["model"] == "gpt-5.2"
+
+    def test_merge_standard_module_behavior_unchanged(self):
+        """Regression: same-module entries (no id) should still merge normally."""
+        base = [{"module": "tool-bash", "config": {"timeout": 30}}]
+        overlay = [{"module": "tool-bash", "config": {"timeout": 60}}]
+        result = merge_module_lists(base, overlay)
+        assert len(result) == 1
+        assert result[0]["config"]["timeout"] == 60
 
 
 class TestProviderKey:

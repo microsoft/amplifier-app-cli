@@ -50,15 +50,16 @@ def merge_module_lists(
     If a module appears in both lists, configs are deep-merged (overlay wins).
     Modules only in overlay are appended.
     """
-    # Index base by key
+    # Index base by key (id wins over key_field for multi-instance entries)
     base_by_key: dict[str, dict[str, Any]] = {}
     for item in base:
         if key_field in item:
-            base_by_key[item[key_field]] = item.copy()
+            key = item.get("id") or item[key_field]
+            base_by_key[key] = item.copy()
 
     # Merge overlay
     for item in overlay:
-        key = item.get(key_field)
+        key = item.get("id") or item.get(key_field)
         if key and key in base_by_key:
             # Merge configs
             base_by_key[key] = deep_merge(base_by_key[key], item)
