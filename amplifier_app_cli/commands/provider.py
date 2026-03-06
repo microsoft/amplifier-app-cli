@@ -11,6 +11,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from ..key_manager import KeyManager
+from ..lib.merge_utils import _provider_key
 from ..lib.settings import AppSettings, Scope
 from ..paths import create_config_manager
 from ..provider_config_utils import configure_provider
@@ -494,13 +495,8 @@ def provider_remove(name: str) -> None:
         original_len = len(scope_providers)
 
         # Filter out the matching entry
-        filtered = []
-        for p in scope_providers:
-            if p.get("id") == entry.get("id") and entry.get("id"):
-                continue  # Remove by id match
-            if p.get("module") == entry.get("module") and not entry.get("id"):
-                continue  # Remove by module match (no id = first instance)
-            filtered.append(p)
+        target_key = _provider_key(entry)
+        filtered = [p for p in scope_providers if _provider_key(p) != target_key]
 
         if len(filtered) < original_len:
             scope_settings = settings._read_scope(scope)  # type: ignore[arg-type]
@@ -1078,13 +1074,8 @@ def _manage_remove_provider(
         scope_providers = settings.get_scope_provider_overrides(scope)  # type: ignore[arg-type]
         original_len = len(scope_providers)
 
-        filtered = []
-        for p in scope_providers:
-            if p.get("id") == entry.get("id") and entry.get("id"):
-                continue
-            if p.get("module") == entry.get("module") and not entry.get("id"):
-                continue
-            filtered.append(p)
+        target_key = _provider_key(entry)
+        filtered = [p for p in scope_providers if _provider_key(p) != target_key]
 
         if len(filtered) < original_len:
             scope_settings = settings._read_scope(scope)  # type: ignore[arg-type]

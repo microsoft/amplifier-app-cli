@@ -517,6 +517,112 @@ class TestProviderRemove:
         assert result.exit_code == 0, f"Output: {result.output}"
         assert "not found" in result.output.lower()
 
+    def test_provider_remove_preserves_other_instance(self, tmp_path):
+        """Removing unnamed provider must not remove named instances of the same module."""
+        settings = _make_settings(tmp_path)
+        # Write both providers directly — set_provider_override dedupes by module,
+        # so we bypass it to create a realistic multi-instance scenario.
+        scope_data = {
+            "config": {
+                "providers": [
+                    {
+                        "module": "provider-openai",
+                        "config": {"default_model": "gpt-4o", "priority": 1},
+                    },
+                    {
+                        "id": "openai-2",
+                        "module": "provider-openai",
+                        "config": {"default_model": "gpt-4-turbo", "priority": 2},
+                    },
+                ]
+            }
+        }
+        settings._write_scope("global", scope_data)
+
+        from amplifier_app_cli.commands.provider import provider
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+        ):
+            result = runner.invoke(provider, ["remove", "openai"], input="y\n")
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+        providers = settings.get_provider_overrides()
+
+        # openai-2 must survive
+        surviving_ids = [p.get("id") for p in providers]
+        assert "openai-2" in surviving_ids, (
+            f"openai-2 was wrongly removed; providers={providers}"
+        )
+
+        # unnamed openai must be gone
+        unnamed = [
+            p
+            for p in providers
+            if p.get("module") == "provider-openai" and not p.get("id")
+        ]
+        assert len(unnamed) == 0, (
+            f"Unnamed openai was not removed; providers={providers}"
+        )
+
+    def test_provider_remove_by_id(self, tmp_path):
+        """Removing a named provider instance must not remove the unnamed instance."""
+        settings = _make_settings(tmp_path)
+        # Write both providers directly — set_provider_override dedupes by module,
+        # so we bypass it to create a realistic multi-instance scenario.
+        scope_data = {
+            "config": {
+                "providers": [
+                    {
+                        "module": "provider-openai",
+                        "config": {"default_model": "gpt-4o", "priority": 1},
+                    },
+                    {
+                        "id": "openai-2",
+                        "module": "provider-openai",
+                        "config": {"default_model": "gpt-4-turbo", "priority": 2},
+                    },
+                ]
+            }
+        }
+        settings._write_scope("global", scope_data)
+
+        from amplifier_app_cli.commands.provider import provider
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+        ):
+            result = runner.invoke(provider, ["remove", "openai-2"], input="y\n")
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+        providers = settings.get_provider_overrides()
+
+        # openai-2 must be gone
+        surviving_ids = [p.get("id") for p in providers]
+        assert "openai-2" not in surviving_ids, (
+            f"openai-2 was not removed; providers={providers}"
+        )
+
+        # unnamed openai must survive
+        unnamed = [
+            p
+            for p in providers
+            if p.get("module") == "provider-openai" and not p.get("id")
+        ]
+        assert len(unnamed) == 1, (
+            f"Unnamed openai was wrongly removed; providers={providers}"
+        )
+
 
 class TestProviderEdit:
     """Tests for `amplifier provider edit`."""
