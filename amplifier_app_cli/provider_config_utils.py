@@ -26,7 +26,8 @@ def _prompt_model_selection(
     provider_id: str,
     default_model: str | None = None,
     collected_config: dict[str, Any] | None = None,
-) -> str:
+    models: list | None = None,
+) -> str | None:
     """Prompt user to select a model from provider's available models.
 
     Queries the provider module for available models and presents a selection menu.
@@ -37,93 +38,105 @@ def _prompt_model_selection(
         default_model: Optional default model from existing config (NOT hard-coded provider default)
         collected_config: Optional config values collected from user (base_url, host, etc.)
             Passed to provider for dynamic model discovery from real servers.
+        models: Optional pre-fetched list of ModelInfo objects. When provided, skips the
+            fetch step and uses these models directly.
 
     Returns:
-        Selected model name
+        Selected model name, or None if interrupted (Ctrl-C / EOF).
     """
-    with console.status("[dim]Fetching available models...[/dim]", spinner="dots"):
-        try:
-            models = get_provider_models(provider_id, collected_config=collected_config)
-        except (ConnectionError, OSError) as e:
-            logger.debug(f"Could not connect to provider '{provider_id}': {e}")
-            models = []
-        except Exception as e:
-            console.print(
-                f"\n  [yellow]⚠  Could not fetch models for '{escape(str(provider_id))}':[/yellow]"
-                f"\n\n  {escape(str(e))}\n"
-            )
-            models = []
+    try:
+        if models is None:
+            with console.status(
+                "[dim]Fetching available models...[/dim]", spinner="dots"
+            ):
+                try:
+                    models = get_provider_models(
+                        provider_id, collected_config=collected_config
+                    )
+                except (ConnectionError, OSError) as e:
+                    logger.debug(f"Could not connect to provider '{provider_id}': {e}")
+                    models = []
+                except Exception as e:
+                    console.print(
+                        f"\n  [yellow]⚠  Could not fetch models for '{escape(str(provider_id))}':[/yellow]"
+                        f"\n\n  {escape(str(e))}\n"
+                    )
+                    models = []
+        # else: use the pre-fetched models passed in
 
-    if not models:
-        # No models available - show helpful message and prompt for custom input
-        # Provider-specific hints for common local providers
-        if provider_id in ("ollama", "provider-ollama"):
-            console.print(
-                "  [dim](No models found on Ollama server. Run 'ollama pull <model>' to install models.)[/dim]"
-            )
-        elif provider_id in ("vllm", "provider-vllm"):
-            console.print(
-                "  [dim](Could not connect to vLLM server or no models available.)[/dim]"
+        if not models:
+            # No models available - show helpful message and prompt for custom input
+            # Provider-specific hints for common local providers
+            if provider_id in ("ollama", "provider-ollama"):
+                console.print(
+                    "  [dim](No models found on Ollama server. Run 'ollama pull <model>' to install models.)[/dim]"
+                )
+            elif provider_id in ("vllm", "provider-vllm"):
+                console.print(
+                    "  [dim](Could not connect to vLLM server or no models available.)[/dim]"
+                )
+            else:
+                console.print("  [dim](No models discovered from server.)[/dim]")
+            model = Prompt.ask("Model name", default=default_model or "")
+            return model
+
+        # Check if default_model is in the provider's model list
+        model_ids = [m.id for m in models]
+        default_in_list = default_model and default_model in model_ids
+
+        # Build selection menu from available models
+        model_map: dict[str, str] = {}
+
+        for idx, model_info in enumerate(models, 1):
+            model_map[str(idx)] = model_info.id
+            # Show display name and capabilities if available
+            caps = ""
+            if hasattr(model_info, "capabilities") and model_info.capabilities:
+                key_caps = [
+                    c
+                    for c in model_info.capabilities
+                    if c in ("fast", "thinking", "vision")
+                ]
+                if key_caps:
+                    caps = f" ({', '.join(key_caps)})"
+            console.print(f"  [{idx}] {model_info.display_name}{caps}")
+
+        next_idx = len(models) + 1
+
+        # If default_model exists but not in list, add it as "keep current" option
+        if default_model and not default_in_list:
+            model_map[str(next_idx)] = default_model
+            console.print(f"  [{next_idx}] {default_model} [dim](current)[/dim]")
+            next_idx += 1
+
+        # Add "custom" option for entering a different model
+        model_map[str(next_idx)] = "__custom__"
+        console.print(f"  [{next_idx}] custom")
+
+        # Determine default choice
+        # Only use a default if there's an existing model from config
+        # No hard-coded defaults - user must choose for new configs
+        default_choice: str | None = None
+        if default_model:
+            for idx, model_id in model_map.items():
+                if model_id == default_model:
+                    default_choice = idx
+                    break
+
+        if default_choice:
+            choice = Prompt.ask(
+                "Choice", choices=list(model_map.keys()), default=default_choice
             )
         else:
-            console.print("  [dim](No models discovered from server.)[/dim]")
-        model = Prompt.ask("Model name", default=default_model or "")
-        return model
+            choice = Prompt.ask("Choice", choices=list(model_map.keys()))
 
-    # Check if default_model is in the provider's model list
-    model_ids = [m.id for m in models]
-    default_in_list = default_model and default_model in model_ids
+        if model_map[choice] == "__custom__":
+            return Prompt.ask("Model name", default=default_model or "")
 
-    # Build selection menu from available models
-    model_map: dict[str, str] = {}
+        return model_map[choice]
 
-    for idx, model_info in enumerate(models, 1):
-        model_map[str(idx)] = model_info.id
-        # Show display name and capabilities if available
-        caps = ""
-        if hasattr(model_info, "capabilities") and model_info.capabilities:
-            key_caps = [
-                c
-                for c in model_info.capabilities
-                if c in ("fast", "thinking", "vision")
-            ]
-            if key_caps:
-                caps = f" ({', '.join(key_caps)})"
-        console.print(f"  [{idx}] {model_info.display_name}{caps}")
-
-    next_idx = len(models) + 1
-
-    # If default_model exists but not in list, add it as "keep current" option
-    if default_model and not default_in_list:
-        model_map[str(next_idx)] = default_model
-        console.print(f"  [{next_idx}] {default_model} [dim](current)[/dim]")
-        next_idx += 1
-
-    # Add "custom" option for entering a different model
-    model_map[str(next_idx)] = "__custom__"
-    console.print(f"  [{next_idx}] custom")
-
-    # Determine default choice
-    # Only use a default if there's an existing model from config
-    # No hard-coded defaults - user must choose for new configs
-    default_choice: str | None = None
-    if default_model:
-        for idx, model_id in model_map.items():
-            if model_id == default_model:
-                default_choice = idx
-                break
-
-    if default_choice:
-        choice = Prompt.ask(
-            "Choice", choices=list(model_map.keys()), default=default_choice
-        )
-    else:
-        choice = Prompt.ask("Choice", choices=list(model_map.keys()))
-
-    if model_map[choice] == "__custom__":
-        return Prompt.ask("Model name", default=default_model or "")
-
-    return model_map[choice]
+    except (KeyboardInterrupt, EOFError):
+        return None
 
 
 def _should_show_field(field: dict[str, Any], collected_config: dict[str, Any]) -> bool:

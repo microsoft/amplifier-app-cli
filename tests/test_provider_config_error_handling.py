@@ -604,6 +604,119 @@ class TestProviderTestSpinner:
 
         mock_console.status.assert_not_called()
 
+
+# ============================================================
+# Task 2: `models` param + Ctrl-C boundary on _prompt_model_selection()
+# ============================================================
+
+
+class TestPromptModelSelectionModelsParam:
+    """Tests for the models param and Ctrl-C boundary in _prompt_model_selection()."""
+
+    def test_prompt_model_selection_uses_provided_models(self):
+        """When models are provided, get_provider_models should NOT be called."""
+        from amplifier_app_cli.provider_config_utils import _prompt_model_selection
+
+        mock_model_1 = MagicMock()
+        mock_model_1.id = "claude-sonnet-4-6"
+        mock_model_1.display_name = "Claude Sonnet 4.6"
+        mock_model_1.capabilities = ["vision", "thinking"]
+
+        mock_model_2 = MagicMock()
+        mock_model_2.id = "claude-opus-4-6"
+        mock_model_2.display_name = "Claude Opus 4.6"
+        mock_model_2.capabilities = ["vision", "thinking"]
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_models"
+            ) as mock_gpm,
+            patch("amplifier_app_cli.provider_config_utils.Prompt") as MockPrompt,
+            patch("amplifier_app_cli.provider_config_utils.console"),
+        ):
+            MockPrompt.ask.return_value = "1"
+            result = _prompt_model_selection(
+                "anthropic", models=[mock_model_1, mock_model_2]
+            )
+
+        mock_gpm.assert_not_called()  # Should NOT have fetched — used provided models
+        assert result == "claude-sonnet-4-6", (
+            f"Expected 'claude-sonnet-4-6', got '{result}'"
+        )
+
+    def test_prompt_model_selection_fetches_when_models_none(self):
+        """When models=None (default), get_provider_models SHOULD be called."""
+        from amplifier_app_cli.provider_config_utils import _prompt_model_selection
+
+        mock_model = MagicMock()
+        mock_model.id = "gpt-4o"
+        mock_model.display_name = "GPT-4o"
+        mock_model.capabilities = []
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_models",
+                return_value=[mock_model],
+            ) as mock_gpm,
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                return_value="1",
+            ),
+            patch("amplifier_app_cli.provider_config_utils.console"),
+        ):
+            result = _prompt_model_selection("openai")
+
+        mock_gpm.assert_called_once()
+        assert result == "gpt-4o", f"Expected 'gpt-4o', got '{result}'"
+
+    def test_prompt_model_selection_returns_none_on_ctrl_c(self):
+        """When Prompt.ask raises KeyboardInterrupt, should return None."""
+        from amplifier_app_cli.provider_config_utils import _prompt_model_selection
+
+        mock_model = MagicMock()
+        mock_model.id = "gpt-4o"
+        mock_model.display_name = "GPT-4o"
+        mock_model.capabilities = []
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_models",
+                return_value=[mock_model],
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                side_effect=KeyboardInterrupt(),
+            ),
+            patch("amplifier_app_cli.provider_config_utils.console"),
+        ):
+            result = _prompt_model_selection("openai")
+
+        assert result is None, f"Expected None on KeyboardInterrupt, got {result!r}"
+
+    def test_prompt_model_selection_returns_none_on_eof(self):
+        """When Prompt.ask raises EOFError, should return None."""
+        from amplifier_app_cli.provider_config_utils import _prompt_model_selection
+
+        mock_model = MagicMock()
+        mock_model.id = "gpt-4o"
+        mock_model.display_name = "GPT-4o"
+        mock_model.capabilities = []
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_models",
+                return_value=[mock_model],
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                side_effect=EOFError(),
+            ),
+            patch("amplifier_app_cli.provider_config_utils.console"),
+        ):
+            result = _prompt_model_selection("openai")
+
+        assert result is None, f"Expected None on EOFError, got {result!r}"
+
     def test_spinner_exits_on_provider_test_failure(self):
         """Spinner should exit cleanly even when a provider test fails."""
         from amplifier_app_cli.commands.provider import _manage_test_providers
