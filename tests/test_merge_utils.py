@@ -345,3 +345,72 @@ class TestProviderScopeMerge:
         # gemini added by project is present
         gemini = next(p for p in result if p["module"] == "provider-gemini")
         assert gemini["config"]["default_model"] == "gemini-1.5-pro"
+
+
+class TestRuntimeConfigMerge:
+    """Tests for _merge_module_lists() and _apply_provider_overrides() in runtime/config.py."""
+
+    def test_runtime_merge_module_lists_preserves_multi_instance(self) -> None:
+        """Base list with two entries sharing same module but different ids must both survive."""
+        from amplifier_app_cli.runtime.config import _merge_module_lists
+
+        base = [
+            {"module": "provider-openai", "config": {"model": "gpt-5.2"}},
+            {
+                "module": "provider-openai",
+                "id": "openai-2",
+                "config": {"model": "gpt-5.4"},
+            },
+        ]
+        result = _merge_module_lists(base, [])
+
+        assert len(result) == 2
+
+    def test_runtime_merge_module_lists_updates_by_id(self) -> None:
+        """Overlay entry keyed by id must update matching base entry, not overwrite unrelated one."""
+        from amplifier_app_cli.runtime.config import _merge_module_lists
+
+        base = [
+            {"module": "provider-openai", "config": {"model": "gpt-5.2"}},
+            {
+                "module": "provider-openai",
+                "id": "openai-2",
+                "config": {"model": "gpt-5.4"},
+            },
+        ]
+        overlay = [
+            {
+                "module": "provider-openai",
+                "id": "openai-2",
+                "config": {"model": "gpt-5.5"},
+            },
+        ]
+        result = _merge_module_lists(base, overlay)
+
+        assert len(result) == 2
+        openai2 = next(r for r in result if r.get("id") == "openai-2")
+        assert openai2["config"]["model"] == "gpt-5.5"
+
+    def test_apply_provider_overrides_preserves_multi_instance(self) -> None:
+        """Both override entries (same module, different ids) must be in override_map independently."""
+        from amplifier_app_cli.runtime.config import _apply_provider_overrides
+
+        providers = [
+            {"module": "provider-openai", "config": {"model": "base"}},
+        ]
+        overrides = [
+            {"module": "provider-openai", "config": {"model": "gpt-5.2"}},
+            {
+                "module": "provider-openai",
+                "id": "openai-2",
+                "config": {"model": "gpt-5.4"},
+            },
+        ]
+        # _apply_provider_overrides only merges into existing bundle providers.
+        # The unnamed override matches the single bundle provider; openai-2 has no bundle match.
+        # The key assertion: the unnamed provider's config is updated (not silently overwritten
+        # by the openai-2 override because they shared the same map key before the fix).
+        result = _apply_provider_overrides(providers, overrides)
+
+        assert len(result) == 1
+        assert result[0]["config"]["model"] == "gpt-5.2"
