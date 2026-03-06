@@ -785,12 +785,22 @@ def provider_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scop
         if not providers:
             console.print("\n  [dim]No providers configured.[/dim]\n")
         else:
+            # Build source map: which scope contributed each provider
+            source_map: dict[str, str] = {}
+            for check_scope in ("local", "project", "global"):
+                scope_providers = settings.get_scope_provider_overrides(check_scope)  # type: ignore[arg-type]
+                for p in scope_providers:
+                    key = _provider_key(p)
+                    if key and key not in source_map:
+                        source_map[key] = check_scope
+
             table = Table(title="Configured Providers")
             table.add_column("#", justify="right", width=3)
             table.add_column("Name/ID", style="cyan")
             table.add_column("Type", style="green")
             table.add_column("Default Model")
             table.add_column("Priority", justify="right")
+            table.add_column("Source", style="dim")
 
             # Find min priority for star marker
             priorities = []
@@ -815,7 +825,10 @@ def provider_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scop
                 is_primary = pri == min_priority
                 name_col = f"★ {display}" if is_primary else f"  {display}"
 
-                table.add_row(str(i), name_col, ptype, model, str(pri))
+                source_key = _provider_key(p)
+                source = source_map.get(source_key, "global")
+
+                table.add_row(str(i), name_col, ptype, model, str(pri), source)
 
             console.print(table)
 

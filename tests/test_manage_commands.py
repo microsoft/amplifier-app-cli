@@ -445,6 +445,72 @@ class TestProviderManage:
 
         assert result.exit_code == 0, f"Output: {result.output}"
 
+    def test_provider_manage_shows_source_column(self, tmp_path):
+        """Manage table should show a Source column with scope annotation."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        from amplifier_app_cli.commands.provider import provider_manage_loop
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet-4-6"},
+            priority=1,
+        )
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with patch("amplifier_app_cli.commands.provider.console", test_console):
+            with patch("amplifier_app_cli.commands.provider.Prompt") as MockPrompt:
+                MockPrompt.ask.return_value = "d"
+                provider_manage_loop(settings)
+
+        rendered = output.getvalue()
+        assert "Source" in rendered
+        assert "global" in rendered
+
+    def test_provider_manage_shows_correct_source_for_local_override(self, tmp_path):
+        """Source column should show 'local' for a provider overridden in local scope."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        from amplifier_app_cli.commands.provider import provider_manage_loop
+
+        settings = _make_settings(tmp_path)
+        # Seed provider in global scope
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet-4-6"},
+            priority=1,
+        )
+        # Override it in local scope
+        local_settings = settings._read_scope("local")
+        local_settings.setdefault("config", {})["providers"] = [
+            {
+                "module": "provider-anthropic",
+                "config": {"default_model": "claude-haiku-4-5", "priority": 1},
+            }
+        ]
+        settings._write_scope("local", local_settings)
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with patch("amplifier_app_cli.commands.provider.console", test_console):
+            with patch("amplifier_app_cli.commands.provider.Prompt") as MockPrompt:
+                MockPrompt.ask.return_value = "d"
+                provider_manage_loop(settings)
+
+        rendered = output.getvalue()
+        assert "Source" in rendered
+        assert "local" in rendered
+
 
 # ============================================================
 # Task 2: routing manage
