@@ -1014,9 +1014,18 @@ def _manage_edit_provider(
     display = entry.get("id") or _display_name(module_id)
 
     key_manager = KeyManager()
-    new_config = configure_provider(
-        module_id, key_manager, existing_config=existing_config
-    )
+    try:
+        new_config = configure_provider(
+            module_id, key_manager, existing_config=existing_config
+        )
+    except (click.Abort, KeyboardInterrupt, EOFError):
+        console.print("\n  [dim]Cancelled.[/dim]")
+        return
+    except Exception as e:
+        console.print(
+            f"\n  [red]⚠  Provider configuration failed:[/red]\n\n  {escape_markup(str(e))}\n"
+        )
+        return
 
     if new_config is None:
         console.print("  [red]Configuration cancelled.[/red]")

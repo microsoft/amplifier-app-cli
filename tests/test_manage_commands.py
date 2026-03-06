@@ -880,3 +880,117 @@ class TestFirstRunUpdates:
 
         # init_cmd should NOW be in exports (opposite of old test)
         assert "init_cmd" in cmd_exports
+
+
+# ============================================================
+# Bug fixes: ensure providers installed + graceful error handling
+# ============================================================
+
+
+class TestEnsureProvidersReadyOnEntry:
+    """init_cmd and routing_manage must call _ensure_providers_ready before entering loops."""
+
+    def test_init_cmd_ensures_providers_ready(self, tmp_path):
+        """init_cmd should call _ensure_providers_ready before entering the dashboard."""
+        from amplifier_app_cli.commands.init import init_cmd
+
+        settings = _make_settings(tmp_path)
+        # Seed a provider so init_cmd skips the "no providers" branch and goes straight to
+        # init_dashboard_loop, which allows us to quit with "d".
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet-4-6"},
+            priority=1,
+        )
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.init._get_settings",
+                return_value=settings,
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider._ensure_providers_ready"
+            ) as mock_ensure,
+            patch("amplifier_app_cli.commands.init.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.commands.init._discover_matrix_files",
+                return_value=[],
+            ),
+        ):
+            MockPrompt.ask.return_value = "d"
+            result = runner.invoke(init_cmd)
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+        mock_ensure.assert_called_once()
+
+    def test_routing_manage_cmd_ensures_providers_ready(self, tmp_path):
+        """routing_manage should call _ensure_providers_ready before entering the loop."""
+        from amplifier_app_cli.commands.routing import routing_group
+
+        settings = _make_settings(tmp_path)
+        cache_dir = _make_matrix_dir(tmp_path)
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.routing._get_settings",
+                return_value=settings,
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider._ensure_providers_ready"
+            ) as mock_ensure,
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing.validate_scope_cli",
+            ),
+        ):
+            result = runner.invoke(routing_group, ["manage"], input="d\n")
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+        mock_ensure.assert_called_once()
+
+
+class TestEditProviderErrorHandling:
+    """_manage_edit_provider must catch configure_provider errors and return to the loop."""
+
+    def test_manage_edit_provider_catches_config_error(self, tmp_path):
+        """Edit provider should catch config errors and return to manage loop, not crash."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        from amplifier_app_cli.commands.provider import provider_manage_loop
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet"},
+            priority=1,
+        )
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.provider.console", test_console),
+            patch("amplifier_app_cli.commands.provider.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                side_effect=ValueError("base_url or client must be provided"),
+            ),
+            patch("amplifier_app_cli.commands.provider.KeyManager"),
+        ):
+            # e1 -> edit provider 1 (triggers error), d -> done (exits gracefully)
+            MockPrompt.ask.side_effect = ["e1", "d"]
+            result = provider_manage_loop(settings)
+
+        # Should return normally (not crash)
+        assert result == "global"
+        rendered = output.getvalue()
+        assert "failed" in rendered.lower() or "error" in rendered.lower(), (
+            f"Expected error message in output, got:\n{rendered}"
+        )

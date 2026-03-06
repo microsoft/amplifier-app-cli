@@ -18,9 +18,10 @@ from unittest.mock import MagicMock, patch
 class TestPromptModelSelectionErrorHandling:
     """Tests for widened exception handling in _prompt_model_selection()."""
 
-    def test_generic_exception_prints_error_and_raises_click_exception(self):
+    def test_generic_exception_prints_warning_and_falls_back_to_manual_entry(self):
         """When get_provider_models() raises a generic Exception,
-        _prompt_model_selection() should print the error and raise click.ClickException."""
+        _prompt_model_selection() should print a warning and fall back to manual entry
+        (not raise click.ClickException)."""
         from amplifier_app_cli.provider_config_utils import _prompt_model_selection
 
         mock_console = MagicMock()
@@ -34,11 +35,17 @@ class TestPromptModelSelectionErrorHandling:
                 "amplifier_app_cli.provider_config_utils.console",
                 mock_console,
             ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                return_value="my-model",
+            ),
         ):
-            with pytest.raises(click.ClickException):
-                _prompt_model_selection("test-provider")
+            result = _prompt_model_selection("test-provider")
 
-        # Verify the error message was printed (at least one call contains the error text)
+        # Should return the manually-entered model, not raise
+        assert result == "my-model", f"Expected 'my-model', got '{result}'"
+
+        # Verify the warning message was printed
         printed_texts = [str(call) for call in mock_console.print.call_args_list]
         joined = " ".join(printed_texts)
         assert "Token expired" in joined, (
@@ -424,7 +431,8 @@ class TestModelFetchingSpinner:
         mock_status_ctx.__exit__.assert_called_once()
 
     def test_spinner_exits_on_generic_exception(self):
-        """Spinner should exit cleanly when get_provider_models() raises a generic Exception."""
+        """Spinner should exit cleanly when get_provider_models() raises a generic Exception,
+        then fall back to manual entry (not raise click.ClickException)."""
         from amplifier_app_cli.provider_config_utils import _prompt_model_selection
 
         mock_console = MagicMock()
@@ -440,10 +448,15 @@ class TestModelFetchingSpinner:
                 "amplifier_app_cli.provider_config_utils.console",
                 mock_console,
             ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                return_value="my-model",
+            ),
         ):
-            with pytest.raises(click.ClickException):
-                _prompt_model_selection("test-provider")
+            result = _prompt_model_selection("test-provider")
 
+        # Should return the manually-entered model, not raise
+        assert result == "my-model", f"Expected 'my-model', got '{result}'"
         mock_status_ctx.__enter__.assert_called_once()
         mock_status_ctx.__exit__.assert_called_once()
 

@@ -8,7 +8,6 @@ import logging
 import os
 from typing import Any
 
-import click
 from rich.markup import escape
 
 from rich.console import Console
@@ -50,10 +49,10 @@ def _prompt_model_selection(
             models = []
         except Exception as e:
             console.print(
-                f"\n  [red]⚠  Could not fetch models for '{escape(str(provider_id))}':[/red]"
+                f"\n  [yellow]⚠  Could not fetch models for '{escape(str(provider_id))}':[/yellow]"
                 f"\n\n  {escape(str(e))}\n"
             )
-            raise click.ClickException(str(e))
+            models = []
 
     if not models:
         # No models available - show helpful message and prompt for custom input
