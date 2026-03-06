@@ -563,15 +563,20 @@ def save_custom_matrix(
 
 
 def _get_provider_names(settings: AppSettings) -> list[str]:
-    """Get list of configured provider type names."""
+    """Get list of unique configured provider type names."""
     providers = settings.get_provider_overrides()
+    seen: set[str] = set()
     names: list[str] = []
     for p in providers:
         module = p.get("module", "")
-        if module.startswith("provider-"):
-            names.append(module.removeprefix("provider-"))
-        else:
-            names.append(module)
+        name = (
+            module.removeprefix("provider-")
+            if module.startswith("provider-")
+            else module
+        )
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
     return names
 
 

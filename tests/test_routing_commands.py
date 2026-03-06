@@ -660,3 +660,54 @@ class TestRoutingManageCreateOption:
             routing_manage_loop(settings)
 
         mock_create.assert_called_once_with(settings)
+
+
+# ============================================================
+# Task 6: _get_provider_names() deduplication
+# ============================================================
+
+
+def _seed_provider(settings: AppSettings, providers: list[dict]) -> None:
+    """Seed provider entries with explicit list for fine-grained control."""
+    scope_settings = settings._read_scope("global")
+    scope_settings["config"] = {"providers": providers}
+    settings._write_scope("global", scope_settings)
+
+
+class TestGetProviderNames:
+    """Tests for _get_provider_names() deduplication."""
+
+    def test_get_provider_names_deduplicates_same_module(self, tmp_path):
+        """Two providers sharing a module but with different ids yield one type name."""
+        from amplifier_app_cli.commands.routing import _get_provider_names
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {"module": "provider-openai", "id": "openai-1"},
+                {"module": "provider-openai", "id": "openai-2"},
+            ],
+        )
+
+        names = _get_provider_names(settings)
+
+        assert names == ["openai"], f"Expected ['openai'], got {names}"
+
+    def test_get_provider_names_returns_all_unique_types(self, tmp_path):
+        """Three providers with distinct modules all appear in the result."""
+        from amplifier_app_cli.commands.routing import _get_provider_names
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {"module": "provider-anthropic"},
+                {"module": "provider-openai"},
+                {"module": "provider-github-copilot"},
+            ],
+        )
+
+        names = _get_provider_names(settings)
+
+        assert names == ["anthropic", "openai", "github-copilot"]
