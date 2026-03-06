@@ -939,8 +939,9 @@ def _manage_add_provider(settings: AppSettings) -> None:
     key_manager = KeyManager()
     try:
         config = configure_provider(module_id, key_manager)
-    except (click.Abort, click.ClickException):
-        raise  # Let Click handle aborts and CLI errors cleanly
+    except (click.Abort, KeyboardInterrupt, EOFError):
+        console.print("\n  [dim]Cancelled.[/dim]")
+        return
     except Exception as e:
         console.print(
             f"\n  [red]⚠  Provider configuration failed:[/red]\n\n  {escape_markup(str(e))}\n"

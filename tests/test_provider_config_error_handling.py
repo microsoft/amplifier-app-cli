@@ -6,7 +6,6 @@ configure_provider().
 """
 
 import click
-import pytest
 from unittest.mock import MagicMock, patch
 
 
@@ -164,12 +163,14 @@ class TestManageAddProviderSafetyNet:
             f"Expected error message in console output, got: {printed_texts}"
         )
 
-    def test_click_abort_propagates(self, tmp_path):
+    def test_click_abort_returns_gracefully(self, tmp_path):
         """When configure_provider() raises click.Abort,
-        it should propagate (not be caught by the safety net)."""
+        _manage_add_provider() should catch it and return gracefully
+        (printing 'Cancelled.' instead of propagating)."""
         from amplifier_app_cli.commands.provider import _manage_add_provider
 
         settings = _make_settings(tmp_path)
+        mock_console = MagicMock()
 
         with (
             patch(
@@ -189,7 +190,7 @@ class TestManageAddProviderSafetyNet:
                 "amplifier_app_cli.commands.provider.configure_provider",
                 side_effect=click.Abort(),
             ),
-            patch("amplifier_app_cli.commands.provider.console"),
+            patch("amplifier_app_cli.commands.provider.console", mock_console),
         ):
             mock_pm = MagicMock()
             mock_pm.list_providers.return_value = [
@@ -197,15 +198,69 @@ class TestManageAddProviderSafetyNet:
             ]
             MockPM.return_value = mock_pm
 
-            with pytest.raises(click.Abort):
-                _manage_add_provider(settings)
+            # Should NOT raise — should return gracefully
+            _manage_add_provider(settings)
 
-    def test_click_exception_propagates(self, tmp_path):
-        """When configure_provider() raises click.ClickException,
-        it should propagate (not be caught by the safety net)."""
+        # Verify "Cancelled" appears in output
+        printed_texts = [str(call) for call in mock_console.print.call_args_list]
+        joined = " ".join(printed_texts)
+        assert "Cancelled" in joined, (
+            f"Expected 'Cancelled' in console output, got: {printed_texts}"
+        )
+
+    def test_keyboard_interrupt_returns_gracefully(self, tmp_path):
+        """When configure_provider() raises KeyboardInterrupt (defense-in-depth),
+        _manage_add_provider() should catch it and return gracefully,
+        printing 'Cancelled.' instead of crashing."""
         from amplifier_app_cli.commands.provider import _manage_add_provider
 
         settings = _make_settings(tmp_path)
+        mock_console = MagicMock()
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._ensure_providers_ready",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.ProviderManager",
+            ) as MockPM,
+            patch(
+                "amplifier_app_cli.commands.provider.Prompt.ask",
+                return_value="1",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.KeyManager",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                side_effect=KeyboardInterrupt(),
+            ),
+            patch("amplifier_app_cli.commands.provider.console", mock_console),
+        ):
+            mock_pm = MagicMock()
+            mock_pm.list_providers.return_value = [
+                ("provider-anthropic", "Anthropic", "Anthropic provider"),
+            ]
+            MockPM.return_value = mock_pm
+
+            # Should NOT raise — should return gracefully
+            _manage_add_provider(settings)
+
+        # Verify "Cancelled" appears in output
+        printed_texts = [str(call) for call in mock_console.print.call_args_list]
+        joined = " ".join(printed_texts)
+        assert "Cancelled" in joined, (
+            f"Expected 'Cancelled' in console output, got: {printed_texts}"
+        )
+
+    def test_click_exception_handled_as_error(self, tmp_path):
+        """When configure_provider() raises click.ClickException,
+        it should be caught by the generic Exception handler, print an error
+        message, and return gracefully (not propagate)."""
+        from amplifier_app_cli.commands.provider import _manage_add_provider
+
+        settings = _make_settings(tmp_path)
+        mock_console = MagicMock()
 
         with (
             patch(
@@ -225,7 +280,7 @@ class TestManageAddProviderSafetyNet:
                 "amplifier_app_cli.commands.provider.configure_provider",
                 side_effect=click.ClickException("Auth failed"),
             ),
-            patch("amplifier_app_cli.commands.provider.console"),
+            patch("amplifier_app_cli.commands.provider.console", mock_console),
         ):
             mock_pm = MagicMock()
             mock_pm.list_providers.return_value = [
@@ -233,8 +288,15 @@ class TestManageAddProviderSafetyNet:
             ]
             MockPM.return_value = mock_pm
 
-            with pytest.raises(click.ClickException):
-                _manage_add_provider(settings)
+            # Should NOT raise — caught by generic Exception handler
+            _manage_add_provider(settings)
+
+        # Verify the error message was printed
+        printed_texts = [str(call) for call in mock_console.print.call_args_list]
+        joined = " ".join(printed_texts)
+        assert "Auth failed" in joined, (
+            f"Expected 'Auth failed' in console output, got: {printed_texts}"
+        )
 
 
 class TestProviderAddSafetyNet:
