@@ -361,6 +361,101 @@ class TestProviderAddSafetyNet:
 
 
 # ============================================================
+# Task 1 (new): Ctrl-C boundary on configure_provider()
+# ============================================================
+
+
+class TestConfigureProviderCtrlC:
+    """Tests for Ctrl-C boundary in configure_provider()."""
+
+    def _make_mock_provider_info(self):
+        """Return a minimal provider info dict with one text config field."""
+        return {
+            "display_name": "Test Provider",
+            "config_fields": [
+                {
+                    "id": "api_key",
+                    "display_name": "API Key",
+                    "field_type": "text",
+                    "prompt": "Enter your API key",
+                    "required": True,
+                }
+            ],
+        }
+
+    def test_configure_provider_returns_none_on_keyboard_interrupt(self):
+        """When a prompt raises KeyboardInterrupt, configure_provider() should return None."""
+        from amplifier_app_cli.provider_config_utils import configure_provider
+
+        mock_key_manager = MagicMock()
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=self._make_mock_provider_info(),
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                side_effect=KeyboardInterrupt(),
+            ),
+            patch("amplifier_app_cli.provider_config_utils.console"),
+        ):
+            result = configure_provider("test-provider", mock_key_manager)
+
+        assert result is None, f"Expected None on KeyboardInterrupt, got {result!r}"
+
+    def test_configure_provider_returns_none_on_eof_error(self):
+        """When a prompt raises EOFError, configure_provider() should return None."""
+        from amplifier_app_cli.provider_config_utils import configure_provider
+
+        mock_key_manager = MagicMock()
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=self._make_mock_provider_info(),
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                side_effect=EOFError(),
+            ),
+            patch("amplifier_app_cli.provider_config_utils.console"),
+        ):
+            result = configure_provider("test-provider", mock_key_manager)
+
+        assert result is None, f"Expected None on EOFError, got {result!r}"
+
+    def test_configure_provider_prints_cancelled_on_ctrl_c(self):
+        """When interrupted, configure_provider() should print 'Cancelled'."""
+        from amplifier_app_cli.provider_config_utils import configure_provider
+
+        mock_key_manager = MagicMock()
+        mock_console = MagicMock()
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=self._make_mock_provider_info(),
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                side_effect=KeyboardInterrupt(),
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.console",
+                mock_console,
+            ),
+        ):
+            configure_provider("test-provider", mock_key_manager)
+
+        printed_texts = [str(call) for call in mock_console.print.call_args_list]
+        joined = " ".join(printed_texts)
+        assert "Cancelled" in joined, (
+            f"Expected 'Cancelled' in console output, got: {printed_texts}"
+        )
+
+
+# ============================================================
 # Task 3: Spinner wraps model fetching
 # ============================================================
 

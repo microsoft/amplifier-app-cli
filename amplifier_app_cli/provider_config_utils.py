@@ -346,152 +346,158 @@ def configure_provider(
     Returns:
         Provider configuration dict, or None if configuration failed
     """
-    # Remove "provider-" prefix if present
-    if provider_id.startswith("provider-"):
-        provider_id = provider_id[9:]
+    try:
+        # Remove "provider-" prefix if present
+        if provider_id.startswith("provider-"):
+            provider_id = provider_id[9:]
 
-    # Build CLI overrides dict
-    cli_overrides: dict[str, Any] = {}
-    if model:
-        cli_overrides["default_model"] = model
-    if endpoint:
-        cli_overrides["azure_endpoint"] = endpoint
-        cli_overrides["base_url"] = endpoint
-        cli_overrides["host"] = endpoint
-    if deployment:
-        cli_overrides["deployment_name"] = deployment
-    if use_azure_cli is not None:
-        cli_overrides["use_default_credential"] = str(use_azure_cli).lower()
-        cli_overrides["use_managed_identity"] = str(use_azure_cli).lower()
+        # Build CLI overrides dict
+        cli_overrides: dict[str, Any] = {}
+        if model:
+            cli_overrides["default_model"] = model
+        if endpoint:
+            cli_overrides["azure_endpoint"] = endpoint
+            cli_overrides["base_url"] = endpoint
+            cli_overrides["host"] = endpoint
+        if deployment:
+            cli_overrides["deployment_name"] = deployment
+        if use_azure_cli is not None:
+            cli_overrides["use_default_credential"] = str(use_azure_cli).lower()
+            cli_overrides["use_managed_identity"] = str(use_azure_cli).lower()
 
-    # Get provider info with config_fields
-    info = get_provider_info(provider_id)
-    if not info:
-        console.print(f"[red]Error: Could not load provider '{provider_id}'[/red]")
+        # Get provider info with config_fields
+        info = get_provider_info(provider_id)
+        if not info:
+            console.print(f"[red]Error: Could not load provider '{provider_id}'[/red]")
+            return None
+
+        display_name = info.get("display_name", provider_id)
+        if not non_interactive:
+            console.print(f"\n[bold]Configuring {display_name}[/bold]")
+
+        collected_config: dict[str, Any] = {}
+
+        # Split config_fields into pre-model and post-model phases
+        # Pre-model fields are processed first (credentials, endpoints, etc.)
+        # Post-model fields are processed after model selection (model-dependent options)
+        config_fields = info.get("config_fields", [])
+        pre_model_fields = [
+            f for f in config_fields if not f.get("requires_model", False)
+        ]
+        post_model_fields = [f for f in config_fields if f.get("requires_model", False)]
+
+        # Phase 1: Process pre-model config_fields (credentials, base_url, etc.)
+        for field in pre_model_fields:
+            field_id = field["id"]
+
+            # Check show_when conditions
+            if not _should_show_field(field, collected_config):
+                continue
+
+            # Check if value provided via CLI override
+            if field_id in cli_overrides and cli_overrides[field_id] is not None:
+                collected_config[field_id] = cli_overrides[field_id]
+                if not non_interactive:
+                    console.print(
+                        f"\n[bold]{field['display_name']}[/bold]: {cli_overrides[field_id]}"
+                    )
+                continue
+
+            # In non-interactive mode, use env var or existing config value
+            if non_interactive:
+                env_var = field.get("env_var")
+                if env_var and os.environ.get(env_var):
+                    collected_config[field_id] = f"${{{env_var}}}"
+                elif existing_config and field_id in existing_config:
+                    collected_config[field_id] = existing_config[field_id]
+                elif field.get("default"):
+                    collected_config[field_id] = field["default"]
+                continue
+
+            # Prompt for the field (pass existing_config for defaults)
+            field_id, value = _prompt_for_field(
+                field, key_manager, collected_config, existing_config
+            )
+            if value is not None:
+                collected_config[field_id] = value
+
+        # Phase 2: Model selection step
+        # Check if model was provided via CLI override
+        if "default_model" in cli_overrides:
+            collected_config["default_model"] = cli_overrides["default_model"]
+            if not non_interactive:
+                console.print(
+                    f"\n[bold]Default Model[/bold]: {cli_overrides['default_model']}"
+                )
+        elif "deployment_name" in collected_config:
+            # Azure OpenAI: deployment_name IS the model
+            collected_config["default_model"] = collected_config["deployment_name"]
+            if not non_interactive:
+                console.print(
+                    f"\n[bold]Default Model[/bold]: {collected_config['default_model']} (from deployment)"
+                )
+        elif non_interactive:
+            # In non-interactive mode, use existing config or skip
+            if existing_config and "default_model" in existing_config:
+                collected_config["default_model"] = existing_config["default_model"]
+            # If no model available, continue without one (provider may have a default)
+        else:
+            # Get default model from existing config ONLY (no hard-coded provider defaults)
+            # This ensures fresh configs require user to choose, while re-configs default to previous choice
+            default_model = (
+                existing_config.get("default_model") if existing_config else None
+            )
+
+            # Prompt for model selection
+            # Pass collected_config so providers can connect to real servers for dynamic discovery
+            console.print()
+            console.print("[bold]Default Model[/bold]")
+            selected_model = _prompt_model_selection(
+                provider_id, default_model, collected_config
+            )
+            if selected_model:
+                collected_config["default_model"] = selected_model
+
+        # Phase 3: Process post-model config_fields (model-dependent options)
+        # These fields can use show_when to reference the selected model
+        for field in post_model_fields:
+            field_id = field["id"]
+
+            # Check show_when conditions (now model is in collected_config)
+            if not _should_show_field(field, collected_config):
+                continue
+
+            # Check if value provided via CLI override
+            if field_id in cli_overrides and cli_overrides[field_id] is not None:
+                collected_config[field_id] = cli_overrides[field_id]
+                if not non_interactive:
+                    console.print(
+                        f"\n[bold]{field['display_name']}[/bold]: {cli_overrides[field_id]}"
+                    )
+                continue
+
+            # In non-interactive mode, use env var or existing config value
+            if non_interactive:
+                env_var = field.get("env_var")
+                if env_var and os.environ.get(env_var):
+                    collected_config[field_id] = f"${{{env_var}}}"
+                elif existing_config and field_id in existing_config:
+                    collected_config[field_id] = existing_config[field_id]
+                elif field.get("default"):
+                    collected_config[field_id] = field["default"]
+                continue
+
+            # Prompt for the field (pass existing_config for defaults)
+            field_id, value = _prompt_for_field(
+                field, key_manager, collected_config, existing_config
+            )
+            if value is not None:
+                collected_config[field_id] = value
+
+        if not non_interactive:
+            console.print(f"\n[green]✓ {display_name} configured[/green]")
+
+        return collected_config
+    except (KeyboardInterrupt, EOFError):
+        console.print("\n[dim]Cancelled.[/dim]")
         return None
-
-    display_name = info.get("display_name", provider_id)
-    if not non_interactive:
-        console.print(f"\n[bold]Configuring {display_name}[/bold]")
-
-    collected_config: dict[str, Any] = {}
-
-    # Split config_fields into pre-model and post-model phases
-    # Pre-model fields are processed first (credentials, endpoints, etc.)
-    # Post-model fields are processed after model selection (model-dependent options)
-    config_fields = info.get("config_fields", [])
-    pre_model_fields = [f for f in config_fields if not f.get("requires_model", False)]
-    post_model_fields = [f for f in config_fields if f.get("requires_model", False)]
-
-    # Phase 1: Process pre-model config_fields (credentials, base_url, etc.)
-    for field in pre_model_fields:
-        field_id = field["id"]
-
-        # Check show_when conditions
-        if not _should_show_field(field, collected_config):
-            continue
-
-        # Check if value provided via CLI override
-        if field_id in cli_overrides and cli_overrides[field_id] is not None:
-            collected_config[field_id] = cli_overrides[field_id]
-            if not non_interactive:
-                console.print(
-                    f"\n[bold]{field['display_name']}[/bold]: {cli_overrides[field_id]}"
-                )
-            continue
-
-        # In non-interactive mode, use env var or existing config value
-        if non_interactive:
-            env_var = field.get("env_var")
-            if env_var and os.environ.get(env_var):
-                collected_config[field_id] = f"${{{env_var}}}"
-            elif existing_config and field_id in existing_config:
-                collected_config[field_id] = existing_config[field_id]
-            elif field.get("default"):
-                collected_config[field_id] = field["default"]
-            continue
-
-        # Prompt for the field (pass existing_config for defaults)
-        field_id, value = _prompt_for_field(
-            field, key_manager, collected_config, existing_config
-        )
-        if value is not None:
-            collected_config[field_id] = value
-
-    # Phase 2: Model selection step
-    # Check if model was provided via CLI override
-    if "default_model" in cli_overrides:
-        collected_config["default_model"] = cli_overrides["default_model"]
-        if not non_interactive:
-            console.print(
-                f"\n[bold]Default Model[/bold]: {cli_overrides['default_model']}"
-            )
-    elif "deployment_name" in collected_config:
-        # Azure OpenAI: deployment_name IS the model
-        collected_config["default_model"] = collected_config["deployment_name"]
-        if not non_interactive:
-            console.print(
-                f"\n[bold]Default Model[/bold]: {collected_config['default_model']} (from deployment)"
-            )
-    elif non_interactive:
-        # In non-interactive mode, use existing config or skip
-        if existing_config and "default_model" in existing_config:
-            collected_config["default_model"] = existing_config["default_model"]
-        # If no model available, continue without one (provider may have a default)
-    else:
-        # Get default model from existing config ONLY (no hard-coded provider defaults)
-        # This ensures fresh configs require user to choose, while re-configs default to previous choice
-        default_model = (
-            existing_config.get("default_model") if existing_config else None
-        )
-
-        # Prompt for model selection
-        # Pass collected_config so providers can connect to real servers for dynamic discovery
-        console.print()
-        console.print("[bold]Default Model[/bold]")
-        selected_model = _prompt_model_selection(
-            provider_id, default_model, collected_config
-        )
-        if selected_model:
-            collected_config["default_model"] = selected_model
-
-    # Phase 3: Process post-model config_fields (model-dependent options)
-    # These fields can use show_when to reference the selected model
-    for field in post_model_fields:
-        field_id = field["id"]
-
-        # Check show_when conditions (now model is in collected_config)
-        if not _should_show_field(field, collected_config):
-            continue
-
-        # Check if value provided via CLI override
-        if field_id in cli_overrides and cli_overrides[field_id] is not None:
-            collected_config[field_id] = cli_overrides[field_id]
-            if not non_interactive:
-                console.print(
-                    f"\n[bold]{field['display_name']}[/bold]: {cli_overrides[field_id]}"
-                )
-            continue
-
-        # In non-interactive mode, use env var or existing config value
-        if non_interactive:
-            env_var = field.get("env_var")
-            if env_var and os.environ.get(env_var):
-                collected_config[field_id] = f"${{{env_var}}}"
-            elif existing_config and field_id in existing_config:
-                collected_config[field_id] = existing_config[field_id]
-            elif field.get("default"):
-                collected_config[field_id] = field["default"]
-            continue
-
-        # Prompt for the field (pass existing_config for defaults)
-        field_id, value = _prompt_for_field(
-            field, key_manager, collected_config, existing_config
-        )
-        if value is not None:
-            collected_config[field_id] = value
-
-    if not non_interactive:
-        console.print(f"\n[green]✓ {display_name} configured[/green]")
-
-    return collected_config
