@@ -198,6 +198,7 @@ async def spawn_sub_session(
     parent_messages: list[dict] | None = None,
     provider_preferences: list | None = None,
     self_delegation_depth: int = 0,
+    session_metadata: dict | None = None,
 ) -> dict:
     """
     Spawn sub-session with agent configuration overlay.
@@ -283,6 +284,17 @@ async def spawn_sub_session(
         logger.debug(
             "Applied orchestrator config override to session.orchestrator.config: %s",
             orchestrator_config,
+        )
+
+    # Inject session metadata if provided (enables kernel CP-SM passthrough on session:start/fork)
+    # Metadata is surfaced on session:start and session:fork events for observability consumers.
+    if session_metadata:
+        if "session" not in merged_config:
+            merged_config["session"] = {}
+        merged_config["session"]["metadata"] = session_metadata
+        logger.debug(
+            "Injected session_metadata into child session config: %s",
+            session_metadata,
         )
 
     # Generate child session ID using W3C Trace Context span_id pattern
@@ -445,6 +457,7 @@ async def spawn_sub_session(
         parent_messages: list[dict] | None = None,
         provider_preferences: list | None = None,
         self_delegation_depth: int = 0,
+        session_metadata: dict | None = None,
     ) -> dict:
         return await spawn_sub_session(
             agent_name=agent_name,
@@ -458,6 +471,7 @@ async def spawn_sub_session(
             parent_messages=parent_messages,
             provider_preferences=provider_preferences,
             self_delegation_depth=self_delegation_depth,
+            session_metadata=session_metadata,
         )
 
     async def child_resume_capability(sub_session_id: str, instruction: str) -> dict:
@@ -764,6 +778,7 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
         parent_messages: list[dict] | None = None,
         provider_preferences: list | None = None,
         self_delegation_depth: int = 0,
+        session_metadata: dict | None = None,
     ) -> dict:
         return await spawn_sub_session(
             agent_name=agent_name,
@@ -777,6 +792,7 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
             parent_messages=parent_messages,
             provider_preferences=provider_preferences,
             self_delegation_depth=self_delegation_depth,
+            session_metadata=session_metadata,
         )
 
     async def child_resume_capability(sub_session_id: str, instruction: str) -> dict:

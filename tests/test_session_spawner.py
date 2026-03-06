@@ -906,3 +906,240 @@ class TestSpawnEnrichment:
         assert result["status"] == "incomplete"
         assert result["turn_count"] == 3
         assert result["metadata"] == {"reason": "max_turns"}
+
+
+class TestSessionMetadataFlow:
+    """Regression tests for session_metadata parameter propagation.
+
+    Covers the bug where amplifier-foundation's delegate tool passes
+    session_metadata={...} to spawn_capability, but the CLI's spawn functions
+    didn't accept that keyword argument, causing:
+
+        TypeError: register_session_spawning.<locals>.spawn_capability()
+            got an unexpected keyword argument 'session_metadata'
+
+    This blocked ALL delegate tool calls for users.
+    """
+
+    async def test_spawn_capability_accepts_session_metadata(self, tmp_path, monkeypatch):
+        """spawn_capability must accept session_metadata without raising TypeError.
+
+        This is the exact failure path: foundation's delegate tool passes
+        session_metadata as a kwarg and the registered spawn_capability must
+        not reject it.
+
+        spawn_sub_session is imported locally inside register_session_spawning,
+        so we patch it at source (session_spawner module) and wrap the entire
+        registration + invocation in the patch context.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from amplifier_app_cli.session_runner import register_session_spawning
+
+        # Build a minimal mock session with a real coordinator-like object
+        # that records what gets registered
+        registered_capabilities: dict = {}
+
+        class FakeCoordinator:
+            def register_capability(self, name, fn):
+                registered_capabilities[name] = fn
+
+        mock_session = MagicMock()
+        mock_session.coordinator = FakeCoordinator()
+
+        # Patch spawn_sub_session at its source so it never hits real I/O.
+        # Must be active during register_session_spawning (when the local import
+        # runs) AND during spawn_fn invocation (when the closure calls it).
+        spawn_called_with: dict = {}
+
+        async def fake_spawn_sub_session(**kwargs):
+            spawn_called_with.update(kwargs)
+            return {
+                "output": "ok",
+                "session_id": "child-x",
+                "status": "success",
+                "turn_count": 1,
+                "metadata": {},
+            }
+
+        with patch(
+            "amplifier_app_cli.session_spawner.spawn_sub_session",
+            fake_spawn_sub_session,
+        ):
+            register_session_spawning(mock_session)
+            spawn_fn = registered_capabilities["session.spawn"]
+
+            parent = MagicMock()
+            parent.session_id = "parent-1"
+
+            # This call MUST NOT raise TypeError — that was the production bug.
+            result = await spawn_fn(
+                agent_name="self",
+                instruction="say hi",
+                parent_session=parent,
+                agent_configs={},
+                session_metadata={"agent_name": "test-agent", "tool_call_id": "abc123"},
+            )
+
+        # Verify result came back (not a crash)
+        assert result["output"] == "ok"
+
+        # Verify session_metadata was forwarded to spawn_sub_session
+        assert spawn_called_with.get("session_metadata") == {
+            "agent_name": "test-agent",
+            "tool_call_id": "abc123",
+        }
+
+    async def test_session_metadata_injected_into_child_config(
+        self, tmp_path, monkeypatch
+    ):
+        """session_metadata is written into merged_config['session']['metadata']
+        before child session creation.
+
+        This enables the kernel's CP-SM passthrough: session:start and
+        session:fork events carry the metadata for observability consumers.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from amplifier_app_cli.session_spawner import spawn_sub_session
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        # Track the config passed to AmplifierSession constructor
+        captured_config: dict = {}
+
+        parent_coordinator = MagicMock()
+        parent_coordinator.get.return_value = None
+        parent_coordinator.get_capability.return_value = None
+        parent_coordinator.display_system = MagicMock()
+        parent_coordinator.cancellation = MagicMock()
+        parent_coordinator.cancellation.register_child = MagicMock()
+        parent_coordinator.cancellation.unregister_child = MagicMock()
+
+        parent_session = MagicMock()
+        parent_session.coordinator = parent_coordinator
+        parent_session.config = {
+            "session": {"orchestrator": "loop-basic", "context": "context-simple"},
+        }
+        parent_session.session_id = "parent-123"
+        parent_session.trace_id = "trace-abc"
+        parent_session.loader = None
+
+        class FakeHooks:
+            def register(self, event, handler, priority=0, name=None):
+                def _unregister():
+                    pass
+
+                return _unregister
+
+            async def emit(self, event, data):
+                pass
+
+        child_coordinator = MagicMock()
+        child_coordinator.register_capability = MagicMock()
+        child_coordinator.get_capability.return_value = None
+        child_coordinator.display_system = MagicMock()
+
+        def child_get(name):
+            if name == "hooks":
+                return FakeHooks()
+            if name == "context":
+                ctx = AsyncMock()
+                ctx.get_messages = AsyncMock(return_value=[])
+                ctx.add_message = AsyncMock()
+                return ctx
+            return None
+
+        child_coordinator.get = child_get
+        child_coordinator.mount = AsyncMock()
+
+        child_session = MagicMock()
+        child_session.coordinator = child_coordinator
+        child_session.initialize = AsyncMock()
+        child_session.execute = AsyncMock(return_value="hi")
+        child_session.cleanup = AsyncMock()
+        child_session.session_id = "child-meta-01"
+
+        def capture_session_constructor(config, **kwargs):
+            captured_config.update(config)
+            return child_session
+
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            side_effect=capture_session_constructor,
+        ):
+            with patch(
+                "amplifier_app_cli.session_spawner.generate_sub_session_id",
+                return_value="child-meta-01",
+            ):
+                with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                    with patch("amplifier_app_cli.session_store.SessionStore.save"):
+                        await spawn_sub_session(
+                            agent_name="self",
+                            instruction="say hi",
+                            parent_session=parent_session,
+                            agent_configs={},
+                            session_metadata={
+                                "agent_name": "self",
+                                "tool_call_id": "tool-xyz",
+                                "parallel_group_id": "grp-1",
+                            },
+                        )
+
+        # The config passed to AmplifierSession must have session.metadata injected
+        assert "session" in captured_config
+        assert captured_config["session"].get("metadata") == {
+            "agent_name": "self",
+            "tool_call_id": "tool-xyz",
+            "parallel_group_id": "grp-1",
+        }
+
+    async def test_spawn_capability_without_session_metadata_still_works(
+        self, tmp_path, monkeypatch
+    ):
+        """Callers that don't pass session_metadata are unaffected (default=None)."""
+        from unittest.mock import MagicMock, patch
+
+        from amplifier_app_cli.session_runner import register_session_spawning
+
+        registered_capabilities: dict = {}
+
+        class FakeCoordinator:
+            def register_capability(self, name, fn):
+                registered_capabilities[name] = fn
+
+        mock_session = MagicMock()
+        mock_session.coordinator = FakeCoordinator()
+
+        spawn_called_with: dict = {}
+
+        async def fake_spawn_sub_session(**kwargs):
+            spawn_called_with.update(kwargs)
+            return {
+                "output": "ok",
+                "session_id": "child-y",
+                "status": "success",
+                "turn_count": 1,
+                "metadata": {},
+            }
+
+        with patch(
+            "amplifier_app_cli.session_spawner.spawn_sub_session",
+            fake_spawn_sub_session,
+        ):
+            register_session_spawning(mock_session)
+            spawn_fn = registered_capabilities["session.spawn"]
+
+            parent = MagicMock()
+            parent.session_id = "parent-2"
+
+            # Call WITHOUT session_metadata — must not raise and must forward None
+            result = await spawn_fn(
+                agent_name="self",
+                instruction="greet",
+                parent_session=parent,
+                agent_configs={},
+            )
+
+        assert result["output"] == "ok"
+        assert spawn_called_with.get("session_metadata") is None
