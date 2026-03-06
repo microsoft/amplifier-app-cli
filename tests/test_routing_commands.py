@@ -923,3 +923,51 @@ class TestShowMatrixDetails:
         assert result.exit_code == 0, f"Output: {result.output}"
         mock_details.assert_called_once()
         mock_resolution.assert_not_called()
+
+
+# ============================================================
+# _list_models_for_provider: pass collected_config from settings
+# ============================================================
+
+
+class TestListModelsForProvider:
+    """Tests that _list_models_for_provider threads provider config to get_provider_models."""
+
+    def test_list_models_passes_config_to_get_provider_models(self, tmp_path):
+        """When settings has a provider config, collected_config is passed to get_provider_models."""
+        from amplifier_app_cli.commands.routing import _list_models_for_provider
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-anthropic",
+                    "config": {"api_key": "test-key", "default_model": "claude-sonnet"},
+                }
+            ],
+        )
+
+        with patch(
+            "amplifier_app_cli.provider_loader.get_provider_models", return_value=[]
+        ) as mock_gpm:
+            _list_models_for_provider("anthropic", settings=settings)
+
+        mock_gpm.assert_called_once()
+        _, call_kwargs = mock_gpm.call_args
+        assert call_kwargs.get("collected_config") is not None, (
+            "Expected collected_config to be passed to get_provider_models"
+        )
+        assert call_kwargs["collected_config"].get("api_key") == "test-key"
+
+    def test_list_models_works_without_settings(self, tmp_path):
+        """Calling without settings still calls get_provider_models (backward compat)."""
+        from amplifier_app_cli.commands.routing import _list_models_for_provider
+
+        with patch(
+            "amplifier_app_cli.provider_loader.get_provider_models", return_value=[]
+        ) as mock_gpm:
+            result = _list_models_for_provider("anthropic")
+
+        mock_gpm.assert_called_once()
+        assert result == []

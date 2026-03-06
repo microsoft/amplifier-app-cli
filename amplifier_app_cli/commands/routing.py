@@ -661,12 +661,33 @@ def _get_provider_names(settings: AppSettings) -> list[str]:
     return names
 
 
-def _list_models_for_provider(provider_name: str) -> list[str]:
-    """List available models for a provider. Returns model name strings."""
+def _list_models_for_provider(
+    provider_name: str, settings: AppSettings | None = None
+) -> list[str]:
+    """List available models for a provider. Returns model name strings.
+
+    If settings is provided, looks up the provider's config (API keys, base_url, etc.)
+    and passes it to get_provider_models for authenticated model listing.
+    """
     try:
         from ..provider_loader import get_provider_models
 
-        models = get_provider_models(provider_name)
+        # Look up provider config from settings if available
+        collected_config: dict[str, Any] | None = None
+        if settings:
+            providers = settings.get_provider_overrides()
+            for p in providers:
+                p_module = p.get("module", "")
+                p_type = (
+                    p_module.removeprefix("provider-")
+                    if p_module.startswith("provider-")
+                    else p_module
+                )
+                if p_type == provider_name or p_module == provider_name:
+                    collected_config = p.get("config", {})
+                    break
+
+        models = get_provider_models(provider_name, collected_config=collected_config)
         return [str(getattr(m, "name", m)) for m in models]
     except Exception:
         return []
@@ -676,6 +697,7 @@ def _prompt_provider_and_model(
     role_name: str,
     role_desc: str,
     provider_names: list[str],
+    settings: AppSettings | None = None,
 ) -> tuple[str, str] | None:
     """Prompt user to select a provider and model for a role.
 
@@ -708,7 +730,7 @@ def _prompt_provider_and_model(
 
     # Try listing models from the provider
     console.print(f"    [dim]Loading models for {provider}...[/dim]")
-    models = _list_models_for_provider(provider)
+    models = _list_models_for_provider(provider, settings=settings)
 
     if models:
         for i, m in enumerate(models, 1):
@@ -768,7 +790,9 @@ def _routing_create_interactive(settings: AppSettings) -> None:
     # Walk through each role
     assignments: dict[str, dict[str, str]] = {}
     for role_name, role_desc in roles.items():
-        result = _prompt_provider_and_model(role_name, role_desc, provider_names)
+        result = _prompt_provider_and_model(
+            role_name, role_desc, provider_names, settings=settings
+        )
         if result:
             provider, model = result
             assignments[role_name] = {
@@ -788,7 +812,7 @@ def _routing_create_interactive(settings: AppSettings) -> None:
                 f"Please assign it.[/yellow]"
             )
             result = _prompt_provider_and_model(
-                required, roles.get(required, ""), provider_names
+                required, roles.get(required, ""), provider_names, settings=settings
             )
             if result:
                 provider, model = result
@@ -839,7 +863,9 @@ def _routing_create_interactive(settings: AppSettings) -> None:
                 new_desc = Prompt.ask("  Description").strip()
             except (EOFError, KeyboardInterrupt):
                 continue
-            result = _prompt_provider_and_model(new_name, new_desc, provider_names)
+            result = _prompt_provider_and_model(
+                new_name, new_desc, provider_names, settings=settings
+            )
             if result:
                 provider, model = result
                 assignments[new_name] = {
@@ -869,7 +895,9 @@ def _routing_create_interactive(settings: AppSettings) -> None:
                 continue
             if edit_name in assignments:
                 desc = assignments[edit_name]["description"]
-                result = _prompt_provider_and_model(edit_name, desc, provider_names)
+                result = _prompt_provider_and_model(
+                    edit_name, desc, provider_names, settings=settings
+                )
                 if result:
                     provider, model = result
                     assignments[edit_name]["provider"] = provider
