@@ -9,8 +9,13 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from ..key_manager import KeyManager
-from ..lib.settings import AppSettings
+from ..lib.settings import AppSettings, Scope
 from ..paths import create_config_manager
+from ..ui.scope import (
+    is_scope_change_available,
+    print_scope_indicator,
+    prompt_scope_change,
+)
 from ..provider_config_utils import configure_provider
 from ..provider_manager import ProviderManager
 from ..provider_env_detect import detect_provider_from_env
@@ -171,7 +176,7 @@ def prompt_first_run_init(console_arg: Console) -> bool:
         from .provider import provider_manage_loop
 
         settings = _get_settings()
-        provider_manage_loop(settings)
+        provider_manage_loop(settings, scope="global")
         # Check if a provider was actually added
         providers = settings.get_provider_overrides()
         return len(providers) > 0
@@ -267,8 +272,9 @@ def _display_name(module_id: str) -> str:
     return module_id.replace("provider-", "")
 
 
-def init_dashboard_loop(settings: AppSettings) -> None:
+def init_dashboard_loop(settings: AppSettings, scope: Scope = "global") -> None:
     """Combined setup dashboard — composes provider and routing management."""
+    current_scope: Scope = scope
     while True:
         console.print(
             "\n  [bold]══════════════════════════════════════════════════════[/bold]"
@@ -277,6 +283,8 @@ def init_dashboard_loop(settings: AppSettings) -> None:
         console.print(
             "  [bold]══════════════════════════════════════════════════════[/bold]\n"
         )
+        print_scope_indicator(console, settings, current_scope)
+        console.print()
 
         # 1. Display provider summary table (condensed)
         providers = settings.get_provider_overrides()
@@ -350,6 +358,8 @@ def init_dashboard_loop(settings: AppSettings) -> None:
         console.print("\n  Actions:")
         console.print("    \\[p] Manage providers")
         console.print("    \\[r] Manage routing")
+        if is_scope_change_available():
+            console.print("    \\[w] Change write scope")
         console.print("    \\[d] Done")
         console.print()
 
@@ -360,15 +370,17 @@ def init_dashboard_loop(settings: AppSettings) -> None:
 
         if choice == "d":
             break
+        elif choice == "w" and is_scope_change_available():
+            current_scope = prompt_scope_change(console, settings, current_scope)
         elif choice == "p":
             from .provider import provider_manage_loop
 
-            provider_manage_loop(settings)
+            current_scope = provider_manage_loop(settings, scope=current_scope)
             # Returns here, re-renders dashboard
         elif choice == "r":
             from .routing import routing_manage_loop
 
-            routing_manage_loop(settings)
+            current_scope = routing_manage_loop(settings, scope=current_scope)
             # Returns here, re-renders dashboard
 
 
@@ -385,6 +397,6 @@ def init_cmd() -> None:
         )
         from .provider import provider_manage_loop
 
-        provider_manage_loop(settings)
+        provider_manage_loop(settings, scope="global")
 
     init_dashboard_loop(settings)

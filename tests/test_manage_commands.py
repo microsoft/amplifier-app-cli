@@ -210,6 +210,241 @@ class TestProviderManage:
         assert result.exit_code == 0, f"Output: {result.output}"
         assert "No providers configured" in result.output
 
+    # --------------------------------------------------------
+    # Scope integration tests (task-2-provider-manage-scope)
+    # --------------------------------------------------------
+
+    def test_scope_indicator_displayed(self, tmp_path):
+        """Scope indicator should appear even when no providers are configured."""
+        from amplifier_app_cli.commands.provider import provider_manage_loop
+
+        settings = _make_settings(tmp_path)
+        # No providers seeded — indicator must still appear (Issue 1 compliance)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.provider.console", test_console),
+            patch("amplifier_app_cli.commands.provider.Prompt") as MockPrompt,
+        ):
+            MockPrompt.ask.return_value = "d"
+            provider_manage_loop(settings)
+
+        rendered = output.getvalue()
+        # "Saving to" is emitted by print_scope_indicator for every scope value
+        assert "Saving to" in rendered
+
+    def test_scope_option_has_help_text(self):
+        """--scope option on provider manage should have a help string."""
+        import click
+
+        from amplifier_app_cli.commands.provider import provider_manage
+
+        scope_param = next(
+            (p for p in provider_manage.params if p.name == "scope"), None
+        )
+        assert scope_param is not None, "--scope option not found on provider_manage"
+        assert isinstance(scope_param, click.Option), "--scope should be a click.Option"
+        assert scope_param.help, "--scope option is missing a help string"
+        assert "scope" in scope_param.help.lower(), (
+            f"help text '{scope_param.help}' does not mention 'scope'"
+        )
+
+    def test_scope_param_accepted(self, tmp_path):
+        """provider_manage_loop should accept a scope parameter."""
+        from amplifier_app_cli.commands.provider import provider_manage_loop
+
+        settings = _make_settings(tmp_path)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.provider.console", test_console),
+            patch("amplifier_app_cli.commands.provider.Prompt") as MockPrompt,
+        ):
+            MockPrompt.ask.return_value = "d"
+            # Should not raise - scope param should be accepted
+            provider_manage_loop(settings, scope="project")
+
+    def test_scope_return_value(self, tmp_path):
+        """provider_manage_loop should return the current scope."""
+        from amplifier_app_cli.commands.provider import provider_manage_loop
+
+        settings = _make_settings(tmp_path)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.provider.console", test_console),
+            patch("amplifier_app_cli.commands.provider.Prompt") as MockPrompt,
+        ):
+            MockPrompt.ask.return_value = "d"
+            result = provider_manage_loop(settings, scope="project")
+
+        assert result == "project"
+
+    def test_w_action_visible_outside_home(self, tmp_path):
+        """[w] action should appear when not running from home directory."""
+        from amplifier_app_cli.commands.provider import provider_manage_loop
+
+        settings = _make_settings(tmp_path)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.provider.console", test_console),
+            patch("amplifier_app_cli.commands.provider.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.commands.provider.is_scope_change_available",
+                return_value=True,
+            ),
+        ):
+            MockPrompt.ask.return_value = "d"
+            provider_manage_loop(settings)
+
+        rendered = output.getvalue()
+        assert "Change write scope" in rendered
+
+    def test_w_action_hidden_at_home(self, tmp_path):
+        """[w] action should be hidden when running from home directory."""
+        from amplifier_app_cli.commands.provider import provider_manage_loop
+
+        settings = _make_settings(tmp_path)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.provider.console", test_console),
+            patch("amplifier_app_cli.commands.provider.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.commands.provider.is_scope_change_available",
+                return_value=False,
+            ),
+        ):
+            MockPrompt.ask.return_value = "d"
+            provider_manage_loop(settings)
+
+        rendered = output.getvalue()
+        assert "Change write scope" not in rendered
+
+    def test_reorder_writes_to_scope(self, tmp_path):
+        """Reorder should write to the current scope, not hardcoded global."""
+        from amplifier_app_cli.commands.provider import _manage_reorder_providers
+
+        settings = _make_settings(tmp_path)
+        # Seed providers into project scope
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet-4-6"},
+            priority=1,
+        )
+        _seed_provider(
+            settings,
+            "provider-openai",
+            {"default_model": "gpt-4o"},
+            priority=2,
+        )
+
+        providers = settings.get_provider_overrides()
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.provider.console", test_console),
+            patch("amplifier_app_cli.commands.provider.Prompt") as MockPrompt,
+        ):
+            MockPrompt.ask.return_value = "2 1"
+            _manage_reorder_providers(settings, providers, scope="project")
+
+        # Verify written to project scope
+        project_settings = settings._read_scope("project")
+        project_providers = project_settings.get("config", {}).get("providers", [])
+        assert len(project_providers) == 2
+
+    def test_add_provider_shows_global_info(self, tmp_path):
+        """_manage_add_provider should show info that credentials are saved to global."""
+        from amplifier_app_cli.commands.provider import _manage_add_provider
+
+        settings = _make_settings(tmp_path)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.provider.console", test_console),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch("amplifier_app_cli.commands.provider.ProviderManager") as MockPM,
+            patch("amplifier_app_cli.commands.provider.Prompt") as MockPrompt,
+            patch("amplifier_app_cli.commands.provider.KeyManager"),
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                return_value={"default_model": "test-model"},
+            ),
+        ):
+            MockPM.return_value.list_providers.return_value = [
+                ("provider-test", "Test Provider", "A test provider")
+            ]
+            MockPrompt.ask.return_value = "1"
+            _manage_add_provider(settings)
+
+        rendered = output.getvalue()
+        assert "global" in rendered.lower()
+
+    def test_cli_scope_option_accepted(self, tmp_path):
+        """CLI command `provider manage --scope=project` should be accepted."""
+        from amplifier_app_cli.commands.provider import provider
+
+        settings = _make_settings(tmp_path)
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch(
+                "amplifier_app_cli.commands.provider.validate_scope_cli",
+            ),
+        ):
+            result = runner.invoke(provider, ["manage", "--scope=project"], input="d\n")
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+
 
 # ============================================================
 # Task 2: routing manage
@@ -253,6 +488,122 @@ class TestRoutingManage:
 
         rendered = output.getvalue()
         assert "balanced" in rendered.lower()
+
+    # --------------------------------------------------------
+    # Scope integration tests (task-3-routing-manage-scope)
+    # --------------------------------------------------------
+
+    def test_routing_manage_loop_shows_scope_indicator(self, tmp_path):
+        """Scope indicator should appear in routing manage loop output."""
+        from amplifier_app_cli.commands.routing import routing_manage_loop
+
+        settings = _make_settings(tmp_path)
+        cache_dir = _make_matrix_dir(tmp_path)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", test_console),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+        ):
+            MockPrompt.ask.return_value = "d"
+            routing_manage_loop(settings)
+
+        rendered = output.getvalue()
+        assert "Saving to" in rendered
+
+    def test_routing_manage_loop_returns_scope(self, tmp_path):
+        """routing_manage_loop should return the current scope when done."""
+        from amplifier_app_cli.commands.routing import routing_manage_loop
+
+        settings = _make_settings(tmp_path)
+        cache_dir = _make_matrix_dir(tmp_path)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", test_console),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+        ):
+            MockPrompt.ask.return_value = "d"
+            result = routing_manage_loop(settings, scope="project")
+
+        assert result == "project"
+
+    def test_routing_manage_select_writes_to_scope(self, tmp_path):
+        """Selecting a matrix in the manage loop should write to current scope."""
+        from amplifier_app_cli.commands.routing import routing_manage_loop
+
+        settings = _make_settings(tmp_path)
+        cache_dir = _make_matrix_dir(tmp_path)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        # Simulate: select matrix "s1" (balanced is #1), then done
+        responses = iter(["s1", "d"])
+        with (
+            patch("amplifier_app_cli.commands.routing.console", test_console),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+        ):
+            MockPrompt.ask.side_effect = lambda *args, **kwargs: next(responses)
+            routing_manage_loop(settings, scope="project")
+
+        # Verify write went to project scope
+        project_settings = settings._read_scope("project")
+        assert project_settings.get("routing", {}).get("matrix") == "balanced"
+
+    def test_routing_manage_cli_accepts_scope(self, tmp_path):
+        """CLI command `routing manage --scope project` should be accepted."""
+        from amplifier_app_cli.commands.routing import routing_group
+
+        settings = _make_settings(tmp_path)
+        cache_dir = _make_matrix_dir(tmp_path)
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.routing._get_settings",
+                return_value=settings,
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing.validate_scope_cli",
+            ),
+        ):
+            result = runner.invoke(
+                routing_group, ["manage", "--scope", "project"], input="d\n"
+            )
+
+        assert result.exit_code == 0, f"Output: {result.output}"
 
 
 # ============================================================
@@ -316,6 +667,83 @@ class TestInitDashboard:
         assert "anthropic" in rendered.lower()
         # Should show routing info
         assert "balanced" in rendered.lower()
+
+    def test_init_dashboard_shows_scope_indicator(self, tmp_path):
+        """Scope indicator should appear unconditionally in init dashboard."""
+        from amplifier_app_cli.commands.init import init_dashboard_loop
+
+        settings = _make_settings(tmp_path)
+        # No providers seeded — indicator must still appear
+        cache_dir = _make_matrix_dir(tmp_path)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.init.console", test_console),
+            patch("amplifier_app_cli.commands.init.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.commands.init._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+        ):
+            MockPrompt.ask.return_value = "d"
+            init_dashboard_loop(settings)
+
+        rendered = output.getvalue()
+        assert "Saving to" in rendered
+
+    def test_init_dashboard_passes_scope_to_provider_manage(self, tmp_path):
+        """init_dashboard_loop should pass scope= to provider_manage_loop."""
+        from amplifier_app_cli.commands.init import init_dashboard_loop
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet-4-6"},
+            priority=1,
+        )
+        cache_dir = _make_matrix_dir(tmp_path)
+
+        from io import StringIO
+        from unittest.mock import MagicMock
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        # Simulate: user picks "p" (provider), then "d" (done)
+        responses = iter(["p", "d"])
+        mock_provider_loop = MagicMock(return_value="global")
+
+        with (
+            patch("amplifier_app_cli.commands.init.console", test_console),
+            patch("amplifier_app_cli.commands.init.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.commands.init._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.provider_manage_loop",
+                mock_provider_loop,
+            ),
+        ):
+            MockPrompt.ask.side_effect = lambda *args, **kwargs: next(responses)
+            init_dashboard_loop(settings)
+
+        # Verify provider_manage_loop was called with scope= keyword
+        assert mock_provider_loop.called, "provider_manage_loop was never called"
+        call_kwargs = mock_provider_loop.call_args.kwargs
+        assert "scope" in call_kwargs, (
+            f"provider_manage_loop was not called with scope= kwarg; "
+            f"got kwargs={call_kwargs}"
+        )
 
 
 # ============================================================

@@ -1,7 +1,8 @@
 """Provider management commands."""
 
+import os
 import time
-from typing import Any
+from typing import Any, cast
 
 import click
 from rich.console import Console
@@ -10,7 +11,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from ..key_manager import KeyManager
-from ..lib.settings import AppSettings
+from ..lib.settings import AppSettings, Scope
 from ..paths import create_config_manager
 from ..provider_config_utils import configure_provider
 from ..provider_loader import get_provider_models
@@ -18,6 +19,12 @@ from ..provider_manager import ProviderManager
 from ..provider_sources import ensure_provider_installed
 from ..provider_sources import get_effective_provider_sources
 from ..provider_sources import install_known_providers
+from ..ui.scope import (
+    is_scope_change_available,
+    print_scope_indicator,
+    prompt_scope_change,
+    validate_scope_cli,
+)
 from ..utils.error_format import escape_markup
 
 console = Console()
@@ -325,53 +332,116 @@ def provider_add(ctx: click.Context, provider_type: str | None) -> None:
 
 
 @provider.command("list")
-def provider_list() -> None:
+@click.option(
+    "--scope",
+    default=None,
+    type=click.Choice(["global", "project", "local"]),
+    help="Show providers from a specific scope only.",
+)
+def provider_list(scope: str | None) -> None:
     """List configured providers.
 
     Shows all configured providers with their type, model, priority, and status.
     The primary provider (lowest priority) is marked with ★.
+
+    Without --scope, shows the effective merged view with a Source column indicating
+    which scope contributed each provider.  With --scope, shows only that scope's
+    providers.
     """
     _ensure_providers_ready()
 
     settings = _get_settings()
-    providers = settings.get_provider_overrides()
 
-    if not providers:
-        console.print("[yellow]No providers configured.[/yellow]")
-        console.print("Run: [cyan]amplifier provider add[/cyan]")
-        return
+    if scope is not None:
+        # ---- Single-scope view ----
+        validate_scope_cli(scope)
+        typed_scope = cast(Scope, scope)
+        providers = settings.get_scope_provider_overrides(typed_scope)
+        scope_path = settings._get_scope_path(typed_scope)  # type: ignore[attr-defined]
+        title = f"Providers in {scope} scope ({scope_path})"
 
-    table = Table(title="Configured Providers")
-    table.add_column("Name/ID", style="cyan")
-    table.add_column("Type", style="green")
-    table.add_column("Default Model")
-    table.add_column("Priority", justify="right")
-    table.add_column("Status")
+        if not providers:
+            console.print(
+                f"[yellow]No providers in {scope} scope ({scope_path}).[/yellow]"
+            )
+            console.print("Run: [cyan]amplifier provider add[/cyan]")
+            return
 
-    # Find min priority for star marker
-    priorities = []
-    for p in providers:
-        config = p.get("config", {})
-        pri = config.get("priority", 100) if isinstance(config, dict) else 100
-        priorities.append(pri)
-    min_priority = min(priorities) if priorities else 0
+        table = Table(title=title)
+        table.add_column("Name/ID", style="cyan")
+        table.add_column("Type", style="green")
+        table.add_column("Default Model")
+        table.add_column("Priority", justify="right")
 
-    for idx, p in enumerate(providers):
-        module = p.get("module", "unknown")
-        display = p.get("id") or _display_name(module)
-        ptype = _display_name(module)
-        config = p.get("config", {})
-        model = config.get("default_model", "-") if isinstance(config, dict) else "-"
-        pri = config.get("priority", 100) if isinstance(config, dict) else 100
+        priorities = [
+            (p.get("config", {}) or {}).get("priority", 100) for p in providers
+        ]
+        min_priority = min(priorities) if priorities else 0
 
-        # Star marker for primary (lowest priority)
-        is_primary = pri == min_priority
-        name_col = f"★ {display}" if is_primary else f"  {display}"
-        status = "configured"
+        for p in providers:
+            module = p.get("module", "unknown")
+            display = p.get("id") or _display_name(module)
+            ptype = _display_name(module)
+            config = p.get("config", {})
+            model = (
+                config.get("default_model", "-") if isinstance(config, dict) else "-"
+            )
+            pri = config.get("priority", 100) if isinstance(config, dict) else 100
+            is_primary = pri == min_priority
+            name_col = f"★ {display}" if is_primary else f"  {display}"
+            table.add_row(name_col, ptype, model, str(pri))
 
-        table.add_row(name_col, ptype, model, str(pri), status)
+        console.print(table)
 
-    console.print(table)
+    else:
+        # ---- Default merged view with Source column ----
+        providers = settings.get_provider_overrides()
+
+        if not providers:
+            console.print("[yellow]No providers configured.[/yellow]")
+            console.print("Run: [cyan]amplifier provider add[/cyan]")
+            return
+
+        # Build source_map: highest-priority scope (local > project > global) wins
+        source_map: dict[str, str] = {}
+        for check_scope in ("local", "project", "global"):
+            scope_providers = settings.get_scope_provider_overrides(check_scope)
+            for p in scope_providers:
+                key = p.get("id") or p.get("module", "")
+                if key and key not in source_map:
+                    source_map[key] = check_scope
+
+        cwd = os.getcwd()
+        table = Table(title=f"Configured Providers (effective from {cwd})")
+        table.add_column("Name/ID", style="cyan")
+        table.add_column("Type", style="green")
+        table.add_column("Default Model")
+        table.add_column("Priority", justify="right")
+        table.add_column("Source", style="dim")
+
+        priorities = []
+        for p in providers:
+            config = p.get("config", {})
+            pri = config.get("priority", 100) if isinstance(config, dict) else 100
+            priorities.append(pri)
+        min_priority = min(priorities) if priorities else 0
+
+        for p in providers:
+            module = p.get("module", "unknown")
+            display = p.get("id") or _display_name(module)
+            ptype = _display_name(module)
+            config = p.get("config", {})
+            model = (
+                config.get("default_model", "-") if isinstance(config, dict) else "-"
+            )
+            pri = config.get("priority", 100) if isinstance(config, dict) else 100
+            is_primary = pri == min_priority
+            name_col = f"★ {display}" if is_primary else f"  {display}"
+            key = p.get("id") or module
+            source = source_map.get(key, "global")
+            table.add_row(name_col, ptype, model, str(pri), source)
+
+        console.print(table)
 
 
 # ============================================================
@@ -450,7 +520,13 @@ def provider_remove(name: str) -> None:
 
 @provider.command("edit")
 @click.argument("name")
-def provider_edit(name: str) -> None:
+@click.option(
+    "--scope",
+    default="global",
+    type=click.Choice(["global", "project", "local"]),
+    help="Settings scope to write to.",
+)
+def provider_edit(name: str, scope: str) -> None:
     """Re-configure an existing provider.
 
     Opens the configuration wizard with current values as defaults.
@@ -459,6 +535,7 @@ def provider_edit(name: str) -> None:
       amplifier provider edit anthropic
       amplifier provider edit anthropic-2
     """
+    validate_scope_cli(scope)
     _ensure_providers_ready()
 
     settings = _get_settings()
@@ -504,8 +581,9 @@ def provider_edit(name: str) -> None:
     if entry.get("source"):
         updated_entry["source"] = entry["source"]
 
-    # Update in settings — replace the matching entry in global scope
-    scope_providers = settings.get_scope_provider_overrides("global")
+    # Update in settings — replace the matching entry in the target scope
+    target_scope = cast(Scope, scope)
+    scope_providers = settings.get_scope_provider_overrides(target_scope)
     new_list = []
     replaced = False
     for p in scope_providers:
@@ -518,11 +596,11 @@ def provider_edit(name: str) -> None:
     if not replaced:
         new_list.append(updated_entry)
 
-    scope_settings = settings._read_scope("global")
+    scope_settings = settings._read_scope(target_scope)
     if "config" not in scope_settings:
         scope_settings["config"] = {}
     scope_settings["config"]["providers"] = new_list
-    settings._write_scope("global", scope_settings)
+    settings._write_scope(target_scope, scope_settings)
 
     model = new_config.get("default_model", "")
     model_display = f" ({model})" if model else ""
@@ -698,11 +776,13 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
 # ============================================================
 
 
-def provider_manage_loop(settings: AppSettings) -> None:
+def provider_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scope:
     """Interactive provider management loop.
 
     Callable from CLI command or from init dashboard.
+    Tracks current_scope internally, returns it when done.
     """
+    current_scope: Scope = scope
     while True:
         # 1. Display provider table
         providers = settings.get_provider_overrides()
@@ -743,6 +823,8 @@ def provider_manage_loop(settings: AppSettings) -> None:
 
             console.print(table)
 
+        print_scope_indicator(console, settings, current_scope)
+
         # 2. Show actions menu
         console.print("  Actions:")
         console.print("    \\[a] Add a provider")
@@ -750,26 +832,30 @@ def provider_manage_loop(settings: AppSettings) -> None:
         console.print("    \\[r] Remove a provider (enter number)")
         console.print("    \\[p] Reorder priorities")
         console.print("    \\[t] Test connections")
+        if is_scope_change_available():
+            console.print("    \\[w] Change write scope")
         console.print("    \\[d] Done")
         console.print()
 
         try:
             choice = Prompt.ask("  Choice", default="d").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            break
+            return current_scope
 
         if choice == "d":
-            break
+            return current_scope
         elif choice == "a":
             _manage_add_provider(settings)
         elif choice.startswith("e"):
-            _manage_edit_provider(settings, choice, providers)
+            _manage_edit_provider(settings, choice, providers, scope=current_scope)
         elif choice.startswith("r"):
             _manage_remove_provider(settings, choice, providers)
         elif choice == "p":
-            _manage_reorder_providers(settings, providers)
+            _manage_reorder_providers(settings, providers, scope=current_scope)
         elif choice == "t":
             _manage_test_providers(settings, providers)
+        elif choice == "w" and is_scope_change_available():
+            current_scope = prompt_scope_change(console, settings, current_scope)
 
 
 def _parse_number_from_choice(choice: str, prefix: str, count: int) -> int | None:
@@ -896,10 +982,14 @@ def _manage_add_provider(settings: AppSettings) -> None:
     model_display = f" ({model})" if model else ""
     name_display = instance_id or display
     console.print(f"\n  [green]✓ Provider added: {name_display}{model_display}[/green]")
+    console.print("  [dim]Credentials saved to global settings.[/dim]")
 
 
 def _manage_edit_provider(
-    settings: AppSettings, choice: str, providers: list[dict[str, Any]]
+    settings: AppSettings,
+    choice: str,
+    providers: list[dict[str, Any]],
+    scope: Scope = "global",
 ) -> None:
     """Edit a provider from the manage loop."""
     if not providers:
@@ -938,7 +1028,7 @@ def _manage_edit_provider(
         updated_entry["source"] = entry["source"]
 
     name = entry.get("id") or _display_name(module_id)
-    scope_providers = settings.get_scope_provider_overrides("global")
+    scope_providers = settings.get_scope_provider_overrides(scope)
     new_list = []
     replaced = False
     for p in scope_providers:
@@ -950,11 +1040,11 @@ def _manage_edit_provider(
     if not replaced:
         new_list.append(updated_entry)
 
-    scope_settings = settings._read_scope("global")
+    scope_settings = settings._read_scope(scope)
     if "config" not in scope_settings:
         scope_settings["config"] = {}
     scope_settings["config"]["providers"] = new_list
-    settings._write_scope("global", scope_settings)
+    settings._write_scope(scope, scope_settings)
 
     model = new_config.get("default_model", "")
     model_display = f" ({model})" if model else ""
@@ -1013,7 +1103,9 @@ def _manage_remove_provider(
 
 
 def _manage_reorder_providers(
-    settings: AppSettings, providers: list[dict[str, Any]]
+    settings: AppSettings,
+    providers: list[dict[str, Any]],
+    scope: Scope = "global",
 ) -> None:
     """Reorder provider priorities from the manage loop."""
     if len(providers) < 2:
@@ -1052,11 +1144,11 @@ def _manage_reorder_providers(
         entry["config"] = config
         reordered.append(entry)
 
-    scope_settings = settings._read_scope("global")
+    scope_settings = settings._read_scope(scope)
     if "config" not in scope_settings:
         scope_settings["config"] = {}
     scope_settings["config"]["providers"] = reordered
-    settings._write_scope("global", scope_settings)
+    settings._write_scope(scope, scope_settings)
 
     console.print("\n  [green]✓ Priorities updated.[/green]")
 
@@ -1110,8 +1202,15 @@ def _manage_test_providers(
 
 
 @provider.command("manage")
-def provider_manage():
+@click.option(
+    "--scope",
+    default="global",
+    type=click.Choice(["global", "project", "local"]),
+    help="Initial write scope for settings.",
+)
+def provider_manage(scope: str):
     """Interactive provider management dashboard."""
+    validate_scope_cli(scope)  # type: ignore[arg-type]
     _ensure_providers_ready()
     settings = _get_settings()
-    provider_manage_loop(settings)
+    provider_manage_loop(settings, scope=scope)  # type: ignore[arg-type]
