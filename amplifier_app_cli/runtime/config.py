@@ -313,19 +313,23 @@ def _apply_provider_overrides(
     if not overrides:
         return providers
 
-    # Build lookup for overrides by module ID
+    # Build lookup for overrides keyed by id-or-module
     override_map = {}
     for override in overrides:
         if isinstance(override, dict) and "module" in override:
-            override_map[override["module"]] = override
+            key = override.get("id") or override["module"]
+            override_map[key] = override
 
     # Apply overrides to matching providers
     result = []
     for provider in providers:
-        if isinstance(provider, dict) and provider.get("module") in override_map:
-            # Merge override into provider
-            merged = merge_module_items(provider, override_map[provider["module"]])
-            result.append(merged)
+        if isinstance(provider, dict):
+            key = provider.get("id") or provider.get("module", "")
+            if key in override_map:
+                merged = merge_module_items(provider, override_map[key])
+                result.append(merged)
+            else:
+                result.append(provider)
         else:
             result.append(provider)
 
@@ -490,15 +494,16 @@ def _merge_module_lists(
     # Build dict by ID for efficient lookup
     result_dict: dict[str, dict[str, Any]] = {}
 
-    # Add all base modules
+    # Add all base modules, keying by id first, then module name
     for module in base_modules:
         if isinstance(module, dict) and "module" in module:
-            result_dict[module["module"]] = module
+            key = module.get("id") or module["module"]
+            result_dict[key] = module
 
     # Merge or add overlay modules
     for module in overlay_modules:
         if isinstance(module, dict) and "module" in module:
-            module_id = module["module"]
+            module_id = module.get("id") or module["module"]
             if module_id in result_dict:
                 # Module exists in base - deep merge using canonical function
                 result_dict[module_id] = merge_module_items(
@@ -514,14 +519,14 @@ def _merge_module_lists(
 
     for module in base_modules:
         if isinstance(module, dict) and "module" in module:
-            module_id = module["module"]
+            module_id = module.get("id") or module["module"]
             if module_id not in seen_ids:
                 result.append(result_dict[module_id])
                 seen_ids.add(module_id)
 
     for module in overlay_modules:
         if isinstance(module, dict) and "module" in module:
-            module_id = module["module"]
+            module_id = module.get("id") or module["module"]
             if module_id not in seen_ids:
                 result.append(module)
                 seen_ids.add(module_id)

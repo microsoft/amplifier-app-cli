@@ -317,13 +317,71 @@ class AppSettings:
     # ----- Provider override settings (config.providers) -----
 
     def get_provider_overrides(self) -> list[dict[str, Any]]:
-        """Return merged provider overrides from config.providers.
+        """Return merged provider overrides from config.providers across all scopes.
 
-        This is the list of configured providers with their settings.
+        Merges by provider identity key (id if present, else module).
+        More-specific scopes override less-specific: global < project < local < session.
+        Providers not present in higher scopes pass through from lower scopes.
         """
-        settings = self.get_merged_settings()
-        providers = settings.get("config", {}).get("providers", [])
-        return providers if isinstance(providers, list) else []
+        from .merge_utils import _provider_key, merge_module_items  # noqa: F401
+
+        result: list[dict[str, Any]] = []
+
+        # Scope priority order: global (lowest) → project → local → session (highest)
+        paths_to_check: list[Path | None] = [
+            self.paths.global_settings,
+            self.paths.project_settings,
+            self.paths.local_settings,
+            self.paths.session_settings,
+        ]
+
+        for path in paths_to_check:
+            if path is None or not path.exists():
+                continue
+            try:
+                with open(path, encoding="utf-8") as f:
+                    content = yaml.safe_load(f) or {}
+                scope_providers = content.get("config", {}).get("providers", [])
+                if not isinstance(scope_providers, list) or not scope_providers:
+                    continue
+                result = self._merge_provider_lists(result, scope_providers)
+            except Exception:
+                pass
+
+        return result
+
+    def _merge_provider_lists(
+        self,
+        base: list[dict[str, Any]],
+        overlay: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Merge provider lists by identity key (id or module).
+
+        Follows the same pattern as _merge_tool_lists but uses
+        _provider_key for identity and merge_module_items for config merging.
+        """
+        from .merge_utils import _provider_key, merge_module_items
+
+        result = list(base)
+        base_keys = {
+            _provider_key(p): i for i, p in enumerate(base) if isinstance(p, dict)
+        }
+
+        for provider in overlay:
+            if not isinstance(provider, dict):
+                continue
+            key = _provider_key(provider)
+            if key and key in base_keys:
+                # Existing provider — deep-merge config
+                idx = base_keys[key]
+                result[idx] = merge_module_items(result[idx], provider)
+            else:
+                # New provider — append
+                result.append(provider)
+                if key:
+                    base_keys[key] = len(result) - 1
+
+        return result
 
     def set_provider_override(
         self, provider_entry: dict[str, Any], scope: Scope = "global"

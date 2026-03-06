@@ -660,3 +660,266 @@ class TestRoutingManageCreateOption:
             routing_manage_loop(settings)
 
         mock_create.assert_called_once_with(settings)
+
+
+# ============================================================
+# Task 6: _get_provider_names() deduplication
+# ============================================================
+
+
+def _seed_provider(settings: AppSettings, providers: list[dict]) -> None:
+    """Seed provider entries with explicit list for fine-grained control."""
+    scope_settings = settings._read_scope("global")
+    scope_settings["config"] = {"providers": providers}
+    settings._write_scope("global", scope_settings)
+
+
+class TestGetProviderNames:
+    """Tests for _get_provider_names() deduplication."""
+
+    def test_get_provider_names_deduplicates_same_module(self, tmp_path):
+        """Two providers sharing a module but with different ids yield one type name."""
+        from amplifier_app_cli.commands.routing import _get_provider_names
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {"module": "provider-openai", "id": "openai-1"},
+                {"module": "provider-openai", "id": "openai-2"},
+            ],
+        )
+
+        names = _get_provider_names(settings)
+
+        assert names == ["openai"], f"Expected ['openai'], got {names}"
+
+    def test_get_provider_names_returns_all_unique_types(self, tmp_path):
+        """Three providers with distinct modules all appear in the result."""
+        from amplifier_app_cli.commands.routing import _get_provider_names
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {"module": "provider-anthropic"},
+                {"module": "provider-openai"},
+                {"module": "provider-github-copilot"},
+            ],
+        )
+
+        names = _get_provider_names(settings)
+
+        assert names == ["anthropic", "openai", "github-copilot"]
+
+
+# ============================================================
+# Task 9: _show_matrix_details()
+# ============================================================
+
+
+def _make_test_console():
+    """Create an isolated Rich console writing to a StringIO buffer."""
+    from io import StringIO
+
+    from rich.console import Console as RichConsole
+
+    buf = StringIO()
+    con = RichConsole(file=buf, force_terminal=False, highlight=False)
+    return con, buf
+
+
+def _seed_providers_for_details(settings: AppSettings, modules: list[str]) -> None:
+    """Seed provider entries by module name list."""
+    providers = [{"module": m} for m in modules]
+    scope_settings = settings._read_scope("global")
+    scope_settings["config"] = {"providers": providers}
+    settings._write_scope("global", scope_settings)
+
+
+class TestShowMatrixDetails:
+    """Tests for _show_matrix_details() candidate waterfall view."""
+
+    # Common matrix fixture used in most tests
+    _THREE_CANDIDATE_MATRIX = {
+        "name": "test-matrix",
+        "description": "Test description",
+        "updated": "2026-03-01",
+        "roles": {
+            "general": {
+                "description": "Versatile catch-all",
+                "candidates": [
+                    {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+                    {"provider": "openai", "model": "gpt-5.2"},
+                    {"provider": "google", "model": "gemini-pro"},
+                ],
+            }
+        },
+    }
+
+    def test_show_matrix_details_shows_all_candidates(self, tmp_path):
+        """All candidates appear in output, not just the winner."""
+        from amplifier_app_cli.commands.routing import _show_matrix_details
+
+        settings = _make_settings(tmp_path)
+        _seed_providers_for_details(settings, ["provider-anthropic", "provider-openai"])
+
+        con, buf = _make_test_console()
+        with patch("amplifier_app_cli.commands.routing.console", con):
+            _show_matrix_details(self._THREE_CANDIDATE_MATRIX, settings)
+
+        rendered = buf.getvalue()
+        assert "claude-sonnet-4-6" in rendered
+        assert "gpt-5.2" in rendered
+        assert "gemini-pro" in rendered
+
+    def test_show_matrix_details_marks_winner_with_star(self, tmp_path):
+        """First configured candidate is marked with ★."""
+        from amplifier_app_cli.commands.routing import _show_matrix_details
+
+        settings = _make_settings(tmp_path)
+        _seed_providers_for_details(settings, ["provider-anthropic", "provider-openai"])
+
+        con, buf = _make_test_console()
+        with patch("amplifier_app_cli.commands.routing.console", con):
+            _show_matrix_details(self._THREE_CANDIDATE_MATRIX, settings)
+
+        rendered = buf.getvalue()
+        assert "★" in rendered
+
+    def test_show_matrix_details_marks_unconfigured(self, tmp_path):
+        """Unconfigured candidates show 'not configured'."""
+        from amplifier_app_cli.commands.routing import _show_matrix_details
+
+        settings = _make_settings(tmp_path)
+        _seed_providers_for_details(settings, ["provider-anthropic", "provider-openai"])
+
+        con, buf = _make_test_console()
+        with patch("amplifier_app_cli.commands.routing.console", con):
+            _show_matrix_details(self._THREE_CANDIDATE_MATRIX, settings)
+
+        rendered = buf.getvalue()
+        assert "not configured" in rendered
+
+    def test_show_matrix_details_shows_role_description(self, tmp_path):
+        """Role description appears in the output."""
+        from amplifier_app_cli.commands.routing import _show_matrix_details
+
+        settings = _make_settings(tmp_path)
+        _seed_providers_for_details(settings, ["provider-anthropic"])
+
+        con, buf = _make_test_console()
+        with patch("amplifier_app_cli.commands.routing.console", con):
+            _show_matrix_details(self._THREE_CANDIDATE_MATRIX, settings)
+
+        rendered = buf.getvalue()
+        assert "Versatile catch-all" in rendered
+
+    def test_show_matrix_details_shows_config_block(self, tmp_path):
+        """Candidate config dict is rendered inline (e.g. [reasoning_effort: high])."""
+        from amplifier_app_cli.commands.routing import _show_matrix_details
+
+        matrix = {
+            "name": "config-test",
+            "description": "Config block test",
+            "updated": "2026-03-01",
+            "roles": {
+                "security-audit": {
+                    "description": "Vulnerability assessment",
+                    "candidates": [
+                        {
+                            "provider": "openai",
+                            "model": "gpt-5.3-codex",
+                            "config": {"reasoning_effort": "high"},
+                        }
+                    ],
+                }
+            },
+        }
+
+        settings = _make_settings(tmp_path)
+        _seed_providers_for_details(settings, ["provider-openai"])
+
+        con, buf = _make_test_console()
+        with patch("amplifier_app_cli.commands.routing.console", con):
+            _show_matrix_details(matrix, settings)
+
+        rendered = buf.getvalue()
+        assert "reasoning_effort" in rendered
+        assert "high" in rendered
+
+    def test_show_matrix_details_shows_no_coverage_warning(self, tmp_path):
+        """⚠ warning shown when no candidate for a role is configured."""
+        from amplifier_app_cli.commands.routing import _show_matrix_details
+
+        matrix = {
+            "name": "no-coverage",
+            "description": "Coverage test",
+            "updated": "2026-03-01",
+            "roles": {
+                "image-gen": {
+                    "description": "Image generation",
+                    "candidates": [
+                        {"provider": "google", "model": "gemini-3-pro-image-preview"},
+                    ],
+                }
+            },
+        }
+
+        settings = _make_settings(tmp_path)
+        # Only configure anthropic — which is NOT in the role's candidates
+        _seed_providers_for_details(settings, ["provider-anthropic"])
+
+        con, buf = _make_test_console()
+        with patch("amplifier_app_cli.commands.routing.console", con):
+            _show_matrix_details(matrix, settings)
+
+        rendered = buf.getvalue()
+        assert "⚠" in rendered
+
+    def test_show_matrix_details_shows_matrix_header(self, tmp_path):
+        """Matrix name, description, and updated date appear in output."""
+        from amplifier_app_cli.commands.routing import _show_matrix_details
+
+        settings = _make_settings(tmp_path)
+        _seed_providers_for_details(settings, ["provider-anthropic"])
+
+        con, buf = _make_test_console()
+        with patch("amplifier_app_cli.commands.routing.console", con):
+            _show_matrix_details(self._THREE_CANDIDATE_MATRIX, settings)
+
+        rendered = buf.getvalue()
+        assert "test-matrix" in rendered
+        assert "Test description" in rendered
+        assert "2026-03-01" in rendered
+
+    def test_routing_show_detailed_flag(self, tmp_path):
+        """routing show --detailed calls _show_matrix_details instead of _show_matrix_resolution."""
+        from amplifier_app_cli.commands.routing import routing_group
+
+        cache_dir = _make_matrix_dir(tmp_path)
+        settings = _make_settings(tmp_path)
+        _seed_providers(settings)
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.routing._get_settings",
+                return_value=settings,
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._show_matrix_details",
+            ) as mock_details,
+            patch(
+                "amplifier_app_cli.commands.routing._show_matrix_resolution",
+            ) as mock_resolution,
+        ):
+            result = runner.invoke(routing_group, ["show", "--detailed"])
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+        mock_details.assert_called_once()
+        mock_resolution.assert_not_called()

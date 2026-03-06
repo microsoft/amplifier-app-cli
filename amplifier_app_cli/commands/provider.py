@@ -11,6 +11,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from ..key_manager import KeyManager
+from ..lib.merge_utils import _provider_key
 from ..lib.settings import AppSettings, Scope
 from ..paths import create_config_manager
 from ..provider_config_utils import configure_provider
@@ -494,13 +495,8 @@ def provider_remove(name: str) -> None:
         original_len = len(scope_providers)
 
         # Filter out the matching entry
-        filtered = []
-        for p in scope_providers:
-            if p.get("id") == entry.get("id") and entry.get("id"):
-                continue  # Remove by id match
-            if p.get("module") == entry.get("module") and not entry.get("id"):
-                continue  # Remove by module match (no id = first instance)
-            filtered.append(p)
+        target_key = _provider_key(entry)
+        filtered = [p for p in scope_providers if _provider_key(p) != target_key]
 
         if len(filtered) < original_len:
             scope_settings = settings._read_scope(scope)  # type: ignore[arg-type]
@@ -789,12 +785,22 @@ def provider_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scop
         if not providers:
             console.print("\n  [dim]No providers configured.[/dim]\n")
         else:
+            # Build source map: which scope contributed each provider
+            source_map: dict[str, str] = {}
+            for check_scope in ("local", "project", "global"):
+                scope_providers = settings.get_scope_provider_overrides(check_scope)  # type: ignore[arg-type]
+                for p in scope_providers:
+                    key = _provider_key(p)
+                    if key and key not in source_map:
+                        source_map[key] = check_scope
+
             table = Table(title="Configured Providers")
             table.add_column("#", justify="right", width=3)
             table.add_column("Name/ID", style="cyan")
             table.add_column("Type", style="green")
             table.add_column("Default Model")
             table.add_column("Priority", justify="right")
+            table.add_column("Source", style="dim")
 
             # Find min priority for star marker
             priorities = []
@@ -819,7 +825,10 @@ def provider_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scop
                 is_primary = pri == min_priority
                 name_col = f"★ {display}" if is_primary else f"  {display}"
 
-                table.add_row(str(i), name_col, ptype, model, str(pri))
+                source_key = _provider_key(p)
+                source = source_map.get(source_key, "global")
+
+                table.add_row(str(i), name_col, ptype, model, str(pri), source)
 
             console.print(table)
 
@@ -1078,13 +1087,8 @@ def _manage_remove_provider(
         scope_providers = settings.get_scope_provider_overrides(scope)  # type: ignore[arg-type]
         original_len = len(scope_providers)
 
-        filtered = []
-        for p in scope_providers:
-            if p.get("id") == entry.get("id") and entry.get("id"):
-                continue
-            if p.get("module") == entry.get("module") and not entry.get("id"):
-                continue
-            filtered.append(p)
+        target_key = _provider_key(entry)
+        filtered = [p for p in scope_providers if _provider_key(p) != target_key]
 
         if len(filtered) < original_len:
             scope_settings = settings._read_scope(scope)  # type: ignore[arg-type]

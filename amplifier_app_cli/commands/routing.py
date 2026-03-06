@@ -243,7 +243,13 @@ def routing_use(matrix_name: str, scope: str):
 
 @routing_group.command("show")
 @click.argument("matrix_name", required=False)
-def routing_show(matrix_name: str | None):
+@click.option(
+    "--detailed",
+    is_flag=True,
+    default=False,
+    help="Show full candidate waterfall instead of resolved view.",
+)
+def routing_show(matrix_name: str | None, detailed: bool):
     """Show effective model routing for each role."""
     settings = _get_settings()
     matrix_files = _discover_matrix_files()
@@ -266,7 +272,10 @@ def routing_show(matrix_name: str | None):
         return
 
     matrix_data = matrices[matrix_name]
-    _show_matrix_resolution(matrix_data, settings)
+    if detailed:
+        _show_matrix_details(matrix_data, settings)
+    else:
+        _show_matrix_resolution(matrix_data, settings)
 
 
 def _show_matrix_resolution(matrix_data: dict[str, Any], settings: AppSettings) -> None:
@@ -311,6 +320,72 @@ def _show_matrix_resolution(matrix_data: dict[str, Any], settings: AppSettings) 
         console.print(
             "\n[yellow]No providers configured. Run: amplifier provider add[/yellow]"
         )
+
+
+def _show_matrix_details(matrix_data: dict[str, Any], settings: AppSettings) -> None:
+    """Display the full candidate waterfall for a routing matrix.
+
+    Shows every candidate for each role with ★/✓/✗ indicators based on
+    whether the provider is configured, and highlights the active winner.
+    """
+    name = matrix_data.get("name", "unknown")
+    description = matrix_data.get("description", "")
+    updated = str(matrix_data.get("updated", ""))
+
+    # Header
+    console.print(f"\n  Matrix: [bold]{name}[/bold]")
+    if description:
+        console.print(f"  {description}")
+    if updated:
+        console.print(f"  Updated: {updated}")
+
+    provider_types = _get_configured_provider_types(settings)
+    roles = matrix_data.get("roles", {})
+
+    for role_name, role_config in roles.items():
+        role_desc = role_config.get("description", "")
+        header = f"\n  [bold cyan]{role_name}[/bold cyan]"
+        if role_desc:
+            header += f" — {role_desc}"
+        console.print(header)
+
+        candidates = role_config.get("candidates", [])
+        winner_found = False
+
+        for candidate in candidates:
+            provider = candidate.get("provider", "")
+            model = candidate.get("model", "?")
+            config = candidate.get("config", {})
+
+            # Build inline config string if present
+            # Use \[ to escape the literal bracket from Rich's markup parser
+            config_str = ""
+            if config:
+                pairs = ", ".join(f"{k}: {v}" for k, v in config.items())
+                config_str = f"  [dim]\\[{pairs}][/dim]"
+
+            is_configured = provider in provider_types
+
+            if is_configured and not winner_found:
+                winner_found = True
+                line = (
+                    f"    [green]★ {provider} / {model}[/green]"
+                    f"{config_str}  [green]← active[/green]"
+                )
+            elif is_configured:
+                line = f"    [dim]✓ {provider} / {model}[/dim]{config_str}"
+            else:
+                line = (
+                    f"    [dim]✗ {provider} / {model}[/dim]"
+                    f"{config_str}  [dim]not configured[/dim]"
+                )
+
+            console.print(line)
+
+        if not winner_found:
+            console.print(
+                "    [yellow]⚠ No configured provider can serve this role[/yellow]"
+            )
 
 
 # ============================================================
@@ -388,7 +463,7 @@ def routing_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scope
         # 4. Actions menu
         console.print("\n  Actions:")
         console.print("    \\[s] Select a different matrix (enter number)")
-        console.print("    \\[v] View resolution for a specific matrix")
+        console.print("    \\[v] View full details of a matrix")
         console.print("    \\[c] Create a custom matrix")
         if is_scope_change_available():
             console.print("    \\[w] Change write scope")
@@ -465,7 +540,7 @@ def _manage_view_matrix(
         num = int(num_str)
         if 1 <= num <= len(matrix_names):
             name = matrix_names[num - 1]
-            _show_matrix_resolution(matrices[name], settings)
+            _show_matrix_details(matrices[name], settings)
         else:
             console.print(f"  [red]Invalid number. Enter 1-{len(matrix_names)}.[/red]")
     except ValueError:
@@ -563,15 +638,20 @@ def save_custom_matrix(
 
 
 def _get_provider_names(settings: AppSettings) -> list[str]:
-    """Get list of configured provider type names."""
+    """Get list of unique configured provider type names."""
     providers = settings.get_provider_overrides()
+    seen: set[str] = set()
     names: list[str] = []
     for p in providers:
         module = p.get("module", "")
-        if module.startswith("provider-"):
-            names.append(module.removeprefix("provider-"))
-        else:
-            names.append(module)
+        name = (
+            module.removeprefix("provider-")
+            if module.startswith("provider-")
+            else module
+        )
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
     return names
 
 

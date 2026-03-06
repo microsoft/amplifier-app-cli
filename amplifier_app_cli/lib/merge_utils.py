@@ -9,6 +9,18 @@ This module provides app-level policy for how configs should be merged:
 from typing import Any
 
 
+# ===== Provider Identity =====
+
+
+def _provider_key(entry: dict[str, Any]) -> str:
+    """Return the identity key for a provider entry.
+
+    Uses 'id' if present (multi-instance providers like openai + openai-2),
+    falls back to 'module' for single-instance providers.
+    """
+    return entry.get("id") or entry.get("module", "")
+
+
 # ===== Deep Merge Utilities =====
 
 
@@ -38,15 +50,16 @@ def merge_module_lists(
     If a module appears in both lists, configs are deep-merged (overlay wins).
     Modules only in overlay are appended.
     """
-    # Index base by key
+    # Index base by key (id wins over key_field for multi-instance entries)
     base_by_key: dict[str, dict[str, Any]] = {}
     for item in base:
         if key_field in item:
-            base_by_key[item[key_field]] = item.copy()
+            key = item.get("id") or item[key_field]
+            base_by_key[key] = item.copy()
 
     # Merge overlay
     for item in overlay:
-        key = item.get(key_field)
+        key = item.get("id") or item.get(key_field)
         if key and key in base_by_key:
             # Merge configs
             base_by_key[key] = deep_merge(base_by_key[key], item)
@@ -89,9 +102,7 @@ def merge_module_items(
     return merged
 
 
-def merge_agent_dicts(
-    parent: dict[str, Any], child: dict[str, Any]
-) -> dict[str, Any]:
+def merge_agent_dicts(parent: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
     """Deep merge child agent dictionary into parent.
 
     Merge rules by key:
