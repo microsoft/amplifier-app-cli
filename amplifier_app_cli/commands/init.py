@@ -399,6 +399,12 @@ def init_dashboard_loop(settings: AppSettings, scope: Scope = "global") -> None:
 @click.command("init")
 def init_cmd() -> None:
     """Interactive setup — manage providers and routing."""
+    from .provider import _ensure_providers_ready
+
+    try:
+        _ensure_providers_ready()
+    except SystemExit:
+        pass
     settings = _get_settings()
 
     # First-run: if no providers, go straight to provider manage

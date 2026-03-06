@@ -557,6 +557,12 @@ def _manage_view_matrix(
 def routing_manage(scope: str):
     """Interactive routing matrix management dashboard."""
     validate_scope_cli(scope)
+    from .provider import _ensure_providers_ready
+
+    try:
+        _ensure_providers_ready()
+    except SystemExit:
+        pass
     settings = _get_settings()
     routing_manage_loop(settings, scope=cast(Scope, scope))
 
