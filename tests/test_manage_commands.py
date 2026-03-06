@@ -811,6 +811,47 @@ class TestInitDashboard:
             f"got kwargs={call_kwargs}"
         )
 
+    def test_init_dashboard_shows_source_column(self, tmp_path):
+        """Provider table in init dashboard should show a Source column with scope annotation."""
+        from amplifier_app_cli.commands.init import init_dashboard_loop
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet-4-6"},
+            priority=1,
+        )
+        cache_dir = _make_matrix_dir(tmp_path)
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        output = StringIO()
+        test_console = Console(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.init.console", test_console),
+            patch("amplifier_app_cli.commands.init.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.commands.init._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+        ):
+            MockPrompt.ask.return_value = "d"
+            init_dashboard_loop(settings)
+
+        rendered = output.getvalue()
+        # Should show Source column header
+        assert "Source" in rendered, (
+            f"'Source' column missing from init dashboard output:\n{rendered}"
+        )
+        # Should show the scope annotation for the seeded provider
+        assert "global" in rendered, (
+            f"'global' scope annotation missing from init dashboard output:\n{rendered}"
+        )
+
 
 # ============================================================
 # Task 4: First-run updates

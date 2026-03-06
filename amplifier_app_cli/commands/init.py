@@ -24,6 +24,7 @@ from .routing import _discover_matrix_files
 from .routing import _get_configured_provider_types
 from .routing import _load_all_matrices
 from .routing import _resolve_role
+from ..lib.merge_utils import _provider_key
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -291,10 +292,20 @@ def init_dashboard_loop(settings: AppSettings, scope: Scope = "global") -> None:
         if not providers:
             console.print("  [yellow]No providers configured.[/yellow]\n")
         else:
+            # Build source map: which scope contributed each provider
+            source_map: dict[str, str] = {}
+            for check_scope in ("local", "project", "global"):
+                scope_providers = settings.get_scope_provider_overrides(check_scope)  # type: ignore[arg-type]
+                for p in scope_providers:
+                    key = _provider_key(p)
+                    if key and key not in source_map:
+                        source_map[key] = check_scope
+
             table = Table(title="Providers")
             table.add_column("Name/ID", style="cyan")
             table.add_column("Default Model")
             table.add_column("Priority", justify="right")
+            table.add_column("Source", style="dim")
 
             # Find min priority for star marker
             priorities = []
@@ -317,8 +328,9 @@ def init_dashboard_loop(settings: AppSettings, scope: Scope = "global") -> None:
 
                 is_primary = pri == min_priority
                 name_col = f"★ {display}" if is_primary else f"  {display}"
+                source = source_map.get(_provider_key(p), "global")
 
-                table.add_row(name_col, model, str(pri))
+                table.add_row(name_col, model, str(pri), source)
 
             console.print(table)
 
