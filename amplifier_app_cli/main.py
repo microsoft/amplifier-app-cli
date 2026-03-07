@@ -1322,7 +1322,10 @@ async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> N
         await context.add_message(msg_dict)
 
 
-def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSession:
+def _create_prompt_session(
+    get_active_mode: Callable | None = None,
+    bottom_toolbar: Callable | None = None,
+) -> PromptSession:
     """Create configured PromptSession for REPL.
 
     Provides:
@@ -1331,10 +1334,12 @@ def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSes
     - Green prompt styling matching Rich console
     - History search with Ctrl-R
     - Multi-line input with Ctrl-J
+    - Optional bottom toolbar (e.g. status bar with mode, model, session info)
     - Graceful fallback to in-memory history on errors
 
     Args:
         get_active_mode: Optional callable that returns the current active mode name
+        bottom_toolbar: Optional callable returning toolbar text (re-evaluated each render)
 
     Returns:
         Configured PromptSession instance
@@ -1395,6 +1400,7 @@ def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSes
         multiline=True,  # Enable multi-line display
         prompt_continuation="  ",  # Two spaces for alignment (cleaner than "... ")
         enable_history_search=True,  # Enables Ctrl-R
+        bottom_toolbar=bottom_toolbar,
     )
 
 
@@ -1454,6 +1460,24 @@ async def interactive_chat(
 
     register_incremental_save(session, store, actual_session_id, bundle_name, config)
 
+    # Inject CLI-specific formatting policy (new sessions only — avoid duplicates on resume).
+    # Shell commands must be single-line for reliable terminal copy-paste.
+    if not session_config.is_resume:
+        cli_context = session.coordinator.get("context")
+        if cli_context and hasattr(cli_context, "add_message"):
+            await cli_context.add_message(
+                {
+                    "role": "developer",
+                    "content": (
+                        "Shell command formatting: when providing shell commands for "
+                        "the user to run, always emit each command as a single line. "
+                        "Never use backslash line continuations, heredocs, or multi-line "
+                        "constructs. If a command is long, that is acceptable — a long "
+                        "single line is easier to copy from a terminal than a multi-line one."
+                    ),
+                }
+            )
+
     # Show banner only for NEW sessions (resume shows banner via history display in commands/session.py)
     if not session_config.is_resume:
         config_summary = get_effective_config_summary(config, bundle_name)
@@ -1468,13 +1492,6 @@ async def interactive_chat(
             )
         )
 
-    # Create prompt session for history and advanced editing
-    prompt_session = _create_prompt_session(
-        get_active_mode=lambda: command_processor.session.coordinator.session_state.get(
-            "active_mode"
-        )
-    )
-
     # Helper to extract model name from config
     def _extract_model_name() -> str:
         if isinstance(config.get("providers"), list) and config["providers"]:
@@ -1485,6 +1502,47 @@ async def interactive_chat(
                     "default_model", "unknown"
                 )
         return "unknown"
+
+    # Persistent footer: [mode] session | model | ~/cwd  (centered).
+    # Re-evaluated by prompt_toolkit on every keypress / redraw.
+    import html as _html
+    import shutil as _shutil
+
+    model_name = _extract_model_name()
+    short_session_id = actual_session_id[:8]
+
+    def _format_footer():
+        cols = _shutil.get_terminal_size().columns
+        mode = command_processor.session.coordinator.session_state.get("active_mode")
+
+        cwd = str(Path.cwd())
+        home = str(Path.home())
+        short_cwd = "~" + cwd[len(home) :] if cwd.startswith(home) else cwd
+
+        parts = []
+        if mode:
+            parts.append(f"<ansicyan>[{mode}]</ansicyan>")
+        parts.append(_html.escape(short_session_id))
+        parts.append(_html.escape(model_name))
+        parts.append(_html.escape(short_cwd))
+        content = " | ".join(parts)
+
+        # Center within the terminal width
+        content_len = (
+            len(short_session_id) + len(model_name) + len(short_cwd) + 3 * len(" | ")
+        )
+        if mode:
+            content_len += len(f"[{mode}]") + len(" | ")
+        pad = max(0, (cols - content_len) // 2)
+        return HTML(" " * pad + content)
+
+    # Create prompt session for history and advanced editing
+    prompt_session = _create_prompt_session(
+        get_active_mode=lambda: command_processor.session.coordinator.session_state.get(
+            "active_mode"
+        ),
+        bottom_toolbar=_format_footer,
+    )
 
     # Helper to save session after each turn
     async def _save_session():
