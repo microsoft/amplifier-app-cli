@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -694,6 +695,52 @@ def _get_provider_names(settings: AppSettings) -> list[str]:
     return names
 
 
+def _get_provider_config(
+    provider_name: str, settings: AppSettings
+) -> dict[str, Any] | None:
+    """Look up the stored config dict for a provider by type name or module name.
+
+    Accepts either the short type name (e.g. ``"anthropic"``) or the full module
+    name (e.g. ``"provider-anthropic"``).  Returns the provider's ``config``
+    sub-dict, or ``None`` if no matching provider is found.
+    """
+    for p in settings.get_provider_overrides():
+        p_module = p.get("module", "")
+        p_type = (
+            p_module.removeprefix("provider-")
+            if p_module.startswith("provider-")
+            else p_module
+        )
+        if p_type == provider_name or p_module == provider_name:
+            return p.get("config", {})
+    return None
+
+
+def _build_model_cache(
+    provider_names: list[str], settings: AppSettings
+) -> dict[str, list]:
+    """Fetch models for all providers upfront. Returns provider_name → [ModelInfo]."""
+    model_cache: dict[str, list] = {}
+    with console.status(
+        "[dim]Fetching models for all providers...[/dim]", spinner="dots"
+    ):
+        for pname in provider_names:
+            try:
+                cfg = _get_provider_config(pname, settings)
+                models = get_provider_models(pname, collected_config=cfg)
+                model_cache[pname] = models
+            except Exception:
+                model_cache[pname] = []
+    for pname in provider_names:
+        count = len(model_cache[pname])
+        if count:
+            console.print(f"  [green]✓[/green] {pname}: {count} model(s)")
+        else:
+            console.print(f"  [yellow]✗[/yellow] {pname}: could not fetch models")
+    console.print()
+    return model_cache
+
+
 def _list_models_for_provider(
     provider_name: str, settings: AppSettings | None = None
 ) -> list[str]:
@@ -705,21 +752,9 @@ def _list_models_for_provider(
     try:
         from ..provider_loader import get_provider_models
 
-        # Look up provider config from settings if available
-        collected_config: dict[str, Any] | None = None
-        if settings:
-            providers = settings.get_provider_overrides()
-            for p in providers:
-                p_module = p.get("module", "")
-                p_type = (
-                    p_module.removeprefix("provider-")
-                    if p_module.startswith("provider-")
-                    else p_module
-                )
-                if p_type == provider_name or p_module == provider_name:
-                    collected_config = p.get("config", {})
-                    break
-
+        collected_config = (
+            _get_provider_config(provider_name, settings) if settings else None
+        )
         models = get_provider_models(provider_name, collected_config=collected_config)
         return [str(getattr(m, "name", m)) for m in models]
     except Exception:
@@ -766,18 +801,7 @@ def _prompt_provider_and_model(
     cached_models = model_cache.get(provider) if model_cache else None
 
     # Look up provider config from settings for authenticated model fetching
-    provider_config: dict[str, Any] | None = None
-    if settings:
-        for p in settings.get_provider_overrides():
-            p_module = p.get("module", "")
-            p_type = (
-                p_module.removeprefix("provider-")
-                if p_module.startswith("provider-")
-                else p_module
-            )
-            if p_type == provider or p_module == provider:
-                provider_config = p.get("config", {})
-                break
+    provider_config = _get_provider_config(provider, settings) if settings else None
 
     from ..provider_config_utils import _prompt_model_selection
 
@@ -867,17 +891,7 @@ def _edit_role(
     cached_models = model_cache.get(provider) if model_cache else None
 
     # Look up provider config from settings
-    provider_config: dict[str, Any] | None = None
-    for p in settings.get_provider_overrides():
-        p_module = p.get("module", "")
-        p_type = (
-            p_module.removeprefix("provider-")
-            if p_module.startswith("provider-")
-            else p_module
-        )
-        if p_type == provider or p_module == provider:
-            provider_config = p.get("config", {})
-            break
+    provider_config = _get_provider_config(provider, settings)
 
     from ..provider_config_utils import _prompt_model_selection
 
@@ -1051,39 +1065,7 @@ def _routing_create_interactive(settings: AppSettings) -> None:
     console.print(f"[dim]Providers: {', '.join(provider_names)}[/dim]\n")
 
     # Fetch models for all providers upfront
-    model_cache: dict[str, list] = {}
-    with console.status(
-        "[dim]Fetching models for all providers...[/dim]", spinner="dots"
-    ):
-        for pname in provider_names:
-            try:
-                # Look up provider config from settings
-                collected_config: dict[str, Any] | None = None
-                providers = settings.get_provider_overrides()
-                for p in providers:
-                    p_module = p.get("module", "")
-                    p_type = (
-                        p_module.removeprefix("provider-")
-                        if p_module.startswith("provider-")
-                        else p_module
-                    )
-                    if p_type == pname or p_module == pname:
-                        collected_config = p.get("config", {})
-                        break
-
-                models = get_provider_models(pname, collected_config=collected_config)
-                model_cache[pname] = models  # Store raw ModelInfo objects
-            except Exception:
-                model_cache[pname] = []
-
-    # Show fetch summary
-    for pname in provider_names:
-        count = len(model_cache[pname])
-        if count:
-            console.print(f"  [green]\u2713[/green] {pname}: {count} model(s)")
-        else:
-            console.print(f"  [yellow]\u2717[/yellow] {pname}: could not fetch models")
-    console.print()
+    model_cache = _build_model_cache(provider_names, settings)
 
     # Walk through each role
     assignments: dict[str, dict[str, str]] = {}
@@ -1233,6 +1215,13 @@ def _routing_create_interactive(settings: AppSettings) -> None:
         console.print("[red]Name cannot be empty.[/red]")
         return
 
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$", matrix_name):
+        console.print(
+            "[red]Matrix name must start with a letter or digit and contain only "
+            "letters, numbers, hyphens, and underscores (max 64 chars).[/red]"
+        )
+        return
+
     output_dir = Path.home() / ".amplifier" / "routing"
     saved = save_custom_matrix(matrix_name, assignments, output_dir)
     console.print(f"\n[green]\u2713 Saved to {saved}[/green]")
@@ -1266,37 +1255,8 @@ def _routing_edit_matrix(settings: AppSettings) -> None:
 
     working_copy = base_matrix  # already a deep copy from _pick_base_matrix
 
-    # Phase 2 — Upfront model fetch (same pattern as _routing_create_interactive)
-    model_cache: dict[str, list] = {}
-    with console.status(
-        "[dim]Fetching models for all providers...[/dim]", spinner="dots"
-    ):
-        for pname in provider_names:
-            try:
-                collected_config: dict[str, Any] | None = None
-                providers = settings.get_provider_overrides()
-                for p in providers:
-                    p_module = p.get("module", "")
-                    p_type = (
-                        p_module.removeprefix("provider-")
-                        if p_module.startswith("provider-")
-                        else p_module
-                    )
-                    if p_type == pname or p_module == pname:
-                        collected_config = p.get("config", {})
-                        break
-                models = get_provider_models(pname, collected_config=collected_config)
-                model_cache[pname] = models
-            except Exception:
-                model_cache[pname] = []
-
-    for pname in provider_names:
-        count = len(model_cache[pname])
-        if count:
-            console.print(f"  [green]\u2713[/green] {pname}: {count} model(s)")
-        else:
-            console.print(f"  [yellow]\u2717[/yellow] {pname}: could not fetch models")
-    console.print()
+    # Phase 2 — Upfront model fetch
+    model_cache = _build_model_cache(provider_names, settings)
 
     # Phase 3 — Edit loop
     changed = False
@@ -1459,6 +1419,13 @@ def _routing_edit_matrix(settings: AppSettings) -> None:
 
     if not matrix_name:
         console.print("[red]Name cannot be empty.[/red]")
+        return
+
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$", matrix_name):
+        console.print(
+            "[red]Matrix name must start with a letter or digit and contain only "
+            "letters, numbers, hyphens, and underscores (max 64 chars).[/red]"
+        )
         return
 
     output_dir = Path.home() / ".amplifier" / "routing"

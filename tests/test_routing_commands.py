@@ -605,37 +605,6 @@ class TestRoutingManageCreateOption:
 
         assert callable(_routing_create_interactive)
 
-    def test_routing_manage_loop_shows_create_option(self, tmp_path):
-        """routing_manage_loop prints [c] Create / edit custom matrix in its menu."""
-        from amplifier_app_cli.commands.routing import routing_manage_loop
-
-        cache_dir = _make_matrix_dir(tmp_path)
-        settings = _make_settings(tmp_path)
-        _seed_providers(settings)
-
-        with (
-            patch(
-                "amplifier_app_cli.commands.routing._discover_matrix_files",
-                return_value=list(cache_dir.rglob("*.yaml")),
-            ),
-            patch(
-                "amplifier_app_cli.commands.routing.Prompt.ask",
-                return_value="d",  # immediately quit
-            ),
-        ):
-            from io import StringIO
-
-            from rich.console import Console as RichConsole
-
-            buf = StringIO()
-            test_console = RichConsole(file=buf, width=120)
-            with patch("amplifier_app_cli.commands.routing.console", test_console):
-                routing_manage_loop(settings)
-
-            output = buf.getvalue()
-
-        assert "Create / edit custom matrix" in output
-
     def test_routing_manage_loop_shows_create_edit_text(self, tmp_path):
         """routing_manage_loop prints '[c] Create / edit custom matrix' in its menu."""
         from amplifier_app_cli.commands.routing import routing_manage_loop
@@ -1131,6 +1100,44 @@ class TestRoutingCreateModelCache:
             f"Expected fetch summary with 'model(s)' in output, got:\n{rendered}"
         )
 
+    def test_build_model_cache_returns_dict(self, tmp_path):
+        """_build_model_cache returns a dict mapping provider names to model lists."""
+        from io import StringIO
+        from unittest.mock import MagicMock
+
+        from rich.console import Console as RichConsole
+
+        from amplifier_app_cli.commands.routing import _build_model_cache
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [{"module": "provider-anthropic", "config": {"default_model": "claude"}}],
+        )
+
+        mock_model = MagicMock()
+        mock_model.id = "claude-3"
+        mock_model.name = "claude-3"
+
+        buf = StringIO()
+        test_console = RichConsole(file=buf, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", test_console),
+            patch(
+                "amplifier_app_cli.commands.routing.get_provider_models",
+                return_value=[mock_model],
+            ),
+        ):
+            result = _build_model_cache(["anthropic"], settings)
+
+        assert "anthropic" in result, (
+            f"Expected 'anthropic' key, got: {list(result.keys())}"
+        )
+        assert len(result["anthropic"]) == 1, (
+            f"Expected 1 model, got {len(result['anthropic'])}"
+        )
+
 
 # ============================================================
 # Task 5: DRY _prompt_provider_and_model() — calls _prompt_model_selection()
@@ -1374,6 +1381,39 @@ class TestPickBaseMatrix:
             f"Expected '→' arrow for active matrix, got:\n{rendered}"
         )
         assert "(active)" in rendered, f"Expected '(active)' label, got:\n{rendered}"
+
+    def test_pick_base_matrix_marks_custom(self, tmp_path):
+        """Custom matrices should be marked with (custom)."""
+        from amplifier_app_cli.commands.routing import _pick_base_matrix
+
+        settings = _make_settings(tmp_path)
+        self._set_active_matrix(settings, "alpha")
+
+        matrices = {
+            "alpha": {"name": "alpha", "roles": {}},
+            "beta": {"name": "beta", "roles": {}},
+        }
+
+        # Create custom matrix file for "alpha" under tmp_path home
+        custom_dir = tmp_path / ".amplifier" / "routing"
+        custom_dir.mkdir(parents=True)
+        (custom_dir / "alpha.yaml").write_text("name: alpha\n")
+
+        con, buf = _make_test_console()
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch(
+                "amplifier_app_cli.commands.routing.Prompt.ask",
+                return_value="1",
+            ),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            _pick_base_matrix(settings, matrices)
+
+        rendered = buf.getvalue()
+        assert "(custom)" in rendered, (
+            f"Expected '(custom)' label for custom matrix, got:\n{rendered}"
+        )
 
     def test_pick_base_matrix_returns_none_on_cancel(self, tmp_path):
         """Returns None when user presses Ctrl-C."""
@@ -1660,6 +1700,151 @@ class TestEditRole:
         assert "enable_prompt_caching" in result["config"], (
             f"Expected 'enable_prompt_caching' in config, got: {result['config']}"
         )
+
+    def test_edit_role_ctrl_c_during_config_returns_none(self, tmp_path):
+        """Ctrl-C during config field prompting should return None."""
+        from amplifier_app_cli.commands.routing import _edit_role
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet"},
+                }
+            ],
+        )
+
+        config_field = {
+            "id": "enable_thinking",
+            "display_name": "Enable thinking",
+            "field_type": "boolean",
+        }
+
+        con, buf = _make_test_console()
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.provider_config_utils._prompt_model_selection",
+                return_value="claude-sonnet-4",
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._get_routing_config_fields",
+                return_value=[config_field],
+            ),
+            patch("amplifier_app_cli.commands.routing.Confirm") as MockConfirm,
+        ):
+            MockPrompt.ask.return_value = "1"  # select provider #1 (anthropic)
+            MockConfirm.ask.side_effect = (
+                KeyboardInterrupt  # Ctrl-C during boolean field
+            )
+
+            result = _edit_role(
+                role_name="general",
+                role_desc="General purpose",
+                provider_names=["anthropic"],
+                settings=settings,
+            )
+
+        assert result is None, f"Expected None on Ctrl-C during config, got: {result}"
+
+    def test_edit_role_show_when_hides_field(self, tmp_path):
+        """Fields with show_when conditions that aren't met should be hidden."""
+        from amplifier_app_cli.commands.routing import _edit_role
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet"},
+                }
+            ],
+        )
+
+        # This text field only shows when "some_flag" == "enabled" — condition not met
+        hidden_field = {
+            "id": "hidden_param",
+            "display_name": "Hidden Param",
+            "field_type": "text",
+            "show_when": {"some_flag": "enabled"},
+        }
+
+        con, buf = _make_test_console()
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.provider_config_utils._prompt_model_selection",
+                return_value="claude-sonnet-4",
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._get_routing_config_fields",
+                return_value=[hidden_field],
+            ),
+        ):
+            MockPrompt.ask.return_value = "1"  # select provider #1 (anthropic)
+
+            result = _edit_role(
+                role_name="general",
+                role_desc="General purpose",
+                provider_names=["anthropic"],
+                settings=settings,
+            )
+
+        # Prompt.ask should only have been called once (provider selection), NOT for hidden field
+        assert MockPrompt.ask.call_count == 1, (
+            f"Expected 1 Prompt.ask call (provider only), got {MockPrompt.ask.call_count}"
+        )
+        assert result is not None
+        assert "hidden_param" not in result["config"], (
+            f"Hidden field should not appear in config, got: {result['config']}"
+        )
+
+
+# ============================================================
+# Fix 5: _get_provider_config() helper
+# ============================================================
+
+
+class TestGetProviderConfig:
+    """Tests for the _get_provider_config() module-level helper."""
+
+    def test_get_provider_config_finds_provider(self, tmp_path):
+        """Finds provider config by type name (strips 'provider-' prefix)."""
+        from amplifier_app_cli.commands.routing import _get_provider_config
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet", "api_key": "test"},
+                }
+            ],
+        )
+
+        config = _get_provider_config("anthropic", settings)
+
+        assert config is not None, "Expected config dict, got None"
+        assert config.get("api_key") == "test", (
+            f"Expected api_key='test', got: {config}"
+        )
+
+    def test_get_provider_config_returns_none_for_unknown(self, tmp_path):
+        """Returns None when no matching provider is found."""
+        from amplifier_app_cli.commands.routing import _get_provider_config
+
+        settings = _make_settings(tmp_path)
+        # No providers seeded
+
+        config = _get_provider_config("nonexistent", settings)
+
+        assert config is None, f"Expected None for unknown provider, got: {config}"
 
 
 # ============================================================
@@ -1975,6 +2160,103 @@ class TestRoutingEditMatrix:
         assert len(content["roles"]) == 2, (
             f"Expected 2 roles after removal, got {len(content['roles'])}"
         )
+
+    def test_routing_edit_matrix_rejects_path_traversal(self, tmp_path):
+        """Matrix name with path traversal characters should be rejected."""
+        import copy
+
+        from amplifier_app_cli.commands.routing import _routing_edit_matrix
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(settings, [{"module": "provider-anthropic"}])
+
+        base = copy.deepcopy(self._BASE_MATRIX)
+        con, buf = _make_test_console()
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch(
+                "amplifier_app_cli.commands.routing._pick_base_matrix",
+                return_value=copy.deepcopy(base),
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=[],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._load_all_matrices",
+                return_value={"balanced": copy.deepcopy(base)},
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing.get_provider_models",
+                return_value=[],
+            ),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            # "s" = save action, "../../evil" = path traversal name
+            MockPrompt.ask.side_effect = ["s", "../../evil"]
+            _routing_edit_matrix(settings)
+
+        # No file should be written (path traversal rejected)
+        evil_file = tmp_path / ".amplifier" / "evil.yaml"
+        assert not evil_file.exists(), (
+            f"Should not write file when matrix name contains path traversal: {evil_file}"
+        )
+        rendered = buf.getvalue()
+        assert "letters" in rendered.lower() or "digits" in rendered.lower(), (
+            f"Expected validation error message, got:\n{rendered}"
+        )
+
+    def test_routing_edit_matrix_quit_confirms_unsaved(self, tmp_path):
+        """Quitting after making changes should prompt for confirmation."""
+        import copy
+
+        from amplifier_app_cli.commands.routing import _routing_edit_matrix
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(settings, [{"module": "provider-anthropic"}])
+
+        base = copy.deepcopy(self._BASE_MATRIX)
+        new_candidate = {
+            "provider": "anthropic",
+            "model": "claude-opus-4",
+            "config": {},
+        }
+        con, buf = _make_test_console()
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch(
+                "amplifier_app_cli.commands.routing._pick_base_matrix",
+                return_value=copy.deepcopy(base),
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=[],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._load_all_matrices",
+                return_value={"balanced": copy.deepcopy(base)},
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing.get_provider_models",
+                return_value=[],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._edit_role",
+                return_value=new_candidate,
+            ),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch("amplifier_app_cli.commands.routing.Confirm") as MockConfirm,
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            # "e1" = edit role #1 (marks changed=True), "q" = quit
+            MockPrompt.ask.side_effect = ["e1", "q"]
+            MockConfirm.ask.return_value = True  # confirm quit
+            _routing_edit_matrix(settings)
+
+        MockConfirm.ask.assert_called_once()
 
     def test_routing_edit_matrix_cannot_remove_required(self, tmp_path):
         """Attempting to remove a required role (general = #1) shows an error message."""
