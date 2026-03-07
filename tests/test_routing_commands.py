@@ -971,3 +971,136 @@ class TestListModelsForProvider:
 
         mock_gpm.assert_called_once()
         assert result == []
+
+
+# ============================================================
+# Task 4: Upfront model cache in _routing_create_interactive()
+# ============================================================
+
+
+class TestRoutingCreateModelCache:
+    """Tests that _routing_create_interactive() fetches models upfront once per provider."""
+
+    def _make_prompts_for_full_flow(self):
+        """Return prompt side_effect list for a 2-provider, 2-role (general+fast) create flow.
+
+        Flow:
+          - role walk: skip general, skip fast (2 skips)
+          - required role retry: pick provider 1, enter model name (×2 roles)
+          - post-summary menu: quit
+        """
+        return [
+            "s",  # skip "general" in role walk
+            "s",  # skip "fast" in role walk
+            "1",  # pick provider 1 for required "general" retry
+            "test-model",  # model name for general (manual entry, list returns [])
+            "1",  # pick provider 1 for required "fast" retry
+            "test-model",  # model name for fast
+            "q",  # quit without saving
+        ]
+
+    def test_routing_create_fetches_models_upfront(self, tmp_path):
+        """get_provider_models is called once per provider (not once per role)."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+        from unittest.mock import MagicMock
+
+        from amplifier_app_cli.commands.routing import _routing_create_interactive
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet"},
+                },
+                {"module": "provider-openai", "config": {"default_model": "gpt-5.2"}},
+            ],
+        )
+
+        mock_model = MagicMock()
+        mock_model.id = "test-model"
+        mock_model.display_name = "Test Model"
+        mock_model.capabilities = []
+
+        buf = StringIO()
+        test_console = RichConsole(file=buf, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", test_console),
+            patch(
+                "amplifier_app_cli.commands.routing.get_provider_models",
+                return_value=[mock_model],
+            ) as mock_gpm,
+            patch(
+                "amplifier_app_cli.commands.routing._list_models_for_provider",
+                return_value=[],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=[],
+            ),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+        ):
+            MockPrompt.ask.side_effect = self._make_prompts_for_full_flow()
+            _routing_create_interactive(settings)
+
+        # get_provider_models should be called once per provider (2), not once per role
+        assert mock_gpm.call_count == 2, (
+            f"Expected 2 calls (one per provider), got {mock_gpm.call_count}"
+        )
+
+    def test_routing_create_shows_fetch_summary(self, tmp_path):
+        """Output contains per-provider model count summary after upfront fetch."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+        from unittest.mock import MagicMock
+
+        from amplifier_app_cli.commands.routing import _routing_create_interactive
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet"},
+                },
+                {"module": "provider-openai", "config": {"default_model": "gpt-5.2"}},
+            ],
+        )
+
+        mock_model = MagicMock()
+        mock_model.id = "test-model"
+        mock_model.display_name = "Test Model"
+        mock_model.capabilities = []
+
+        buf = StringIO()
+        test_console = RichConsole(file=buf, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", test_console),
+            patch(
+                "amplifier_app_cli.commands.routing.get_provider_models",
+                return_value=[mock_model],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._list_models_for_provider",
+                return_value=[],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=[],
+            ),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+        ):
+            MockPrompt.ask.side_effect = self._make_prompts_for_full_flow()
+            _routing_create_interactive(settings)
+
+        rendered = buf.getvalue()
+        assert "model(s)" in rendered, (
+            f"Expected fetch summary with 'model(s)' in output, got:\n{rendered}"
+        )
