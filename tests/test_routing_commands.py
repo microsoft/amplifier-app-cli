@@ -1366,3 +1366,90 @@ class TestPickBaseMatrix:
             result = _pick_base_matrix(settings, matrices)
 
         assert result is None, f"Expected None on Ctrl-C, got: {result}"
+
+
+# ============================================================
+# Task 7: _get_routing_config_fields() helper
+# ============================================================
+
+
+class TestGetRoutingConfigFields:
+    """Tests for _get_routing_config_fields() config field filter helper."""
+
+    def test_get_routing_config_fields_filters_secrets(self):
+        """Filters out fields with field_type == 'secret'."""
+        from amplifier_app_cli.commands.routing import _get_routing_config_fields
+
+        provider_info = {
+            "display_name": "Test Provider",
+            "config_fields": [
+                {"id": "api_key", "field_type": "secret", "display_name": "API Key"},
+                {
+                    "id": "reasoning_effort",
+                    "field_type": "choice",
+                    "display_name": "Reasoning Effort",
+                },
+            ],
+        }
+
+        with patch(
+            "amplifier_app_cli.commands.routing.get_provider_info",
+            return_value=provider_info,
+        ):
+            result = _get_routing_config_fields("provider-test")
+
+        assert len(result) == 1, f"Expected 1 field, got {len(result)}: {result}"
+        assert result[0]["id"] == "reasoning_effort", (
+            f"Expected reasoning_effort, got {result[0]['id']}"
+        )
+
+    def test_get_routing_config_fields_filters_infrastructure(self):
+        """Filters out infrastructure fields (base_url, etc.) but keeps model-behavior fields."""
+        from amplifier_app_cli.commands.routing import _get_routing_config_fields
+
+        provider_info = {
+            "display_name": "Test Provider",
+            "config_fields": [
+                {"id": "base_url", "field_type": "text", "display_name": "Base URL"},
+                {
+                    "id": "enable_prompt_caching",
+                    "field_type": "bool",
+                    "display_name": "Enable Prompt Caching",
+                },
+            ],
+        }
+
+        with patch(
+            "amplifier_app_cli.commands.routing.get_provider_info",
+            return_value=provider_info,
+        ):
+            result = _get_routing_config_fields("provider-test")
+
+        assert len(result) == 1, f"Expected 1 field, got {len(result)}: {result}"
+        assert result[0]["id"] == "enable_prompt_caching", (
+            f"Expected enable_prompt_caching, got {result[0]['id']}"
+        )
+
+    def test_get_routing_config_fields_returns_empty_when_no_info(self):
+        """Returns empty list when get_provider_info returns None."""
+        from amplifier_app_cli.commands.routing import _get_routing_config_fields
+
+        with patch(
+            "amplifier_app_cli.commands.routing.get_provider_info",
+            return_value=None,
+        ):
+            result = _get_routing_config_fields("provider-nonexistent")
+
+        assert result == [], f"Expected [], got {result}"
+
+    def test_get_routing_config_fields_returns_empty_when_no_config_fields(self):
+        """Returns empty list when provider info has no config_fields key."""
+        from amplifier_app_cli.commands.routing import _get_routing_config_fields
+
+        with patch(
+            "amplifier_app_cli.commands.routing.get_provider_info",
+            return_value={"display_name": "Test"},
+        ):
+            result = _get_routing_config_fields("provider-test")
+
+        assert result == [], f"Expected [], got {result}"

@@ -12,7 +12,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from ..lib.settings import AppSettings, Scope
-from ..provider_loader import get_provider_models
+from ..provider_loader import get_provider_info, get_provider_models
 from ..ui.scope import (
     is_scope_change_available,
     print_scope_indicator,
@@ -21,6 +21,38 @@ from ..ui.scope import (
 )
 
 console = Console()
+
+INFRASTRUCTURE_CONFIG_FIELDS = frozenset(
+    {
+        "base_url",
+        "api_key",
+        "host",
+        "azure_endpoint",
+        "api_version",
+        "deployment_name",
+        "managed_identity_client_id",
+        "use_managed_identity",
+        "use_default_credential",
+    }
+)
+
+
+def _get_routing_config_fields(provider_id: str) -> list[dict[str, Any]]:
+    """Get config fields from a provider that are relevant for routing matrix candidates.
+
+    Filters out secrets (API keys) and infrastructure fields (base_url, endpoints).
+    Returns only model-behavior fields (reasoning_effort, 1M context, prompt caching, etc.).
+
+    Returns empty list if provider info is unavailable.
+    """
+    info = get_provider_info(provider_id)
+    config_fields = info.get("config_fields", []) if info else []
+    return [
+        field
+        for field in config_fields
+        if field.get("field_type") != "secret"
+        and field.get("id") not in INFRASTRUCTURE_CONFIG_FIELDS
+    ]
 
 
 def _get_settings() -> AppSettings:
