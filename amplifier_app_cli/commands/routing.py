@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, cast
 
 import click
 import yaml
 from rich.console import Console
-from rich.prompt import Prompt
+from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from ..lib.settings import AppSettings, Scope
-from ..provider_loader import get_provider_models
+from ..provider_loader import get_provider_info, get_provider_models
 from ..ui.scope import (
     is_scope_change_available,
     print_scope_indicator,
@@ -21,6 +22,38 @@ from ..ui.scope import (
 )
 
 console = Console()
+
+INFRASTRUCTURE_CONFIG_FIELDS = frozenset(
+    {
+        "base_url",
+        "api_key",
+        "host",
+        "azure_endpoint",
+        "api_version",
+        "deployment_name",
+        "managed_identity_client_id",
+        "use_managed_identity",
+        "use_default_credential",
+    }
+)
+
+
+def _get_routing_config_fields(provider_id: str) -> list[dict[str, Any]]:
+    """Get config fields from a provider that are relevant for routing matrix candidates.
+
+    Filters out secrets (API keys) and infrastructure fields (base_url, endpoints).
+    Returns only model-behavior fields (reasoning_effort, 1M context, prompt caching, etc.).
+
+    Returns empty list if provider info is unavailable.
+    """
+    info = get_provider_info(provider_id)
+    config_fields = info.get("config_fields", []) if info else []
+    return [
+        field
+        for field in config_fields
+        if field.get("field_type") != "secret"
+        and field.get("id") not in INFRASTRUCTURE_CONFIG_FIELDS
+    ]
 
 
 def _get_settings() -> AppSettings:
@@ -465,7 +498,7 @@ def routing_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scope
         console.print("\n  Actions:")
         console.print("    \\[s] Select a different matrix (enter number)")
         console.print("    \\[v] View full details of a matrix")
-        console.print("    \\[c] Create a custom matrix")
+        console.print("    \\[c] Create / edit custom matrix")
         if is_scope_change_available():
             console.print("    \\[w] Change write scope")
         console.print("    \\[d] Done")
@@ -485,7 +518,7 @@ def routing_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scope
         elif choice.startswith("v"):
             _manage_view_matrix(settings, choice, matrices)
         elif choice == "c":
-            _routing_create_interactive(settings)
+            _routing_edit_matrix(settings)
 
 
 def _manage_select_matrix(
@@ -662,6 +695,52 @@ def _get_provider_names(settings: AppSettings) -> list[str]:
     return names
 
 
+def _get_provider_config(
+    provider_name: str, settings: AppSettings
+) -> dict[str, Any] | None:
+    """Look up the stored config dict for a provider by type name or module name.
+
+    Accepts either the short type name (e.g. ``"anthropic"``) or the full module
+    name (e.g. ``"provider-anthropic"``).  Returns the provider's ``config``
+    sub-dict, or ``None`` if no matching provider is found.
+    """
+    for p in settings.get_provider_overrides():
+        p_module = p.get("module", "")
+        p_type = (
+            p_module.removeprefix("provider-")
+            if p_module.startswith("provider-")
+            else p_module
+        )
+        if p_type == provider_name or p_module == provider_name:
+            return p.get("config", {})
+    return None
+
+
+def _build_model_cache(
+    provider_names: list[str], settings: AppSettings
+) -> dict[str, list]:
+    """Fetch models for all providers upfront. Returns provider_name → [ModelInfo]."""
+    model_cache: dict[str, list] = {}
+    with console.status(
+        "[dim]Fetching models for all providers...[/dim]", spinner="dots"
+    ):
+        for pname in provider_names:
+            try:
+                cfg = _get_provider_config(pname, settings)
+                models = get_provider_models(pname, collected_config=cfg)
+                model_cache[pname] = models
+            except Exception:
+                model_cache[pname] = []
+    for pname in provider_names:
+        count = len(model_cache[pname])
+        if count:
+            console.print(f"  [green]✓[/green] {pname}: {count} model(s)")
+        else:
+            console.print(f"  [yellow]✗[/yellow] {pname}: could not fetch models")
+    console.print()
+    return model_cache
+
+
 def _list_models_for_provider(
     provider_name: str, settings: AppSettings | None = None
 ) -> list[str]:
@@ -673,21 +752,9 @@ def _list_models_for_provider(
     try:
         from ..provider_loader import get_provider_models
 
-        # Look up provider config from settings if available
-        collected_config: dict[str, Any] | None = None
-        if settings:
-            providers = settings.get_provider_overrides()
-            for p in providers:
-                p_module = p.get("module", "")
-                p_type = (
-                    p_module.removeprefix("provider-")
-                    if p_module.startswith("provider-")
-                    else p_module
-                )
-                if p_type == provider_name or p_module == provider_name:
-                    collected_config = p.get("config", {})
-                    break
-
+        collected_config = (
+            _get_provider_config(provider_name, settings) if settings else None
+        )
         models = get_provider_models(provider_name, collected_config=collected_config)
         return [str(getattr(m, "name", m)) for m in models]
     except Exception:
@@ -734,18 +801,7 @@ def _prompt_provider_and_model(
     cached_models = model_cache.get(provider) if model_cache else None
 
     # Look up provider config from settings for authenticated model fetching
-    provider_config: dict[str, Any] | None = None
-    if settings:
-        for p in settings.get_provider_overrides():
-            p_module = p.get("module", "")
-            p_type = (
-                p_module.removeprefix("provider-")
-                if p_module.startswith("provider-")
-                else p_module
-            )
-            if p_type == provider or p_module == provider:
-                provider_config = p.get("config", {})
-                break
+    provider_config = _get_provider_config(provider, settings) if settings else None
 
     from ..provider_config_utils import _prompt_model_selection
 
@@ -768,6 +824,220 @@ def _prompt_provider_and_model(
         return None
 
     return provider, model
+
+
+def _edit_role(
+    role_name: str,
+    role_desc: str,
+    provider_names: list[str],
+    settings: AppSettings,
+    model_cache: dict[str, list] | None = None,
+    current_candidate: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Edit a routing matrix role: pick provider, model, and config.
+
+    Args:
+        role_name: Name of the role being edited (e.g., "security-audit")
+        role_desc: Description of the role
+        provider_names: List of configured provider type names
+        settings: AppSettings instance for config lookup
+        model_cache: Pre-fetched ModelInfo objects per provider (from upfront cache)
+        current_candidate: Existing candidate dict if editing (for defaults).
+            Has keys: provider, model, config
+
+    Returns:
+        Dict with {provider, model, config} for the candidate, or None if cancelled/skipped.
+    """
+    # Step 1 — Print role header
+    console.print(f"\n  [bold cyan]{role_name}[/bold cyan]: {role_desc}")
+
+    # Step 2 — Provider selection
+    for i, pname in enumerate(provider_names, 1):
+        marker = (
+            "→ "
+            if current_candidate and pname == current_candidate.get("provider")
+            else "  "
+        )
+        console.print(f"  {marker}[{i}] {pname}")
+    console.print(
+        "    [s] Skip (keep current)" if current_candidate else "    [s] Skip"
+    )
+
+    try:
+        default = "s"
+        if current_candidate:
+            for i, pname in enumerate(provider_names, 1):
+                if pname == current_candidate.get("provider"):
+                    default = str(i)
+                    break
+        choice = Prompt.ask("    Provider", default=default).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+    if choice == "s":
+        return current_candidate  # Keep existing or skip (None if no current)
+
+    try:
+        idx = int(choice)
+        if idx < 1 or idx > len(provider_names):
+            console.print("    [red]Invalid choice.[/red]")
+            return None
+        provider = provider_names[idx - 1]
+    except ValueError:
+        console.print("    [red]Invalid choice.[/red]")
+        return None
+
+    # Step 3 — Model selection
+    cached_models = model_cache.get(provider) if model_cache else None
+
+    # Look up provider config from settings
+    provider_config = _get_provider_config(provider, settings)
+
+    from ..provider_config_utils import _prompt_model_selection
+
+    default_model = (
+        current_candidate.get("model")
+        if current_candidate and current_candidate.get("provider") == provider
+        else None
+    )
+
+    provider_id = (
+        f"provider-{provider}" if not provider.startswith("provider-") else provider
+    )
+    selected_model = _prompt_model_selection(
+        provider_id,
+        default_model=default_model,
+        collected_config=provider_config,
+        models=cached_models,
+    )
+
+    if selected_model is None:  # Ctrl-C
+        return None
+
+    # Step 4 — Config field prompting (simplified: direct Prompt/Confirm, no env-var wrapping)
+    config_fields = _get_routing_config_fields(provider_id)
+    candidate_config: dict[str, Any] = {}
+
+    if config_fields:
+        console.print(f"\n  [bold]Config for {provider} / {selected_model}:[/bold]")
+        existing_config = (
+            current_candidate.get("config", {}) if current_candidate else {}
+        )
+
+        for field_dict in config_fields:
+            field_id = field_dict.get("id", "")
+            display = field_dict.get("display_name", field_id)
+            field_type = field_dict.get("field_type", "text")
+            default = existing_config.get(field_id) or field_dict.get("default")
+            choices = field_dict.get("choices")
+            description = field_dict.get("description", "")
+
+            # Check show_when conditions (simple key=value evaluation)
+            show_when = field_dict.get("show_when")
+            if show_when:
+                should_show = True
+                for sw_key, sw_val in show_when.items():
+                    current_val = str(candidate_config.get(sw_key, ""))
+                    if sw_val.startswith("contains:"):
+                        if sw_val[9:] not in current_val:
+                            should_show = False
+                    elif sw_val.startswith("not_contains:"):
+                        if sw_val[13:] in current_val:
+                            should_show = False
+                    elif current_val != sw_val:
+                        should_show = False
+                if not should_show:
+                    continue
+
+            try:
+                if description:
+                    console.print(f"  [dim]{description}[/dim]")
+
+                if field_type == "boolean":
+                    bool_default = default in ("true", "True", True, "yes")
+                    value = Confirm.ask(f"  {display}", default=bool_default)
+                    candidate_config[field_id] = str(value).lower()
+                elif field_type == "choice" and choices:
+                    for i, c in enumerate(choices, 1):
+                        marker = " (current)" if str(c) == str(default) else ""
+                        console.print(f"  [{i}] {c}{marker}")
+                    default_idx = None
+                    if default:
+                        for i, c in enumerate(choices, 1):
+                            if str(c) == str(default):
+                                default_idx = str(i)
+                                break
+                    choice_str = Prompt.ask(
+                        f"  {display}",
+                        choices=[str(i) for i in range(1, len(choices) + 1)],
+                        default=default_idx,
+                    )
+                    if choice_str is not None:
+                        candidate_config[field_id] = choices[int(choice_str) - 1]
+                else:
+                    value = Prompt.ask(
+                        f"  {display}", default=str(default) if default else ""
+                    )
+                    if value:
+                        candidate_config[field_id] = value
+            except (EOFError, KeyboardInterrupt):
+                return None
+
+    # Step 5 — Return result
+    return {
+        "provider": provider,
+        "model": selected_model,
+        "config": candidate_config,
+    }
+
+
+def _pick_base_matrix(
+    settings: AppSettings,
+    matrices: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Let user pick a matrix to clone and customize.
+
+    Shows all available matrices with indicators for active (→) and custom (custom).
+    Returns a deep copy of the selected matrix data, or None if cancelled.
+    """
+    import copy
+
+    routing_config = settings.get_routing_config()
+    active_matrix = routing_config.get("matrix", "balanced")
+
+    # Custom matrices live under ~/.amplifier/routing/
+    custom_dir = Path.home() / ".amplifier" / "routing"
+
+    matrix_names = sorted(matrices.keys())
+
+    console.print("\n  Choose a matrix to customize:")
+
+    default_idx = 1
+    for i, name in enumerate(matrix_names, 1):
+        is_active = name == active_matrix
+        is_custom = (custom_dir / f"{name}.yaml").exists()
+
+        if is_active:
+            default_idx = i
+
+        prefix = "→ " if is_active else "  "
+        suffixes = []
+        if is_active:
+            suffixes.append("(active)")
+        if is_custom:
+            suffixes.append("(custom)")
+        suffix_str = "  " + "  ".join(suffixes) if suffixes else ""
+        console.print(f"    [{i}] {prefix}{name}{suffix_str}")
+
+    try:
+        choices = [str(i) for i in range(1, len(matrix_names) + 1)]
+        num_str = Prompt.ask("  Matrix", choices=choices, default=str(default_idx))
+        idx = int(num_str) - 1
+        selected_name = matrix_names[idx]
+        return copy.deepcopy(matrices[selected_name])
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n[dim]Cancelled.[/dim]")
+        return None
 
 
 def _routing_create_interactive(settings: AppSettings) -> None:
@@ -795,39 +1065,7 @@ def _routing_create_interactive(settings: AppSettings) -> None:
     console.print(f"[dim]Providers: {', '.join(provider_names)}[/dim]\n")
 
     # Fetch models for all providers upfront
-    model_cache: dict[str, list] = {}
-    with console.status(
-        "[dim]Fetching models for all providers...[/dim]", spinner="dots"
-    ):
-        for pname in provider_names:
-            try:
-                # Look up provider config from settings
-                collected_config: dict[str, Any] | None = None
-                providers = settings.get_provider_overrides()
-                for p in providers:
-                    p_module = p.get("module", "")
-                    p_type = (
-                        p_module.removeprefix("provider-")
-                        if p_module.startswith("provider-")
-                        else p_module
-                    )
-                    if p_type == pname or p_module == pname:
-                        collected_config = p.get("config", {})
-                        break
-
-                models = get_provider_models(pname, collected_config=collected_config)
-                model_cache[pname] = models  # Store raw ModelInfo objects
-            except Exception:
-                model_cache[pname] = []
-
-    # Show fetch summary
-    for pname in provider_names:
-        count = len(model_cache[pname])
-        if count:
-            console.print(f"  [green]\u2713[/green] {pname}: {count} model(s)")
-        else:
-            console.print(f"  [yellow]\u2717[/yellow] {pname}: could not fetch models")
-    console.print()
+    model_cache = _build_model_cache(provider_names, settings)
 
     # Walk through each role
     assignments: dict[str, dict[str, str]] = {}
@@ -977,9 +1215,261 @@ def _routing_create_interactive(settings: AppSettings) -> None:
         console.print("[red]Name cannot be empty.[/red]")
         return
 
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$", matrix_name):
+        console.print(
+            "[red]Matrix name must start with a letter or digit and contain only "
+            "letters, numbers, hyphens, and underscores (max 64 chars).[/red]"
+        )
+        return
+
     output_dir = Path.home() / ".amplifier" / "routing"
     saved = save_custom_matrix(matrix_name, assignments, output_dir)
     console.print(f"\n[green]\u2713 Saved to {saved}[/green]")
+
+
+def _routing_edit_matrix(settings: AppSettings) -> None:
+    """Interactive matrix editor — clone an existing matrix and customize it."""
+    import datetime
+
+    # Phase 1 — Setup
+    provider_names = _get_provider_names(settings)
+    if not provider_names:
+        console.print(
+            "[yellow]No providers configured. Run: amplifier provider add[/yellow]"
+        )
+        return
+
+    matrix_files = _discover_matrix_files()
+    matrices = _load_all_matrices(matrix_files)
+
+    if not matrices:
+        console.print("[yellow]No routing matrices found.[/yellow]")
+        console.print(
+            "[dim]Run 'amplifier update' to fetch the routing-matrix bundle.[/dim]"
+        )
+        return
+
+    base_matrix = _pick_base_matrix(settings, matrices)
+    if base_matrix is None:
+        return
+
+    working_copy = base_matrix  # already a deep copy from _pick_base_matrix
+
+    # Phase 2 — Upfront model fetch
+    model_cache = _build_model_cache(provider_names, settings)
+
+    # Phase 3 — Edit loop
+    changed = False
+    roles = working_copy.get("roles", {})
+
+    while True:
+        # Show numbered role index then waterfall view
+        role_list = list(roles.keys())
+        console.print("  Roles:")
+        for i, rname in enumerate(role_list, 1):
+            console.print(f"  [{i}] {rname}")
+        console.print()
+        _show_matrix_details(working_copy, settings)
+
+        console.print("\n  Actions:")
+        console.print("    [e<N>] Edit a role (e.g., e1)")
+        console.print("    [a] Add a new role")
+        console.print("    [r<N>] Remove a role")
+        console.print("    [s] Save")
+        console.print("    [q] Quit without saving")
+        console.print()
+
+        try:
+            action = Prompt.ask("  Action", default="s").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            if changed:
+                try:
+                    if not Confirm.ask("  Unsaved changes. Quit?", default=False):
+                        continue
+                except (EOFError, KeyboardInterrupt):
+                    pass
+            return
+
+        if action == "q":
+            if changed:
+                try:
+                    if not Confirm.ask("  Unsaved changes. Quit?", default=False):
+                        continue
+                except (EOFError, KeyboardInterrupt):
+                    pass
+            return
+
+        elif action == "s":
+            break  # Go to save phase
+
+        elif action == "a":
+            # Add a new role
+            try:
+                new_name = Prompt.ask("  Role name").strip()
+                new_desc = Prompt.ask("  Description").strip()
+            except (EOFError, KeyboardInterrupt):
+                continue
+            if not new_name:
+                console.print("  [red]Name cannot be empty.[/red]")
+                continue
+            if new_name in roles:
+                console.print(
+                    f"  [yellow]Role '{new_name}' already exists. "
+                    f"Use [e] to edit it.[/yellow]"
+                )
+                continue
+            result = _edit_role(
+                new_name, new_desc, provider_names, settings, model_cache=model_cache
+            )
+            if result:
+                roles[new_name] = {
+                    "description": new_desc,
+                    "candidates": [result],
+                }
+                changed = True
+                console.print(
+                    f"  [green]\u2713 Added {new_name} \u2192 "
+                    f"{result['provider']} / {result['model']}[/green]"
+                )
+
+        elif action.startswith("r"):
+            # Remove a role
+            num_str = action[1:].strip()
+            if not num_str:
+                try:
+                    num_str = Prompt.ask("  Role number to remove").strip()
+                except (EOFError, KeyboardInterrupt):
+                    continue
+            try:
+                num = int(num_str)
+                if num < 1 or num > len(role_list):
+                    console.print(f"  [red]Invalid. Enter 1-{len(role_list)}.[/red]")
+                    continue
+                role_name = role_list[num - 1]
+            except ValueError:
+                console.print("  [red]Invalid number.[/red]")
+                continue
+
+            if role_name in ("general", "fast"):
+                console.print(
+                    f"  [red]Cannot remove required role '{role_name}'.[/red]"
+                )
+                continue
+
+            try:
+                if not Confirm.ask(f"  Remove '{role_name}'?", default=False):
+                    continue
+            except (EOFError, KeyboardInterrupt):
+                continue
+
+            del roles[role_name]
+            changed = True
+            console.print(f"  [green]\u2713 Removed {role_name}[/green]")
+
+        elif action.startswith("e"):
+            # Edit a role
+            num_str = action[1:].strip()
+            if not num_str:
+                try:
+                    num_str = Prompt.ask("  Role number to edit").strip()
+                except (EOFError, KeyboardInterrupt):
+                    continue
+            try:
+                num = int(num_str)
+                if num < 1 or num > len(role_list):
+                    console.print(f"  [red]Invalid. Enter 1-{len(role_list)}.[/red]")
+                    continue
+                role_name = role_list[num - 1]
+            except ValueError:
+                console.print("  [red]Invalid number.[/red]")
+                continue
+
+            role_data = roles[role_name]
+            role_desc = role_data.get("description", "")
+            candidates = role_data.get("candidates", [])
+            current_candidate = candidates[0] if candidates else None
+
+            result = _edit_role(
+                role_name,
+                role_desc,
+                provider_names,
+                settings,
+                model_cache=model_cache,
+                current_candidate=current_candidate,
+            )
+            if result and result != current_candidate:
+                roles[role_name]["candidates"] = [result]
+                changed = True
+                config_str = ""
+                if result.get("config"):
+                    pairs = ", ".join(f"{k}: {v}" for k, v in result["config"].items())
+                    config_str = f"  [{pairs}]"
+                console.print(
+                    f"  [green]\u2713 {role_name} \u2192 "
+                    f"{result['provider']} / {result['model']}{config_str}[/green]"
+                )
+
+    # Phase 4 — Save
+    try:
+        default_name = working_copy.get("name", "custom")
+        matrix_name = Prompt.ask("  Matrix name", default=default_name).strip()
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n[dim]Cancelled.[/dim]")
+        return
+
+    if not matrix_name:
+        console.print("[red]Name cannot be empty.[/red]")
+        return
+
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$", matrix_name):
+        console.print(
+            "[red]Matrix name must start with a letter or digit and contain only "
+            "letters, numbers, hyphens, and underscores (max 64 chars).[/red]"
+        )
+        return
+
+    output_dir = Path.home() / ".amplifier" / "routing"
+    output_file = output_dir / f"{matrix_name}.yaml"
+
+    # Check for overwrite
+    if output_file.exists():
+        try:
+            if not Confirm.ask(
+                f"  '{matrix_name}' already exists. Overwrite?", default=False
+            ):
+                return
+        except (EOFError, KeyboardInterrupt):
+            return
+
+    # Build matrix dict — write directly to support config in candidates
+    matrix_roles: dict[str, Any] = {}
+    for role_name, role_data in roles.items():
+        candidates_out: list[dict[str, Any]] = []
+        for cand in role_data.get("candidates", []):
+            cand_entry: dict[str, Any] = {
+                "provider": cand.get("provider", ""),
+                "model": cand.get("model", ""),
+            }
+            if cand.get("config"):
+                cand_entry["config"] = cand["config"]
+            candidates_out.append(cand_entry)
+        matrix_roles[role_name] = {
+            "description": role_data.get("description", ""),
+            "candidates": candidates_out,
+        }
+
+    matrix_data: dict[str, Any] = {
+        "name": matrix_name,
+        "description": f"Custom matrix: {matrix_name}",
+        "updated": datetime.date.today().isoformat(),
+        "roles": matrix_roles,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with open(output_file, "w", encoding="utf-8") as f:
+        yaml.safe_dump(matrix_data, f, default_flow_style=False, sort_keys=False)
+
+    console.print(f"\n[green]\u2713 Saved to {output_file}[/green]")
 
 
 @routing_group.command("create")
