@@ -770,6 +770,55 @@ def _prompt_provider_and_model(
     return provider, model
 
 
+def _pick_base_matrix(
+    settings: AppSettings,
+    matrices: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Let user pick a matrix to clone and customize.
+
+    Shows all available matrices with indicators for active (→) and custom (custom).
+    Returns a deep copy of the selected matrix data, or None if cancelled.
+    """
+    import copy
+
+    routing_config = settings.get_routing_config()
+    active_matrix = routing_config.get("matrix", "balanced")
+
+    # Custom matrices live under ~/.amplifier/routing/
+    custom_dir = Path.home() / ".amplifier" / "routing"
+
+    matrix_names = sorted(matrices.keys())
+
+    console.print("\n  Choose a matrix to customize:")
+
+    default_idx = 1
+    for i, name in enumerate(matrix_names, 1):
+        is_active = name == active_matrix
+        is_custom = (custom_dir / f"{name}.yaml").exists()
+
+        if is_active:
+            default_idx = i
+
+        prefix = "→ " if is_active else "  "
+        suffixes = []
+        if is_active:
+            suffixes.append("(active)")
+        if is_custom:
+            suffixes.append("(custom)")
+        suffix_str = "  " + "  ".join(suffixes) if suffixes else ""
+        console.print(f"    [{i}] {prefix}{name}{suffix_str}")
+
+    try:
+        choices = [str(i) for i in range(1, len(matrix_names) + 1)]
+        num_str = Prompt.ask("  Matrix", choices=choices, default=str(default_idx))
+        idx = int(num_str) - 1
+        selected_name = matrix_names[idx]
+        return copy.deepcopy(matrices[selected_name])
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n[dim]Cancelled.[/dim]")
+        return None
+
+
 def _routing_create_interactive(settings: AppSettings) -> None:
     """Interactive custom matrix creation. Callable from CLI or manage loop."""
     provider_names = _get_provider_names(settings)

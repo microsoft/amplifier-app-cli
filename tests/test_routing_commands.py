@@ -1263,3 +1263,106 @@ class TestPromptProviderAndModelDRY:
             f"Expected display_name 'Claude Sonnet 4.6' in output, got:\n{rendered}"
         )
         assert result is not None, "Expected a result tuple, not None"
+
+
+# ============================================================
+# Task 6: _pick_base_matrix() helper
+# ============================================================
+
+
+class TestPickBaseMatrix:
+    """Tests for _pick_base_matrix() matrix picker helper."""
+
+    # Minimal matrices fixture: two matrices for testing
+    _MATRICES = {
+        "alpha": {"name": "alpha", "description": "First matrix", "roles": {}},
+        "beta": {"name": "beta", "description": "Second matrix", "roles": {}},
+    }
+
+    def _set_active_matrix(self, settings: AppSettings, matrix_name: str) -> None:
+        """Write routing config so settings reports a specific active matrix."""
+        settings._write_scope("global", {"routing": {"matrix": matrix_name}})
+
+    def test_pick_base_matrix_returns_deep_copy(self, tmp_path):
+        """Returns a deep copy of the selected matrix, not the original object."""
+        from amplifier_app_cli.commands.routing import _pick_base_matrix
+
+        settings = _make_settings(tmp_path)
+        self._set_active_matrix(settings, "alpha")
+
+        matrices = {
+            "alpha": {"name": "alpha", "description": "First", "roles": {"r": {}}},
+            "beta": {"name": "beta", "description": "Second", "roles": {}},
+        }
+
+        con, buf = _make_test_console()
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch(
+                "amplifier_app_cli.commands.routing.Prompt.ask",
+                return_value="1",  # pick #1 (alpha — sorted first)
+            ),
+        ):
+            result = _pick_base_matrix(settings, matrices)
+
+        # Sorted: alpha=1, beta=2; "1" → alpha
+        assert result is not None, "Expected a dict, got None"
+        assert result == matrices["alpha"], "Returned data should equal selected matrix"
+        assert result is not matrices["alpha"], (
+            "Should be a deep copy, not the same object"
+        )
+        # Verify it's truly deep: inner dict must also differ
+        assert result["roles"] is not matrices["alpha"]["roles"], (
+            "Deep copy should produce independent nested dicts"
+        )
+
+    def test_pick_base_matrix_marks_active(self, tmp_path):
+        """Active matrix is marked with → arrow and (active) suffix in display."""
+        from amplifier_app_cli.commands.routing import _pick_base_matrix
+
+        settings = _make_settings(tmp_path)
+        self._set_active_matrix(settings, "beta")
+
+        matrices = {
+            "alpha": {"name": "alpha", "roles": {}},
+            "beta": {"name": "beta", "roles": {}},
+        }
+
+        con, buf = _make_test_console()
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch(
+                "amplifier_app_cli.commands.routing.Prompt.ask",
+                return_value="1",  # pick any; we only care about printed output
+            ),
+        ):
+            _pick_base_matrix(settings, matrices)
+
+        rendered = buf.getvalue()
+        assert "→" in rendered, (
+            f"Expected '→' arrow for active matrix, got:\n{rendered}"
+        )
+        assert "(active)" in rendered, f"Expected '(active)' label, got:\n{rendered}"
+
+    def test_pick_base_matrix_returns_none_on_cancel(self, tmp_path):
+        """Returns None when user presses Ctrl-C."""
+        from amplifier_app_cli.commands.routing import _pick_base_matrix
+
+        settings = _make_settings(tmp_path)
+        self._set_active_matrix(settings, "alpha")
+
+        matrices = {
+            "alpha": {"name": "alpha", "roles": {}},
+        }
+
+        con, buf = _make_test_console()
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch(
+                "amplifier_app_cli.commands.routing.Prompt.ask",
+                side_effect=KeyboardInterrupt,
+            ),
+        ):
+            result = _pick_base_matrix(settings, matrices)
+
+        assert result is None, f"Expected None on Ctrl-C, got: {result}"
