@@ -777,7 +777,7 @@ def _prompt_provider_and_model(
     # Show providers as numbered list + skip option
     for i, pname in enumerate(provider_names, 1):
         console.print(f"    [{i}] {pname}")
-    console.print("    [s] Skip")
+    console.print("    \\[s] Skip")
 
     try:
         choice = Prompt.ask("    Provider", default="s").strip().lower()
@@ -860,7 +860,7 @@ def _edit_role(
         )
         console.print(f"  {marker}[{i}] {pname}")
     console.print(
-        "    [s] Skip (keep current)" if current_candidate else "    [s] Skip"
+        "    \\[s] Skip (keep current)" if current_candidate else "    \\[s] Skip"
     )
 
     try:
@@ -1128,11 +1128,11 @@ def _routing_create_interactive(settings: AppSettings) -> None:
 
     # Post-summary menu loop
     while True:
-        console.print("\n  [a] Add a custom role")
-        console.print("  [r] Remove a custom-added role")
-        console.print("  [e] Edit a role's assignment")
-        console.print("  [s] Save")
-        console.print("  [q] Quit without saving")
+        console.print("\n  \\[a] Add a custom role")
+        console.print("  \\[r] Remove a custom-added role")
+        console.print("  \\[e] Edit a role's assignment")
+        console.print("  \\[s] Save")
+        console.print("  \\[q] Quit without saving")
 
         try:
             action = Prompt.ask("  Action", default="s").strip().lower()
@@ -1272,11 +1272,11 @@ def _routing_edit_matrix(settings: AppSettings) -> None:
         _show_matrix_details(working_copy, settings)
 
         console.print("\n  Actions:")
-        console.print("    [e<N>] Edit a role (e.g., e1)")
-        console.print("    [a] Add a new role")
-        console.print("    [r<N>] Remove a role")
-        console.print("    [s] Save")
-        console.print("    [q] Quit without saving")
+        console.print("    \\[e<N>] Edit a role (e.g., e1)")
+        console.print("    \\[a] Add a new role")
+        console.print("    \\[r<N>] Remove a role")
+        console.print("    \\[s] Save")
+        console.print("    \\[q] Quit without saving")
         console.print()
 
         try:
