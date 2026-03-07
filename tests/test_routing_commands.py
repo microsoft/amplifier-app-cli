@@ -2299,3 +2299,62 @@ class TestRoutingEditMatrix:
         assert "Cannot remove required role" in rendered, (
             f"Expected error about required role, got output:\n{rendered}"
         )
+
+    def test_routing_edit_matrix_shows_action_letters(self, tmp_path):
+        """Edit loop menu must show [e<N>], [a], [r<N>], [s], [q] action letters.
+
+        Rich treats bare [x] as markup tags and silently strips them.
+        All bracket sequences in menu text must be escaped with \\[ so they
+        render literally instead of being consumed as markup.
+        """
+        import copy
+
+        from amplifier_app_cli.commands.routing import _routing_edit_matrix
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(settings, [{"module": "provider-anthropic"}])
+
+        base = copy.deepcopy(self._BASE_MATRIX)
+        con, buf = _make_test_console()
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch(
+                "amplifier_app_cli.commands.routing._pick_base_matrix",
+                return_value=copy.deepcopy(base),
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=[],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._load_all_matrices",
+                return_value={"balanced": copy.deepcopy(base)},
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing.get_provider_models",
+                return_value=[],
+            ),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            # "s" = save immediately, "my-matrix" = matrix name
+            MockPrompt.ask.side_effect = ["s", "my-matrix"]
+            _routing_edit_matrix(settings)
+
+        rendered = buf.getvalue()
+        assert "[e" in rendered, (
+            f"Expected '[e<N>]' action letter in menu, got output:\n{rendered}"
+        )
+        assert "[a]" in rendered, (
+            f"Expected '[a]' action letter in menu, got output:\n{rendered}"
+        )
+        assert "[r" in rendered, (
+            f"Expected '[r<N>]' action letter in menu, got output:\n{rendered}"
+        )
+        assert "[s]" in rendered, (
+            f"Expected '[s]' action letter in menu, got output:\n{rendered}"
+        )
+        assert "[q]" in rendered, (
+            f"Expected '[q]' action letter in menu, got output:\n{rendered}"
+        )
