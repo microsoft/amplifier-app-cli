@@ -1453,3 +1453,179 @@ class TestGetRoutingConfigFields:
             result = _get_routing_config_fields("provider-test")
 
         assert result == [], f"Expected [], got {result}"
+
+
+# ============================================================
+# Task 8: _edit_role() — provider + model + config prompting
+# ============================================================
+
+
+class TestEditRole:
+    """Tests for _edit_role() — provider + model + config prompting."""
+
+    def test_edit_role_returns_provider_model_config(self, tmp_path):
+        """Returns {provider, model, config} dict on successful provider+model selection."""
+        from amplifier_app_cli.commands.routing import _edit_role
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet"},
+                }
+            ],
+        )
+
+        con, buf = _make_test_console()
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.provider_config_utils._prompt_model_selection",
+                return_value="claude-sonnet-4-6",
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._get_routing_config_fields",
+                return_value=[],
+            ),
+        ):
+            MockPrompt.ask.return_value = "1"  # select provider #1 (anthropic)
+            result = _edit_role(
+                role_name="general",
+                role_desc="Versatile catch-all",
+                provider_names=["anthropic"],
+                settings=settings,
+            )
+
+        assert result == {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "config": {},
+        }, f"Unexpected result: {result}"
+
+    def test_edit_role_returns_none_on_skip_no_current(self, tmp_path):
+        """Returns None when user skips and no current_candidate exists."""
+        from amplifier_app_cli.commands.routing import _edit_role
+
+        settings = _make_settings(tmp_path)
+
+        con, buf = _make_test_console()
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+        ):
+            MockPrompt.ask.return_value = "s"  # skip
+            result = _edit_role(
+                role_name="general",
+                role_desc="Versatile catch-all",
+                provider_names=["anthropic"],
+                settings=settings,
+            )
+
+        assert result is None, f"Expected None on skip with no current, got: {result}"
+
+    def test_edit_role_skip_returns_current_candidate(self, tmp_path):
+        """Returns current_candidate when user skips and a current_candidate exists."""
+        from amplifier_app_cli.commands.routing import _edit_role
+
+        settings = _make_settings(tmp_path)
+        current = {
+            "provider": "anthropic",
+            "model": "claude-haiku-4-5",
+            "config": {"reasoning_effort": "low"},
+        }
+
+        con, buf = _make_test_console()
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+        ):
+            MockPrompt.ask.return_value = "s"  # skip
+            result = _edit_role(
+                role_name="fast",
+                role_desc="Quick utility tasks",
+                provider_names=["anthropic", "openai"],
+                settings=settings,
+                current_candidate=current,
+            )
+
+        assert result == current, (
+            f"Expected current_candidate to be returned on skip, got: {result}"
+        )
+
+    def test_edit_role_returns_none_on_ctrl_c(self, tmp_path):
+        """Returns None when user presses Ctrl-C during provider selection."""
+        from amplifier_app_cli.commands.routing import _edit_role
+
+        settings = _make_settings(tmp_path)
+
+        con, buf = _make_test_console()
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+        ):
+            MockPrompt.ask.side_effect = KeyboardInterrupt
+            result = _edit_role(
+                role_name="general",
+                role_desc="Versatile catch-all",
+                provider_names=["anthropic"],
+                settings=settings,
+            )
+
+        assert result is None, f"Expected None on Ctrl-C, got: {result}"
+
+    def test_edit_role_with_config_fields(self, tmp_path):
+        """Boolean config fields are prompted and included in the returned dict."""
+        from amplifier_app_cli.commands.routing import _edit_role
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-openai",
+                    "config": {"default_model": "gpt-5"},
+                }
+            ],
+        )
+
+        boolean_field = {
+            "id": "enable_prompt_caching",
+            "display_name": "Enable Prompt Caching",
+            "field_type": "boolean",
+            "required": False,
+            "description": "Enable caching for repeated prompts",
+        }
+
+        con, buf = _make_test_console()
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch("amplifier_app_cli.commands.routing.Confirm") as MockConfirm,
+            patch(
+                "amplifier_app_cli.provider_config_utils._prompt_model_selection",
+                return_value="gpt-5.2",
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._get_routing_config_fields",
+                return_value=[boolean_field],
+            ),
+        ):
+            MockPrompt.ask.return_value = "1"  # select provider #1 (openai)
+            MockConfirm.ask.return_value = True  # enable caching = yes
+
+            result = _edit_role(
+                role_name="general",
+                role_desc="Versatile catch-all",
+                provider_names=["openai"],
+                settings=settings,
+            )
+
+        assert result is not None, "Expected a result dict, got None"
+        assert result["provider"] == "openai"
+        assert result["model"] == "gpt-5.2"
+        assert "enable_prompt_caching" in result["config"], (
+            f"Expected 'enable_prompt_caching' in config, got: {result['config']}"
+        )

@@ -8,7 +8,7 @@ from typing import Any, cast
 import click
 import yaml
 from rich.console import Console
-from rich.prompt import Prompt
+from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from ..lib.settings import AppSettings, Scope
@@ -800,6 +800,181 @@ def _prompt_provider_and_model(
         return None
 
     return provider, model
+
+
+def _edit_role(
+    role_name: str,
+    role_desc: str,
+    provider_names: list[str],
+    settings: AppSettings,
+    model_cache: dict[str, list] | None = None,
+    current_candidate: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Edit a routing matrix role: pick provider, model, and config.
+
+    Args:
+        role_name: Name of the role being edited (e.g., "security-audit")
+        role_desc: Description of the role
+        provider_names: List of configured provider type names
+        settings: AppSettings instance for config lookup
+        model_cache: Pre-fetched ModelInfo objects per provider (from upfront cache)
+        current_candidate: Existing candidate dict if editing (for defaults).
+            Has keys: provider, model, config
+
+    Returns:
+        Dict with {provider, model, config} for the candidate, or None if cancelled/skipped.
+    """
+    # Step 1 — Print role header
+    console.print(f"\n  [bold cyan]{role_name}[/bold cyan]: {role_desc}")
+
+    # Step 2 — Provider selection
+    for i, pname in enumerate(provider_names, 1):
+        marker = (
+            "→ "
+            if current_candidate and pname == current_candidate.get("provider")
+            else "  "
+        )
+        console.print(f"  {marker}[{i}] {pname}")
+    console.print(
+        "    [s] Skip (keep current)" if current_candidate else "    [s] Skip"
+    )
+
+    try:
+        default = "s"
+        if current_candidate:
+            for i, pname in enumerate(provider_names, 1):
+                if pname == current_candidate.get("provider"):
+                    default = str(i)
+                    break
+        choice = Prompt.ask("    Provider", default=default).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+    if choice == "s":
+        return current_candidate  # Keep existing or skip (None if no current)
+
+    try:
+        idx = int(choice)
+        if idx < 1 or idx > len(provider_names):
+            console.print("    [red]Invalid choice.[/red]")
+            return None
+        provider = provider_names[idx - 1]
+    except ValueError:
+        console.print("    [red]Invalid choice.[/red]")
+        return None
+
+    # Step 3 — Model selection
+    cached_models = model_cache.get(provider) if model_cache else None
+
+    # Look up provider config from settings
+    provider_config: dict[str, Any] | None = None
+    for p in settings.get_provider_overrides():
+        p_module = p.get("module", "")
+        p_type = (
+            p_module.removeprefix("provider-")
+            if p_module.startswith("provider-")
+            else p_module
+        )
+        if p_type == provider or p_module == provider:
+            provider_config = p.get("config", {})
+            break
+
+    from ..provider_config_utils import _prompt_model_selection
+
+    default_model = (
+        current_candidate.get("model")
+        if current_candidate and current_candidate.get("provider") == provider
+        else None
+    )
+
+    provider_id = (
+        f"provider-{provider}" if not provider.startswith("provider-") else provider
+    )
+    selected_model = _prompt_model_selection(
+        provider_id,
+        default_model=default_model,
+        collected_config=provider_config,
+        models=cached_models,
+    )
+
+    if selected_model is None:  # Ctrl-C
+        return None
+
+    # Step 4 — Config field prompting (simplified: direct Prompt/Confirm, no env-var wrapping)
+    config_fields = _get_routing_config_fields(provider_id)
+    candidate_config: dict[str, Any] = {}
+
+    if config_fields:
+        console.print(f"\n  [bold]Config for {provider} / {selected_model}:[/bold]")
+        existing_config = (
+            current_candidate.get("config", {}) if current_candidate else {}
+        )
+
+        for field_dict in config_fields:
+            field_id = field_dict.get("id", "")
+            display = field_dict.get("display_name", field_id)
+            field_type = field_dict.get("field_type", "text")
+            default = existing_config.get(field_id) or field_dict.get("default")
+            choices = field_dict.get("choices")
+            description = field_dict.get("description", "")
+
+            # Check show_when conditions (simple key=value evaluation)
+            show_when = field_dict.get("show_when")
+            if show_when:
+                should_show = True
+                for sw_key, sw_val in show_when.items():
+                    current_val = str(candidate_config.get(sw_key, ""))
+                    if sw_val.startswith("contains:"):
+                        if sw_val[9:] not in current_val:
+                            should_show = False
+                    elif sw_val.startswith("not_contains:"):
+                        if sw_val[13:] in current_val:
+                            should_show = False
+                    elif current_val != sw_val:
+                        should_show = False
+                if not should_show:
+                    continue
+
+            try:
+                if description:
+                    console.print(f"  [dim]{description}[/dim]")
+
+                if field_type == "boolean":
+                    bool_default = default in ("true", "True", True, "yes")
+                    value = Confirm.ask(f"  {display}", default=bool_default)
+                    candidate_config[field_id] = str(value).lower()
+                elif field_type == "choice" and choices:
+                    for i, c in enumerate(choices, 1):
+                        marker = " (current)" if str(c) == str(default) else ""
+                        console.print(f"  [{i}] {c}{marker}")
+                    default_idx = None
+                    if default:
+                        for i, c in enumerate(choices, 1):
+                            if str(c) == str(default):
+                                default_idx = str(i)
+                                break
+                    choice_str = Prompt.ask(
+                        f"  {display}",
+                        choices=[str(i) for i in range(1, len(choices) + 1)],
+                        default=default_idx,
+                    )
+                    if choice_str is not None:
+                        candidate_config[field_id] = choices[int(choice_str) - 1]
+                else:
+                    value = Prompt.ask(
+                        f"  {display}", default=str(default) if default else ""
+                    )
+                    if value:
+                        candidate_config[field_id] = value
+            except (EOFError, KeyboardInterrupt):
+                return None
+
+    # Step 5 — Return result
+    return {
+        "provider": provider,
+        "model": selected_model,
+        "config": candidate_config,
+    }
 
 
 def _pick_base_matrix(
