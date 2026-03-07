@@ -637,7 +637,7 @@ class TestRoutingManageCreateOption:
         assert "Create a custom matrix" in output
 
     def test_routing_manage_loop_c_calls_create_interactive(self, tmp_path):
-        """Pressing 'c' in manage loop calls _routing_create_interactive."""
+        """Pressing 'c' in manage loop calls _routing_edit_matrix."""
         from amplifier_app_cli.commands.routing import routing_manage_loop
 
         cache_dir = _make_matrix_dir(tmp_path)
@@ -654,7 +654,7 @@ class TestRoutingManageCreateOption:
                 side_effect=["c", "d"],  # press c, then d to quit
             ),
             patch(
-                "amplifier_app_cli.commands.routing._routing_create_interactive",
+                "amplifier_app_cli.commands.routing._routing_edit_matrix",
             ) as mock_create,
         ):
             routing_manage_loop(settings)
@@ -1628,4 +1628,361 @@ class TestEditRole:
         assert result["model"] == "gpt-5.2"
         assert "enable_prompt_caching" in result["config"], (
             f"Expected 'enable_prompt_caching' in config, got: {result['config']}"
+        )
+
+
+# ============================================================
+# Task 9 (of 10): _routing_edit_matrix() — clone-and-edit loop
+# ============================================================
+
+
+class TestRoutingEditMatrix:
+    """Tests for _routing_edit_matrix() — clone-and-edit matrix loop."""
+
+    # Base matrix: two required roles with anthropic candidates
+    _BASE_MATRIX = {
+        "name": "balanced",
+        "description": "Balanced matrix",
+        "updated": "2026-01-01",
+        "roles": {
+            "general": {
+                "description": "General purpose",
+                "candidates": [{"provider": "anthropic", "model": "claude-sonnet"}],
+            },
+            "fast": {
+                "description": "Fast tasks",
+                "candidates": [{"provider": "anthropic", "model": "claude-haiku"}],
+            },
+        },
+    }
+
+    # Larger matrix: three roles including a non-required one
+    _THREE_ROLE_MATRIX = {
+        "name": "balanced",
+        "description": "Balanced matrix",
+        "updated": "2026-01-01",
+        "roles": {
+            "general": {
+                "description": "General purpose",
+                "candidates": [{"provider": "anthropic", "model": "claude-sonnet"}],
+            },
+            "fast": {
+                "description": "Fast tasks",
+                "candidates": [{"provider": "anthropic", "model": "claude-haiku"}],
+            },
+            "coding": {
+                "description": "Code writing",
+                "candidates": [{"provider": "anthropic", "model": "claude-opus"}],
+            },
+        },
+    }
+
+    def test_routing_edit_matrix_clone_and_save(self, tmp_path):
+        """Clone a matrix and immediately save it — file is written with correct content."""
+        import copy
+
+        import yaml
+
+        from amplifier_app_cli.commands.routing import _routing_edit_matrix
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(settings, [{"module": "provider-anthropic"}])
+
+        base = copy.deepcopy(self._BASE_MATRIX)
+        con, buf = _make_test_console()
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch(
+                "amplifier_app_cli.commands.routing._pick_base_matrix",
+                return_value=copy.deepcopy(base),
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=[],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._load_all_matrices",
+                return_value={"balanced": copy.deepcopy(base)},
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing.get_provider_models",
+                return_value=[],
+            ),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            # "s" = save action, "my-matrix" = matrix name
+            MockPrompt.ask.side_effect = ["s", "my-matrix"]
+            _routing_edit_matrix(settings)
+
+        output_file = tmp_path / ".amplifier" / "routing" / "my-matrix.yaml"
+        assert output_file.exists(), f"Expected YAML file at {output_file}"
+
+        content = yaml.safe_load(output_file.read_text())
+        assert content["name"] == "my-matrix", (
+            f"Expected name 'my-matrix', got {content['name']}"
+        )
+        assert "general" in content["roles"], "Expected 'general' role in saved matrix"
+        assert "fast" in content["roles"], "Expected 'fast' role in saved matrix"
+
+    def test_routing_edit_matrix_quit_without_save(self, tmp_path):
+        """Quitting without saving writes no file."""
+        import copy
+
+        from amplifier_app_cli.commands.routing import _routing_edit_matrix
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(settings, [{"module": "provider-anthropic"}])
+
+        base = copy.deepcopy(self._BASE_MATRIX)
+        con, buf = _make_test_console()
+
+        output_dir = tmp_path / ".amplifier" / "routing"
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch(
+                "amplifier_app_cli.commands.routing._pick_base_matrix",
+                return_value=copy.deepcopy(base),
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=[],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._load_all_matrices",
+                return_value={"balanced": copy.deepcopy(base)},
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing.get_provider_models",
+                return_value=[],
+            ),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            MockPrompt.ask.return_value = "q"
+            _routing_edit_matrix(settings)
+
+        # No files should have been written
+        yaml_files = list(output_dir.rglob("*.yaml")) if output_dir.exists() else []
+        assert not yaml_files, f"Expected no YAML files, found: {yaml_files}"
+
+    def test_routing_edit_matrix_edit_role_then_save(self, tmp_path):
+        """Edit role #1, then save — saved matrix reflects new provider/model."""
+        import copy
+
+        import yaml
+
+        from amplifier_app_cli.commands.routing import _routing_edit_matrix
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(settings, [{"module": "provider-anthropic"}])
+
+        base = copy.deepcopy(self._BASE_MATRIX)
+        new_candidate = {
+            "provider": "anthropic",
+            "model": "claude-opus-4",
+            "config": {},
+        }
+        con, buf = _make_test_console()
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch(
+                "amplifier_app_cli.commands.routing._pick_base_matrix",
+                return_value=copy.deepcopy(base),
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=[],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._load_all_matrices",
+                return_value={"balanced": copy.deepcopy(base)},
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing.get_provider_models",
+                return_value=[],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._edit_role",
+                return_value=new_candidate,
+            ),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            # "e1" = edit role #1 (general), "s" = save, "edited-matrix" = name
+            MockPrompt.ask.side_effect = ["e1", "s", "edited-matrix"]
+            _routing_edit_matrix(settings)
+
+        output_file = tmp_path / ".amplifier" / "routing" / "edited-matrix.yaml"
+        assert output_file.exists(), f"Expected YAML file at {output_file}"
+
+        content = yaml.safe_load(output_file.read_text())
+        general_candidates = content["roles"]["general"]["candidates"]
+        assert len(general_candidates) == 1
+        assert general_candidates[0]["model"] == "claude-opus-4", (
+            f"Expected edited model 'claude-opus-4', got {general_candidates[0]['model']}"
+        )
+
+    def test_routing_edit_matrix_add_role(self, tmp_path):
+        """Add a new role — saved matrix contains the new role."""
+        import copy
+
+        import yaml
+
+        from amplifier_app_cli.commands.routing import _routing_edit_matrix
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(settings, [{"module": "provider-anthropic"}])
+
+        base = copy.deepcopy(self._BASE_MATRIX)
+        new_candidate = {
+            "provider": "anthropic",
+            "model": "claude-opus-4",
+            "config": {},
+        }
+        con, buf = _make_test_console()
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch(
+                "amplifier_app_cli.commands.routing._pick_base_matrix",
+                return_value=copy.deepcopy(base),
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=[],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._load_all_matrices",
+                return_value={"balanced": copy.deepcopy(base)},
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing.get_provider_models",
+                return_value=[],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._edit_role",
+                return_value=new_candidate,
+            ),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            # "a" = add role, "coding" = name, "Code writing" = desc,
+            # "s" = save, "with-coding" = matrix name
+            MockPrompt.ask.side_effect = [
+                "a",
+                "coding",
+                "Code writing",
+                "s",
+                "with-coding",
+            ]
+            _routing_edit_matrix(settings)
+
+        output_file = tmp_path / ".amplifier" / "routing" / "with-coding.yaml"
+        assert output_file.exists(), f"Expected YAML file at {output_file}"
+
+        content = yaml.safe_load(output_file.read_text())
+        assert "coding" in content["roles"], (
+            f"Expected 'coding' role in saved matrix, got: {list(content['roles'].keys())}"
+        )
+        assert len(content["roles"]) == 3, (
+            f"Expected 3 roles (general, fast, coding), got {len(content['roles'])}"
+        )
+
+    def test_routing_edit_matrix_remove_role(self, tmp_path):
+        """Remove a non-required role (#3 = coding) — saved matrix has one fewer role."""
+        import copy
+
+        import yaml
+
+        from amplifier_app_cli.commands.routing import _routing_edit_matrix
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(settings, [{"module": "provider-anthropic"}])
+
+        base = copy.deepcopy(self._THREE_ROLE_MATRIX)
+        con, buf = _make_test_console()
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch(
+                "amplifier_app_cli.commands.routing._pick_base_matrix",
+                return_value=copy.deepcopy(base),
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=[],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._load_all_matrices",
+                return_value={"balanced": copy.deepcopy(base)},
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing.get_provider_models",
+                return_value=[],
+            ),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch("amplifier_app_cli.commands.routing.Confirm") as MockConfirm,
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            # "r3" = remove role #3 (coding), confirm yes,
+            # "s" = save, "removed-coding" = matrix name
+            MockPrompt.ask.side_effect = ["r3", "s", "removed-coding"]
+            MockConfirm.ask.return_value = True  # confirm remove
+            _routing_edit_matrix(settings)
+
+        output_file = tmp_path / ".amplifier" / "routing" / "removed-coding.yaml"
+        assert output_file.exists(), f"Expected YAML file at {output_file}"
+
+        content = yaml.safe_load(output_file.read_text())
+        assert "coding" not in content["roles"], (
+            f"Expected 'coding' to be removed, got roles: {list(content['roles'].keys())}"
+        )
+        assert len(content["roles"]) == 2, (
+            f"Expected 2 roles after removal, got {len(content['roles'])}"
+        )
+
+    def test_routing_edit_matrix_cannot_remove_required(self, tmp_path):
+        """Attempting to remove a required role (general = #1) shows an error message."""
+        import copy
+
+        from amplifier_app_cli.commands.routing import _routing_edit_matrix
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(settings, [{"module": "provider-anthropic"}])
+
+        base = copy.deepcopy(self._BASE_MATRIX)
+        con, buf = _make_test_console()
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch(
+                "amplifier_app_cli.commands.routing._pick_base_matrix",
+                return_value=copy.deepcopy(base),
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=[],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._load_all_matrices",
+                return_value={"balanced": copy.deepcopy(base)},
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing.get_provider_models",
+                return_value=[],
+            ),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            # "r1" = try to remove role #1 (general), then "q" to exit
+            MockPrompt.ask.side_effect = ["r1", "q"]
+            _routing_edit_matrix(settings)
+
+        rendered = buf.getvalue()
+        assert "Cannot remove required role" in rendered, (
+            f"Expected error about required role, got output:\n{rendered}"
         )

@@ -517,7 +517,7 @@ def routing_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scope
         elif choice.startswith("v"):
             _manage_view_matrix(settings, choice, matrices)
         elif choice == "c":
-            _routing_create_interactive(settings)
+            _routing_edit_matrix(settings)
 
 
 def _manage_select_matrix(
@@ -1236,6 +1236,273 @@ def _routing_create_interactive(settings: AppSettings) -> None:
     output_dir = Path.home() / ".amplifier" / "routing"
     saved = save_custom_matrix(matrix_name, assignments, output_dir)
     console.print(f"\n[green]\u2713 Saved to {saved}[/green]")
+
+
+def _routing_edit_matrix(settings: AppSettings) -> None:
+    """Interactive matrix editor — clone an existing matrix and customize it."""
+    import datetime
+
+    # Phase 1 — Setup
+    provider_names = _get_provider_names(settings)
+    if not provider_names:
+        console.print(
+            "[yellow]No providers configured. Run: amplifier provider add[/yellow]"
+        )
+        return
+
+    matrix_files = _discover_matrix_files()
+    matrices = _load_all_matrices(matrix_files)
+
+    if not matrices:
+        console.print("[yellow]No routing matrices found.[/yellow]")
+        console.print(
+            "[dim]Run 'amplifier update' to fetch the routing-matrix bundle.[/dim]"
+        )
+        return
+
+    base_matrix = _pick_base_matrix(settings, matrices)
+    if base_matrix is None:
+        return
+
+    working_copy = base_matrix  # already a deep copy from _pick_base_matrix
+
+    # Phase 2 — Upfront model fetch (same pattern as _routing_create_interactive)
+    model_cache: dict[str, list] = {}
+    with console.status(
+        "[dim]Fetching models for all providers...[/dim]", spinner="dots"
+    ):
+        for pname in provider_names:
+            try:
+                collected_config: dict[str, Any] | None = None
+                providers = settings.get_provider_overrides()
+                for p in providers:
+                    p_module = p.get("module", "")
+                    p_type = (
+                        p_module.removeprefix("provider-")
+                        if p_module.startswith("provider-")
+                        else p_module
+                    )
+                    if p_type == pname or p_module == pname:
+                        collected_config = p.get("config", {})
+                        break
+                models = get_provider_models(pname, collected_config=collected_config)
+                model_cache[pname] = models
+            except Exception:
+                model_cache[pname] = []
+
+    for pname in provider_names:
+        count = len(model_cache[pname])
+        if count:
+            console.print(f"  [green]\u2713[/green] {pname}: {count} model(s)")
+        else:
+            console.print(f"  [yellow]\u2717[/yellow] {pname}: could not fetch models")
+    console.print()
+
+    # Phase 3 — Edit loop
+    changed = False
+    roles = working_copy.get("roles", {})
+
+    while True:
+        # Show numbered role index then waterfall view
+        role_list = list(roles.keys())
+        console.print("  Roles:")
+        for i, rname in enumerate(role_list, 1):
+            console.print(f"  [{i}] {rname}")
+        console.print()
+        _show_matrix_details(working_copy, settings)
+
+        console.print("\n  Actions:")
+        console.print("    [e<N>] Edit a role (e.g., e1)")
+        console.print("    [a] Add a new role")
+        console.print("    [r<N>] Remove a role")
+        console.print("    [s] Save")
+        console.print("    [q] Quit without saving")
+        console.print()
+
+        try:
+            action = Prompt.ask("  Action", default="s").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            if changed:
+                try:
+                    if not Confirm.ask("  Unsaved changes. Quit?", default=False):
+                        continue
+                except (EOFError, KeyboardInterrupt):
+                    pass
+            return
+
+        if action == "q":
+            if changed:
+                try:
+                    if not Confirm.ask("  Unsaved changes. Quit?", default=False):
+                        continue
+                except (EOFError, KeyboardInterrupt):
+                    pass
+            return
+
+        elif action == "s":
+            break  # Go to save phase
+
+        elif action == "a":
+            # Add a new role
+            try:
+                new_name = Prompt.ask("  Role name").strip()
+                new_desc = Prompt.ask("  Description").strip()
+            except (EOFError, KeyboardInterrupt):
+                continue
+            if not new_name:
+                console.print("  [red]Name cannot be empty.[/red]")
+                continue
+            if new_name in roles:
+                console.print(
+                    f"  [yellow]Role '{new_name}' already exists. "
+                    f"Use [e] to edit it.[/yellow]"
+                )
+                continue
+            result = _edit_role(
+                new_name, new_desc, provider_names, settings, model_cache=model_cache
+            )
+            if result:
+                roles[new_name] = {
+                    "description": new_desc,
+                    "candidates": [result],
+                }
+                changed = True
+                console.print(
+                    f"  [green]\u2713 Added {new_name} \u2192 "
+                    f"{result['provider']} / {result['model']}[/green]"
+                )
+
+        elif action.startswith("r"):
+            # Remove a role
+            num_str = action[1:].strip()
+            if not num_str:
+                try:
+                    num_str = Prompt.ask("  Role number to remove").strip()
+                except (EOFError, KeyboardInterrupt):
+                    continue
+            try:
+                num = int(num_str)
+                if num < 1 or num > len(role_list):
+                    console.print(f"  [red]Invalid. Enter 1-{len(role_list)}.[/red]")
+                    continue
+                role_name = role_list[num - 1]
+            except ValueError:
+                console.print("  [red]Invalid number.[/red]")
+                continue
+
+            if role_name in ("general", "fast"):
+                console.print(
+                    f"  [red]Cannot remove required role '{role_name}'.[/red]"
+                )
+                continue
+
+            try:
+                if not Confirm.ask(f"  Remove '{role_name}'?", default=False):
+                    continue
+            except (EOFError, KeyboardInterrupt):
+                continue
+
+            del roles[role_name]
+            changed = True
+            console.print(f"  [green]\u2713 Removed {role_name}[/green]")
+
+        elif action.startswith("e"):
+            # Edit a role
+            num_str = action[1:].strip()
+            if not num_str:
+                try:
+                    num_str = Prompt.ask("  Role number to edit").strip()
+                except (EOFError, KeyboardInterrupt):
+                    continue
+            try:
+                num = int(num_str)
+                if num < 1 or num > len(role_list):
+                    console.print(f"  [red]Invalid. Enter 1-{len(role_list)}.[/red]")
+                    continue
+                role_name = role_list[num - 1]
+            except ValueError:
+                console.print("  [red]Invalid number.[/red]")
+                continue
+
+            role_data = roles[role_name]
+            role_desc = role_data.get("description", "")
+            candidates = role_data.get("candidates", [])
+            current_candidate = candidates[0] if candidates else None
+
+            result = _edit_role(
+                role_name,
+                role_desc,
+                provider_names,
+                settings,
+                model_cache=model_cache,
+                current_candidate=current_candidate,
+            )
+            if result and result != current_candidate:
+                roles[role_name]["candidates"] = [result]
+                changed = True
+                config_str = ""
+                if result.get("config"):
+                    pairs = ", ".join(f"{k}: {v}" for k, v in result["config"].items())
+                    config_str = f"  [{pairs}]"
+                console.print(
+                    f"  [green]\u2713 {role_name} \u2192 "
+                    f"{result['provider']} / {result['model']}{config_str}[/green]"
+                )
+
+    # Phase 4 — Save
+    try:
+        default_name = working_copy.get("name", "custom")
+        matrix_name = Prompt.ask("  Matrix name", default=default_name).strip()
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n[dim]Cancelled.[/dim]")
+        return
+
+    if not matrix_name:
+        console.print("[red]Name cannot be empty.[/red]")
+        return
+
+    output_dir = Path.home() / ".amplifier" / "routing"
+    output_file = output_dir / f"{matrix_name}.yaml"
+
+    # Check for overwrite
+    if output_file.exists():
+        try:
+            if not Confirm.ask(
+                f"  '{matrix_name}' already exists. Overwrite?", default=False
+            ):
+                return
+        except (EOFError, KeyboardInterrupt):
+            return
+
+    # Build matrix dict — write directly to support config in candidates
+    matrix_roles: dict[str, Any] = {}
+    for role_name, role_data in roles.items():
+        candidates_out: list[dict[str, Any]] = []
+        for cand in role_data.get("candidates", []):
+            cand_entry: dict[str, Any] = {
+                "provider": cand.get("provider", ""),
+                "model": cand.get("model", ""),
+            }
+            if cand.get("config"):
+                cand_entry["config"] = cand["config"]
+            candidates_out.append(cand_entry)
+        matrix_roles[role_name] = {
+            "description": role_data.get("description", ""),
+            "candidates": candidates_out,
+        }
+
+    matrix_data: dict[str, Any] = {
+        "name": matrix_name,
+        "description": f"Custom matrix: {matrix_name}",
+        "updated": datetime.date.today().isoformat(),
+        "roles": matrix_roles,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with open(output_file, "w", encoding="utf-8") as f:
+        yaml.safe_dump(matrix_data, f, default_flow_style=False, sort_keys=False)
+
+    console.print(f"\n[green]\u2713 Saved to {output_file}[/green]")
 
 
 @routing_group.command("create")
