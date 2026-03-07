@@ -12,6 +12,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from ..lib.settings import AppSettings, Scope
+from ..provider_loader import get_provider_models
 from ..ui.scope import (
     is_scope_change_available,
     print_scope_indicator,
@@ -698,6 +699,7 @@ def _prompt_provider_and_model(
     role_desc: str,
     provider_names: list[str],
     settings: AppSettings | None = None,
+    model_cache: dict[str, list] | None = None,
 ) -> tuple[str, str] | None:
     """Prompt user to select a provider and model for a role.
 
@@ -728,34 +730,39 @@ def _prompt_provider_and_model(
         console.print("    [red]Invalid choice.[/red]")
         return None
 
-    # Try listing models from the provider
-    console.print(f"    [dim]Loading models for {provider}...[/dim]")
-    models = _list_models_for_provider(provider, settings=settings)
+    # Get cached models (raw ModelInfo objects) or None
+    cached_models = model_cache.get(provider) if model_cache else None
 
-    if models:
-        for i, m in enumerate(models, 1):
-            console.print(f"      [{i}] {m}")
-        try:
-            model_choice = Prompt.ask("    Model number or name").strip()
-        except (EOFError, KeyboardInterrupt):
-            return None
+    # Look up provider config from settings for authenticated model fetching
+    provider_config: dict[str, Any] | None = None
+    if settings:
+        for p in settings.get_provider_overrides():
+            p_module = p.get("module", "")
+            p_type = (
+                p_module.removeprefix("provider-")
+                if p_module.startswith("provider-")
+                else p_module
+            )
+            if p_type == provider or p_module == provider:
+                provider_config = p.get("config", {})
+                break
 
-        try:
-            midx = int(model_choice)
-            if 1 <= midx <= len(models):
-                model = models[midx - 1]
-            else:
-                model = model_choice
-        except ValueError:
-            model = model_choice
-    else:
-        console.print(
-            "    [dim]Could not list models. Enter model name manually.[/dim]"
-        )
-        try:
-            model = Prompt.ask("    Model name").strip()
-        except (EOFError, KeyboardInterrupt):
-            return None
+    from ..provider_config_utils import _prompt_model_selection
+
+    provider_id = (
+        f"provider-{provider}" if not provider.startswith("provider-") else provider
+    )
+    selected = _prompt_model_selection(
+        provider_id,
+        default_model=None,
+        collected_config=provider_config,
+        models=cached_models,
+    )
+
+    if selected is None:  # Ctrl-C or cancel
+        return None
+
+    model = selected
 
     if not model:
         return None
@@ -787,11 +794,50 @@ def _routing_create_interactive(settings: AppSettings) -> None:
     console.print("\n[bold]Create Custom Routing Matrix[/bold]")
     console.print(f"[dim]Providers: {', '.join(provider_names)}[/dim]\n")
 
+    # Fetch models for all providers upfront
+    model_cache: dict[str, list] = {}
+    with console.status(
+        "[dim]Fetching models for all providers...[/dim]", spinner="dots"
+    ):
+        for pname in provider_names:
+            try:
+                # Look up provider config from settings
+                collected_config: dict[str, Any] | None = None
+                providers = settings.get_provider_overrides()
+                for p in providers:
+                    p_module = p.get("module", "")
+                    p_type = (
+                        p_module.removeprefix("provider-")
+                        if p_module.startswith("provider-")
+                        else p_module
+                    )
+                    if p_type == pname or p_module == pname:
+                        collected_config = p.get("config", {})
+                        break
+
+                models = get_provider_models(pname, collected_config=collected_config)
+                model_cache[pname] = models  # Store raw ModelInfo objects
+            except Exception:
+                model_cache[pname] = []
+
+    # Show fetch summary
+    for pname in provider_names:
+        count = len(model_cache[pname])
+        if count:
+            console.print(f"  [green]\u2713[/green] {pname}: {count} model(s)")
+        else:
+            console.print(f"  [yellow]\u2717[/yellow] {pname}: could not fetch models")
+    console.print()
+
     # Walk through each role
     assignments: dict[str, dict[str, str]] = {}
     for role_name, role_desc in roles.items():
         result = _prompt_provider_and_model(
-            role_name, role_desc, provider_names, settings=settings
+            role_name,
+            role_desc,
+            provider_names,
+            settings=settings,
+            model_cache=model_cache,
         )
         if result:
             provider, model = result
@@ -812,7 +858,11 @@ def _routing_create_interactive(settings: AppSettings) -> None:
                 f"Please assign it.[/yellow]"
             )
             result = _prompt_provider_and_model(
-                required, roles.get(required, ""), provider_names, settings=settings
+                required,
+                roles.get(required, ""),
+                provider_names,
+                settings=settings,
+                model_cache=model_cache,
             )
             if result:
                 provider, model = result
@@ -864,7 +914,11 @@ def _routing_create_interactive(settings: AppSettings) -> None:
             except (EOFError, KeyboardInterrupt):
                 continue
             result = _prompt_provider_and_model(
-                new_name, new_desc, provider_names, settings=settings
+                new_name,
+                new_desc,
+                provider_names,
+                settings=settings,
+                model_cache=model_cache,
             )
             if result:
                 provider, model = result
@@ -896,7 +950,11 @@ def _routing_create_interactive(settings: AppSettings) -> None:
             if edit_name in assignments:
                 desc = assignments[edit_name]["description"]
                 result = _prompt_provider_and_model(
-                    edit_name, desc, provider_names, settings=settings
+                    edit_name,
+                    desc,
+                    provider_names,
+                    settings=settings,
+                    model_cache=model_cache,
                 )
                 if result:
                     provider, model = result

@@ -6,7 +6,6 @@ configure_provider().
 """
 
 import click
-import pytest
 from unittest.mock import MagicMock, patch
 
 
@@ -164,12 +163,14 @@ class TestManageAddProviderSafetyNet:
             f"Expected error message in console output, got: {printed_texts}"
         )
 
-    def test_click_abort_propagates(self, tmp_path):
+    def test_click_abort_returns_gracefully(self, tmp_path):
         """When configure_provider() raises click.Abort,
-        it should propagate (not be caught by the safety net)."""
+        _manage_add_provider() should catch it and return gracefully
+        (printing 'Cancelled.' instead of propagating)."""
         from amplifier_app_cli.commands.provider import _manage_add_provider
 
         settings = _make_settings(tmp_path)
+        mock_console = MagicMock()
 
         with (
             patch(
@@ -189,7 +190,7 @@ class TestManageAddProviderSafetyNet:
                 "amplifier_app_cli.commands.provider.configure_provider",
                 side_effect=click.Abort(),
             ),
-            patch("amplifier_app_cli.commands.provider.console"),
+            patch("amplifier_app_cli.commands.provider.console", mock_console),
         ):
             mock_pm = MagicMock()
             mock_pm.list_providers.return_value = [
@@ -197,15 +198,69 @@ class TestManageAddProviderSafetyNet:
             ]
             MockPM.return_value = mock_pm
 
-            with pytest.raises(click.Abort):
-                _manage_add_provider(settings)
+            # Should NOT raise — should return gracefully
+            _manage_add_provider(settings)
 
-    def test_click_exception_propagates(self, tmp_path):
-        """When configure_provider() raises click.ClickException,
-        it should propagate (not be caught by the safety net)."""
+        # Verify "Cancelled" appears in output
+        printed_texts = [str(call) for call in mock_console.print.call_args_list]
+        joined = " ".join(printed_texts)
+        assert "Cancelled" in joined, (
+            f"Expected 'Cancelled' in console output, got: {printed_texts}"
+        )
+
+    def test_keyboard_interrupt_returns_gracefully(self, tmp_path):
+        """When configure_provider() raises KeyboardInterrupt (defense-in-depth),
+        _manage_add_provider() should catch it and return gracefully,
+        printing 'Cancelled.' instead of crashing."""
         from amplifier_app_cli.commands.provider import _manage_add_provider
 
         settings = _make_settings(tmp_path)
+        mock_console = MagicMock()
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._ensure_providers_ready",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.ProviderManager",
+            ) as MockPM,
+            patch(
+                "amplifier_app_cli.commands.provider.Prompt.ask",
+                return_value="1",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.KeyManager",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                side_effect=KeyboardInterrupt(),
+            ),
+            patch("amplifier_app_cli.commands.provider.console", mock_console),
+        ):
+            mock_pm = MagicMock()
+            mock_pm.list_providers.return_value = [
+                ("provider-anthropic", "Anthropic", "Anthropic provider"),
+            ]
+            MockPM.return_value = mock_pm
+
+            # Should NOT raise — should return gracefully
+            _manage_add_provider(settings)
+
+        # Verify "Cancelled" appears in output
+        printed_texts = [str(call) for call in mock_console.print.call_args_list]
+        joined = " ".join(printed_texts)
+        assert "Cancelled" in joined, (
+            f"Expected 'Cancelled' in console output, got: {printed_texts}"
+        )
+
+    def test_click_exception_handled_as_error(self, tmp_path):
+        """When configure_provider() raises click.ClickException,
+        it should be caught by the generic Exception handler, print an error
+        message, and return gracefully (not propagate)."""
+        from amplifier_app_cli.commands.provider import _manage_add_provider
+
+        settings = _make_settings(tmp_path)
+        mock_console = MagicMock()
 
         with (
             patch(
@@ -225,7 +280,7 @@ class TestManageAddProviderSafetyNet:
                 "amplifier_app_cli.commands.provider.configure_provider",
                 side_effect=click.ClickException("Auth failed"),
             ),
-            patch("amplifier_app_cli.commands.provider.console"),
+            patch("amplifier_app_cli.commands.provider.console", mock_console),
         ):
             mock_pm = MagicMock()
             mock_pm.list_providers.return_value = [
@@ -233,8 +288,15 @@ class TestManageAddProviderSafetyNet:
             ]
             MockPM.return_value = mock_pm
 
-            with pytest.raises(click.ClickException):
-                _manage_add_provider(settings)
+            # Should NOT raise — caught by generic Exception handler
+            _manage_add_provider(settings)
+
+        # Verify the error message was printed
+        printed_texts = [str(call) for call in mock_console.print.call_args_list]
+        joined = " ".join(printed_texts)
+        assert "Auth failed" in joined, (
+            f"Expected 'Auth failed' in console output, got: {printed_texts}"
+        )
 
 
 class TestProviderAddSafetyNet:
@@ -357,6 +419,101 @@ class TestProviderAddSafetyNet:
         )
         assert "Traceback" not in result.output, (
             f"Expected no traceback, got: {result.output}"
+        )
+
+
+# ============================================================
+# Task 1 (new): Ctrl-C boundary on configure_provider()
+# ============================================================
+
+
+class TestConfigureProviderCtrlC:
+    """Tests for Ctrl-C boundary in configure_provider()."""
+
+    def _make_mock_provider_info(self):
+        """Return a minimal provider info dict with one text config field."""
+        return {
+            "display_name": "Test Provider",
+            "config_fields": [
+                {
+                    "id": "api_key",
+                    "display_name": "API Key",
+                    "field_type": "text",
+                    "prompt": "Enter your API key",
+                    "required": True,
+                }
+            ],
+        }
+
+    def test_configure_provider_returns_none_on_keyboard_interrupt(self):
+        """When a prompt raises KeyboardInterrupt, configure_provider() should return None."""
+        from amplifier_app_cli.provider_config_utils import configure_provider
+
+        mock_key_manager = MagicMock()
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=self._make_mock_provider_info(),
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                side_effect=KeyboardInterrupt(),
+            ),
+            patch("amplifier_app_cli.provider_config_utils.console"),
+        ):
+            result = configure_provider("test-provider", mock_key_manager)
+
+        assert result is None, f"Expected None on KeyboardInterrupt, got {result!r}"
+
+    def test_configure_provider_returns_none_on_eof_error(self):
+        """When a prompt raises EOFError, configure_provider() should return None."""
+        from amplifier_app_cli.provider_config_utils import configure_provider
+
+        mock_key_manager = MagicMock()
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=self._make_mock_provider_info(),
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                side_effect=EOFError(),
+            ),
+            patch("amplifier_app_cli.provider_config_utils.console"),
+        ):
+            result = configure_provider("test-provider", mock_key_manager)
+
+        assert result is None, f"Expected None on EOFError, got {result!r}"
+
+    def test_configure_provider_prints_cancelled_on_ctrl_c(self):
+        """When interrupted, configure_provider() should print 'Cancelled'."""
+        from amplifier_app_cli.provider_config_utils import configure_provider
+
+        mock_key_manager = MagicMock()
+        mock_console = MagicMock()
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=self._make_mock_provider_info(),
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                side_effect=KeyboardInterrupt(),
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.console",
+                mock_console,
+            ),
+        ):
+            configure_provider("test-provider", mock_key_manager)
+
+        printed_texts = [str(call) for call in mock_console.print.call_args_list]
+        joined = " ".join(printed_texts)
+        assert "Cancelled" in joined, (
+            f"Expected 'Cancelled' in console output, got: {printed_texts}"
         )
 
 
@@ -508,6 +665,119 @@ class TestProviderTestSpinner:
             _manage_test_providers(MagicMock(), [])
 
         mock_console.status.assert_not_called()
+
+
+# ============================================================
+# Task 2: `models` param + Ctrl-C boundary on _prompt_model_selection()
+# ============================================================
+
+
+class TestPromptModelSelectionModelsParam:
+    """Tests for the models param and Ctrl-C boundary in _prompt_model_selection()."""
+
+    def test_prompt_model_selection_uses_provided_models(self):
+        """When models are provided, get_provider_models should NOT be called."""
+        from amplifier_app_cli.provider_config_utils import _prompt_model_selection
+
+        mock_model_1 = MagicMock()
+        mock_model_1.id = "claude-sonnet-4-6"
+        mock_model_1.display_name = "Claude Sonnet 4.6"
+        mock_model_1.capabilities = ["vision", "thinking"]
+
+        mock_model_2 = MagicMock()
+        mock_model_2.id = "claude-opus-4-6"
+        mock_model_2.display_name = "Claude Opus 4.6"
+        mock_model_2.capabilities = ["vision", "thinking"]
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_models"
+            ) as mock_gpm,
+            patch("amplifier_app_cli.provider_config_utils.Prompt") as MockPrompt,
+            patch("amplifier_app_cli.provider_config_utils.console"),
+        ):
+            MockPrompt.ask.return_value = "1"
+            result = _prompt_model_selection(
+                "anthropic", models=[mock_model_1, mock_model_2]
+            )
+
+        mock_gpm.assert_not_called()  # Should NOT have fetched — used provided models
+        assert result == "claude-sonnet-4-6", (
+            f"Expected 'claude-sonnet-4-6', got '{result}'"
+        )
+
+    def test_prompt_model_selection_fetches_when_models_none(self):
+        """When models=None (default), get_provider_models SHOULD be called."""
+        from amplifier_app_cli.provider_config_utils import _prompt_model_selection
+
+        mock_model = MagicMock()
+        mock_model.id = "gpt-4o"
+        mock_model.display_name = "GPT-4o"
+        mock_model.capabilities = []
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_models",
+                return_value=[mock_model],
+            ) as mock_gpm,
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                return_value="1",
+            ),
+            patch("amplifier_app_cli.provider_config_utils.console"),
+        ):
+            result = _prompt_model_selection("openai")
+
+        mock_gpm.assert_called_once()
+        assert result == "gpt-4o", f"Expected 'gpt-4o', got '{result}'"
+
+    def test_prompt_model_selection_returns_none_on_ctrl_c(self):
+        """When Prompt.ask raises KeyboardInterrupt, should return None."""
+        from amplifier_app_cli.provider_config_utils import _prompt_model_selection
+
+        mock_model = MagicMock()
+        mock_model.id = "gpt-4o"
+        mock_model.display_name = "GPT-4o"
+        mock_model.capabilities = []
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_models",
+                return_value=[mock_model],
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                side_effect=KeyboardInterrupt(),
+            ),
+            patch("amplifier_app_cli.provider_config_utils.console"),
+        ):
+            result = _prompt_model_selection("openai")
+
+        assert result is None, f"Expected None on KeyboardInterrupt, got {result!r}"
+
+    def test_prompt_model_selection_returns_none_on_eof(self):
+        """When Prompt.ask raises EOFError, should return None."""
+        from amplifier_app_cli.provider_config_utils import _prompt_model_selection
+
+        mock_model = MagicMock()
+        mock_model.id = "gpt-4o"
+        mock_model.display_name = "GPT-4o"
+        mock_model.capabilities = []
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_models",
+                return_value=[mock_model],
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                side_effect=EOFError(),
+            ),
+            patch("amplifier_app_cli.provider_config_utils.console"),
+        ):
+            result = _prompt_model_selection("openai")
+
+        assert result is None, f"Expected None on EOFError, got {result!r}"
 
     def test_spinner_exits_on_provider_test_failure(self):
         """Spinner should exit cleanly even when a provider test fails."""

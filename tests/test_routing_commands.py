@@ -971,3 +971,295 @@ class TestListModelsForProvider:
 
         mock_gpm.assert_called_once()
         assert result == []
+
+
+# ============================================================
+# Task 4: Upfront model cache in _routing_create_interactive()
+# ============================================================
+
+
+class TestRoutingCreateModelCache:
+    """Tests that _routing_create_interactive() fetches models upfront once per provider."""
+
+    def _make_prompts_for_full_flow(self):
+        """Return prompt side_effect list for routing.Prompt in a 2-provider, 2-role flow.
+
+        Flow (routing.Prompt only — model selection now uses provider_config_utils.Prompt):
+          - role walk: skip general, skip fast (2 skips)
+          - required role retry: pick provider 1 (×2 roles)
+          - post-summary menu: quit
+        """
+        return [
+            "s",  # skip "general" in role walk
+            "s",  # skip "fast" in role walk
+            "1",  # pick provider 1 for required "general" retry
+            "1",  # pick provider 1 for required "fast" retry
+            "q",  # quit without saving
+        ]
+
+    def test_routing_create_fetches_models_upfront(self, tmp_path):
+        """get_provider_models is called once per provider (not once per role)."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+        from unittest.mock import MagicMock
+
+        from amplifier_app_cli.commands.routing import _routing_create_interactive
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet"},
+                },
+                {"module": "provider-openai", "config": {"default_model": "gpt-5.2"}},
+            ],
+        )
+
+        mock_model = MagicMock()
+        mock_model.id = "test-model"
+        mock_model.display_name = "Test Model"
+        mock_model.capabilities = []
+
+        buf = StringIO()
+        test_console = RichConsole(file=buf, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", test_console),
+            patch(
+                "amplifier_app_cli.commands.routing.get_provider_models",
+                return_value=[mock_model],
+            ) as mock_gpm,
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=[],
+            ),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch("amplifier_app_cli.provider_config_utils.Prompt") as MockPromptPCU,
+        ):
+            MockPrompt.ask.side_effect = self._make_prompts_for_full_flow()
+            # Model selection (via _prompt_model_selection) picks model #1 for each role
+            MockPromptPCU.ask.side_effect = ["1", "1"]
+            _routing_create_interactive(settings)
+
+        # get_provider_models should be called once per provider (2), not once per role
+        assert mock_gpm.call_count == 2, (
+            f"Expected 2 calls (one per provider), got {mock_gpm.call_count}"
+        )
+
+    def test_routing_create_shows_fetch_summary(self, tmp_path):
+        """Output contains per-provider model count summary after upfront fetch."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+        from unittest.mock import MagicMock
+
+        from amplifier_app_cli.commands.routing import _routing_create_interactive
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet"},
+                },
+                {"module": "provider-openai", "config": {"default_model": "gpt-5.2"}},
+            ],
+        )
+
+        mock_model = MagicMock()
+        mock_model.id = "test-model"
+        mock_model.display_name = "Test Model"
+        mock_model.capabilities = []
+
+        buf = StringIO()
+        test_console = RichConsole(file=buf, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", test_console),
+            patch(
+                "amplifier_app_cli.commands.routing.get_provider_models",
+                return_value=[mock_model],
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=[],
+            ),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch("amplifier_app_cli.provider_config_utils.Prompt") as MockPromptPCU,
+        ):
+            MockPrompt.ask.side_effect = self._make_prompts_for_full_flow()
+            MockPromptPCU.ask.side_effect = ["1", "1"]
+            _routing_create_interactive(settings)
+
+        rendered = buf.getvalue()
+        assert "model(s)" in rendered, (
+            f"Expected fetch summary with 'model(s)' in output, got:\n{rendered}"
+        )
+
+
+# ============================================================
+# Task 5: DRY _prompt_provider_and_model() — calls _prompt_model_selection()
+# ============================================================
+
+
+class TestPromptProviderAndModelDRY:
+    """Tests that _prompt_provider_and_model() delegates model selection to _prompt_model_selection()."""
+
+    def test_prompt_provider_and_model_calls_prompt_model_selection(self, tmp_path):
+        """_prompt_provider_and_model() calls _prompt_model_selection with cached models."""
+        from io import StringIO
+        from unittest.mock import MagicMock
+
+        from rich.console import Console as RichConsole
+
+        from amplifier_app_cli.commands.routing import _prompt_provider_and_model
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet"},
+                }
+            ],
+        )
+
+        mock_model = MagicMock()
+        mock_model.id = "claude-sonnet-4-6"
+        mock_model.display_name = "Claude Sonnet 4.6"
+        mock_model.capabilities = ["vision", "thinking"]
+
+        model_cache = {"anthropic": [mock_model]}
+
+        output = StringIO()
+        test_console = RichConsole(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", test_console),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.provider_config_utils._prompt_model_selection",
+                return_value="claude-sonnet-4-6",
+            ) as mock_pms,
+        ):
+            MockPrompt.ask.return_value = "1"  # Pick provider #1 (anthropic)
+            result = _prompt_provider_and_model(
+                "general",
+                "Versatile catch-all",
+                ["anthropic"],
+                settings=settings,
+                model_cache=model_cache,
+            )
+
+        assert result == ("anthropic", "claude-sonnet-4-6")
+        mock_pms.assert_called_once()
+        # Verify cached models were passed via keyword arg
+        call_kwargs = mock_pms.call_args
+        passed_models = call_kwargs.kwargs.get("models")
+        assert passed_models == [mock_model], (
+            f"Expected cached models to be passed, got: {passed_models}"
+        )
+
+    def test_prompt_provider_and_model_returns_none_on_model_cancel(self, tmp_path):
+        """When _prompt_model_selection returns None (Ctrl-C), the function returns None."""
+        from io import StringIO
+        from unittest.mock import MagicMock
+
+        from rich.console import Console as RichConsole
+
+        from amplifier_app_cli.commands.routing import _prompt_provider_and_model
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [{"module": "provider-openai", "config": {"default_model": "gpt-4"}}],
+        )
+
+        mock_model = MagicMock()
+        mock_model.id = "gpt-4o"
+        mock_model.display_name = "GPT-4o"
+        mock_model.capabilities = []
+
+        model_cache = {"openai": [mock_model]}
+
+        output = StringIO()
+        test_console = RichConsole(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", test_console),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch(
+                "amplifier_app_cli.provider_config_utils._prompt_model_selection",
+                return_value=None,  # Ctrl-C / cancel
+            ),
+        ):
+            MockPrompt.ask.return_value = "1"  # Pick provider #1 (openai)
+            result = _prompt_provider_and_model(
+                "fast",
+                "Quick utility tasks",
+                ["openai"],
+                settings=settings,
+                model_cache=model_cache,
+            )
+
+        assert result is None, (
+            f"Expected None when model selection cancelled, got: {result}"
+        )
+
+    def test_prompt_provider_and_model_displays_formatted_models(self, tmp_path):
+        """Without mocking _prompt_model_selection, output shows display_name not raw repr."""
+        from io import StringIO
+        from unittest.mock import MagicMock
+
+        from rich.console import Console as RichConsole
+
+        from amplifier_app_cli.commands.routing import _prompt_provider_and_model
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet"},
+                }
+            ],
+        )
+
+        mock_model = MagicMock()
+        mock_model.id = "claude-sonnet-4-6"
+        mock_model.display_name = "Claude Sonnet 4.6"
+        mock_model.capabilities = ["vision", "thinking"]
+
+        model_cache = {"anthropic": [mock_model]}
+
+        output = StringIO()
+        test_console = RichConsole(file=output, force_terminal=False)
+
+        with (
+            patch("amplifier_app_cli.commands.routing.console", test_console),
+            patch("amplifier_app_cli.commands.routing.Prompt") as MockPrompt,
+            patch("amplifier_app_cli.provider_config_utils.console", test_console),
+            patch("amplifier_app_cli.provider_config_utils.Prompt") as MockPromptPCU,
+        ):
+            MockPrompt.ask.return_value = "1"  # Pick provider #1 (anthropic)
+            MockPromptPCU.ask.return_value = "1"  # Pick model #1
+
+            result = _prompt_provider_and_model(
+                "general",
+                "Versatile catch-all",
+                ["anthropic"],
+                settings=settings,
+                model_cache=model_cache,
+            )
+
+        rendered = output.getvalue()
+        assert "Claude Sonnet 4.6" in rendered, (
+            f"Expected display_name 'Claude Sonnet 4.6' in output, got:\n{rendered}"
+        )
+        assert result is not None, "Expected a result tuple, not None"
