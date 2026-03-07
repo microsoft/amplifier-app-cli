@@ -497,7 +497,7 @@ def routing_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scope
         console.print("\n  Actions:")
         console.print("    \\[s] Select a different matrix (enter number)")
         console.print("    \\[v] View full details of a matrix")
-        console.print("    \\[c] Create a custom matrix")
+        console.print("    \\[c] Create / edit custom matrix")
         if is_scope_change_available():
             console.print("    \\[w] Change write scope")
         console.print("    \\[d] Done")
