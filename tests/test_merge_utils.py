@@ -414,3 +414,82 @@ class TestRuntimeConfigMerge:
 
         assert len(result) == 1
         assert result[0]["config"]["model"] == "gpt-5.2"
+
+
+class TestSettingsIdToInstanceId:
+    """Tests for settings 'id' → mount plan 'instance_id' mapping."""
+
+    def test_settings_id_becomes_mount_plan_instance_id(self) -> None:
+        """Settings entry with 'id' should have instance_id set in the mount plan."""
+        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+
+        providers = [
+            {
+                "module": "provider-anthropic",
+                "id": "anthropic-sonnet",
+                "config": {"default_model": "claude-sonnet-4-6", "priority": 1},
+            }
+        ]
+        result = _map_id_to_instance_id(providers)
+        assert result[0]["instance_id"] == "anthropic-sonnet"
+
+    def test_settings_no_id_no_instance_id(self) -> None:
+        """Settings entry without 'id' should NOT get instance_id (backward compat)."""
+        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+
+        providers = [
+            {
+                "module": "provider-anthropic",
+                "config": {"default_model": "claude-3-5-sonnet"},
+            }
+        ]
+        result = _map_id_to_instance_id(providers)
+        assert "instance_id" not in result[0]
+
+    def test_multi_instance_settings_both_get_instance_id(self) -> None:
+        """Two settings entries for same module with different ids both get instance_id."""
+        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+
+        providers = [
+            {
+                "module": "provider-anthropic",
+                "id": "anthropic-sonnet",
+                "config": {"default_model": "claude-sonnet-4-6", "priority": 1},
+            },
+            {
+                "module": "provider-anthropic",
+                "id": "anthropic-haiku",
+                "config": {"default_model": "claude-haiku-3-5", "priority": 2},
+            },
+        ]
+        result = _map_id_to_instance_id(providers)
+        assert result[0]["instance_id"] == "anthropic-sonnet"
+        assert result[1]["instance_id"] == "anthropic-haiku"
+
+    def test_existing_instance_id_not_overwritten(self) -> None:
+        """If instance_id already present, it should NOT be overwritten by id."""
+        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+
+        providers = [
+            {
+                "module": "provider-anthropic",
+                "id": "anthropic-sonnet",
+                "instance_id": "already-set",
+                "config": {},
+            }
+        ]
+        result = _map_id_to_instance_id(providers)
+        assert result[0]["instance_id"] == "already-set"
+
+    def test_does_not_mutate_input(self) -> None:
+        """Should return new dicts, not mutate the originals."""
+        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+
+        original = {
+            "module": "provider-anthropic",
+            "id": "anthropic-sonnet",
+            "config": {},
+        }
+        providers = [original]
+        _map_id_to_instance_id(providers)
+        assert "instance_id" not in original

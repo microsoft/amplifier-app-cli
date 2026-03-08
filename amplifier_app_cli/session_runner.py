@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import sys
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -498,11 +499,17 @@ def _should_attempt_self_healing(
     configured_providers = mount_plan.get("providers", [])
     mounted_providers = coordinator.get("providers") or {}
 
-    # Extract provider IDs for logging
-    configured_provider_ids = [
-        p.get("module", p) if isinstance(p, dict) else str(p)
-        for p in configured_providers
-    ]
+    # Extract provider IDs for comparison.
+    # Prefer instance_id (mount plan field) or id (settings field) when present so that
+    # two entries with the same module but different instance_ids are treated as distinct.
+    # Fall back to the module name for legacy entries that carry no instance identifier.
+    configured_provider_ids = []
+    for p in configured_providers:
+        if isinstance(p, dict):
+            pid = p.get("instance_id") or p.get("id") or p.get("module", "")
+            configured_provider_ids.append(pid)
+        else:
+            configured_provider_ids.append(str(p))
     mounted_provider_ids = list(mounted_providers.keys())
 
     # Normalize module IDs to provider names for accurate comparison
@@ -531,12 +538,16 @@ def _should_attempt_self_healing(
         return True
 
     # Partial provider failure - log warning but continue with what loaded
-    # Don't trigger self-healing for partial failures (often benign)
-    if len(mounted_providers) < len(configured_providers):
-        failed_providers = set(configured_provider_names) - set(mounted_provider_ids)
+    # Don't trigger self-healing for partial failures (often benign).
+    # Use Counter instead of set so duplicate type names (multi-instance providers)
+    # are counted accurately rather than collapsed.
+    configured_counts = Counter(configured_provider_names)
+    mounted_counts = Counter(mounted_provider_ids)
+    if sum(configured_counts.values()) > sum(mounted_counts.values()):
+        missing = dict(configured_counts - mounted_counts)
         logger.warning(
-            f"Partial provider failure: {len(mounted_providers)}/{len(configured_providers)} loaded. "
-            f"Failed: {failed_providers}. Loaded: {mounted_provider_ids}. "
+            f"Partial provider failure: {sum(mounted_counts.values())}/{sum(configured_counts.values())} loaded. "
+            f"Missing: {missing}. Loaded: {mounted_provider_ids}. "
             "Session continuing with available providers (self-healing NOT triggered for partial failure)."
         )
         # Don't return True - let session continue with partial providers

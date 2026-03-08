@@ -137,6 +137,12 @@ async def resolve_bundle_config(
             # observability when using provider-agnostic bundles.
             bundle_config["providers"] = _ensure_raw_defaults(provider_overrides)
 
+    # Map settings 'id' → mount plan 'instance_id' so the kernel can identify
+    # provider instances for multi-instance routing.
+    # Settings YAML uses 'id'; kernel reads 'instance_id' — this bridges the gap.
+    if bundle_config.get("providers"):
+        bundle_config["providers"] = _map_id_to_instance_id(bundle_config["providers"])
+
     # Apply tool overrides from settings (e.g., allowed_write_paths for tool-filesystem)
     # Include session-scoped settings if session context provided
     tool_overrides = app_settings.get_tool_overrides(
@@ -300,6 +306,42 @@ def _ensure_raw_defaults(providers: list[dict[str, Any]]) -> list[dict[str, Any]
             result.append(provider_copy)
         else:
             result.append(provider)
+    return result
+
+
+def _map_id_to_instance_id(
+    providers: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Map 'id' field from settings entries to 'instance_id' in mount plan entries.
+
+    The settings YAML uses 'id' as the provider instance identity field:
+        config:
+          providers:
+            - module: provider-anthropic
+              id: anthropic-sonnet    # ← settings uses "id"
+
+    The kernel (amplifier-core) reads 'instance_id' from the mount plan:
+        instance_id = provider_config.get("instance_id")  # ← kernel reads "instance_id"
+
+    This function bridges the gap: for each provider entry that has an 'id'
+    field but no 'instance_id', it adds instance_id = id.
+
+    Args:
+        providers: List of provider config dicts from the assembled mount plan.
+
+    Returns:
+        New list of provider dicts with instance_id added where applicable.
+        Original dicts are not mutated.
+    """
+    result = []
+    for provider in providers:
+        if (
+            isinstance(provider, dict)
+            and "id" in provider
+            and "instance_id" not in provider
+        ):
+            provider = {**provider, "instance_id": provider["id"]}
+        result.append(provider)
     return result
 
 
@@ -773,5 +815,6 @@ __all__ = [
     "inject_user_providers",
     "_apply_provider_overrides",
     "_ensure_raw_defaults",
+    "_map_id_to_instance_id",
     "_build_notification_behaviors",
 ]
