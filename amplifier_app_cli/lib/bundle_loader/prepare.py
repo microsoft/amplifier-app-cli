@@ -29,6 +29,7 @@ async def load_and_prepare_bundle(
     install_deps: bool = True,
     compose_behaviors: list[str] | None = None,
     source_overrides: dict[str, str] | None = None,
+    progress_callback: Callable[[str, str], None] | None = None,
 ) -> PreparedBundle:
     """Load bundle by name or URI and prepare it for execution.
 
@@ -53,6 +54,9 @@ async def load_and_prepare_bundle(
         source_overrides: Optional dict mapping module_id -> source_uri.
             Passed to bundle.prepare() to override module sources before download.
             This enables settings.yaml overrides to take effect at prepare time.
+        progress_callback: Optional callback(action, detail) for progress reporting.
+            Called at each phase transition during bundle preparation.
+            Actions include "loading", "composing", "activating", "installing", etc.
 
     Returns:
         PreparedBundle ready for create_session().
@@ -105,6 +109,9 @@ async def load_and_prepare_bundle(
 
     logger.info(f"Loading bundle '{bundle_name}' from {uri}")
 
+    if progress_callback:
+        progress_callback("loading", bundle_name)
+
     # 2. Load bundle via foundation (handles file://, git+, http://, zip+)
     # CRITICAL: Pass discovery.registry so well-known bundles (foundation, etc.)
     # are available when resolving includes. Without this, includes fail because
@@ -115,7 +122,10 @@ async def load_and_prepare_bundle(
     # 3. Compose additional behavior bundles (app-level policies like notifications)
     if compose_behaviors:
         for behavior_uri in compose_behaviors:
+            behavior_name = _extract_behavior_name(behavior_uri)
             logger.info(f"Composing behavior: {behavior_uri}")
+            if progress_callback:
+                progress_callback("composing", behavior_name)
             try:
                 behavior_bundle = await load_bundle(
                     behavior_uri, registry=discovery.registry
@@ -147,7 +157,9 @@ async def load_and_prepare_bundle(
 
     logger.info(f"Preparing bundle '{bundle_name}' (install_deps={install_deps})")
     prepared = await bundle.prepare(
-        install_deps=install_deps, source_resolver=resolver_callback
+        install_deps=install_deps,
+        source_resolver=resolver_callback,
+        progress_callback=progress_callback,
     )
     logger.info(f"Bundle '{bundle_name}' prepared successfully")
 
@@ -248,6 +260,34 @@ async def prepare_bundle_from_uri(
     logger.info("Bundle prepared successfully")
 
     return prepared
+
+
+def _extract_behavior_name(uri: str) -> str:
+    """Extract a human-readable behavior name from a bundle URI.
+
+    Parses URIs like:
+        git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=behaviors/modes.yaml
+    Into friendly names like "modes".
+
+    Falls back to the repo name or the raw URI if parsing fails.
+    """
+    # Try subdirectory fragment: ...#subdirectory=behaviors/modes.yaml → "modes"
+    if "#subdirectory=" in uri:
+        subdir = uri.split("#subdirectory=")[-1]
+        # Get filename without extension from the subdirectory path
+        name = subdir.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        if name:
+            return name
+
+    # Fall back to repo name: ...amplifier-bundle-modes@main → "modes"
+    if "github.com/" in uri:
+        path = uri.split("github.com/")[-1].split("@")[0].split("#")[0]
+        repo = path.rsplit("/", 1)[-1]
+        if repo.startswith("amplifier-bundle-"):
+            return repo[len("amplifier-bundle-") :]
+        return repo
+
+    return uri
 
 
 __all__ = [

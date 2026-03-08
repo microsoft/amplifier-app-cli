@@ -60,67 +60,85 @@ async def resolve_bundle_config(
 
     discovery = AppBundleDiscovery(search_paths=get_bundle_search_paths())
 
+    # Set up progress spinner for bundle preparation
+    status = None
     if console:
-        console.print(f"[dim]Preparing bundle '{bundle_name}'...[/dim]")
+        status = console.status(
+            f"[dim]Preparing bundle '{bundle_name}'...[/dim]",
+            spinner="dots",
+        )
+        status.start()
 
-    # Build behavior URIs from app-level settings
-    # These are app-level policies: compose behavior bundles before prepare()
-    # so modules get properly downloaded and installed via normal bundle machinery
-    compose_behaviors: list[str] = []
+    def _on_progress(action: str, detail: str) -> None:
+        if status:
+            label = _format_progress(action, detail)
+            status.update(f"[dim]Preparing '{bundle_name}': {label}[/dim]")
 
-    # Modes system (runtime behavior overlays like /mode plan, /mode review)
-    # Always available - users choose to use /mode commands or not
-    compose_behaviors.extend(_build_modes_behaviors())
+    try:
+        # Build behavior URIs from app-level settings
+        # These are app-level policies: compose behavior bundles before prepare()
+        # so modules get properly downloaded and installed via normal bundle machinery
+        compose_behaviors: list[str] = []
 
-    # Notification behaviors (desktop and push notifications)
-    compose_behaviors.extend(
-        _build_notification_behaviors(app_settings.get_notification_config())
-    )
+        # Modes system (runtime behavior overlays like /mode plan, /mode review)
+        # Always available - users choose to use /mode commands or not
+        compose_behaviors.extend(_build_modes_behaviors())
 
-    # Add app bundles (user-configured bundles that are always composed)
-    # App bundles are explicit user configuration, composed AFTER notification behaviors
-    app_bundles = app_settings.get_app_bundles()
-    if app_bundles:
-        compose_behaviors = compose_behaviors + app_bundles
+        # Notification behaviors (desktop and push notifications)
+        compose_behaviors.extend(
+            _build_notification_behaviors(app_settings.get_notification_config())
+        )
 
-    # Get source overrides from unified settings
-    # This enables settings.yaml overrides to take effect at prepare time
-    source_overrides = app_settings.get_source_overrides()
+        # Add app bundles (user-configured bundles that are always composed)
+        # App bundles are explicit user configuration, composed AFTER notification behaviors
+        app_bundles = app_settings.get_app_bundles()
+        if app_bundles:
+            compose_behaviors = compose_behaviors + app_bundles
 
-    # Get module sources from 'amplifier source add' (sources.modules in settings.yaml)
-    module_sources = app_settings.get_module_sources()
+        # Get source overrides from unified settings
+        # This enables settings.yaml overrides to take effect at prepare time
+        source_overrides = app_settings.get_source_overrides()
 
-    # CRITICAL: Also extract provider sources from config.providers[]
-    # Providers are configured via 'amplifier provider use' and stored in config.providers,
-    # not in overrides section. Bundle.prepare() needs these sources to download provider modules.
-    provider_overrides = app_settings.get_provider_overrides()
-    provider_sources = {
-        provider["module"]: provider["source"]
-        for provider in provider_overrides
-        if isinstance(provider, dict) and "module" in provider and "source" in provider
-    }
+        # Get module sources from 'amplifier source add' (sources.modules in settings.yaml)
+        module_sources = app_settings.get_module_sources()
 
-    # Merge all source overrides with proper precedence:
-    # sources.modules (general) < overrides.<id>.source (specific) < config.providers[].source (most specific)
-    combined_sources = {**module_sources, **source_overrides, **provider_sources}
+        # CRITICAL: Also extract provider sources from config.providers[]
+        # Providers are configured via 'amplifier provider use' and stored in config.providers,
+        # not in overrides section. Bundle.prepare() needs these sources to download provider modules.
+        provider_overrides = app_settings.get_provider_overrides()
+        provider_sources = {
+            provider["module"]: provider["source"]
+            for provider in provider_overrides
+            if isinstance(provider, dict)
+            and "module" in provider
+            and "source" in provider
+        }
 
-    # Load and prepare bundle (downloads modules from git sources)
-    # If compose_behaviors is provided, those behaviors are composed onto the bundle
-    # BEFORE prepare() runs, so their modules get installed correctly
-    # If combined_sources is provided, module sources are resolved before download
-    prepared = await load_and_prepare_bundle(
-        bundle_name,
-        discovery,
-        compose_behaviors=compose_behaviors if compose_behaviors else None,
-        source_overrides=combined_sources if combined_sources else None,
-    )
+        # Merge all source overrides with proper precedence:
+        # sources.modules (general) < overrides.<id>.source (specific) < config.providers[].source (most specific)
+        combined_sources = {**module_sources, **source_overrides, **provider_sources}
 
-    # Load full agent metadata from .md files (for descriptions)
-    # Foundation handles this via load_agent_metadata() after source_base_paths is populated
-    prepared.bundle.load_agent_metadata()
+        # Load and prepare bundle (downloads modules from git sources)
+        # If compose_behaviors is provided, those behaviors are composed onto the bundle
+        # BEFORE prepare() runs, so their modules get installed correctly
+        # If combined_sources is provided, module sources are resolved before download
+        prepared = await load_and_prepare_bundle(
+            bundle_name,
+            discovery,
+            compose_behaviors=compose_behaviors if compose_behaviors else None,
+            source_overrides=combined_sources if combined_sources else None,
+            progress_callback=_on_progress if status else None,
+        )
 
-    # Get the mount plan from the prepared bundle (now includes agent descriptions)
-    bundle_config = prepared.mount_plan
+        # Load full agent metadata from .md files (for descriptions)
+        # Foundation handles this via load_agent_metadata() after source_base_paths is populated
+        prepared.bundle.load_agent_metadata()
+
+        # Get the mount plan from the prepared bundle (now includes agent descriptions)
+        bundle_config = prepared.mount_plan
+    finally:
+        if status:
+            status.stop()
 
     # Apply provider overrides
     provider_overrides = app_settings.get_provider_overrides()
@@ -621,6 +639,28 @@ def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> No
     """
     if "providers" in config and not prepared_bundle.mount_plan.get("providers"):
         prepared_bundle.mount_plan["providers"] = config["providers"]
+
+
+def _format_progress(action: str, detail: str) -> str:
+    """Format a progress callback into a human-readable label for the spinner.
+
+    Maps foundation progress actions to user-friendly descriptions.
+
+    Args:
+        action: Progress action (e.g., "loading", "composing", "activating").
+        detail: Detail string (e.g., module name, bundle name).
+
+    Returns:
+        Human-readable progress label.
+    """
+    labels = {
+        "loading": f"Loading {detail}",
+        "composing": f"Composing {detail}",
+        "installing_package": f"Installing package {detail}",
+        "activating": f"Activating {detail}",
+        "installing": f"Installing {detail}",
+    }
+    return labels.get(action, f"{action}: {detail}")
 
 
 def _build_modes_behaviors() -> list[str]:
