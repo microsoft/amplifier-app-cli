@@ -1,5 +1,6 @@
 """Tests for session_runner module - unified session initialization."""
 
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8,6 +9,7 @@ import pytest
 from amplifier_app_cli.session_runner import (
     InitializedSession,
     SessionConfig,
+    _should_attempt_self_healing,
     create_initialized_session,
 )
 
@@ -161,9 +163,18 @@ class TestPostSessionMetadataStamping:
         console = MagicMock()
 
         with (
-            patch(f"{_MODULE}._create_bundle_session", new_callable=AsyncMock, return_value=mock_sess),
-            patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
-            patch("amplifier_app_cli.project_utils.get_project_slug", return_value="test-slug"),
+            patch(
+                f"{_MODULE}._create_bundle_session",
+                new_callable=AsyncMock,
+                return_value=mock_sess,
+            ),
+            patch(
+                "amplifier_app_cli.commands.init.check_first_run", return_value=False
+            ),
+            patch(
+                "amplifier_app_cli.project_utils.get_project_slug",
+                return_value="test-slug",
+            ),
             patch("amplifier_app_cli.ui.CLIApprovalSystem"),
             patch("amplifier_app_cli.ui.CLIDisplaySystem"),
         ):
@@ -184,9 +195,18 @@ class TestPostSessionMetadataStamping:
         console = MagicMock()
 
         with (
-            patch(f"{_MODULE}._create_bundle_session", new_callable=AsyncMock, return_value=mock_sess),
-            patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
-            patch("amplifier_app_cli.project_utils.get_project_slug", return_value="test-slug"),
+            patch(
+                f"{_MODULE}._create_bundle_session",
+                new_callable=AsyncMock,
+                return_value=mock_sess,
+            ),
+            patch(
+                "amplifier_app_cli.commands.init.check_first_run", return_value=False
+            ),
+            patch(
+                "amplifier_app_cli.project_utils.get_project_slug",
+                return_value="test-slug",
+            ),
             patch("amplifier_app_cli.ui.CLIApprovalSystem"),
             patch("amplifier_app_cli.ui.CLIDisplaySystem"),
         ):
@@ -203,9 +223,18 @@ class TestPostSessionMetadataStamping:
         console = MagicMock()
 
         with (
-            patch(f"{_MODULE}._create_bundle_session", new_callable=AsyncMock, return_value=mock_sess),
-            patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
-            patch("amplifier_app_cli.project_utils.get_project_slug", return_value="test-slug"),
+            patch(
+                f"{_MODULE}._create_bundle_session",
+                new_callable=AsyncMock,
+                return_value=mock_sess,
+            ),
+            patch(
+                "amplifier_app_cli.commands.init.check_first_run", return_value=False
+            ),
+            patch(
+                "amplifier_app_cli.project_utils.get_project_slug",
+                return_value="test-slug",
+            ),
             patch("amplifier_app_cli.ui.CLIApprovalSystem"),
             patch("amplifier_app_cli.ui.CLIDisplaySystem"),
         ):
@@ -235,9 +264,18 @@ class TestPostSessionMetadataStamping:
         console = MagicMock()
 
         with (
-            patch(f"{_MODULE}._create_bundle_session", new_callable=AsyncMock, return_value=mock_sess),
-            patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
-            patch("amplifier_app_cli.project_utils.get_project_slug", return_value="test-slug"),
+            patch(
+                f"{_MODULE}._create_bundle_session",
+                new_callable=AsyncMock,
+                return_value=mock_sess,
+            ),
+            patch(
+                "amplifier_app_cli.commands.init.check_first_run", return_value=False
+            ),
+            patch(
+                "amplifier_app_cli.project_utils.get_project_slug",
+                return_value="test-slug",
+            ),
             patch("amplifier_app_cli.ui.CLIApprovalSystem"),
             patch("amplifier_app_cli.ui.CLIDisplaySystem"),
         ):
@@ -259,9 +297,18 @@ class TestPostSessionMetadataStamping:
         console = MagicMock()
 
         with (
-            patch(f"{_MODULE}._create_bundle_session", new_callable=AsyncMock, return_value=mock_sess),
-            patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
-            patch("amplifier_app_cli.project_utils.get_project_slug", return_value="test-slug"),
+            patch(
+                f"{_MODULE}._create_bundle_session",
+                new_callable=AsyncMock,
+                return_value=mock_sess,
+            ),
+            patch(
+                "amplifier_app_cli.commands.init.check_first_run", return_value=False
+            ),
+            patch(
+                "amplifier_app_cli.project_utils.get_project_slug",
+                return_value="test-slug",
+            ),
             patch("amplifier_app_cli.ui.CLIApprovalSystem"),
             patch("amplifier_app_cli.ui.CLIDisplaySystem"),
         ):
@@ -283,8 +330,14 @@ class TestPostSessionMetadataStamping:
         console = MagicMock()
 
         with (
-            patch(f"{_MODULE}._create_bundle_session", new_callable=AsyncMock, return_value=mock_sess),
-            patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
+            patch(
+                f"{_MODULE}._create_bundle_session",
+                new_callable=AsyncMock,
+                return_value=mock_sess,
+            ),
+            patch(
+                "amplifier_app_cli.commands.init.check_first_run", return_value=False
+            ),
             patch("amplifier_app_cli.ui.CLIApprovalSystem"),
             patch("amplifier_app_cli.ui.CLIDisplaySystem"),
             # Simulate no working directory available
@@ -296,3 +349,125 @@ class TestPostSessionMetadataStamping:
 
         # working_dir is the empty-string fallback
         assert result.session.config.get("working_dir") == ""
+
+
+# ---------------------------------------------------------------------------
+# _should_attempt_self_healing — multi-instance Counter comparison tests
+# ---------------------------------------------------------------------------
+
+
+def _make_self_healing_mocks(configured_providers, mounted_provider_dict):
+    """Return (mock_session, mock_prepared_bundle) for _should_attempt_self_healing tests."""
+    mock_session = MagicMock()
+
+    def _coordinator_get(key):
+        if key == "providers":
+            return mounted_provider_dict
+        if key == "tools":
+            return {}
+        return None
+
+    mock_session.coordinator.get.side_effect = _coordinator_get
+
+    mock_bundle = MagicMock()
+    mock_bundle.mount_plan = {"providers": configured_providers, "tools": []}
+    return mock_session, mock_bundle
+
+
+class TestSelfHealingCounterComparison:
+    """Tests for Counter-based multi-instance provider detection in self-healing check.
+
+    With set()-based comparison, duplicate type names collapse and partial
+    failures involving multi-instance providers go undetected or are mis-reported.
+    Counter-based comparison handles duplicate type names correctly.
+    """
+
+    def test_self_healing_detects_multi_instance_mismatch(self, caplog):
+        """Partial failure with multi-instance providers is detected and named correctly.
+
+        Mount plan has 2 anthropic entries with different instance_ids, but only
+        the first is mounted. The warning must name the *missing* instance_id
+        ('anthropic-haiku'), not a collapsed generic 'anthropic'.
+        """
+        configured = [
+            {"module": "provider-anthropic", "instance_id": "anthropic-sonnet"},
+            {"module": "provider-anthropic", "instance_id": "anthropic-haiku"},
+        ]
+        mounted = {"anthropic-sonnet": MagicMock()}
+
+        mock_session, mock_bundle = _make_self_healing_mocks(configured, mounted)
+
+        with caplog.at_level(
+            logging.WARNING, logger="amplifier_app_cli.session_runner"
+        ):
+            result = _should_attempt_self_healing(mock_session, mock_bundle)
+
+        # Should NOT trigger full self-healing (partial failure only)
+        assert result is False
+
+        # Warning must be logged for the partial failure
+        warning_messages = [
+            r.message for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert warning_messages, (
+            "Expected a partial-failure warning but none was logged"
+        )
+
+        # The missing entry must be identified by instance_id, not collapsed module name
+        combined = " ".join(warning_messages)
+        assert "anthropic-haiku" in combined, (
+            f"Expected 'anthropic-haiku' in warning but got: {combined}"
+        )
+        assert "Missing" in combined, (
+            f"Expected 'Missing' key in warning (Counter format) but got: {combined}"
+        )
+
+    def test_self_healing_no_warning_when_all_mounted(self, caplog):
+        """No warning when both multi-instance providers are mounted successfully.
+
+        Both instance_ids appear in mounted_providers — Counter counts match,
+        so no partial-failure warning should be logged.
+        """
+        configured = [
+            {"module": "provider-anthropic", "instance_id": "anthropic-sonnet"},
+            {"module": "provider-anthropic", "instance_id": "anthropic-haiku"},
+        ]
+        mounted = {
+            "anthropic-sonnet": MagicMock(),
+            "anthropic-haiku": MagicMock(),
+        }
+
+        mock_session, mock_bundle = _make_self_healing_mocks(configured, mounted)
+
+        with caplog.at_level(
+            logging.WARNING, logger="amplifier_app_cli.session_runner"
+        ):
+            result = _should_attempt_self_healing(mock_session, mock_bundle)
+
+        assert result is False
+        warning_messages = [
+            r.message for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert not warning_messages, f"Expected no warnings but got: {warning_messages}"
+
+    def test_self_healing_backward_compat_single_instance(self, caplog):
+        """Single-instance provider with no instance_id still works correctly.
+
+        Legacy mount plan entries without instance_id fall back to normalized
+        module name. When that provider mounts successfully no warning fires.
+        """
+        configured = [{"module": "provider-anthropic"}]
+        mounted = {"anthropic": MagicMock()}
+
+        mock_session, mock_bundle = _make_self_healing_mocks(configured, mounted)
+
+        with caplog.at_level(
+            logging.WARNING, logger="amplifier_app_cli.session_runner"
+        ):
+            result = _should_attempt_self_healing(mock_session, mock_bundle)
+
+        assert result is False
+        warning_messages = [
+            r.message for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert not warning_messages, f"Expected no warnings but got: {warning_messages}"
