@@ -494,33 +494,6 @@ class TestSettingsIdToInstanceId:
         _map_id_to_instance_id(providers)
         assert "instance_id" not in original
 
-    def test_auto_assigns_instance_id_for_multi_instance_without_id(self) -> None:
-        """Entry without 'id' gets auto-assigned instance_id when multi-instance detected.
-
-        Reproduces the bug: user has an original provider entry (no 'id') and adds
-        a second instance via the CLI (with 'id'). The kernel rejects the first entry
-        because it has no instance_id. The fix: auto-assign normalized module name.
-        """
-        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
-
-        providers = [
-            {
-                "module": "provider-anthropic",
-                # No 'id' — original entry added before multi-instance support
-                "config": {"default_model": "claude-opus-4-6", "priority": 2},
-            },
-            {
-                "module": "provider-anthropic",
-                "id": "anthropic-sonnet",
-                "config": {"default_model": "claude-sonnet-4-6", "priority": 6},
-            },
-        ]
-        result = _map_id_to_instance_id(providers)
-        # First entry: auto-assigned from normalized module name "provider-anthropic" → "anthropic"
-        assert result[0]["instance_id"] == "anthropic"
-        # Second entry: mapped from its explicit 'id'
-        assert result[1]["instance_id"] == "anthropic-sonnet"
-
     def test_single_instance_no_auto_assign(self) -> None:
         """Single provider with no 'id' should NOT get auto-assigned instance_id.
 
@@ -556,4 +529,37 @@ class TestSettingsIdToInstanceId:
         ]
         result = _map_id_to_instance_id(providers)
         assert result[0]["instance_id"] == "anthropic-opus"
+        assert result[1]["instance_id"] == "anthropic-sonnet"
+
+    def test_default_entry_no_id_not_auto_assigned_instance_id(self) -> None:
+        """Entry without 'id' should NOT get auto-assigned instance_id even in multi-instance.
+
+        The original entry (no 'id') is the "default" instance — it mounts under the
+        provider's default name and needs no instance_id. Only the explicitly-named
+        second entry should get instance_id from its 'id' field.
+
+        This is a regression test for PR #134's over-eager auto-assign that causes
+        the snapshot overwrite bug: when instance_id == default_name, the kernel
+        skips remapping and the second mount silently overwrites the first instance.
+        """
+        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+
+        providers = [
+            {
+                "module": "provider-anthropic",
+                # No 'id' — original entry, should stay as the "default" instance
+                "config": {"default_model": "claude-opus-4-6", "priority": 2},
+            },
+            {
+                "module": "provider-anthropic",
+                "id": "anthropic-sonnet",
+                "config": {"default_model": "claude-sonnet-4-6", "priority": 6},
+            },
+        ]
+        result = _map_id_to_instance_id(providers)
+        # First entry: NO instance_id — it's the default, the kernel mounts it as "anthropic"
+        assert "instance_id" not in result[0], (
+            f"Default entry should NOT have instance_id, got: {result[0].get('instance_id')}"
+        )
+        # Second entry: gets instance_id from its explicit 'id'
         assert result[1]["instance_id"] == "anthropic-sonnet"

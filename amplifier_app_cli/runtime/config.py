@@ -323,17 +323,11 @@ def _map_id_to_instance_id(
     The kernel (amplifier-core) reads 'instance_id' from the mount plan:
         instance_id = provider_config.get("instance_id")  # ← kernel reads "instance_id"
 
-    This function bridges the gap in two passes:
-
-    Pass 1: for each provider entry that has an 'id' field but no 'instance_id',
-    it adds instance_id = id.
-
-    Pass 2: auto-assign instance_id for entries that still have none when
-    multi-instance is detected (another entry with the same module has an id).
-    The auto-assigned value is the normalized module name — e.g.
-    "provider-anthropic" → "anthropic". This handles the common migration
-    case where an original single-instance entry (no 'id') coexists with a
-    newly-added instance (with 'id').
+    This function maps 'id' → 'instance_id' for entries that have an explicit 'id'.
+    Entries without 'id' are left unchanged — they are treated as the "default" instance
+    that mounts under the provider's default name (e.g. "anthropic" for provider-anthropic).
+    The kernel's snapshot-based remapping handles the case where a default instance coexists
+    with explicitly-named instances.
 
     Args:
         providers: List of provider config dicts from the assembled mount plan.
@@ -342,7 +336,6 @@ def _map_id_to_instance_id(
         New list of provider dicts with instance_id added where applicable.
         Original dicts are not mutated.
     """
-    # Pass 1: map explicit 'id' → 'instance_id'
     result = []
     for provider in providers:
         if (
@@ -352,30 +345,7 @@ def _map_id_to_instance_id(
         ):
             provider = {**provider, "instance_id": provider["id"]}
         result.append(provider)
-
-    # Pass 2: auto-assign instance_id for entries without one when
-    # multi-instance is detected for their module.
-    module_counts: dict[str, int] = {}
-    for p in result:
-        if isinstance(p, dict):
-            mid = p.get("module", "")
-            module_counts[mid] = module_counts.get(mid, 0) + 1
-
-    final = []
-    for p in result:
-        if (
-            isinstance(p, dict)
-            and module_counts.get(p.get("module", ""), 0) > 1
-            and "instance_id" not in p
-        ):
-            mid = p.get("module", "")
-            normalized = (
-                mid.removeprefix("provider-") if mid.startswith("provider-") else mid
-            )
-            p = {**p, "instance_id": normalized}
-        final.append(p)
-
-    return final
+    return result
 
 
 def _apply_provider_overrides(
