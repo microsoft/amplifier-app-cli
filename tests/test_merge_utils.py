@@ -493,3 +493,67 @@ class TestSettingsIdToInstanceId:
         providers = [original]
         _map_id_to_instance_id(providers)
         assert "instance_id" not in original
+
+    def test_auto_assigns_instance_id_for_multi_instance_without_id(self) -> None:
+        """Entry without 'id' gets auto-assigned instance_id when multi-instance detected.
+
+        Reproduces the bug: user has an original provider entry (no 'id') and adds
+        a second instance via the CLI (with 'id'). The kernel rejects the first entry
+        because it has no instance_id. The fix: auto-assign normalized module name.
+        """
+        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+
+        providers = [
+            {
+                "module": "provider-anthropic",
+                # No 'id' — original entry added before multi-instance support
+                "config": {"default_model": "claude-opus-4-6", "priority": 2},
+            },
+            {
+                "module": "provider-anthropic",
+                "id": "anthropic-sonnet",
+                "config": {"default_model": "claude-sonnet-4-6", "priority": 6},
+            },
+        ]
+        result = _map_id_to_instance_id(providers)
+        # First entry: auto-assigned from normalized module name "provider-anthropic" → "anthropic"
+        assert result[0]["instance_id"] == "anthropic"
+        # Second entry: mapped from its explicit 'id'
+        assert result[1]["instance_id"] == "anthropic-sonnet"
+
+    def test_single_instance_no_auto_assign(self) -> None:
+        """Single provider with no 'id' should NOT get auto-assigned instance_id.
+
+        Backward compat: single-instance providers don't need instance_id.
+        Auto-assign only triggers when multiple entries share the same module.
+        """
+        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+
+        providers = [
+            {
+                "module": "provider-anthropic",
+                "config": {"default_model": "claude-3-5-sonnet"},
+            }
+        ]
+        result = _map_id_to_instance_id(providers)
+        assert "instance_id" not in result[0]
+
+    def test_both_have_id_no_auto_assign(self) -> None:
+        """Two providers both with 'id' get instance_id from their id — no auto-assign."""
+        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+
+        providers = [
+            {
+                "module": "provider-anthropic",
+                "id": "anthropic-opus",
+                "config": {"default_model": "claude-opus-4-6", "priority": 1},
+            },
+            {
+                "module": "provider-anthropic",
+                "id": "anthropic-sonnet",
+                "config": {"default_model": "claude-sonnet-4-6", "priority": 2},
+            },
+        ]
+        result = _map_id_to_instance_id(providers)
+        assert result[0]["instance_id"] == "anthropic-opus"
+        assert result[1]["instance_id"] == "anthropic-sonnet"
