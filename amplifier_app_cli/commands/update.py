@@ -840,6 +840,41 @@ def _show_verbose_report(
     print_legend()
 
 
+def _format_update_progress(name: str, phase: str) -> str:
+    """Format an update progress callback into a human-readable label for the spinner.
+
+    Maps update phases to user-friendly descriptions, following the same pattern
+    as _format_progress() in runtime/config.py for bundle preparation.
+
+    Args:
+        name: Item being updated (module name, "amplifier", bundle name).
+        phase: Progress phase (e.g., "updating", "clearing", "downloading").
+
+    Returns:
+        Human-readable progress label.
+    """
+    labels = {
+        "updating": f"Updating {name}...",
+        "clearing": f"Clearing cache for {name}...",
+        "downloading": f"Downloading {name}...",
+        "done": f"Updated {name}",
+        "failed": f"Failed to update {name}",
+        "installing": f"Installing {name} (uv tool install)...",
+        "checking_deps": f"Checking {name} dependencies...",
+        "updating_bundle": f"Loading bundle {name}...",
+        "refreshing_bundle": f"Refreshing bundle {name}...",
+    }
+    label = labels.get(phase)
+    if label:
+        return label
+    # For raw uv output lines streamed during self-update, show them directly.
+    # execute_self_update passes cleaned stderr lines as the phase value
+    # (see its docstring for the dual-use contract).
+    if name == "amplifier" and phase:
+        return f"Updating Amplifier: {phase}"
+    return f"{phase}: {name}"
+
+
 @click.command()
 @click.option("--check-only", is_flag=True, help="Check for updates without installing")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmations")
@@ -989,44 +1024,60 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             console.print("[dim]Update cancelled[/dim]")
             return
 
-    # Execute updates with progress
+    # Execute updates with progress spinner (same pattern as bundle preparation)
     console.print()
-    console.print("Updating...")
 
-    result = asyncio.run(
-        execute_updates(
-            report, umbrella_info=umbrella_info if has_umbrella_updates else None
-        )
+    spinner = console.status(
+        "[dim]Updating...[/dim]",
+        spinner="dots",
     )
+    spinner.start()
 
-    # Execute bundle updates
-    bundle_updated: list[str] = []
-    bundle_failed: list[str] = []
-    bundle_errors: dict[str, str] = {}
+    def _on_update_progress(name: str, phase: str) -> None:
+        label = _format_update_progress(name, phase)
+        spinner.update(f"[dim]{label}[/dim]")
 
-    if has_bundle_updates:
-        from amplifier_foundation import update_bundle
+    try:
+        result = asyncio.run(
+            execute_updates(
+                report,
+                umbrella_info=umbrella_info if has_umbrella_updates else None,
+                progress_callback=_on_update_progress,
+            )
+        )
 
-        registry = create_bundle_registry()
-        bundles_to_update = [
-            name for name, status in bundle_results.items() if status.has_updates
-        ]
+        # Execute bundle updates
+        bundle_updated: list[str] = []
+        bundle_failed: list[str] = []
+        bundle_errors: dict[str, str] = {}
 
-        for bundle_name in bundles_to_update:
-            try:
-                loaded = asyncio.run(registry.load(bundle_name))
-                if isinstance(loaded, dict):
-                    bundle_errors[bundle_name] = "Expected single bundle, got dict"
+        if has_bundle_updates:
+            from amplifier_foundation import update_bundle
+
+            registry = create_bundle_registry()
+            bundles_to_update = [
+                name for name, status in bundle_results.items() if status.has_updates
+            ]
+
+            for bundle_name in bundles_to_update:
+                try:
+                    _on_update_progress(bundle_name, "updating_bundle")
+                    loaded = asyncio.run(registry.load(bundle_name))
+                    if isinstance(loaded, dict):
+                        bundle_errors[bundle_name] = "Expected single bundle, got dict"
+                        bundle_failed.append(bundle_name)
+                        continue
+                    bundle_obj = loaded
+
+                    # Refresh bundle sources
+                    _on_update_progress(bundle_name, "refreshing_bundle")
+                    asyncio.run(update_bundle(bundle_obj))
+                    bundle_updated.append(bundle_name)
+                except Exception as exc:
+                    bundle_errors[bundle_name] = str(exc)
                     bundle_failed.append(bundle_name)
-                    continue
-                bundle_obj = loaded
-
-                # Refresh bundle sources
-                asyncio.run(update_bundle(bundle_obj))
-                bundle_updated.append(bundle_name)
-            except Exception as exc:
-                bundle_errors[bundle_name] = str(exc)
-                bundle_failed.append(bundle_name)
+    finally:
+        spinner.stop()
 
     # Show results
     console.print()
