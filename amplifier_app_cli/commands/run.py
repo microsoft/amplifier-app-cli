@@ -88,12 +88,35 @@ def register_run_command(
                     session_id, sessions_dir = global_match
                     # Extract project name from path
                     project_name = sessions_dir.parent.name
+                    # Determine the real project directory for the cd hint.
+                    # Prefer reading from session metadata (reliable); fall back to
+                    # reversing the slug encoding (unreliable when path components
+                    # contain hyphens, but better than pointing inside ~/.amplifier).
+                    real_project_path = None
+                    metadata_path = sessions_dir / session_id / "metadata.json"
+                    if metadata_path.exists():
+                        try:
+                            import json as _json
+
+                            _meta = _json.loads(metadata_path.read_text())
+                            real_project_path = (
+                                _meta.get("cwd")
+                                or _meta.get("working_dir")
+                                or _meta.get("project_path")
+                            )
+                        except Exception:
+                            pass
+                    if real_project_path is None:
+                        # slug e.g. "-Users-chrispark-Projects-myapp"
+                        # strip leading "-" then swap remaining "-" → "/"
+                        slug = sessions_dir.parent.name
+                        real_project_path = "/" + slug.lstrip("-").replace("-", "/")
                     console.print(
                         f"[red]Error:[/red] Session '{session_id}' exists in a different project\n"
                         f"  Project: {project_name}\n"
                         f"  Location: {sessions_dir / session_id}\n\n"
                         f"To resume this session, run:\n"
-                        f"  [cyan]cd {sessions_dir.parent.parent.parent / project_name}[/cyan]\n"
+                        f"  [cyan]cd {real_project_path}[/cyan]\n"
                         f"  [cyan]amplifier run --resume {session_id[:8]}[/cyan]"
                     )
                 else:

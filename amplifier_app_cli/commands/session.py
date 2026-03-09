@@ -753,7 +753,7 @@ def register_session_commands(
                 console.print(
                     f"[red]Error:[/red] No session found matching '{original_partial_id}'"
                 )
-            sys.exit(1)
+                sys.exit(1)
         except ValueError as e:
             console.print(f"[red]Error:[/red] {escape_markup(e)}")
             sys.exit(1)
@@ -844,7 +844,7 @@ def register_session_commands(
                 console.print(
                     f"[red]Error:[/red] No session found matching '{original_partial_id}'"
                 )
-            sys.exit(1)
+                sys.exit(1)
         except ValueError as e:
             console.print(f"[red]Error:[/red] {escape_markup(e)}")
             sys.exit(1)
@@ -1074,7 +1074,7 @@ def register_session_commands(
                 console.print(
                     f"[red]Error:[/red] No session found matching '{original_partial_id}'"
                 )
-            sys.exit(1)
+                sys.exit(1)
         except ValueError as e:
             console.print(f"[red]Error:[/red] {escape_markup(e)}")
             sys.exit(1)

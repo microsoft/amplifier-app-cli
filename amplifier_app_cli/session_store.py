@@ -92,6 +92,8 @@ def find_session_global(
         return None
 
     partial_id = partial_id.strip()
+    if not partial_id:
+        return None
     matches: list[tuple[str, Path, float]] = []  # (session_id, sessions_dir, mtime)
 
     for project_dir in projects_dir.iterdir():

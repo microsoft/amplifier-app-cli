@@ -1,9 +1,8 @@
 """Test find_session_global for cross-project session search."""
 
-import tempfile
 from pathlib import Path
 
-from amplifier_app_cli.session_store import SessionStore, find_session_global
+from amplifier_app_cli.session_store import find_session_global
 
 
 class TestFindSessionGlobal:
@@ -175,13 +174,19 @@ class TestFindSessionGlobal:
         """Should return None for empty or whitespace-only partial ID."""
         projects_dir = tmp_path / ".amplifier" / "projects"
         project = projects_dir / "-myproject" / "sessions"
-        project.mkdir(parents=True)
+
+        # Create a real session so the search has something to potentially match,
+        # confirming the guard fires before any directory walk (not just vacuously).
+        session_id = "some-real-session-1234"
+        session_dir = project / session_id
+        session_dir.mkdir(parents=True)
+        (session_dir / "metadata.json").write_text("{}")
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        # Empty string
+        # Empty string — must return None even though real sessions exist
         assert find_session_global("") is None
-        # Whitespace only
+        # Whitespace only — same guarantee
         assert find_session_global("   ") is None
 
     def test_strips_whitespace_from_partial_id(self, tmp_path, monkeypatch):
