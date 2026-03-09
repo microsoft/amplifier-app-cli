@@ -5,7 +5,9 @@ Selective updates: Only update modules that actually have updates, then re-downl
 """
 
 import logging
+import re
 import subprocess
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
@@ -390,9 +392,7 @@ def _invalidate_modules_with_missing_deps() -> tuple[int, int]:
                 missing_deps.append(dep)
 
         if missing_deps:
-            logger.debug(
-                f"Module {module_path.name} has missing deps: {missing_deps}"
-            )
+            logger.debug(f"Module {module_path.name} has missing deps: {missing_deps}")
             modules_to_invalidate.append(module_path_str)
 
     # Remove invalidated entries
@@ -400,7 +400,9 @@ def _invalidate_modules_with_missing_deps() -> tuple[int, int]:
         for path_str in modules_to_invalidate:
             del state["modules"][path_str]
             module_name = Path(path_str).name
-            logger.info(f"Invalidated install state for {module_name} (missing dependencies)")
+            logger.info(
+                f"Invalidated install state for {module_name} (missing dependencies)"
+            )
 
         # Write back the modified state
         try:
@@ -412,7 +414,10 @@ def _invalidate_modules_with_missing_deps() -> tuple[int, int]:
     return (modules_checked, len(modules_to_invalidate))
 
 
-async def execute_self_update(umbrella_info: UmbrellaInfo) -> ExecutionResult:
+async def execute_self_update(
+    umbrella_info: UmbrellaInfo,
+    progress_callback: Callable[[str, str], None] | None = None,
+) -> ExecutionResult:
     """Delegate to 'uv tool install --force'.
 
     Philosophy: uv is designed for this, use it.
@@ -421,23 +426,76 @@ async def execute_self_update(umbrella_info: UmbrellaInfo) -> ExecutionResult:
     dependencies are no longer available in the new Python environment.
     This avoids unnecessary reinstallation of modules whose dependencies
     are still satisfied.
+
+    Progress reporting: The progress_callback receives two kinds of phase values:
+    - Structured keywords: "installing", "checking_deps" (stable, mapped by caller)
+    - Raw uv output lines: e.g. "Resolved 15 packages in 2.31s" (streamed from stderr)
+    The caller's format function should handle both (see _format_update_progress).
     """
     url = f"git+{umbrella_info.url}@{umbrella_info.ref}"
 
+    if progress_callback:
+        progress_callback("amplifier", "installing")
+
+    # Matches all CSI sequences: colors, cursor movement, erase, show/hide cursor
+    ansi_csi = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+    process: subprocess.Popen[str] | None = None
+    stderr_lines: list[str] = []
+
+    def _drain_stderr() -> None:
+        """Read uv's stderr line-by-line in a background thread.
+
+        Runs in a daemon thread so the 120s timeout in the main thread
+        applies to the entire operation, not just the post-drain wait.
+        """
+        assert process is not None and process.stderr is not None
+        for line in process.stderr:
+            raw = line.rstrip("\n\r")
+            if not raw:
+                continue
+            stderr_lines.append(raw)
+            if progress_callback:
+                # Strip ANSI escape codes for clean spinner display
+                clean = ansi_csi.sub("", raw).strip()
+                if clean:
+                    progress_callback("amplifier", clean)
+
     try:
-        result = subprocess.run(
+        # Use Popen to stream uv output for progress visibility.
+        # Previously used subprocess.run(capture_output=True) which silenced
+        # all output for up to 120 seconds with no feedback.
+        process = subprocess.Popen(
             ["uv", "tool", "install", "--force", url],
-            capture_output=True,
+            stdout=subprocess.DEVNULL,  # uv progress goes to stderr; discard stdout
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=120,
         )
 
-        if result.returncode == 0:
+        # Drain stderr in a background thread so the 120s timeout covers
+        # the entire operation. Without threading, `for line in process.stderr`
+        # blocks indefinitely if uv stalls mid-output.
+        reader = threading.Thread(target=_drain_stderr, daemon=True)
+        reader.start()
+        reader.join(timeout=120)
+
+        if reader.is_alive():
+            # Timeout expired while still reading stderr — uv is hung
+            process.kill()
+            process.wait()
+            raise subprocess.TimeoutExpired(process.args, 120)
+
+        # stderr is fully drained; brief wait for process exit
+        process.wait(timeout=5)
+
+        if process.returncode == 0:
             # Surgically invalidate only modules with missing dependencies.
             # The --force flag may recreate the Python environment, wiping
             # some module dependencies. Rather than clearing all install state,
             # we check which modules actually have missing deps and only
             # invalidate those entries.
+            if progress_callback:
+                progress_callback("amplifier", "checking_deps")
             checked, invalidated = _invalidate_modules_with_missing_deps()
             if invalidated > 0:
                 logger.info(
@@ -449,7 +507,7 @@ async def execute_self_update(umbrella_info: UmbrellaInfo) -> ExecutionResult:
                 updated=["amplifier"],
                 messages=["Amplifier updated successfully"],
             )
-        error_msg = result.stderr.strip() or "Unknown error"
+        error_msg = "\n".join(stderr_lines).strip() or "Unknown error"
         return ExecutionResult(
             success=False,
             failed=["amplifier"],
@@ -458,6 +516,9 @@ async def execute_self_update(umbrella_info: UmbrellaInfo) -> ExecutionResult:
         )
 
     except subprocess.TimeoutExpired:
+        if process:
+            process.kill()
+            process.wait()  # reap zombie, close pipe fds
         return ExecutionResult(
             success=False,
             failed=["amplifier"],
@@ -474,6 +535,9 @@ async def execute_self_update(umbrella_info: UmbrellaInfo) -> ExecutionResult:
             ],
         )
     except Exception as e:
+        if process and process.poll() is None:
+            process.kill()
+            process.wait()  # reap zombie, close pipe fds
         return ExecutionResult(
             success=False,
             failed=["amplifier"],
@@ -483,7 +547,9 @@ async def execute_self_update(umbrella_info: UmbrellaInfo) -> ExecutionResult:
 
 
 async def execute_updates(
-    report: UpdateReport, umbrella_info: UmbrellaInfo | None = None
+    report: UpdateReport,
+    umbrella_info: UmbrellaInfo | None = None,
+    progress_callback: Callable[[str, str], None] | None = None,
 ) -> ExecutionResult:
     """Orchestrate all updates based on report.
 
@@ -492,6 +558,7 @@ async def execute_updates(
     Args:
         report: Update status report from check_all_sources
         umbrella_info: Optional umbrella info if already checked for updates
+        progress_callback: Optional callback(name, phase) for progress reporting
     """
     all_updated = []
     all_failed = []
@@ -503,7 +570,9 @@ async def execute_updates(
     modules_needing_update = [s for s in report.cached_git_sources if s.has_update]
     if modules_needing_update:
         logger.info(f"Selectively updating {len(modules_needing_update)} module(s)...")
-        result = await execute_selective_module_update(modules_needing_update)
+        result = await execute_selective_module_update(
+            modules_needing_update, progress_callback=progress_callback
+        )
 
         all_updated.extend(result.updated)
         all_failed.extend(result.failed)
@@ -516,7 +585,9 @@ async def execute_updates(
     # 2. Execute self-update if umbrella_info provided (already checked by caller)
     if umbrella_info:
         logger.info("Updating Amplifier (umbrella dependencies have updates)...")
-        result = await execute_self_update(umbrella_info)
+        result = await execute_self_update(
+            umbrella_info, progress_callback=progress_callback
+        )
 
         all_updated.extend(result.updated)
         all_failed.extend(result.failed)
