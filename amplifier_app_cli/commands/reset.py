@@ -205,6 +205,7 @@ def _remove_stale_uv_lock() -> bool:
         True if a stale lock was found and removed, False otherwise.
     """
     # Ask uv where its cache lives rather than hardcoding ~/.cache/uv
+    # (macOS uses ~/Library/Caches/uv, UV_CACHE_DIR overrides both)
     try:
         result = subprocess.run(
             ["uv", "cache", "dir"],
@@ -214,15 +215,28 @@ def _remove_stale_uv_lock() -> bool:
         )
         if result.returncode != 0 or not result.stdout.strip():
             return False
-        cache_dir = Path(result.stdout.strip())
+        cache_dir = Path(result.stdout.strip()).resolve()
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
-    lock_path = cache_dir / "uv.lock"
-    if not lock_path.exists():
+    if not cache_dir.is_dir():
         return False
 
-    # Check if any uv process is actually running — if so, the lock is legit
+    # uv.lock is uv's internal advisory lock (observed behavior, not public API)
+    lock_path = cache_dir / "uv.lock"
+
+    # Check for both real files and broken symlinks (exists() returns False
+    # for broken symlinks, but they still block uv cache clean)
+    if not lock_path.exists() and not lock_path.is_symlink():
+        return False
+
+    # Check if any uv process is actually running — if so, the lock is legit.
+    # pgrep -x matches the process name exactly (avoids false matches on uvicorn etc).
+    #
+    # NOTE: There is an inherent TOCTOU race between the pgrep check and unlink().
+    # A new uv process could start in this window. This is best-effort: removing
+    # an orphaned lock is far safer than leaving one that causes an indefinite hang.
+    # The worst case of a false removal is uv recreating its lock file immediately.
     try:
         result = subprocess.run(
             ["pgrep", "-x", "uv"],
@@ -232,15 +246,26 @@ def _remove_stale_uv_lock() -> bool:
         if result.returncode == 0:
             # uv is running, lock is legitimate
             return False
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        # pgrep not available or timed out — fall through and try removal
-        pass
+    except FileNotFoundError:
+        # pgrep not available (Windows, minimal containers) — we cannot
+        # determine if uv is running. Fail closed: don't remove the lock.
+        # The existing 60s timeout in _clean_uv_cache() will handle this.
+        return False
+    except subprocess.TimeoutExpired:
+        # System too busy to answer in 5s — treat as uv possibly running.
+        return False
 
     try:
         lock_path.unlink()
         console.print("    [dim]Removed stale uv.lock[/dim]")
         return True
-    except OSError:
+    except OSError as e:
+        import errno
+
+        if e.errno != errno.ENOENT:
+            # Permission denied, read-only FS, etc — warn the user so they
+            # have context if uv cache clean subsequently hangs.
+            console.print(f"    [dim]Could not remove stale uv.lock: {e}[/dim]")
         return False
 
 
