@@ -16,7 +16,7 @@ from rich.panel import Panel
 from amplifier_foundation.exceptions import BundleError, BundleValidationError
 
 from ..console import console
-from ..session_store import extract_session_mode
+from ..session_store import extract_session_mode, find_session_global
 from ..utils.error_format import escape_markup
 from ..effective_config import get_effective_config_summary
 from ..lib.settings import AppSettings
@@ -82,7 +82,25 @@ def register_run_command(
             try:
                 resume = store.find_session(resume)
             except FileNotFoundError:
-                console.print(f"[red]Error:[/red] No session found matching '{resume}'")
+                # Session not in current project - search other projects
+                global_match = find_session_global(resume)
+                if global_match:
+                    session_id, sessions_dir = global_match
+                    # Extract project name from path
+                    project_name = sessions_dir.parent.name
+                    console.print(
+                        f"[red]Error:[/red] Session '{session_id}' exists in a different project\n"
+                        f"  Project: {project_name}\n"
+                        f"  Location: {sessions_dir / session_id}\n\n"
+                        f"To resume this session, run:\n"
+                        f"  [cyan]cd {sessions_dir.parent.parent.parent / project_name}[/cyan]\n"
+                        f"  [cyan]amplifier run --resume {session_id[:8]}[/cyan]"
+                    )
+                else:
+                    console.print(
+                        f"[red]Error:[/red] No session found matching '{resume}'\n"
+                        f"  Tip: Use [cyan]amplifier session list --all-projects[/cyan] to search across all projects"
+                    )
                 sys.exit(1)
             except ValueError as e:
                 from ..utils.error_format import format_error_message
