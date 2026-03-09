@@ -193,6 +193,57 @@ def _show_plan(
     console.print()
 
 
+def _remove_stale_uv_lock() -> bool:
+    """Remove an orphaned uv.lock file if no uv process is running.
+
+    uv uses a lock file in its cache directory to prevent concurrent access.
+    If a previous uv process was killed (Ctrl+C, OOM, etc.), the lock file
+    can be left behind, causing subsequent 'uv cache clean' to hang waiting
+    to acquire it.
+
+    Returns:
+        True if a stale lock was found and removed, False otherwise.
+    """
+    # Ask uv where its cache lives rather than hardcoding ~/.cache/uv
+    try:
+        result = subprocess.run(
+            ["uv", "cache", "dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return False
+        cache_dir = Path(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+    lock_path = cache_dir / "uv.lock"
+    if not lock_path.exists():
+        return False
+
+    # Check if any uv process is actually running — if so, the lock is legit
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", "uv"],
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            # uv is running, lock is legitimate
+            return False
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        # pgrep not available or timed out — fall through and try removal
+        pass
+
+    try:
+        lock_path.unlink()
+        console.print("    [dim]Removed stale uv.lock[/dim]")
+        return True
+    except OSError:
+        return False
+
+
 def _clean_uv_cache(dry_run: bool = False) -> bool:
     """Run 'uv cache clean' to purge the UV package cache."""
     console.print("[bold]>>>[/bold] Cleaning UV cache...")
@@ -200,6 +251,11 @@ def _clean_uv_cache(dry_run: bool = False) -> bool:
     if dry_run:
         console.print("    [dim][dry-run] Would run: uv cache clean[/dim]")
         return True
+
+    # Remove orphaned lock file before attempting cache clean.
+    # A stale uv.lock (from a killed uv process) causes 'uv cache clean'
+    # to hang indefinitely waiting to acquire the lock.
+    _remove_stale_uv_lock()
 
     try:
         subprocess.run(
