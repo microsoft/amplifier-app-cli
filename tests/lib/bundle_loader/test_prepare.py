@@ -4,6 +4,9 @@ Tests for the _build_include_source_resolver function which builds a
 callback used to redirect include sources during bundle loading.
 """
 
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+
 from amplifier_app_cli.lib.bundle_loader.prepare import _build_include_source_resolver
 
 
@@ -103,3 +106,68 @@ class TestBuildIncludeSourceResolver:
         result = resolver(source)
 
         assert result == "/home/user/dev/superpowers#subdirectory=behaviors/foo.yaml"
+
+
+class TestLoadAndPrepareBundleSourceOverrides:
+    """Tests for bundle_source_overrides parameter in load_and_prepare_bundle."""
+
+    @pytest.mark.asyncio
+    async def test_bundle_overrides_sets_resolver_on_registry(self):
+        """When bundle_source_overrides is provided, set_include_source_resolver is called on registry with a callable."""
+        from amplifier_app_cli.lib.bundle_loader.prepare import load_and_prepare_bundle
+
+        overrides = {"amplifier-bundle-superpowers": "/local/path"}
+
+        mock_registry = MagicMock()
+        mock_discovery = MagicMock()
+        mock_discovery.find.return_value = "file:///path/to/bundle.yaml"
+        mock_discovery.registry = mock_registry
+
+        mock_bundle = MagicMock()
+        mock_prepared = MagicMock()
+        mock_bundle.prepare = AsyncMock(return_value=mock_prepared)
+
+        with patch(
+            "amplifier_app_cli.lib.bundle_loader.prepare.load_bundle",
+            new_callable=AsyncMock,
+        ) as mock_load_bundle:
+            mock_load_bundle.return_value = mock_bundle
+
+            await load_and_prepare_bundle(
+                "my-bundle",
+                mock_discovery,
+                bundle_source_overrides=overrides,
+            )
+
+        # set_include_source_resolver was called once with a callable
+        mock_registry.set_include_source_resolver.assert_called_once()
+        call_args = mock_registry.set_include_source_resolver.call_args[0]
+        assert callable(call_args[0])
+
+    @pytest.mark.asyncio
+    async def test_no_bundle_overrides_skips_resolver(self):
+        """When bundle_source_overrides is None (default), set_include_source_resolver is NOT called."""
+        from amplifier_app_cli.lib.bundle_loader.prepare import load_and_prepare_bundle
+
+        mock_registry = MagicMock()
+        mock_discovery = MagicMock()
+        mock_discovery.find.return_value = "file:///path/to/bundle.yaml"
+        mock_discovery.registry = mock_registry
+
+        mock_bundle = MagicMock()
+        mock_prepared = MagicMock()
+        mock_bundle.prepare = AsyncMock(return_value=mock_prepared)
+
+        with patch(
+            "amplifier_app_cli.lib.bundle_loader.prepare.load_bundle",
+            new_callable=AsyncMock,
+        ) as mock_load_bundle:
+            mock_load_bundle.return_value = mock_bundle
+
+            await load_and_prepare_bundle(
+                "my-bundle",
+                mock_discovery,
+            )
+
+        # set_include_source_resolver was NOT called
+        mock_registry.set_include_source_resolver.assert_not_called()

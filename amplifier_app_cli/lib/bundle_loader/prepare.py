@@ -30,6 +30,7 @@ async def load_and_prepare_bundle(
     compose_behaviors: list[str] | None = None,
     source_overrides: dict[str, str] | None = None,
     progress_callback: Callable[[str, str], None] | None = None,
+    bundle_source_overrides: dict[str, str] | None = None,
 ) -> PreparedBundle:
     """Load bundle by name or URI and prepare it for execution.
 
@@ -57,6 +58,11 @@ async def load_and_prepare_bundle(
         progress_callback: Optional callback(action, detail) for progress reporting.
             Called at each phase transition during bundle preparation.
             Actions include "loading", "composing", "activating", "installing", etc.
+        bundle_source_overrides: Optional dict mapping substring keys -> override URIs.
+            Used to redirect bundle include URIs before foundation resolves them.
+            Keys are matched as substrings of include URIs. If matched, the override
+            URI is used instead.
+            Example: {"amplifier-bundle-superpowers": "/local/path"}
 
     Returns:
         PreparedBundle ready for create_session().
@@ -111,6 +117,13 @@ async def load_and_prepare_bundle(
 
     if progress_callback:
         progress_callback("loading", bundle_name)
+
+    if bundle_source_overrides:
+        include_resolver = _build_include_source_resolver(bundle_source_overrides)
+        discovery.registry.set_include_source_resolver(include_resolver)
+        logger.info(
+            f"Bundle source overrides active: {list(bundle_source_overrides.keys())}"
+        )
 
     # 2. Load bundle via foundation (handles file://, git+, http://, zip+)
     # CRITICAL: Pass discovery.registry so well-known bundles (foundation, etc.)
