@@ -118,6 +118,9 @@ async def resolve_bundle_config(
         # sources.modules (general) < overrides.<id>.source (specific) < config.providers[].source (most specific)
         combined_sources = {**module_sources, **source_overrides, **provider_sources}
 
+        # Get bundle source overrides from settings (sources.bundles in settings.yaml)
+        bundle_sources = app_settings.get_bundle_sources()
+
         # Load and prepare bundle (downloads modules from git sources)
         # If compose_behaviors is provided, those behaviors are composed onto the bundle
         # BEFORE prepare() runs, so their modules get installed correctly
@@ -127,6 +130,7 @@ async def resolve_bundle_config(
             discovery,
             compose_behaviors=compose_behaviors if compose_behaviors else None,
             source_overrides=combined_sources if combined_sources else None,
+            bundle_source_overrides=bundle_sources if bundle_sources else None,
             progress_callback=_on_progress if status else None,
         )
 
