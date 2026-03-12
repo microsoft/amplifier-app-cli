@@ -262,6 +262,49 @@ async def prepare_bundle_from_uri(
     return prepared
 
 
+def _build_include_source_resolver(
+    bundle_overrides: dict[str, str],
+) -> Callable[[str], str | None]:
+    """Build a resolver callback for redirecting include sources during bundle loading.
+
+    Args:
+        bundle_overrides: Dict mapping source key substrings to override URIs.
+            If a key is a substring of an include's source URI, that include
+            will be loaded from the override URI instead.
+
+    Returns:
+        A resolver callable(source: str) -> str | None.
+        Returns the override URI when a key matches, None when no key matches.
+        Preserves the original URI's #fragment when the override has none.
+
+    Examples:
+        overrides = {"amplifier-bundle-superpowers": "/local/path/superpowers"}
+        resolver = _build_include_source_resolver(overrides)
+        resolver("git+https://github.com/org/amplifier-bundle-superpowers@main")
+        # -> "/local/path/superpowers"
+
+        # Fragment preservation:
+        resolver("git+https://github.com/org/amplifier-bundle-superpowers@main#subdirectory=foo.yaml")
+        # -> "/local/path/superpowers#subdirectory=foo.yaml"
+    """
+    if not bundle_overrides:
+        return lambda _: None
+
+    def resolver(source: str) -> str | None:
+        for key, override in bundle_overrides.items():
+            if key in source:
+                # If the original source has a fragment and the override does not,
+                # preserve the fragment from the original.
+                if "#" in source and "#" not in override:
+                    fragment = source.split("#", 1)[1]
+                    return f"{override}#{fragment}"
+                # If override already has a fragment, override's fragment wins.
+                return override
+        return None
+
+    return resolver
+
+
 def _extract_behavior_name(uri: str) -> str:
     """Extract a human-readable behavior name from a bundle URI.
 
