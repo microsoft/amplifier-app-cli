@@ -336,8 +336,8 @@ def _check_dependency_installed(dep_name: str) -> bool:
 def _invalidate_modules_with_missing_deps() -> tuple[int, int]:
     """Surgically invalidate only modules whose dependencies are missing.
 
-    After `uv tool install --force` recreates the Python environment, previously
-    installed module dependencies (like aiohttp for tool-web) may be removed.
+    After `uv tool install --upgrade --reinstall` updates the Python environment,
+    previously installed module dependencies (like aiohttp for tool-web) may be removed.
     This function checks each module's dependencies and only invalidates entries
     for modules that have missing dependencies.
 
@@ -418,7 +418,7 @@ async def execute_self_update(
     umbrella_info: UmbrellaInfo,
     progress_callback: Callable[[str, str], None] | None = None,
 ) -> ExecutionResult:
-    """Delegate to 'uv tool install --force'.
+    """Delegate to 'uv tool install --upgrade --reinstall'.
 
     Philosophy: uv is designed for this, use it.
 
@@ -466,7 +466,7 @@ async def execute_self_update(
         # Previously used subprocess.run(capture_output=True) which silenced
         # all output for up to 120 seconds with no feedback.
         process = subprocess.Popen(
-            ["uv", "tool", "install", "--force", url],
+            ["uv", "tool", "install", "--upgrade", "--reinstall", url],
             stdout=subprocess.DEVNULL,  # uv progress goes to stderr; discard stdout
             stderr=subprocess.PIPE,
             text=True,
@@ -490,8 +490,8 @@ async def execute_self_update(
 
         if process.returncode == 0:
             # Surgically invalidate only modules with missing dependencies.
-            # The --force flag may recreate the Python environment, wiping
-            # some module dependencies. Rather than clearing all install state,
+            # The --reinstall flag refreshes the Python environment, which may
+            # wipe some module dependencies. Rather than clearing all install state,
             # we check which modules actually have missing deps and only
             # invalidate those entries.
             if progress_callback:
