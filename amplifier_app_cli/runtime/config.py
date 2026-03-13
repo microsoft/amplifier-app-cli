@@ -144,6 +144,28 @@ async def resolve_bundle_config(
         if status:
             status.stop()
 
+    # ── General config overrides ──────────────────────────────────────────
+    # The overrides.<id>.config section in settings.yaml provides a single
+    # consistent path for overriding ANY module's config — providers, tools,
+    # and hooks alike.  Applied BEFORE the dedicated override sections
+    # (config.providers[], modules.tools[], config.notifications.*) so that
+    # those more-specific sections take precedence on overlapping keys.
+    config_overrides = app_settings.get_config_overrides()
+    if config_overrides:
+        for section_key in ("providers", "tools", "hooks"):
+            section = bundle_config.get(section_key)
+            if not section:
+                continue
+            for item in section:
+                if not isinstance(item, dict):
+                    continue
+                module_id = item.get("module")
+                if module_id and module_id in config_overrides:
+                    override_cfg = config_overrides[module_id]
+                    if override_cfg:
+                        base_cfg = item.get("config", {}) or {}
+                        item["config"] = {**base_cfg, **override_cfg}
+
     # Apply provider overrides
     provider_overrides = app_settings.get_provider_overrides()
     if provider_overrides:
