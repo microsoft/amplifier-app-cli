@@ -16,6 +16,7 @@ from pathlib import Path
 from .source_status import CachedGitStatus
 from .source_status import UpdateReport
 from .umbrella_discovery import UmbrellaInfo
+from .uv_utils import remove_stale_uv_lock
 
 logger = logging.getLogger(__name__)
 
@@ -462,6 +463,11 @@ async def execute_self_update(
                     progress_callback("amplifier", clean)
 
     try:
+        # Remove orphaned lock file before running uv. A stale uv.lock (from
+        # a killed uv process) causes uv tool install to hang indefinitely
+        # waiting to acquire it — same guard applied in reset._clean_uv_cache().
+        remove_stale_uv_lock()
+
         # Use Popen to stream uv output for progress visibility.
         # Previously used subprocess.run(capture_output=True) which silenced
         # all output for up to 120 seconds with no feedback.
