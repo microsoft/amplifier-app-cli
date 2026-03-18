@@ -201,6 +201,10 @@ async def resolve_bundle_config(
         else:
             # Bundle has no tools - use overrides directly
             bundle_config["tools"] = tool_overrides
+    elif bundle_config.get("tools"):
+        # No user overrides, but still apply CLI tool policies
+        # (e.g., cwd in write paths, default skills dirs)
+        bundle_config["tools"] = _ensure_cli_tool_policies(bundle_config["tools"])
 
     # Apply hook overrides from notification settings
     # This maps config.notifications.ntfy.* to hooks-notify-push config etc.
@@ -237,7 +241,9 @@ async def resolve_bundle_config(
     # This must happen AFTER env var expansion so API keys are actual values, not "${VAR}" literals
     if bundle_config.get("providers"):
         prepared.mount_plan["providers"] = bundle_config["providers"]
-    if tool_overrides:
+    # Always sync tools — CLI policy functions (cwd in write paths, default skills dirs)
+    # modify bundle_config["tools"] even without user tool_overrides
+    if bundle_config.get("tools"):
         prepared.mount_plan["tools"] = bundle_config["tools"]
     # Sync hooks (now with notification config overrides applied)
     if bundle_config.get("hooks"):
@@ -255,7 +261,9 @@ async def resolve_bundle_config(
     # from the Bundle dataclass, not mount_plan. Child sessions then get zero
     # providers, causing coordinator.get("providers") to return empty and tool
     # modules that depend on providers (e.g., image generation) to fail.
-    _sync_overrides_to_bundle(prepared, bundle_config, sync_tools=bool(tool_overrides))
+    _sync_overrides_to_bundle(
+        prepared, bundle_config, sync_tools=bool(bundle_config.get("tools"))
+    )
 
     # Note: Notification hooks are now composed via compose_behaviors parameter
     # to load_and_prepare_bundle(), so they get properly installed during prepare().
@@ -485,7 +493,7 @@ def _apply_tool_overrides(
     for tool-filesystem, ensuring users can always write within their project.
     """
     if not overrides:
-        return _ensure_cwd_in_write_paths(tools)
+        return _ensure_cli_tool_policies(tools)
 
     # Build lookup for overrides by module ID
     override_map = {}
@@ -518,7 +526,19 @@ def _apply_tool_overrides(
         ):
             result.append(override)
 
-    return _ensure_cwd_in_write_paths(result)
+    return _ensure_cli_tool_policies(result)
+
+
+def _ensure_cli_tool_policies(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply all CLI policy injections to tool configs.
+
+    Chains all tool-specific policy functions. Each function targets a specific
+    tool module and injects CLI-level defaults that the module itself should not
+    hardcode (because modules sit below the app layer).
+    """
+    tools = _ensure_cwd_in_write_paths(tools)
+    tools = _ensure_default_skills_dirs(tools)
+    return tools
 
 
 def _ensure_cwd_in_write_paths(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -544,6 +564,38 @@ def _ensure_cwd_in_write_paths(tools: list[dict[str, Any]]) -> list[dict[str, An
             if "." not in paths:
                 paths.insert(0, ".")
             config["allowed_write_paths"] = paths
+            tool["config"] = config
+        result.append(tool)
+    return result
+
+
+def _ensure_default_skills_dirs(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure workspace and user skill directories are in tool-skills config.
+
+    This is a CLI policy decision: .amplifier/skills/ (workspace) and
+    ~/.amplifier/skills/ (user) follow the same project-first, user-second
+    convention as bundles, agents, and modules. Without this, when behaviors
+    configure explicit remote skill sources, the module's get_default_skills_dirs()
+    fallback is bypassed and workspace skills become invisible.
+
+    Args:
+        tools: List of tool configurations
+
+    Returns:
+        Tools with workspace and user skill dirs in tool-skills's config.skills
+    """
+    default_paths = [".amplifier/skills", "~/.amplifier/skills"]
+
+    result = []
+    for tool in tools:
+        if isinstance(tool, dict) and tool.get("module") == "tool-skills":
+            tool = tool.copy()
+            config = (tool.get("config") or {}).copy()
+            skills = list(config.get("skills", []))
+            for path in default_paths:
+                if path not in skills:
+                    skills.append(path)
+            config["skills"] = skills
             tool["config"] = config
         result.append(tool)
     return result
