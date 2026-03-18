@@ -5,6 +5,7 @@ from pathlib import Path
 from amplifier_app_cli.lib.merge_utils import _provider_key, merge_module_lists
 from amplifier_app_cli.lib.settings import AppSettings, SettingsPaths
 from amplifier_app_cli.runtime.config import _ensure_cwd_in_write_paths
+from amplifier_app_cli.runtime.config import _ensure_default_skills_dirs
 
 
 def _make_settings(tmp_path: Path) -> AppSettings:
@@ -172,6 +173,93 @@ class TestEnsureCwdInWritePaths:
         _ensure_cwd_in_write_paths(tools)
         # Original should be unchanged
         assert original_paths == ["/some/path"]
+
+
+class TestEnsureDefaultSkillsDirs:
+    """Tests for _ensure_default_skills_dirs CLI policy function."""
+
+    def test_injects_default_paths_when_missing(self):
+        """Default skill dirs should be appended when not present."""
+        tools = [
+            {
+                "module": "tool-skills",
+                "config": {"skills": ["git+https://example.com/skills"]},
+            }
+        ]
+        result = _ensure_default_skills_dirs(tools)
+        skills = result[0]["config"]["skills"]
+        assert "git+https://example.com/skills" in skills
+        assert ".amplifier/skills" in skills
+        assert "~/.amplifier/skills" in skills
+
+    def test_preserves_existing_paths(self):
+        """Default paths should not be duplicated if already present."""
+        tools = [
+            {
+                "module": "tool-skills",
+                "config": {
+                    "skills": [
+                        "git+https://example.com/skills",
+                        ".amplifier/skills",
+                        "~/.amplifier/skills",
+                    ]
+                },
+            }
+        ]
+        result = _ensure_default_skills_dirs(tools)
+        skills = result[0]["config"]["skills"]
+        assert skills.count(".amplifier/skills") == 1
+        assert skills.count("~/.amplifier/skills") == 1
+
+    def test_handles_empty_config(self):
+        """Should handle tool-skills with no config."""
+        tools = [{"module": "tool-skills"}]
+        result = _ensure_default_skills_dirs(tools)
+        skills = result[0]["config"]["skills"]
+        assert ".amplifier/skills" in skills
+        assert "~/.amplifier/skills" in skills
+
+    def test_handles_empty_skills_list(self):
+        """Should handle empty skills list."""
+        tools = [{"module": "tool-skills", "config": {"skills": []}}]
+        result = _ensure_default_skills_dirs(tools)
+        skills = result[0]["config"]["skills"]
+        assert ".amplifier/skills" in skills
+        assert "~/.amplifier/skills" in skills
+
+    def test_ignores_other_tools(self):
+        """Should not modify tools that aren't tool-skills."""
+        tools = [
+            {"module": "tool-bash", "config": {"some_key": "value"}},
+            {"module": "tool-skills", "config": {"skills": ["url1"]}},
+        ]
+        result = _ensure_default_skills_dirs(tools)
+        assert result[0] == {"module": "tool-bash", "config": {"some_key": "value"}}
+        assert ".amplifier/skills" in result[1]["config"]["skills"]
+
+    def test_does_not_mutate_input(self):
+        """Should not mutate the original tools list."""
+        original_skills = ["git+https://example.com/skills"]
+        tools = [
+            {
+                "module": "tool-skills",
+                "config": {"skills": original_skills},
+            }
+        ]
+        _ensure_default_skills_dirs(tools)
+        assert original_skills == ["git+https://example.com/skills"]
+
+    def test_default_paths_appended_after_configured(self):
+        """Default paths should come after explicitly configured sources."""
+        tools = [
+            {
+                "module": "tool-skills",
+                "config": {"skills": ["url1", "url2"]},
+            }
+        ]
+        result = _ensure_default_skills_dirs(tools)
+        skills = result[0]["config"]["skills"]
+        assert skills == ["url1", "url2", ".amplifier/skills", "~/.amplifier/skills"]
 
 
 class TestProviderScopeMerge:
