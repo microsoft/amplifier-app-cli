@@ -901,6 +901,22 @@ class CommandProcessor:
                     else:
                         lines.append(f"  /{name}")
 
+        # Add dynamic skills section if skills are available
+        skills_discovery = session_state.get("skills_discovery")
+        if skills_discovery and hasattr(skills_discovery, "get_shortcuts"):
+            shortcuts = skills_discovery.get_shortcuts()
+            if shortcuts:
+                lines.append("")
+                lines.append("Skill Commands:")
+                for name in sorted(shortcuts.keys()):
+                    shortcut_info = shortcuts[name]
+                    description = (
+                        shortcut_info.get("description", "")
+                        if isinstance(shortcut_info, dict)
+                        else str(shortcut_info)
+                    )
+                    lines.append(f"  /{name:<11} - {description}")
+
         return "\n".join(lines)
 
     async def _get_config_display(self) -> str:
