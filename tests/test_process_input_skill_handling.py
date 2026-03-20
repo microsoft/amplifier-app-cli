@@ -8,7 +8,24 @@ Tests cover:
 5. Mode shortcuts still work as before
 """
 
+import pytest
 from unittest.mock import MagicMock
+
+from amplifier_app_cli.main import CommandProcessor
+
+
+# ---------------------------------------------------------------------------
+# Fixture - reset class-level SKILL_SHORTCUTS between tests to prevent
+# state leaking from one test into another via the shared class dict.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def reset_skill_shortcuts():
+    """Clear SKILL_SHORTCUTS before and after every test in this module."""
+    CommandProcessor.SKILL_SHORTCUTS.clear()
+    yield
+    CommandProcessor.SKILL_SHORTCUTS.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -18,8 +35,6 @@ from unittest.mock import MagicMock
 
 def _make_command_processor(skills_discovery=None, mode_shortcuts=None):
     """Create a CommandProcessor with mocked session for unit testing."""
-    from amplifier_app_cli.main import CommandProcessor
-
     mock_session = MagicMock()
     mock_session.coordinator = MagicMock()
     mock_session.coordinator.session_state = {
@@ -40,8 +55,6 @@ def _make_command_processor(skills_discovery=None, mode_shortcuts=None):
 
 def _make_cp_with_skill_shortcut(shortcut_name="simplify"):
     """Create a CommandProcessor with a specific skill shortcut populated."""
-    from amplifier_app_cli.main import CommandProcessor
-
     mock_discovery = MagicMock()
     mock_discovery.get_shortcuts.return_value = {
         shortcut_name: {"name": shortcut_name, "description": f"{shortcut_name} skill"}
@@ -213,9 +226,7 @@ class TestUnknownCommandStillWorks:
 
     def test_non_skill_shortcut_is_unknown(self):
         """A command that is not in SKILL_SHORTCUTS and not in COMMANDS should be unknown."""
-        from amplifier_app_cli.main import CommandProcessor
-
-        # Ensure 'notaskill' is not in SKILL_SHORTCUTS
+        # Ensure 'notaskill' is not in SKILL_SHORTCUTS (reset_skill_shortcuts clears it, but be explicit)
         CommandProcessor.SKILL_SHORTCUTS.pop("notaskill", None)
         cp = _make_command_processor()
         action, _data = cp.process_input("/notaskill")
@@ -259,8 +270,6 @@ class TestModeShortcutsStillWork:
 
     def test_skill_shortcut_does_not_interfere_with_mode_shortcut(self):
         """A skill shortcut and mode shortcut with different names should coexist."""
-        from amplifier_app_cli.main import CommandProcessor
-
         # Setup skill shortcut
         mock_skill_discovery = MagicMock()
         mock_skill_discovery.get_shortcuts.return_value = {
