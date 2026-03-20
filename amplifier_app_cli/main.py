@@ -370,6 +370,10 @@ class CommandProcessor:
                     data["args"] = mode_args
                     if trailing:
                         data["trailing_prompt"] = trailing
+                elif cmd_info["action"] == "load_skill":
+                    skill_parts = args.strip().split(maxsplit=1)
+                    data["skill_name"] = skill_parts[0] if skill_parts else ""
+                    data["arguments"] = skill_parts[1] if len(skill_parts) > 1 else ""
                 return cmd_info["action"], data
 
             # Check for mode shortcuts (e.g., /plan -> /mode plan)
@@ -386,6 +390,17 @@ class CommandProcessor:
                         data["args"] = f"{shortcut_name} on"
                         data["trailing_prompt"] = trailing
                 return "handle_mode", data
+
+            # Check for skill shortcuts (e.g., /simplify -> load_skill)
+            if shortcut_name in self.SKILL_SHORTCUTS:
+                return (
+                    "load_skill",
+                    {
+                        "skill_name": shortcut_name,
+                        "arguments": args.strip(),
+                        "command": command,
+                    },
+                )
 
             return "unknown_command", {"command": command}
 
