@@ -308,10 +308,16 @@ class CommandProcessor:
             "action": "fork_session",
             "description": "Fork session at turn N: /fork [turn]",
         },
+        "/skills": {"action": "list_skills", "description": "List available skills"},
+        "/skill": {
+            "action": "load_skill",
+            "description": "Load a skill (e.g., /skill simplify)",
+        },
     }
 
     # Dynamic shortcuts for modes (populated from mode definitions)
     MODE_SHORTCUTS: dict[str, str] = {}
+    SKILL_SHORTCUTS: dict[str, dict] = {}
 
     def __init__(self, session: AmplifierSession, bundle_name: str = "unknown"):
         self.session = session
@@ -323,6 +329,8 @@ class CommandProcessor:
             self.session.coordinator.session_state["active_mode"] = None
         # Populate mode shortcuts from discovery (if available)
         self._populate_mode_shortcuts()
+        # Populate skill shortcuts from discovery (if available)
+        self._populate_skill_shortcuts()
 
     def _populate_mode_shortcuts(self) -> None:
         """Populate MODE_SHORTCUTS from mode discovery."""
@@ -331,6 +339,14 @@ class CommandProcessor:
             shortcuts = discovery.get_shortcuts()
             # Update class-level shortcuts dict
             CommandProcessor.MODE_SHORTCUTS.update(shortcuts)
+
+    def _populate_skill_shortcuts(self) -> None:
+        """Populate SKILL_SHORTCUTS from skills discovery."""
+        discovery = self.session.coordinator.session_state.get("skills_discovery")
+        if discovery and hasattr(discovery, "get_shortcuts"):
+            shortcuts = discovery.get_shortcuts()
+            # Update class-level shortcuts dict
+            CommandProcessor.SKILL_SHORTCUTS.update(shortcuts)
 
     def process_input(self, user_input: str) -> tuple[str, dict[str, Any]]:
         """
