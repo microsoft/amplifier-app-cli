@@ -225,6 +225,61 @@ async def create_initialized_session(
 
     # Step 7: Restore transcript (resume only)
     if config.is_resume and config.initial_transcript:
+        # Step 7a: Auto-repair broken transcripts (heal-forward).
+        # When a session is interrupted mid-tool-execution (SIGKILL, OOM, crash),
+        # the assistant message with tool_calls is persisted but the tool_result
+        # messages are not.  On resume the provider rejects the request (HTTP 400).
+        # Detect this and inject synthetic tool results so the session can continue.
+        transcript_to_restore = config.initial_transcript
+        try:
+            from amplifier_foundation.session import (
+                backup,
+                diagnose_transcript,
+                repair_transcript,
+                write_transcript,
+            )
+
+            diagnosis = diagnose_transcript(transcript_to_restore)
+            if diagnosis["status"] == "broken":
+                failure_modes = diagnosis.get("failure_modes", [])
+                orphan_ids = diagnosis.get("orphaned_tool_ids", [])
+
+                # Back up the original transcript before modifying
+                store = SessionStore()
+                session_dir = store.base_dir / session_id
+                transcript_path = session_dir / "transcript.jsonl"
+                backup_path = None
+                if transcript_path.exists():
+                    backup_path = backup(transcript_path, "pre-auto-repair")
+
+                # Heal-forward: inject synthetic results, preserve full history
+                transcript_to_restore = repair_transcript(
+                    transcript_to_restore, diagnosis
+                )
+
+                # Write repaired transcript to disk (persistent, one-time fix)
+                if session_dir.exists():
+                    write_transcript(session_dir, transcript_to_restore)
+
+                logger.warning(
+                    "Auto-repaired session transcript: %s "
+                    "(orphaned tool calls: %s). "
+                    "The model will see interrupted tools and can retry if needed.%s",
+                    ", ".join(failure_modes),
+                    ", ".join(orphan_ids) if orphan_ids else "none",
+                    f" Backup: {backup_path}" if backup_path else "",
+                )
+        except ImportError:
+            # Foundation not available (non-standard setup) — skip repair
+            logger.debug(
+                "amplifier_foundation.session not available, "
+                "skipping transcript auto-repair"
+            )
+        except Exception as e:
+            # Repair failed — continue with original transcript rather than crash
+            logger.warning("Transcript auto-repair failed, using original: %s", e)
+            transcript_to_restore = config.initial_transcript
+
         context = session.coordinator.get("context")
         if context and hasattr(context, "set_messages"):
             # CRITICAL: create_session() already added a fresh system prompt.
@@ -241,10 +296,10 @@ async def create_initialized_session(
                         len(fresh_system_msg.get("content", "")),
                     )
 
-            # Restore the transcript
-            await context.set_messages(config.initial_transcript)
+            # Restore the (possibly repaired) transcript
+            await context.set_messages(transcript_to_restore)
             logger.info(
-                "Restored %d messages from transcript", len(config.initial_transcript)
+                "Restored %d messages from transcript", len(transcript_to_restore)
             )
 
             # Check if transcript has a system message; if not, re-inject the fresh one
