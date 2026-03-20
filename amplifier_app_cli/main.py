@@ -496,6 +496,14 @@ class CommandProcessor:
         if action == "fork_session":
             return await self._fork_session(data.get("args", ""))
 
+        if action == "list_skills":
+            return await self._list_skills()
+
+        if action == "load_skill":
+            return await self._load_skill(
+                data.get("skill_name", ""), data.get("arguments", "")
+            )
+
         if action == "unknown_command":
             return (
                 f"Unknown command: {data['command']}. Use /help for available commands."
@@ -1196,6 +1204,74 @@ class CommandProcessor:
   /denied-dirs add <path>      - Add directory (session scope)
   /denied-dirs remove <path>   - Remove directory (session scope)"""
 
+    async def _list_skills(self) -> str:
+        """List available skills with descriptions and shortcuts."""
+        session_state = self.session.coordinator.session_state
+        discovery = session_state.get("skills_discovery")
+
+        if not discovery:
+            return (
+                "Skills system not available. Include a bundle with skills to enable."
+            )
+
+        skills = discovery.list_skills()
+        if not skills:
+            return "No skills found. Create skills in .amplifier/skills/ or include a bundle with skills."
+
+        lines = ["Available Skills:"]
+        for item in skills:
+            name, description = item[0], item[1] if len(item) > 1 else ""
+            if description:
+                lines.append(f"  {name:<20} {description}")
+            else:
+                lines.append(f"  {name}")
+
+        # Add shortcuts section
+        shortcuts = discovery.get_shortcuts()
+        if shortcuts:
+            lines.append("")
+            lines.append("Shortcuts:")
+            for shortcut_name in shortcuts:
+                lines.append(f"  /{shortcut_name}")
+
+        lines.append("")
+        lines.append("Use /skill <name> to load a skill.")
+        return "\n".join(lines)
+
+    async def _load_skill(self, skill_name: str, arguments: str) -> str:
+        """Load a skill and return a synthetic prompt for execution.
+
+        Args:
+            skill_name: Name of the skill to load
+            arguments: Optional context arguments from the user
+
+        Returns:
+            Synthetic prompt string for session.execute(), or error message.
+        """
+        if not skill_name:
+            return "Usage: /skill <name> [context]"
+
+        session_state = self.session.coordinator.session_state
+        discovery = session_state.get("skills_discovery")
+
+        if not discovery:
+            return (
+                "Skills system not available. Include a bundle with skills to enable."
+            )
+
+        skill = discovery.find(skill_name)
+        if not skill:
+            # Get available skills for error message
+            skills = discovery.list_skills()
+            available = ", ".join(s[0] for s in skills) if skills else "none"
+            return f"Unknown skill: {skill_name}. Available: {available}"
+
+        # Construct synthetic prompt for session.execute()
+        if arguments:
+            return f'Use the load_skill tool to load the skill "{skill_name}". Additional context from the user: {arguments}'
+        else:
+            return f'Use the load_skill tool to load the skill "{skill_name}".'
+
 
 def get_module_search_paths() -> list[Path]:
     """
@@ -1668,7 +1744,24 @@ async def interactive_chat(
                     else:
                         # Handle command
                         result = await command_processor.handle_command(action, data)
-                        console.print(f"[cyan]{result}[/cyan]")
+
+                        # Special handling for load_skill: execute the returned prompt
+                        # unless it's an error message
+                        _skill_error_prefixes = (
+                            "Unknown skill:",
+                            "Usage:",
+                            "Skills system",
+                        )
+                        if action == "load_skill" and not result.startswith(
+                            _skill_error_prefixes
+                        ):
+                            console.print(
+                                "\n[dim]Processing... (Ctrl+C to cancel)[/dim]"
+                            )
+                            await _process_runtime_mentions(session, result)
+                            await _execute_with_interrupt(result)
+                        else:
+                            console.print(f"[cyan]{result}[/cyan]")
 
                         # If command included trailing text, execute it as a prompt
                         trailing_prompt = data.get("trailing_prompt")
