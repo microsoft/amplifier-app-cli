@@ -120,7 +120,7 @@ class TestHandleCommandLoadSkillDispatch:
     async def test_handle_command_load_skill_calls_load_skill_method(self):
         """handle_command() with load_skill should call self._load_skill(skill_name, arguments)."""
         cp = _make_command_processor()
-        cp._load_skill = AsyncMock(return_value="Skill prompt")
+        cp._load_skill = AsyncMock(return_value=(True, "Skill prompt"))
         result = await cp.handle_command(
             "load_skill", {"skill_name": "simplify", "arguments": "focus on memory"}
         )
@@ -131,7 +131,7 @@ class TestHandleCommandLoadSkillDispatch:
     async def test_handle_command_load_skill_passes_skill_name_and_arguments(self):
         """handle_command() should pass skill_name and arguments to _load_skill()."""
         cp = _make_command_processor()
-        cp._load_skill = AsyncMock(return_value="Prompt result")
+        cp._load_skill = AsyncMock(return_value=(True, "Prompt result"))
         await cp.handle_command(
             "load_skill",
             {"skill_name": "refactor", "arguments": "please clean this up"},
@@ -286,22 +286,25 @@ class TestLoadSkillValidation:
     async def test_load_skill_empty_name_returns_usage(self):
         """_load_skill() with empty skill_name should return usage message."""
         cp = _make_command_processor()
-        result = await cp._load_skill("", "")
-        assert "Usage:" in result
+        is_prompt, text = await cp._load_skill("", "")
+        assert is_prompt is False
+        assert "Usage:" in text
 
     @pytest.mark.asyncio
     async def test_load_skill_empty_name_returns_string(self):
         """_load_skill() with empty skill_name should return a string."""
         cp = _make_command_processor()
-        result = await cp._load_skill("", "")
-        assert isinstance(result, str)
+        is_prompt, text = await cp._load_skill("", "")
+        assert is_prompt is False
+        assert isinstance(text, str)
 
     @pytest.mark.asyncio
     async def test_load_skill_empty_name_usage_mentions_skill(self):
         """_load_skill() usage message should mention /skill."""
         cp = _make_command_processor()
-        result = await cp._load_skill("", "")
-        assert "/skill" in result
+        is_prompt, text = await cp._load_skill("", "")
+        assert is_prompt is False
+        assert "/skill" in text
 
 
 # ---------------------------------------------------------------------------
@@ -319,8 +322,9 @@ class TestLoadSkillUnknownSkill:
         mock_discovery.find.return_value = None  # Skill not found
 
         cp = _make_command_processor(skills_discovery=mock_discovery)
-        result = await cp._load_skill("nonexistent", "")
-        assert "Unknown skill:" in result
+        is_prompt, text = await cp._load_skill("nonexistent", "")
+        assert is_prompt is False
+        assert "Unknown skill:" in text
 
     @pytest.mark.asyncio
     async def test_load_skill_unknown_includes_available_list(self):
@@ -329,18 +333,20 @@ class TestLoadSkillUnknownSkill:
         mock_discovery.find.return_value = None  # Skill not found
 
         cp = _make_command_processor(skills_discovery=mock_discovery)
-        result = await cp._load_skill("nonexistent", "")
+        is_prompt, text = await cp._load_skill("nonexistent", "")
         # Should mention available skills
-        assert "simplify" in result
+        assert is_prompt is False
+        assert "simplify" in text
 
     @pytest.mark.asyncio
     async def test_load_skill_unknown_no_discovery_returns_error(self):
         """_load_skill() with no discovery should return an appropriate error."""
         cp = _make_command_processor()  # No skills_discovery
-        result = await cp._load_skill("simplify", "")
+        is_prompt, text = await cp._load_skill("simplify", "")
         # Should be some kind of error (Skills system not available)
-        assert isinstance(result, str)
-        assert len(result) > 0
+        assert is_prompt is False
+        assert isinstance(text, str)
+        assert len(text) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -361,8 +367,9 @@ class TestLoadSkillPromptConstruction:
         }
 
         cp = _make_command_processor(skills_discovery=mock_discovery)
-        result = await cp._load_skill("simplify", "")
-        assert 'Use the load_skill tool to load the skill "simplify".' in result
+        is_prompt, text = await cp._load_skill("simplify", "")
+        assert is_prompt is True
+        assert 'Use the load_skill tool to load the skill "simplify".' in text
 
     @pytest.mark.asyncio
     async def test_load_skill_prompt_without_args_exact_format(self):
@@ -374,9 +381,10 @@ class TestLoadSkillPromptConstruction:
         }
 
         cp = _make_command_processor(skills_discovery=mock_discovery)
-        result = await cp._load_skill("simplify", "")
+        is_prompt, text = await cp._load_skill("simplify", "")
+        assert is_prompt is True
         # Exact format: 'Use the load_skill tool to load the skill "<name>".'
-        assert result == 'Use the load_skill tool to load the skill "simplify".'
+        assert text == 'Use the load_skill tool to load the skill "simplify".'
 
 
 # ---------------------------------------------------------------------------
@@ -397,8 +405,9 @@ class TestLoadSkillPromptWithArgs:
         }
 
         cp = _make_command_processor(skills_discovery=mock_discovery)
-        result = await cp._load_skill("simplify", "focus on memory usage")
-        assert "focus on memory usage" in result
+        is_prompt, text = await cp._load_skill("simplify", "focus on memory usage")
+        assert is_prompt is True
+        assert "focus on memory usage" in text
 
     @pytest.mark.asyncio
     async def test_load_skill_prompt_with_args_exact_format(self):
@@ -410,10 +419,11 @@ class TestLoadSkillPromptWithArgs:
         }
 
         cp = _make_command_processor(skills_discovery=mock_discovery)
-        result = await cp._load_skill("simplify", "focus on memory usage")
+        is_prompt, text = await cp._load_skill("simplify", "focus on memory usage")
+        assert is_prompt is True
         # Exact format: 'Use the load_skill tool to load the skill "<name>". Additional context from the user: <args>'
         expected = 'Use the load_skill tool to load the skill "simplify". Additional context from the user: focus on memory usage'
-        assert result == expected
+        assert text == expected
 
     @pytest.mark.asyncio
     async def test_load_skill_with_different_args(self):
@@ -425,9 +435,10 @@ class TestLoadSkillPromptWithArgs:
         }
 
         cp = _make_command_processor(skills_discovery=mock_discovery)
-        result = await cp._load_skill("refactor", "please clean this up")
+        is_prompt, text = await cp._load_skill("refactor", "please clean this up")
+        assert is_prompt is True
         expected = 'Use the load_skill tool to load the skill "refactor". Additional context from the user: please clean this up'
-        assert result == expected
+        assert text == expected
 
     @pytest.mark.asyncio
     async def test_load_skill_with_empty_string_args_uses_no_args_format(self):
@@ -439,7 +450,8 @@ class TestLoadSkillPromptWithArgs:
         }
 
         cp = _make_command_processor(skills_discovery=mock_discovery)
-        result = await cp._load_skill("simplify", "")
+        is_prompt, text = await cp._load_skill("simplify", "")
+        assert is_prompt is True
         # Empty args -> no-args format
-        assert "Additional context" not in result
-        assert result == 'Use the load_skill tool to load the skill "simplify".'
+        assert "Additional context" not in text
+        assert text == 'Use the load_skill tool to load the skill "simplify".'

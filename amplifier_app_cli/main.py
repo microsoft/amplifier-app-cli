@@ -500,9 +500,10 @@ class CommandProcessor:
             return await self._list_skills()
 
         if action == "load_skill":
-            return await self._load_skill(
+            _is_prompt, text = await self._load_skill(
                 data.get("skill_name", ""), data.get("arguments", "")
             )
+            return text
 
         if action == "unknown_command":
             return (
@@ -1253,24 +1254,27 @@ class CommandProcessor:
         lines.append("Use /skill <name> to load a skill.")
         return "\n".join(lines)
 
-    async def _load_skill(self, skill_name: str, arguments: str) -> str:
-        """Load a skill and return a synthetic prompt for execution.
+    async def _load_skill(self, skill_name: str, arguments: str) -> tuple[bool, str]:
+        """Load a skill and return a structured result for execution.
 
         Args:
             skill_name: Name of the skill to load
             arguments: Optional context arguments from the user
 
         Returns:
-            Synthetic prompt string for session.execute(), or error message.
+            Tuple of (is_prompt, text) where is_prompt=True means text is a
+            synthetic prompt for session.execute(), and is_prompt=False means
+            text is an error/usage message to display to the user.
         """
         if not skill_name:
-            return "Usage: /skill <name> [context]"
+            return False, "Usage: /skill <name> [context]"
 
         discovery = self.session.coordinator.get_capability("skills_discovery")
 
         if not discovery:
             return (
-                "Skills system not available. Include a bundle with skills to enable."
+                False,
+                "Skills system not available. Include a bundle with skills to enable.",
             )
 
         skill = discovery.find(skill_name)
@@ -1278,13 +1282,13 @@ class CommandProcessor:
             # Get available skills for error message
             skills = discovery.list_skills()
             available = ", ".join(s[0] for s in skills) if skills else "none"
-            return f"Unknown skill: {skill_name}. Available: {available}"
+            return False, f"Unknown skill: {skill_name}. Available: {available}"
 
         # Construct synthetic prompt for session.execute()
         if arguments:
-            return f'Use the load_skill tool to load the skill "{skill_name}". Additional context from the user: {arguments}'
+            return True, f'Use the load_skill tool to load the skill "{skill_name}". Additional context from the user: {arguments}'
         else:
-            return f'Use the load_skill tool to load the skill "{skill_name}".'
+            return True, f'Use the load_skill tool to load the skill "{skill_name}".'
 
 
 def get_module_search_paths() -> list[Path]:
@@ -1759,21 +1763,19 @@ async def interactive_chat(
                         # Handle command
                         result = await command_processor.handle_command(action, data)
 
-                        # Special handling for load_skill: execute the returned prompt
-                        # unless it's an error message
-                        _skill_error_prefixes = (
-                            "Unknown skill:",
-                            "Usage:",
-                            "Skills system",
-                        )
-                        if action == "load_skill" and not result.startswith(
-                            _skill_error_prefixes
-                        ):
-                            console.print(
-                                "\n[dim]Processing... (Ctrl+C to cancel)[/dim]"
+                        if action == "load_skill":
+                            is_prompt, text = await command_processor._load_skill(
+                                data.get("skill_name", ""),
+                                data.get("arguments", ""),
                             )
-                            await _process_runtime_mentions(session, result)
-                            await _execute_with_interrupt(result)
+                            if is_prompt:
+                                console.print(
+                                    "\n[dim]Processing... (Ctrl+C to cancel)[/dim]"
+                                )
+                                await _process_runtime_mentions(session, text)
+                                await _execute_with_interrupt(text)
+                            else:
+                                console.print(f"[cyan]{text}[/cyan]")
                         else:
                             console.print(f"[cyan]{result}[/cyan]")
 
