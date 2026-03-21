@@ -319,8 +319,9 @@ class CommandProcessor:
         # Initialize session_state if not present
         if not hasattr(self.session.coordinator, "session_state"):
             self.session.coordinator.session_state = {}
-        if "active_mode" not in self.session.coordinator.session_state:
-            self.session.coordinator.session_state["active_mode"] = None
+        # Initialize active_mode capability if not already set
+        if self.session.coordinator.get_capability("modes.active_mode") is None:
+            self.session.coordinator.register_capability("modes.active_mode", None)
         # Populate mode shortcuts from discovery (if available)
         self._populate_mode_shortcuts()
 
@@ -374,7 +375,7 @@ class CommandProcessor:
             return "unknown_command", {"command": command}
 
         # Regular prompt
-        active_mode = self.session.coordinator.session_state.get("active_mode")
+        active_mode = self.session.coordinator.get_capability("modes.active_mode")
         return "prompt", {"text": user_input, "active_mode": active_mode}
 
     def _split_mode_trailing(self, args: str) -> tuple[str, str | None]:
@@ -475,13 +476,12 @@ class CommandProcessor:
     async def _handle_mode(self, args: str) -> str:
         """Handle /mode command for setting, toggling, or clearing modes."""
         args = args.strip().lower()
-        session_state = self.session.coordinator.session_state
-        current_mode = session_state.get("active_mode")
+        current_mode = self.session.coordinator.get_capability("modes.active_mode")
 
         # /mode off - clear any active mode
         if args == "off":
             if current_mode:
-                session_state["active_mode"] = None
+                self.session.coordinator.register_capability("modes.active_mode", None)
                 # Reset warnings in mode hooks if present
                 mode_hooks = self.session.coordinator.get_capability("modes.hooks")
                 if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
@@ -515,7 +515,7 @@ class CommandProcessor:
         if explicit_state == "on":
             if current_mode == mode_name:
                 return f"Already in {mode_name} mode"
-            session_state["active_mode"] = mode_name
+            self.session.coordinator.register_capability("modes.active_mode", mode_name)
             mode_hooks = self.session.coordinator.get_capability("modes.hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
@@ -524,7 +524,7 @@ class CommandProcessor:
         if explicit_state == "off":
             if current_mode != mode_name:
                 return f"Not in {mode_name} mode"
-            session_state["active_mode"] = None
+            self.session.coordinator.register_capability("modes.active_mode", None)
             mode_hooks = self.session.coordinator.get_capability("modes.hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
@@ -532,13 +532,13 @@ class CommandProcessor:
 
         # Toggle behavior (no explicit on/off)
         if current_mode == mode_name:
-            session_state["active_mode"] = None
+            self.session.coordinator.register_capability("modes.active_mode", None)
             mode_hooks = self.session.coordinator.get_capability("modes.hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
             return f"Mode off: {mode_name}"
         else:
-            session_state["active_mode"] = mode_name
+            self.session.coordinator.register_capability("modes.active_mode", mode_name)
             mode_hooks = self.session.coordinator.get_capability("modes.hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
@@ -548,7 +548,6 @@ class CommandProcessor:
         """List available modes, grouped by source bundle."""
         from collections import defaultdict
 
-        session_state = self.session.coordinator.session_state
         discovery = self.session.coordinator.get_capability("modes.discovery")
 
         if not discovery:
@@ -560,7 +559,7 @@ class CommandProcessor:
         if not modes:
             return "No modes found. Create modes in .amplifier/modes/ or include a bundle with modes."
 
-        current_mode = session_state.get("active_mode")
+        current_mode = self.session.coordinator.get_capability("modes.active_mode")
 
         # Group by source (supports both 2-tuple and 3-tuple formats)
         groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
@@ -668,7 +667,7 @@ class CommandProcessor:
         lines.append(f"  Config: {self.bundle_name}")
 
         # Active mode status
-        active_mode = self.session.coordinator.session_state.get("active_mode")
+        active_mode = self.session.coordinator.get_capability("modes.active_mode")
         lines.append(f"  Mode: {active_mode or 'none'}")
 
         # Context size
@@ -1469,8 +1468,8 @@ async def interactive_chat(
 
     # Create prompt session for history and advanced editing
     prompt_session = _create_prompt_session(
-        get_active_mode=lambda: command_processor.session.coordinator.session_state.get(
-            "active_mode"
+        get_active_mode=lambda: command_processor.session.coordinator.get_capability(
+            "modes.active_mode"
         )
     )
 
