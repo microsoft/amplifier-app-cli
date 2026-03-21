@@ -903,20 +903,19 @@ class CommandProcessor:
                         lines.append(f"  /{name}")
 
         # Add dynamic skills section if skills are available
-        skills_discovery = self.session.coordinator.get_capability("skills_discovery")
-        if skills_discovery and hasattr(skills_discovery, "get_shortcuts"):
-            shortcuts = skills_discovery.get_shortcuts()
-            if shortcuts:
-                lines.append("")
-                lines.append("Skill Commands:")
-                for name in sorted(shortcuts.keys()):
-                    shortcut_info = shortcuts[name]
-                    description = (
-                        shortcut_info.get("description", "")
-                        if isinstance(shortcut_info, dict)
-                        else str(shortcut_info)
-                    )
-                    lines.append(f"  /{name:<11} - {description}")
+        # Use cached SKILL_SHORTCUTS (same source as process_input) for consistency
+        shortcuts = self.SKILL_SHORTCUTS
+        if shortcuts:
+            lines.append("")
+            lines.append("Skill Commands:")
+            for name in sorted(shortcuts.keys()):
+                shortcut_info = shortcuts[name]
+                description = (
+                    shortcut_info.get("description", "")
+                    if isinstance(shortcut_info, dict)
+                    else str(shortcut_info)
+                )
+                lines.append(f"  /{name:<11} - {description}")
 
         return "\n".join(lines)
 
@@ -1286,7 +1285,10 @@ class CommandProcessor:
 
         # Construct synthetic prompt for session.execute()
         if arguments:
-            return True, f'Use the load_skill tool to load the skill "{skill_name}". Additional context from the user: {arguments}'
+            return (
+                True,
+                f'Use the load_skill tool to load the skill "{skill_name}". Additional context from the user: {arguments}',
+            )
         else:
             return True, f'Use the load_skill tool to load the skill "{skill_name}".'
 

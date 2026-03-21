@@ -55,10 +55,12 @@ def _make_command_processor(skills_discovery=None, mode_shortcuts=None):
 
     if skills_discovery is not None:
         original_get_capability = mock_session.coordinator.get_capability
+
         def _get_capability(key):
             if key == "skills_discovery":
                 return skills_discovery
             return original_get_capability(key)
+
         mock_session.coordinator.get_capability = _get_capability
 
     cp = CommandProcessor(mock_session, "test-bundle")
@@ -170,3 +172,25 @@ class TestFormatHelpSkillsSection:
 
         assert "/skills" in help_text
         assert "/skill" in help_text
+
+    def test_format_help_uses_skill_shortcuts_not_live_capability(self):
+        """_format_help() should read from self.SKILL_SHORTCUTS, not get_capability().
+
+        When SKILL_SHORTCUTS is populated but get_capability('skills_discovery')
+        returns None, the 'Skill Commands:' section must still appear.
+        This ensures _format_help() and process_input() use the same cached data.
+        """
+        # Create processor with no skills_discovery (get_capability returns None)
+        cp = _make_command_processor()  # No skills_discovery
+
+        # Manually inject into SKILL_SHORTCUTS (simulates cache already populated)
+        cp.SKILL_SHORTCUTS["simplify"] = {
+            "name": "simplify",
+            "description": "Simplify complex code",
+        }
+
+        help_text = cp._format_help()
+
+        # Must show skill from SKILL_SHORTCUTS even though get_capability returns None
+        assert "Skill Commands:" in help_text
+        assert "/simplify" in help_text
