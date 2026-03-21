@@ -22,16 +22,22 @@ def _make_command_processor(active_mode=None, mode_shortcuts=None):
     mock_session.coordinator = MagicMock()
     mock_session.coordinator.session_state = {
         "active_mode": active_mode,
-        "mode_discovery": MagicMock(),
-        "mode_hooks": MagicMock(),
     }
+
+    # Set up capabilities dict for get_capability
+    mode_discovery_mock = MagicMock()
+    mode_hooks_mock = MagicMock()
+    capabilities = {
+        "modes.discovery": mode_discovery_mock,
+        "modes.hooks": mode_hooks_mock,
+        "modes.active_mode": active_mode,
+    }
+    mock_session.coordinator.get_capability.side_effect = lambda key: capabilities.get(key)
 
     # Mock mode_discovery to return shortcuts
     if mode_shortcuts is None:
         mode_shortcuts = {"brainstorm": "brainstorm", "plan": "plan"}
-    mock_session.coordinator.session_state[
-        "mode_discovery"
-    ].get_shortcuts.return_value = mode_shortcuts
+    mode_discovery_mock.get_shortcuts.return_value = mode_shortcuts
 
     # Mock mode_discovery.find() to return a mode definition for known modes
     def mock_find(name):
@@ -41,10 +47,8 @@ def _make_command_processor(active_mode=None, mode_shortcuts=None):
         mock_mode.shortcut = name
         return mock_mode
 
-    mock_session.coordinator.session_state[
-        "mode_discovery"
-    ].find.side_effect = mock_find
-    mock_session.coordinator.session_state["mode_discovery"].list_modes.return_value = [
+    mode_discovery_mock.find.side_effect = mock_find
+    mode_discovery_mock.list_modes.return_value = [
         ("brainstorm", "Design refinement"),
         ("plan", "Implementation planning"),
     ]

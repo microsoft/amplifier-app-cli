@@ -326,7 +326,7 @@ class CommandProcessor:
 
     def _populate_mode_shortcuts(self) -> None:
         """Populate MODE_SHORTCUTS from mode discovery."""
-        discovery = self.session.coordinator.session_state.get("mode_discovery")
+        discovery = self.session.coordinator.get_capability("modes.discovery")
         if discovery and hasattr(discovery, "get_shortcuts"):
             shortcuts = discovery.get_shortcuts()
             # Update class-level shortcuts dict
@@ -483,7 +483,7 @@ class CommandProcessor:
             if current_mode:
                 session_state["active_mode"] = None
                 # Reset warnings in mode hooks if present
-                mode_hooks = session_state.get("mode_hooks")
+                mode_hooks = self.session.coordinator.get_capability("modes.hooks")
                 if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                     mode_hooks.reset_warnings()
                 return f"Mode off: {current_mode}"
@@ -501,7 +501,7 @@ class CommandProcessor:
         explicit_state = parts[1] if len(parts) > 1 else None
 
         # Check if mode exists via discovery
-        discovery = session_state.get("mode_discovery")
+        discovery = self.session.coordinator.get_capability("modes.discovery")
         if discovery:
             mode_def = discovery.find(mode_name)
             if not mode_def:
@@ -516,7 +516,7 @@ class CommandProcessor:
             if current_mode == mode_name:
                 return f"Already in {mode_name} mode"
             session_state["active_mode"] = mode_name
-            mode_hooks = session_state.get("mode_hooks")
+            mode_hooks = self.session.coordinator.get_capability("modes.hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
             return f"Mode: {mode_name}" + (f" — {description}" if description else "")
@@ -525,7 +525,7 @@ class CommandProcessor:
             if current_mode != mode_name:
                 return f"Not in {mode_name} mode"
             session_state["active_mode"] = None
-            mode_hooks = session_state.get("mode_hooks")
+            mode_hooks = self.session.coordinator.get_capability("modes.hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
             return f"Mode off: {mode_name}"
@@ -533,13 +533,13 @@ class CommandProcessor:
         # Toggle behavior (no explicit on/off)
         if current_mode == mode_name:
             session_state["active_mode"] = None
-            mode_hooks = session_state.get("mode_hooks")
+            mode_hooks = self.session.coordinator.get_capability("modes.hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
             return f"Mode off: {mode_name}"
         else:
             session_state["active_mode"] = mode_name
-            mode_hooks = session_state.get("mode_hooks")
+            mode_hooks = self.session.coordinator.get_capability("modes.hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
             return f"Mode: {mode_name}" + (f" — {description}" if description else "")
@@ -549,7 +549,7 @@ class CommandProcessor:
         from collections import defaultdict
 
         session_state = self.session.coordinator.session_state
-        discovery = session_state.get("mode_discovery")
+        discovery = self.session.coordinator.get_capability("modes.discovery")
 
         if not discovery:
             return (
@@ -847,8 +847,7 @@ class CommandProcessor:
             lines.append(f"  {cmd:<12} - {info['description']}")
 
         # Add dynamic modes section if modes are available
-        session_state = self.session.coordinator.session_state
-        discovery = session_state.get("mode_discovery")
+        discovery = self.session.coordinator.get_capability("modes.discovery")
         if discovery:
             modes = discovery.list_modes()
             if modes:
