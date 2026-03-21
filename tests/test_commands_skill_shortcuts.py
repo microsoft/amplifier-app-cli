@@ -9,38 +9,7 @@ Tests cover:
 
 from unittest.mock import MagicMock
 
-
-# ---------------------------------------------------------------------------
-# Helper - build a minimal CommandProcessor without a real session
-# ---------------------------------------------------------------------------
-
-
-def _make_command_processor(skills_discovery=None, mode_shortcuts=None):
-    """Create a CommandProcessor with mocked session for unit testing."""
-    from amplifier_app_cli.main import CommandProcessor
-
-    mock_session = MagicMock()
-    mock_session.coordinator = MagicMock()
-    mock_session.coordinator.session_state = {
-        "active_mode": None,
-    }
-    mock_session.coordinator.get_capability.return_value = None
-
-    if mode_shortcuts is not None:
-        mock_mode_discovery = MagicMock()
-        mock_mode_discovery.get_shortcuts.return_value = mode_shortcuts
-        mock_session.coordinator.session_state["mode_discovery"] = mock_mode_discovery
-
-    if skills_discovery is not None:
-        original_get_capability = mock_session.coordinator.get_capability
-        def _get_capability(key):
-            if key == "skills_discovery":
-                return skills_discovery
-            return original_get_capability(key)
-        mock_session.coordinator.get_capability = _get_capability
-
-    cp = CommandProcessor(mock_session, "test-bundle")
-    return cp
+from helpers import _make_command_processor
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +226,9 @@ class TestInitCallsPopulateSkillShortcuts:
         try:
             CommandProcessor(mock_session, "test-bundle")
             assert len(mode_call_tracker) > 0, "_populate_mode_shortcuts was not called"
-            assert len(skill_call_tracker) > 0, "_populate_skill_shortcuts was not called"
+            assert len(skill_call_tracker) > 0, (
+                "_populate_skill_shortcuts was not called"
+            )
         finally:
             CommandProcessor._populate_mode_shortcuts = original_mode_method
             CommandProcessor._populate_skill_shortcuts = original_skill_method
@@ -316,4 +287,4 @@ class TestPatternParity:
         cp = _make_command_processor()
         action, data = cp.process_input("/skill simplify")
         assert action == "load_skill"
-        assert data["args"] == "simplify"
+        assert data["skill_name"] == "simplify"
