@@ -20,9 +20,7 @@ def _make_command_processor(active_mode=None, mode_shortcuts=None):
 
     mock_session = MagicMock()
     mock_session.coordinator = MagicMock()
-    mock_session.coordinator.session_state = {
-        "active_mode": active_mode,
-    }
+    mock_session.coordinator.session_state = {}  # backward compat only, not read by tests
 
     # Set up capabilities dict for get_capability
     mode_discovery_mock = MagicMock()
