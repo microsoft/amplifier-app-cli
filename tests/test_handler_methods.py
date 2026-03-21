@@ -30,9 +30,15 @@ def _make_command_processor(skills_discovery=None):
     mock_session.coordinator.session_state = {
         "active_mode": None,
     }
+    mock_session.coordinator.get_capability.return_value = None
 
     if skills_discovery is not None:
-        mock_session.coordinator.session_state["skills_discovery"] = skills_discovery
+        original_get_capability = mock_session.coordinator.get_capability
+        def _get_capability(key):
+            if key == "skills_discovery":
+                return skills_discovery
+            return original_get_capability(key)
+        mock_session.coordinator.get_capability = _get_capability
 
     cp = CommandProcessor(mock_session, "test-bundle")
     return cp

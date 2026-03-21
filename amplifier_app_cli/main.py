@@ -342,7 +342,7 @@ class CommandProcessor:
 
     def _populate_skill_shortcuts(self) -> None:
         """Populate SKILL_SHORTCUTS from skills discovery."""
-        discovery = self.session.coordinator.session_state.get("skills_discovery")
+        discovery = self.session.coordinator.get_capability("skills_discovery")
         if discovery and hasattr(discovery, "get_shortcuts"):
             shortcuts = discovery.get_shortcuts()
             # Update class-level shortcuts dict
@@ -902,7 +902,7 @@ class CommandProcessor:
                         lines.append(f"  /{name}")
 
         # Add dynamic skills section if skills are available
-        skills_discovery = session_state.get("skills_discovery")
+        skills_discovery = self.session.coordinator.get_capability("skills_discovery")
         if skills_discovery and hasattr(skills_discovery, "get_shortcuts"):
             shortcuts = skills_discovery.get_shortcuts()
             if shortcuts:
@@ -1222,8 +1222,7 @@ class CommandProcessor:
 
     async def _list_skills(self) -> str:
         """List available skills with descriptions and shortcuts."""
-        session_state = self.session.coordinator.session_state
-        discovery = session_state.get("skills_discovery")
+        discovery = self.session.coordinator.get_capability("skills_discovery")
 
         if not discovery:
             return (
@@ -1267,8 +1266,7 @@ class CommandProcessor:
         if not skill_name:
             return "Usage: /skill <name> [context]"
 
-        session_state = self.session.coordinator.session_state
-        discovery = session_state.get("skills_discovery")
+        discovery = self.session.coordinator.get_capability("skills_discovery")
 
         if not discovery:
             return (
