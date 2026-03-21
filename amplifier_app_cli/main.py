@@ -316,9 +316,6 @@ class CommandProcessor:
     def __init__(self, session: AmplifierSession, bundle_name: str = "unknown"):
         self.session = session
         self.bundle_name = bundle_name
-        # Initialize session_state if not present
-        if not hasattr(self.session.coordinator, "session_state"):
-            self.session.coordinator.session_state = {}
         # Initialize active_mode capability if not already set
         if self.session.coordinator.get_capability("modes.active_mode") is None:
             self.session.coordinator.register_capability("modes.active_mode", None)
