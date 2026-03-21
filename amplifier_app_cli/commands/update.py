@@ -875,6 +875,112 @@ def _format_update_progress(name: str, phase: str) -> str:
     return f"{phase}: {name}"
 
 
+def _refresh_skills_cache(console: Console) -> None:
+    """Refresh stale skills caches (populated by tool-skills during mount).
+
+    Scans ~/.amplifier/cache/skills/ for directories that contain
+    .amplifier_cache_meta.json metadata (written by tool-skills after a clone).
+    For each, compares the cached commit SHA against the remote; if stale,
+    deletes and re-clones.  Directories without metadata are left untouched for
+    backward compatibility.
+    """
+    import json
+    import logging
+    import shutil
+    import subprocess
+    from datetime import datetime
+    from pathlib import Path
+
+    _logger = logging.getLogger(__name__)
+
+    skills_cache_dir = Path.home() / ".amplifier" / "cache" / "skills"
+    if not skills_cache_dir.exists():
+        return
+
+    refreshed = 0
+    for cached_repo in skills_cache_dir.iterdir():
+        if not cached_repo.is_dir():
+            continue
+        meta_file = cached_repo / ".amplifier_cache_meta.json"
+        if not meta_file.exists():
+            continue  # Legacy cache without metadata – leave untouched
+
+        try:
+            meta = json.loads(meta_file.read_text())
+            git_url = meta.get("git_url", "")
+            ref = meta.get("ref", "main")
+            cached_commit = meta.get("commit", "")
+
+            if not git_url or not cached_commit:
+                continue
+
+            # Check remote for latest commit SHA
+            result = subprocess.run(
+                ["git", "ls-remote", git_url, ref],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                continue
+
+            remote_sha = result.stdout.split()[0] if result.stdout.strip() else ""
+            if not remote_sha or remote_sha.startswith(cached_commit[:8]):
+                continue  # Cache is fresh
+
+            # Stale – delete and re-clone
+            console.print(f"  Refreshing skills cache: {cached_repo.name}")
+            shutil.rmtree(cached_repo)
+            clone_result = subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--branch",
+                    ref,
+                    git_url,
+                    str(cached_repo),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if clone_result.returncode == 0:
+                sha_result = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=str(cached_repo),
+                    capture_output=True,
+                    text=True,
+                )
+                new_sha = (
+                    sha_result.stdout.strip() if sha_result.returncode == 0 else ""
+                )
+                new_meta = {
+                    "cached_at": datetime.now().isoformat(),
+                    "ref": ref,
+                    "commit": new_sha,
+                    "git_url": git_url,
+                    "type": "skills",
+                }
+                (cached_repo / ".amplifier_cache_meta.json").write_text(
+                    json.dumps(new_meta, indent=2)
+                )
+                refreshed += 1
+                console.print(
+                    f"    [green]\u2713[/green] Updated ({cached_commit[:8]} \u2192 {new_sha[:8]})"
+                )
+            else:
+                console.print(
+                    f"    [red]\u2717[/red] Clone failed: {clone_result.stderr[:100]}"
+                )
+        except Exception as exc:
+            _logger.warning(f"Failed to refresh skills cache {cached_repo.name}: {exc}")
+
+    if refreshed > 0:
+        console.print(f"  Skills: {refreshed} cache(s) refreshed")
+
+
 @click.command()
 @click.option("--check-only", is_flag=True, help="Check for updates without installing")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmations")
@@ -1076,6 +1182,10 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
                 except Exception as exc:
                     bundle_errors[bundle_name] = str(exc)
                     bundle_failed.append(bundle_name)
+
+        # Refresh any stale skills caches
+        spinner.update("[dim]Refreshing skills caches...[/dim]")
+        _refresh_skills_cache(console)
     finally:
         spinner.stop()
 
