@@ -308,10 +308,16 @@ class CommandProcessor:
             "action": "fork_session",
             "description": "Fork session at turn N: /fork [turn]",
         },
+        "/skills": {"action": "list_skills", "description": "List available skills"},
+        "/skill": {
+            "action": "load_skill",
+            "description": "Load a skill (e.g., /skill simplify)",
+        },
     }
 
     # Dynamic shortcuts for modes (populated from mode definitions)
     MODE_SHORTCUTS: dict[str, str] = {}
+    SKILL_SHORTCUTS: dict[str, dict] = {}
 
     def __init__(self, session: AmplifierSession, bundle_name: str = "unknown"):
         self.session = session
@@ -323,6 +329,8 @@ class CommandProcessor:
             self.session.coordinator.session_state["active_mode"] = None
         # Populate mode shortcuts from discovery (if available)
         self._populate_mode_shortcuts()
+        # Populate skill shortcuts from discovery (if available)
+        self._populate_skill_shortcuts()
 
     def _populate_mode_shortcuts(self) -> None:
         """Populate MODE_SHORTCUTS from mode discovery."""
@@ -331,6 +339,14 @@ class CommandProcessor:
             shortcuts = discovery.get_shortcuts()
             # Update class-level shortcuts dict
             CommandProcessor.MODE_SHORTCUTS.update(shortcuts)
+
+    def _populate_skill_shortcuts(self) -> None:
+        """Populate SKILL_SHORTCUTS from skills discovery."""
+        discovery = self.session.coordinator.get_capability("skills_discovery")
+        if discovery and hasattr(discovery, "get_shortcuts"):
+            shortcuts = discovery.get_shortcuts()
+            # Update class-level shortcuts dict
+            CommandProcessor.SKILL_SHORTCUTS.update(shortcuts)
 
     def process_input(self, user_input: str) -> tuple[str, dict[str, Any]]:
         """
@@ -354,6 +370,10 @@ class CommandProcessor:
                     data["args"] = mode_args
                     if trailing:
                         data["trailing_prompt"] = trailing
+                elif cmd_info["action"] == "load_skill":
+                    skill_parts = args.strip().split(maxsplit=1)
+                    data["skill_name"] = skill_parts[0] if skill_parts else ""
+                    data["arguments"] = skill_parts[1] if len(skill_parts) > 1 else ""
                 return cmd_info["action"], data
 
             # Check for mode shortcuts (e.g., /plan -> /mode plan)
@@ -370,6 +390,17 @@ class CommandProcessor:
                         data["args"] = f"{shortcut_name} on"
                         data["trailing_prompt"] = trailing
                 return "handle_mode", data
+
+            # Check for skill shortcuts (e.g., /simplify -> load_skill)
+            if shortcut_name in self.SKILL_SHORTCUTS:
+                return (
+                    "load_skill",
+                    {
+                        "skill_name": shortcut_name,
+                        "arguments": args.strip(),
+                        "command": command,
+                    },
+                )
 
             return "unknown_command", {"command": command}
 
@@ -464,6 +495,15 @@ class CommandProcessor:
 
         if action == "fork_session":
             return await self._fork_session(data.get("args", ""))
+
+        if action == "list_skills":
+            return await self._list_skills()
+
+        if action == "load_skill":
+            _is_prompt, text = await self._load_skill(
+                data.get("skill_name", ""), data.get("arguments", "")
+            )
+            return text
 
         if action == "unknown_command":
             return (
@@ -862,6 +902,21 @@ class CommandProcessor:
                     else:
                         lines.append(f"  /{name}")
 
+        # Add dynamic skills section if skills are available
+        # Use cached SKILL_SHORTCUTS (same source as process_input) for consistency
+        shortcuts = self.SKILL_SHORTCUTS
+        if shortcuts:
+            lines.append("")
+            lines.append("Skill Commands:")
+            for name in sorted(shortcuts.keys()):
+                shortcut_info = shortcuts[name]
+                description = (
+                    shortcut_info.get("description", "")
+                    if isinstance(shortcut_info, dict)
+                    else str(shortcut_info)
+                )
+                lines.append(f"  /{name:<11} - {description}")
+
         return "\n".join(lines)
 
     async def _get_config_display(self) -> str:
@@ -1164,6 +1219,78 @@ class CommandProcessor:
   /denied-dirs list            - List denied directories
   /denied-dirs add <path>      - Add directory (session scope)
   /denied-dirs remove <path>   - Remove directory (session scope)"""
+
+    async def _list_skills(self) -> str:
+        """List available skills with descriptions and shortcuts."""
+        discovery = self.session.coordinator.get_capability("skills_discovery")
+
+        if not discovery:
+            return (
+                "Skills system not available. Include a bundle with skills to enable."
+            )
+
+        skills = discovery.list_skills()
+        if not skills:
+            return "No skills found. Create skills in .amplifier/skills/ or include a bundle with skills."
+
+        lines = ["Available Skills:"]
+        for item in skills:
+            name, description = item[0], item[1] if len(item) > 1 else ""
+            if description:
+                lines.append(f"  {name:<20} {description}")
+            else:
+                lines.append(f"  {name}")
+
+        # Add shortcuts section
+        shortcuts = discovery.get_shortcuts()
+        if shortcuts:
+            lines.append("")
+            lines.append("Shortcuts:")
+            for shortcut_name in shortcuts:
+                lines.append(f"  /{shortcut_name}")
+
+        lines.append("")
+        lines.append("Use /skill <name> to load a skill.")
+        return "\n".join(lines)
+
+    async def _load_skill(self, skill_name: str, arguments: str) -> tuple[bool, str]:
+        """Load a skill and return a structured result for execution.
+
+        Args:
+            skill_name: Name of the skill to load
+            arguments: Optional context arguments from the user
+
+        Returns:
+            Tuple of (is_prompt, text) where is_prompt=True means text is a
+            synthetic prompt for session.execute(), and is_prompt=False means
+            text is an error/usage message to display to the user.
+        """
+        if not skill_name:
+            return False, "Usage: /skill <name> [context]"
+
+        discovery = self.session.coordinator.get_capability("skills_discovery")
+
+        if not discovery:
+            return (
+                False,
+                "Skills system not available. Include a bundle with skills to enable.",
+            )
+
+        skill = discovery.find(skill_name)
+        if not skill:
+            # Get available skills for error message
+            skills = discovery.list_skills()
+            available = ", ".join(s[0] for s in skills) if skills else "none"
+            return False, f"Unknown skill: {skill_name}. Available: {available}"
+
+        # Construct synthetic prompt for session.execute()
+        if arguments:
+            return (
+                True,
+                f'Use the load_skill tool to load the skill "{skill_name}". Additional context from the user: {arguments}',
+            )
+        else:
+            return True, f'Use the load_skill tool to load the skill "{skill_name}".'
 
 
 def get_module_search_paths() -> list[Path]:
@@ -1637,7 +1764,22 @@ async def interactive_chat(
                     else:
                         # Handle command
                         result = await command_processor.handle_command(action, data)
-                        console.print(f"[cyan]{result}[/cyan]")
+
+                        if action == "load_skill":
+                            is_prompt, text = await command_processor._load_skill(
+                                data.get("skill_name", ""),
+                                data.get("arguments", ""),
+                            )
+                            if is_prompt:
+                                console.print(
+                                    "\n[dim]Processing... (Ctrl+C to cancel)[/dim]"
+                                )
+                                await _process_runtime_mentions(session, text)
+                                await _execute_with_interrupt(text)
+                            else:
+                                console.print(f"[cyan]{text}[/cyan]")
+                        else:
+                            console.print(f"[cyan]{result}[/cyan]")
 
                         # If command included trailing text, execute it as a prompt
                         trailing_prompt = data.get("trailing_prompt")
