@@ -329,6 +329,20 @@ async def spawn_sub_session(
             project_path=project_path,
             session_id=sub_session_id,
         )
+
+        # Emit session:fork event from parent hooks (finding #14)
+        parent_hooks = parent_session.coordinator.get("hooks")
+        if parent_hooks:
+            await parent_hooks.emit(
+                "session:fork",
+                {
+                    "child_session_id": sub_session_id,
+                    "parent_session_id": parent_session.session_id,
+                    "agent_name": agent_name,
+                    "spawn_mode": "subprocess",
+                },
+            )
+
         import json as _json
 
         try:

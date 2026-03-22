@@ -283,3 +283,92 @@ class TestSubprocessRouting:
         assert result["turn_count"] == 5
         assert result["session_id"] == "child-structured"
         assert result["metadata"] == {"tokens_used": 12345}
+
+    async def test_session_fork_event_emitted_for_subprocess(self, monkeypatch):
+        """session:fork event is emitted from parent hooks when subprocess path is taken.
+
+        When spawn_sub_session uses the subprocess path (use_subprocess=True or
+        spawn_mode: subprocess in config), the parent's hooks should receive a
+        session:fork event with child_session_id, parent_session_id, agent_name,
+        and spawn_mode='subprocess'.
+        """
+        parent = _make_parent_session()
+
+        # Create mock hooks
+        mock_hooks = AsyncMock()
+        mock_hooks.emit = AsyncMock()
+
+        # Mock coordinator.get to return mock_hooks for 'hooks' key
+        def coordinator_get(key):
+            if key == "hooks":
+                return mock_hooks
+            return None
+
+        parent.coordinator.get.side_effect = coordinator_get
+
+        # Create and inject fake subprocess_runner module
+        fake_module = _make_subprocess_runner_module()
+        monkeypatch.setitem(
+            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
+        )
+
+        with (
+            patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge,
+        ):
+            mock_merge.return_value = {"session": {}}
+
+            from amplifier_app_cli.session_spawner import spawn_sub_session
+
+            await spawn_sub_session(
+                agent_name="test-agent",
+                instruction="Do something",
+                parent_session=parent,
+                agent_configs={"test-agent": {}},
+                sub_session_id="child-session-id",
+                use_subprocess=True,
+            )
+
+        # Verify session:fork event was emitted exactly once with correct data
+        mock_hooks.emit.assert_called_once_with(
+            "session:fork",
+            {
+                "child_session_id": "child-session-id",
+                "parent_session_id": "parent-session-id",
+                "agent_name": "test-agent",
+                "spawn_mode": "subprocess",
+            },
+        )
+
+    async def test_session_fork_not_emitted_when_no_hooks(self, monkeypatch):
+        """No error when parent has no hooks — session:fork is silently skipped.
+
+        Acceptance criterion #3: no event emitted if hooks not available (no error).
+        """
+        parent = _make_parent_session()
+        # coordinator.get returns None by default (no hooks)
+
+        fake_module = _make_subprocess_runner_module()
+        monkeypatch.setitem(
+            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
+        )
+
+        with (
+            patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge,
+        ):
+            mock_merge.return_value = {"session": {}}
+
+            from amplifier_app_cli.session_spawner import spawn_sub_session
+
+            # Should complete without error even when no hooks are registered
+            result = await spawn_sub_session(
+                agent_name="test-agent",
+                instruction="Do something",
+                parent_session=parent,
+                agent_configs={"test-agent": {}},
+                sub_session_id="no-hooks-session-id",
+                use_subprocess=True,
+            )
+
+        # Result should still be returned normally
+        assert result["output"] == "subprocess output"
+        assert result["session_id"] == "no-hooks-session-id"
