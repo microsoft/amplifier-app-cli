@@ -4,6 +4,7 @@ Implements sub-session creation with configuration inheritance and overlays.
 """
 
 import logging
+import sys
 from pathlib import Path
 
 from amplifier_core import AmplifierSession
@@ -12,6 +13,10 @@ from amplifier_foundation import generate_sub_session_id
 from .agent_config import merge_configs
 
 logger = logging.getLogger(__name__)
+
+# Capture default sys.path entries at import time.
+# Used to filter out bundle-added paths when forwarding sys_paths to subprocess children.
+_DEFAULT_SYS_PATHS: frozenset[str] = frozenset(sys.path)
 
 
 def _extract_bundle_context(session: "AmplifierSession") -> dict | None:
@@ -322,12 +327,25 @@ async def spawn_sub_session(
             or Path.cwd()
         )
         child_config = {k: v for k, v in merged_config.items() if k != "spawn_mode"}
+
+        # Extract bundle context to propagate to subprocess child.
+        # Without this, bundle-loaded modules and packages are not importable in the child.
+        bundle_ctx = _extract_bundle_context(parent_session)
+        bundle_pkg_paths = parent_session.coordinator.get_capability(
+            "bundle_package_paths"
+        )
+
         result = await run_session_in_subprocess(
             config=child_config,
             prompt=instruction,
             parent_id=parent_session.session_id,
             project_path=project_path,
             session_id=sub_session_id,
+            module_paths=bundle_ctx.get("module_paths") if bundle_ctx else None,
+            bundle_package_paths=(
+                bundle_pkg_paths() if callable(bundle_pkg_paths) else bundle_pkg_paths
+            ),
+            sys_paths=[p for p in sys.path if p not in _DEFAULT_SYS_PATHS],
         )
 
         # Emit session:fork event from parent hooks (finding #14)
@@ -411,8 +429,6 @@ async def spawn_sub_session(
     # Two sources of paths need to be shared:
     # 1. loader._added_paths - individual module paths added during loading
     # 2. bundle_package_paths capability - bundle src/ directories (e.g., python-dev)
-    import sys
-
     paths_to_share: list[str] = []
 
     # Source 1: Module paths from parent loader
@@ -839,6 +855,7 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
         provider_preferences: list | None = None,
         self_delegation_depth: int = 0,
         session_metadata: dict | None = None,
+        use_subprocess: bool = False,
     ) -> dict:
         return await spawn_sub_session(
             agent_name=agent_name,
@@ -853,6 +870,7 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
             provider_preferences=provider_preferences,
             self_delegation_depth=self_delegation_depth,
             session_metadata=session_metadata,
+            use_subprocess=use_subprocess,
         )
 
     async def child_resume_capability(sub_session_id: str, instruction: str) -> dict:

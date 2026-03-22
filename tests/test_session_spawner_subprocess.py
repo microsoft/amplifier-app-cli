@@ -372,3 +372,120 @@ class TestSubprocessRouting:
         # Result should still be returned normally
         assert result["output"] == "subprocess output"
         assert result["session_id"] == "no-hooks-session-id"
+
+
+class TestBundleContextSubprocess:
+    """Tests for bundle context propagation in subprocess dispatch."""
+
+    async def test_bundle_context_passed_to_subprocess(self, monkeypatch):
+        """module_paths, bundle_package_paths, sys_paths are forwarded to run_session_in_subprocess.
+
+        When use_subprocess=True, spawn_sub_session must extract bundle context from the
+        parent session and pass module_paths, bundle_package_paths, and sys_paths to
+        run_session_in_subprocess. Without this, bundle modules are not importable in child.
+        """
+        from pathlib import Path
+
+        parent = _make_parent_session()
+
+        # Set up a fake BundleModuleResolver on the coordinator
+        fake_paths = {"my_tool": Path("/bundle/tools/my_tool")}
+        fake_resolver = type("FakeBMR", (), {"_paths": fake_paths})()
+
+        def coordinator_get(key):
+            if key == "module-source-resolver":
+                return fake_resolver
+            return None
+
+        parent.coordinator.get.side_effect = coordinator_get
+
+        # bundle_package_paths capability
+        bundle_pkg_paths = ["/bundle/src", "/bundle/extra/src"]
+
+        def coordinator_get_cap(key):
+            if key == "bundle_package_paths":
+                return bundle_pkg_paths
+            if key == "session.working_dir":
+                return None
+            return None
+
+        parent.coordinator.get_capability.side_effect = coordinator_get_cap
+
+        fake_module = _make_subprocess_runner_module()
+        monkeypatch.setitem(
+            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
+        )
+
+        with patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge:
+            mock_merge.return_value = {"session": {}}
+
+            from amplifier_app_cli.session_spawner import spawn_sub_session
+
+            await spawn_sub_session(
+                agent_name="some-agent",
+                instruction="Do something",
+                parent_session=parent,
+                agent_configs={"some-agent": {}},
+                sub_session_id="bundle-ctx-test-id",
+                use_subprocess=True,
+            )
+
+        fake_module.run_session_in_subprocess.assert_called_once()
+        call_kwargs = fake_module.run_session_in_subprocess.call_args.kwargs
+
+        # module_paths must be passed and contain our bundle module paths
+        assert "module_paths" in call_kwargs, (
+            "module_paths not forwarded to run_session_in_subprocess"
+        )
+        assert call_kwargs["module_paths"] is not None
+        assert "my_tool" in call_kwargs["module_paths"], (
+            f"Expected 'my_tool' in module_paths, got: {call_kwargs['module_paths']}"
+        )
+
+        # bundle_package_paths must be passed
+        assert "bundle_package_paths" in call_kwargs, (
+            "bundle_package_paths not forwarded to run_session_in_subprocess"
+        )
+        assert call_kwargs["bundle_package_paths"] == bundle_pkg_paths
+
+        # sys_paths must be passed as a list
+        assert "sys_paths" in call_kwargs, (
+            "sys_paths not forwarded to run_session_in_subprocess"
+        )
+        assert isinstance(call_kwargs["sys_paths"], list)
+
+
+class TestResumeSubSessionChildSpawnCapability:
+    """Tests for child_spawn_capability closure in resume_sub_session."""
+
+    def test_resume_child_spawn_capability_has_use_subprocess_param(self):
+        """child_spawn_capability registered in resume_sub_session accepts use_subprocess.
+
+        The closure registered as session.spawn inside resume_sub_session must include
+        use_subprocess: bool = False in its signature and thread it through to spawn_sub_session.
+        Without this, resumed sessions cannot spawn subprocess children.
+        """
+        import inspect
+
+        from amplifier_app_cli.session_spawner import resume_sub_session
+
+        # Get the source of resume_sub_session to inspect the closure signature
+        source = inspect.getsource(resume_sub_session)
+
+        # Locate the child_spawn_capability definition within resume_sub_session
+        child_spawn_idx = source.find("async def child_spawn_capability(")
+        assert child_spawn_idx != -1, (
+            "No child_spawn_capability closure found in resume_sub_session"
+        )
+
+        # Extract the signature portion (up to ') -> dict:')
+        sig_end = source.find(") -> dict:", child_spawn_idx)
+        if sig_end == -1:
+            sig_end = source.find("->", child_spawn_idx) + 40
+        closure_sig = source[child_spawn_idx:sig_end]
+
+        # RED: Currently the closure in resume_sub_session does NOT have use_subprocess
+        assert "use_subprocess" in closure_sig, (
+            f"child_spawn_capability in resume_sub_session is missing 'use_subprocess' param.\n"
+            f"Found signature fragment:\n{closure_sig}"
+        )
