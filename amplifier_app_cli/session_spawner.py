@@ -329,6 +329,20 @@ async def spawn_sub_session(
             project_path=project_path,
             session_id=sub_session_id,
         )
+        import json as _json
+
+        try:
+            parsed = _json.loads(result)
+            if isinstance(parsed, dict) and "output" in parsed:
+                return {
+                    "output": parsed["output"],
+                    "session_id": parsed.get("session_id", sub_session_id),
+                    "status": parsed.get("status", "success"),
+                    "turn_count": parsed.get("turn_count", 1),
+                    "metadata": parsed.get("metadata", {}),
+                }
+        except (ValueError, TypeError):
+            pass
         return {
             "output": result,
             "session_id": sub_session_id,

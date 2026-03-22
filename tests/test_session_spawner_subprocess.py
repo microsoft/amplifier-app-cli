@@ -235,3 +235,51 @@ class TestSubprocessRouting:
         # Other keys must still be present
         assert passed_config.get("session") == {"orchestrator": "loop-basic"}
         assert passed_config.get("other_key") == "other_value"
+
+    async def test_json_envelope_parsed_for_return_dict(self, monkeypatch):
+        """When child returns JSON envelope, all fields are parsed into return dict.
+
+        The subprocess runner may return a JSON string with structured fields:
+        output, status, turn_count, session_id, metadata. These should be parsed
+        and returned in the result dict instead of the raw string.
+        """
+        import json
+
+        parent = _make_parent_session()
+
+        # Create fake module that returns a JSON envelope string
+        json_envelope = json.dumps(
+            {
+                "output": "analysis complete",
+                "status": "success",
+                "turn_count": 5,
+                "session_id": "child-structured",
+                "metadata": {"tokens_used": 12345},
+            }
+        )
+        fake_module = ModuleType("amplifier_foundation.subprocess_runner")
+        fake_module.run_session_in_subprocess = AsyncMock(return_value=json_envelope)
+        monkeypatch.setitem(
+            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
+        )
+
+        with patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge:
+            mock_merge.return_value = {"session": {}}
+
+            from amplifier_app_cli.session_spawner import spawn_sub_session
+
+            result = await spawn_sub_session(
+                agent_name="some-agent",
+                instruction="Do analysis",
+                parent_session=parent,
+                agent_configs={"some-agent": {}},
+                sub_session_id="fixed-sub-id",
+                use_subprocess=True,
+            )
+
+        # All fields from JSON envelope should be parsed into the result dict
+        assert result["output"] == "analysis complete"
+        assert result["status"] == "success"
+        assert result["turn_count"] == 5
+        assert result["session_id"] == "child-structured"
+        assert result["metadata"] == {"tokens_used": 12345}
