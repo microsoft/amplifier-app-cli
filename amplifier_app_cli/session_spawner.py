@@ -4,6 +4,7 @@ Implements sub-session creation with configuration inheritance and overlays.
 """
 
 import logging
+import sys
 from pathlib import Path
 
 from amplifier_core import AmplifierSession
@@ -12,6 +13,10 @@ from amplifier_foundation import generate_sub_session_id
 from .agent_config import merge_configs
 
 logger = logging.getLogger(__name__)
+
+# Capture default sys.path entries at import time.
+# Used to filter out bundle-added paths when forwarding sys_paths to subprocess children.
+_DEFAULT_SYS_PATHS: frozenset[str] = frozenset(sys.path)
 
 
 def _extract_bundle_context(session: "AmplifierSession") -> dict | None:
@@ -199,6 +204,7 @@ async def spawn_sub_session(
     provider_preferences: list | None = None,
     self_delegation_depth: int = 0,
     session_metadata: dict | None = None,
+    use_subprocess: bool = False,
 ) -> dict:
     """
     Spawn sub-session with agent configuration overlay.
@@ -226,6 +232,10 @@ async def spawn_sub_session(
         self_delegation_depth: Current depth in the self-delegation chain (default: 0).
             Incremented for self-delegation, reset to 0 for named agents.
             Used to prevent infinite recursion.
+        use_subprocess: If True, run the agent in a subprocess via
+            run_session_in_subprocess instead of in-process. Also
+            triggered when spawn_mode: "subprocess" is set in
+            merged config. Returns early with output dict.
 
     Returns:
         Dict with "output" (response) and "session_id" (for multi-turn)
@@ -307,6 +317,72 @@ async def spawn_sub_session(
         )
     assert sub_session_id is not None  # Always generated above if not provided
 
+    # Route to subprocess runner if requested via parameter or config
+    spawn_mode = merged_config.get("spawn_mode")
+    if use_subprocess or spawn_mode == "subprocess":
+        from amplifier_foundation.subprocess_runner import run_session_in_subprocess
+
+        project_path = str(
+            parent_session.coordinator.get_capability("session.working_dir")
+            or Path.cwd()
+        )
+        child_config = {k: v for k, v in merged_config.items() if k != "spawn_mode"}
+
+        # Extract bundle context to propagate to subprocess child.
+        # Without this, bundle-loaded modules and packages are not importable in the child.
+        bundle_ctx = _extract_bundle_context(parent_session)
+        bundle_pkg_paths = parent_session.coordinator.get_capability(
+            "bundle_package_paths"
+        )
+
+        result = await run_session_in_subprocess(
+            config=child_config,
+            prompt=instruction,
+            parent_id=parent_session.session_id,
+            project_path=project_path,
+            session_id=sub_session_id,
+            module_paths=bundle_ctx.get("module_paths") if bundle_ctx else None,
+            bundle_package_paths=(
+                bundle_pkg_paths() if callable(bundle_pkg_paths) else bundle_pkg_paths
+            ),
+            sys_paths=[p for p in sys.path if p not in _DEFAULT_SYS_PATHS],
+        )
+
+        # Emit session:fork event from parent hooks (finding #14)
+        parent_hooks = parent_session.coordinator.get("hooks")
+        if parent_hooks:
+            await parent_hooks.emit(
+                "session:fork",
+                {
+                    "child_session_id": sub_session_id,
+                    "parent_session_id": parent_session.session_id,
+                    "agent_name": agent_name,
+                    "spawn_mode": "subprocess",
+                },
+            )
+
+        import json as _json
+
+        try:
+            parsed = _json.loads(result)
+            if isinstance(parsed, dict) and "output" in parsed:
+                return {
+                    "output": parsed["output"],
+                    "session_id": parsed.get("session_id", sub_session_id),
+                    "status": parsed.get("status", "success"),
+                    "turn_count": parsed.get("turn_count", 1),
+                    "metadata": parsed.get("metadata", {}),
+                }
+        except (ValueError, TypeError):
+            pass
+        return {
+            "output": result,
+            "session_id": sub_session_id,
+            "status": "success",
+            "turn_count": 1,
+            "metadata": {},
+        }
+
     # Create child session with parent_id and inherited UX systems (kernel mechanism)
     # NOTE: We intentionally do NOT share parent's loader here.
     # The loader caches modules with their config, so sharing would cause child sessions
@@ -353,8 +429,6 @@ async def spawn_sub_session(
     # Two sources of paths need to be shared:
     # 1. loader._added_paths - individual module paths added during loading
     # 2. bundle_package_paths capability - bundle src/ directories (e.g., python-dev)
-    import sys
-
     paths_to_share: list[str] = []
 
     # Source 1: Module paths from parent loader
@@ -458,6 +532,7 @@ async def spawn_sub_session(
         provider_preferences: list | None = None,
         self_delegation_depth: int = 0,
         session_metadata: dict | None = None,
+        use_subprocess: bool = False,
     ) -> dict:
         return await spawn_sub_session(
             agent_name=agent_name,
@@ -472,6 +547,7 @@ async def spawn_sub_session(
             provider_preferences=provider_preferences,
             self_delegation_depth=self_delegation_depth,
             session_metadata=session_metadata,
+            use_subprocess=use_subprocess,
         )
 
     async def child_resume_capability(sub_session_id: str, instruction: str) -> dict:
@@ -779,6 +855,7 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
         provider_preferences: list | None = None,
         self_delegation_depth: int = 0,
         session_metadata: dict | None = None,
+        use_subprocess: bool = False,
     ) -> dict:
         return await spawn_sub_session(
             agent_name=agent_name,
@@ -793,6 +870,7 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
             provider_preferences=provider_preferences,
             self_delegation_depth=self_delegation_depth,
             session_metadata=session_metadata,
+            use_subprocess=use_subprocess,
         )
 
     async def child_resume_capability(sub_session_id: str, instruction: str) -> dict:
