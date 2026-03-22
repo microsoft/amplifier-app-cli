@@ -1,10 +1,11 @@
 """Tests for subprocess opt-in spawning in session_spawner.py.
 
 Tests that spawn_sub_session() correctly routes to subprocess runner when:
-1. subprocess=True parameter is passed
+1. use_subprocess=True parameter is passed
 2. spawn_mode: subprocess is in merged config
 
 Also verifies that without these flags, the in-process AmplifierSession path is taken.
+Also verifies spawn_mode is stripped from child config before passing to subprocess runner.
 """
 
 import sys
@@ -62,7 +63,7 @@ class TestSubprocessRouting:
     """Tests for subprocess opt-in parameter routing in spawn_sub_session."""
 
     async def test_subprocess_param_routes_to_subprocess(self, monkeypatch):
-        """subprocess=True routes to run_session_in_subprocess, returns expected dict."""
+        """use_subprocess=True routes to run_session_in_subprocess, returns expected dict."""
         parent = _make_parent_session()
 
         # Create and inject fake subprocess_runner module
@@ -84,7 +85,7 @@ class TestSubprocessRouting:
                 parent_session=parent,
                 agent_configs={"some-agent": {}},
                 sub_session_id="fixed-test-id",
-                subprocess=True,
+                use_subprocess=True,
             )
 
         # Verify subprocess runner was called
@@ -106,7 +107,10 @@ class TestSubprocessRouting:
         assert result["metadata"] == {}
 
     async def test_spawn_mode_config_routes_to_subprocess(self, monkeypatch):
-        """spawn_mode: subprocess in merged config routes to subprocess runner."""
+        """spawn_mode: subprocess in merged config routes to subprocess runner.
+
+        Also verifies spawn_mode is stripped from the config passed to the runner.
+        """
         parent = _make_parent_session()
 
         fake_module = _make_subprocess_runner_module()
@@ -128,23 +132,24 @@ class TestSubprocessRouting:
                 parent_session=parent,
                 agent_configs={"some-agent": {}},
                 sub_session_id="fixed-test-id-2",
-                # subprocess=False is default -- routing via config only
+                # use_subprocess=False is default -- routing via config only
             )
 
         # Verify subprocess runner was called due to config
         fake_module.run_session_in_subprocess.assert_called_once()
         call_kwargs = fake_module.run_session_in_subprocess.call_args
         assert call_kwargs.kwargs["session_id"] == "fixed-test-id-2"
-        assert call_kwargs.kwargs["config"]["spawn_mode"] == "subprocess"
+        # spawn_mode must be stripped from child config before passing to runner
+        assert "spawn_mode" not in call_kwargs.kwargs["config"]
 
         assert result["status"] == "success"
         assert result["session_id"] == "fixed-test-id-2"
         assert result["output"] == "subprocess output"
 
     async def test_no_subprocess_flag_uses_inprocess(self, monkeypatch):
-        """Without subprocess flag or spawn_mode config, AmplifierSession path is taken.
+        """Without use_subprocess flag or spawn_mode config, AmplifierSession path is taken.
 
-        Verifies run_session_in_subprocess is NOT called when subprocess=False
+        Verifies run_session_in_subprocess is NOT called when use_subprocess=False
         and spawn_mode is not set in merged config.
         """
         parent = _make_parent_session()
@@ -177,8 +182,56 @@ class TestSubprocessRouting:
                     parent_session=parent,
                     agent_configs={"some-agent": {}},
                     sub_session_id="fixed-test-id-3",
-                    subprocess=False,  # Explicitly no subprocess
+                    use_subprocess=False,  # Explicitly no subprocess
                 )
 
         # Verify subprocess runner was NOT called
         fake_module.run_session_in_subprocess.assert_not_called()
+
+    async def test_spawn_mode_stripped_from_child_config(self, monkeypatch):
+        """spawn_mode is stripped from config passed to run_session_in_subprocess.
+
+        When merged_config contains spawn_mode, it must not be forwarded to the
+        subprocess runner -- otherwise the child would re-enter subprocess mode
+        recursively (spawn_mode cascade bug, finding #7).
+        """
+        parent = _make_parent_session()
+
+        fake_module = _make_subprocess_runner_module()
+        monkeypatch.setitem(
+            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
+        )
+
+        with (
+            patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge,
+        ):
+            # Config has spawn_mode: subprocess (simulates cascade scenario)
+            mock_merge.return_value = {
+                "session": {"orchestrator": "loop-basic"},
+                "spawn_mode": "subprocess",
+                "other_key": "other_value",
+            }
+
+            from amplifier_app_cli.session_spawner import spawn_sub_session
+
+            await spawn_sub_session(
+                agent_name="some-agent",
+                instruction="Cascade test",
+                parent_session=parent,
+                agent_configs={"some-agent": {}},
+                sub_session_id="cascade-test-id",
+            )
+
+        # Verify subprocess runner was called
+        fake_module.run_session_in_subprocess.assert_called_once()
+        call_kwargs = fake_module.run_session_in_subprocess.call_args
+        passed_config = call_kwargs.kwargs["config"]
+
+        # spawn_mode must NOT be in the config passed to the child
+        assert "spawn_mode" not in passed_config, (
+            f"spawn_mode should be stripped from child config, but got: {passed_config}"
+        )
+
+        # Other keys must still be present
+        assert passed_config.get("session") == {"orchestrator": "loop-basic"}
+        assert passed_config.get("other_key") == "other_value"

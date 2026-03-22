@@ -199,7 +199,7 @@ async def spawn_sub_session(
     provider_preferences: list | None = None,
     self_delegation_depth: int = 0,
     session_metadata: dict | None = None,
-    subprocess: bool = False,
+    use_subprocess: bool = False,
 ) -> dict:
     """
     Spawn sub-session with agent configuration overlay.
@@ -227,7 +227,7 @@ async def spawn_sub_session(
         self_delegation_depth: Current depth in the self-delegation chain (default: 0).
             Incremented for self-delegation, reset to 0 for named agents.
             Used to prevent infinite recursion.
-        subprocess: If True, run the agent in a subprocess via
+        use_subprocess: If True, run the agent in a subprocess via
             run_session_in_subprocess instead of in-process. Also
             triggered when spawn_mode: "subprocess" is set in
             merged config. Returns early with output dict.
@@ -314,15 +314,16 @@ async def spawn_sub_session(
 
     # Route to subprocess runner if requested via parameter or config
     spawn_mode = merged_config.get("spawn_mode")
-    if subprocess or spawn_mode == "subprocess":
+    if use_subprocess or spawn_mode == "subprocess":
         from amplifier_foundation.subprocess_runner import run_session_in_subprocess
 
         project_path = str(
             parent_session.coordinator.get_capability("session.working_dir")
             or Path.cwd()
         )
+        child_config = {k: v for k, v in merged_config.items() if k != "spawn_mode"}
         result = await run_session_in_subprocess(
-            config=merged_config,
+            config=child_config,
             prompt=instruction,
             parent_id=parent_session.session_id,
             project_path=project_path,
@@ -487,7 +488,7 @@ async def spawn_sub_session(
         provider_preferences: list | None = None,
         self_delegation_depth: int = 0,
         session_metadata: dict | None = None,
-        subprocess: bool = False,
+        use_subprocess: bool = False,
     ) -> dict:
         return await spawn_sub_session(
             agent_name=agent_name,
@@ -502,7 +503,7 @@ async def spawn_sub_session(
             provider_preferences=provider_preferences,
             self_delegation_depth=self_delegation_depth,
             session_metadata=session_metadata,
-            subprocess=subprocess,
+            use_subprocess=use_subprocess,
         )
 
     async def child_resume_capability(sub_session_id: str, instruction: str) -> dict:
