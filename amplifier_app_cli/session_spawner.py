@@ -317,7 +317,7 @@ async def spawn_sub_session(
     if subprocess or spawn_mode == "subprocess":
         from amplifier_foundation.subprocess_runner import run_session_in_subprocess
 
-        project_path = (
+        project_path = str(
             parent_session.coordinator.get_capability("session.working_dir")
             or Path.cwd()
         )

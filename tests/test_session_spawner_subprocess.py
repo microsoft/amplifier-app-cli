@@ -94,6 +94,9 @@ class TestSubprocessRouting:
         assert call_kwargs.kwargs["prompt"] == "Do something"
         assert call_kwargs.kwargs["parent_id"] == "parent-session-id"
         assert call_kwargs.kwargs["session_id"] == "fixed-test-id"
+        assert isinstance(call_kwargs.kwargs["project_path"], str), (
+            "project_path must be str, not Path object (would fail JSON serialization)"
+        )
 
         # Verify correct return dict structure
         assert result["output"] == "subprocess output"
