@@ -15,33 +15,7 @@ Tests cover:
 import pytest
 from unittest.mock import MagicMock, AsyncMock
 
-from amplifier_app_cli.main import CommandProcessor
-
-
-# ---------------------------------------------------------------------------
-# Helper - build a minimal CommandProcessor without a real session
-# ---------------------------------------------------------------------------
-
-
-def _make_command_processor(skills_discovery=None):
-    """Create a CommandProcessor with mocked session for unit testing."""
-    mock_session = MagicMock()
-    mock_session.coordinator = MagicMock()
-    mock_session.coordinator.session_state = {
-        "active_mode": None,
-    }
-    mock_session.coordinator.get_capability.return_value = None
-
-    if skills_discovery is not None:
-        original_get_capability = mock_session.coordinator.get_capability
-        def _get_capability(key):
-            if key == "skills_discovery":
-                return skills_discovery
-            return original_get_capability(key)
-        mock_session.coordinator.get_capability = _get_capability
-
-    cp = CommandProcessor(mock_session, "test-bundle")
-    return cp
+from helpers import _make_command_processor
 
 
 def _make_mock_discovery(skills=None, shortcuts=None):

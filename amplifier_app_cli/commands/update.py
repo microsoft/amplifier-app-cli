@@ -925,7 +925,7 @@ def _refresh_skills_cache(console: Console) -> None:
                 continue
 
             remote_sha = result.stdout.split()[0] if result.stdout.strip() else ""
-            if not remote_sha or remote_sha.startswith(cached_commit[:8]):
+            if not remote_sha or remote_sha == cached_commit:
                 continue  # Cache is fresh
 
             # Stale – delete and re-clone

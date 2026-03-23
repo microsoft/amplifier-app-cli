@@ -1762,10 +1762,9 @@ async def interactive_chat(
                         await _execute_with_interrupt(data["text"])
 
                     else:
-                        # Handle command
-                        result = await command_processor.handle_command(action, data)
-
                         if action == "load_skill":
+                            # Call _load_skill() directly to get is_prompt flag —
+                            # handle_command() discards it, so we bypass it here.
                             is_prompt, text = await command_processor._load_skill(
                                 data.get("skill_name", ""),
                                 data.get("arguments", ""),
@@ -1779,6 +1778,10 @@ async def interactive_chat(
                             else:
                                 console.print(f"[cyan]{text}[/cyan]")
                         else:
+                            # Handle command
+                            result = await command_processor.handle_command(
+                                action, data
+                            )
                             console.print(f"[cyan]{result}[/cyan]")
 
                         # If command included trailing text, execute it as a prompt
