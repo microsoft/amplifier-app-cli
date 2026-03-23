@@ -20,6 +20,7 @@ dependencies = [
 
 [project.scripts]
 amplifier = "amplifier_app_cli.main:main"
+a-amplifier = "amplifier_app_cli.main:main"
 
 [tool.uv]
 package = true
@@ -38,7 +39,7 @@ build-backend = "hatchling.build"
 dev = ["pytest>=8.4.2", "pytest-asyncio>=0.24.0"]
 
 [tool.uv.sources]
-amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", branch = "main" }
+amplifier-foundation = { git = "https://github.com/anokye-labs/amplifier-foundation", branch = "main" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
