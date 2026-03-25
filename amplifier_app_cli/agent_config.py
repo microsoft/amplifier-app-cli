@@ -4,6 +4,7 @@ Utilities for agent overlay merging and validation.
 Agents are loaded via bundles (amplifier-foundation).
 """
 
+import copy
 import logging
 from typing import Any
 
@@ -113,6 +114,15 @@ def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
         # Filter to only specified agent names
         parent_agents = parent.get("agents", {})
         result["agents"] = {k: v for k, v in parent_agents.items() if k in agent_filter}
+
+    # Deep-copy the agents dict to prevent cross-session mutation.
+    # Placed AFTER agent filtering so the copy covers the final filtered set only.
+    # The routing hook's on_session_start mutates agent_cfg dicts in-place when it
+    # resolves model_role -> provider_preferences. Without deepcopy, a child session's
+    # routing hook silently corrupts the parent's agent configs — a race condition
+    # with parallel spawns.
+    if result.get("agents"):
+        result["agents"] = copy.deepcopy(result["agents"])
 
     return result
 

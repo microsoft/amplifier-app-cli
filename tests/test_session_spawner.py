@@ -1143,3 +1143,549 @@ class TestSessionMetadataFlow:
 
         assert result["output"] == "ok"
         assert spawn_called_with.get("session_metadata") is None
+
+
+class TestRoutingFallbackFromAgentConfig:
+    """Bug A (P1): spawn_sub_session must read routing-resolved provider_preferences
+    from agent_config when no explicit preferences are passed by the caller.
+
+    The routing hook writes provider_preferences into agent_cfg dicts at session:start.
+    Tool-delegate normally reads these and passes them as a function argument, but
+    spawn_sub_session should also work without tool-delegate as a middleman.
+    """
+
+    async def test_uses_agent_config_prefs_when_caller_passes_none(
+        self, tmp_path, monkeypatch
+    ):
+        """When provider_preferences=None (caller omits it), use agent_config['provider_preferences'].
+
+        Simulates a direct spawn_sub_session call (not via tool-delegate) where
+        the agent has routing-resolved preferences from model_role resolution.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from amplifier_app_cli.session_spawner import spawn_sub_session
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        apply_called_with = {}
+
+        async def fake_apply_prefs(config, prefs, coordinator):
+            apply_called_with["prefs"] = prefs
+            return config  # return unchanged for simplicity
+
+        parent_coordinator = MagicMock()
+        parent_coordinator.get.return_value = None
+        parent_coordinator.get_capability.return_value = None
+        parent_coordinator.display_system = MagicMock()
+        parent_coordinator.cancellation = MagicMock()
+        parent_coordinator.cancellation.register_child = MagicMock()
+        parent_coordinator.cancellation.unregister_child = MagicMock()
+
+        parent_session = MagicMock()
+        parent_session.coordinator = parent_coordinator
+        parent_session.config = {
+            "session": {"orchestrator": "loop-basic", "context": "context-simple"},
+        }
+        parent_session.session_id = "parent-routing-test"
+        parent_session.trace_id = "trace-routing"
+        parent_session.loader = None
+
+        class FakeHooks:
+            def register(self, event, handler, priority=0, name=None):
+                def _unregister():
+                    pass
+                return _unregister
+
+            async def emit(self, event, data):
+                pass
+
+        child_coordinator = MagicMock()
+        child_coordinator.register_capability = MagicMock()
+        child_coordinator.get_capability.return_value = None
+        child_coordinator.display_system = MagicMock()
+
+        def child_get(name):
+            if name == "hooks":
+                return FakeHooks()
+            if name == "context":
+                ctx = AsyncMock()
+                ctx.get_messages = AsyncMock(return_value=[])
+                ctx.add_message = AsyncMock()
+                return ctx
+            return None
+
+        child_coordinator.get = child_get
+        child_coordinator.mount = AsyncMock()
+
+        child_session = MagicMock()
+        child_session.coordinator = child_coordinator
+        child_session.initialize = AsyncMock()
+        child_session.execute = AsyncMock(return_value="response")
+        child_session.cleanup = AsyncMock()
+        child_session.session_id = "child-routing-001"
+
+        # Agent config WITH routing-hook-resolved preferences (no explicit call-time prefs)
+        agent_configs = {
+            "coder": {
+                "description": "Coding agent with routing-resolved prefs",
+                "provider_preferences": [
+                    {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+                    {"provider": "openai", "model": "gpt-5"},
+                ],
+            }
+        }
+
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            return_value=child_session,
+        ):
+            with patch(
+                "amplifier_app_cli.session_spawner.generate_sub_session_id",
+                return_value="child-routing-001",
+            ):
+                with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                    with patch("amplifier_app_cli.session_store.SessionStore.save"):
+                        with patch(
+                            "amplifier_foundation.spawn_utils.ProviderPreference.from_dict",
+                            side_effect=lambda d: d,
+                        ):
+                            with patch(
+                                "amplifier_foundation.apply_provider_preferences_with_resolution",
+                                side_effect=fake_apply_prefs,
+                            ):
+                                # NOTE: provider_preferences NOT passed (default None)
+                                await spawn_sub_session(
+                                    agent_name="coder",
+                                    instruction="Write some code",
+                                    parent_session=parent_session,
+                                    agent_configs=agent_configs,
+                                    # provider_preferences intentionally omitted
+                                )
+
+        assert "prefs" in apply_called_with, (
+            "apply_provider_preferences_with_resolution must be called when "
+            "agent_config has routing-resolved provider_preferences (Bug A)"
+        )
+        assert len(apply_called_with["prefs"]) == 2, (
+            "Both routing-resolved preferences must be forwarded"
+        )
+
+    async def test_explicit_prefs_take_precedence_over_agent_config_prefs(
+        self, tmp_path, monkeypatch
+    ):
+        """Explicit caller-supplied provider_preferences override agent_config prefs.
+
+        When both are provided, the caller's explicit preferences win. The fallback
+        only activates when the caller passes nothing (None).
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from amplifier_app_cli.session_spawner import spawn_sub_session
+        from amplifier_foundation.spawn_utils import ProviderPreference
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        apply_called_with = {}
+
+        async def fake_apply_prefs(config, prefs, coordinator):
+            apply_called_with["prefs"] = prefs
+            return config
+
+        parent_coordinator = MagicMock()
+        parent_coordinator.get.return_value = None
+        parent_coordinator.get_capability.return_value = None
+        parent_coordinator.display_system = MagicMock()
+        parent_coordinator.cancellation = MagicMock()
+        parent_coordinator.cancellation.register_child = MagicMock()
+        parent_coordinator.cancellation.unregister_child = MagicMock()
+
+        parent_session = MagicMock()
+        parent_session.coordinator = parent_coordinator
+        parent_session.config = {
+            "session": {"orchestrator": "loop-basic", "context": "context-simple"},
+        }
+        parent_session.session_id = "parent-explicit-prefs"
+        parent_session.trace_id = "trace-explicit"
+        parent_session.loader = None
+
+        class FakeHooks:
+            def register(self, event, handler, priority=0, name=None):
+                def _unregister():
+                    pass
+                return _unregister
+
+            async def emit(self, event, data):
+                pass
+
+        child_coordinator = MagicMock()
+        child_coordinator.register_capability = MagicMock()
+        child_coordinator.get_capability.return_value = None
+        child_coordinator.display_system = MagicMock()
+
+        def child_get(name):
+            if name == "hooks":
+                return FakeHooks()
+            if name == "context":
+                ctx = AsyncMock()
+                ctx.get_messages = AsyncMock(return_value=[])
+                ctx.add_message = AsyncMock()
+                return ctx
+            return None
+
+        child_coordinator.get = child_get
+        child_coordinator.mount = AsyncMock()
+
+        child_session = MagicMock()
+        child_session.coordinator = child_coordinator
+        child_session.initialize = AsyncMock()
+        child_session.execute = AsyncMock(return_value="response")
+        child_session.cleanup = AsyncMock()
+        child_session.session_id = "child-explicit-001"
+
+        # Agent config has routing-resolved prefs
+        agent_configs = {
+            "coder": {
+                "provider_preferences": [
+                    {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+                ],
+            }
+        }
+
+        # Explicit caller pref — should win over agent_config pref
+        explicit_pref = ProviderPreference(provider="openai", model="gpt-5")
+
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            return_value=child_session,
+        ):
+            with patch(
+                "amplifier_app_cli.session_spawner.generate_sub_session_id",
+                return_value="child-explicit-001",
+            ):
+                with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                    with patch("amplifier_app_cli.session_store.SessionStore.save"):
+                        with patch(
+                            "amplifier_foundation.apply_provider_preferences_with_resolution",
+                            side_effect=fake_apply_prefs,
+                        ):
+                            await spawn_sub_session(
+                                agent_name="coder",
+                                instruction="Write some code",
+                                parent_session=parent_session,
+                                agent_configs=agent_configs,
+                                provider_preferences=[explicit_pref],  # explicit
+                            )
+
+        # The explicit pref (openai gpt-5) must be what was applied
+        assert "prefs" in apply_called_with
+        applied = apply_called_with["prefs"]
+        assert len(applied) == 1
+        assert applied[0].provider == "openai", (
+            "Explicit caller prefs must override agent_config routing prefs (Bug A precedence)"
+        )
+        assert applied[0].model == "gpt-5"
+
+    async def test_no_prefs_no_agent_config_prefs_skips_apply(
+        self, tmp_path, monkeypatch
+    ):
+        """When neither caller prefs nor agent_config prefs are present, apply is skipped."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from amplifier_app_cli.session_spawner import spawn_sub_session
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        apply_call_count = {"n": 0}
+
+        async def fake_apply_prefs(config, prefs, coordinator):
+            apply_call_count["n"] += 1
+            return config
+
+        parent_coordinator = MagicMock()
+        parent_coordinator.get.return_value = None
+        parent_coordinator.get_capability.return_value = None
+        parent_coordinator.display_system = MagicMock()
+        parent_coordinator.cancellation = MagicMock()
+        parent_coordinator.cancellation.register_child = MagicMock()
+        parent_coordinator.cancellation.unregister_child = MagicMock()
+
+        parent_session = MagicMock()
+        parent_session.coordinator = parent_coordinator
+        parent_session.config = {
+            "session": {"orchestrator": "loop-basic", "context": "context-simple"},
+        }
+        parent_session.session_id = "parent-no-prefs"
+        parent_session.trace_id = "trace-no-prefs"
+        parent_session.loader = None
+
+        class FakeHooks:
+            def register(self, event, handler, priority=0, name=None):
+                def _unregister():
+                    pass
+                return _unregister
+
+            async def emit(self, event, data):
+                pass
+
+        child_coordinator = MagicMock()
+        child_coordinator.register_capability = MagicMock()
+        child_coordinator.get_capability.return_value = None
+        child_coordinator.display_system = MagicMock()
+
+        def child_get(name):
+            if name == "hooks":
+                return FakeHooks()
+            if name == "context":
+                ctx = AsyncMock()
+                ctx.get_messages = AsyncMock(return_value=[])
+                ctx.add_message = AsyncMock()
+                return ctx
+            return None
+
+        child_coordinator.get = child_get
+        child_coordinator.mount = AsyncMock()
+
+        child_session = MagicMock()
+        child_session.coordinator = child_coordinator
+        child_session.initialize = AsyncMock()
+        child_session.execute = AsyncMock(return_value="response")
+        child_session.cleanup = AsyncMock()
+        child_session.session_id = "child-no-prefs-001"
+
+        # Agent config WITHOUT any provider_preferences (no routing hook result)
+        agent_configs = {
+            "coder": {"description": "Coding agent — no routing"},
+        }
+
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            return_value=child_session,
+        ):
+            with patch(
+                "amplifier_app_cli.session_spawner.generate_sub_session_id",
+                return_value="child-no-prefs-001",
+            ):
+                with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                    with patch("amplifier_app_cli.session_store.SessionStore.save"):
+                        with patch(
+                            "amplifier_foundation.apply_provider_preferences_with_resolution",
+                            side_effect=fake_apply_prefs,
+                        ):
+                            await spawn_sub_session(
+                                agent_name="coder",
+                                instruction="Write some code",
+                                parent_session=parent_session,
+                                agent_configs=agent_configs,
+                            )
+
+        assert apply_call_count["n"] == 0, (
+            "apply_provider_preferences_with_resolution must NOT be called "
+            "when neither caller prefs nor agent_config prefs exist"
+        )
+
+
+class TestRoutingCapabilityPropagation:
+    """Bug C (P2): spawn_sub_session must propagate session.routing capability
+    from parent to child when the parent has one.
+
+    When the routing-matrix bundle registers a session.routing capability on the
+    parent, the child's hooks-routing needs to find it to apply runtime overrides
+    (capability_overrides) to the effective matrix. Without propagation the child
+    resolves model_role against an unmodified matrix, ignoring any runtime tweaks.
+    """
+
+    async def test_routing_capability_propagated_to_child(self, tmp_path, monkeypatch):
+        """session.routing capability must be registered on child when parent has it."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from amplifier_app_cli.session_spawner import spawn_sub_session
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        fake_routing = {"matrix": "balanced", "overrides": {"coding": "anthropic"}}
+
+        registered_capabilities = {}
+
+        def mock_register_capability(name, value):
+            registered_capabilities[name] = value
+
+        parent_coordinator = MagicMock()
+        parent_coordinator.get.return_value = None
+
+        def parent_get_capability(name):
+            if name == "session.routing":
+                return fake_routing
+            return None
+
+        parent_coordinator.get_capability = MagicMock(side_effect=parent_get_capability)
+        parent_coordinator.display_system = MagicMock()
+        parent_coordinator.cancellation = MagicMock()
+        parent_coordinator.cancellation.register_child = MagicMock()
+        parent_coordinator.cancellation.unregister_child = MagicMock()
+
+        parent_session = MagicMock()
+        parent_session.coordinator = parent_coordinator
+        parent_session.config = {
+            "session": {"orchestrator": "loop-basic", "context": "context-simple"},
+        }
+        parent_session.session_id = "parent-routing-cap"
+        parent_session.trace_id = "trace-routing-cap"
+        parent_session.loader = None
+
+        class FakeHooks:
+            def register(self, event, handler, priority=0, name=None):
+                def _unregister():
+                    pass
+                return _unregister
+
+            async def emit(self, event, data):
+                pass
+
+        child_coordinator = MagicMock()
+        child_coordinator.register_capability = MagicMock(
+            side_effect=mock_register_capability
+        )
+        child_coordinator.get_capability.return_value = None
+        child_coordinator.display_system = MagicMock()
+
+        def child_get(name):
+            if name == "hooks":
+                return FakeHooks()
+            if name == "context":
+                ctx = AsyncMock()
+                ctx.get_messages = AsyncMock(return_value=[])
+                ctx.add_message = AsyncMock()
+                return ctx
+            return None
+
+        child_coordinator.get = child_get
+        child_coordinator.mount = AsyncMock()
+
+        child_session = MagicMock()
+        child_session.coordinator = child_coordinator
+        child_session.initialize = AsyncMock()
+        child_session.execute = AsyncMock(return_value="response")
+        child_session.cleanup = AsyncMock()
+        child_session.session_id = "child-routing-cap-001"
+
+        agent_configs = {
+            "coder": {"description": "Coding agent"},
+        }
+
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            return_value=child_session,
+        ):
+            with patch(
+                "amplifier_app_cli.session_spawner.generate_sub_session_id",
+                return_value="child-routing-cap-001",
+            ):
+                with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                    with patch("amplifier_app_cli.session_store.SessionStore.save"):
+                        await spawn_sub_session(
+                            agent_name="coder",
+                            instruction="Write some code",
+                            parent_session=parent_session,
+                            agent_configs=agent_configs,
+                        )
+
+        assert "session.routing" in registered_capabilities, (
+            "session.routing capability must be propagated from parent to child (Bug C)"
+        )
+        assert registered_capabilities["session.routing"] is fake_routing, (
+            "Child must receive the exact same routing object as parent"
+        )
+
+    async def test_no_routing_capability_on_parent_skips_registration(
+        self, tmp_path, monkeypatch
+    ):
+        """When parent has no session.routing capability, child gets none (no crash)."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from amplifier_app_cli.session_spawner import spawn_sub_session
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        registered_capabilities = {}
+
+        def mock_register_capability(name, value):
+            registered_capabilities[name] = value
+
+        parent_coordinator = MagicMock()
+        parent_coordinator.get.return_value = None
+        parent_coordinator.get_capability.return_value = None  # No session.routing
+        parent_coordinator.display_system = MagicMock()
+        parent_coordinator.cancellation = MagicMock()
+        parent_coordinator.cancellation.register_child = MagicMock()
+        parent_coordinator.cancellation.unregister_child = MagicMock()
+
+        parent_session = MagicMock()
+        parent_session.coordinator = parent_coordinator
+        parent_session.config = {
+            "session": {"orchestrator": "loop-basic", "context": "context-simple"},
+        }
+        parent_session.session_id = "parent-no-routing"
+        parent_session.trace_id = "trace-no-routing"
+        parent_session.loader = None
+
+        class FakeHooks:
+            def register(self, event, handler, priority=0, name=None):
+                def _unregister():
+                    pass
+                return _unregister
+
+            async def emit(self, event, data):
+                pass
+
+        child_coordinator = MagicMock()
+        child_coordinator.register_capability = MagicMock(
+            side_effect=mock_register_capability
+        )
+        child_coordinator.get_capability.return_value = None
+        child_coordinator.display_system = MagicMock()
+
+        def child_get(name):
+            if name == "hooks":
+                return FakeHooks()
+            if name == "context":
+                ctx = AsyncMock()
+                ctx.get_messages = AsyncMock(return_value=[])
+                ctx.add_message = AsyncMock()
+                return ctx
+            return None
+
+        child_coordinator.get = child_get
+        child_coordinator.mount = AsyncMock()
+
+        child_session = MagicMock()
+        child_session.coordinator = child_coordinator
+        child_session.initialize = AsyncMock()
+        child_session.execute = AsyncMock(return_value="response")
+        child_session.cleanup = AsyncMock()
+        child_session.session_id = "child-no-routing-001"
+
+        agent_configs = {
+            "coder": {"description": "Coding agent"},
+        }
+
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            return_value=child_session,
+        ):
+            with patch(
+                "amplifier_app_cli.session_spawner.generate_sub_session_id",
+                return_value="child-no-routing-001",
+            ):
+                with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                    with patch("amplifier_app_cli.session_store.SessionStore.save"):
+                        await spawn_sub_session(
+                            agent_name="coder",
+                            instruction="Write some code",
+                            parent_session=parent_session,
+                            agent_configs=agent_configs,
+                        )
+
+        assert "session.routing" not in registered_capabilities, (
+            "session.routing must not be registered on child when parent has none (Bug C)"
+        )

@@ -272,6 +272,29 @@ async def spawn_sub_session(
             merged_config, hook_inheritance, agent_hook_modules
         )
 
+    # Defense-in-depth: read routing-resolved provider_preferences from agent config
+    # when no explicit preferences were passed by the caller.
+    # The routing hook (hooks-routing) writes provider_preferences into agent configs
+    # at session:start when resolving model_role declarations in agent frontmatter.
+    # Tool-delegate normally reads these and passes them as a function argument, but
+    # this fallback ensures spawn_sub_session works without that middleman — any
+    # direct caller benefits from frontmatter routing too.
+    if not provider_preferences:
+        agent_prefs_raw = agent_config.get("provider_preferences")
+        if agent_prefs_raw:
+            from amplifier_foundation.spawn_utils import ProviderPreference
+
+            provider_preferences = [
+                ProviderPreference.from_dict(p) if isinstance(p, dict) else p
+                for p in agent_prefs_raw
+            ]
+            logger.debug(
+                "Using routing-resolved provider_preferences from agent config "
+                "for agent '%s' (%d preference(s))",
+                agent_name,
+                len(provider_preferences),
+            )
+
     # Apply provider preferences if specified (ordered fallback chain)
     if provider_preferences:
         from amplifier_foundation import apply_provider_preferences_with_resolution
@@ -509,6 +532,15 @@ async def spawn_sub_session(
         child_session.coordinator.register_capability(
             "session.working_dir", parent_working_dir
         )
+
+    # Routing capability — inherit so child's hooks-routing can compose runtime overrides.
+    # When the parent has a session.routing capability (registered by the routing-matrix
+    # bundle), the child's hooks-routing reads it to apply capability_overrides to the
+    # effective matrix. Without inheritance the child gets no overrides and may resolve
+    # model_role against a different effective matrix than the parent intended.
+    parent_routing = parent_session.coordinator.get_capability("session.routing")
+    if parent_routing:
+        child_session.coordinator.register_capability("session.routing", parent_routing)
 
     # Self-delegation depth tracking (for recursion limits)
     # This is a simple value capability, not a function
