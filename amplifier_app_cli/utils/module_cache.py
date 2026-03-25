@@ -16,10 +16,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+from .cache_management import rmtree_safe
 
 try:
     import tomllib
@@ -62,7 +63,10 @@ def get_bundle_name(cache_path: Path) -> str | None:
                     frontmatter = yaml.safe_load(parts[1])
                     if isinstance(frontmatter, dict):
                         bundle_section = frontmatter.get("bundle", {})
-                        if isinstance(bundle_section, dict) and "name" in bundle_section:
+                        if (
+                            isinstance(bundle_section, dict)
+                            and "name" in bundle_section
+                        ):
                             return bundle_section["name"]
         except Exception as e:
             logger.debug(f"Could not parse bundle.md frontmatter: {e}")
@@ -98,7 +102,9 @@ def get_module_info_from_pyproject(cache_path: Path) -> tuple[str | None, str | 
 
     try:
         data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        entry_points = data.get("project", {}).get("entry-points", {}).get("amplifier.modules", {})
+        entry_points = (
+            data.get("project", {}).get("entry-points", {}).get("amplifier.modules", {})
+        )
 
         if not entry_points:
             return None, None
@@ -146,7 +152,9 @@ class CachedModuleInfo:
     distinguishes between them (module_type="bundle" for bundles).
     """
 
-    module_id: str  # Entry point key for modules (e.g., "tool-bash"), bundle name for bundles
+    module_id: (
+        str  # Entry point key for modules (e.g., "tool-bash"), bundle name for bundles
+    )
     module_type: str  # tool, hook, provider, orchestrator, context, agent, bundle
     ref: str
     sha: str
@@ -408,7 +416,7 @@ def clear_module_cache(
                 try:
                     if progress_callback:
                         progress_callback(entry.name, "clearing")
-                    shutil.rmtree(entry)
+                    rmtree_safe(entry)
                     cleared += 1
                 except Exception as e:
                     logger.warning(f"Could not clear {entry}: {e}")
@@ -435,7 +443,7 @@ def clear_module_cache(
         # Delete cache directory
         try:
             if module.cache_path.exists():
-                shutil.rmtree(module.cache_path)
+                rmtree_safe(module.cache_path)
                 cleared += 1
                 logger.debug(f"Cleared cache for {module.module_id}@{module.ref}")
         except Exception as e:
@@ -470,7 +478,7 @@ async def update_module(
     # pyproject.toml entry points (e.g., "provider-anthropic" not
     # "amplifier-module-provider-anthropic")
     if repo_name.startswith("amplifier-module-"):
-        module_id = repo_name[len("amplifier-module-"):]
+        module_id = repo_name[len("amplifier-module-") :]
     else:
         module_id = repo_name
 
