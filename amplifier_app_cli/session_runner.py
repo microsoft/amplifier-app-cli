@@ -482,6 +482,7 @@ def register_session_spawning(session: AmplifierSession) -> None:
         provider_preferences: list | None = None,
         self_delegation_depth: int = 0,
         session_metadata: dict | None = None,
+        use_subprocess: bool = False,
     ) -> dict:
         return await spawn_sub_session(
             agent_name=agent_name,
@@ -496,6 +497,7 @@ def register_session_spawning(session: AmplifierSession) -> None:
             provider_preferences=provider_preferences,
             self_delegation_depth=self_delegation_depth,
             session_metadata=session_metadata,
+            use_subprocess=use_subprocess,
         )
 
     async def resume_capability(sub_session_id: str, instruction: str) -> dict:

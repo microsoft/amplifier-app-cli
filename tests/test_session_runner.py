@@ -11,6 +11,7 @@ from amplifier_app_cli.session_runner import (
     SessionConfig,
     _should_attempt_self_healing,
     create_initialized_session,
+    register_session_spawning,
 )
 
 # ---------------------------------------------------------------------------
@@ -449,6 +450,93 @@ class TestSelfHealingCounterComparison:
             r.message for r in caplog.records if r.levelno == logging.WARNING
         ]
         assert not warning_messages, f"Expected no warnings but got: {warning_messages}"
+
+
+# ---------------------------------------------------------------------------
+# register_session_spawning — spawn_capability forwards use_subprocess
+# ---------------------------------------------------------------------------
+
+
+class TestSpawnCapabilityForwardsUseSubprocess:
+    """Tests that the root spawn_capability closure accepts and forwards use_subprocess.
+
+    The root spawn_capability in register_session_spawning must forward
+    use_subprocess to spawn_sub_session so that callers (e.g. recipe executor)
+    can request subprocess isolation for agent steps.
+
+    Bug: child_spawn_capability closures in session_spawner.py already have
+    use_subprocess, but the ROOT spawn_capability in session_runner.py was
+    missing it — making subprocess isolation unreachable from root sessions.
+    """
+
+    @pytest.mark.anyio
+    async def test_spawn_capability_forwards_use_subprocess_true(self):
+        """spawn_capability forwards use_subprocess=True to spawn_sub_session."""
+        mock_session = _make_mock_session()
+
+        # Patch at the SOURCE module — register_session_spawning does
+        # `from .session_spawner import spawn_sub_session` internally,
+        # so we must patch the source before calling register_session_spawning.
+        with patch(
+            "amplifier_app_cli.session_spawner.spawn_sub_session",
+            new_callable=AsyncMock,
+            return_value={"output": "test", "session_id": "sub-123"},
+        ) as mock_spawn:
+            register_session_spawning(mock_session)
+
+            # Extract the registered spawn_capability from the mock
+            register_calls = mock_session.coordinator.register_capability.call_args_list
+            spawn_call = [c for c in register_calls if c[0][0] == "session.spawn"]
+            assert spawn_call, "session.spawn capability was not registered"
+            spawn_fn = spawn_call[0][0][1]
+
+            # Call spawn_capability with use_subprocess=True
+            mock_parent = MagicMock()
+            await spawn_fn(
+                agent_name="test-agent",
+                instruction="do something",
+                parent_session=mock_parent,
+                agent_configs={"test-agent": {}},
+                use_subprocess=True,
+            )
+
+            mock_spawn.assert_called_once()
+            call_kwargs = mock_spawn.call_args[1]
+            assert call_kwargs["use_subprocess"] is True, (
+                "use_subprocess=True was not forwarded to spawn_sub_session"
+            )
+
+    @pytest.mark.anyio
+    async def test_spawn_capability_defaults_use_subprocess_false(self):
+        """spawn_capability defaults use_subprocess=False (backward compat)."""
+        mock_session = _make_mock_session()
+
+        with patch(
+            "amplifier_app_cli.session_spawner.spawn_sub_session",
+            new_callable=AsyncMock,
+            return_value={"output": "test", "session_id": "sub-123"},
+        ) as mock_spawn:
+            register_session_spawning(mock_session)
+
+            # Extract the registered spawn_capability
+            register_calls = mock_session.coordinator.register_capability.call_args_list
+            spawn_call = [c for c in register_calls if c[0][0] == "session.spawn"]
+            spawn_fn = spawn_call[0][0][1]
+
+            # Call WITHOUT use_subprocess — should default to False
+            mock_parent = MagicMock()
+            await spawn_fn(
+                agent_name="test-agent",
+                instruction="do something",
+                parent_session=mock_parent,
+                agent_configs={"test-agent": {}},
+            )
+
+            mock_spawn.assert_called_once()
+            call_kwargs = mock_spawn.call_args[1]
+            assert call_kwargs["use_subprocess"] is False, (
+                "use_subprocess should default to False"
+            )
 
     def test_self_healing_backward_compat_single_instance(self, caplog):
         """Single-instance provider with no instance_id still works correctly.
