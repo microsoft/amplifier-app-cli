@@ -369,6 +369,7 @@ async def spawn_sub_session(
                 bundle_pkg_paths() if callable(bundle_pkg_paths) else bundle_pkg_paths
             ),
             sys_paths=[p for p in sys.path if p not in _DEFAULT_SYS_PATHS],
+            mention_mappings=bundle_ctx.get("mention_mappings") if bundle_ctx else None,
         )
 
         # Emit session:fork event from parent hooks (finding #14)
