@@ -62,7 +62,10 @@ def get_bundle_name(cache_path: Path) -> str | None:
                     frontmatter = yaml.safe_load(parts[1])
                     if isinstance(frontmatter, dict):
                         bundle_section = frontmatter.get("bundle", {})
-                        if isinstance(bundle_section, dict) and "name" in bundle_section:
+                        if (
+                            isinstance(bundle_section, dict)
+                            and "name" in bundle_section
+                        ):
                             return bundle_section["name"]
         except Exception as e:
             logger.debug(f"Could not parse bundle.md frontmatter: {e}")
@@ -98,7 +101,9 @@ def get_module_info_from_pyproject(cache_path: Path) -> tuple[str | None, str | 
 
     try:
         data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        entry_points = data.get("project", {}).get("entry-points", {}).get("amplifier.modules", {})
+        entry_points = (
+            data.get("project", {}).get("entry-points", {}).get("amplifier.modules", {})
+        )
 
         if not entry_points:
             return None, None
@@ -146,7 +151,9 @@ class CachedModuleInfo:
     distinguishes between them (module_type="bundle" for bundles).
     """
 
-    module_id: str  # Entry point key for modules (e.g., "tool-bash"), bundle name for bundles
+    module_id: (
+        str  # Entry point key for modules (e.g., "tool-bash"), bundle name for bundles
+    )
     module_type: str  # tool, hook, provider, orchestrator, context, agent, bundle
     ref: str
     sha: str
@@ -240,6 +247,14 @@ def scan_cached_modules(type_filter: str = "all") -> list[CachedModuleInfo]:
 
         try:
             metadata = json.loads(meta_file.read_text(encoding="utf-8"))
+
+            # Skills sources (e.g. obra/superpowers) are handled separately
+            # by _refresh_skills_cache() in update.py. Including them here
+            # routes them through GitSourceHandler._verify_clone_integrity()
+            # which rejects them for lacking pyproject.toml/bundle.md.
+            if metadata.get("type") == "skills":
+                continue
+
             url = metadata.get("git_url", "")
             sha = metadata.get("commit", "")
             ref = metadata.get("ref", "main")
@@ -302,6 +317,11 @@ def scan_cached_modules(type_filter: str = "all") -> list[CachedModuleInfo]:
 
         try:
             metadata = json.loads(legacy_meta.read_text(encoding="utf-8"))
+
+            # Skills sources are handled separately (see comment above)
+            if metadata.get("type") == "skills":
+                continue
+
             url = metadata.get("url", "")
 
             # Use structural detection for older entries too
@@ -470,7 +490,7 @@ async def update_module(
     # pyproject.toml entry points (e.g., "provider-anthropic" not
     # "amplifier-module-provider-anthropic")
     if repo_name.startswith("amplifier-module-"):
-        module_id = repo_name[len("amplifier-module-"):]
+        module_id = repo_name[len("amplifier-module-") :]
     else:
         module_id = repo_name
 
