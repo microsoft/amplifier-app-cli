@@ -429,10 +429,12 @@ async def _check_all_cached_modules(
     # Get all cached modules using centralized utility
     cached_modules = scan_cached_modules()
 
-    # Filter out bundles - they're handled separately via update_bundle
-    # and would fail with uv pip install (config-only repos have no pyproject.toml)
-    # Use structural detection (module_type="bundle") not name-based filtering
-    cached_modules = [m for m in cached_modules if m.module_type != "bundle"]
+    # Filter out bundles (handled by update_bundle) and skills sources
+    # (handled by _refresh_skills_cache). Both would fail module validation:
+    # bundles lack pyproject.toml, skills repos lack all Amplifier markers.
+    cached_modules = [
+        m for m in cached_modules if m.module_type not in ("bundle", "skills")
+    ]
 
     if not cached_modules:
         return [], 0
