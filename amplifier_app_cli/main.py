@@ -1668,11 +1668,11 @@ async def interactive_chat(
                 if running_tools:
                     tools_str = ", ".join(running_tools)
                     console.print(
-                        f"\n[yellow]Cancelling after [bold]{tools_str}[/bold] completes... (Ctrl+C again to force)[/yellow]"
+                        f"\n[yellow]Stopping after current operation in [bold]{tools_str}[/bold]... (Ctrl+C again to force)[/yellow]"
                     )
                 else:
                     console.print(
-                        "\n[yellow]Cancelling after current operation completes... (Ctrl+C again to force)[/yellow]"
+                        "\n[yellow]Stopping after current operation completes... (Ctrl+C again to force)[/yellow]"
                     )
 
         original_handler = signal.signal(signal.SIGINT, sigint_handler)

@@ -587,6 +587,7 @@ async def spawn_sub_session(
         return await resume_sub_session(
             sub_session_id=sub_session_id,
             instruction=instruction,
+            parent_session=parent_session,
         )
 
     child_session.coordinator.register_capability(
@@ -639,65 +640,68 @@ async def spawn_sub_session(
             name="_spawn_capture",
         )
 
-    # Execute instruction in child session
+    # Execute instruction in child session; cleanup MUST run even on CancelledError
     try:
-        response = await child_session.execute(instruction)
+        try:
+            response = await child_session.execute(instruction)
+        finally:
+            if unregister_hook:
+                unregister_hook()
+
+        # Persist state for multi-turn resumption
+        from datetime import UTC
+        from datetime import datetime
+
+        from .session_store import SessionStore
+
+        context = child_session.coordinator.get("context")
+        transcript = await context.get_messages() if context else []
+
+        # Extract or generate trace_id for W3C Trace Context pattern
+        # Root session ID is the trace_id, propagate it to all children
+        parent_trace_id = getattr(parent_session, "trace_id", parent_session.session_id)
+
+        # Extract child_span from sub_session_id for short_id resolution
+        # Format: {parent_id}-{child_span}_{agent_name}
+        child_span: str | None = None
+        if sub_session_id and "_" in sub_session_id and "-" in sub_session_id:
+            base = sub_session_id.rsplit("_", 1)[0]  # Remove agent name
+            child_span = base.rsplit("-", 1)[-1]  # Get child_span (16 hex chars)
+
+        metadata = {
+            "session_id": sub_session_id,
+            "parent_id": parent_session.session_id,
+            "trace_id": parent_trace_id,  # W3C Trace Context: trace entire conversation
+            "agent_name": agent_name,
+            "child_span": child_span,  # For short_id resolution (first 8 chars = short_id)
+            "created": datetime.now(UTC).isoformat(),
+            "config": merged_config,
+            "agent_overlay": agent_config,
+            "turn_count": 1,
+            "bundle_context": _extract_bundle_context(parent_session),
+            "self_delegation_depth": self_delegation_depth,  # For recursion limit tracking
+            # Store working_dir for session sync between CLI and web
+            "working_dir": str(Path.cwd().resolve()),
+        }
+
+        store = SessionStore()
+        store.save(sub_session_id, transcript, metadata)
+        logger.debug(f"Sub-session {sub_session_id} state persisted")
+
     finally:
-        if unregister_hook:
-            unregister_hook()
+        # Unregister child cancellation token before cleanup
+        # MUST run even if execution was cancelled (CancelledError) or failed
+        parent_cancellation.unregister_child(child_cancellation)
+        logger.debug(
+            f"Unregistered child cancellation token for sub-session {sub_session_id}"
+        )
 
-    # Persist state for multi-turn resumption
-    from datetime import UTC
-    from datetime import datetime
+        # Notify display system we're exiting the nested session (for indentation)
+        if hasattr(display_system, "pop_nesting"):
+            display_system.pop_nesting()
 
-    from .session_store import SessionStore
-
-    context = child_session.coordinator.get("context")
-    transcript = await context.get_messages() if context else []
-
-    # Extract or generate trace_id for W3C Trace Context pattern
-    # Root session ID is the trace_id, propagate it to all children
-    parent_trace_id = getattr(parent_session, "trace_id", parent_session.session_id)
-
-    # Extract child_span from sub_session_id for short_id resolution
-    # Format: {parent_id}-{child_span}_{agent_name}
-    child_span: str | None = None
-    if sub_session_id and "_" in sub_session_id and "-" in sub_session_id:
-        base = sub_session_id.rsplit("_", 1)[0]  # Remove agent name
-        child_span = base.rsplit("-", 1)[-1]  # Get child_span (16 hex chars)
-
-    metadata = {
-        "session_id": sub_session_id,
-        "parent_id": parent_session.session_id,
-        "trace_id": parent_trace_id,  # W3C Trace Context: trace entire conversation
-        "agent_name": agent_name,
-        "child_span": child_span,  # For short_id resolution (first 8 chars = short_id)
-        "created": datetime.now(UTC).isoformat(),
-        "config": merged_config,
-        "agent_overlay": agent_config,
-        "turn_count": 1,
-        "bundle_context": _extract_bundle_context(parent_session),
-        "self_delegation_depth": self_delegation_depth,  # For recursion limit tracking
-        # Store working_dir for session sync between CLI and web
-        "working_dir": str(Path.cwd().resolve()),
-    }
-
-    store = SessionStore()
-    store.save(sub_session_id, transcript, metadata)
-    logger.debug(f"Sub-session {sub_session_id} state persisted")
-
-    # Unregister child cancellation token before cleanup
-    parent_cancellation.unregister_child(child_cancellation)
-    logger.debug(
-        f"Unregistered child cancellation token for sub-session {sub_session_id}"
-    )
-
-    # Notify display system we're exiting the nested session (for indentation)
-    if hasattr(display_system, "pop_nesting"):
-        display_system.pop_nesting()
-
-    # Cleanup child session
-    await child_session.cleanup()
+        # Cleanup child session
+        await child_session.cleanup()
 
     # Return response and session ID for potential multi-turn
     # Include enriched fields from orchestrator:complete hook
@@ -710,7 +714,7 @@ async def spawn_sub_session(
     }
 
 
-async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
+async def resume_sub_session(sub_session_id: str, instruction: str, parent_session: AmplifierSession | None = None) -> dict:
     """Resume existing sub-session for multi-turn engagement.
 
     Loads previously saved sub-session state, recreates the session with
@@ -910,6 +914,7 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
         return await resume_sub_session(
             sub_session_id=sub_session_id,
             instruction=instruction,
+            parent_session=child_session,
         )
 
     child_session.coordinator.register_capability(
@@ -977,25 +982,48 @@ async def resume_sub_session(sub_session_id: str, instruction: str) -> dict:
             name="_spawn_capture",
         )
 
-    # Execute new instruction with full context
+    # Wire up cancellation propagation if parent session provided
+    # Enables graceful Ctrl+C to stop the child after its current tool call
+    if parent_session is not None:
+        resume_parent_cancellation = parent_session.coordinator.cancellation
+        resume_child_cancellation = child_session.coordinator.cancellation
+        resume_parent_cancellation.register_child(resume_child_cancellation)
+        logger.debug(
+            f"Registered child cancellation token for resumed sub-session {sub_session_id}"
+        )
+    else:
+        resume_parent_cancellation = None
+        resume_child_cancellation = None
+
+    # Execute new instruction with full context; cleanup MUST run even on CancelledError
     try:
-        response = await child_session.execute(instruction)
+        try:
+            response = await child_session.execute(instruction)
+        finally:
+            if unregister_hook:
+                unregister_hook()
+
+        # Update state for next resumption
+        updated_transcript = await context.get_messages() if context else []
+        metadata["turn_count"] = len(updated_transcript)
+        metadata["last_updated"] = datetime.now(UTC).isoformat()
+
+        store.save(sub_session_id, updated_transcript, metadata)
+        logger.debug(
+            f"Sub-session {sub_session_id} state updated (turn {metadata['turn_count']})"
+        )
+
     finally:
-        if unregister_hook:
-            unregister_hook()
+        # Unregister child cancellation token before cleanup
+        # MUST run even if execution was cancelled (CancelledError) or failed
+        if resume_parent_cancellation is not None and resume_child_cancellation is not None:
+            resume_parent_cancellation.unregister_child(resume_child_cancellation)
+            logger.debug(
+                f"Unregistered child cancellation token for resumed sub-session {sub_session_id}"
+            )
 
-    # Update state for next resumption
-    updated_transcript = await context.get_messages() if context else []
-    metadata["turn_count"] = len(updated_transcript)
-    metadata["last_updated"] = datetime.now(UTC).isoformat()
-
-    store.save(sub_session_id, updated_transcript, metadata)
-    logger.debug(
-        f"Sub-session {sub_session_id} state updated (turn {metadata['turn_count']})"
-    )
-
-    # Cleanup child session
-    await child_session.cleanup()
+        # Cleanup child session
+        await child_session.cleanup()
 
     # Return response and same session ID
     # Include enriched fields from orchestrator:complete hook
