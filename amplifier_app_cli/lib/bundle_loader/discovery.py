@@ -422,6 +422,12 @@ class AppBundleDiscovery:
         Filters out:
         - Subdirectory bundles (#subdirectory= in URI) since those share
           a repo with their parent and updating the parent updates them too
+        - Exception: user-added bundles (bundle.added in settings.yaml) are
+          ALWAYS included even if their URI contains #subdirectory=. When the
+          user explicitly adds a behavior bundle via `amplifier bundle add
+          ...#subdirectory=...`, there is no separate parent being tracked —
+          the subdirectory bundle IS the thing to update. Filtering it out
+          would silently break `amplifier update` for those bundles.
 
         This is used by `amplifier update` to check for updates on ALL locally
         cached root bundles, not just the filtered list shown to users.
@@ -453,26 +459,35 @@ class AppBundleDiscovery:
             root_bundles.add(name)
 
         # 3. Include user-added bundles from settings.yaml
+        # User-explicitly-added bundles are ALWAYS included regardless of whether
+        # their URI contains #subdirectory=. The user added them directly via
+        # `amplifier bundle add`, so there is no separate parent being tracked.
+        # The subdirectory-skip logic below applies only to auto-discovered bundles
+        # where the parent repo IS separately tracked.
+        added_bundles: dict[str, str] = {}
         try:
             app_settings = AppSettings()
             added_bundles = app_settings.get_added_bundles()  # Returns dict {name: uri}
 
-            for name, uri in added_bundles.items():
-                # Skip subdirectory bundles
-                if "#subdirectory=" in uri:
-                    continue
+            for name in added_bundles:
                 root_bundles.add(name)
         except Exception as e:
             logger.debug(f"Could not read bundles from settings: {e}")
 
         # 4. Filter out subdirectory bundles from registry roots
         # (registry stores URI, check it for subdirectory marker)
+        # User-added bundles are exempt: they were explicitly added and must
+        # always appear in update checks regardless of their registry URI.
         registry_path = Path.home() / ".amplifier" / "registry.json"
         if registry_path.exists():
             try:
                 with open(registry_path, encoding="utf-8") as f:
                     data = json.load(f)
+                user_added_names = set(added_bundles.keys())
                 for name in list(root_bundles):
+                    if name in user_added_names:
+                        # Explicitly user-added — never filter out
+                        continue
                     bundle_data = data.get("bundles", {}).get(name, {})
                     uri = bundle_data.get("uri", "")
                     if "#subdirectory=" in uri:
