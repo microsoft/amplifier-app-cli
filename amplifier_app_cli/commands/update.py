@@ -143,6 +143,9 @@ def _get_bundle_repo_info(bundle_status: "BundleStatus") -> dict | None:
     """Extract the bundle repo's own SHA info from BundleStatus.
 
     Finds the SourceStatus in bundle_status.sources that matches bundle_status.bundle_source.
+    Comparison is done after stripping any #fragment (e.g. #subdirectory=...) from both
+    sides, so behavior bundles whose bundle_source has a subdirectory fragment still match
+    the clean repo-root URI stored in source.source_uri.
 
     Returns:
         Dict with cached_sha, remote_sha, has_update or None if not found.
@@ -150,8 +153,11 @@ def _get_bundle_repo_info(bundle_status: "BundleStatus") -> dict | None:
     if not bundle_status.bundle_source:
         return None
 
+    bundle_base = bundle_status.bundle_source.split("#")[0]
+
     for source in bundle_status.sources:
-        if source.source_uri == bundle_status.bundle_source:
+        source_base = source.source_uri.split("#")[0]
+        if source_base == bundle_base:
             return {
                 "cached_sha": source.cached_commit[:7]
                 if source.cached_commit
