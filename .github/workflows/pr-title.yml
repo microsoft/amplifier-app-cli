@@ -1,0 +1,51 @@
+name: pr-title
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    name: pr-title
+    runs-on: ubuntu-latest
+    steps:
+      - name: pr-title
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as handle:
+              event = json.load(handle)
+
+          pull_request = event["pull_request"]
+          if pull_request.get("draft"):
+              print("Draft PR; skipping title validation until ready for review.")
+              sys.exit(0)
+
+          title = (pull_request.get("title") or "").strip()
+          if not title:
+              print("::error title=PR title required::PR title cannot be empty.")
+              sys.exit(1)
+
+          blocked_patterns = (
+              r"^\s*\[?\s*(?:wip|draft|dnm)\b",
+              r"^\s*do not merge\b",
+          )
+          if any(re.search(pattern, title, re.IGNORECASE) for pattern in blocked_patterns):
+              print('::error title=Invalid PR title::Update the PR title before review. WIP, draft, DNM, and "Do Not Merge" prefixes are not allowed.')
+              sys.exit(1)
+
+          print(f"PR title is valid: {title}")
+          PY
