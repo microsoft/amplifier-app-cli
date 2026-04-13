@@ -1635,9 +1635,67 @@ async def interactive_chat(
             }
             store.save(actual_session_id, messages, metadata)
 
+    # Helper to detect and repair broken transcripts before each turn
+    async def _repair_transcript_if_needed():
+        """Pre-turn transcript repair.
+
+        Detects and fixes orphaned tool calls, ordering violations, and
+        incomplete assistant turns left by interrupted operations (Ctrl+C,
+        SIGKILL, OOM, MCP transport failures).
+
+        Uses the same foundation diagnosis library as resume-time repair
+        (session_runner.py), but operates on live in-memory context messages
+        rather than on-disk transcript files.  Runs once per turn; the scan
+        is a pure in-memory walk (<10 ms for typical sessions).
+        """
+        context = session.coordinator.get("context")
+        if not context or not hasattr(context, "get_messages"):
+            return
+
+        try:
+            messages = await context.get_messages()
+            if not messages:
+                return
+
+            from amplifier_foundation.session import (
+                diagnose_transcript,
+                repair_transcript,
+            )
+
+            diagnosis = diagnose_transcript(messages)
+            if diagnosis["status"] != "broken":
+                return
+
+            failure_modes = diagnosis.get("failure_modes", [])
+            orphan_ids = diagnosis.get("orphaned_tool_ids", [])
+
+            # Repair and update context in-place
+            repaired = repair_transcript(messages, diagnosis)
+            if hasattr(context, "set_messages"):
+                await context.set_messages(repaired)
+
+            # Persist immediately so the fix survives further interruptions
+            await _save_session()
+
+            logger.warning(
+                "Pre-turn transcript repair: %s (orphaned tool calls: %s).",
+                ", ".join(failure_modes),
+                ", ".join(orphan_ids) if orphan_ids else "none",
+            )
+        except ImportError:
+            # Foundation not available (non-standard setup) — skip repair
+            pass
+        except Exception as e:
+            # Repair must never block the session — log and continue
+            logger.debug("Pre-turn transcript repair failed: %s", e)
+
     # Helper to execute a prompt with Ctrl+C handling
     async def _execute_with_interrupt(prompt_text: str) -> bool:
         """Execute prompt with interrupt handling. Returns True if completed, False if cancelled."""
+        # Pre-turn transcript repair: detect and fix any orphaned tool calls,
+        # ordering violations, or incomplete turns before the next LLM call.
+        await _repair_transcript_if_needed()
+
         # Reset cancellation state for new execution
         session.coordinator.cancellation.reset()
 
