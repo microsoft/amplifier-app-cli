@@ -1012,14 +1012,14 @@ class CommandProcessor:
             console.print(f"[bold]Providers:[/bold] ({count_label})")
             for item in providers_items:
                 is_enabled = item.get("enabled", True)
-                status = "[on]" if is_enabled else "[off]"
+                status = "\\[on]" if is_enabled else "\\[off]"
                 name = item.get("name", "unknown")
                 source = item.get("source", "")
                 line = f"  {status} {name}"
                 if source:
                     line += f"  [dim](from {source})[/dim]"
                 if not is_enabled:
-                    line += " [dim][disabled][/dim]"
+                    line += " [dim]\\[disabled][/dim]"
                 console.print(line)
                 cfg = item.get("config", {})
                 if cfg and isinstance(cfg, dict):
@@ -1038,14 +1038,14 @@ class CommandProcessor:
             console.print(f"[bold]Tools:[/bold] ({count_label})")
             for item in tools_items:
                 is_enabled = item.get("enabled", True)
-                status = "[on]" if is_enabled else "[off]"
+                status = "\\[on]" if is_enabled else "\\[off]"
                 name = item.get("name", "unknown")
                 source = item.get("source", "")
                 line = f"  {status} {name}"
                 if source:
                     line += f"  [dim](from {source})[/dim]"
                 if not is_enabled:
-                    line += " [dim][disabled][/dim]"
+                    line += " [dim]\\[disabled][/dim]"
                 console.print(line)
             console.print()
 
@@ -1059,14 +1059,14 @@ class CommandProcessor:
             console.print(f"[bold]Hooks:[/bold] ({count_label})")
             for item in hooks_items:
                 is_enabled = item.get("enabled", True)
-                status = "[on]" if is_enabled else "[off]"
+                status = "\\[on]" if is_enabled else "\\[off]"
                 name = item.get("name", "unknown")
                 source = item.get("source", "")
                 line = f"  {status} {name}"
                 if source:
                     line += f"  [dim](from {source})[/dim]"
                 if not is_enabled:
-                    line += " [dim][disabled][/dim]"
+                    line += " [dim]\\[disabled][/dim]"
                 console.print(line)
             console.print()
 
@@ -1080,14 +1080,14 @@ class CommandProcessor:
             console.print(f"[bold]Context:[/bold] ({count_label})")
             for item in context_items:
                 is_enabled = item.get("enabled", True)
-                status = "[on]" if is_enabled else "[off]"
+                status = "\\[on]" if is_enabled else "\\[off]"
                 name = item.get("name", "unknown")
                 source = item.get("source", "")
                 line = f"  {status} {name}"
                 if source:
                     line += f"  [dim](from {source})[/dim]"
                 if not is_enabled:
-                    line += " [dim][disabled][/dim]"
+                    line += " [dim]\\[disabled][/dim]"
                 console.print(line)
             console.print()
 
@@ -1101,14 +1101,14 @@ class CommandProcessor:
             console.print(f"[bold]Agents:[/bold] ({count_label})")
             for item in agents_items:
                 is_enabled = item.get("enabled", True)
-                status = "[on]" if is_enabled else "[off]"
+                status = "\\[on]" if is_enabled else "\\[off]"
                 name = item.get("name", "unknown")
                 source = item.get("source", "")
                 line = f"  {status} {name}"
                 if source:
                     line += f"  [dim](from {source})[/dim]"
                 if not is_enabled:
-                    line += " [dim][disabled][/dim]"
+                    line += " [dim]\\[disabled][/dim]"
                 console.print(line)
             console.print()
 
@@ -1122,12 +1122,12 @@ class CommandProcessor:
             console.print(f"[bold]Behaviors:[/bold] ({count_label})")
             for item in behaviors_items:
                 is_enabled = item.get("enabled", True)
-                status = "[on]" if is_enabled else "[off]"
+                status = "\\[on]" if is_enabled else "\\[off]"
                 name = item.get("name", "unknown")
                 contributions = item.get("contributions", {})
                 line = f"  {status} {name}"
                 if not is_enabled:
-                    line += " [dim][disabled][/dim]"
+                    line += " [dim]\\[disabled][/dim]"
                 console.print(line)
                 if contributions and isinstance(contributions, dict):
                     contrib_parts = [
