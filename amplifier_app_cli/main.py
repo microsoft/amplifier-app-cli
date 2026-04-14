@@ -1163,6 +1163,19 @@ class CommandProcessor:
         """Map (category, action) to configurator method, handle async/sync, catch errors."""
         import inspect
 
+        from .console import console
+
+        # Hooks are read-only: toggling requires a core suspend/resume API that doesn't
+        # exist yet. Show a clear, actionable message rather than silently erroring.
+        if category == "hooks":
+            console.print(
+                "[yellow]Hook toggle is not supported in this version. "
+                "Hooks are visible in /config for inspection but cannot be "
+                "disabled/re-enabled at runtime.\n"
+                "A core suspend/resume API is needed for safe hook toggle.[/yellow]"
+            )
+            return ""
+
         configurator = self.configurator
 
         method_map = {
@@ -1170,8 +1183,6 @@ class CommandProcessor:
             ("context", "enable"): "context_enable",
             ("tools", "disable"): "tool_disable",
             ("tools", "enable"): "tool_enable",
-            ("hooks", "disable"): "hook_disable",
-            ("hooks", "enable"): "hook_enable",
             ("providers", "disable"): "provider_disable",
             ("providers", "enable"): "provider_enable",
             ("agents", "disable"): "agent_disable",

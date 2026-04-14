@@ -349,6 +349,28 @@ class TestConfigMutation:
         mock_configurator.behavior_enable.assert_called_once_with("caveman")
 
     @pytest.mark.asyncio
+    async def test_config_hooks_disable_not_supported(self):
+        """hooks disable prints a 'not supported' warning — does NOT call hook_disable."""
+        mock_configurator = _make_mock_configurator()
+        cp = _make_command_processor(configurator=mock_configurator)
+        result = await cp._get_config_display("hooks disable hooks-mode")
+        # Output goes via console.print (yellow warning), so return value is empty
+        assert result == ""
+        # Confirm the configurator was never asked to do anything
+        mock_configurator.hook_disable.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_config_hooks_enable_not_supported(self):
+        """hooks enable prints a 'not supported' warning — does NOT call hook_enable."""
+        mock_configurator = _make_mock_configurator()
+        cp = _make_command_processor(configurator=mock_configurator)
+        result = await cp._get_config_display("hooks enable hooks-mode")
+        # Output goes via console.print (yellow warning), so return value is empty
+        assert result == ""
+        # Confirm the configurator was never asked to do anything
+        mock_configurator.hook_enable.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_config_mutation_error_displayed(self):
         """ValueError from context_disable is caught, 'not found' or 'error' in result."""
         mock_configurator = _make_mock_configurator()
