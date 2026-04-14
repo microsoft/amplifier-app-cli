@@ -464,4 +464,7 @@ class TestConfigHelpEntry:
         """/config command description reflects subcommand syntax."""
         cp = _make_command_processor()
         description = cp.COMMANDS["/config"]["description"]
-        assert description == "Live session config \u2014 /config [category] [disable|enable name]"
+        assert (
+            description
+            == "Live session config \u2014 /config [category] [disable|enable name]"
+        )

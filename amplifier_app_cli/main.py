@@ -341,6 +341,7 @@ class CommandProcessor:
     def __init__(self, session: AmplifierSession, bundle_name: str = "unknown"):
         self.session = session
         self.bundle_name = bundle_name
+        self.configurator: Any = None
         # Initialize session_state if not present
         if not hasattr(self.session.coordinator, "session_state"):
             self.session.coordinator.session_state = {}
@@ -1043,7 +1044,7 @@ class CommandProcessor:
         """Render the full configuration dashboard using SessionConfigurator."""
         from .console import console
 
-        configurator = self.configurator  # type: ignore[attr-defined]
+        configurator = self.configurator
 
         # Collect all list data from the configurator
         context_items = configurator.context_list()
@@ -1139,7 +1140,7 @@ class CommandProcessor:
         """Render a per-category list view using list_methods dict."""
         from .console import console
 
-        configurator = self.configurator  # type: ignore[attr-defined]
+        configurator = self.configurator
 
         list_methods = {
             "context": configurator.context_list,
@@ -1162,7 +1163,7 @@ class CommandProcessor:
         """Map (category, action) to configurator method, handle async/sync, catch errors."""
         import inspect
 
-        configurator = self.configurator  # type: ignore[attr-defined]
+        configurator = self.configurator
 
         method_map = {
             ("context", "disable"): "context_disable",
@@ -1210,7 +1211,7 @@ class CommandProcessor:
         """Show changes from original config."""
         from .console import console
 
-        configurator = self.configurator  # type: ignore[attr-defined]
+        configurator = self.configurator
         changes = configurator.diff_from_original()
 
         if not changes:
@@ -1226,7 +1227,7 @@ class CommandProcessor:
 
     async def _handle_config_save(self, scope: str = "global") -> str:
         """Save config changes to disk."""
-        configurator = self.configurator  # type: ignore[attr-defined]
+        configurator = self.configurator
         try:
             configurator.save(scope=scope)
             return f"\u2713 Config saved (scope: {scope})"
@@ -1235,7 +1236,7 @@ class CommandProcessor:
 
     async def _handle_config_set(self, path: str, value: str) -> str:
         """Set a config value with automatic type inference (bool/int/float/string)."""
-        configurator = self.configurator  # type: ignore[attr-defined]
+        configurator = self.configurator
 
         # Parse value type: bool → int → float → string
         parsed_value: Any
