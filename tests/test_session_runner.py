@@ -1,6 +1,7 @@
 """Tests for session_runner module - unified session initialization."""
 
 import logging
+import sys as _sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -559,3 +560,295 @@ class TestSpawnCapabilityForwardsUseSubprocess:
             r.message for r in caplog.records if r.levelno == logging.WARNING
         ]
         assert not warning_messages, f"Expected no warnings but got: {warning_messages}"
+
+
+# ---------------------------------------------------------------------------
+# SessionConfigurator wiring tests (task-8)
+# ---------------------------------------------------------------------------
+
+
+def _configurator_patches(mock_sess):
+    """Context managers list for common create_initialized_session patches."""
+    return [
+        patch(
+            f"{_MODULE}._create_bundle_session",
+            new_callable=AsyncMock,
+            return_value=mock_sess,
+        ),
+        patch(
+            "amplifier_app_cli.commands.init.check_first_run", return_value=False
+        ),
+        patch(
+            "amplifier_app_cli.project_utils.get_project_slug",
+            return_value="test-slug",
+        ),
+        patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+        patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+    ]
+
+
+class TestInitializedSessionConfiguratorField:
+    """Tests for the new configurator field on InitializedSession."""
+
+    def test_configurator_field_defaults_to_none(self):
+        """InitializedSession.configurator defaults to None."""
+        mock_config = SessionConfig(config={}, search_paths=[], verbose=False)
+        initialized = InitializedSession(
+            session=MagicMock(),
+            session_id="test-123",
+            config=mock_config,
+        )
+        assert initialized.configurator is None
+
+    def test_configurator_field_can_be_set(self):
+        """InitializedSession.configurator can be assigned."""
+        mock_config = SessionConfig(config={}, search_paths=[], verbose=False)
+        mock_configurator = MagicMock()
+        initialized = InitializedSession(
+            session=MagicMock(),
+            session_id="test-123",
+            config=mock_config,
+            configurator=mock_configurator,
+        )
+        assert initialized.configurator is mock_configurator
+
+
+class TestSessionConfiguratorWiring:
+    """Tests for SessionConfigurator creation during session initialization."""
+
+    @staticmethod
+    def _make_fake_configurator_module(mock_cls):
+        """Return a fake amplifier_foundation.configurator module with mock class."""
+        import types
+
+        mod = types.ModuleType("amplifier_foundation.configurator")
+        mod.SessionConfigurator = mock_cls
+        return mod
+
+    @pytest.mark.anyio
+    async def test_configurator_created_when_prepared_bundle_present(self):
+        """SessionConfigurator is created when prepared_bundle is available."""
+        from contextlib import ExitStack
+
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()  # has prepared_bundle set
+        console = MagicMock()
+
+        mock_configurator = MagicMock()
+        mock_configurator.apply_saved_settings = AsyncMock()
+        mock_configurator.take_snapshot = MagicMock()
+        mock_configurator_cls = MagicMock(return_value=mock_configurator)
+
+        fake_module = self._make_fake_configurator_module(mock_configurator_cls)
+
+        with ExitStack() as stack:
+            for p in _configurator_patches(mock_sess):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.dict(
+                    _sys.modules,
+                    {"amplifier_foundation.configurator": fake_module},
+                )
+            )
+            stack.enter_context(
+                patch(
+                    f"{_MODULE}.AppSettings",
+                    return_value=MagicMock(
+                        get_merged_settings=MagicMock(return_value={})
+                    ),
+                )
+            )
+            result = await create_initialized_session(cfg, console)
+
+        assert result.configurator is mock_configurator
+        mock_configurator_cls.assert_called_once_with(mock_sess, cfg.prepared_bundle)
+
+    @pytest.mark.anyio
+    async def test_configurator_apply_saved_settings_called(self):
+        """apply_saved_settings is called with the configurator key from merged settings."""
+        from contextlib import ExitStack
+
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()
+        console = MagicMock()
+
+        mock_configurator = MagicMock()
+        mock_configurator.apply_saved_settings = AsyncMock()
+        mock_configurator.take_snapshot = MagicMock()
+        mock_configurator_cls = MagicMock(return_value=mock_configurator)
+
+        saved_settings = {"key": "value"}
+        merged = {"configurator": saved_settings, "other": "stuff"}
+        fake_module = self._make_fake_configurator_module(mock_configurator_cls)
+
+        with ExitStack() as stack:
+            for p in _configurator_patches(mock_sess):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.dict(
+                    _sys.modules,
+                    {"amplifier_foundation.configurator": fake_module},
+                )
+            )
+            stack.enter_context(
+                patch(
+                    f"{_MODULE}.AppSettings",
+                    return_value=MagicMock(
+                        get_merged_settings=MagicMock(return_value=merged)
+                    ),
+                )
+            )
+            await create_initialized_session(cfg, console)
+
+        mock_configurator.apply_saved_settings.assert_called_once_with(saved_settings)
+
+    @pytest.mark.anyio
+    async def test_configurator_snapshot_taken_after_apply_settings(self):
+        """take_snapshot is called after apply_saved_settings."""
+        from contextlib import ExitStack
+
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()
+        console = MagicMock()
+
+        call_order = []
+        mock_configurator = MagicMock()
+        mock_configurator.apply_saved_settings = AsyncMock(
+            side_effect=lambda _: call_order.append("apply")
+        )
+        mock_configurator.take_snapshot = MagicMock(
+            side_effect=lambda: call_order.append("snapshot")
+        )
+        mock_configurator_cls = MagicMock(return_value=mock_configurator)
+        fake_module = self._make_fake_configurator_module(mock_configurator_cls)
+
+        with ExitStack() as stack:
+            for p in _configurator_patches(mock_sess):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.dict(
+                    _sys.modules,
+                    {"amplifier_foundation.configurator": fake_module},
+                )
+            )
+            stack.enter_context(
+                patch(
+                    f"{_MODULE}.AppSettings",
+                    return_value=MagicMock(
+                        get_merged_settings=MagicMock(return_value={})
+                    ),
+                )
+            )
+            await create_initialized_session(cfg, console)
+
+        assert call_order == ["apply", "snapshot"], (
+            f"Expected apply then snapshot, got: {call_order}"
+        )
+
+    @pytest.mark.anyio
+    async def test_configurator_none_when_prepared_bundle_is_none(self):
+        """configurator is None when prepared_bundle is not set."""
+        from contextlib import ExitStack
+
+        mock_sess = _make_mock_session()
+        # Create config WITHOUT prepared_bundle
+        cfg = SessionConfig(
+            config={},
+            search_paths=[],
+            verbose=False,
+            bundle_name="test-bundle",
+        )
+        console = MagicMock()
+
+        mock_configurator_cls = MagicMock()
+        fake_module = self._make_fake_configurator_module(mock_configurator_cls)
+
+        with ExitStack() as stack:
+            for p in _configurator_patches(mock_sess):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.dict(
+                    _sys.modules,
+                    {"amplifier_foundation.configurator": fake_module},
+                )
+            )
+            result = await create_initialized_session(cfg, console)
+
+        # SessionConfigurator should NOT be instantiated when prepared_bundle is None
+        mock_configurator_cls.assert_not_called()
+        assert result.configurator is None
+
+    @pytest.mark.anyio
+    async def test_configurator_none_on_import_error(self, caplog):
+        """configurator is None when foundation is not available (ImportError)."""
+        from contextlib import ExitStack
+
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()
+        console = MagicMock()
+
+        # Setting module to None makes Python raise ImportError on import
+        with ExitStack() as stack:
+            for p in _configurator_patches(mock_sess):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.dict(
+                    _sys.modules,
+                    {"amplifier_foundation.configurator": None},  # type: ignore
+                )
+            )
+            stack.enter_context(
+                caplog.at_level(
+                    logging.DEBUG, logger="amplifier_app_cli.session_runner"
+                )
+            )
+            result = await create_initialized_session(cfg, console)
+
+        assert result.configurator is None
+
+    @pytest.mark.anyio
+    async def test_configurator_none_on_general_exception(self, caplog):
+        """configurator is None and warning is logged on unexpected Exception."""
+        from contextlib import ExitStack
+
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()
+        console = MagicMock()
+
+        mock_configurator = MagicMock()
+        mock_configurator.apply_saved_settings = AsyncMock(
+            side_effect=RuntimeError("unexpected failure")
+        )
+        mock_configurator.take_snapshot = MagicMock()
+        mock_configurator_cls = MagicMock(return_value=mock_configurator)
+        fake_module = self._make_fake_configurator_module(mock_configurator_cls)
+
+        with ExitStack() as stack:
+            for p in _configurator_patches(mock_sess):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.dict(
+                    _sys.modules,
+                    {"amplifier_foundation.configurator": fake_module},
+                )
+            )
+            stack.enter_context(
+                patch(
+                    f"{_MODULE}.AppSettings",
+                    return_value=MagicMock(
+                        get_merged_settings=MagicMock(return_value={})
+                    ),
+                )
+            )
+            stack.enter_context(
+                caplog.at_level(
+                    logging.WARNING, logger="amplifier_app_cli.session_runner"
+                )
+            )
+            result = await create_initialized_session(cfg, console)
+
+        assert result.configurator is None
+        warning_messages = [
+            r.message for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert warning_messages, "Expected a warning but none was logged"

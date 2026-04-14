@@ -1906,6 +1906,10 @@ async def interactive_chat(
     # Create command processor
     command_processor = CommandProcessor(session, bundle_name)
 
+    # Attach SessionConfigurator if available
+    if initialized.configurator is not None:
+        command_processor.configurator = initialized.configurator
+
     # Create session store for saving
     store = SessionStore()
 
