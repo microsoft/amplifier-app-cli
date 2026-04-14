@@ -5,7 +5,6 @@ Tests cover:
 2. configurator parameter sets cp.configurator when provided
 """
 
-import pytest
 from unittest.mock import MagicMock
 
 from helpers import _make_command_processor
