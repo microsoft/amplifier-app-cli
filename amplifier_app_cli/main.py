@@ -938,6 +938,45 @@ class CommandProcessor:
 
         return "\n".join(lines)
 
+    @property
+    def _display_bundle_name(self) -> str:
+        """Return the bundle name with any 'bundle:' prefix removed."""
+        return self.bundle_name.removeprefix("bundle:")
+
+    def _render_simple_section(
+        self,
+        console: Any,
+        title: str,
+        items: list,
+        *,
+        trailing_newline: bool = True,
+    ) -> None:
+        """Render a simple enabled/disabled section list with status indicators.
+
+        Prints a header line with on/off counts, then each item with its
+        [on]/[off] status, optional source provenance, and [disabled] tag.
+        Items without a 'source' key simply omit the provenance annotation.
+        """
+        if not items:
+            return
+        enabled = sum(1 for x in items if x.get("enabled", True))
+        disabled = len(items) - enabled
+        count = f"{enabled} on" + (f", {disabled} off" if disabled else "")
+        console.print(f"[bold]{title}:[/bold] ({count})")
+        for item in items:
+            is_on = item.get("enabled", True)
+            status = "\\[on]" if is_on else "\\[off]"
+            name = item.get("name", "unknown")
+            source = item.get("source", "")
+            line = f"  {status} {name}"
+            if source:
+                line += f"  [dim](from {source})[/dim]"
+            if not is_on:
+                line += " [dim]\\[disabled][/dim]"
+            console.print(line)
+        if trailing_newline:
+            console.print()
+
     async def _get_config_display(self) -> str:
         """Display current configuration.
 
@@ -959,22 +998,14 @@ class CommandProcessor:
         behaviors_items = configurator.behaviors_list()
         changes = configurator.diff_from_original()
 
-        # Extract bundle name
-        if self.bundle_name.startswith("bundle:"):
-            bundle_name = self.bundle_name.removeprefix("bundle:")
-        else:
-            bundle_name = self.bundle_name
-
-        # Get active mode
+        # Get active mode and change count
         active_mode = (
             self.session.coordinator.session_state.get("active_mode") or "none"
         )
-
-        # Get change count
         change_count = len(changes) if changes else 0
 
         # Render header
-        console.print(f"\n[bold]Bundle:[/bold] {bundle_name}")
+        console.print(f"\n[bold]Bundle:[/bold] {self._display_bundle_name}")
         console.print(f"[bold]Mode:[/bold] {active_mode}")
         if change_count > 0:
             console.print(
@@ -1002,25 +1033,12 @@ class CommandProcessor:
                         console.print(f"  {field}: {value}")
             console.print()
 
-        # Render providers section
+        # Render providers section (with per-provider config values after items)
         if providers_items:
-            enabled_count = sum(1 for p in providers_items if p.get("enabled", True))
-            disabled_count = len(providers_items) - enabled_count
-            count_label = f"{enabled_count} on"
-            if disabled_count:
-                count_label += f", {disabled_count} off"
-            console.print(f"[bold]Providers:[/bold] ({count_label})")
+            self._render_simple_section(
+                console, "Providers", providers_items, trailing_newline=False
+            )
             for item in providers_items:
-                is_enabled = item.get("enabled", True)
-                status = "\\[on]" if is_enabled else "\\[off]"
-                name = item.get("name", "unknown")
-                source = item.get("source", "")
-                line = f"  {status} {name}"
-                if source:
-                    line += f"  [dim](from {source})[/dim]"
-                if not is_enabled:
-                    line += " [dim]\\[disabled][/dim]"
-                console.print(line)
                 cfg = item.get("config", {})
                 if cfg and isinstance(cfg, dict):
                     for key, val in cfg.items():
@@ -1028,107 +1046,19 @@ class CommandProcessor:
                         console.print(f"    {key}: {redacted_val}")
             console.print()
 
-        # Render tools section
-        if tools_items:
-            enabled_count = sum(1 for t in tools_items if t.get("enabled", True))
-            disabled_count = len(tools_items) - enabled_count
-            count_label = f"{enabled_count} on"
-            if disabled_count:
-                count_label += f", {disabled_count} off"
-            console.print(f"[bold]Tools:[/bold] ({count_label})")
-            for item in tools_items:
-                is_enabled = item.get("enabled", True)
-                status = "\\[on]" if is_enabled else "\\[off]"
-                name = item.get("name", "unknown")
-                source = item.get("source", "")
-                line = f"  {status} {name}"
-                if source:
-                    line += f"  [dim](from {source})[/dim]"
-                if not is_enabled:
-                    line += " [dim]\\[disabled][/dim]"
-                console.print(line)
-            console.print()
+        # Render tools, hooks, context, and agents sections (structurally identical)
+        self._render_simple_section(console, "Tools", tools_items)
+        self._render_simple_section(console, "Hooks", hooks_items)
+        self._render_simple_section(console, "Context", context_items)
+        self._render_simple_section(console, "Agents", agents_items)
 
-        # Render hooks section
-        if hooks_items:
-            enabled_count = sum(1 for h in hooks_items if h.get("enabled", True))
-            disabled_count = len(hooks_items) - enabled_count
-            count_label = f"{enabled_count} on"
-            if disabled_count:
-                count_label += f", {disabled_count} off"
-            console.print(f"[bold]Hooks:[/bold] ({count_label})")
-            for item in hooks_items:
-                is_enabled = item.get("enabled", True)
-                status = "\\[on]" if is_enabled else "\\[off]"
-                name = item.get("name", "unknown")
-                source = item.get("source", "")
-                line = f"  {status} {name}"
-                if source:
-                    line += f"  [dim](from {source})[/dim]"
-                if not is_enabled:
-                    line += " [dim]\\[disabled][/dim]"
-                console.print(line)
-            console.print()
-
-        # Render context section
-        if context_items:
-            enabled_count = sum(1 for c in context_items if c.get("enabled", True))
-            disabled_count = len(context_items) - enabled_count
-            count_label = f"{enabled_count} on"
-            if disabled_count:
-                count_label += f", {disabled_count} off"
-            console.print(f"[bold]Context:[/bold] ({count_label})")
-            for item in context_items:
-                is_enabled = item.get("enabled", True)
-                status = "\\[on]" if is_enabled else "\\[off]"
-                name = item.get("name", "unknown")
-                source = item.get("source", "")
-                line = f"  {status} {name}"
-                if source:
-                    line += f"  [dim](from {source})[/dim]"
-                if not is_enabled:
-                    line += " [dim]\\[disabled][/dim]"
-                console.print(line)
-            console.print()
-
-        # Render agents section
-        if agents_items:
-            enabled_count = sum(1 for a in agents_items if a.get("enabled", True))
-            disabled_count = len(agents_items) - enabled_count
-            count_label = f"{enabled_count} on"
-            if disabled_count:
-                count_label += f", {disabled_count} off"
-            console.print(f"[bold]Agents:[/bold] ({count_label})")
-            for item in agents_items:
-                is_enabled = item.get("enabled", True)
-                status = "\\[on]" if is_enabled else "\\[off]"
-                name = item.get("name", "unknown")
-                source = item.get("source", "")
-                line = f"  {status} {name}"
-                if source:
-                    line += f"  [dim](from {source})[/dim]"
-                if not is_enabled:
-                    line += " [dim]\\[disabled][/dim]"
-                console.print(line)
-            console.print()
-
-        # Render behaviors section with contribution counts per category
+        # Render behaviors section (with per-behavior contribution counts after items)
         if behaviors_items:
-            enabled_count = sum(1 for b in behaviors_items if b.get("enabled", True))
-            disabled_count = len(behaviors_items) - enabled_count
-            count_label = f"{enabled_count} on"
-            if disabled_count:
-                count_label += f", {disabled_count} off"
-            console.print(f"[bold]Behaviors:[/bold] ({count_label})")
+            self._render_simple_section(
+                console, "Behaviors", behaviors_items, trailing_newline=False
+            )
             for item in behaviors_items:
-                is_enabled = item.get("enabled", True)
-                status = "\\[on]" if is_enabled else "\\[off]"
-                name = item.get("name", "unknown")
                 contributions = item.get("contributions", {})
-                line = f"  {status} {name}"
-                if not is_enabled:
-                    line += " [dim]\\[disabled][/dim]"
-                console.print(line)
                 if contributions and isinstance(contributions, dict):
                     contrib_parts = [
                         f"{cat}: {count}"
@@ -1139,6 +1069,7 @@ class CommandProcessor:
                         console.print(
                             f"    [dim]contributes: {', '.join(contrib_parts)}[/dim]"
                         )
+            console.print()
 
         return ""  # Output already printed via console
 
@@ -1146,13 +1077,7 @@ class CommandProcessor:
         """Render configuration using the legacy bundle display (fallback when no configurator)."""
         from .console import console
 
-        # Extract bundle name from config source name (format: "bundle:<name>")
-        if self.bundle_name.startswith("bundle:"):
-            bundle_name = self.bundle_name.removeprefix("bundle:")
-        else:
-            bundle_name = self.bundle_name
-
-        await self._render_bundle_config(bundle_name, console)
+        await self._render_bundle_config(self._display_bundle_name, console)
 
         # Also show loaded agents (available at runtime)
         # Note: agents can be a dict (resolved agents) or list/other format (config)

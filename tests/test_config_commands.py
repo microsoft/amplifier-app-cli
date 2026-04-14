@@ -155,7 +155,7 @@ class TestConfigDashboard:
         mock_configurator.behaviors_list.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_config_dashboard_shows_disabled_indicator(self):
+    async def test_config_dashboard_returns_empty_string(self):
         """handle_command returns '' because output goes to console, not return value."""
         mock_configurator = _make_mock_configurator()
         cp = _make_command_processor(configurator=mock_configurator)
