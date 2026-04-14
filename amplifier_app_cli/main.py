@@ -1003,7 +1003,7 @@ class CommandProcessor:
             return await self._handle_config_diff()
 
         if subcmd == "save":
-            scope = "project"
+            scope = "global"
             remaining = parts[1:]
             for i, p in enumerate(remaining):
                 if p == "--scope" and i + 1 < len(remaining):
@@ -1214,8 +1214,7 @@ class CommandProcessor:
         changes = configurator.diff_from_original()
 
         if not changes:
-            console.print("[dim]No changes from original[/dim]")
-            return ""
+            return "No changes from original"
 
         console.print(f"[bold]Changes ({len(changes)}):[/bold]")
         for change in changes:

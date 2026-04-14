@@ -291,7 +291,9 @@ class TestConfigMutation:
         mock_configurator.context_disable.return_value = None
         cp = _make_command_processor(configurator=mock_configurator)
         await cp._get_config_display("context disable foundation:system-base")
-        mock_configurator.context_disable.assert_called_once_with("foundation:system-base")
+        mock_configurator.context_disable.assert_called_once_with(
+            "foundation:system-base"
+        )
 
     @pytest.mark.asyncio
     async def test_config_context_enable(self):
@@ -300,7 +302,9 @@ class TestConfigMutation:
         mock_configurator.context_enable.return_value = None
         cp = _make_command_processor(configurator=mock_configurator)
         await cp._get_config_display("context enable caveman:caveman-rules")
-        mock_configurator.context_enable.assert_called_once_with("caveman:caveman-rules")
+        mock_configurator.context_enable.assert_called_once_with(
+            "caveman:caveman-rules"
+        )
 
     @pytest.mark.asyncio
     async def test_config_tools_disable(self):
@@ -353,3 +357,101 @@ class TestConfigMutation:
         result = await cp._get_config_display("context disable nonexistent-item")
         assert isinstance(result, str)
         assert any(word in result.lower() for word in ["not found", "error"])
+
+
+class TestConfigDiff:
+    """Tests for /config diff subcommand."""
+
+    @pytest.mark.asyncio
+    async def test_config_diff_calls_configurator(self):
+        """diff subcommand calls configurator.diff_from_original()."""
+        mock_configurator = _make_mock_configurator()
+        # _make_mock_configurator returns 1 change by default
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("diff")
+        mock_configurator.diff_from_original.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_config_diff_no_changes(self):
+        """Empty diff returns a 'no changes' message."""
+        mock_configurator = _make_mock_configurator()
+        mock_configurator.diff_from_original.return_value = []
+        cp = _make_command_processor(configurator=mock_configurator)
+        result = await cp._get_config_display("diff")
+        assert "no changes" in result.lower()
+
+
+class TestConfigSave:
+    """Tests for /config save subcommand."""
+
+    @pytest.mark.asyncio
+    async def test_config_save_calls_configurator(self):
+        """/config save calls cfg.save(scope='global'), result contains 'saved'."""
+        mock_configurator = _make_mock_configurator()
+        mock_configurator.save.return_value = None
+        cp = _make_command_processor(configurator=mock_configurator)
+        result = await cp._get_config_display("save")
+        mock_configurator.save.assert_called_once_with(scope="global")
+        assert "saved" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_config_save_project_scope(self):
+        """/config save --scope project calls cfg.save(scope='project')."""
+        mock_configurator = _make_mock_configurator()
+        mock_configurator.save.return_value = None
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("save --scope project")
+        mock_configurator.save.assert_called_once_with(scope="project")
+
+    @pytest.mark.asyncio
+    async def test_config_save_error(self):
+        """save raises ValueError → result contains 'error'."""
+        mock_configurator = _make_mock_configurator()
+        mock_configurator.save.side_effect = ValueError("Permission denied")
+        cp = _make_command_processor(configurator=mock_configurator)
+        result = await cp._get_config_display("save")
+        assert "error" in result.lower()
+
+
+class TestConfigSet:
+    """Tests for /config set subcommand."""
+
+    @pytest.mark.asyncio
+    async def test_config_set_calls_configurator(self):
+        """/config set path value calls config_set with path and string value, result contains 'set'."""
+        mock_configurator = _make_mock_configurator()
+        mock_configurator.config_set.return_value = None
+        cp = _make_command_processor(configurator=mock_configurator)
+        result = await cp._get_config_display(
+            "set providers.anthropic.config.model claude-sonnet-4"
+        )
+        mock_configurator.config_set.assert_called_once_with(
+            "providers.anthropic.config.model", "claude-sonnet-4"
+        )
+        assert "set" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_config_set_parses_boolean(self):
+        """/config set path true calls config_set with Python bool True."""
+        mock_configurator = _make_mock_configurator()
+        mock_configurator.config_set.return_value = None
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("set providers.raw true")
+        mock_configurator.config_set.assert_called_once_with("providers.raw", True)
+
+    @pytest.mark.asyncio
+    async def test_config_set_parses_integer(self):
+        """/config set path 30 calls config_set with Python int 30."""
+        mock_configurator = _make_mock_configurator()
+        mock_configurator.config_set.return_value = None
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("set tools.bash.timeout 30")
+        mock_configurator.config_set.assert_called_once_with("tools.bash.timeout", 30)
+
+    @pytest.mark.asyncio
+    async def test_config_set_usage_error(self):
+        """/config set with no path/value returns usage message containing 'usage'."""
+        mock_configurator = _make_mock_configurator()
+        cp = _make_command_processor(configurator=mock_configurator)
+        result = await cp._get_config_display("set")
+        assert "usage" in result.lower()
