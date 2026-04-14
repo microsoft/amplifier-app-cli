@@ -319,6 +319,25 @@ class CommandProcessor:
     MODE_SHORTCUTS: dict[str, str] = {}
     SKILL_SHORTCUTS: dict[str, dict] = {}
 
+    # Patterns used to detect sensitive config keys that should be redacted
+    _SENSITIVE_KEY_PATTERNS = ("key", "token", "secret", "password", "api_key")
+
+    @staticmethod
+    def _redact_value(key: str, value: Any) -> Any:
+        """Redact a config value if the key is sensitive and value is long enough.
+
+        Returns the first 4 chars + '...redacted' for string values longer than
+        20 characters whose key contains a sensitive keyword. Non-string values
+        and short values are returned unchanged.
+        """
+        if not isinstance(value, str) or len(value) <= 20:
+            return value
+        key_lower = key.lower()
+        for pattern in CommandProcessor._SENSITIVE_KEY_PATTERNS:
+            if pattern in key_lower:
+                return f"{value[:4]}...redacted"
+        return value
+
     def __init__(self, session: AmplifierSession, bundle_name: str = "unknown"):
         self.session = session
         self.bundle_name = bundle_name
