@@ -1224,7 +1224,7 @@ class CommandProcessor:
             console.print(f"  {cat} {change_name}: {change_action}")
         return ""  # Output already printed via console
 
-    async def _handle_config_save(self, scope: str = "project") -> str:
+    async def _handle_config_save(self, scope: str = "global") -> str:
         """Save config changes to disk."""
         configurator = self.configurator  # type: ignore[attr-defined]
         try:
