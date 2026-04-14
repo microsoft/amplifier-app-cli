@@ -172,3 +172,58 @@ class TestConfigDashboard:
         result = await cp._get_config_display()
 
         assert isinstance(result, str)
+
+
+class TestConfigSubcommandRouting:
+    """Tests that /config subcommands are correctly routed by process_input."""
+
+    def test_config_no_args_routes_to_dashboard(self):
+        """/config with no args routes to action='show_config' with empty args."""
+        cp = _make_command_processor()
+        action, data = cp.process_input("/config")
+        assert action == "show_config"
+        assert data["args"] == ""
+
+    def test_config_category_routes_to_show_config(self):
+        """/config tools routes to show_config with args='tools'."""
+        cp = _make_command_processor()
+        action, data = cp.process_input("/config tools")
+        assert action == "show_config"
+        assert data["args"] == "tools"
+
+    def test_config_category_name_routes_with_args(self):
+        """/config tools tool-bash routes with args='tools tool-bash'."""
+        cp = _make_command_processor()
+        action, data = cp.process_input("/config tools tool-bash")
+        assert action == "show_config"
+        assert data["args"] == "tools tool-bash"
+
+    def test_config_disable_routes_with_full_args(self):
+        """/config tools disable tool-bash routes with full args captured."""
+        cp = _make_command_processor()
+        action, data = cp.process_input("/config tools disable tool-bash")
+        assert action == "show_config"
+        assert data["args"] == "tools disable tool-bash"
+
+    def test_config_diff_routes(self):
+        """/config diff routes to show_config with args='diff'."""
+        cp = _make_command_processor()
+        action, data = cp.process_input("/config diff")
+        assert action == "show_config"
+        assert data["args"] == "diff"
+
+    def test_config_save_routes(self):
+        """/config save routes to show_config with args='save'."""
+        cp = _make_command_processor()
+        action, data = cp.process_input("/config save")
+        assert action == "show_config"
+        assert data["args"] == "save"
+
+    def test_config_set_routes(self):
+        """/config set ... routes to show_config with the full args string."""
+        cp = _make_command_processor()
+        action, data = cp.process_input(
+            "/config set providers.anthropic.config.model claude-sonnet-4"
+        )
+        assert action == "show_config"
+        assert data["args"] == "set providers.anthropic.config.model claude-sonnet-4"
