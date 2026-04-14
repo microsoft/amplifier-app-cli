@@ -288,7 +288,7 @@ class CommandProcessor:
         "/help": {"action": "show_help", "description": "Show available commands"},
         "/config": {
             "action": "show_config",
-            "description": "Show current configuration",
+            "description": "Live session config \u2014 /config [category] [disable|enable name]",
         },
         "/tools": {"action": "list_tools", "description": "List available tools"},
         "/agents": {"action": "list_agents", "description": "List available agents"},

@@ -455,3 +455,13 @@ class TestConfigSet:
         cp = _make_command_processor(configurator=mock_configurator)
         result = await cp._get_config_display("set")
         assert "usage" in result.lower()
+
+
+class TestConfigHelpEntry:
+    """Tests that the /config COMMANDS dict entry has the expected description."""
+
+    def test_config_help_description(self):
+        """/config command description reflects subcommand syntax."""
+        cp = _make_command_processor()
+        description = cp.COMMANDS["/config"]["description"]
+        assert description == "Live session config \u2014 /config [category] [disable|enable name]"
