@@ -495,7 +495,7 @@ class CommandProcessor:
             return self._format_help()
 
         if action == "show_config":
-            return await self._get_config_display()
+            return await self._get_config_display(data.get("args", ""))
 
         if action == "list_tools":
             return await self._list_tools()
@@ -977,17 +977,73 @@ class CommandProcessor:
         if trailing_newline:
             console.print()
 
-    async def _get_config_display(self) -> str:
-        """Display current configuration.
+    async def _get_config_display(self, args: str = "") -> str:
+        """Display current configuration or handle subcommands.
 
-        Uses the live SessionConfigurator dashboard if a configurator is attached,
-        otherwise falls back to the legacy bundle config rendering.
+        Parses args and dispatches to subcommand handlers:
+        - No args → _render_config_dashboard()
+        - 'diff' → _handle_config_diff()
+        - 'save' → _handle_config_save(scope)
+        - 'set' → _handle_config_set(path, value)
+        - <category> → _render_config_category(category)
+        - <category> disable/enable <name> → _handle_config_toggle(...)
         """
-        from .console import console
-
         configurator = getattr(self, "configurator", None)
         if configurator is None:
             return await self._render_legacy_config()
+
+        parts = args.strip().split() if args.strip() else []
+
+        if not parts:
+            return await self._render_config_dashboard()
+
+        subcmd = parts[0].lower()
+
+        if subcmd == "diff":
+            return await self._handle_config_diff()
+
+        if subcmd == "save":
+            scope = "project"
+            remaining = parts[1:]
+            for i, p in enumerate(remaining):
+                if p == "--scope" and i + 1 < len(remaining):
+                    scope = remaining[i + 1]
+            return await self._handle_config_save(scope)
+
+        if subcmd == "set":
+            if len(parts) < 3:
+                return "Usage: /config set <path> <value>"
+            path = parts[1]
+            value = parts[2]
+            return await self._handle_config_set(path, value)
+
+        _VALID_CATEGORIES = {
+            "context",
+            "tools",
+            "hooks",
+            "providers",
+            "agents",
+            "behaviors",
+        }
+
+        if subcmd in _VALID_CATEGORIES:
+            category = subcmd
+            if len(parts) == 1:
+                return await self._render_config_category(category)
+            if len(parts) >= 3 and parts[1].lower() in ("disable", "enable"):
+                action = parts[1].lower()
+                name = parts[2]
+                return await self._handle_config_toggle(category, action, name)
+            return await self._render_config_category(category)
+
+        # Unknown subcommand — show dashboard
+        return await self._render_config_dashboard()
+
+    async def _render_config_dashboard(self) -> str:
+        """Render the full configuration dashboard using SessionConfigurator."""
+        from .console import console
+
+        configurator = self.configurator  # type: ignore[attr-defined]
 
         # Collect all list data from the configurator
         context_items = configurator.context_list()
@@ -1072,6 +1128,136 @@ class CommandProcessor:
             console.print()
 
         return ""  # Output already printed via console
+
+    def _render_category_summary(
+        self, console: Any, category: str, items: list
+    ) -> None:
+        """Render one category section with status indicators."""
+        self._render_simple_section(console, category.capitalize(), items)
+
+    async def _render_config_category(self, category: str) -> str:
+        """Render a per-category list view using list_methods dict."""
+        from .console import console
+
+        configurator = self.configurator  # type: ignore[attr-defined]
+
+        list_methods = {
+            "context": configurator.context_list,
+            "tools": configurator.tools_list,
+            "hooks": configurator.hooks_list,
+            "providers": configurator.providers_list,
+            "agents": configurator.agents_list,
+            "behaviors": configurator.behaviors_list,
+        }
+
+        method = list_methods.get(category)
+        if method is None:
+            return f"Unknown category: {category}"
+
+        items = method()
+        self._render_category_summary(console, category, items)
+        return ""  # Output already printed via console
+
+    async def _handle_config_toggle(self, category: str, action: str, name: str) -> str:
+        """Map (category, action) to configurator method, handle async/sync, catch errors."""
+        import inspect
+
+        configurator = self.configurator  # type: ignore[attr-defined]
+
+        method_map = {
+            ("context", "disable"): "context_disable",
+            ("context", "enable"): "context_enable",
+            ("tools", "disable"): "tool_disable",
+            ("tools", "enable"): "tool_enable",
+            ("hooks", "disable"): "hook_disable",
+            ("hooks", "enable"): "hook_enable",
+            ("providers", "disable"): "provider_disable",
+            ("providers", "enable"): "provider_enable",
+            ("agents", "disable"): "agent_disable",
+            ("agents", "enable"): "agent_enable",
+            ("behaviors", "disable"): "behavior_disable",
+            ("behaviors", "enable"): "behavior_enable",
+        }
+
+        method_name = method_map.get((category, action))
+        if method_name is None:
+            return f"Unknown action: {action} for category: {category}"
+
+        method = getattr(configurator, method_name, None)
+        if method is None:
+            return f"Method not available: {method_name}"
+
+        try:
+            result = method(name)
+            if inspect.isawaitable(result):
+                result = await result
+
+            # Format success message
+            if isinstance(result, dict):
+                # behaviors return dict with enabled/disabled/warnings
+                warnings = result.get("warnings", [])
+                msg = f"\u2713 {action.capitalize()}d {name}"
+                if warnings:
+                    msg += f"\nWarnings: {', '.join(str(w) for w in warnings)}"
+                return msg
+
+            return f"\u2713 {action.capitalize()}d {name}"
+
+        except (ValueError, RuntimeError) as e:
+            return f"Error: {e}"
+
+    async def _handle_config_diff(self) -> str:
+        """Show changes from original config."""
+        from .console import console
+
+        configurator = self.configurator  # type: ignore[attr-defined]
+        changes = configurator.diff_from_original()
+
+        if not changes:
+            console.print("[dim]No changes from original[/dim]")
+            return ""
+
+        console.print(f"[bold]Changes ({len(changes)}):[/bold]")
+        for change in changes:
+            cat = change.get("category", "?")
+            change_name = change.get("name", "?")
+            change_action = change.get("action", "?")
+            console.print(f"  {cat} {change_name}: {change_action}")
+        return ""  # Output already printed via console
+
+    async def _handle_config_save(self, scope: str = "project") -> str:
+        """Save config changes to disk."""
+        configurator = self.configurator  # type: ignore[attr-defined]
+        try:
+            configurator.save(scope=scope)
+            return f"\u2713 Config saved (scope: {scope})"
+        except ValueError as e:
+            return f"Error saving config: {e}"
+
+    async def _handle_config_set(self, path: str, value: str) -> str:
+        """Set a config value with automatic type inference (bool/int/float/string)."""
+        configurator = self.configurator  # type: ignore[attr-defined]
+
+        # Parse value type: bool → int → float → string
+        parsed_value: Any
+        if value.lower() == "true":
+            parsed_value = True
+        elif value.lower() == "false":
+            parsed_value = False
+        else:
+            try:
+                parsed_value = int(value)
+            except ValueError:
+                try:
+                    parsed_value = float(value)
+                except ValueError:
+                    parsed_value = value  # Keep as string
+
+        try:
+            configurator.config_set(path, parsed_value)
+            return f"\u2713 Set {path} = {parsed_value!r}"
+        except (ValueError, RuntimeError) as e:
+            return f"Error setting config: {e}"
 
     async def _render_legacy_config(self) -> str:
         """Render configuration using the legacy bundle display (fallback when no configurator)."""

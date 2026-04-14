@@ -4,7 +4,7 @@ import sys
 import os
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 # Add tests directory to sys.path so helpers can be imported
 sys.path.insert(0, os.path.dirname(__file__))
@@ -227,3 +227,129 @@ class TestConfigSubcommandRouting:
         )
         assert action == "show_config"
         assert data["args"] == "set providers.anthropic.config.model claude-sonnet-4"
+
+
+class TestConfigCategoryList:
+    """Tests that /config <category> calls the correct list method."""
+
+    @pytest.mark.asyncio
+    async def test_config_tools_calls_tools_list(self):
+        """/config tools calls configurator.tools_list()."""
+        mock_configurator = _make_mock_configurator()
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("tools")
+        mock_configurator.tools_list.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_config_context_calls_context_list(self):
+        """/config context calls configurator.context_list()."""
+        mock_configurator = _make_mock_configurator()
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("context")
+        mock_configurator.context_list.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_config_hooks_calls_hooks_list(self):
+        """/config hooks calls configurator.hooks_list()."""
+        mock_configurator = _make_mock_configurator()
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("hooks")
+        mock_configurator.hooks_list.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_config_providers_calls_providers_list(self):
+        """/config providers calls configurator.providers_list()."""
+        mock_configurator = _make_mock_configurator()
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("providers")
+        mock_configurator.providers_list.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_config_agents_calls_agents_list(self):
+        """/config agents calls configurator.agents_list()."""
+        mock_configurator = _make_mock_configurator()
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("agents")
+        mock_configurator.agents_list.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_config_behaviors_calls_behaviors_list(self):
+        """/config behaviors calls configurator.behaviors_list()."""
+        mock_configurator = _make_mock_configurator()
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("behaviors")
+        mock_configurator.behaviors_list.assert_called()
+
+
+class TestConfigMutation:
+    """Tests for config mutation commands (enable/disable)."""
+
+    @pytest.mark.asyncio
+    async def test_config_context_disable(self):
+        """context disable calls cfg.context_disable('foundation:system-base')."""
+        mock_configurator = _make_mock_configurator()
+        mock_configurator.context_disable.return_value = None
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("context disable foundation:system-base")
+        mock_configurator.context_disable.assert_called_once_with("foundation:system-base")
+
+    @pytest.mark.asyncio
+    async def test_config_context_enable(self):
+        """context enable calls cfg.context_enable('caveman:caveman-rules')."""
+        mock_configurator = _make_mock_configurator()
+        mock_configurator.context_enable.return_value = None
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("context enable caveman:caveman-rules")
+        mock_configurator.context_enable.assert_called_once_with("caveman:caveman-rules")
+
+    @pytest.mark.asyncio
+    async def test_config_tools_disable(self):
+        """tools disable calls cfg.tool_disable('tool-bash') — uses AsyncMock."""
+        mock_configurator = _make_mock_configurator()
+        mock_configurator.tool_disable = AsyncMock(return_value=None)
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("tools disable tool-bash")
+        mock_configurator.tool_disable.assert_called_once_with("tool-bash")
+
+    @pytest.mark.asyncio
+    async def test_config_tools_enable(self):
+        """tools enable calls cfg.tool_enable('tool-bash') — uses AsyncMock."""
+        mock_configurator = _make_mock_configurator()
+        mock_configurator.tool_enable = AsyncMock(return_value=None)
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("tools enable tool-bash")
+        mock_configurator.tool_enable.assert_called_once_with("tool-bash")
+
+    @pytest.mark.asyncio
+    async def test_config_behaviors_disable(self):
+        """behaviors disable calls cfg.behavior_disable('caveman') — returns dict."""
+        mock_configurator = _make_mock_configurator()
+        mock_configurator.behavior_disable.return_value = {
+            "disabled": ["caveman"],
+            "warnings": [],
+        }
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("behaviors disable caveman")
+        mock_configurator.behavior_disable.assert_called_once_with("caveman")
+
+    @pytest.mark.asyncio
+    async def test_config_behaviors_enable(self):
+        """behaviors enable calls cfg.behavior_enable('caveman') — returns dict."""
+        mock_configurator = _make_mock_configurator()
+        mock_configurator.behavior_enable.return_value = {
+            "enabled": ["caveman"],
+            "warnings": [],
+        }
+        cp = _make_command_processor(configurator=mock_configurator)
+        await cp._get_config_display("behaviors enable caveman")
+        mock_configurator.behavior_enable.assert_called_once_with("caveman")
+
+    @pytest.mark.asyncio
+    async def test_config_mutation_error_displayed(self):
+        """ValueError from context_disable is caught, 'not found' or 'error' in result."""
+        mock_configurator = _make_mock_configurator()
+        mock_configurator.context_disable.side_effect = ValueError("Item not found")
+        cp = _make_command_processor(configurator=mock_configurator)
+        result = await cp._get_config_display("context disable nonexistent-item")
+        assert isinstance(result, str)
+        assert any(word in result.lower() for word in ["not found", "error"])
