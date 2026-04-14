@@ -939,7 +939,211 @@ class CommandProcessor:
         return "\n".join(lines)
 
     async def _get_config_display(self) -> str:
-        """Display current configuration using bundle display."""
+        """Display current configuration.
+
+        Uses the live SessionConfigurator dashboard if a configurator is attached,
+        otherwise falls back to the legacy bundle config rendering.
+        """
+        from .console import console
+
+        configurator = getattr(self, "configurator", None)
+        if configurator is None:
+            return await self._render_legacy_config()
+
+        # Collect all list data from the configurator
+        context_items = configurator.context_list()
+        tools_items = configurator.tools_list()
+        hooks_items = configurator.hooks_list()
+        providers_items = configurator.providers_list()
+        agents_items = configurator.agents_list()
+        behaviors_items = configurator.behaviors_list()
+        changes = configurator.diff_from_original()
+
+        # Extract bundle name
+        if self.bundle_name.startswith("bundle:"):
+            bundle_name = self.bundle_name.removeprefix("bundle:")
+        else:
+            bundle_name = self.bundle_name
+
+        # Get active mode
+        active_mode = (
+            self.session.coordinator.session_state.get("active_mode") or "none"
+        )
+
+        # Get change count
+        change_count = len(changes) if changes else 0
+
+        # Render header
+        console.print(f"\n[bold]Bundle:[/bold] {bundle_name}")
+        console.print(f"[bold]Mode:[/bold] {active_mode}")
+        if change_count > 0:
+            console.print(
+                f"[bold]Changes:[/bold] {change_count}  (use /config save to persist)"
+            )
+        else:
+            console.print(
+                "[dim]No changes from original  (use /config save to persist)[/dim]"
+            )
+        console.print()
+
+        # Render session section (orchestrator info from session.config)
+        raw_config = self.session.config
+        session_config = (
+            raw_config.get("session", {}) if isinstance(raw_config, dict) else {}
+        )
+        if session_config and isinstance(session_config, dict):
+            console.print("[bold]Session:[/bold]")
+            for field in ["orchestrator", "context"]:
+                if field in session_config:
+                    value = session_config[field]
+                    if isinstance(value, dict) and "module" in value:
+                        console.print(f"  {field}: {value.get('module', 'unknown')}")
+                    else:
+                        console.print(f"  {field}: {value}")
+            console.print()
+
+        # Render providers section
+        if providers_items:
+            enabled_count = sum(1 for p in providers_items if p.get("enabled", True))
+            disabled_count = len(providers_items) - enabled_count
+            count_label = f"{enabled_count} on"
+            if disabled_count:
+                count_label += f", {disabled_count} off"
+            console.print(f"[bold]Providers:[/bold] ({count_label})")
+            for item in providers_items:
+                is_enabled = item.get("enabled", True)
+                status = "[on]" if is_enabled else "[off]"
+                name = item.get("name", "unknown")
+                source = item.get("source", "")
+                line = f"  {status} {name}"
+                if source:
+                    line += f"  [dim](from {source})[/dim]"
+                if not is_enabled:
+                    line += " [dim][disabled][/dim]"
+                console.print(line)
+                cfg = item.get("config", {})
+                if cfg and isinstance(cfg, dict):
+                    for key, val in cfg.items():
+                        redacted_val = self._redact_value(key, val)
+                        console.print(f"    {key}: {redacted_val}")
+            console.print()
+
+        # Render tools section
+        if tools_items:
+            enabled_count = sum(1 for t in tools_items if t.get("enabled", True))
+            disabled_count = len(tools_items) - enabled_count
+            count_label = f"{enabled_count} on"
+            if disabled_count:
+                count_label += f", {disabled_count} off"
+            console.print(f"[bold]Tools:[/bold] ({count_label})")
+            for item in tools_items:
+                is_enabled = item.get("enabled", True)
+                status = "[on]" if is_enabled else "[off]"
+                name = item.get("name", "unknown")
+                source = item.get("source", "")
+                line = f"  {status} {name}"
+                if source:
+                    line += f"  [dim](from {source})[/dim]"
+                if not is_enabled:
+                    line += " [dim][disabled][/dim]"
+                console.print(line)
+            console.print()
+
+        # Render hooks section
+        if hooks_items:
+            enabled_count = sum(1 for h in hooks_items if h.get("enabled", True))
+            disabled_count = len(hooks_items) - enabled_count
+            count_label = f"{enabled_count} on"
+            if disabled_count:
+                count_label += f", {disabled_count} off"
+            console.print(f"[bold]Hooks:[/bold] ({count_label})")
+            for item in hooks_items:
+                is_enabled = item.get("enabled", True)
+                status = "[on]" if is_enabled else "[off]"
+                name = item.get("name", "unknown")
+                source = item.get("source", "")
+                line = f"  {status} {name}"
+                if source:
+                    line += f"  [dim](from {source})[/dim]"
+                if not is_enabled:
+                    line += " [dim][disabled][/dim]"
+                console.print(line)
+            console.print()
+
+        # Render context section
+        if context_items:
+            enabled_count = sum(1 for c in context_items if c.get("enabled", True))
+            disabled_count = len(context_items) - enabled_count
+            count_label = f"{enabled_count} on"
+            if disabled_count:
+                count_label += f", {disabled_count} off"
+            console.print(f"[bold]Context:[/bold] ({count_label})")
+            for item in context_items:
+                is_enabled = item.get("enabled", True)
+                status = "[on]" if is_enabled else "[off]"
+                name = item.get("name", "unknown")
+                source = item.get("source", "")
+                line = f"  {status} {name}"
+                if source:
+                    line += f"  [dim](from {source})[/dim]"
+                if not is_enabled:
+                    line += " [dim][disabled][/dim]"
+                console.print(line)
+            console.print()
+
+        # Render agents section
+        if agents_items:
+            enabled_count = sum(1 for a in agents_items if a.get("enabled", True))
+            disabled_count = len(agents_items) - enabled_count
+            count_label = f"{enabled_count} on"
+            if disabled_count:
+                count_label += f", {disabled_count} off"
+            console.print(f"[bold]Agents:[/bold] ({count_label})")
+            for item in agents_items:
+                is_enabled = item.get("enabled", True)
+                status = "[on]" if is_enabled else "[off]"
+                name = item.get("name", "unknown")
+                source = item.get("source", "")
+                line = f"  {status} {name}"
+                if source:
+                    line += f"  [dim](from {source})[/dim]"
+                if not is_enabled:
+                    line += " [dim][disabled][/dim]"
+                console.print(line)
+            console.print()
+
+        # Render behaviors section with contribution counts per category
+        if behaviors_items:
+            enabled_count = sum(1 for b in behaviors_items if b.get("enabled", True))
+            disabled_count = len(behaviors_items) - enabled_count
+            count_label = f"{enabled_count} on"
+            if disabled_count:
+                count_label += f", {disabled_count} off"
+            console.print(f"[bold]Behaviors:[/bold] ({count_label})")
+            for item in behaviors_items:
+                is_enabled = item.get("enabled", True)
+                status = "[on]" if is_enabled else "[off]"
+                name = item.get("name", "unknown")
+                contributions = item.get("contributions", {})
+                line = f"  {status} {name}"
+                if not is_enabled:
+                    line += " [dim][disabled][/dim]"
+                console.print(line)
+                if contributions and isinstance(contributions, dict):
+                    contrib_parts = [
+                        f"{cat}: {count}"
+                        for cat, count in contributions.items()
+                        if count > 0
+                    ]
+                    if contrib_parts:
+                        console.print(
+                            f"    [dim]contributes: {', '.join(contrib_parts)}[/dim]"
+                        )
+
+        return ""  # Output already printed via console
+
+    async def _render_legacy_config(self) -> str:
+        """Render configuration using the legacy bundle display (fallback when no configurator)."""
         from .console import console
 
         # Extract bundle name from config source name (format: "bundle:<name>")
