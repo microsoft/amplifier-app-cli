@@ -68,26 +68,60 @@ class TestRedactValue:
 
 
 def _make_mock_configurator():
-    """Create a MagicMock configurator with realistic list data for testing."""
+    """Create a MagicMock configurator with realistic multi-claimant list data for testing.
+
+    Uses multi-claimant format:
+    - Items use 'behaviors' list (not 'source' string) for behavior attribution
+    - Tool items include 'module_id' field
+    - behaviors_list contributions use lists of item name strings (not int counts)
+    """
     mock_configurator = MagicMock()
 
     # context_list: 3 items (2 enabled foundation, 1 disabled caveman)
     mock_configurator.context_list.return_value = [
-        {"name": "foundation-base", "enabled": True, "source": "foundation"},
-        {"name": "foundation-tools-context", "enabled": True, "source": "foundation"},
-        {"name": "caveman-context", "enabled": False, "source": "caveman"},
+        {"name": "foundation-base", "enabled": True, "behaviors": ["foundation"]},
+        {
+            "name": "foundation-tools-context",
+            "enabled": True,
+            "behaviors": ["foundation"],
+        },
+        {"name": "caveman-context", "enabled": False, "behaviors": ["caveman"]},
     ]
 
     # tools_list: 3 items (2 enabled foundation, 1 disabled caveman)
+    # Includes 'module_id' and 'behaviors' list for _render_tools_section compatibility
     mock_configurator.tools_list.return_value = [
-        {"name": "foundation-tool-fs", "enabled": True, "source": "foundation"},
-        {"name": "foundation-tool-web", "enabled": True, "source": "foundation"},
-        {"name": "caveman-tool", "enabled": False, "source": "caveman"},
+        {
+            "name": "foundation-tool-fs",
+            "enabled": True,
+            "behaviors": ["foundation"],
+            "module_id": "amplifier_core.tools.filesystem",
+            "config": {},
+        },
+        {
+            "name": "foundation-tool-web",
+            "enabled": True,
+            "behaviors": ["foundation"],
+            "module_id": "amplifier_core.tools.web",
+            "config": {},
+        },
+        {
+            "name": "caveman-tool",
+            "enabled": False,
+            "behaviors": ["caveman"],
+            "module_id": "amplifier_bundle_caveman.tools.caveman",
+            "config": {},
+        },
     ]
 
     # hooks_list: 1 item (enabled modes hook)
     mock_configurator.hooks_list.return_value = [
-        {"name": "modes-hook", "enabled": True, "source": "foundation"},
+        {
+            "name": "modes-hook",
+            "enabled": True,
+            "behaviors": ["foundation"],
+            "event": "llm:request",
+        },
     ]
 
     # providers_list: 1 item (enabled anthropic with api_key in config)
@@ -95,7 +129,7 @@ def _make_mock_configurator():
         {
             "name": "anthropic",
             "enabled": True,
-            "source": "foundation",
+            "behaviors": ["foundation"],
             "config": {
                 "api_key": "sk-ant-1234567890abcdef1234567890",
                 "model": "claude-3-5-sonnet",
@@ -105,26 +139,36 @@ def _make_mock_configurator():
 
     # agents_list: 1 item (enabled foundation:explorer)
     mock_configurator.agents_list.return_value = [
-        {"name": "foundation:explorer", "enabled": True, "source": "foundation"},
+        {"name": "foundation:explorer", "enabled": True, "behaviors": ["foundation"]},
     ]
 
-    # behaviors_list: 2 items (enabled foundation, disabled caveman with contribution counts)
+    # behaviors_list: 2 items (enabled foundation, disabled caveman)
+    # Contributions use lists of item name strings (not int counts)
     mock_configurator.behaviors_list.return_value = [
         {
             "name": "foundation",
             "enabled": True,
             "contributions": {
-                "context": 2,
-                "tools": 2,
-                "hooks": 1,
-                "providers": 1,
-                "agents": 1,
+                "context": [
+                    "context:foundation-base",
+                    "context:foundation-tools-context",
+                ],
+                "tools": ["tools:foundation-tool-fs", "tools:foundation-tool-web"],
+                "hooks": ["hooks:modes-hook"],
+                "providers": ["providers:anthropic"],
+                "agents": ["agents:foundation:explorer"],
             },
         },
         {
             "name": "caveman",
             "enabled": False,
-            "contributions": {"context": 1, "tools": 1},
+            "contributions": {
+                "context": ["context:caveman-context"],
+                "tools": ["tools:caveman-tool"],
+                "hooks": [],
+                "providers": [],
+                "agents": [],
+            },
         },
     ]
 
@@ -134,6 +178,120 @@ def _make_mock_configurator():
     ]
 
     return mock_configurator
+
+
+class TestMockConfiguratorFormat:
+    """Tests that _make_mock_configurator returns multi-claimant format data.
+
+    These tests verify the mock data uses 'behaviors' lists instead of 'source' strings,
+    tools have 'module_id' fields, and behaviors contributions are lists of strings.
+    """
+
+    def test_context_items_use_behaviors_list(self):
+        """Context items should have 'behaviors' list, not 'source' string."""
+        mock_configurator = _make_mock_configurator()
+        items = mock_configurator.context_list()
+        assert len(items) > 0, "context_list should return items"
+        for item in items:
+            assert "behaviors" in item, (
+                f"context item {item['name']!r} should have 'behaviors' key"
+            )
+            assert isinstance(item["behaviors"], list), (
+                f"context item {item['name']!r} 'behaviors' should be a list"
+            )
+
+    def test_tools_items_use_behaviors_list(self):
+        """Tool items should have 'behaviors' list, not 'source' string."""
+        mock_configurator = _make_mock_configurator()
+        items = mock_configurator.tools_list()
+        assert len(items) > 0, "tools_list should return items"
+        for item in items:
+            assert "behaviors" in item, (
+                f"tool item {item['name']!r} should have 'behaviors' key"
+            )
+            assert isinstance(item["behaviors"], list), (
+                f"tool item {item['name']!r} 'behaviors' should be a list"
+            )
+
+    def test_tools_items_have_module_id(self):
+        """Tool items should have 'module_id' field for _render_tools_section."""
+        mock_configurator = _make_mock_configurator()
+        items = mock_configurator.tools_list()
+        assert len(items) > 0, "tools_list should return items"
+        for item in items:
+            assert "module_id" in item, (
+                f"tool item {item['name']!r} should have 'module_id' field"
+            )
+
+    def test_hooks_items_use_behaviors_list(self):
+        """Hook items should have 'behaviors' list, not 'source' string."""
+        mock_configurator = _make_mock_configurator()
+        items = mock_configurator.hooks_list()
+        assert len(items) > 0, "hooks_list should return items"
+        for item in items:
+            assert "behaviors" in item, (
+                f"hook item {item['name']!r} should have 'behaviors' key"
+            )
+            assert isinstance(item["behaviors"], list), (
+                f"hook item {item['name']!r} 'behaviors' should be a list"
+            )
+
+    def test_provider_items_use_behaviors_list(self):
+        """Provider items should have 'behaviors' list, not 'source' string."""
+        mock_configurator = _make_mock_configurator()
+        items = mock_configurator.providers_list()
+        assert len(items) > 0, "providers_list should return items"
+        for item in items:
+            assert "behaviors" in item, (
+                f"provider item {item['name']!r} should have 'behaviors' key"
+            )
+            assert isinstance(item["behaviors"], list), (
+                f"provider item {item['name']!r} 'behaviors' should be a list"
+            )
+
+    def test_agent_items_use_behaviors_list(self):
+        """Agent items should have 'behaviors' list, not 'source' string."""
+        mock_configurator = _make_mock_configurator()
+        items = mock_configurator.agents_list()
+        assert len(items) > 0, "agents_list should return items"
+        for item in items:
+            assert "behaviors" in item, (
+                f"agent item {item['name']!r} should have 'behaviors' key"
+            )
+            assert isinstance(item["behaviors"], list), (
+                f"agent item {item['name']!r} 'behaviors' should be a list"
+            )
+
+    def test_behaviors_contributions_are_lists(self):
+        """behaviors_list contributions should use lists of strings, not int counts."""
+        mock_configurator = _make_mock_configurator()
+        items = mock_configurator.behaviors_list()
+        assert len(items) > 0, "behaviors_list should return items"
+        enabled_item = next((i for i in items if i.get("enabled", True)), None)
+        assert enabled_item is not None, "should have at least one enabled behavior"
+        contributions = enabled_item.get("contributions", {})
+        assert isinstance(contributions, dict), "contributions should be a dict"
+        for cat, value in contributions.items():
+            assert isinstance(value, list), (
+                f"contributions[{cat!r}] should be a list of strings, got {type(value).__name__}"
+            )
+
+    def test_behaviors_contributions_contain_strings(self):
+        """behaviors_list contribution lists should contain string item names."""
+        mock_configurator = _make_mock_configurator()
+        items = mock_configurator.behaviors_list()
+        enabled_item = next((i for i in items if i.get("enabled", True)), None)
+        assert enabled_item is not None
+        contributions = enabled_item.get("contributions", {})
+        non_empty_cats = {k: v for k, v in contributions.items() if v}
+        assert len(non_empty_cats) > 0, (
+            "enabled behavior should have some non-empty contributions"
+        )
+        for cat, value in non_empty_cats.items():
+            for name in value:
+                assert isinstance(name, str), (
+                    f"contributions[{cat!r}] items should be strings, got {type(name).__name__}"
+                )
 
 
 class TestConfigDashboard:
@@ -641,195 +799,6 @@ class TestRenderSimpleSectionWithConfig:
         assert "..." not in all_calls, "no ellipsis for exactly 3 keys"
 
 
-class TestRenderHooksSection:
-    """Tests for the new _render_hooks_section method that groups hooks."""
-
-    def _all_calls_str(self, mock_console):
-        return " ".join(str(c) for c in mock_console.print.call_args_list)
-
-    def test_shell_hooks_collapsed_with_count(self):
-        """Multiple shell-* hooks are collapsed into one summary line."""
-        cp = _make_command_processor()
-        mock_console = MagicMock()
-        items = [
-            {"name": "shell-notification", "event": "tool:pre", "enabled": True},
-            {"name": "shell-pre-tool", "event": "tool:pre", "enabled": True},
-            {"name": "shell-post-tool", "event": "tool:post", "enabled": True},
-        ]
-        cp._render_hooks_section(mock_console, items)
-        calls = self._all_calls_str(mock_console)
-        assert "shell-*" in calls, "shell-* group label should appear"
-        assert "3" in calls, "count of shell hooks should appear"
-        # Each shell hook name should NOT appear individually
-        assert "shell-notification" not in calls
-        assert "shell-pre-tool" not in calls
-
-    def test_auto_hooks_collapsed_with_count(self):
-        """Multiple _auto_* hooks are collapsed into one summary line."""
-        cp = _make_command_processor()
-        mock_console = MagicMock()
-        items = [
-            {
-                "name": "_auto_tool:pre_bf121312-41db",
-                "event": "tool:pre",
-                "enabled": True,
-            },
-            {
-                "name": "_auto_tool:post_4cccb727-1ace",
-                "event": "tool:post",
-                "enabled": True,
-            },
-            {
-                "name": "_auto_llm:response_9b9847ed",
-                "event": "llm:response",
-                "enabled": True,
-            },
-        ]
-        cp._render_hooks_section(mock_console, items)
-        calls = self._all_calls_str(mock_console)
-        assert "_auto_*" in calls, "_auto_* group label should appear"
-        assert "3" in calls, "count of auto hooks should appear"
-        # Individual UUID names should NOT appear
-        assert "_auto_tool:pre_bf121312" not in calls
-
-    def test_named_hooks_shown_individually_with_event(self):
-        """Named (non-shell, non-auto) hooks are listed individually with their event."""
-        cp = _make_command_processor()
-        mock_console = MagicMock()
-        items = [
-            {"name": "routing-resolve", "event": "provider:request", "enabled": True},
-        ]
-        cp._render_hooks_section(mock_console, items)
-        calls = self._all_calls_str(mock_console)
-        assert "routing-resolve" in calls, "named hook should be listed"
-        assert "provider:request" in calls, "hook event should appear alongside name"
-
-    def test_header_shows_total_item_count(self):
-        """The section header shows the total count of all hooks."""
-        cp = _make_command_processor()
-        mock_console = MagicMock()
-        items = [
-            {"name": "routing-resolve", "event": "provider:request", "enabled": True},
-            {"name": "shell-pre-tool", "event": "tool:pre", "enabled": True},
-            {"name": "_auto_tool:pre_abc", "event": "tool:pre", "enabled": True},
-        ]
-        cp._render_hooks_section(mock_console, items)
-        # First print call is the header
-        first_call = str(mock_console.print.call_args_list[0])
-        assert "3" in first_call, "header should show total of 3 hooks"
-
-    def test_mixed_hooks_three_groups(self):
-        """Named, shell-*, and _auto_* each produce their own line/group."""
-        cp = _make_command_processor()
-        mock_console = MagicMock()
-        items = [
-            {"name": "routing-resolve", "event": "provider:request", "enabled": True},
-            {"name": "shell-notification", "event": "tool:pre", "enabled": True},
-            {"name": "_auto_tool:pre_abc", "event": "tool:pre", "enabled": True},
-        ]
-        cp._render_hooks_section(mock_console, items)
-        calls = self._all_calls_str(mock_console)
-        assert "routing-resolve" in calls
-        assert "shell-*" in calls
-        assert "_auto_*" in calls
-
-
-class TestRenderBehaviorsSection:
-    """Tests for the new _render_behaviors_section method that shows contributions inline."""
-
-    def _item_call_containing(self, mock_console, text):
-        """Return the string of the first console.print call containing `text`, or None."""
-        for call in mock_console.print.call_args_list:
-            args, _ = call
-            if args and text in str(args[0]):
-                return str(args[0])
-        return None
-
-    def test_contributions_shown_inline_with_name(self):
-        """Contribution counts appear inline on the same line as the behavior name."""
-        cp = _make_command_processor()
-        mock_console = MagicMock()
-        items = [
-            {
-                "name": "foundation",
-                "enabled": True,
-                "contributions": {
-                    "context": 12,
-                    "tools": 8,
-                    "hooks": 3,
-                    "providers": 2,
-                    "agents": 23,
-                },
-            }
-        ]
-        cp._render_behaviors_section(mock_console, items)
-        foundation_call = self._item_call_containing(mock_console, "foundation")
-        assert foundation_call is not None, "foundation should appear in a print call"
-        assert "12" in foundation_call, "context count should appear inline with name"
-        assert "context" in foundation_call, "full 'context' label should appear inline"
-
-    def test_zero_counts_shown_for_uniformity(self):
-        """All categories are shown even if count is 0, for consistent formatting."""
-        cp = _make_command_processor()
-        mock_console = MagicMock()
-        items = [
-            {
-                "name": "superpowers",
-                "enabled": True,
-                "contributions": {
-                    "context": 4,
-                    "tools": 0,
-                    "hooks": 0,
-                    "providers": 0,
-                    "agents": 6,
-                },
-            }
-        ]
-        cp._render_behaviors_section(mock_console, items)
-        superpowers_call = self._item_call_containing(mock_console, "superpowers")
-        assert superpowers_call is not None
-        assert "0" in superpowers_call, "zero counts should appear (not filtered out)"
-
-    def test_contributions_not_on_separate_lines(self):
-        """Contributions must NOT appear as separate indented sub-lines below name."""
-        cp = _make_command_processor()
-        mock_console = MagicMock()
-        items = [
-            {
-                "name": "foundation",
-                "enabled": True,
-                "contributions": {
-                    "context": 2,
-                    "tools": 2,
-                    "hooks": 1,
-                    "providers": 1,
-                    "agents": 1,
-                },
-            }
-        ]
-        cp._render_behaviors_section(mock_console, items)
-        # Check that "contributes:" (old sub-block format) does NOT appear
-        all_calls = " ".join(str(c) for c in mock_console.print.call_args_list)
-        assert "contributes:" not in all_calls, "old sub-block format should not appear"
-
-    def test_header_shows_enabled_count(self):
-        """Section header shows number of composed (enabled) behaviors using 'composed' term."""
-        cp = _make_command_processor()
-        mock_console = MagicMock()
-        items = [
-            {"name": "foundation", "enabled": True, "contributions": {}},
-            {"name": "caveman", "enabled": False, "contributions": {}},
-        ]
-        cp._render_behaviors_section(mock_console, items)
-        first_call = str(mock_console.print.call_args_list[0])
-        assert "1 composed" in first_call, (
-            "header should show '1 composed' for one enabled behavior"
-        )
-        assert "1 disabled" in first_call, (
-            "header should show '1 disabled' for one disabled behavior"
-        )
-
-
 class TestSectionHeaderFormat:
     """Tests that section headers use the design spec '── title ──' format."""
 
@@ -844,23 +813,23 @@ class TestSectionHeaderFormat:
         assert "[bold]" not in first_call, "old bold format should not appear in header"
 
     def test_hooks_section_header_uses_em_dash_format(self):
-        """_render_hooks_section header should use '──' dividers."""
+        """_render_hooks_section_v2 header should use '──' dividers."""
         cp = _make_command_processor()
         mock_console = MagicMock()
         items = [
             {"name": "routing-resolve", "event": "provider:request", "enabled": True}
         ]
-        cp._render_hooks_section(mock_console, items)
+        cp._render_hooks_section_v2(mock_console, items)
         first_call = str(mock_console.print.call_args_list[0])
         assert "──" in first_call, "hooks section header should contain '──' dividers"
         assert "[bold]" not in first_call, "old bold format should not appear"
 
     def test_behaviors_section_header_uses_em_dash_format(self):
-        """_render_behaviors_section header should use '──' dividers."""
+        """_render_behaviors_section_v2 header should use '──' dividers."""
         cp = _make_command_processor()
         mock_console = MagicMock()
         items = [{"name": "foundation", "enabled": True, "contributions": {}}]
-        cp._render_behaviors_section(mock_console, items)
+        cp._render_behaviors_section_v2(mock_console, items)
         first_call = str(mock_console.print.call_args_list[0])
         assert "──" in first_call, (
             "behaviors section header should contain '──' dividers"
