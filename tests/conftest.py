@@ -14,6 +14,15 @@ import pytest
 #   from helpers import make_command_processor
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Make the local amplifier-foundation package importable for integration tests.
+# The caveman-test amplifier-foundation (one level up from amplifier-app-cli)
+# contains the configurator subpackage used in integration tests.
+# Insert before any other amplifier-foundation source so the local development
+# version is preferred.
+_local_foundation = Path(__file__).parent.parent.parent / "amplifier-foundation"
+if _local_foundation.exists() and str(_local_foundation) not in sys.path:
+    sys.path.insert(0, str(_local_foundation))
+
 from amplifier_app_cli.main import CommandProcessor  # noqa: E402
 
 

@@ -1278,3 +1278,146 @@ class TestNewContextAgentsRendering:
         assert disabled_call is not None, "disabled item should appear in output"
         assert "red" in disabled_call, "disabled item should have red markup for [off]"
         assert "dim" in disabled_call, "disabled item's entire line should be dimmed"
+
+
+class TestRealConfiguratorRenderIntegration:
+    """Integration tests verifying real SessionConfigurator output flows correctly
+    through the renderer methods.
+
+    These tests use a real SessionConfigurator instance (not a MagicMock) to detect
+    key-name mismatches between the configurator's dict contract and the renderer's
+    expectations. A mock configurator would mask such mismatches.
+
+    The real SessionConfigurator is imported from the caveman-test amplifier-foundation
+    package (../amplifier-foundation relative to this repo), which is the local
+    development version containing the configurator module.
+    """
+
+    @staticmethod
+    def _get_session_configurator_class():
+        """Import SessionConfigurator from the caveman-test amplifier-foundation package.
+
+        Adds the local amplifier-foundation source tree to sys.path so the configurator
+        module is importable even when the system-installed amplifier-foundation
+        (from resolve-platform) does not contain the configurator subpackage.
+
+        Returns None if the import fails, allowing tests to be skipped gracefully.
+        """
+        import sys
+        from pathlib import Path
+
+        # caveman-test/amplifier-foundation lives one level up from caveman-test/amplifier-app-cli
+        candidate = Path(__file__).parent.parent.parent / "amplifier-foundation"
+        if candidate.exists() and str(candidate) not in sys.path:
+            sys.path.insert(0, str(candidate))
+
+        try:
+            from amplifier_foundation.configurator import SessionConfigurator  # noqa: PLC0415
+            return SessionConfigurator
+        except ImportError:
+            return None
+
+    def _make_real_configurator(self):
+        """Create a real SessionConfigurator with minimal mocked dependencies.
+
+        Returns a SessionConfigurator whose tools_list() produces one enabled tool
+        'bash' with behaviors=['foundation'] and module_id='tool-bash'.
+        """
+        from unittest.mock import MagicMock
+        from amplifier_foundation.bundle import Bundle
+
+        SessionConfigurator = self._get_session_configurator_class()
+        if SessionConfigurator is None:
+            return None
+
+        coordinator = MagicMock()
+        coordinator.get_capability.return_value = None
+        coordinator.hooks.list_handlers.return_value = {}
+        coordinator.get = MagicMock(side_effect=lambda mp: {"bash": MagicMock()} if mp == "tools" else {})
+        coordinator.config = {
+            "tools": [{"module": "tool-bash"}],
+            "agents": {},
+        }
+
+        bundle = Bundle(
+            name="test-behavior",
+            context={},
+            tools=[{"module": "tool-bash"}],
+            hooks=[],
+            providers=[],
+        )
+        bundle._provenance = {"tool:tool-bash": ["foundation"]}  # type: ignore[misc]
+
+        prepared = MagicMock()
+        prepared.bundle = bundle
+
+        session = MagicMock()
+        session.coordinator = coordinator
+
+        return SessionConfigurator(session=session, prepared_bundle=prepared)
+
+    def _find_call_containing(self, mock_console, text):
+        """Return first print() call whose argument contains the text, or None."""
+        for call in mock_console.print.call_args_list:
+            args, _ = call
+            if args and text in str(args[0]):
+                return str(args[0])
+        return None
+
+    def test_real_tools_list_behavior_renders_as_string(self):
+        """Real tools_list() output: behavior attribution renders as 'foundation', not \"['foundation']\".
+
+        When the configurator returns 'behavior: [\"foundation\"]' but the renderer
+        reads 'behaviors' (plural), the fallback to 'source' returns the list object
+        itself, producing \"['foundation']\" in the rendered output instead of
+        \"foundation\".
+        """
+        cfg = self._make_real_configurator()
+        if cfg is None:
+            import pytest
+            pytest.skip("amplifier_foundation.configurator not available in this environment")
+
+        items = cfg.tools_list()
+        assert len(items) == 1, "Expected one tool item"
+
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        cp._render_tools_section(mock_console, items)
+
+        bash_call = self._find_call_containing(mock_console, "bash")
+        assert bash_call is not None, "'bash' should appear in rendered output"
+
+        assert "['foundation']" not in bash_call, (
+            "Behavior must render as string 'foundation', not as Python list repr \"['foundation']\". "
+            "This indicates a key mismatch: configurator returns 'behavior' but renderer reads 'behaviors'."
+        )
+        assert "foundation" in bash_call, (
+            "Behavior 'foundation' must appear on the tool line as a plain string."
+        )
+
+    def test_real_tools_list_module_id_renders(self):
+        """Real tools_list() output: module: field renders on a separate indented line.
+
+        When the configurator returns 'module: \"tool-bash\"' but the renderer reads
+        'module_id', the module line is never rendered (empty string → skipped).
+        """
+        cfg = self._make_real_configurator()
+        if cfg is None:
+            import pytest
+            pytest.skip("amplifier_foundation.configurator not available in this environment")
+
+        items = cfg.tools_list()
+
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        cp._render_tools_section(mock_console, items)
+
+        # The module line contains "module: tool-bash"
+        module_line = self._find_call_containing(mock_console, "module:")
+        assert module_line is not None, (
+            "Module line ('module: tool-bash') must appear in rendered output. "
+            "This indicates a key mismatch: configurator returns 'module' but renderer reads 'module_id'."
+        )
+        assert "tool-bash" in module_line, (
+            "Module value 'tool-bash' must appear on the module: line."
+        )

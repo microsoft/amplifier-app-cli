@@ -994,61 +994,6 @@ class CommandProcessor:
         if trailing_newline:
             console.print()
 
-    def _render_hooks_section(
-        self,
-        console: Any,
-        items: list,
-        *,
-        trailing_newline: bool = True,
-    ) -> None:
-        """Render hooks section grouping shell-* and _auto_* hooks into summary lines.
-
-        Named hooks (non-shell, non-auto) are listed individually with their
-        bound event.  shell-* and _auto_* hooks are each collapsed into a
-        single count summary line to avoid UUID noise.
-        """
-        if not items:
-            return
-        enabled = sum(1 for x in items if x.get("enabled", True))
-        disabled = len(items) - enabled
-        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
-        console.print(f"── hooks ({count}) ──")
-
-        shell_hooks = [h for h in items if h.get("name", "").startswith("shell-")]
-        auto_hooks = [h for h in items if h.get("name", "").startswith("_auto_")]
-        named_hooks = [
-            h
-            for h in items
-            if not h.get("name", "").startswith("shell-")
-            and not h.get("name", "").startswith("_auto_")
-        ]
-
-        # Render individual named hooks with their event
-        for hook in named_hooks:
-            is_on = hook.get("enabled", True)
-            status = "\\[on]" if is_on else "\\[off]"
-            name = hook.get("name", "unknown")
-            event = hook.get("event", "")
-            line = f"  {status} {name}"
-            if event:
-                line += f"  [dim]{event}[/dim]"
-            console.print(line)
-
-        # Collapse shell-* hooks into one summary line
-        if shell_hooks:
-            console.print(
-                f"  \\[on] shell-*  [dim]({len(shell_hooks)} shell hooks)[/dim]"
-            )
-
-        # Collapse _auto_* hooks into one summary line
-        if auto_hooks:
-            console.print(
-                f"  \\[on] _auto_*  [dim]({len(auto_hooks)} auto-generated hooks)[/dim]"
-            )
-
-        if trailing_newline:
-            console.print()
-
     def _render_hooks_section_v2(
         self,
         console: Any,
@@ -1102,44 +1047,6 @@ class CommandProcessor:
             # Line 2: event in [dim], indented
             if event:
                 console.print(f"        [dim]event: {event}[/dim]")
-
-        if trailing_newline:
-            console.print()
-
-    def _render_behaviors_section(
-        self,
-        console: Any,
-        items: list,
-        *,
-        trailing_newline: bool = True,
-    ) -> None:
-        """Render behaviors section with contribution counts inline per behavior.
-
-        Each behavior line shows the behavior name followed by counts for each
-        category (context, tools, hooks, providers, agents), using abbreviated
-        labels (ctx for context).  Zero counts are shown for uniformity.
-        """
-        if not items:
-            return
-        enabled = sum(1 for x in items if x.get("enabled", True))
-        disabled = len(items) - enabled
-        count = f"{enabled} composed" + (f", {disabled} disabled" if disabled else "")
-        console.print(f"── behaviors ({count}) ──")
-
-        _CAT_ORDER = ("context", "tools", "hooks", "providers", "agents")
-
-        for item in items:
-            is_on = item.get("enabled", True)
-            status = "\\[on]" if is_on else "\\[off]"
-            name = item.get("name", "unknown")
-            line = f"  {status}  {name}"
-            contributions = item.get("contributions", {})
-            if isinstance(contributions, dict):
-                parts = [f"{contributions.get(cat, 0)} {cat}" for cat in _CAT_ORDER]
-                line += f"  {', '.join(parts)}"
-            if not is_on:
-                line += "  ← disabled"
-            console.print(line)
 
         if trailing_newline:
             console.print()
