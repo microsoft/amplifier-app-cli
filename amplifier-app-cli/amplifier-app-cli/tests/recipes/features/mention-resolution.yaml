@@ -1,0 +1,45 @@
+name: "mention-resolution"
+description: "Test @mention path resolution for bundle files via CLI"
+version: "1.0.0"
+author: "Amplifier Testing Team"
+created: "2025-12-23T00:00:00Z"
+tags: ["feature", "mention-resolution", "@mention", "bundles"]
+
+# Test Objective:
+# Validate that the CLI correctly resolves @namespace:path style mentions
+# This syntax works for bundles and allows agents to reference bundle content
+#
+# What we're validating:
+# - @mention syntax is parsed correctly
+# - Bundle paths resolve to actual file locations
+# - Content can be read from resolved paths
+
+steps:
+  - id: "read-bundle-file"
+    agent: "foundation:explorer"
+    prompt: |
+      Use the read_file tool to read the file at this exact @mention path:
+      @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
+
+      This tests whether the CLI correctly resolves @namespace:path style mentions.
+
+      Return the following in your response:
+      1. Whether read_file was successfully invoked with the @mention path
+      2. The first 500 characters of the file content (to verify successful read)
+      3. Whether the content contains expected philosophy keywords like "simplicity"
+    output: "bundle_content"
+    timeout: 30
+
+  - id: "validate"
+    agent: "recipes:result-validator"
+    prompt: |
+      Validate this @mention path resolution test result:
+      {{bundle_content}}
+
+      PASS criteria (ALL must be true):
+      1. read_file tool was invoked with @mention path (@foundation:context/IMPLEMENTATION_PHILOSOPHY.md)
+      2. File content was successfully returned (not an error)
+      3. Content contains philosophy-related terms (e.g., "simplicity", "philosophy", "principles")
+
+      Provide clear PASS or FAIL verdict with evidence.
+    timeout: 30

@@ -1,0 +1,80 @@
+name: "agent-delegation"
+description: "Feature test: Sub-session spawning via task tool (agent delegation)"
+version: "1.0.0"
+author: "Amplifier Testing Team"
+created: "2025-12-23T00:00:00Z"
+tags: ["feature", "agent-delegation", "task-tool", "sub-session"]
+
+# Test context
+context:
+  test_word: "testing"
+  expected_count: 7
+
+# Test Steps
+steps:
+  # Step 1: Delegate task to sub-agent
+  # The explorer agent will use the task tool to spawn a sub-agent
+  # that counts letters in the word "testing"
+  - id: "delegate-task"
+    agent: "foundation:explorer"
+    timeout: 60
+    prompt: |
+      Use the task tool to delegate this counting task to a sub-agent:
+
+      "Count the number of letters in the word '{{test_word}}'"
+
+      The sub-agent should analyze the word and return the exact count.
+      Expected result: {{expected_count}} letters
+
+      After the sub-agent completes, capture its response in your output.
+    output: "delegation_result"
+    retry:
+      max_attempts: 2
+      backoff: "exponential"
+      initial_delay: 5
+
+  # Step 2: Validate delegation behavior
+  # The result-validator checks that the delegation mechanism worked correctly
+  - id: "validate"
+    agent: "recipes:result-validator"
+    timeout: 60
+    prompt: |
+      Validate the agent delegation test results:
+
+      TEST: Agent Delegation via Task Tool
+
+      Delegation Result:
+      {{delegation_result}}
+
+      VALIDATION CRITERIA (all must pass):
+
+      1. Task Tool Invocation
+         - Verify the parent agent (foundation:explorer) successfully invoked the task tool
+         - Evidence: delegation_result should contain task tool usage
+
+      2. Sub-Agent Session Spawned
+         - Verify a sub-agent session was created
+         - Evidence: delegation_result should show sub-agent activity
+
+      3. Correct Answer Produced
+         - Verify sub-agent counted letters in "{{test_word}}" correctly
+         - Expected: {{expected_count}} letters
+         - Evidence: delegation_result should contain the number {{expected_count}}
+
+      4. Result Returned to Parent
+         - Verify the sub-agent's answer flowed back to the parent agent
+         - Evidence: delegation_result contains sub-agent's complete response
+
+      VERDICT FORMAT:
+      - Start with "PASS:" if all criteria met
+      - Start with "FAIL:" if any criteria failed
+      - Provide evidence for each criterion
+      - List which criteria passed/failed
+
+      What we're testing:
+      - CLI spawns sub-sessions correctly
+      - Task tool integration works end-to-end
+      - Parent-child session communication works
+      - Results flow back properly from sub-agent to parent
+    output: "validation_verdict"
+    on_error: "fail"

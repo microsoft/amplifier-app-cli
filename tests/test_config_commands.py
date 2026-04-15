@@ -909,7 +909,11 @@ class TestNewToolsRendering:
         assert "30" in all_calls, "config value '30' should appear"
 
     def test_tools_show_multi_claimant_behavior(self):
-        """Multiple behaviors in the behaviors list appear comma-separated on the name line."""
+        """Multiple behaviors appear comma-separated on the module line (not the name line).
+
+        Attribution moves to the module line to avoid line-wrapping confusion
+        when there are many behaviors in the list.
+        """
         cp = _make_command_processor()
         mock_console = MagicMock()
         items = [
@@ -924,9 +928,12 @@ class TestNewToolsRendering:
         cp._render_tools_section(mock_console, items)
         name_call = self._find_call_containing(mock_console, "tool-bash")
         assert name_call is not None, "tool-bash should appear in output"
-        assert "foundation" in name_call, "first behavior should appear on name line"
-        assert "caveman" in name_call, "second behavior should appear on name line"
-        assert "," in name_call, "behaviors should be comma-separated"
+        # Behaviors appear on the MODULE line (with module_id), not the name line
+        module_call = self._find_call_containing(mock_console, "amplifier_core.tools.bash")
+        assert module_call is not None, "module_id should appear in output"
+        assert "foundation" in module_call, "first behavior should appear on module line"
+        assert "caveman" in module_call, "second behavior should appear on module line"
+        assert "," in module_call, "behaviors should be comma-separated on module line"
 
     def test_tools_green_on_red_off(self):
         """Enabled tools show green [on], disabled tools show red [off] with dim entire line."""
@@ -1367,10 +1374,10 @@ class TestRealConfiguratorRenderIntegration:
     def test_real_tools_list_behavior_renders_as_string(self):
         """Real tools_list() output: behavior attribution renders as 'foundation', not \"['foundation']\".
 
-        When the configurator returns 'behavior: [\"foundation\"]' but the renderer
-        reads 'behaviors' (plural), the fallback to 'source' returns the list object
-        itself, producing \"['foundation']\" in the rendered output instead of
-        \"foundation\".
+        Behavior attribution appears on the MODULE line (not the name line), to avoid
+        wrapping confusion when many behaviors are attributed.  The module line format is:
+          module: tool-bash  (foundation)
+        The check verifies that 'foundation' renders as a plain string, not as \"['foundation']\".
         """
         cfg = self._make_real_configurator()
         if cfg is None:
@@ -1384,15 +1391,16 @@ class TestRealConfiguratorRenderIntegration:
         mock_console = MagicMock()
         cp._render_tools_section(mock_console, items)
 
-        bash_call = self._find_call_containing(mock_console, "bash")
-        assert bash_call is not None, "'bash' should appear in rendered output"
+        # Attribution is on the MODULE line (contains "module: tool-bash")
+        module_call = self._find_call_containing(mock_console, "module: tool-bash")
+        assert module_call is not None, "'module: tool-bash' should appear in rendered output"
 
-        assert "['foundation']" not in bash_call, (
+        assert "['foundation']" not in module_call, (
             "Behavior must render as string 'foundation', not as Python list repr \"['foundation']\". "
             "This indicates a key mismatch: configurator returns 'behavior' but renderer reads 'behaviors'."
         )
-        assert "foundation" in bash_call, (
-            "Behavior 'foundation' must appear on the tool line as a plain string."
+        assert "foundation" in module_call, (
+            "Behavior 'foundation' must appear on the module line as a plain string."
         )
 
     def test_real_tools_list_module_id_renders(self):

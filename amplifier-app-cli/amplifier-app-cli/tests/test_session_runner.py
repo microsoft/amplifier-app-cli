@@ -1,0 +1,854 @@
+"""Tests for session_runner module - unified session initialization."""
+
+import logging
+import sys as _sys
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from amplifier_app_cli.session_runner import (
+    InitializedSession,
+    SessionConfig,
+    _should_attempt_self_healing,
+    create_initialized_session,
+    register_session_spawning,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers shared across tests
+# ---------------------------------------------------------------------------
+
+_MODULE = "amplifier_app_cli.session_runner"
+
+
+def _make_session_config(session_config_initial=None, **kwargs):
+    """Return a minimal SessionConfig with a PreparedBundle mock."""
+    prepared_bundle = MagicMock()
+    prepared_bundle.mount_plan = {"providers": [], "tools": []}
+    return SessionConfig(
+        config=dict(session_config_initial or {}),
+        search_paths=[],
+        verbose=False,
+        prepared_bundle=prepared_bundle,
+        bundle_name="test-bundle",
+        **kwargs,
+    )
+
+
+def _make_mock_session(initial_session_config=None):
+    """Return a mock AmplifierSession with a real dict for session.config.
+
+    Using a real dict means we can assert on its contents after the call.
+    """
+    mock_sess = MagicMock()
+    mock_sess.config = dict(initial_session_config or {})
+    mock_sess.coordinator.get_capability.return_value = None
+    mock_sess.coordinator.register_capability = MagicMock()
+    mock_sess.coordinator.get.return_value = None
+    return mock_sess
+
+
+# ---------------------------------------------------------------------------
+# SessionConfig tests
+# ---------------------------------------------------------------------------
+
+
+class TestSessionConfig:
+    """Test SessionConfig dataclass properties."""
+
+    def test_is_resume_false_when_no_transcript(self):
+        """New session has is_resume=False."""
+        config = SessionConfig(
+            config={},
+            search_paths=[],
+            verbose=False,
+        )
+        assert config.is_resume is False
+
+    def test_is_resume_true_when_transcript_provided(self):
+        """Resume session has is_resume=True."""
+        config = SessionConfig(
+            config={},
+            search_paths=[],
+            verbose=False,
+            initial_transcript=[{"role": "user", "content": "test"}],
+        )
+        assert config.is_resume is True
+
+    def test_is_resume_true_with_empty_transcript(self):
+        """Empty list still counts as resume (edge case)."""
+        config = SessionConfig(
+            config={},
+            search_paths=[],
+            verbose=False,
+            initial_transcript=[],
+        )
+        # Empty list is truthy for is_resume check (list exists)
+        # This is intentional - empty transcript still means resume mode
+        assert config.is_resume is True
+
+    def test_default_values(self):
+        """Test default values are set correctly."""
+        config = SessionConfig(
+            config={"key": "value"},
+            search_paths=[Path("/test")],
+            verbose=True,
+        )
+        assert config.session_id is None
+        assert config.bundle_name == "unknown"
+        assert config.initial_transcript is None
+        assert config.prepared_bundle is None
+        assert config.output_format == "text"
+
+
+# ---------------------------------------------------------------------------
+# InitializedSession tests
+# ---------------------------------------------------------------------------
+
+
+class TestInitializedSession:
+    """Test InitializedSession container."""
+
+    @pytest.mark.anyio
+    async def test_cleanup_calls_session_cleanup(self):
+        """Cleanup properly disposes the session."""
+        mock_session = AsyncMock()
+        mock_config = SessionConfig(config={}, search_paths=[], verbose=False)
+
+        initialized = InitializedSession(
+            session=mock_session,
+            session_id="test-123",
+            config=mock_config,
+            store=MagicMock(),
+        )
+
+        await initialized.cleanup()
+        mock_session.cleanup.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Post-session metadata stamping tests
+# ---------------------------------------------------------------------------
+
+
+class TestPostSessionMetadataStamping:
+    """Tests for the two-phase root-level metadata stamping.
+
+    create_initialized_session writes root-level metadata into config.config
+    BEFORE session creation (to propagate via deep-merge to child sessions)
+    and then into session.config AFTER creation (belt-and-suspenders: the
+    foundation layer may copy config.config into a fresh dict when building
+    the coordinator, so session.config and config.config are not guaranteed
+    to be the same object — hooks read coordinator.config, so we must ensure
+    the values are present there too).
+
+    Bugs fixed in this batch:
+    - project_dir / project_name guards checked ``config.config`` (always
+      False after the pre-session write) instead of ``session.config``.
+    - ``cwd`` was only defined inside the try block, causing NameError in
+      the post-session block when Path.cwd() raised OSError.
+    """
+
+    @pytest.mark.anyio
+    async def test_project_dir_written_to_session_config(self):
+        """project_dir is written to session.config after session creation.
+
+        Before the fix the guard was:
+            if "project_dir" not in config.config:   # always False after pre-session write
+        Because config.config already has project_dir from the pre-session block.
+        The fix checks session.config instead, which starts empty when the
+        foundation layer copies the config dict into a fresh coordinator dict.
+        """
+        mock_sess = _make_mock_session()  # session.config starts empty
+        cfg = _make_session_config()
+        console = MagicMock()
+
+        with (
+            patch(
+                f"{_MODULE}._create_bundle_session",
+                new_callable=AsyncMock,
+                return_value=mock_sess,
+            ),
+            patch(
+                "amplifier_app_cli.commands.init.check_first_run", return_value=False
+            ),
+            patch(
+                "amplifier_app_cli.project_utils.get_project_slug",
+                return_value="test-slug",
+            ),
+            patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+            patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+        ):
+            result = await create_initialized_session(cfg, console)
+
+        assert "project_dir" in result.session.config
+        # project_dir should be a non-empty path (CWD)
+        assert result.session.config["project_dir"] != ""
+
+    @pytest.mark.anyio
+    async def test_project_name_written_to_session_config(self):
+        """project_name is written to session.config after session creation.
+
+        Same copy-paste bug as project_dir — the guard now checks session.config.
+        """
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()
+        console = MagicMock()
+
+        with (
+            patch(
+                f"{_MODULE}._create_bundle_session",
+                new_callable=AsyncMock,
+                return_value=mock_sess,
+            ),
+            patch(
+                "amplifier_app_cli.commands.init.check_first_run", return_value=False
+            ),
+            patch(
+                "amplifier_app_cli.project_utils.get_project_slug",
+                return_value="test-slug",
+            ),
+            patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+            patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+        ):
+            result = await create_initialized_session(cfg, console)
+
+        assert "project_name" in result.session.config
+        assert result.session.config["project_name"] != ""
+
+    @pytest.mark.anyio
+    async def test_root_session_id_stamped_for_root_session(self):
+        """root_session_id in session.config equals the generated session_id."""
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()
+        console = MagicMock()
+
+        with (
+            patch(
+                f"{_MODULE}._create_bundle_session",
+                new_callable=AsyncMock,
+                return_value=mock_sess,
+            ),
+            patch(
+                "amplifier_app_cli.commands.init.check_first_run", return_value=False
+            ),
+            patch(
+                "amplifier_app_cli.project_utils.get_project_slug",
+                return_value="test-slug",
+            ),
+            patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+            patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+        ):
+            result = await create_initialized_session(cfg, console)
+
+        assert result.session.config["root_session_id"] == result.session_id
+
+    @pytest.mark.anyio
+    async def test_child_session_root_session_id_not_overwritten(self):
+        """Child sessions: inherited root_session_id in session.config is preserved.
+
+        When a child session is spawned, the coordinator config inherits
+        root_session_id from the parent via config deep-merge.  The
+        post-session guard must not overwrite this value with the child's
+        own session_id.
+        """
+        parent_root_id = "parent-root-aaaa-bbbb-cccc"
+        # Simulate coordinator config that already has the parent's root_session_id
+        mock_sess = _make_mock_session(
+            initial_session_config={"root_session_id": parent_root_id}
+        )
+        # config.config also carries it (from deep-merge during spawn_sub_session)
+        cfg = _make_session_config(
+            session_config_initial={"root_session_id": parent_root_id},
+            session_id="child-abc-def",
+        )
+        console = MagicMock()
+
+        with (
+            patch(
+                f"{_MODULE}._create_bundle_session",
+                new_callable=AsyncMock,
+                return_value=mock_sess,
+            ),
+            patch(
+                "amplifier_app_cli.commands.init.check_first_run", return_value=False
+            ),
+            patch(
+                "amplifier_app_cli.project_utils.get_project_slug",
+                return_value="test-slug",
+            ),
+            patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+            patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+        ):
+            result = await create_initialized_session(cfg, console)
+
+        # Must keep the parent's root_session_id, NOT overwrite with child's session_id
+        assert result.session.config["root_session_id"] == parent_root_id
+
+    @pytest.mark.anyio
+    async def test_child_session_project_dir_not_overwritten(self):
+        """Child sessions: project_dir inherited in session.config is not overwritten."""
+        parent_project_dir = "/home/user/parent-project"
+        mock_sess = _make_mock_session(
+            initial_session_config={"project_dir": parent_project_dir}
+        )
+        cfg = _make_session_config(
+            session_config_initial={"project_dir": parent_project_dir}
+        )
+        console = MagicMock()
+
+        with (
+            patch(
+                f"{_MODULE}._create_bundle_session",
+                new_callable=AsyncMock,
+                return_value=mock_sess,
+            ),
+            patch(
+                "amplifier_app_cli.commands.init.check_first_run", return_value=False
+            ),
+            patch(
+                "amplifier_app_cli.project_utils.get_project_slug",
+                return_value="test-slug",
+            ),
+            patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+            patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+        ):
+            result = await create_initialized_session(cfg, console)
+
+        assert result.session.config["project_dir"] == parent_project_dir
+
+    @pytest.mark.anyio
+    async def test_cwd_empty_fallback_on_os_error_no_name_error(self):
+        """cwd = '' before try block prevents NameError when Path.cwd() raises OSError.
+
+        Before the fix, cwd was only defined inside the try block.  If OSError
+        fired (e.g. sandboxed environment with no working directory), the
+        post-session ``session.config["working_dir"] = cwd`` line would raise
+        NameError.  The fix initialises cwd = "" before the try block.
+        """
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()
+        console = MagicMock()
+
+        with (
+            patch(
+                f"{_MODULE}._create_bundle_session",
+                new_callable=AsyncMock,
+                return_value=mock_sess,
+            ),
+            patch(
+                "amplifier_app_cli.commands.init.check_first_run", return_value=False
+            ),
+            patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+            patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+            # Simulate no working directory available
+            patch(f"{_MODULE}.Path") as mock_path_cls,
+        ):
+            mock_path_cls.cwd.side_effect = OSError("no cwd in sandbox")
+            # Must NOT raise NameError — cwd falls back to ""
+            result = await create_initialized_session(cfg, console)
+
+        # working_dir is the empty-string fallback
+        assert result.session.config.get("working_dir") == ""
+
+
+# ---------------------------------------------------------------------------
+# _should_attempt_self_healing — multi-instance Counter comparison tests
+# ---------------------------------------------------------------------------
+
+
+def _make_self_healing_mocks(configured_providers, mounted_provider_dict):
+    """Return (mock_session, mock_prepared_bundle) for _should_attempt_self_healing tests."""
+    mock_session = MagicMock()
+
+    def _coordinator_get(key):
+        if key == "providers":
+            return mounted_provider_dict
+        if key == "tools":
+            return {}
+        return None
+
+    mock_session.coordinator.get.side_effect = _coordinator_get
+
+    mock_bundle = MagicMock()
+    mock_bundle.mount_plan = {"providers": configured_providers, "tools": []}
+    return mock_session, mock_bundle
+
+
+class TestSelfHealingCounterComparison:
+    """Tests for Counter-based multi-instance provider detection in self-healing check.
+
+    With set()-based comparison, duplicate type names collapse and partial
+    failures involving multi-instance providers go undetected or are mis-reported.
+    Counter-based comparison handles duplicate type names correctly.
+    """
+
+    def test_self_healing_detects_multi_instance_mismatch(self, caplog):
+        """Partial failure with multi-instance providers is detected and named correctly.
+
+        Mount plan has 2 anthropic entries with different instance_ids, but only
+        the first is mounted. The warning must name the *missing* instance_id
+        ('anthropic-haiku'), not a collapsed generic 'anthropic'.
+        """
+        configured = [
+            {"module": "provider-anthropic", "instance_id": "anthropic-sonnet"},
+            {"module": "provider-anthropic", "instance_id": "anthropic-haiku"},
+        ]
+        mounted = {"anthropic-sonnet": MagicMock()}
+
+        mock_session, mock_bundle = _make_self_healing_mocks(configured, mounted)
+
+        with caplog.at_level(
+            logging.WARNING, logger="amplifier_app_cli.session_runner"
+        ):
+            result = _should_attempt_self_healing(mock_session, mock_bundle)
+
+        # Should NOT trigger full self-healing (partial failure only)
+        assert result is False
+
+        # Warning must be logged for the partial failure
+        warning_messages = [
+            r.message for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert warning_messages, (
+            "Expected a partial-failure warning but none was logged"
+        )
+
+        # The missing entry must be identified by instance_id, not collapsed module name
+        combined = " ".join(warning_messages)
+        assert "anthropic-haiku" in combined, (
+            f"Expected 'anthropic-haiku' in warning but got: {combined}"
+        )
+        assert "Missing" in combined, (
+            f"Expected 'Missing' key in warning (Counter format) but got: {combined}"
+        )
+
+    def test_self_healing_no_warning_when_all_mounted(self, caplog):
+        """No warning when both multi-instance providers are mounted successfully.
+
+        Both instance_ids appear in mounted_providers — Counter counts match,
+        so no partial-failure warning should be logged.
+        """
+        configured = [
+            {"module": "provider-anthropic", "instance_id": "anthropic-sonnet"},
+            {"module": "provider-anthropic", "instance_id": "anthropic-haiku"},
+        ]
+        mounted = {
+            "anthropic-sonnet": MagicMock(),
+            "anthropic-haiku": MagicMock(),
+        }
+
+        mock_session, mock_bundle = _make_self_healing_mocks(configured, mounted)
+
+        with caplog.at_level(
+            logging.WARNING, logger="amplifier_app_cli.session_runner"
+        ):
+            result = _should_attempt_self_healing(mock_session, mock_bundle)
+
+        assert result is False
+        warning_messages = [
+            r.message for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert not warning_messages, f"Expected no warnings but got: {warning_messages}"
+
+
+# ---------------------------------------------------------------------------
+# register_session_spawning — spawn_capability forwards use_subprocess
+# ---------------------------------------------------------------------------
+
+
+class TestSpawnCapabilityForwardsUseSubprocess:
+    """Tests that the root spawn_capability closure accepts and forwards use_subprocess.
+
+    The root spawn_capability in register_session_spawning must forward
+    use_subprocess to spawn_sub_session so that callers (e.g. recipe executor)
+    can request subprocess isolation for agent steps.
+
+    Bug: child_spawn_capability closures in session_spawner.py already have
+    use_subprocess, but the ROOT spawn_capability in session_runner.py was
+    missing it — making subprocess isolation unreachable from root sessions.
+    """
+
+    @pytest.mark.anyio
+    async def test_spawn_capability_forwards_use_subprocess_true(self):
+        """spawn_capability forwards use_subprocess=True to spawn_sub_session."""
+        mock_session = _make_mock_session()
+
+        # Patch at the SOURCE module — register_session_spawning does
+        # `from .session_spawner import spawn_sub_session` internally,
+        # so we must patch the source before calling register_session_spawning.
+        with patch(
+            "amplifier_app_cli.session_spawner.spawn_sub_session",
+            new_callable=AsyncMock,
+            return_value={"output": "test", "session_id": "sub-123"},
+        ) as mock_spawn:
+            register_session_spawning(mock_session)
+
+            # Extract the registered spawn_capability from the mock
+            register_calls = mock_session.coordinator.register_capability.call_args_list
+            spawn_call = [c for c in register_calls if c[0][0] == "session.spawn"]
+            assert spawn_call, "session.spawn capability was not registered"
+            spawn_fn = spawn_call[0][0][1]
+
+            # Call spawn_capability with use_subprocess=True
+            mock_parent = MagicMock()
+            await spawn_fn(
+                agent_name="test-agent",
+                instruction="do something",
+                parent_session=mock_parent,
+                agent_configs={"test-agent": {}},
+                use_subprocess=True,
+            )
+
+            mock_spawn.assert_called_once()
+            call_kwargs = mock_spawn.call_args[1]
+            assert call_kwargs["use_subprocess"] is True, (
+                "use_subprocess=True was not forwarded to spawn_sub_session"
+            )
+
+    @pytest.mark.anyio
+    async def test_spawn_capability_defaults_use_subprocess_false(self):
+        """spawn_capability defaults use_subprocess=False (backward compat)."""
+        mock_session = _make_mock_session()
+
+        with patch(
+            "amplifier_app_cli.session_spawner.spawn_sub_session",
+            new_callable=AsyncMock,
+            return_value={"output": "test", "session_id": "sub-123"},
+        ) as mock_spawn:
+            register_session_spawning(mock_session)
+
+            # Extract the registered spawn_capability
+            register_calls = mock_session.coordinator.register_capability.call_args_list
+            spawn_call = [c for c in register_calls if c[0][0] == "session.spawn"]
+            spawn_fn = spawn_call[0][0][1]
+
+            # Call WITHOUT use_subprocess — should default to False
+            mock_parent = MagicMock()
+            await spawn_fn(
+                agent_name="test-agent",
+                instruction="do something",
+                parent_session=mock_parent,
+                agent_configs={"test-agent": {}},
+            )
+
+            mock_spawn.assert_called_once()
+            call_kwargs = mock_spawn.call_args[1]
+            assert call_kwargs["use_subprocess"] is False, (
+                "use_subprocess should default to False"
+            )
+
+    def test_self_healing_backward_compat_single_instance(self, caplog):
+        """Single-instance provider with no instance_id still works correctly.
+
+        Legacy mount plan entries without instance_id fall back to normalized
+        module name. When that provider mounts successfully no warning fires.
+        """
+        configured = [{"module": "provider-anthropic"}]
+        mounted = {"anthropic": MagicMock()}
+
+        mock_session, mock_bundle = _make_self_healing_mocks(configured, mounted)
+
+        with caplog.at_level(
+            logging.WARNING, logger="amplifier_app_cli.session_runner"
+        ):
+            result = _should_attempt_self_healing(mock_session, mock_bundle)
+
+        assert result is False
+        warning_messages = [
+            r.message for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert not warning_messages, f"Expected no warnings but got: {warning_messages}"
+
+
+# ---------------------------------------------------------------------------
+# SessionConfigurator wiring tests (task-8)
+# ---------------------------------------------------------------------------
+
+
+def _configurator_patches(mock_sess):
+    """Context managers list for common create_initialized_session patches."""
+    return [
+        patch(
+            f"{_MODULE}._create_bundle_session",
+            new_callable=AsyncMock,
+            return_value=mock_sess,
+        ),
+        patch(
+            "amplifier_app_cli.commands.init.check_first_run", return_value=False
+        ),
+        patch(
+            "amplifier_app_cli.project_utils.get_project_slug",
+            return_value="test-slug",
+        ),
+        patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+        patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+    ]
+
+
+class TestInitializedSessionConfiguratorField:
+    """Tests for the new configurator field on InitializedSession."""
+
+    def test_configurator_field_defaults_to_none(self):
+        """InitializedSession.configurator defaults to None."""
+        mock_config = SessionConfig(config={}, search_paths=[], verbose=False)
+        initialized = InitializedSession(
+            session=MagicMock(),
+            session_id="test-123",
+            config=mock_config,
+        )
+        assert initialized.configurator is None
+
+    def test_configurator_field_can_be_set(self):
+        """InitializedSession.configurator can be assigned."""
+        mock_config = SessionConfig(config={}, search_paths=[], verbose=False)
+        mock_configurator = MagicMock()
+        initialized = InitializedSession(
+            session=MagicMock(),
+            session_id="test-123",
+            config=mock_config,
+            configurator=mock_configurator,
+        )
+        assert initialized.configurator is mock_configurator
+
+
+class TestSessionConfiguratorWiring:
+    """Tests for SessionConfigurator creation during session initialization."""
+
+    @staticmethod
+    def _make_fake_configurator_module(mock_cls):
+        """Return a fake amplifier_foundation.configurator module with mock class."""
+        import types
+
+        mod = types.ModuleType("amplifier_foundation.configurator")
+        mod.SessionConfigurator = mock_cls
+        return mod
+
+    @pytest.mark.anyio
+    async def test_configurator_created_when_prepared_bundle_present(self):
+        """SessionConfigurator is created when prepared_bundle is available."""
+        from contextlib import ExitStack
+
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()  # has prepared_bundle set
+        console = MagicMock()
+
+        mock_configurator = MagicMock()
+        mock_configurator.apply_saved_settings = AsyncMock()
+        mock_configurator.take_snapshot = MagicMock()
+        mock_configurator_cls = MagicMock(return_value=mock_configurator)
+
+        fake_module = self._make_fake_configurator_module(mock_configurator_cls)
+
+        with ExitStack() as stack:
+            for p in _configurator_patches(mock_sess):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.dict(
+                    _sys.modules,
+                    {"amplifier_foundation.configurator": fake_module},
+                )
+            )
+            stack.enter_context(
+                patch(
+                    f"{_MODULE}.AppSettings",
+                    return_value=MagicMock(
+                        get_merged_settings=MagicMock(return_value={})
+                    ),
+                )
+            )
+            result = await create_initialized_session(cfg, console)
+
+        assert result.configurator is mock_configurator
+        mock_configurator_cls.assert_called_once_with(mock_sess, cfg.prepared_bundle)
+
+    @pytest.mark.anyio
+    async def test_configurator_apply_saved_settings_called(self):
+        """apply_saved_settings is called with the configurator key from merged settings."""
+        from contextlib import ExitStack
+
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()
+        console = MagicMock()
+
+        mock_configurator = MagicMock()
+        mock_configurator.apply_saved_settings = AsyncMock()
+        mock_configurator.take_snapshot = MagicMock()
+        mock_configurator_cls = MagicMock(return_value=mock_configurator)
+
+        saved_settings = {"key": "value"}
+        merged = {"configurator": saved_settings, "other": "stuff"}
+        fake_module = self._make_fake_configurator_module(mock_configurator_cls)
+
+        with ExitStack() as stack:
+            for p in _configurator_patches(mock_sess):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.dict(
+                    _sys.modules,
+                    {"amplifier_foundation.configurator": fake_module},
+                )
+            )
+            stack.enter_context(
+                patch(
+                    f"{_MODULE}.AppSettings",
+                    return_value=MagicMock(
+                        get_merged_settings=MagicMock(return_value=merged)
+                    ),
+                )
+            )
+            await create_initialized_session(cfg, console)
+
+        mock_configurator.apply_saved_settings.assert_called_once_with(saved_settings)
+
+    @pytest.mark.anyio
+    async def test_configurator_snapshot_taken_after_apply_settings(self):
+        """take_snapshot is called after apply_saved_settings."""
+        from contextlib import ExitStack
+
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()
+        console = MagicMock()
+
+        call_order = []
+        mock_configurator = MagicMock()
+        mock_configurator.apply_saved_settings = AsyncMock(
+            side_effect=lambda _: call_order.append("apply")
+        )
+        mock_configurator.take_snapshot = MagicMock(
+            side_effect=lambda: call_order.append("snapshot")
+        )
+        mock_configurator_cls = MagicMock(return_value=mock_configurator)
+        fake_module = self._make_fake_configurator_module(mock_configurator_cls)
+
+        with ExitStack() as stack:
+            for p in _configurator_patches(mock_sess):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.dict(
+                    _sys.modules,
+                    {"amplifier_foundation.configurator": fake_module},
+                )
+            )
+            stack.enter_context(
+                patch(
+                    f"{_MODULE}.AppSettings",
+                    return_value=MagicMock(
+                        get_merged_settings=MagicMock(return_value={})
+                    ),
+                )
+            )
+            await create_initialized_session(cfg, console)
+
+        assert call_order == ["apply", "snapshot"], (
+            f"Expected apply then snapshot, got: {call_order}"
+        )
+
+    @pytest.mark.anyio
+    async def test_configurator_none_when_prepared_bundle_is_none(self):
+        """configurator is None when prepared_bundle is not set."""
+        from contextlib import ExitStack
+
+        mock_sess = _make_mock_session()
+        # Create config WITHOUT prepared_bundle
+        cfg = SessionConfig(
+            config={},
+            search_paths=[],
+            verbose=False,
+            bundle_name="test-bundle",
+        )
+        console = MagicMock()
+
+        mock_configurator_cls = MagicMock()
+        fake_module = self._make_fake_configurator_module(mock_configurator_cls)
+
+        with ExitStack() as stack:
+            for p in _configurator_patches(mock_sess):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.dict(
+                    _sys.modules,
+                    {"amplifier_foundation.configurator": fake_module},
+                )
+            )
+            result = await create_initialized_session(cfg, console)
+
+        # SessionConfigurator should NOT be instantiated when prepared_bundle is None
+        mock_configurator_cls.assert_not_called()
+        assert result.configurator is None
+
+    @pytest.mark.anyio
+    async def test_configurator_none_on_import_error(self, caplog):
+        """configurator is None when foundation is not available (ImportError)."""
+        from contextlib import ExitStack
+
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()
+        console = MagicMock()
+
+        # Setting module to None makes Python raise ImportError on import
+        with ExitStack() as stack:
+            for p in _configurator_patches(mock_sess):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.dict(
+                    _sys.modules,
+                    {"amplifier_foundation.configurator": None},  # type: ignore
+                )
+            )
+            stack.enter_context(
+                caplog.at_level(
+                    logging.DEBUG, logger="amplifier_app_cli.session_runner"
+                )
+            )
+            result = await create_initialized_session(cfg, console)
+
+        assert result.configurator is None
+
+    @pytest.mark.anyio
+    async def test_configurator_none_on_general_exception(self, caplog):
+        """configurator is None and warning is logged on unexpected Exception."""
+        from contextlib import ExitStack
+
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()
+        console = MagicMock()
+
+        mock_configurator = MagicMock()
+        mock_configurator.apply_saved_settings = AsyncMock(
+            side_effect=RuntimeError("unexpected failure")
+        )
+        mock_configurator.take_snapshot = MagicMock()
+        mock_configurator_cls = MagicMock(return_value=mock_configurator)
+        fake_module = self._make_fake_configurator_module(mock_configurator_cls)
+
+        with ExitStack() as stack:
+            for p in _configurator_patches(mock_sess):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.dict(
+                    _sys.modules,
+                    {"amplifier_foundation.configurator": fake_module},
+                )
+            )
+            stack.enter_context(
+                patch(
+                    f"{_MODULE}.AppSettings",
+                    return_value=MagicMock(
+                        get_merged_settings=MagicMock(return_value={})
+                    ),
+                )
+            )
+            stack.enter_context(
+                caplog.at_level(
+                    logging.WARNING, logger="amplifier_app_cli.session_runner"
+                )
+            )
+            result = await create_initialized_session(cfg, console)
+
+        assert result.configurator is None
+        warning_messages = [
+            r.message for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert warning_messages, "Expected a warning but none was logged"

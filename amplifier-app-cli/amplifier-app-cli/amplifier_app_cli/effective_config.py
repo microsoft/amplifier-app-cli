@@ -1,0 +1,161 @@
+"""Effective configuration summary utilities.
+
+Extracts display-friendly information from resolved configuration.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class EffectiveConfigSummary:
+    """Summary of effective configuration for display."""
+
+    config_source: str  # Bundle name in "bundle:name" format
+    provider_name: str  # Friendly name (e.g., "Azure OpenAI")
+    provider_module: str  # Module ID (e.g., "provider-azure-openai")
+    model: str
+    orchestrator: str
+    tool_count: int
+    hook_count: int
+
+    def format_banner_line(self) -> str:
+        """Format as single-line summary for banner display.
+
+        Returns:
+            Formatted string like "Bundle: foundation | Provider: Anthropic | claude-sonnet-4-5"
+        """
+        # Extract bundle name from "bundle:name" format
+        if self.config_source.startswith("bundle:"):
+            bundle_name = self.config_source.replace("bundle:", "")
+        else:
+            # Fallback for config loading
+            bundle_name = self.config_source
+        return f"Bundle: {bundle_name} | Provider: {self.provider_name} | {self.model}"
+
+
+def get_effective_config_summary(
+    config: dict[str, Any],
+    config_source: str = "default",
+) -> EffectiveConfigSummary:
+    """Extract effective configuration summary from resolved config.
+
+    Args:
+        config: Resolved mount plan configuration dict
+        config_source: Config source name (typically "bundle:<name>")
+
+    Returns:
+        EffectiveConfigSummary with display-friendly information
+    """
+    # Extract provider info - select by priority (lowest number wins)
+    # This matches the orchestrator's _select_provider() logic
+    providers = config.get("providers", [])
+    selected_provider = _select_provider_by_priority(providers)
+
+    if selected_provider:
+        provider_module = selected_provider.get("module", "unknown")
+        provider_config = selected_provider.get("config", {})
+        model = provider_config.get("default_model", "default")
+
+        # Try to get friendly provider name
+        provider_name = _get_provider_display_name(provider_module)
+    else:
+        provider_module = "none"
+        provider_name = "None"
+        model = "none"
+
+    # Extract orchestrator
+    session_config = config.get("session", {})
+    orchestrator = session_config.get("orchestrator", "loop-basic")
+    if isinstance(orchestrator, dict):
+        orchestrator = orchestrator.get("module", "loop-basic")
+
+    # Count tools and hooks
+    tool_count = len(config.get("tools", []))
+    hook_count = len(config.get("hooks", []))
+
+    return EffectiveConfigSummary(
+        config_source=config_source,
+        provider_name=provider_name,
+        provider_module=provider_module,
+        model=model,
+        orchestrator=orchestrator,
+        tool_count=tool_count,
+        hook_count=hook_count,
+    )
+
+
+def _select_provider_by_priority(
+    providers: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Select provider with lowest priority number (highest precedence).
+
+    This matches the orchestrator's _select_provider() logic where lower
+    priority numbers mean higher precedence (priority 1 beats priority 100).
+
+    Args:
+        providers: List of provider configuration dicts
+
+    Returns:
+        Provider dict with lowest priority, or None if list is empty
+    """
+    if not providers:
+        return None
+
+    # Build list of (priority, provider) tuples
+    provider_list: list[tuple[int, dict[str, Any]]] = []
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        # Get priority from config, default to 100
+        config = provider.get("config", {})
+        priority = config.get("priority", 100) if isinstance(config, dict) else 100
+        provider_list.append((priority, provider))
+
+    if not provider_list:
+        return None
+
+    # Sort by priority (lowest first) and return the winner
+    provider_list.sort(key=lambda x: x[0])
+    return provider_list[0][1]
+
+
+def _get_provider_display_name(provider_module: str) -> str:
+    """Get friendly display name for a provider module.
+
+    Args:
+        provider_module: Provider module ID (e.g., "provider-azure-openai")
+
+    Returns:
+        Friendly display name (e.g., "Azure OpenAI")
+    """
+    # Try to get from provider's get_info()
+    try:
+        from .provider_loader import get_provider_info
+
+        info = get_provider_info(provider_module)
+        if info and "display_name" in info:
+            return info["display_name"]
+    except Exception as e:
+        logger.debug(f"Could not get provider info for {provider_module}: {e}")
+
+    # Fallback: Convert module ID to friendly name
+    # "provider-azure-openai" -> "Azure OpenAI"
+    name = provider_module.replace("provider-", "")
+    # Handle common cases
+    name_map = {
+        "anthropic": "Anthropic",
+        "openai": "OpenAI",
+        "azure-openai": "Azure OpenAI",
+        "ollama": "Ollama",
+        "vllm": "vLLM",
+    }
+    return name_map.get(name, name.replace("-", " ").title())
+
+
+__all__ = ["EffectiveConfigSummary", "get_effective_config_summary"]
