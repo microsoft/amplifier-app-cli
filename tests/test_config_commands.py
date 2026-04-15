@@ -1250,9 +1250,6 @@ class TestNewContextAgentsRendering:
                 return str(args[0])
         return None
 
-    def _all_calls_str(self, mock_console):
-        return " ".join(str(c) for c in mock_console.print.call_args_list)
-
     def test_context_shows_behavior_dim(self):
         """Context item name and its dim behavior attribution are shown on one line."""
         cp = _make_command_processor()

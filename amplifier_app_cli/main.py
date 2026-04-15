@@ -1199,14 +1199,15 @@ class CommandProcessor:
         if trailing_newline:
             console.print()
 
-    def _render_context_section(
+    def _render_items_with_behavior_attribution(
         self,
         console: Any,
         items: list,
+        section_name: str,
         *,
         trailing_newline: bool = True,
     ) -> None:
-        """Render context section with behavior attribution in dim after name.
+        """Render a section where each item has a single-line format with behavior attribution.
 
         Design spec format (single line, no indented second line):
           [green]\\[on][/green]  name  [dim]behavior1, behavior2[/dim]
@@ -1215,13 +1216,14 @@ class CommandProcessor:
 
         Multi-claimant behaviors are joined with comma.
         Disabled items have the entire line dimmed.
+        The section_name string is used verbatim in the header line.
         """
         if not items:
             return
         enabled = sum(1 for x in items if x.get("enabled", True))
         disabled = len(items) - enabled
         count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
-        console.print(f"\u2500\u2500 context ({count}) \u2500\u2500")
+        console.print(f"\u2500\u2500 {section_name} ({count}) \u2500\u2500")
 
         for item in items:
             is_on = item.get("enabled", True)
@@ -1247,6 +1249,18 @@ class CommandProcessor:
 
         if trailing_newline:
             console.print()
+
+    def _render_context_section(
+        self,
+        console: Any,
+        items: list,
+        *,
+        trailing_newline: bool = True,
+    ) -> None:
+        """Render context section with behavior attribution in dim after name."""
+        self._render_items_with_behavior_attribution(
+            console, items, "context", trailing_newline=trailing_newline
+        )
 
     def _render_agents_section(
         self,
@@ -1255,47 +1269,10 @@ class CommandProcessor:
         *,
         trailing_newline: bool = True,
     ) -> None:
-        """Render agents section with behavior attribution in dim after name.
-
-        Design spec format (single line, no indented second line):
-          [green]\\[on][/green]  name  [dim]behavior1, behavior2[/dim]
-          -- or for disabled --
-          [dim][red]\\[off][/red]  name  behavior1, behavior2[/dim]
-
-        Multi-claimant behaviors are joined with comma.
-        Disabled items have the entire line dimmed.
-        """
-        if not items:
-            return
-        enabled = sum(1 for x in items if x.get("enabled", True))
-        disabled = len(items) - enabled
-        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
-        console.print(f"\u2500\u2500 agents ({count}) \u2500\u2500")
-
-        for item in items:
-            is_on = item.get("enabled", True)
-            name = item.get("name", "unknown")
-
-            # Build behavior attribution — behaviors list or source fallback
-            behaviors = item.get("behaviors", [])
-            if isinstance(behaviors, list) and behaviors:
-                behavior_str = ", ".join(behaviors)
-            else:
-                behavior_str = item.get("source", "")
-
-            if is_on:
-                line = f"  [green]\\[on][/green]  {name}"
-                if behavior_str:
-                    line += f"  [dim]{behavior_str}[/dim]"
-            else:
-                line = f"  [dim][red]\\[off][/red]  {name}"
-                if behavior_str:
-                    line += f"  {behavior_str}"
-                line += "[/dim]"
-            console.print(line)
-
-        if trailing_newline:
-            console.print()
+        """Render agents section with behavior attribution in dim after name."""
+        self._render_items_with_behavior_attribution(
+            console, items, "agents", trailing_newline=trailing_newline
+        )
 
     async def _get_config_display(self, args: str = "") -> str:
         """Display current configuration or handle subcommands.
