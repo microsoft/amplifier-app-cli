@@ -1080,3 +1080,100 @@ class TestNewHooksRendering:
         )
         # The event line should contain 'event:' label
         assert "event:" in event_call, "event line should contain 'event:' label"
+
+
+class TestNewProvidersRendering:
+    """Tests for _render_providers_section_v2 method — full config tree with source URI."""
+
+    def _find_call_containing(self, mock_console, text):
+        """Return the string of the first console.print call containing text, or None."""
+        for call in mock_console.print.call_args_list:
+            args, _ = call
+            if args and text in str(args[0]):
+                return str(args[0])
+        return None
+
+    def _all_calls_str(self, mock_console):
+        return " ".join(str(c) for c in mock_console.print.call_args_list)
+
+    def test_providers_show_source_uri(self):
+        """Source URI is shown on a separate indented line from the provider name."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "anthropic",
+                "enabled": True,
+                "source": "foundation",
+                "source_uri": "git+https://github.com/example/amplifier-foundation.git",
+                "config": {
+                    "model": "claude-3-5-sonnet",
+                },
+            }
+        ]
+        cp._render_providers_section_v2(mock_console, items)
+        name_call = self._find_call_containing(mock_console, "anthropic")
+        assert name_call is not None, "anthropic should appear in output"
+        source_uri_call = self._find_call_containing(mock_console, "git+https://")
+        assert source_uri_call is not None, "source URI should appear in output"
+        # Source URI must be on a DIFFERENT print call than the name
+        assert name_call != source_uri_call, (
+            "source URI should be on a separate indented line from the name"
+        )
+        # The source line should contain 'source:' label
+        assert "source:" in source_uri_call, (
+            "source line should contain 'source:' label"
+        )
+
+    def test_providers_show_config_tree(self):
+        """Config keys model and max_tokens are visible in the config tree."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "anthropic",
+                "enabled": True,
+                "source": "foundation",
+                "source_uri": "git+https://github.com/example/amplifier-foundation.git",
+                "config": {
+                    "model": "claude-3-5-sonnet",
+                    "max_tokens": 16384,
+                    "api_key": "sk-ant-1234567890abcdef1234567890",
+                },
+            }
+        ]
+        cp._render_providers_section_v2(mock_console, items)
+        calls = self._all_calls_str(mock_console)
+        # model and max_tokens should be visible
+        assert "model" in calls, "model config key should be visible"
+        assert "claude-3-5-sonnet" in calls, "model value should be visible"
+        assert "max_tokens" in calls, "max_tokens config key should be visible"
+        assert "16384" in calls, "max_tokens value should be visible"
+        # 'config:' header should be shown
+        assert "config:" in calls, "config: header should be present in output"
+
+    def test_providers_redact_api_key(self):
+        """API key is redacted (original value not in output, 'redacted' is)."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        api_key = "sk-ant-1234567890abcdef1234567890"
+        items = [
+            {
+                "name": "anthropic",
+                "enabled": True,
+                "source": "foundation",
+                "source_uri": "git+https://github.com/example/amplifier-foundation.git",
+                "config": {
+                    "api_key": api_key,
+                    "model": "claude-3-5-sonnet",
+                },
+            }
+        ]
+        cp._render_providers_section_v2(mock_console, items)
+        calls = self._all_calls_str(mock_console)
+        # Original api_key value should NOT be in output
+        assert api_key not in calls, (
+            "original API key value should not appear in output"
+        )
+        # 'redacted' should appear instead
+        assert "redacted" in calls, "'redacted' should appear in output for API key"
