@@ -880,3 +880,111 @@ class TestSectionHeaderFormat:
         assert "active" in first_call, "header should use 'active' count terminology"
         assert "disabled" in first_call, "disabled items should say 'disabled'"
         assert " on" not in first_call, "old 'N on' format should not appear"
+
+
+class TestNewToolsRendering:
+    """Tests for the new _render_tools_section method."""
+
+    def _find_call_containing(self, mock_console, text):
+        """Return the string of the first console.print call containing text, or None."""
+        for call in mock_console.print.call_args_list:
+            args, _ = call
+            if args and text in str(args[0]):
+                return str(args[0])
+        return None
+
+    def _all_calls_str(self, mock_console):
+        return " ".join(str(c) for c in mock_console.print.call_args_list)
+
+    def test_tools_show_module_on_indented_line(self):
+        """module_id appears on a separate indented line below the tool name."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "tool-bash",
+                "enabled": True,
+                "module_id": "amplifier_core.tools.bash",
+                "behaviors": ["foundation"],
+                "config": {},
+            }
+        ]
+        cp._render_tools_section(mock_console, items)
+        name_call = self._find_call_containing(mock_console, "tool-bash")
+        assert name_call is not None, "tool-bash should appear in output"
+        module_call = self._find_call_containing(
+            mock_console, "amplifier_core.tools.bash"
+        )
+        assert module_call is not None, "module_id should appear in output"
+        assert name_call != module_call, (
+            "module_id should be on a different line from the name"
+        )
+
+    def test_tools_show_config_tree_indented(self):
+        """Config key-value pairs appear as an indented tree below the item."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "tool-bash",
+                "enabled": True,
+                "module_id": "amplifier_core.tools.bash",
+                "behaviors": ["foundation"],
+                "config": {"timeout": 30, "max_output": 1000},
+            }
+        ]
+        cp._render_tools_section(mock_console, items)
+        all_calls = self._all_calls_str(mock_console)
+        assert "config:" in all_calls, "config: label should appear"
+        assert "timeout" in all_calls, "config key 'timeout' should appear"
+        assert "30" in all_calls, "config value '30' should appear"
+
+    def test_tools_show_multi_claimant_behavior(self):
+        """Multiple behaviors in the behaviors list appear comma-separated on the name line."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "tool-bash",
+                "enabled": True,
+                "module_id": "amplifier_core.tools.bash",
+                "behaviors": ["foundation", "caveman"],
+                "config": {},
+            }
+        ]
+        cp._render_tools_section(mock_console, items)
+        name_call = self._find_call_containing(mock_console, "tool-bash")
+        assert name_call is not None, "tool-bash should appear in output"
+        assert "foundation" in name_call, "first behavior should appear on name line"
+        assert "caveman" in name_call, "second behavior should appear on name line"
+        assert "," in name_call, "behaviors should be comma-separated"
+
+    def test_tools_green_on_red_off(self):
+        """Enabled tools show green [on], disabled tools show red [off] with dim entire line."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "tool-bash",
+                "enabled": True,
+                "module_id": "amplifier_core.tools.bash",
+                "behaviors": ["foundation"],
+                "config": {},
+            },
+            {
+                "name": "tool-disabled",
+                "enabled": False,
+                "module_id": "amplifier_core.tools.disabled",
+                "behaviors": ["foundation"],
+                "config": {},
+            },
+        ]
+        cp._render_tools_section(mock_console, items)
+        enabled_call = self._find_call_containing(mock_console, "tool-bash")
+        assert enabled_call is not None, "enabled tool should appear in output"
+        assert "green" in enabled_call, "enabled tool should have green markup"
+
+        disabled_call = self._find_call_containing(mock_console, "tool-disabled")
+        assert disabled_call is not None, "disabled tool should appear in output"
+        assert "dim" in disabled_call, "disabled tool's line should be in dim"
+        assert "red" in disabled_call, "disabled tool should have red markup"

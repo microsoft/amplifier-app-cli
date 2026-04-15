@@ -1230,6 +1230,75 @@ class CommandProcessor:
         if trailing_newline:
             console.print()
 
+    def _render_tools_section(
+        self,
+        console: Any,
+        items: list,
+        *,
+        trailing_newline: bool = True,
+    ) -> None:
+        """Render tools section with module ID on indented line and config tree.
+
+        Design spec format:
+          Line 1: [green]\\[on][/green]  name-padded-to-40  [dim]behavior1, behavior2[/dim]
+                  -- or for disabled --
+                  [dim][red]\\[off][/red]  name-padded-to-40  behavior1, behavior2[/dim]
+          Line 2: [dim]        module: {module_id}[/dim]
+          Line 3+: if config present and non-empty:
+                    config:
+                      key: value          (or collapsed to config: {...} if >80 chars inline)
+        """
+        if not items:
+            return
+        enabled = sum(1 for x in items if x.get("enabled", True))
+        disabled = len(items) - enabled
+        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
+        console.print(f"\u2500\u2500 tools ({count}) \u2500\u2500")
+
+        for item in items:
+            is_on = item.get("enabled", True)
+            name = item.get("name", "unknown")
+            behaviors = item.get("behaviors", [])
+            module_id = item.get("module_id", "")
+
+            # Join multi-claimant behaviors with comma
+            if isinstance(behaviors, list):
+                behavior_str = ", ".join(behaviors)
+            else:
+                behavior_str = str(behaviors) if behaviors else ""
+
+            # Line 1: status + name (left-aligned 40 chars) + dim behavior attribution
+            name_padded = name.ljust(40)
+            if is_on:
+                line = f"  [green]\\[on][/green]  {name_padded}"
+                if behavior_str:
+                    line += f"  [dim]{behavior_str}[/dim]"
+            else:
+                line = f"  [dim][red]\\[off][/red]  {name_padded}"
+                if behavior_str:
+                    line += f"  {behavior_str}"
+                line += "[/dim]"
+            console.print(line)
+
+            # Line 2: module: {module_id} in [dim]
+            if module_id:
+                console.print(f"        [dim]module: {module_id}[/dim]")
+
+            # Line 3+: config tree (collapsed if inline representation >80 chars)
+            cfg = item.get("config", {})
+            if cfg and isinstance(cfg, dict):
+                pairs = [f"{k}: {self._redact_value(k, v)}" for k, v in cfg.items()]
+                inline = "{" + ", ".join(pairs) + "}"
+                if len(inline) > 80:
+                    console.print("        config: {...}")
+                else:
+                    console.print("        config:")
+                    for k, v in cfg.items():
+                        console.print(f"          {k}: {self._redact_value(k, v)}")
+
+        if trailing_newline:
+            console.print()
+
     async def _render_config_dashboard(self) -> str:
         """Render the full configuration dashboard using SessionConfigurator."""
         from .console import console
@@ -1289,8 +1358,8 @@ class CommandProcessor:
         # Render providers section (config on second line per design spec)
         self._render_providers_section(console, providers_items)
 
-        # Render tools section (inline config in braces) and other sections
-        self._render_simple_section(console, "Tools", tools_items, show_config=True)
+        # Render tools section (module ID + config tree per design spec)
+        self._render_tools_section(console, tools_items)
         self._render_hooks_section(console, hooks_items)
         self._render_simple_section(console, "Context", context_items)
         self._render_simple_section(console, "Agents", agents_items)
