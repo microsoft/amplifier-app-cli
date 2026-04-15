@@ -1144,6 +1144,69 @@ class CommandProcessor:
         if trailing_newline:
             console.print()
 
+    _CAT_LABELS: dict[str, str] = {
+        "context": "context",
+        "tools": "tools",
+        "hooks": "hooks",
+        "providers": "providers",
+        "agents": "agents",
+    }
+
+    def _render_behaviors_section_v2(
+        self,
+        console: Any,
+        items: list,
+        *,
+        trailing_newline: bool = True,
+    ) -> None:
+        """Render behaviors section showing non-zero categories with item names.
+
+        Categories with empty item lists are omitted. Item names are displayed
+        with provenance key prefixes stripped (e.g. 'context:readme' -> 'readme').
+        Dim styling applied to category lines for enabled behaviors; full dim
+        wrapping applied for disabled behaviors.
+        """
+        if not items:
+            return
+        enabled = sum(1 for x in items if x.get("enabled", True))
+        disabled = len(items) - enabled
+        count = f"{enabled} composed" + (f", {disabled} disabled" if disabled else "")
+        console.print(f"── behaviors ({count}) ──")
+
+        _CAT_ORDER = ("context", "tools", "hooks", "providers", "agents")
+
+        for item in items:
+            is_on = item.get("enabled", True)
+            status = "\\[on]" if is_on else "\\[off]"
+            name = item.get("name", "unknown")
+            line = f"  {status}  {name}"
+            if not is_on:
+                line += "  ← disabled"
+            console.print(line)
+
+            contributions = item.get("contributions", {})
+            if isinstance(contributions, dict):
+                for cat in _CAT_ORDER:
+                    cat_items = contributions.get(cat, [])
+                    if not isinstance(cat_items, list) or not cat_items:
+                        continue
+                    label = self._CAT_LABELS.get(cat, cat)
+                    # Strip provenance key prefix: "context:readme" -> "readme"
+                    names = [
+                        n.split(":", 1)[1] if ":" in n else n
+                        for n in cat_items
+                    ]
+                    names_str = ", ".join(names)
+                    cat_line = f"    {label}: {names_str}"
+                    if is_on:
+                        console.print(f"[dim]{cat_line}[/dim]")
+                    else:
+                        console.print(f"[dim]{cat_line}[/dim]")
+
+        if trailing_newline:
+            console.print()
+
+
     async def _get_config_display(self, args: str = "") -> str:
         """Display current configuration or handle subcommands.
 
@@ -1443,8 +1506,8 @@ class CommandProcessor:
         self._render_simple_section(console, "Context", context_items)
         self._render_simple_section(console, "Agents", agents_items)
 
-        # Render behaviors section (inline contribution counts)
-        self._render_behaviors_section(console, behaviors_items)
+        # Render behaviors section (non-zero categories with item names)
+        self._render_behaviors_section_v2(console, behaviors_items)
 
         return ""  # Output already printed via console
 

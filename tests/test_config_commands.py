@@ -1177,3 +1177,61 @@ class TestNewProvidersRendering:
         )
         # 'redacted' should appear instead
         assert "redacted" in calls, "'redacted' should appear in output for API key"
+
+
+class TestNewBehaviorsRendering:
+    """Tests for _render_behaviors_section_v2 — non-zero categories with item names."""
+
+    def _all_calls_str(self, mock_console):
+        return " ".join(str(c) for c in mock_console.print.call_args_list)
+
+    def test_zero_categories_omitted(self):
+        """Categories with empty item lists are not shown in the output."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "foundation",
+                "enabled": True,
+                "contributions": {
+                    "context": ["context:readme"],
+                    "tools": [],
+                    "hooks": [],
+                    "providers": [],
+                    "agents": [],
+                },
+            }
+        ]
+        cp._render_behaviors_section_v2(mock_console, items)
+        calls = self._all_calls_str(mock_console)
+        # context has items so should appear
+        assert "context" in calls, "non-empty context category should be shown"
+        # tools and hooks have empty lists so must NOT appear as category labels
+        assert "tools" not in calls, "empty tools category should be omitted"
+        assert "hooks" not in calls, "empty hooks category should be omitted"
+
+    def test_item_names_listed(self):
+        """Actual item names are shown with provenance key prefix stripped."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "foundation",
+                "enabled": True,
+                "contributions": {
+                    "context": ["context:readme", "context:guide"],
+                    "tools": ["tools:tool-bash"],
+                    "hooks": [],
+                    "providers": [],
+                    "agents": [],
+                },
+            }
+        ]
+        cp._render_behaviors_section_v2(mock_console, items)
+        calls = self._all_calls_str(mock_console)
+        # Prefix stripped: "context:readme" -> "readme"
+        assert "readme" in calls, "readme should appear with prefix stripped"
+        assert "guide" in calls, "guide should appear with prefix stripped"
+        assert "tool-bash" in calls, "tool-bash should appear with prefix stripped"
+        # The raw prefixed form should NOT appear
+        assert "context:readme" not in calls, "provenance prefix should be stripped from display"
