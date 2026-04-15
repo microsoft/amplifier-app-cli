@@ -1248,45 +1248,6 @@ class CommandProcessor:
         console.print()
         return ""
 
-    def _render_providers_section(
-        self,
-        console: Any,
-        items: list,
-        *,
-        trailing_newline: bool = True,
-    ) -> None:
-        """Render the providers section with config on a second indented line.
-
-        Design spec format:
-          [on]  anthropic                                      (foundation)
-                model: claude-sonnet-4, max_tokens: 16384, api_key: sk-...redacted
-        """
-        if not items:
-            return
-        enabled = sum(1 for x in items if x.get("enabled", True))
-        disabled = len(items) - enabled
-        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
-        console.print(f"── providers ({count}) ──")
-        for item in items:
-            is_on = item.get("enabled", True)
-            status = "\\[on]" if is_on else "\\[off]"
-            name = item.get("name", "unknown")
-            source = item.get("source", "")
-            # Line 1: status + name + source
-            line1 = f"  {status}  {name:<30}"
-            if source:
-                line1 += f"  ({source})"
-            if not is_on:
-                line1 += "  ← disabled"
-            console.print(line1)
-            # Line 2: config key: value pairs, indented
-            cfg = item.get("config", {})
-            if cfg and isinstance(cfg, dict):
-                pairs = [f"{k}: {self._redact_value(k, v)}" for k, v in cfg.items()]
-                console.print(f"        {', '.join(pairs)}")
-        if trailing_newline:
-            console.print()
-
     def _render_providers_section_v2(
         self,
         console: Any,
