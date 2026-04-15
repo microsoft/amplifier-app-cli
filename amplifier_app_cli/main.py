@@ -964,14 +964,14 @@ class CommandProcessor:
             return
         enabled = sum(1 for x in items if x.get("enabled", True))
         disabled = len(items) - enabled
-        count = f"{enabled} on" + (f", {disabled} off" if disabled else "")
-        console.print(f"[bold]{title}:[/bold] ({count})")
+        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
+        console.print(f"── {title.lower()} ({count}) ──")
         for item in items:
             is_on = item.get("enabled", True)
             status = "\\[on]" if is_on else "\\[off]"
             name = item.get("name", "unknown")
             source = item.get("source", "")
-            line = f"  {status} {name}"
+            line = f"  {status}  {name}"
             # Inline config summary (top 3 key-value pairs, redacted)
             if show_config:
                 cfg = item.get("config", {})
@@ -987,9 +987,9 @@ class CommandProcessor:
                     summary += "}"
                     line += f"  {summary}"
             if source:
-                line += f"  [dim]({source})[/dim]"
+                line += f"  ({source})"
             if not is_on:
-                line += " [dim]\\[disabled][/dim]"
+                line += "  ← disabled"
             console.print(line)
         if trailing_newline:
             console.print()
@@ -1011,8 +1011,8 @@ class CommandProcessor:
             return
         enabled = sum(1 for x in items if x.get("enabled", True))
         disabled = len(items) - enabled
-        count = f"{enabled} on" + (f", {disabled} off" if disabled else "")
-        console.print(f"[bold]Hooks:[/bold] ({count})")
+        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
+        console.print(f"── hooks ({count}) ──")
 
         shell_hooks = [h for h in items if h.get("name", "").startswith("shell-")]
         auto_hooks = [h for h in items if h.get("name", "").startswith("_auto_")]
@@ -1066,32 +1066,22 @@ class CommandProcessor:
             return
         enabled = sum(1 for x in items if x.get("enabled", True))
         disabled = len(items) - enabled
-        count = f"{enabled} on" + (f", {disabled} off" if disabled else "")
-        console.print(f"[bold]Behaviors:[/bold] ({count})")
+        count = f"{enabled} composed" + (f", {disabled} disabled" if disabled else "")
+        console.print(f"── behaviors ({count}) ──")
 
         _CAT_ORDER = ("context", "tools", "hooks", "providers", "agents")
-        _CAT_LABEL = {
-            "context": "ctx",
-            "tools": "tools",
-            "hooks": "hooks",
-            "providers": "providers",
-            "agents": "agents",
-        }
 
         for item in items:
             is_on = item.get("enabled", True)
             status = "\\[on]" if is_on else "\\[off]"
             name = item.get("name", "unknown")
-            line = f"  {status} {name}"
+            line = f"  {status}  {name}"
             contributions = item.get("contributions", {})
             if isinstance(contributions, dict):
-                parts = [
-                    f"{contributions.get(cat, 0)} {_CAT_LABEL[cat]}"
-                    for cat in _CAT_ORDER
-                ]
-                line += f"  [dim]{', '.join(parts)}[/dim]"
+                parts = [f"{contributions.get(cat, 0)} {cat}" for cat in _CAT_ORDER]
+                line += f"  {', '.join(parts)}"
             if not is_on:
-                line += " [dim]\\[disabled][/dim]"
+                line += "  ← disabled"
             console.print(line)
 
         if trailing_newline:
@@ -1115,9 +1105,12 @@ class CommandProcessor:
         parts = args.strip().split() if args.strip() else []
 
         if not parts:
-            return await self._render_config_dashboard()
+            return self._render_config_help()
 
         subcmd = parts[0].lower()
+
+        if subcmd == "show":
+            return await self._render_config_dashboard()
 
         if subcmd == "diff":
             return await self._handle_config_diff()
@@ -1159,6 +1152,84 @@ class CommandProcessor:
         # Unknown subcommand — show dashboard
         return await self._render_config_dashboard()
 
+    def _render_config_help(self) -> str:
+        """Render a concise help listing of /config subcommands."""
+        from .console import console
+
+        console.print()
+        console.print("[bold]/config[/bold] — Session Configuration")
+        console.print()
+        console.print(
+            "  [bold]/config show[/bold]                       Show full live config tree"
+        )
+        console.print(
+            "  [bold]/config <category>[/bold]                 List items in a category"
+        )
+        console.print(
+            "  [bold]/config <category> <name>[/bold]          Show detailed config for one item"
+        )
+        console.print(
+            "  [bold]/config <category> disable <n>[/bold]     Disable an item"
+        )
+        console.print(
+            "  [bold]/config <category> enable <n>[/bold]      Re-enable an item"
+        )
+        console.print(
+            "  [bold]/config set <path> <value>[/bold]         Set a config value"
+        )
+        console.print(
+            "  [bold]/config diff[/bold]                       Show changes since session start"
+        )
+        console.print(
+            "  [bold]/config save[/bold] [--scope project|global]  Persist to settings.yaml"
+        )
+        console.print()
+        console.print(
+            "  Categories: context, tools, hooks, providers, agents, behaviors"
+        )
+        console.print("  Hooks are read-only (visible but not toggleable)")
+        console.print()
+        return ""
+
+    def _render_providers_section(
+        self,
+        console: Any,
+        items: list,
+        *,
+        trailing_newline: bool = True,
+    ) -> None:
+        """Render the providers section with config on a second indented line.
+
+        Design spec format:
+          [on]  anthropic                                      (foundation)
+                model: claude-sonnet-4, max_tokens: 16384, api_key: sk-...redacted
+        """
+        if not items:
+            return
+        enabled = sum(1 for x in items if x.get("enabled", True))
+        disabled = len(items) - enabled
+        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
+        console.print(f"── providers ({count}) ──")
+        for item in items:
+            is_on = item.get("enabled", True)
+            status = "\\[on]" if is_on else "\\[off]"
+            name = item.get("name", "unknown")
+            source = item.get("source", "")
+            # Line 1: status + name + source
+            line1 = f"  {status}  {name:<30}"
+            if source:
+                line1 += f"  ({source})"
+            if not is_on:
+                line1 += "  ← disabled"
+            console.print(line1)
+            # Line 2: config key: value pairs, indented
+            cfg = item.get("config", {})
+            if cfg and isinstance(cfg, dict):
+                pairs = [f"{k}: {self._redact_value(k, v)}" for k, v in cfg.items()]
+                console.print(f"        {', '.join(pairs)}")
+        if trailing_newline:
+            console.print()
+
     async def _render_config_dashboard(self) -> str:
         """Render the full configuration dashboard using SessionConfigurator."""
         from .console import console
@@ -1180,41 +1251,45 @@ class CommandProcessor:
         )
         change_count = len(changes) if changes else 0
 
-        # Render header
-        console.print(f"\n[bold]Bundle:[/bold] {self._display_bundle_name}")
-        console.print(f"[bold]Mode:[/bold] {active_mode}")
+        # Render header matching design spec:
+        # Active bundle: <name>
+        # Mode: <mode> | Session changes: N items changed | /config save to persist
+        console.print()
+        console.print(f"Active bundle: {self._display_bundle_name}")
         if change_count > 0:
             console.print(
-                f"[bold]Changes:[/bold] {change_count}  (use /config save to persist)"
+                f"Mode: {active_mode} | Session changes: {change_count} items changed"
+                " | /config save to persist"
             )
         else:
-            console.print(
-                "[dim]No changes from original  (use /config save to persist)[/dim]"
-            )
+            console.print(f"Mode: {active_mode} | No changes from original")
         console.print()
 
-        # Render session section (orchestrator info from session.config)
-        raw_config = self.session.config
+        # Render session section (orchestrator info from coordinator.config)
+        raw_config = self.session.coordinator.config
         session_config = (
             raw_config.get("session", {}) if isinstance(raw_config, dict) else {}
         )
         if session_config and isinstance(session_config, dict):
-            console.print("[bold]Session:[/bold]")
+            console.print("── session ──")
             for field in ["orchestrator", "context"]:
                 if field in session_config:
                     value = session_config[field]
                     if isinstance(value, dict) and "module" in value:
-                        console.print(f"  {field}: {value.get('module', 'unknown')}")
+                        mod_id = value.get("module", "unknown")
+                        cfg = value.get("config", {})
+                        console.print(f"  {field}: {mod_id}")
+                        if cfg and isinstance(cfg, dict):
+                            cfg_str = ", ".join(f"{k}: {v}" for k, v in cfg.items())
+                            console.print(f"    config: {{{cfg_str}}}")
                     else:
                         console.print(f"  {field}: {value}")
             console.print()
 
-        # Render providers section (inline config summary)
-        self._render_simple_section(
-            console, "Providers", providers_items, show_config=True
-        )
+        # Render providers section (config on second line per design spec)
+        self._render_providers_section(console, providers_items)
 
-        # Render tools section (inline config summary) and plain context/agents sections
+        # Render tools section (inline config in braces) and other sections
         self._render_simple_section(console, "Tools", tools_items, show_config=True)
         self._render_hooks_section(console, hooks_items)
         self._render_simple_section(console, "Context", context_items)

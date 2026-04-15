@@ -4,7 +4,7 @@ import sys
 import os
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # Add tests directory to sys.path so helpers can be imported
 sys.path.insert(0, os.path.dirname(__file__))
@@ -141,11 +141,46 @@ class TestConfigDashboard:
 
     @pytest.mark.asyncio
     async def test_config_no_args_renders_dashboard(self):
-        """All 6 list methods should be called on the configurator when rendering dashboard."""
+        """/config show calls all 6 list methods on the configurator (dashboard rendering)."""
         mock_configurator = _make_mock_configurator()
         cp = _make_command_processor(configurator=mock_configurator)
 
-        await cp._get_config_display()
+        await cp._get_config_display("show")
+
+        mock_configurator.context_list.assert_called_once()
+        mock_configurator.tools_list.assert_called_once()
+        mock_configurator.hooks_list.assert_called_once()
+        mock_configurator.providers_list.assert_called_once()
+        mock_configurator.agents_list.assert_called_once()
+        mock_configurator.behaviors_list.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_config_no_args_shows_help(self):
+        """/config with no args should show help text, not the dashboard."""
+        mock_configurator = _make_mock_configurator()
+        cp = _make_command_processor(configurator=mock_configurator)
+
+        mock_console = MagicMock()
+        with patch("amplifier_app_cli.console.console", mock_console):
+            await cp._get_config_display()
+
+        all_output = " ".join(str(c) for c in mock_console.print.call_args_list)
+        assert "show" in all_output.lower(), "help should mention /config show"
+        assert "diff" in all_output.lower(), "help should mention diff subcommand"
+        assert "save" in all_output.lower(), "help should mention save subcommand"
+        assert "Categories" in all_output, "help should list available categories"
+
+        # Help should NOT trigger the list methods (those belong to the dashboard)
+        mock_configurator.context_list.assert_not_called()
+        mock_configurator.tools_list.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_config_show_renders_dashboard(self):
+        """/config show renders the full dashboard (all 6 list methods are called)."""
+        mock_configurator = _make_mock_configurator()
+        cp = _make_command_processor(configurator=mock_configurator)
+
+        await cp._get_config_display("show")
 
         mock_configurator.context_list.assert_called_once()
         mock_configurator.tools_list.assert_called_once()
@@ -731,7 +766,7 @@ class TestRenderBehaviorsSection:
         foundation_call = self._item_call_containing(mock_console, "foundation")
         assert foundation_call is not None, "foundation should appear in a print call"
         assert "12" in foundation_call, "context count should appear inline with name"
-        assert "ctx" in foundation_call, "abbreviated 'ctx' should appear inline"
+        assert "context" in foundation_call, "full 'context' label should appear inline"
 
     def test_zero_counts_shown_for_uniformity(self):
         """All categories are shown even if count is 0, for consistent formatting."""
@@ -778,7 +813,7 @@ class TestRenderBehaviorsSection:
         assert "contributes:" not in all_calls, "old sub-block format should not appear"
 
     def test_header_shows_enabled_count(self):
-        """Section header shows number of enabled behaviors."""
+        """Section header shows number of composed (enabled) behaviors using 'composed' term."""
         cp = _make_command_processor()
         mock_console = MagicMock()
         items = [
@@ -787,9 +822,61 @@ class TestRenderBehaviorsSection:
         ]
         cp._render_behaviors_section(mock_console, items)
         first_call = str(mock_console.print.call_args_list[0])
-        assert "1 on" in first_call, (
-            "header should show '1 on' for one enabled behavior"
+        assert "1 composed" in first_call, (
+            "header should show '1 composed' for one enabled behavior"
         )
-        assert "1 off" in first_call, (
-            "header should show '1 off' for one disabled behavior"
+        assert "1 disabled" in first_call, (
+            "header should show '1 disabled' for one disabled behavior"
         )
+
+
+class TestSectionHeaderFormat:
+    """Tests that section headers use the design spec '── title ──' format."""
+
+    def test_simple_section_header_uses_em_dash_format(self):
+        """_render_simple_section header should use '──' dividers, not '[bold]Title:[/bold]'."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [{"name": "bash", "enabled": True, "source": "foundation"}]
+        cp._render_simple_section(mock_console, "Tools", items)
+        first_call = str(mock_console.print.call_args_list[0])
+        assert "──" in first_call, "section header should contain em-dash '──' dividers"
+        assert "[bold]" not in first_call, "old bold format should not appear in header"
+
+    def test_hooks_section_header_uses_em_dash_format(self):
+        """_render_hooks_section header should use '──' dividers."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {"name": "routing-resolve", "event": "provider:request", "enabled": True}
+        ]
+        cp._render_hooks_section(mock_console, items)
+        first_call = str(mock_console.print.call_args_list[0])
+        assert "──" in first_call, "hooks section header should contain '──' dividers"
+        assert "[bold]" not in first_call, "old bold format should not appear"
+
+    def test_behaviors_section_header_uses_em_dash_format(self):
+        """_render_behaviors_section header should use '──' dividers."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [{"name": "foundation", "enabled": True, "contributions": {}}]
+        cp._render_behaviors_section(mock_console, items)
+        first_call = str(mock_console.print.call_args_list[0])
+        assert "──" in first_call, (
+            "behaviors section header should contain '──' dividers"
+        )
+        assert "[bold]" not in first_call, "old bold format should not appear"
+
+    def test_simple_section_uses_active_terminology(self):
+        """_render_simple_section header should use 'active' count, not 'on' count."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {"name": "bash", "enabled": True, "source": "foundation"},
+            {"name": "other", "enabled": False, "source": "foundation"},
+        ]
+        cp._render_simple_section(mock_console, "Tools", items)
+        first_call = str(mock_console.print.call_args_list[0])
+        assert "active" in first_call, "header should use 'active' count terminology"
+        assert "disabled" in first_call, "disabled items should say 'disabled'"
+        assert " on" not in first_call, "old 'N on' format should not appear"
