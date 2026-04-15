@@ -1191,10 +1191,7 @@ class CommandProcessor:
                         continue
                     label = self._CAT_LABELS.get(cat, cat)
                     # Strip provenance key prefix: "context:readme" -> "readme"
-                    names = [
-                        n.split(":", 1)[1] if ":" in n else n
-                        for n in cat_items
-                    ]
+                    names = [n.split(":", 1)[1] if ":" in n else n for n in cat_items]
                     names_str = ", ".join(names)
                     cat_line = f"    {label}: {names_str}"
                     console.print(f"[dim]{cat_line}[/dim]")
@@ -1202,6 +1199,103 @@ class CommandProcessor:
         if trailing_newline:
             console.print()
 
+    def _render_context_section(
+        self,
+        console: Any,
+        items: list,
+        *,
+        trailing_newline: bool = True,
+    ) -> None:
+        """Render context section with behavior attribution in dim after name.
+
+        Design spec format (single line, no indented second line):
+          [green]\\[on][/green]  name  [dim]behavior1, behavior2[/dim]
+          -- or for disabled --
+          [dim][red]\\[off][/red]  name  behavior1, behavior2[/dim]
+
+        Multi-claimant behaviors are joined with comma.
+        Disabled items have the entire line dimmed.
+        """
+        if not items:
+            return
+        enabled = sum(1 for x in items if x.get("enabled", True))
+        disabled = len(items) - enabled
+        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
+        console.print(f"\u2500\u2500 context ({count}) \u2500\u2500")
+
+        for item in items:
+            is_on = item.get("enabled", True)
+            name = item.get("name", "unknown")
+
+            # Build behavior attribution — behaviors list or source fallback
+            behaviors = item.get("behaviors", [])
+            if isinstance(behaviors, list) and behaviors:
+                behavior_str = ", ".join(behaviors)
+            else:
+                behavior_str = item.get("source", "")
+
+            if is_on:
+                line = f"  [green]\\[on][/green]  {name}"
+                if behavior_str:
+                    line += f"  [dim]{behavior_str}[/dim]"
+            else:
+                line = f"  [dim][red]\\[off][/red]  {name}"
+                if behavior_str:
+                    line += f"  {behavior_str}"
+                line += "[/dim]"
+            console.print(line)
+
+        if trailing_newline:
+            console.print()
+
+    def _render_agents_section(
+        self,
+        console: Any,
+        items: list,
+        *,
+        trailing_newline: bool = True,
+    ) -> None:
+        """Render agents section with behavior attribution in dim after name.
+
+        Design spec format (single line, no indented second line):
+          [green]\\[on][/green]  name  [dim]behavior1, behavior2[/dim]
+          -- or for disabled --
+          [dim][red]\\[off][/red]  name  behavior1, behavior2[/dim]
+
+        Multi-claimant behaviors are joined with comma.
+        Disabled items have the entire line dimmed.
+        """
+        if not items:
+            return
+        enabled = sum(1 for x in items if x.get("enabled", True))
+        disabled = len(items) - enabled
+        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
+        console.print(f"\u2500\u2500 agents ({count}) \u2500\u2500")
+
+        for item in items:
+            is_on = item.get("enabled", True)
+            name = item.get("name", "unknown")
+
+            # Build behavior attribution — behaviors list or source fallback
+            behaviors = item.get("behaviors", [])
+            if isinstance(behaviors, list) and behaviors:
+                behavior_str = ", ".join(behaviors)
+            else:
+                behavior_str = item.get("source", "")
+
+            if is_on:
+                line = f"  [green]\\[on][/green]  {name}"
+                if behavior_str:
+                    line += f"  [dim]{behavior_str}[/dim]"
+            else:
+                line = f"  [dim][red]\\[off][/red]  {name}"
+                if behavior_str:
+                    line += f"  {behavior_str}"
+                line += "[/dim]"
+            console.print(line)
+
+        if trailing_newline:
+            console.print()
 
     async def _get_config_display(self, args: str = "") -> str:
         """Display current configuration or handle subcommands.
@@ -1499,8 +1593,8 @@ class CommandProcessor:
         # Render tools section (module ID + config tree per design spec)
         self._render_tools_section(console, tools_items)
         self._render_hooks_section_v2(console, hooks_items)
-        self._render_simple_section(console, "Context", context_items)
-        self._render_simple_section(console, "Agents", agents_items)
+        self._render_context_section(console, context_items)
+        self._render_agents_section(console, agents_items)
 
         # Render behaviors section (non-zero categories with item names)
         self._render_behaviors_section_v2(console, behaviors_items)

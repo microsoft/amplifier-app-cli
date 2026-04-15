@@ -1234,4 +1234,81 @@ class TestNewBehaviorsRendering:
         assert "guide" in calls, "guide should appear with prefix stripped"
         assert "tool-bash" in calls, "tool-bash should appear with prefix stripped"
         # The raw prefixed form should NOT appear
-        assert "context:readme" not in calls, "provenance prefix should be stripped from display"
+        assert "context:readme" not in calls, (
+            "provenance prefix should be stripped from display"
+        )
+
+
+class TestNewContextAgentsRendering:
+    """Tests for the new _render_context_section and _render_agents_section methods."""
+
+    def _find_call_containing(self, mock_console, text):
+        """Return the string of the first console.print call containing text, or None."""
+        for call in mock_console.print.call_args_list:
+            args, _ = call
+            if args and text in str(args[0]):
+                return str(args[0])
+        return None
+
+    def _all_calls_str(self, mock_console):
+        return " ".join(str(c) for c in mock_console.print.call_args_list)
+
+    def test_context_shows_behavior_dim(self):
+        """Context item name and its dim behavior attribution are shown on one line."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "readme",
+                "enabled": True,
+                "behaviors": ["foundation"],
+            }
+        ]
+        cp._render_context_section(mock_console, items)
+        name_call = self._find_call_containing(mock_console, "readme")
+        assert name_call is not None, "context item 'readme' should appear in output"
+        assert "foundation" in name_call, (
+            "behavior 'foundation' should appear on same line as name"
+        )
+        assert "[dim]" in name_call, "behavior attribution should be wrapped in [dim]"
+
+    def test_agents_shows_multi_claimant(self):
+        """Agent item with multiple behaviors shows both comma-separated on one line."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "foundation:explorer",
+                "enabled": True,
+                "behaviors": ["foundation", "superpowers"],
+            }
+        ]
+        cp._render_agents_section(mock_console, items)
+        name_call = self._find_call_containing(mock_console, "foundation:explorer")
+        assert name_call is not None, (
+            "agent 'foundation:explorer' should appear in output"
+        )
+        assert "foundation" in name_call, (
+            "'foundation' behavior should be visible on same line"
+        )
+        assert "superpowers" in name_call, (
+            "'superpowers' behavior should be visible on same line"
+        )
+        assert "," in name_call, "multiple behaviors should be comma-separated"
+
+    def test_disabled_items_are_dimmed(self):
+        """Disabled items have [red][off] and the entire line is [dim]."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "disabled-ctx",
+                "enabled": False,
+                "behaviors": ["foundation"],
+            }
+        ]
+        cp._render_context_section(mock_console, items)
+        disabled_call = self._find_call_containing(mock_console, "disabled-ctx")
+        assert disabled_call is not None, "disabled item should appear in output"
+        assert "red" in disabled_call, "disabled item should have red markup for [off]"
+        assert "dim" in disabled_call, "disabled item's entire line should be dimmed"
