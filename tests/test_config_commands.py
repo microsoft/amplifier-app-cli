@@ -929,9 +929,13 @@ class TestNewToolsRendering:
         name_call = self._find_call_containing(mock_console, "tool-bash")
         assert name_call is not None, "tool-bash should appear in output"
         # Behaviors appear on the MODULE line (with module_id), not the name line
-        module_call = self._find_call_containing(mock_console, "amplifier_core.tools.bash")
+        module_call = self._find_call_containing(
+            mock_console, "amplifier_core.tools.bash"
+        )
         assert module_call is not None, "module_id should appear in output"
-        assert "foundation" in module_call, "first behavior should appear on module line"
+        assert "foundation" in module_call, (
+            "first behavior should appear on module line"
+        )
         assert "caveman" in module_call, "second behavior should appear on module line"
         assert "," in module_call, "behaviors should be comma-separated on module line"
 
@@ -1214,6 +1218,161 @@ class TestNewBehaviorsRendering:
             "provenance prefix should be stripped from display"
         )
 
+    def test_root_namespace_strips_own_prefix_from_agent_names(self):
+        """When root_namespace matches behavior's own namespace, strip it from item names.
+
+        For 'foundation' behavior with root_namespace='foundation':
+          Provenance key 'agent:foundation:bug-hunter' → raw_name 'foundation:bug-hunter'
+          → stripped to 'bug-hunter' (because 'foundation:' prefix matches root_ns)
+
+        For foreign-namespace items:
+          'agent:modes:context/modes.md' → raw_name 'modes:context/modes.md'
+          → kept as-is (because 'modes:' != 'foundation:')
+        """
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "foundation",
+                "enabled": True,
+                "root_namespace": "foundation",
+                "contributions": {
+                    "context": [],
+                    "tools": [],
+                    "hooks": [],
+                    "providers": [],
+                    "agents": [
+                        "agent:foundation:bug-hunter",
+                        "agent:foundation:explorer",
+                        "agent:modes:context/modes.md",  # foreign namespace
+                    ],
+                },
+            }
+        ]
+        cp._render_behaviors_section_v2(mock_console, items)
+        calls = self._all_calls_str(mock_console)
+
+        # Own-namespace prefix should be stripped
+        assert "bug-hunter" in calls, (
+            "'bug-hunter' should appear (foundation: prefix stripped)"
+        )
+        assert "explorer" in calls, (
+            "'explorer' should appear (foundation: prefix stripped)"
+        )
+        # The full prefixed form should NOT appear
+        assert "foundation:bug-hunter" not in calls, (
+            "'foundation:bug-hunter' should be stripped to 'bug-hunter'"
+        )
+        assert "foundation:explorer" not in calls, (
+            "'foundation:explorer' should be stripped to 'explorer'"
+        )
+        # Foreign namespace should be kept intact
+        assert "modes:context/modes.md" in calls, (
+            "Foreign-namespace item 'modes:context/modes.md' should NOT be stripped"
+        )
+
+    def test_root_namespace_none_keeps_all_prefixes(self):
+        """When root_namespace is None, item names are shown with namespace prefixes intact."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "some-behavior",
+                "enabled": True,
+                # root_namespace absent/None
+                "contributions": {
+                    "context": [],
+                    "tools": [],
+                    "hooks": [],
+                    "providers": [],
+                    "agents": ["agent:some-ns:some-agent"],
+                },
+            }
+        ]
+        cp._render_behaviors_section_v2(mock_console, items)
+        calls = self._all_calls_str(mock_console)
+        # No root_namespace → namespace prefix preserved
+        assert "some-ns:some-agent" in calls, (
+            "Without root_namespace, 'some-ns:some-agent' should appear verbatim"
+        )
+
+    def test_print_wrapped_items_continuation_indent(self):
+        """_print_wrapped_items continuation lines align with first item on first line."""
+        cp = _make_command_processor()
+
+        printed_lines: list[str] = []
+
+        class CapturingConsole:
+            def print(self, text=""):
+                printed_lines.append(str(text))
+
+        cc = CapturingConsole()
+        # Use a narrow max_width to force wrapping with a few items
+        long_items = [
+            "integration-specialist",
+            "modular-builder",
+            "post-task-cleanup",
+            "security-guardian",
+        ]
+        cp._print_wrapped_items(
+            cc, "agents", long_items, indent="        ", max_width=55, dim=False
+        )
+
+        assert len(printed_lines) >= 2, (
+            "Should have produced at least 2 lines (wrapping occurred)"
+        )
+
+        first_line = printed_lines[0]
+        # The first line starts with the prefix "        agents: "
+        assert first_line.startswith("        agents: "), (
+            f"First line should start with '        agents: ', got: {first_line!r}"
+        )
+        prefix_len = len("        agents: ")
+
+        # All continuation lines (after the first) should be indented by prefix_len spaces
+        for i, line in enumerate(printed_lines[1:], start=2):
+            # Strip dim markup wrapper if present (dim=False here, but let's be safe)
+            plain = line.replace("[dim]", "").replace("[/dim]", "")
+            assert plain.startswith(" " * prefix_len), (
+                f"Continuation line {i} should start with {prefix_len} spaces, "
+                f"got: {plain!r}"
+            )
+
+    def test_print_wrapped_items_no_wrap_when_short(self):
+        """_print_wrapped_items produces a single line when items fit within max_width."""
+        cp = _make_command_processor()
+
+        printed_lines: list[str] = []
+
+        class CapturingConsole:
+            def print(self, text=""):
+                printed_lines.append(str(text))
+
+        cc = CapturingConsole()
+        cp._print_wrapped_items(
+            cc, "agents", ["a", "b", "c"], indent="  ", max_width=78, dim=False
+        )
+        assert len(printed_lines) == 1, (
+            f"Short item list should fit on one line, got {len(printed_lines)} lines"
+        )
+        assert printed_lines[0] == "  agents: a, b, c", (
+            f"Expected '  agents: a, b, c', got {printed_lines[0]!r}"
+        )
+
+    def test_print_wrapped_items_empty_list_produces_no_output(self):
+        """_print_wrapped_items produces no output for an empty item list."""
+        cp = _make_command_processor()
+
+        printed_lines: list[str] = []
+
+        class CapturingConsole:
+            def print(self, text=""):
+                printed_lines.append(str(text))
+
+        cc = CapturingConsole()
+        cp._print_wrapped_items(cc, "agents", [], indent="        ", dim=False)
+        assert printed_lines == [], "Empty items list should produce no output"
+
 
 class TestNewContextAgentsRendering:
     """Tests for the new _render_context_section and _render_agents_section methods."""
@@ -1320,6 +1479,7 @@ class TestRealConfiguratorRenderIntegration:
 
         try:
             from amplifier_foundation.configurator import SessionConfigurator  # noqa: PLC0415
+
             return SessionConfigurator
         except ImportError:
             return None
@@ -1340,7 +1500,9 @@ class TestRealConfiguratorRenderIntegration:
         coordinator = MagicMock()
         coordinator.get_capability.return_value = None
         coordinator.hooks.list_handlers.return_value = {}
-        coordinator.get = MagicMock(side_effect=lambda mp: {"bash": MagicMock()} if mp == "tools" else {})
+        coordinator.get = MagicMock(
+            side_effect=lambda mp: {"bash": MagicMock()} if mp == "tools" else {}
+        )
         coordinator.config = {
             "tools": [{"module": "tool-bash"}],
             "agents": {},
@@ -1382,7 +1544,10 @@ class TestRealConfiguratorRenderIntegration:
         cfg = self._make_real_configurator()
         if cfg is None:
             import pytest
-            pytest.skip("amplifier_foundation.configurator not available in this environment")
+
+            pytest.skip(
+                "amplifier_foundation.configurator not available in this environment"
+            )
 
         items = cfg.tools_list()
         assert len(items) == 1, "Expected one tool item"
@@ -1393,7 +1558,9 @@ class TestRealConfiguratorRenderIntegration:
 
         # Attribution is on the MODULE line (contains "module: tool-bash")
         module_call = self._find_call_containing(mock_console, "module: tool-bash")
-        assert module_call is not None, "'module: tool-bash' should appear in rendered output"
+        assert module_call is not None, (
+            "'module: tool-bash' should appear in rendered output"
+        )
 
         assert "['foundation']" not in module_call, (
             "Behavior must render as string 'foundation', not as Python list repr \"['foundation']\". "
@@ -1412,7 +1579,10 @@ class TestRealConfiguratorRenderIntegration:
         cfg = self._make_real_configurator()
         if cfg is None:
             import pytest
-            pytest.skip("amplifier_foundation.configurator not available in this environment")
+
+            pytest.skip(
+                "amplifier_foundation.configurator not available in this environment"
+            )
 
         items = cfg.tools_list()
 
