@@ -1049,6 +1049,63 @@ class CommandProcessor:
         if trailing_newline:
             console.print()
 
+    def _render_hooks_section_v2(
+        self,
+        console: Any,
+        items: list,
+        *,
+        trailing_newline: bool = True,
+    ) -> None:
+        """Render hooks section listing ALL hooks individually — no collapsing.
+
+        Design spec format (same green/red/dim pattern as _render_tools_section):
+          Line 1: [green]\\[on][/green]  name-padded-to-40  [dim]attribution[/dim]
+                  -- or for disabled --
+                  [dim][red]\\[off][/red]  name-padded-to-40  attribution[/dim]
+          Line 2: [dim]        event: {event}[/dim]
+
+        All hooks (including shell-* and _auto_* patterns) are listed
+        individually with NO collapsing.
+        """
+        if not items:
+            return
+        enabled = sum(1 for x in items if x.get("enabled", True))
+        disabled = len(items) - enabled
+        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
+        console.print(f"\u2500\u2500 hooks ({count}) \u2500\u2500")
+
+        for item in items:
+            is_on = item.get("enabled", True)
+            name = item.get("name", "unknown")
+            event = item.get("event", "")
+
+            # Build attribution string from behaviors list or source
+            behaviors = item.get("behaviors", [])
+            if isinstance(behaviors, list) and behaviors:
+                attribution = ", ".join(behaviors)
+            else:
+                attribution = item.get("source", "")
+
+            # Line 1: status + name (left-aligned 40 chars) + dim attribution
+            name_padded = name.ljust(40)
+            if is_on:
+                line = f"  [green]\\[on][/green]  {name_padded}"
+                if attribution:
+                    line += f"  [dim]{attribution}[/dim]"
+            else:
+                line = f"  [dim][red]\\[off][/red]  {name_padded}"
+                if attribution:
+                    line += f"  {attribution}"
+                line += "[/dim]"
+            console.print(line)
+
+            # Line 2: event in [dim], indented
+            if event:
+                console.print(f"        [dim]event: {event}[/dim]")
+
+        if trailing_newline:
+            console.print()
+
     def _render_behaviors_section(
         self,
         console: Any,
@@ -1360,7 +1417,7 @@ class CommandProcessor:
 
         # Render tools section (module ID + config tree per design spec)
         self._render_tools_section(console, tools_items)
-        self._render_hooks_section(console, hooks_items)
+        self._render_hooks_section_v2(console, hooks_items)
         self._render_simple_section(console, "Context", context_items)
         self._render_simple_section(console, "Agents", agents_items)
 

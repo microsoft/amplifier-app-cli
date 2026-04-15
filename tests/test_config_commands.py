@@ -988,3 +988,95 @@ class TestNewToolsRendering:
         assert disabled_call is not None, "disabled tool should appear in output"
         assert "dim" in disabled_call, "disabled tool's line should be in dim"
         assert "red" in disabled_call, "disabled tool should have red markup"
+
+
+class TestNewHooksRendering:
+    """Tests for the new _render_hooks_section_v2 method that lists all hooks individually."""
+
+    def _find_call_containing(self, mock_console, text):
+        """Return the string of the first console.print call containing text, or None."""
+        for call in mock_console.print.call_args_list:
+            args, _ = call
+            if args and text in str(args[0]):
+                return str(args[0])
+        return None
+
+    def _all_calls_str(self, mock_console):
+        return " ".join(str(c) for c in mock_console.print.call_args_list)
+
+    def test_shell_hooks_listed_individually(self):
+        """shell-* hooks are listed individually — 'shell-*' pattern must NOT appear."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {"name": "shell-notification", "event": "tool:pre", "enabled": True},
+            {"name": "shell-pre-tool", "event": "tool:pre", "enabled": True},
+            {"name": "shell-post-tool", "event": "tool:post", "enabled": True},
+        ]
+        cp._render_hooks_section_v2(mock_console, items)
+        calls = self._all_calls_str(mock_console)
+        # Each shell hook should appear individually
+        assert "shell-notification" in calls, (
+            "shell-notification should be listed individually"
+        )
+        assert "shell-pre-tool" in calls, "shell-pre-tool should be listed individually"
+        assert "shell-post-tool" in calls, (
+            "shell-post-tool should be listed individually"
+        )
+        # The 'shell-*' collapsed pattern must NOT appear
+        assert "shell-*" not in calls, "shell-* collapsed group pattern must NOT appear"
+
+    def test_auto_hooks_listed_individually(self):
+        """_auto_* hooks are listed individually — '_auto_*' pattern must NOT appear."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "_auto_tool:pre_bf121312-41db",
+                "event": "tool:pre",
+                "enabled": True,
+            },
+            {
+                "name": "_auto_tool:post_4cccb727-1ace",
+                "event": "tool:post",
+                "enabled": True,
+            },
+            {
+                "name": "_auto_llm:response_9b9847ed",
+                "event": "llm:response",
+                "enabled": True,
+            },
+        ]
+        cp._render_hooks_section_v2(mock_console, items)
+        calls = self._all_calls_str(mock_console)
+        # Each _auto_* hook should appear individually
+        assert "_auto_tool:pre_bf121312-41db" in calls, (
+            "_auto_ hook should be listed individually"
+        )
+        assert "_auto_tool:post_4cccb727-1ace" in calls, (
+            "_auto_ hook should be listed individually"
+        )
+        assert "_auto_llm:response_9b9847ed" in calls, (
+            "_auto_ hook should be listed individually"
+        )
+        # The '_auto_*' collapsed pattern must NOT appear
+        assert "_auto_*" not in calls, "_auto_* collapsed group pattern must NOT appear"
+
+    def test_hooks_show_event_on_indented_line(self):
+        """The hook event appears on a separate indented line (different print call from name)."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {"name": "routing-resolve", "event": "provider:request", "enabled": True},
+        ]
+        cp._render_hooks_section_v2(mock_console, items)
+        name_call = self._find_call_containing(mock_console, "routing-resolve")
+        assert name_call is not None, "routing-resolve should appear in output"
+        event_call = self._find_call_containing(mock_console, "provider:request")
+        assert event_call is not None, "provider:request event should appear in output"
+        # event must be on a DIFFERENT print call than the name
+        assert name_call != event_call, (
+            "event should be on a separate indented line from the name"
+        )
+        # The event line should contain 'event:' label
+        assert "event:" in event_call, "event line should contain 'event:' label"
