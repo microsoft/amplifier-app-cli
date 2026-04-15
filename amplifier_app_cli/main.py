@@ -1163,8 +1163,7 @@ class CommandProcessor:
 
         Categories with empty item lists are omitted. Item names are displayed
         with provenance key prefixes stripped (e.g. 'context:readme' -> 'readme').
-        Dim styling applied to category lines for enabled behaviors; full dim
-        wrapping applied for disabled behaviors.
+        Dim styling applied to all category lines.
         """
         if not items:
             return
@@ -1198,10 +1197,7 @@ class CommandProcessor:
                     ]
                     names_str = ", ".join(names)
                     cat_line = f"    {label}: {names_str}"
-                    if is_on:
-                        console.print(f"[dim]{cat_line}[/dim]")
-                    else:
-                        console.print(f"[dim]{cat_line}[/dim]")
+                    console.print(f"[dim]{cat_line}[/dim]")
 
         if trailing_newline:
             console.print()
