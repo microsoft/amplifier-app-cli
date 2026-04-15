@@ -322,7 +322,9 @@ class CommandProcessor:
     # Patterns used to detect sensitive config keys that should be redacted
     _SENSITIVE_KEY_PATTERNS = ("key", "token", "secret", "password", "api_key")
 
-    def _render_config_tree(self, console: Any, cfg: dict, indent: str) -> None:
+    def _render_config_tree(
+        self, console: Any, cfg: dict, indent: str, *, dim: bool = False
+    ) -> None:
         """Render a config dict as an indented YAML-like tree.
 
         Handles nested dicts (recurse), lists (one item per line with '- ' prefix),
@@ -332,24 +334,29 @@ class CommandProcessor:
             console: Rich console (or mock) to print to.
             cfg: The config dict to render.
             indent: Leading whitespace string for the current nesting level.
+            dim: If True, wrap every output line in Rich ``[dim]`` markup.
         """
+        _d = "[dim]" if dim else ""
+        _e = "[/dim]" if dim else ""
         for k, v in cfg.items():
             redacted = self._redact_value(k, v)
             if isinstance(v, dict) and v and redacted is v:
                 # Nested dict — recurse
-                console.print(f"{indent}{k}:")
-                self._render_config_tree(console, v, indent + "  ")
+                console.print(f"{_d}{indent}{k}:{_e}")
+                self._render_config_tree(console, v, indent + "  ", dim=dim)
             elif isinstance(v, list) and v and redacted is v:
                 # List — one item per line
-                console.print(f"{indent}{k}:")
+                console.print(f"{_d}{indent}{k}:{_e}")
                 for list_item in v:
                     if isinstance(list_item, dict):
-                        console.print(f"{indent}  -")
-                        self._render_config_tree(console, list_item, indent + "    ")
+                        console.print(f"{_d}{indent}  -{_e}")
+                        self._render_config_tree(
+                            console, list_item, indent + "    ", dim=dim
+                        )
                     else:
-                        console.print(f"{indent}  - {list_item}")
+                        console.print(f"{_d}{indent}  - {list_item}{_e}")
             else:
-                console.print(f"{indent}{k}: {redacted}")
+                console.print(f"{_d}{indent}{k}: {redacted}{_e}")
 
     def _print_wrapped_items(
         self,
@@ -1158,10 +1165,15 @@ class CommandProcessor:
         for item in items:
             is_on = item.get("enabled", True)
             name = item.get("name", "unknown")
+            # Root namespace for this behavior — used to strip redundant prefixes
+            # from the behavior's own items (e.g. "superpowers:implementer" → "implementer"
+            # for a behavior whose root namespace is "superpowers").
+            root_ns = item.get("root_namespace") or ""
+
             if is_on:
-                console.print(f"  \\[on]  {name}")
+                console.print(f"  [green]\\[on][/green]  {name}")
             else:
-                console.print(f"  \\[off]  {name}  \u2190 disabled")
+                console.print(f"  [dim][red]\\[off][/red]  {name}[/dim]")
 
             contributions = item.get("contributions", {})
             if isinstance(contributions, dict):
@@ -1170,8 +1182,21 @@ class CommandProcessor:
                     if not isinstance(cat_items, list) or not cat_items:
                         continue
                     label = self._CAT_LABELS.get(cat, cat)
-                    # Strip provenance key prefix: "context:readme" -> "readme"
-                    names = [n.split(":", 1)[1] if ":" in n else n for n in cat_items]
+                    # Strip provenance category prefix: "context:readme" -> "readme"
+                    raw_names = [
+                        n.split(":", 1)[1] if ":" in n else n for n in cat_items
+                    ]
+                    # Strip root namespace prefix from items when it matches the
+                    # behavior's own namespace (e.g. "superpowers:implementer" ->
+                    # "implementer"), but keep foreign namespaces intact.
+                    if root_ns:
+                        ns_prefix = root_ns + ":"
+                        names = [
+                            n[len(ns_prefix):] if n.startswith(ns_prefix) else n
+                            for n in raw_names
+                        ]
+                    else:
+                        names = raw_names
                     self._print_wrapped_items(
                         console, label, names, indent="        ", max_width=78
                     )
@@ -1409,12 +1434,15 @@ class CommandProcessor:
             if source_uri:
                 console.print(f"        [dim]source: {source_uri}[/dim]")
 
-            # Line 3+: config tree — 'config:' header then indented key: value pairs
+            # Line 3+: config tree — 'config:' header then indented key: value pairs.
+            # Config header and values are dim so the provider name stands out.
             cfg = item.get("config", {})
             if cfg and isinstance(cfg, dict):
-                console.print("        config:")
+                console.print("[dim]        config:[/dim]")
                 for k, v in cfg.items():
-                    console.print(f"          {k}: {self._redact_value(k, v)}")
+                    console.print(
+                        f"[dim]          {k}: {self._redact_value(k, v)}[/dim]"
+                    )
 
         if trailing_newline:
             console.print()
@@ -1474,11 +1502,12 @@ class CommandProcessor:
             console.print(f"        [dim]{module_str}[/dim]")
 
             # Lines 3+: config tree — always fully expanded, never collapsed to {...}
+            # Config header and key-value pairs are dim so the tool name stands out.
             cfg = item.get("config", {})
             if cfg and isinstance(cfg, dict):
-                console.print("        config:")
+                console.print("[dim]        config:[/dim]")
                 for k, v in cfg.items():
-                    self._render_config_tree(console, {k: v}, "          ")
+                    self._render_config_tree(console, {k: v}, "          ", dim=True)
 
         if trailing_newline:
             console.print()
@@ -1533,8 +1562,11 @@ class CommandProcessor:
                         cfg = value.get("config", {})
                         console.print(f"  {field}: {mod_id}")
                         if cfg and isinstance(cfg, dict):
-                            cfg_str = ", ".join(f"{k}: {v}" for k, v in cfg.items())
-                            console.print(f"    config: {{{cfg_str}}}")
+                            console.print("[dim]    config:[/dim]")
+                            for k, v in cfg.items():
+                                self._render_config_tree(
+                                    console, {k: v}, "      ", dim=True
+                                )
                     else:
                         console.print(f"  {field}: {value}")
             console.print()
