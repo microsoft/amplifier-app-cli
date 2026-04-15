@@ -490,3 +490,306 @@ class TestConfigHelpEntry:
             description
             == "Live session config \u2014 /config [category] [disable|enable name]"
         )
+
+
+class TestRenderSimpleSectionWithConfig:
+    """Tests for config summary inline display in _render_simple_section."""
+
+    def _item_call_containing(self, mock_console, text):
+        """Return the string of the first console.print call containing `text`, or None."""
+        for call in mock_console.print.call_args_list:
+            args, _ = call
+            if args and text in str(args[0]):
+                return str(args[0])
+        return None
+
+    def test_show_config_true_renders_config_inline(self):
+        """When show_config=True, config key/value appears inline on the item line."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "bash",
+                "enabled": True,
+                "config": {"timeout": 30},
+                "source": "foundation",
+            }
+        ]
+        cp._render_simple_section(mock_console, "Tools", items, show_config=True)
+        bash_call = self._item_call_containing(mock_console, "bash")
+        assert bash_call is not None
+        assert "timeout" in bash_call, (
+            "config key 'timeout' should appear inline on the item line"
+        )
+        assert "30" in bash_call, "config value '30' should appear inline"
+
+    def test_show_config_false_does_not_render_config(self):
+        """When show_config=False (default), config is not shown."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "bash",
+                "enabled": True,
+                "config": {"timeout": 30},
+                "source": "foundation",
+            }
+        ]
+        cp._render_simple_section(mock_console, "Tools", items, show_config=False)
+        bash_call = self._item_call_containing(mock_console, "bash")
+        assert bash_call is not None
+        assert "timeout" not in bash_call, (
+            "config should not appear when show_config=False"
+        )
+
+    def test_config_truncated_after_three_keys(self):
+        """When config has >3 keys, only first 3 shown with '...' marker."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "mytool",
+                "enabled": True,
+                "config": {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5},
+                "source": "foundation",
+            }
+        ]
+        cp._render_simple_section(mock_console, "Tools", items, show_config=True)
+        all_calls = " ".join(str(c) for c in mock_console.print.call_args_list)
+        assert "..." in all_calls, "ellipsis should appear when config has >3 keys"
+
+    def test_config_sensitive_key_redacted_inline(self):
+        """Sensitive config keys (api_key) are redacted when shown inline."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "anthropic",
+                "enabled": True,
+                "config": {"api_key": "sk-ant-1234567890abcdef1234567890"},
+                "source": "foundation",
+            }
+        ]
+        cp._render_simple_section(mock_console, "Providers", items, show_config=True)
+        all_calls = " ".join(str(c) for c in mock_console.print.call_args_list)
+        assert "redacted" in all_calls, "sensitive api_key should be redacted"
+        assert "sk-ant-1234567890abcdef1234567890" not in all_calls, (
+            "raw key must not appear"
+        )
+
+    def test_empty_config_not_shown(self):
+        """Items with empty config dict show no config summary."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {"name": "bash", "enabled": True, "config": {}, "source": "foundation"}
+        ]
+        cp._render_simple_section(mock_console, "Tools", items, show_config=True)
+        bash_call = self._item_call_containing(mock_console, "bash")
+        assert bash_call is not None
+        assert "{" not in bash_call, "empty config should not produce a {} block"
+
+    def test_three_keys_no_truncation(self):
+        """Exactly 3 config keys show all without ellipsis."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "mytool",
+                "enabled": True,
+                "config": {"a": 1, "b": 2, "c": 3},
+                "source": "foundation",
+            }
+        ]
+        cp._render_simple_section(mock_console, "Tools", items, show_config=True)
+        all_calls = " ".join(str(c) for c in mock_console.print.call_args_list)
+        assert "..." not in all_calls, "no ellipsis for exactly 3 keys"
+
+
+class TestRenderHooksSection:
+    """Tests for the new _render_hooks_section method that groups hooks."""
+
+    def _all_calls_str(self, mock_console):
+        return " ".join(str(c) for c in mock_console.print.call_args_list)
+
+    def test_shell_hooks_collapsed_with_count(self):
+        """Multiple shell-* hooks are collapsed into one summary line."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {"name": "shell-notification", "event": "tool:pre", "enabled": True},
+            {"name": "shell-pre-tool", "event": "tool:pre", "enabled": True},
+            {"name": "shell-post-tool", "event": "tool:post", "enabled": True},
+        ]
+        cp._render_hooks_section(mock_console, items)
+        calls = self._all_calls_str(mock_console)
+        assert "shell-*" in calls, "shell-* group label should appear"
+        assert "3" in calls, "count of shell hooks should appear"
+        # Each shell hook name should NOT appear individually
+        assert "shell-notification" not in calls
+        assert "shell-pre-tool" not in calls
+
+    def test_auto_hooks_collapsed_with_count(self):
+        """Multiple _auto_* hooks are collapsed into one summary line."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "_auto_tool:pre_bf121312-41db",
+                "event": "tool:pre",
+                "enabled": True,
+            },
+            {
+                "name": "_auto_tool:post_4cccb727-1ace",
+                "event": "tool:post",
+                "enabled": True,
+            },
+            {
+                "name": "_auto_llm:response_9b9847ed",
+                "event": "llm:response",
+                "enabled": True,
+            },
+        ]
+        cp._render_hooks_section(mock_console, items)
+        calls = self._all_calls_str(mock_console)
+        assert "_auto_*" in calls, "_auto_* group label should appear"
+        assert "3" in calls, "count of auto hooks should appear"
+        # Individual UUID names should NOT appear
+        assert "_auto_tool:pre_bf121312" not in calls
+
+    def test_named_hooks_shown_individually_with_event(self):
+        """Named (non-shell, non-auto) hooks are listed individually with their event."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {"name": "routing-resolve", "event": "provider:request", "enabled": True},
+        ]
+        cp._render_hooks_section(mock_console, items)
+        calls = self._all_calls_str(mock_console)
+        assert "routing-resolve" in calls, "named hook should be listed"
+        assert "provider:request" in calls, "hook event should appear alongside name"
+
+    def test_header_shows_total_item_count(self):
+        """The section header shows the total count of all hooks."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {"name": "routing-resolve", "event": "provider:request", "enabled": True},
+            {"name": "shell-pre-tool", "event": "tool:pre", "enabled": True},
+            {"name": "_auto_tool:pre_abc", "event": "tool:pre", "enabled": True},
+        ]
+        cp._render_hooks_section(mock_console, items)
+        # First print call is the header
+        first_call = str(mock_console.print.call_args_list[0])
+        assert "3" in first_call, "header should show total of 3 hooks"
+
+    def test_mixed_hooks_three_groups(self):
+        """Named, shell-*, and _auto_* each produce their own line/group."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {"name": "routing-resolve", "event": "provider:request", "enabled": True},
+            {"name": "shell-notification", "event": "tool:pre", "enabled": True},
+            {"name": "_auto_tool:pre_abc", "event": "tool:pre", "enabled": True},
+        ]
+        cp._render_hooks_section(mock_console, items)
+        calls = self._all_calls_str(mock_console)
+        assert "routing-resolve" in calls
+        assert "shell-*" in calls
+        assert "_auto_*" in calls
+
+
+class TestRenderBehaviorsSection:
+    """Tests for the new _render_behaviors_section method that shows contributions inline."""
+
+    def _item_call_containing(self, mock_console, text):
+        """Return the string of the first console.print call containing `text`, or None."""
+        for call in mock_console.print.call_args_list:
+            args, _ = call
+            if args and text in str(args[0]):
+                return str(args[0])
+        return None
+
+    def test_contributions_shown_inline_with_name(self):
+        """Contribution counts appear inline on the same line as the behavior name."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "foundation",
+                "enabled": True,
+                "contributions": {
+                    "context": 12,
+                    "tools": 8,
+                    "hooks": 3,
+                    "providers": 2,
+                    "agents": 23,
+                },
+            }
+        ]
+        cp._render_behaviors_section(mock_console, items)
+        foundation_call = self._item_call_containing(mock_console, "foundation")
+        assert foundation_call is not None, "foundation should appear in a print call"
+        assert "12" in foundation_call, "context count should appear inline with name"
+        assert "ctx" in foundation_call, "abbreviated 'ctx' should appear inline"
+
+    def test_zero_counts_shown_for_uniformity(self):
+        """All categories are shown even if count is 0, for consistent formatting."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "superpowers",
+                "enabled": True,
+                "contributions": {
+                    "context": 4,
+                    "tools": 0,
+                    "hooks": 0,
+                    "providers": 0,
+                    "agents": 6,
+                },
+            }
+        ]
+        cp._render_behaviors_section(mock_console, items)
+        superpowers_call = self._item_call_containing(mock_console, "superpowers")
+        assert superpowers_call is not None
+        assert "0" in superpowers_call, "zero counts should appear (not filtered out)"
+
+    def test_contributions_not_on_separate_lines(self):
+        """Contributions must NOT appear as separate indented sub-lines below name."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {
+                "name": "foundation",
+                "enabled": True,
+                "contributions": {
+                    "context": 2,
+                    "tools": 2,
+                    "hooks": 1,
+                    "providers": 1,
+                    "agents": 1,
+                },
+            }
+        ]
+        cp._render_behaviors_section(mock_console, items)
+        # Check that "contributes:" (old sub-block format) does NOT appear
+        all_calls = " ".join(str(c) for c in mock_console.print.call_args_list)
+        assert "contributes:" not in all_calls, "old sub-block format should not appear"
+
+    def test_header_shows_enabled_count(self):
+        """Section header shows number of enabled behaviors."""
+        cp = _make_command_processor()
+        mock_console = MagicMock()
+        items = [
+            {"name": "foundation", "enabled": True, "contributions": {}},
+            {"name": "caveman", "enabled": False, "contributions": {}},
+        ]
+        cp._render_behaviors_section(mock_console, items)
+        first_call = str(mock_console.print.call_args_list[0])
+        assert "1 on" in first_call, (
+            "header should show '1 on' for one enabled behavior"
+        )
+        assert "1 off" in first_call, (
+            "header should show '1 off' for one disabled behavior"
+        )

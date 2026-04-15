@@ -951,11 +951,13 @@ class CommandProcessor:
         items: list,
         *,
         trailing_newline: bool = True,
+        show_config: bool = False,
     ) -> None:
         """Render a simple enabled/disabled section list with status indicators.
 
         Prints a header line with on/off counts, then each item with its
-        [on]/[off] status, optional source provenance, and [disabled] tag.
+        [on]/[off] status, optional inline config summary (when show_config=True),
+        optional source provenance, and [disabled] tag.
         Items without a 'source' key simply omit the provenance annotation.
         """
         if not items:
@@ -970,11 +972,128 @@ class CommandProcessor:
             name = item.get("name", "unknown")
             source = item.get("source", "")
             line = f"  {status} {name}"
+            # Inline config summary (top 3 key-value pairs, redacted)
+            if show_config:
+                cfg = item.get("config", {})
+                if cfg and isinstance(cfg, dict):
+                    cfg_items = list(cfg.items())
+                    truncated = len(cfg_items) > 3
+                    pairs = [
+                        f"{k}: {self._redact_value(k, v)}" for k, v in cfg_items[:3]
+                    ]
+                    summary = "{" + ", ".join(pairs)
+                    if truncated:
+                        summary += ", ..."
+                    summary += "}"
+                    line += f"  {summary}"
             if source:
-                line += f"  [dim](from {source})[/dim]"
+                line += f"  [dim]({source})[/dim]"
             if not is_on:
                 line += " [dim]\\[disabled][/dim]"
             console.print(line)
+        if trailing_newline:
+            console.print()
+
+    def _render_hooks_section(
+        self,
+        console: Any,
+        items: list,
+        *,
+        trailing_newline: bool = True,
+    ) -> None:
+        """Render hooks section grouping shell-* and _auto_* hooks into summary lines.
+
+        Named hooks (non-shell, non-auto) are listed individually with their
+        bound event.  shell-* and _auto_* hooks are each collapsed into a
+        single count summary line to avoid UUID noise.
+        """
+        if not items:
+            return
+        enabled = sum(1 for x in items if x.get("enabled", True))
+        disabled = len(items) - enabled
+        count = f"{enabled} on" + (f", {disabled} off" if disabled else "")
+        console.print(f"[bold]Hooks:[/bold] ({count})")
+
+        shell_hooks = [h for h in items if h.get("name", "").startswith("shell-")]
+        auto_hooks = [h for h in items if h.get("name", "").startswith("_auto_")]
+        named_hooks = [
+            h
+            for h in items
+            if not h.get("name", "").startswith("shell-")
+            and not h.get("name", "").startswith("_auto_")
+        ]
+
+        # Render individual named hooks with their event
+        for hook in named_hooks:
+            is_on = hook.get("enabled", True)
+            status = "\\[on]" if is_on else "\\[off]"
+            name = hook.get("name", "unknown")
+            event = hook.get("event", "")
+            line = f"  {status} {name}"
+            if event:
+                line += f"  [dim]{event}[/dim]"
+            console.print(line)
+
+        # Collapse shell-* hooks into one summary line
+        if shell_hooks:
+            console.print(
+                f"  \\[on] shell-*  [dim]({len(shell_hooks)} shell hooks)[/dim]"
+            )
+
+        # Collapse _auto_* hooks into one summary line
+        if auto_hooks:
+            console.print(
+                f"  \\[on] _auto_*  [dim]({len(auto_hooks)} auto-generated hooks)[/dim]"
+            )
+
+        if trailing_newline:
+            console.print()
+
+    def _render_behaviors_section(
+        self,
+        console: Any,
+        items: list,
+        *,
+        trailing_newline: bool = True,
+    ) -> None:
+        """Render behaviors section with contribution counts inline per behavior.
+
+        Each behavior line shows the behavior name followed by counts for each
+        category (context, tools, hooks, providers, agents), using abbreviated
+        labels (ctx for context).  Zero counts are shown for uniformity.
+        """
+        if not items:
+            return
+        enabled = sum(1 for x in items if x.get("enabled", True))
+        disabled = len(items) - enabled
+        count = f"{enabled} on" + (f", {disabled} off" if disabled else "")
+        console.print(f"[bold]Behaviors:[/bold] ({count})")
+
+        _CAT_ORDER = ("context", "tools", "hooks", "providers", "agents")
+        _CAT_LABEL = {
+            "context": "ctx",
+            "tools": "tools",
+            "hooks": "hooks",
+            "providers": "providers",
+            "agents": "agents",
+        }
+
+        for item in items:
+            is_on = item.get("enabled", True)
+            status = "\\[on]" if is_on else "\\[off]"
+            name = item.get("name", "unknown")
+            line = f"  {status} {name}"
+            contributions = item.get("contributions", {})
+            if isinstance(contributions, dict):
+                parts = [
+                    f"{contributions.get(cat, 0)} {_CAT_LABEL[cat]}"
+                    for cat in _CAT_ORDER
+                ]
+                line += f"  [dim]{', '.join(parts)}[/dim]"
+            if not is_on:
+                line += " [dim]\\[disabled][/dim]"
+            console.print(line)
+
         if trailing_newline:
             console.print()
 
@@ -1090,43 +1209,19 @@ class CommandProcessor:
                         console.print(f"  {field}: {value}")
             console.print()
 
-        # Render providers section (with per-provider config values after items)
-        if providers_items:
-            self._render_simple_section(
-                console, "Providers", providers_items, trailing_newline=False
-            )
-            for item in providers_items:
-                cfg = item.get("config", {})
-                if cfg and isinstance(cfg, dict):
-                    for key, val in cfg.items():
-                        redacted_val = self._redact_value(key, val)
-                        console.print(f"    {key}: {redacted_val}")
-            console.print()
+        # Render providers section (inline config summary)
+        self._render_simple_section(
+            console, "Providers", providers_items, show_config=True
+        )
 
-        # Render tools, hooks, context, and agents sections (structurally identical)
-        self._render_simple_section(console, "Tools", tools_items)
-        self._render_simple_section(console, "Hooks", hooks_items)
+        # Render tools section (inline config summary) and plain context/agents sections
+        self._render_simple_section(console, "Tools", tools_items, show_config=True)
+        self._render_hooks_section(console, hooks_items)
         self._render_simple_section(console, "Context", context_items)
         self._render_simple_section(console, "Agents", agents_items)
 
-        # Render behaviors section (with per-behavior contribution counts after items)
-        if behaviors_items:
-            self._render_simple_section(
-                console, "Behaviors", behaviors_items, trailing_newline=False
-            )
-            for item in behaviors_items:
-                contributions = item.get("contributions", {})
-                if contributions and isinstance(contributions, dict):
-                    contrib_parts = [
-                        f"{cat}: {count}"
-                        for cat, count in contributions.items()
-                        if count > 0
-                    ]
-                    if contrib_parts:
-                        console.print(
-                            f"    [dim]contributes: {', '.join(contrib_parts)}[/dim]"
-                        )
-            console.print()
+        # Render behaviors section (inline contribution counts)
+        self._render_behaviors_section(console, behaviors_items)
 
         return ""  # Output already printed via console
 
