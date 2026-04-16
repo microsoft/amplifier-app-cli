@@ -1052,7 +1052,7 @@ class CommandProcessor:
         for item in items:
             is_on = item.get("enabled", True)
             status = "\\[on]" if is_on else "\\[off]"
-            name = item.get("name", "unknown")
+            name = escape_markup(item.get("name", "unknown"))
             source = item.get("source", "")
             line = f"  {status}  {name}"
             # Inline config summary (top 3 key-value pairs, redacted)
@@ -1117,16 +1117,21 @@ class CommandProcessor:
                 attribution = str(item.get("source", "") or "")
 
             # Line 1: status + name only (attribution moves to event line)
+            safe_name = escape_markup(name)
             if is_on:
-                console.print(f"  [green]\\[on][/green]  {name}")
+                console.print(f"  [green]\\[on][/green]  {safe_name}")
             else:
-                console.print(f"  [dim][red]\\[off][/red]  {name}[/dim]")
+                console.print(f"  [dim][red]\\[off][/red]  {safe_name}[/dim]")
 
             # Line 2: event (+ attribution in parens) in [dim], indented
             if event or attribution:
-                detail = f"event: {event}" if event else ""
+                safe_event = escape_markup(event)
+                safe_attribution = escape_markup(attribution)
+                detail = f"event: {safe_event}" if event else ""
                 if attribution:
-                    detail += f"  ({attribution})" if detail else f"({attribution})"
+                    detail += (
+                        f"  ({safe_attribution})" if detail else f"({safe_attribution})"
+                    )
                 console.print(f"        [dim]{detail}[/dim]")
 
         if trailing_newline:
@@ -1170,10 +1175,11 @@ class CommandProcessor:
             # for a behavior whose root namespace is "superpowers").
             root_ns = item.get("root_namespace") or ""
 
+            safe_name = escape_markup(name)
             if is_on:
-                console.print(f"  [green]\\[on][/green]  {name}")
+                console.print(f"  [green]\\[on][/green]  {safe_name}")
             else:
-                console.print(f"  [dim][red]\\[off][/red]  {name}[/dim]")
+                console.print(f"  [dim][red]\\[off][/red]  {safe_name}[/dim]")
 
             contributions = item.get("contributions", {})
             if isinstance(contributions, dict):
@@ -1192,7 +1198,7 @@ class CommandProcessor:
                     if root_ns:
                         ns_prefix = root_ns + ":"
                         names = [
-                            n[len(ns_prefix):] if n.startswith(ns_prefix) else n
+                            n[len(ns_prefix) :] if n.startswith(ns_prefix) else n
                             for n in raw_names
                         ]
                     else:
@@ -1232,14 +1238,14 @@ class CommandProcessor:
 
         for item in items:
             is_on = item.get("enabled", True)
-            name = item.get("name", "unknown")
+            name = escape_markup(item.get("name", "unknown"))
 
             # Build behavior attribution — behaviors list or source fallback
             behaviors = item.get("behaviors", [])
             if isinstance(behaviors, list) and behaviors:
-                behavior_str = ", ".join(behaviors)
+                behavior_str = escape_markup(", ".join(behaviors))
             else:
-                behavior_str = item.get("source", "")
+                behavior_str = escape_markup(item.get("source", "") or "")
 
             if is_on:
                 line = f"  [green]\\[on][/green]  {name}"
@@ -1412,12 +1418,12 @@ class CommandProcessor:
             # Build attribution — behaviors list or source fallback
             behaviors = item.get("behaviors", [])
             if isinstance(behaviors, list) and behaviors:
-                attribution = ", ".join(behaviors)
+                attribution = escape_markup(", ".join(behaviors))
             else:
-                attribution = item.get("source", "")
+                attribution = escape_markup(item.get("source", "") or "")
 
             # Line 1: status + name (left-aligned 30 chars) + dim attribution
-            name_padded = name.ljust(30)
+            name_padded = escape_markup(name).ljust(30)
             if is_on:
                 line = f"  [green]\\[on][/green]  {name_padded}"
                 if attribution:
@@ -1432,7 +1438,7 @@ class CommandProcessor:
             # Line 2: source URI in [dim], indented
             source_uri = item.get("source_uri", "")
             if source_uri:
-                console.print(f"        [dim]source: {source_uri}[/dim]")
+                console.print(f"        [dim]source: {escape_markup(source_uri)}[/dim]")
 
             # Line 3+: config tree — 'config:' header then indented key: value pairs.
             # Config header and values are dim so the provider name stands out.
@@ -1485,18 +1491,22 @@ class CommandProcessor:
 
             # Join multi-claimant behaviors with comma for the attribution suffix
             if isinstance(behaviors, list) and behaviors:
-                behavior_str = ", ".join(str(b) for b in behaviors if b)
+                behavior_str = escape_markup(", ".join(str(b) for b in behaviors if b))
             else:
                 behavior_str = ""
 
             # Line 1: status + name only (no attribution — avoids wrapping confusion)
+            safe_name = escape_markup(name)
             if is_on:
-                console.print(f"  [green]\\[on][/green]  {name}")
+                console.print(f"  [green]\\[on][/green]  {safe_name}")
             else:
-                console.print(f"  [dim][red]\\[off][/red]  {name}[/dim]")
+                console.print(f"  [dim][red]\\[off][/red]  {safe_name}[/dim]")
 
             # Line 2: module: {module_id}  (behaviors) in [dim], indented
-            module_str = f"module: {module_id}" if module_id else "module: (unknown)"
+            safe_module_id = escape_markup(module_id) if module_id else ""
+            module_str = (
+                f"module: {safe_module_id}" if safe_module_id else "module: (unknown)"
+            )
             if behavior_str:
                 module_str += f"  ({behavior_str})"
             console.print(f"        [dim]{module_str}[/dim]")

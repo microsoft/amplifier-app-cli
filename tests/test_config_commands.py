@@ -1599,3 +1599,98 @@ class TestRealConfiguratorRenderIntegration:
         assert "tool-bash" in module_line, (
             "Module value 'tool-bash' must appear on the module: line."
         )
+
+
+class TestRichMarkupEscape:
+    """Tests that user-derived strings are escaped before interpolation into Rich markup.
+
+    If a tool name, hook name, agent name, module ID, or other user-derived value
+    contains Rich markup syntax like [b] or [on], it must be escaped so that
+    Rich renders it as literal text rather than applying markup formatting.
+    """
+
+    def _render_with_real_console(self, items: list, render_method_name: str, **kwargs):
+        """Helper: render items using a real Rich Console and return plain text output."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        cp = _make_command_processor()
+        output = StringIO()
+        real_console = RichConsole(file=output, force_terminal=False, highlight=False)
+        method = getattr(cp, render_method_name)
+        method(real_console, items, **kwargs)
+        return output.getvalue()
+
+    def test_render_tools_section_escapes_name_with_markup_tags(self):
+        """Tool names containing [b]...[/b] appear literally — not as bold markup."""
+        items = [
+            {
+                "name": "tool[b]special[/b]",  # [b]...[/b] activates bold if unescaped
+                "enabled": True,
+                "module_id": "tool-special",
+                "behaviors": [],
+                "config": {},
+            }
+        ]
+        rendered = self._render_with_real_console(items, "_render_tools_section")
+
+        # After fix: "[b]" must appear literally in output
+        # Before fix: "[b]" is consumed as bold markup and disappears from plain text
+        assert "[b]" in rendered, (
+            f"Expected '[b]' to appear literally in rendered output, got: {rendered!r}. "
+            "This indicates escape_markup() is not applied to tool names."
+        )
+
+    def test_render_hooks_section_escapes_name_with_markup_tags(self):
+        """Hook names containing [dim] appear literally — not as dim styling."""
+        items = [
+            {
+                "name": "hook[dim]internal[/dim]",
+                "event": "tool:pre",
+                "enabled": True,
+                "behaviors": [],
+            }
+        ]
+        rendered = self._render_with_real_console(items, "_render_hooks_section_v2")
+
+        assert "[dim]" in rendered, (
+            f"Expected '[dim]' to appear literally in hook name output, got: {rendered!r}. "
+            "Hook names must be escaped before interpolation into Rich markup."
+        )
+
+    def test_render_items_with_behavior_attribution_escapes_name(self):
+        """Context/agent names containing markup tags appear literally."""
+        items = [
+            {
+                "name": "context[blink]special[/blink]",  # [blink] not in template
+                "enabled": True,
+                "behaviors": ["foundation"],
+            }
+        ]
+        rendered = self._render_with_real_console(
+            items, "_render_items_with_behavior_attribution", section_name="context"
+        )
+
+        assert "[blink]" in rendered, (
+            f"Expected '[blink]' to appear literally in context name output, got: {rendered!r}. "
+            "Context/agent names must be escaped."
+        )
+
+    def test_render_providers_section_escapes_name(self):
+        """Provider names containing markup tags appear literally in output."""
+        items = [
+            {
+                "name": "provider[red]special[/red]",
+                "enabled": True,
+                "behaviors": [],
+                "source_uri": None,
+                "config": {},
+            }
+        ]
+        rendered = self._render_with_real_console(items, "_render_providers_section_v2")
+
+        assert "[red]" in rendered, (
+            f"Expected '[red]' to appear literally in provider name output, got: {rendered!r}. "
+            "Provider names must be escaped."
+        )
