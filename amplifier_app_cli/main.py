@@ -56,6 +56,8 @@ from .console import console
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
 from .session_store import SessionStore
+from .ui.dashboard_renderer import DashboardRenderer
+from .ui.dashboard_renderer import _redact_value as _dr_redact_value
 from .ui.error_display import display_llm_error
 from .ui.error_display import display_validation_error
 from .ui.log_filter import LLMErrorLogFilter
@@ -319,44 +321,15 @@ class CommandProcessor:
     MODE_SHORTCUTS: dict[str, str] = {}
     SKILL_SHORTCUTS: dict[str, dict] = {}
 
-    # Patterns used to detect sensitive config keys that should be redacted
+    # Patterns used to detect sensitive config keys that should be redacted.
+    # Kept for backward compatibility; the canonical copy lives in dashboard_renderer.
     _SENSITIVE_KEY_PATTERNS = ("key", "token", "secret", "password", "api_key")
 
     def _render_config_tree(
         self, console: Any, cfg: dict, indent: str, *, dim: bool = False
     ) -> None:
-        """Render a config dict as an indented YAML-like tree.
-
-        Handles nested dicts (recurse), lists (one item per line with '- ' prefix),
-        and scalars (key: value).  Sensitive keys are redacted via ``_redact_value``.
-
-        Args:
-            console: Rich console (or mock) to print to.
-            cfg: The config dict to render.
-            indent: Leading whitespace string for the current nesting level.
-            dim: If True, wrap every output line in Rich ``[dim]`` markup.
-        """
-        _d = "[dim]" if dim else ""
-        _e = "[/dim]" if dim else ""
-        for k, v in cfg.items():
-            redacted = self._redact_value(k, v)
-            if isinstance(v, dict) and v and redacted is v:
-                # Nested dict — recurse
-                console.print(f"{_d}{indent}{k}:{_e}")
-                self._render_config_tree(console, v, indent + "  ", dim=dim)
-            elif isinstance(v, list) and v and redacted is v:
-                # List — one item per line
-                console.print(f"{_d}{indent}{k}:{_e}")
-                for list_item in v:
-                    if isinstance(list_item, dict):
-                        console.print(f"{_d}{indent}  -{_e}")
-                        self._render_config_tree(
-                            console, list_item, indent + "    ", dim=dim
-                        )
-                    else:
-                        console.print(f"{_d}{indent}  - {list_item}{_e}")
-            else:
-                console.print(f"{_d}{indent}{k}: {redacted}{_e}")
+        """Render a config dict as an indented YAML-like tree (delegates to DashboardRenderer)."""
+        DashboardRenderer(console).render_config_tree(cfg, indent, dim=dim)
 
     def _print_wrapped_items(
         self,
@@ -367,59 +340,19 @@ class CommandProcessor:
         max_width: int = 78,
         dim: bool = True,
     ) -> None:
-        """Print ``label: item1, item2, ...`` with continuation-line indentation.
-
-        When the comma-separated list would exceed ``max_width`` columns, it wraps
-        to a new line indented to align with the first item (i.e. past ``label: ``).
-
-        Args:
-            console: Rich console (or mock) to print to.
-            label: Category label (e.g. ``'agents'``).
-            items: List of string items to display.
-            indent: Base indentation prefix (default 8 spaces).
-            max_width: Maximum line width before wrapping (default 78).
-            dim: If True, wrap output in Rich ``[dim]`` markup (default True).
-        """
-        if not items:
-            return
-        prefix = f"{indent}{label}: "
-        continuation = " " * len(prefix)
-        start = "[dim]" if dim else ""
-        end = "[/dim]" if dim else ""
-
-        lines: list[str] = []
-        current = prefix
-        for i, item in enumerate(items):
-            sep = "," if i < len(items) - 1 else ""
-            piece = str(item) + sep
-            if current != prefix and len(current) + 1 + len(piece) > max_width:
-                lines.append(current)
-                current = continuation + piece
-            else:
-                if current == prefix:
-                    current += piece
-                else:
-                    current += " " + piece
-        lines.append(current)
-
-        for line in lines:
-            console.print(f"{start}{line}{end}")
+        """Print ``label: item1, item2, ...`` with continuation (delegates to DashboardRenderer)."""
+        DashboardRenderer(console).print_wrapped_items(
+            label, items, indent, max_width, dim
+        )
 
     @staticmethod
     def _redact_value(key: str, value: Any) -> Any:
         """Redact a config value if the key is sensitive and value is long enough.
 
-        Returns the first 4 chars + '...redacted' for string values longer than
-        20 characters whose key contains a sensitive keyword. Non-string values
-        and short values are returned unchanged.
+        Delegates to the module-level function in dashboard_renderer.
+        Kept as a static method on CommandProcessor for backward compatibility.
         """
-        if not isinstance(value, str) or len(value) <= 20:
-            return value
-        key_lower = key.lower()
-        for pattern in CommandProcessor._SENSITIVE_KEY_PATTERNS:
-            if pattern in key_lower:
-                return f"{value[:4]}...redacted"
-        return value
+        return _dr_redact_value(key, value)
 
     def __init__(self, session: AmplifierSession, bundle_name: str = "unknown"):
         self.session = session
@@ -1036,46 +969,10 @@ class CommandProcessor:
         trailing_newline: bool = True,
         show_config: bool = False,
     ) -> None:
-        """Render a simple enabled/disabled section list with status indicators.
-
-        Prints a header line with on/off counts, then each item with its
-        [on]/[off] status, optional inline config summary (when show_config=True),
-        optional source provenance, and [disabled] tag.
-        Items without a 'source' key simply omit the provenance annotation.
-        """
-        if not items:
-            return
-        enabled = sum(1 for x in items if x.get("enabled", True))
-        disabled = len(items) - enabled
-        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
-        console.print(f"── {title.lower()} ({count}) ──")
-        for item in items:
-            is_on = item.get("enabled", True)
-            status = "\\[on]" if is_on else "\\[off]"
-            name = escape_markup(item.get("name", "unknown"))
-            source = item.get("source", "")
-            line = f"  {status}  {name}"
-            # Inline config summary (top 3 key-value pairs, redacted)
-            if show_config:
-                cfg = item.get("config", {})
-                if cfg and isinstance(cfg, dict):
-                    cfg_items = list(cfg.items())
-                    truncated = len(cfg_items) > 3
-                    pairs = [
-                        f"{k}: {self._redact_value(k, v)}" for k, v in cfg_items[:3]
-                    ]
-                    summary = "{" + ", ".join(pairs)
-                    if truncated:
-                        summary += ", ..."
-                    summary += "}"
-                    line += f"  {summary}"
-            if source:
-                line += f"  ({source})"
-            if not is_on:
-                line += "  ← disabled"
-            console.print(line)
-        if trailing_newline:
-            console.print()
+        """Render a simple enabled/disabled section list (delegates to DashboardRenderer)."""
+        DashboardRenderer(console).render_simple_section(
+            title, items, trailing_newline=trailing_newline, show_config=show_config
+        )
 
     def _render_hooks_section_v2(
         self,
@@ -1084,59 +981,10 @@ class CommandProcessor:
         *,
         trailing_newline: bool = True,
     ) -> None:
-        """Render hooks section listing ALL hooks individually — no collapsing.
-
-        Design spec format:
-          Line 1:  [green]\\[on][/green]  name
-                   -- or for disabled --
-                   [dim][red]\\[off][/red]  name[/dim]
-          Line 2:  [dim]        event: {event}  ({attribution})[/dim]
-
-        Attribution appears on the event line (not the name line) to keep the
-        name line short and avoid wrapping on terminals with many behaviors.
-        All hooks (including shell-* and _auto_* patterns) are listed
-        individually with NO collapsing.
-        """
-        if not items:
-            return
-        enabled = sum(1 for x in items if x.get("enabled", True))
-        disabled = len(items) - enabled
-        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
-        console.print(f"\u2500\u2500 hooks ({count}) \u2500\u2500")
-
-        for item in items:
-            is_on = item.get("enabled", True)
-            name = item.get("name", "unknown")
-            event = item.get("event", "")
-
-            # Build attribution string from behaviors list or source
-            behaviors = item.get("behaviors", [])
-            if isinstance(behaviors, list) and behaviors:
-                attribution = ", ".join(str(b) for b in behaviors if b)
-            else:
-                attribution = str(item.get("source", "") or "")
-
-            # Line 1: status + name only (attribution moves to event line)
-            safe_name = escape_markup(name)
-            if is_on:
-                console.print(f"  [green]\\[on][/green]  {safe_name}")
-            else:
-                console.print(f"  [dim][red]\\[off][/red]  {safe_name}[/dim]")
-
-            # Line 2: event (+ attribution in parens) in [dim], indented
-            if event or attribution:
-                safe_event = escape_markup(event)
-                safe_attribution = escape_markup(attribution)
-                detail = f"event: {safe_event}" if event else ""
-                if attribution:
-                    detail += (
-                        f"  ({safe_attribution})" if detail else f"({safe_attribution})"
-                    )
-                console.print(f"        [dim]{detail}[/dim]")
-
-        if trailing_newline:
-            console.print()
-
+        """Render hooks section listing ALL hooks individually (delegates to DashboardRenderer)."""
+        DashboardRenderer(console).render_hooks_section(
+            items, trailing_newline=trailing_newline
+        )
     _CAT_LABELS: dict[str, str] = {
         "context": "context",
         "tools": "tools",
@@ -1152,64 +1000,10 @@ class CommandProcessor:
         *,
         trailing_newline: bool = True,
     ) -> None:
-        """Render behaviors section showing non-zero categories with item names.
-
-        Categories with empty item lists are omitted. Item names are displayed
-        with provenance key prefixes stripped (e.g. 'context:readme' -> 'readme').
-        Dim styling applied to all category lines.
-        """
-        if not items:
-            return
-        enabled = sum(1 for x in items if x.get("enabled", True))
-        disabled = len(items) - enabled
-        count = f"{enabled} composed" + (f", {disabled} disabled" if disabled else "")
-        console.print(f"── behaviors ({count}) ──")
-
-        _CAT_ORDER = ("context", "tools", "hooks", "providers", "agents")
-
-        for item in items:
-            is_on = item.get("enabled", True)
-            name = item.get("name", "unknown")
-            # Root namespace for this behavior — used to strip redundant prefixes
-            # from the behavior's own items (e.g. "superpowers:implementer" → "implementer"
-            # for a behavior whose root namespace is "superpowers").
-            root_ns = item.get("root_namespace") or ""
-
-            safe_name = escape_markup(name)
-            if is_on:
-                console.print(f"  [green]\\[on][/green]  {safe_name}")
-            else:
-                console.print(f"  [dim][red]\\[off][/red]  {safe_name}[/dim]")
-
-            contributions = item.get("contributions", {})
-            if isinstance(contributions, dict):
-                for cat in _CAT_ORDER:
-                    cat_items = contributions.get(cat, [])
-                    if not isinstance(cat_items, list) or not cat_items:
-                        continue
-                    label = self._CAT_LABELS.get(cat, cat)
-                    # Strip provenance category prefix: "context:readme" -> "readme"
-                    raw_names = [
-                        n.split(":", 1)[1] if ":" in n else n for n in cat_items
-                    ]
-                    # Strip root namespace prefix from items when it matches the
-                    # behavior's own namespace (e.g. "superpowers:implementer" ->
-                    # "implementer"), but keep foreign namespaces intact.
-                    if root_ns:
-                        ns_prefix = root_ns + ":"
-                        names = [
-                            n[len(ns_prefix) :] if n.startswith(ns_prefix) else n
-                            for n in raw_names
-                        ]
-                    else:
-                        names = raw_names
-                    self._print_wrapped_items(
-                        console, label, names, indent="        ", max_width=78
-                    )
-
-        if trailing_newline:
-            console.print()
-
+        """Render behaviors section showing non-zero categories (delegates to DashboardRenderer)."""
+        DashboardRenderer(console).render_behaviors_section(
+            items, trailing_newline=trailing_newline
+        )
     def _render_items_with_behavior_attribution(
         self,
         console: Any,
@@ -1218,48 +1012,10 @@ class CommandProcessor:
         *,
         trailing_newline: bool = True,
     ) -> None:
-        """Render a section where each item has a single-line format with behavior attribution.
-
-        Design spec format (single line, no indented second line):
-          [green]\\[on][/green]  name  [dim]behavior1, behavior2[/dim]
-          -- or for disabled --
-          [dim][red]\\[off][/red]  name  behavior1, behavior2[/dim]
-
-        Multi-claimant behaviors are joined with comma.
-        Disabled items have the entire line dimmed.
-        The section_name string is used verbatim in the header line.
-        """
-        if not items:
-            return
-        enabled = sum(1 for x in items if x.get("enabled", True))
-        disabled = len(items) - enabled
-        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
-        console.print(f"\u2500\u2500 {section_name} ({count}) \u2500\u2500")
-
-        for item in items:
-            is_on = item.get("enabled", True)
-            name = escape_markup(item.get("name", "unknown"))
-
-            # Build behavior attribution — behaviors list or source fallback
-            behaviors = item.get("behaviors", [])
-            if isinstance(behaviors, list) and behaviors:
-                behavior_str = escape_markup(", ".join(behaviors))
-            else:
-                behavior_str = escape_markup(item.get("source", "") or "")
-
-            if is_on:
-                line = f"  [green]\\[on][/green]  {name}"
-                if behavior_str:
-                    line += f"  [dim]{behavior_str}[/dim]"
-            else:
-                line = f"  [dim][red]\\[off][/red]  {name}"
-                if behavior_str:
-                    line += f"  {behavior_str}"
-                line += "[/dim]"
-            console.print(line)
-
-        if trailing_newline:
-            console.print()
+        """Render a section with behavior attribution (delegates to DashboardRenderer)."""
+        DashboardRenderer(console).render_attributed_section(
+            items, section_name, trailing_newline=trailing_newline
+        )
 
     def _render_context_section(
         self,
@@ -1268,9 +1024,9 @@ class CommandProcessor:
         *,
         trailing_newline: bool = True,
     ) -> None:
-        """Render context section with behavior attribution in dim after name."""
-        self._render_items_with_behavior_attribution(
-            console, items, "context", trailing_newline=trailing_newline
+        """Render context section (delegates to DashboardRenderer)."""
+        DashboardRenderer(console).render_attributed_section(
+            items, "context", trailing_newline=trailing_newline
         )
 
     def _render_agents_section(
@@ -1280,10 +1036,11 @@ class CommandProcessor:
         *,
         trailing_newline: bool = True,
     ) -> None:
-        """Render agents section with behavior attribution in dim after name."""
-        self._render_items_with_behavior_attribution(
-            console, items, "agents", trailing_newline=trailing_newline
+        """Render agents section (delegates to DashboardRenderer)."""
+        DashboardRenderer(console).render_attributed_section(
+            items, "agents", trailing_newline=trailing_newline
         )
+
 
     async def _get_config_display(self, args: str = "") -> str:
         """Display current configuration or handle subcommands.
@@ -1396,62 +1153,10 @@ class CommandProcessor:
         *,
         trailing_newline: bool = True,
     ) -> None:
-        """Render the providers section with source URI and full config tree.
-
-        Design spec format:
-          [green]\\[on][/green]  name-padded-to-30  [dim]behavior[/dim]
-                  [dim]source: {source_uri}[/dim]
-                  config:
-                    key: value
-        """
-        if not items:
-            return
-        enabled = sum(1 for x in items if x.get("enabled", True))
-        disabled = len(items) - enabled
-        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
-        console.print(f"\u2500\u2500 providers ({count}) \u2500\u2500")
-
-        for item in items:
-            is_on = item.get("enabled", True)
-            name = item.get("name", "unknown")
-
-            # Build attribution — behaviors list or source fallback
-            behaviors = item.get("behaviors", [])
-            if isinstance(behaviors, list) and behaviors:
-                attribution = escape_markup(", ".join(behaviors))
-            else:
-                attribution = escape_markup(item.get("source", "") or "")
-
-            # Line 1: status + name (left-aligned 30 chars) + dim attribution
-            name_padded = escape_markup(name).ljust(30)
-            if is_on:
-                line = f"  [green]\\[on][/green]  {name_padded}"
-                if attribution:
-                    line += f"  [dim]{attribution}[/dim]"
-            else:
-                line = f"  [dim][red]\\[off][/red]  {name_padded}"
-                if attribution:
-                    line += f"  {attribution}"
-                line += "[/dim]"
-            console.print(line)
-
-            # Line 2: source URI in [dim], indented
-            source_uri = item.get("source_uri", "")
-            if source_uri:
-                console.print(f"        [dim]source: {escape_markup(source_uri)}[/dim]")
-
-            # Line 3+: config tree — 'config:' header then indented key: value pairs.
-            # Config header and values are dim so the provider name stands out.
-            cfg = item.get("config", {})
-            if cfg and isinstance(cfg, dict):
-                console.print("[dim]        config:[/dim]")
-                for k, v in cfg.items():
-                    console.print(
-                        f"[dim]          {k}: {self._redact_value(k, v)}[/dim]"
-                    )
-
-        if trailing_newline:
-            console.print()
+        """Render providers section with source URI + full config tree (delegates to DashboardRenderer)."""
+        DashboardRenderer(console).render_providers_section(
+            items, trailing_newline=trailing_newline
+        )
 
     def _render_tools_section(
         self,
@@ -1460,67 +1165,11 @@ class CommandProcessor:
         *,
         trailing_newline: bool = True,
     ) -> None:
-        """Render tools section with module ID + attribution on an indented second line.
+        """Render tools section with module ID + attribution (delegates to DashboardRenderer)."""
+        DashboardRenderer(console).render_tools_section(
+            items, trailing_newline=trailing_newline
+        )
 
-        Design spec format:
-          Line 1:  [green]\\[on][/green]  name
-                   -- or for disabled --
-                   [dim][red]\\[off][/red]  name[/dim]
-          Line 2:  [dim]        module: {module_id}  (behavior1, behavior2)[/dim]
-          Line 3+: if config present and non-empty:
-                   [dim]        config:[/dim]
-                   [dim]          key: value[/dim]
-                   (always expanded — never collapsed to {...})
-
-        Attribution (behavior names) appears on the module line, not the name line,
-        to avoid line-wrapping that makes long behavior lists hard to read.
-        Config dicts are always expanded as a YAML-like tree — never collapsed.
-        """
-        if not items:
-            return
-        enabled = sum(1 for x in items if x.get("enabled", True))
-        disabled = len(items) - enabled
-        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
-        console.print(f"\u2500\u2500 tools ({count}) \u2500\u2500")
-
-        for item in items:
-            is_on = item.get("enabled", True)
-            name = item.get("name", "unknown")
-            behaviors = item.get("behaviors", [])
-            module_id = item.get("module_id", "") or ""
-
-            # Join multi-claimant behaviors with comma for the attribution suffix
-            if isinstance(behaviors, list) and behaviors:
-                behavior_str = escape_markup(", ".join(str(b) for b in behaviors if b))
-            else:
-                behavior_str = ""
-
-            # Line 1: status + name only (no attribution — avoids wrapping confusion)
-            safe_name = escape_markup(name)
-            if is_on:
-                console.print(f"  [green]\\[on][/green]  {safe_name}")
-            else:
-                console.print(f"  [dim][red]\\[off][/red]  {safe_name}[/dim]")
-
-            # Line 2: module: {module_id}  (behaviors) in [dim], indented
-            safe_module_id = escape_markup(module_id) if module_id else ""
-            module_str = (
-                f"module: {safe_module_id}" if safe_module_id else "module: (unknown)"
-            )
-            if behavior_str:
-                module_str += f"  ({behavior_str})"
-            console.print(f"        [dim]{module_str}[/dim]")
-
-            # Lines 3+: config tree — always fully expanded, never collapsed to {...}
-            # Config header and key-value pairs are dim so the tool name stands out.
-            cfg = item.get("config", {})
-            if cfg and isinstance(cfg, dict):
-                console.print("[dim]        config:[/dim]")
-                for k, v in cfg.items():
-                    self._render_config_tree(console, {k: v}, "          ", dim=True)
-
-        if trailing_newline:
-            console.print()
 
     async def _render_config_dashboard(self) -> str:
         """Render the full configuration dashboard using SessionConfigurator."""
@@ -1537,25 +1186,15 @@ class CommandProcessor:
         behaviors_items = configurator.behaviors_list()
         changes = configurator.diff_from_original()
 
-        # Get active mode and change count
         active_mode = (
             self.session.coordinator.session_state.get("active_mode") or "none"
         )
         change_count = len(changes) if changes else 0
 
-        # Render header matching design spec:
-        # Active bundle: <name>
-        # Mode: <mode> | Session changes: N items changed | /config save to persist
-        console.print()
-        console.print(f"Active bundle: {self._display_bundle_name}")
-        if change_count > 0:
-            console.print(
-                f"Mode: {active_mode} | Session changes: {change_count} items changed"
-                " | /config save to persist"
-            )
-        else:
-            console.print(f"Mode: {active_mode} | No changes from original")
-        console.print()
+        renderer = DashboardRenderer(console)
+
+        # Render header
+        renderer.render_header(self._display_bundle_name, active_mode, change_count)
 
         # Render session section (orchestrator info from coordinator.config)
         raw_config = self.session.coordinator.config
@@ -1574,26 +1213,21 @@ class CommandProcessor:
                         if cfg and isinstance(cfg, dict):
                             console.print("[dim]    config:[/dim]")
                             for k, v in cfg.items():
-                                self._render_config_tree(
-                                    console, {k: v}, "      ", dim=True
-                                )
+                                renderer.render_config_tree({k: v}, "      ", dim=True)
                     else:
                         console.print(f"  {field}: {value}")
             console.print()
 
-        # Render providers section (source URI + full config tree per design spec)
-        self._render_providers_section_v2(console, providers_items)
-
-        # Render tools section (module ID + config tree per design spec)
-        self._render_tools_section(console, tools_items)
-        self._render_hooks_section_v2(console, hooks_items)
-        self._render_context_section(console, context_items)
-        self._render_agents_section(console, agents_items)
-
-        # Render behaviors section (non-zero categories with item names)
-        self._render_behaviors_section_v2(console, behaviors_items)
+        # Render all sections via DashboardRenderer
+        renderer.render_providers_section(providers_items)
+        renderer.render_tools_section(tools_items)
+        renderer.render_hooks_section(hooks_items)
+        renderer.render_attributed_section(context_items, "context")
+        renderer.render_attributed_section(agents_items, "agents")
+        renderer.render_behaviors_section(behaviors_items)
 
         return ""  # Output already printed via console
+
 
     def _render_category_summary(
         self, console: Any, category: str, items: list
