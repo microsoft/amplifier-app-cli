@@ -1,0 +1,42 @@
+name: "smoke-agent-spawning"
+description: "Smoke test: Basic recipe execution with prompt and validation"
+version: "1.0.0"
+author: "Amplifier Testing Team"
+created: "2025-12-23T00:00:00Z"
+tags: ["smoke", "basic", "agent"]
+
+# Test: Verify that a recipe can execute a simple prompt and validate the result
+# Expected outcome: Agent responds to prompt, validator confirms response quality
+#
+# This is the most basic recipe test - it verifies:
+# 1. Recipe can execute steps sequentially
+# 2. Context flows between steps (output -> next prompt)
+# 3. Foundation bundle explorer agent works correctly
+# 4. Recipes bundle result-validator agent works correctly
+
+steps:
+  - id: "execute-prompt"
+    agent: "foundation:explorer"
+    prompt: "Respond with a brief greeting (1-2 sentences) explaining what you are."
+    output: "greeting_response"
+    timeout: 30
+
+  - id: "validate"
+    agent: "recipes:result-validator"
+    prompt: |
+      You are a result validator. Review this response and determine if it's valid:
+
+      Response: {{greeting_response}}
+
+      Criteria:
+      - Is it 1-2 sentences?
+      - Does it explain what the agent is?
+      - Is it coherent and complete?
+
+      Provide your verdict in this exact format at the end:
+      ✅ VERDICT: PASS
+      or
+      ❌ VERDICT: FAIL
+
+      Explain your reasoning briefly before the verdict.
+    timeout: 30

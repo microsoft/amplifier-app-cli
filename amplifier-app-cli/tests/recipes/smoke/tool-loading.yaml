@@ -1,0 +1,64 @@
+name: "smoke-tool-loading"
+description: "Smoke test: Validates CLI tool module loading and availability"
+version: "1.0.0"
+author: "Amplifier Testing Team"
+created: "2025-12-23T00:00:00Z"
+tags: ["smoke", "tools", "integration"]
+
+# Test Objective:
+# Validate that the CLI correctly loads tool modules and makes them accessible to agents.
+# This tests the integration chain:
+#   Module resolution → Tool mounting → ModuleCoordinator registration → Agent tool access
+#
+# What we're validating:
+# - CLI loads tool modules from the mount plan
+# - Tools are registered with ModuleCoordinator
+# - Agents can invoke tools through the coordinator
+# - Tool execution returns results to the agent
+
+steps:
+  - id: "use-tool"
+    agent: "foundation:explorer"
+    prompt: |
+      Please use the `glob` tool to find all Markdown files in the current directory.
+
+      Use the pattern "*.md" to search for Markdown files.
+
+      After invoking the tool, report back with:
+      1. Did you have access to the glob tool?
+      2. What was the result of executing the tool?
+      3. How many Markdown files were found?
+
+      Be specific and clear in your response.
+    output: "tool_result"
+    timeout: 30
+
+  - id: "validate"
+    agent: "recipes:result-validator"
+    prompt: |
+      Evaluate whether the CLI successfully loaded tool modules and made them accessible to the agent.
+
+      Previous step result:
+      {{tool_result}}
+
+      Validation criteria (ALL must pass):
+      1. The agent had access to the glob tool
+      2. The tool executed successfully (no errors)
+      3. The tool returned results (list of files)
+
+      Provide your assessment using this format:
+
+      ## Validation Results
+
+      Criterion 1 - Tool Access: [PASS/FAIL] - [explanation]
+      Criterion 2 - Tool Execution: [PASS/FAIL] - [explanation]
+      Criterion 3 - Results Returned: [PASS/FAIL] - [explanation]
+
+      ## Evidence
+      [Quote specific evidence from the tool result]
+
+      ## Final Verdict
+      ✅ VERDICT: PASS - CLI tool loading successful
+      OR
+      ❌ VERDICT: FAIL - [specific failure reason]
+    timeout: 30

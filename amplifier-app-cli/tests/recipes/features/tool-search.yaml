@@ -1,0 +1,50 @@
+name: "tool-search"
+description: "Feature test: Validates grep/search tool operations in CLI"
+version: "1.0.0"
+author: "Amplifier Testing Team"
+created: "2025-12-23T00:00:00Z"
+tags: ["feature", "tools", "grep", "search"]
+
+context:
+  fixtures_dir: "tests/recipes/fixtures"
+  search_pattern: "def test_function"
+  expected_file: "sample-code.py"
+
+steps:
+  - id: "test-grep"
+    agent: "foundation:explorer"
+    prompt: |
+      Search for the pattern "{{search_pattern}}" in the directory {{fixtures_dir}}.
+
+      Use the grep tool to find this pattern. Report back:
+      1. Whether the search was successful
+      2. Which file(s) contain the pattern
+      3. The matching lines found
+
+      Be specific about the grep operation and results.
+    output: "grep_result"
+    timeout: 30
+
+  - id: "validate"
+    agent: "recipes:result-validator"
+    prompt: |
+      Validate the grep tool execution from the previous step.
+
+      RESULT TO VALIDATE:
+      {{grep_result}}
+
+      VALIDATION CRITERIA:
+      1. The grep tool was successfully invoked
+      2. The search pattern "{{search_pattern}}" was found
+      3. The results include the file path (should contain "{{expected_file}}")
+      4. The matching content includes the actual pattern text
+
+      Provide a clear PASS or FAIL verdict.
+
+      PASS if: All criteria met - grep tool worked and found the pattern
+      FAIL if: Grep tool failed, pattern not found, or incomplete results
+
+      Format your response with:
+      - Evidence for each criterion
+      - Final verdict: PASS or FAIL
+    timeout: 30

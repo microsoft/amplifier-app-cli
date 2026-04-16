@@ -37,6 +37,7 @@ from typing import Any
 from amplifier_core import AmplifierSession
 from amplifier_core import ModuleValidationError
 
+from .lib.settings import AppSettings
 from .session_store import SessionStore
 from .ui.error_display import display_validation_error
 from .utils.error_format import escape_markup
@@ -95,6 +96,7 @@ class InitializedSession:
     session_id: str
     config: SessionConfig
     store: SessionStore = field(default_factory=SessionStore)
+    configurator: Any = None
 
     async def cleanup(self):
         """Clean up session resources."""
@@ -280,10 +282,33 @@ async def create_initialized_session(
         register_provider(approval_provider)
         logger.debug("Registered CLIApprovalProvider for interactive approvals")
 
+    # Step 11: Create SessionConfigurator (if foundation available and bundle present)
+    configurator = None
+    if config.prepared_bundle is not None:
+        try:
+            from amplifier_foundation.configurator import SessionConfigurator
+
+            configurator = SessionConfigurator(session, config.prepared_bundle)
+            app_settings = AppSettings()
+            merged = app_settings.get_merged_settings()
+            configurator_settings = merged.get("configurator") or {}
+            await configurator.apply_saved_settings(configurator_settings)
+            configurator.take_snapshot()
+        except ImportError:
+            logger.debug(
+                "amplifier_foundation.configurator not available, "
+                "skipping SessionConfigurator setup"
+            )
+            configurator = None
+        except Exception as e:
+            logger.warning("SessionConfigurator initialization failed: %s", e)
+            configurator = None
+
     return InitializedSession(
         session=session,
         session_id=session_id,
         config=config,
+        configurator=configurator,
     )
 
 
