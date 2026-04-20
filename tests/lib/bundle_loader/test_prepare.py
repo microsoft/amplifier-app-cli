@@ -107,6 +107,76 @@ class TestBuildIncludeSourceResolver:
 
         assert result == "/home/user/dev/superpowers#subdirectory=behaviors/foo.yaml"
 
+    # --- Issue #257: namespace:path references must not be overridden ---
+
+    def test_namespace_path_not_overridden_when_key_substring_matches(self):
+        """Issue #257: override key 'foo' must NOT redirect 'foo:behaviors/extra'.
+
+        Namespace:path references resolve via the bundle registry's namespace
+        lookup. Substring-matching them against override keys redirects the
+        include and triggers false-positive cycle detection in foundation,
+        silently dropping the sub-bundle and its agents.
+        """
+        overrides = {"foo": "git+ssh://git@github.com/foo/amplifier-bundle-foo@main"}
+        resolver = _build_include_source_resolver(overrides)
+
+        result = resolver("foo:behaviors/extra")
+
+        assert result is None
+
+    def test_namespace_path_not_overridden_cross_bundle_collision(self):
+        """Issue #257: cross-bundle substring collision in namespace:path is skipped.
+
+        A user with overrides for bundle 'foo' must not accidentally redirect
+        includes for an unrelated namespace 'foo-team'.
+        """
+        overrides = {"foo": "git+ssh://example.com/foo-bundle@main"}
+        resolver = _build_include_source_resolver(overrides)
+
+        result = resolver("foo-team:behaviors/policies")
+
+        assert result is None
+
+    def test_uri_override_still_works_when_namespace_name_is_substring(self):
+        """Issue #257 regression guard: legitimate URI overrides continue to work.
+
+        The namespace:path guard must not affect substring matching on real URIs.
+        """
+        overrides = {"amplifier-bundle-foo": "/local/path/to/foo"}
+        resolver = _build_include_source_resolver(overrides)
+
+        # This is a URI (git+https://...), not namespace:path.
+        result = resolver("git+https://github.com/org/amplifier-bundle-foo@main")
+
+        assert result == "/local/path/to/foo"
+
+    def test_file_uri_override_still_matches(self):
+        """file:// URIs are not namespace:path and must still match by substring."""
+        overrides = {"my-bundle": "/local/override"}
+        resolver = _build_include_source_resolver(overrides)
+
+        result = resolver("file:///path/to/my-bundle/bundle.md")
+
+        assert result == "/local/override"
+
+    def test_git_ssh_uri_override_still_matches(self):
+        """git+ssh:// URIs are not namespace:path and must still match by substring."""
+        overrides = {"amplifier-bundle-foo": "/local/foo"}
+        resolver = _build_include_source_resolver(overrides)
+
+        result = resolver("git+ssh://git@github.com/org/amplifier-bundle-foo@main")
+
+        assert result == "/local/foo"
+
+    def test_plain_local_path_override_still_matches(self):
+        """Plain local paths (no ':' at all) are not namespace:path and still match."""
+        overrides = {"my-bundle": "/override"}
+        resolver = _build_include_source_resolver(overrides)
+
+        result = resolver("/home/user/dev/my-bundle")
+
+        assert result == "/override"
+
 
 class TestLoadAndPrepareBundleSourceOverrides:
     """Tests for bundle_source_overrides parameter in load_and_prepare_bundle."""

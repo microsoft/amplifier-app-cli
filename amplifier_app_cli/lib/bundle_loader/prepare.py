@@ -10,6 +10,7 @@ modules from git sources before session creation.
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 from typing import Callable
 
@@ -21,6 +22,25 @@ if TYPE_CHECKING:
     from amplifier_app_cli.lib.bundle_loader.discovery import AppBundleDiscovery
 
 logger = logging.getLogger(__name__)
+
+
+# A "namespace:path" include (e.g. "foo:behaviors/extra") is a reference
+# into the bundle registry's namespace lookup, not a fetchable URI. It must
+# never be overridden by `sources.bundles` entries because a substring match
+# between an override key and the namespace name would redirect the include
+# and cause foundation's cycle detector to skip it. See issue #257.
+#
+# Namespace identifiers are 2+ alphanumeric/hyphen/underscore chars followed
+# by ":". URI forms (git+https://, file:///, zip+..., http://, https://) are
+# distinguished by containing "://" or starting with "git+"/"zip+".
+_NAMESPACE_PATH_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]+:")
+
+
+def _is_namespace_path(source: str) -> bool:
+    """Return True if source is a namespace:path reference, not a URI."""
+    if "://" in source or source.startswith(("git+", "zip+")):
+        return False
+    return bool(_NAMESPACE_PATH_PATTERN.match(source))
 
 
 async def load_and_prepare_bundle(
@@ -283,11 +303,14 @@ def _build_include_source_resolver(
     Args:
         bundle_overrides: Dict mapping source key substrings to override URIs.
             If a key is a substring of an include's source URI, that include
-            will be loaded from the override URI instead.
+            will be loaded from the override URI instead. Namespace:path
+            references (e.g. "foo:behaviors/extra") are never overridden
+            by this mechanism - see issue #257.
 
     Returns:
         A resolver callable(source: str) -> str | None.
-        Returns the override URI when a key matches, None when no key matches.
+        Returns the override URI when a key matches, None when no key matches
+        or when source is a namespace:path reference.
         Preserves the original URI's #fragment when the override has none.
 
     Examples:
@@ -299,11 +322,25 @@ def _build_include_source_resolver(
         # Fragment preservation:
         resolver("git+https://github.com/org/amplifier-bundle-superpowers@main#subdirectory=foo.yaml")
         # -> "/local/path/superpowers#subdirectory=foo.yaml"
+
+        # Namespace:path references bypass the override mechanism even when
+        # the override key is a substring of the namespace identifier:
+        resolver_foo = _build_include_source_resolver({"foo": "/local/foo"})
+        resolver_foo("foo:behaviors/extra")
+        # -> None  (resolved via registry namespace lookup, not overrides)
     """
     if not bundle_overrides:
         return lambda _: None
 
     def resolver(source: str) -> str | None:
+        # Issue #257: namespace:path references (e.g. "foo:behaviors/extra")
+        # resolve via the bundle registry's namespace lookup. Substring-matching
+        # them against override keys would redirect the include to the root
+        # bundle and trigger false-positive cycle detection in foundation's
+        # loader, silently dropping the sub-bundle and its agents.
+        if _is_namespace_path(source):
+            return None
+
         for key, override in bundle_overrides.items():
             if key in source:
                 # If the original source has a fragment and the override does not,
