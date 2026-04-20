@@ -1,3 +1,0 @@
-Sample content for filesystem testing
-This file tests read_file operations
-Line three contains test data

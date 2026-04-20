@@ -65,6 +65,8 @@ next-steps.md
 # Amplifier specific ignores #
 ##############################
 
+# Guard against accidentally committing a nested clone of this repo
+/amplifier-app-cli/
 
 # Working folders
 ai_working/tmp
