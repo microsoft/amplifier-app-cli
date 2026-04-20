@@ -296,9 +296,9 @@ def _build_include_source_resolver(
         resolver("git+https://github.com/org/amplifier-bundle-superpowers@main")
         # -> "/local/path/superpowers"
 
-        # Fragment preservation:
+        # Fragment preservation — git URL override keeps the fragment:
         resolver("git+https://github.com/org/amplifier-bundle-superpowers@main#subdirectory=foo.yaml")
-        # -> "/local/path/superpowers#subdirectory=foo.yaml"
+        # -> "/local/path/superpowers/foo.yaml"  (subdirectory converted to path for local overrides)
     """
     if not bundle_overrides:
         return lambda _: None
@@ -310,6 +310,13 @@ def _build_include_source_resolver(
                 # preserve the fragment from the original.
                 if "#" in source and "#" not in override:
                     fragment = source.split("#", 1)[1]
+                    # For local path overrides, #subdirectory=path is a git-only
+                    # convention and is not meaningful as a file path. Convert it
+                    # to a path component instead.
+                    is_local = not (override.startswith("git+") or "://" in override)
+                    if is_local and fragment.startswith("subdirectory="):
+                        subdir = fragment.removeprefix("subdirectory=")
+                        return f"{override}/{subdir}"
                     return f"{override}#{fragment}"
                 # If override already has a fragment, override's fragment wins.
                 return override
