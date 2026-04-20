@@ -254,12 +254,166 @@ async def _get_umbrella_dependency_details(umbrella_info) -> list[dict]:
         return []
 
 
+def _read_bundle_file(
+    uri: str, parsed: Any, cache_dir: Any, git_handler: Any
+) -> str | None:
+    """Read raw bundle file content from a URI (file:// or git cache).
+
+    For file:// URIs: reads bundle.md or bundle.yaml from the local path.
+    For git URIs: reads bundle.md or bundle.yaml from the local git cache.
+
+    Args:
+        uri: The bundle URI string.
+        parsed: ParsedURI from parse_uri(uri).
+        cache_dir: The amplifier cache directory (Path).
+        git_handler: GitSourceHandler instance.
+
+    Returns:
+        Raw file content string, or None if the file cannot be read.
+    """
+    from pathlib import Path as _Path
+
+    try:
+        if parsed.is_file:
+            # file:// URI — strip prefix to get the real filesystem path
+            local_path = _Path(uri.replace("file://", ""))
+            if local_path.is_dir():
+                for fname in ("bundle.md", "bundle.yaml"):
+                    bundle_file = local_path / fname
+                    if bundle_file.exists():
+                        return bundle_file.read_text(encoding="utf-8")
+            elif local_path.is_file():
+                return local_path.read_text(encoding="utf-8")
+
+        elif parsed.is_git:
+            # git URI — find the already-cloned cache directory.
+            # GitSourceHandler._get_cache_path() computes the deterministic path.
+            cache_path = git_handler._get_cache_path(parsed, cache_dir)
+            if cache_path.exists():
+                for fname in ("bundle.md", "bundle.yaml"):
+                    bundle_file = cache_path / fname
+                    if bundle_file.exists():
+                        return bundle_file.read_text(encoding="utf-8")
+    except Exception:
+        pass
+
+    return None
+
+
+def _extract_git_sources_from_bundle_content(content: str) -> list[str]:
+    """Extract git source URIs from bundle YAML frontmatter.
+
+    Parses the bundle file (YAML frontmatter in .md files, or plain YAML in
+    .yaml files) and collects ``source:`` field values from ``hooks:``,
+    ``tools:``, and ``providers:`` sections that are git URIs.
+
+    Only ``git+…`` URIs are returned; file:// and bare-path sources are
+    intentionally excluded because they are user-local and handled elsewhere.
+
+    Args:
+        content: Raw content of the bundle file.
+
+    Returns:
+        Deduplicated list of git source URI strings.
+    """
+    import yaml as _yaml
+
+    sources: list[str] = []
+    try:
+        if content.lstrip().startswith("---"):
+            # Markdown bundle: YAML frontmatter between --- delimiters
+            parts = content.split("---", 2)
+            if len(parts) < 3:
+                return sources
+            frontmatter = _yaml.safe_load(parts[1])
+        else:
+            # Pure YAML bundle (bundle.yaml)
+            frontmatter = _yaml.safe_load(content)
+
+        if not isinstance(frontmatter, dict):
+            return sources
+
+        for section_name in ("hooks", "tools", "providers"):
+            section = frontmatter.get(section_name)
+            if not isinstance(section, list):
+                continue
+            for item in section:
+                if isinstance(item, dict):
+                    source = item.get("source")
+                    if isinstance(source, str) and source.startswith("git+"):
+                        if source not in sources:
+                            sources.append(source)
+    except Exception:
+        pass
+
+    return sources
+
+
+async def _get_module_source_statuses(
+    uri: str,
+    parsed: Any,
+    cache_dir: Any,
+    git_handler: Any,
+) -> list[Any]:
+    """Discover and status-check git module sources declared inside a bundle file.
+
+    Reads the bundle file, parses YAML frontmatter, extracts git source URIs
+    from ``hooks:``, ``tools:``, and ``providers:`` sections, then calls
+    ``git_handler.get_status()`` for each URI so the returned
+    ``SourceStatus`` objects have accurate ``cached_commit`` / ``remote_commit``
+    / ``has_update`` fields.
+
+    These SourceStatus objects are appended to the bundle's
+    ``BundleStatus.sources`` list so that ``_collect_unified_modules()`` and
+    the update executor can discover, display, and cache the modules — even
+    when the owning bundle is a local file:// bundle rather than a git-sourced
+    bundle.
+
+    Args:
+        uri: The bundle URI string.
+        parsed: ParsedURI from parse_uri(uri).
+        cache_dir: The amplifier cache directory (Path).
+        git_handler: GitSourceHandler instance.
+
+    Returns:
+        List of SourceStatus objects (one per discoverable git module source).
+    """
+    from amplifier_foundation.paths.resolution import parse_uri as _parse_uri
+
+    content = _read_bundle_file(uri, parsed, cache_dir, git_handler)
+    if not content:
+        return []
+
+    module_uris = _extract_git_sources_from_bundle_content(content)
+    if not module_uris:
+        return []
+
+    statuses: list[Any] = []
+    for module_uri in module_uris:
+        try:
+            module_parsed = _parse_uri(module_uri)
+            if git_handler.can_handle(module_parsed):
+                status = await git_handler.get_status(module_parsed, cache_dir)
+                statuses.append(status)
+        except Exception:
+            continue  # Non-fatal: skip sources that cannot be status-checked
+
+    return statuses
+
+
 async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
     """Check status of all discovered bundles WITHOUT loading them.
 
     This checks cache status directly from URIs to avoid the side effect of
     registry.load() downloading missing bundles, which would make deleted
     caches appear as "up to date".
+
+    For every bundle, the bundle file is also parsed to discover any git module
+    sources declared in ``hooks:``, ``tools:``, or ``providers:`` sections.
+    These module source statuses are appended to ``BundleStatus.sources`` so
+    that downstream logic (``_collect_unified_modules()``, update executor) can
+    find and cache them — this is critical for local file:// bundles whose
+    modules would otherwise never be discovered.
 
     Returns:
         Dict mapping bundle name to BundleStatus
@@ -301,25 +455,33 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
                     source_status = await _get_file_bundle_status(
                         bundle_name, uri, remote_uri_value, git_handler, cache_dir
                     )
-                    results[bundle_name] = BundleStatus(
+                    bundle_status = BundleStatus(
                         bundle_name=bundle_name,
                         bundle_source=uri,
                         sources=[source_status],
                     )
+                    # Also discover any git module sources declared in this bundle
+                    module_sources = await _get_module_source_statuses(
+                        uri, parsed, cache_dir, git_handler
+                    )
+                    bundle_status.sources.extend(module_sources)
+                    results[bundle_name] = bundle_status
                     continue
 
             if git_handler.can_handle(parsed):
                 source_status: SourceStatus = await git_handler.get_status(
                     parsed, cache_dir
                 )
-                results[bundle_name] = BundleStatus(
+                bundle_status = BundleStatus(
                     bundle_name=bundle_name,
                     bundle_source=uri,
                     sources=[source_status],
                 )
             else:
-                # Non-git bundles - report as unknown
-                results[bundle_name] = BundleStatus(
+                # Non-git bundles (local file:// user bundles) — report as unknown
+                # but still extract module sources from the bundle file so that
+                # git-sourced modules declared inside are discovered and cached.
+                bundle_status = BundleStatus(
                     bundle_name=bundle_name,
                     bundle_source=uri,
                     sources=[
@@ -331,6 +493,15 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
                         )
                     ],
                 )
+
+            # For both git and non-git bundles, discover any git module sources
+            # declared inside the bundle's hooks/tools/providers sections.
+            module_sources = await _get_module_source_statuses(
+                uri, parsed, cache_dir, git_handler
+            )
+            bundle_status.sources.extend(module_sources)
+            results[bundle_name] = bundle_status
+
         except Exception:
             continue  # Skip bundles that fail status check
 
