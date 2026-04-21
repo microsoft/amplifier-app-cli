@@ -897,3 +897,198 @@ class TestFirstRunDetection:
         source = inspect.getsource(prompt_first_run_init)
         # Should reference provider add, not old init command
         assert "provider" in source.lower() and "add" in source.lower()
+
+
+# ============================================================
+# Fix 4: -p flag matches provider instance id/mount name
+# ============================================================
+
+
+def _make_run_cli_p_flag(captured: list) -> "click.Group":
+    """Create a minimal Click CLI with the run command registered.
+
+    ``captured`` is cleared and replaced with the providers list that
+    ``execute_single`` receives, i.e. after the provider selection logic has
+    run and the selected provider has been promoted to priority 0.
+    """
+    import click
+    from amplifier_app_cli.commands.run import register_run_command
+    from unittest.mock import AsyncMock
+
+    cli = click.Group("test")
+
+    async def _execute_single(prompt, config_data, *args, **kwargs):
+        captured[:] = list(config_data.get("providers", []))
+
+    register_run_command(
+        cli,
+        interactive_chat=AsyncMock(),
+        execute_single=_execute_single,
+        get_module_search_paths=lambda: [],
+        check_first_run=lambda: False,
+        prompt_first_run_init=lambda c: False,
+    )
+    return cli
+
+
+def _invoke_run_p_flag(providers_list: list, p_flag: str):
+    """Run ``amplifier run -p <p_flag> --output-format json hello`` via CliRunner.
+
+    Mocks ``resolve_config`` to inject *providers_list* and suppresses the
+    update-check coroutine.  Returns ``(CliResult, captured_providers)`` where
+    *captured_providers* contains the providers as passed to ``execute_single``
+    — the selected provider will have ``config["priority"] == 0``.
+    """
+    from click.testing import CliRunner
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    captured: list = []
+    cli = _make_run_cli_p_flag(captured)
+
+    fake_config: dict = {"providers": list(providers_list)}
+    fake_bundle = MagicMock()
+    fake_bundle.mount_plan = {"providers": list(providers_list)}
+
+    with (
+        patch(
+            "amplifier_app_cli.commands.run.create_config_manager",
+            return_value=MagicMock(get_merged_settings=lambda: {}),
+        ),
+        patch(
+            "amplifier_app_cli.commands.run.resolve_config",
+            return_value=(fake_config, fake_bundle),
+        ),
+        patch(
+            "amplifier_app_cli.utils.startup_checker.check_and_notify",
+            new_callable=AsyncMock,
+        ),
+    ):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["run", "-p", p_flag, "--output-format", "json", "hello"]
+        )
+
+    return result, captured
+
+
+class TestRunPFlag:
+    """Tests for -p/--provider flag matching provider instance id/mount name.
+
+    Validates Fix 4 from UPSTREAM-FIXES.md: ``-p`` now does a two-pass search —
+    Pass 1 matches on ``id`` or ``instance_id``; Pass 2 falls back to module type
+    (``provider-{name}``) for backward compatibility.
+    """
+
+    def test_run_p_flag_matches_instance_id(self):
+        """Pass 1: -p <id> selects the first of two same-module providers by instance id."""
+        providers = [
+            {
+                "module": "provider-anthropic",
+                "id": "spark2-gemma",
+                "config": {"priority": 2},
+            },
+            {
+                "module": "provider-anthropic",
+                "id": "r11-gemma",
+                "config": {"priority": 3},
+            },
+        ]
+        result, captured = _invoke_run_p_flag(providers, "spark2-gemma")
+
+        assert result.exit_code == 0, f"Expected success, got exit {result.exit_code}: {result.output}"
+        selected = next(p for p in captured if p.get("id") == "spark2-gemma")
+        other = next(p for p in captured if p.get("id") == "r11-gemma")
+        assert selected["config"]["priority"] == 0, (
+            f"spark2-gemma should be promoted to priority 0, "
+            f"got {selected['config']['priority']}"
+        )
+        assert other["config"]["priority"] == 3, (
+            f"r11-gemma should keep original priority 3, "
+            f"got {other['config']['priority']}"
+        )
+
+    def test_run_p_flag_matches_instance_id_non_first_position(self):
+        """Pass 1: -p <id> selects the second of two same-module providers by instance id."""
+        providers = [
+            {
+                "module": "provider-anthropic",
+                "id": "spark2-gemma",
+                "config": {"priority": 2},
+            },
+            {
+                "module": "provider-anthropic",
+                "id": "r11-gemma",
+                "config": {"priority": 3},
+            },
+        ]
+        result, captured = _invoke_run_p_flag(providers, "r11-gemma")
+
+        assert result.exit_code == 0, f"Expected success, got exit {result.exit_code}: {result.output}"
+        selected = next(p for p in captured if p.get("id") == "r11-gemma")
+        other = next(p for p in captured if p.get("id") == "spark2-gemma")
+        assert selected["config"]["priority"] == 0, (
+            f"r11-gemma should be promoted to priority 0, "
+            f"got {selected['config']['priority']}"
+        )
+        assert other["config"]["priority"] == 2, (
+            f"spark2-gemma should keep original priority 2, "
+            f"got {other['config']['priority']}"
+        )
+
+    def test_run_p_flag_falls_back_to_module_type(self):
+        """Pass 2 (fallback): -p anthropic still works for a single provider with no id."""
+        providers = [
+            {"module": "provider-anthropic", "config": {"priority": 1}},
+        ]
+        result, captured = _invoke_run_p_flag(providers, "anthropic")
+
+        assert result.exit_code == 0, (
+            f"Regression: -p anthropic no longer works via module-type fallback: "
+            f"{result.output}"
+        )
+        assert captured[0]["config"]["priority"] == 0, (
+            f"Provider should be promoted to priority 0, "
+            f"got {captured[0]['config']['priority']}"
+        )
+
+    def test_run_p_flag_end_to_end_via_resolve_bundle_config(self):
+        """Pass 1 works on providers processed by _map_id_to_instance_id (real data flow).
+
+        ``_map_id_to_instance_id`` copies ``id`` → ``instance_id`` without stripping
+        ``id``, so both fields co-exist on resolved entries.  This test uses the
+        actual mapping function to produce realistic provider dicts and verifies that
+        Pass 1 matches correctly on the resolved data, not just on synthetic dicts.
+        """
+        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+
+        raw_providers = [
+            {
+                "module": "provider-vllm",
+                "id": "r11-gemma",
+                "config": {"base_url": "http://r11:8000/v1", "priority": 1},
+            },
+            {
+                "module": "provider-vllm",
+                "id": "spark2-gemma",
+                "config": {"base_url": "http://spark2:8000/v1", "priority": 2},
+            },
+        ]
+        resolved = _map_id_to_instance_id(raw_providers)
+
+        # Confirm the mapping preserves id AND adds instance_id
+        assert resolved[0].get("id") == "r11-gemma"
+        assert resolved[0].get("instance_id") == "r11-gemma"
+
+        result, captured = _invoke_run_p_flag(resolved, "r11-gemma")
+
+        assert result.exit_code == 0, f"Expected success, got exit {result.exit_code}: {result.output}"
+        r11 = next(p for p in captured if p.get("instance_id") == "r11-gemma")
+        spark2 = next(p for p in captured if p.get("instance_id") == "spark2-gemma")
+        assert r11["config"]["priority"] == 0, (
+            f"r11-gemma should be promoted to priority 0, "
+            f"got {r11['config']['priority']}"
+        )
+        assert spark2["config"]["priority"] == 2, (
+            f"spark2-gemma should keep original priority 2, "
+            f"got {spark2['config']['priority']}"
+        )

@@ -803,3 +803,100 @@ class TestPromptModelSelectionModelsParam:
 
         mock_status_ctx.__enter__.assert_called_once()
         mock_status_ctx.__exit__.assert_called_once()
+
+
+# ============================================================
+# Fix 4: -p flag error message shows instance ids
+# ============================================================
+
+
+class TestRunPFlagErrorMessage:
+    """Tests for -p flag error message listing instance ids, not module types.
+
+    Validates Fix 4 from UPSTREAM-FIXES.md: when -p <name> fails to match any
+    provider, the error message now shows ``id`` / ``instance_id`` fields instead
+    of the module type (which was repeated for every same-type instance).
+    """
+
+    def _invoke_run_bad_p(self, providers_list: list, p_flag: str):
+        """Invoke ``run -p <p_flag>`` with a flag that matches no provider.
+
+        Returns the CliResult (expect exit_code == 1).
+        """
+        import click
+        from click.testing import CliRunner
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from amplifier_app_cli.commands.run import register_run_command
+
+        cli = click.Group("test")
+
+        async def _execute_single(*args, **kwargs):
+            pass  # Should not be reached for error cases
+
+        register_run_command(
+            cli,
+            interactive_chat=AsyncMock(),
+            execute_single=_execute_single,
+            get_module_search_paths=lambda: [],
+            check_first_run=lambda: False,
+            prompt_first_run_init=lambda c: False,
+        )
+
+        fake_config: dict = {"providers": list(providers_list)}
+        fake_bundle = MagicMock()
+        fake_bundle.mount_plan = {"providers": list(providers_list)}
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.run.create_config_manager",
+                return_value=MagicMock(get_merged_settings=lambda: {}),
+            ),
+            patch(
+                "amplifier_app_cli.commands.run.resolve_config",
+                return_value=(fake_config, fake_bundle),
+            ),
+            patch(
+                "amplifier_app_cli.utils.startup_checker.check_and_notify",
+                new_callable=AsyncMock,
+            ),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(
+                cli, ["run", "-p", p_flag, "--output-format", "json", "hello"]
+            )
+
+        return result
+
+    def test_run_p_flag_error_shows_instance_ids(self):
+        """When -p <name> matches no provider, error lists instance ids not module types.
+
+        The original bug: with two ``provider-anthropic`` entries that have distinct
+        ``id`` fields, the error showed "Available providers: anthropic, anthropic"
+        (module type repeated).  After the fix it shows the instance ids.
+        """
+        providers = [
+            {
+                "module": "provider-anthropic",
+                "id": "spark2-gemma",
+                "config": {"priority": 1},
+            },
+            {
+                "module": "provider-anthropic",
+                "id": "r11-gemma",
+                "config": {"priority": 2},
+            },
+        ]
+        result = self._invoke_run_bad_p(providers, "nonexistent-provider")
+
+        assert result.exit_code == 1, (
+            f"Expected exit code 1 for unknown provider, got {result.exit_code}. "
+            f"Output: {result.output!r}"
+        )
+        assert "spark2-gemma" in result.output, (
+            f"Expected 'spark2-gemma' in error output (instance id should be listed), "
+            f"got: {result.output!r}"
+        )
+        assert "r11-gemma" in result.output, (
+            f"Expected 'r11-gemma' in error output (instance id should be listed), "
+            f"got: {result.output!r}"
+        )

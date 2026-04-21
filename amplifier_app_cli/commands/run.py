@@ -212,17 +212,31 @@ def register_run_command(
             )
             providers_list = config_data.get("providers", [])
 
-            # Find the target provider
+            # Find the target provider — two-pass search:
+            # Pass 1: exact match on instance id/mount name.
+            # _map_id_to_instance_id copies id → instance_id without stripping id,
+            # so both fields co-exist on resolved entries; either leg can match.
             target_idx = None
             for i, entry in enumerate(providers_list):
-                if isinstance(entry, dict) and entry.get("module") == provider_module:
+                if isinstance(entry, dict) and (
+                    entry.get("id") == provider
+                    or entry.get("instance_id") == provider
+                ):
                     target_idx = i
                     break
 
             if target_idx is None:
+                # Pass 2: fallback — module-type match (original behavior).
+                # Preserves single-instance usage: -p anthropic → provider-anthropic.
+                for i, entry in enumerate(providers_list):
+                    if isinstance(entry, dict) and entry.get("module") == provider_module:
+                        target_idx = i
+                        break
+
+            if target_idx is None:
                 console.print(
                     f"[red]Error:[/red] Provider '{provider}' not configured\n"
-                    f"Available providers: {', '.join(p.get('module', '?').replace('provider-', '') for p in providers_list if isinstance(p, dict))}\n"
+                    f"Available providers: {', '.join(p.get('id') or p.get('instance_id') or p.get('module', '?').replace('provider-', '') for p in providers_list if isinstance(p, dict))}\n"
                     f"Run 'amplifier provider use --help' for configuration options"
                 )
                 sys.exit(1)
