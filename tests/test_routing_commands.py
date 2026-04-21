@@ -2358,3 +2358,67 @@ class TestRoutingEditMatrix:
         assert "[q]" in rendered, (
             f"Expected '[q]' action letter in menu, got output:\n{rendered}"
         )
+
+
+# ============================================================
+# Fix 3: append-missing guard — no duplicate when hook already present
+# ============================================================
+
+
+class TestApplyHookOverridesGuard:
+    """Explicit guard test for the COE-required already-present check.
+
+    Change B adds a trailing 'append missing' block to _apply_hook_overrides.
+    The guard is the set-based check against the *original* hooks list.  When
+    a hook module is already present in the bundle, the in-place merge path
+    handles it and the append block must NOT fire — producing exactly one
+    entry in the result.
+    """
+
+    def test_append_block_skipped_when_hook_already_present(self):
+        """COE guard: no duplicate hooks-routing when hook is already in the bundle.
+
+        Scenario:
+          - Bundle hooks list already contains a hooks-routing entry.
+          - An override for hooks-routing is provided (as happens when the user
+            sets routing.matrix in settings.yaml).
+
+        Expected:
+          - Exactly one hooks-routing entry in the result.
+          - The config from both the bundle and the override are merged onto it.
+          - The append block does NOT produce a second entry.
+        """
+        from amplifier_app_cli.runtime.config import _apply_hook_overrides
+
+        hooks = [
+            {
+                "module": "hooks-routing",
+                "config": {"existing_key": "existing_val"},
+            },
+            {"module": "hooks-notify", "config": {"topic": "alerts"}},
+        ]
+        overrides = [
+            {
+                "module": "hooks-routing",
+                "config": {"default_matrix": "balanced", "_bundle_root": "/some/path"},
+            }
+        ]
+
+        result = _apply_hook_overrides(hooks, overrides)
+
+        routing_entries = [h for h in result if h.get("module") == "hooks-routing"]
+        assert len(routing_entries) == 1, (
+            f"COE guard failed: expected exactly 1 hooks-routing entry, "
+            f"got {len(routing_entries)}: {routing_entries}"
+        )
+        cfg = routing_entries[0]["config"]
+        # In-place merge: base keys + override keys must all be present
+        assert cfg.get("existing_key") == "existing_val", (
+            f"Original config key should be preserved: {cfg}"
+        )
+        assert cfg.get("default_matrix") == "balanced", f"Override key missing: {cfg}"
+        assert cfg.get("_bundle_root") == "/some/path", f"Override key missing: {cfg}"
+        # Unrelated hook must be untouched
+        notify_entries = [h for h in result if h.get("module") == "hooks-notify"]
+        assert len(notify_entries) == 1
+        assert notify_entries[0]["config"]["topic"] == "alerts"

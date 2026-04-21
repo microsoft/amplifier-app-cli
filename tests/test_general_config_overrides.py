@@ -301,6 +301,188 @@ class TestFullPipelineIntegration:
         assert result["tools"][0]["config"]["t_new"] is True
         assert result["hooks"][0]["config"]["h_new"] is True
 
+    # ------------------------------------------------------------------ #
+    # Fix 3 tests: _apply_hook_overrides appends absent hooks             #
+    # ------------------------------------------------------------------ #
+
+    def test_apply_hook_overrides_appends_absent_hook(self):
+        """Change B: _apply_hook_overrides appends a hook that is not in the bundle.
+
+        When the override list contains a module that isn't present in the
+        bundle hooks list, _apply_hook_overrides should append the override
+        entry to the result — matching the _apply_tool_overrides behaviour.
+        """
+        hooks = [{"module": "hooks-notify", "config": {"topic": "alerts"}}]
+        overrides = [
+            {"module": "hooks-routing", "config": {"default_matrix": "balanced"}}
+        ]
+
+        result = _apply_hook_overrides(hooks, overrides)
+
+        assert len(result) == 2, f"Expected 2 hooks, got {len(result)}: {result}"
+        routing_entries = [h for h in result if h.get("module") == "hooks-routing"]
+        assert len(routing_entries) == 1, "Expected exactly one hooks-routing entry"
+        assert routing_entries[0]["config"]["default_matrix"] == "balanced"
+        # Original hook must be untouched
+        assert result[0]["config"]["topic"] == "alerts"
+
+    def test_existing_hooks_unchanged_when_no_overrides(self):
+        """Regression guard: no overrides → hooks returned as-is.
+
+        _apply_hook_overrides must short-circuit cleanly when overrides is
+        empty, returning the original hooks list unchanged.
+        """
+        hooks = [
+            {"module": "hooks-ci", "config": {"url": "http://ci.local"}},
+            {"module": "hooks-notify", "config": {"topic": "dev"}},
+        ]
+        result = _apply_hook_overrides(hooks, [])
+
+        assert result == hooks
+        assert len(result) == 2
+
+    @pytest.mark.asyncio
+    async def test_routing_config_injected_when_hook_absent_from_bundle(self):
+        """Integration: routing.matrix + overrides.hooks-routing.config._bundle_root reach
+        the final bundle even when the active bundle has no hooks-routing entry.
+
+        Both routing-section keys (default_matrix from routing.matrix) and extra
+        config keys (_bundle_root from overrides.hooks-routing.config) must appear
+        in the injected hooks-routing entry.
+        """
+        mount_plan = {
+            # Bundle deliberately has no hooks-routing entry
+            "hooks": [{"module": "hooks-ci", "config": {"enabled": True}}],
+        }
+        mock_prepared = MagicMock()
+        mock_prepared.mount_plan = mount_plan
+        mock_prepared.bundle.load_agent_metadata = MagicMock()
+
+        settings = _make_app_settings(
+            config_overrides={"hooks-routing": {"_bundle_root": "/project/.amplifier"}},
+            routing_config={"matrix": "my-matrix"},
+        )
+
+        with (
+            patch(
+                "amplifier_app_cli.lib.bundle_loader.prepare.load_and_prepare_bundle",
+                new_callable=AsyncMock,
+                return_value=mock_prepared,
+            ),
+            patch("amplifier_app_cli.paths.get_bundle_search_paths", return_value=[]),
+            patch("amplifier_app_cli.lib.bundle_loader.AppBundleDiscovery"),
+        ):
+            result, _ = await resolve_bundle_config(
+                bundle_name="test", app_settings=settings
+            )
+
+        routing_entries = [
+            h for h in result["hooks"] if h.get("module") == "hooks-routing"
+        ]
+        assert len(routing_entries) == 1, (
+            f"Expected exactly one hooks-routing entry, got {routing_entries}"
+        )
+        cfg = routing_entries[0]["config"]
+        assert cfg.get("default_matrix") == "my-matrix", (
+            f"Expected default_matrix='my-matrix', got {cfg}"
+        )
+        assert cfg.get("_bundle_root") == "/project/.amplifier", (
+            f"Expected _bundle_root='/project/.amplifier', got {cfg}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_routing_config_preserved_when_hook_present_in_bundle(self):
+        """Integration: when hooks-routing IS already in the bundle, the same
+        settings (routing.matrix + overrides.hooks-routing.config._bundle_root)
+        must be merged onto the existing entry — and no duplicate must appear.
+        """
+        mount_plan = {
+            "hooks": [
+                {
+                    "module": "hooks-routing",
+                    "config": {"existing_key": "original_value"},
+                }
+            ],
+        }
+        mock_prepared = MagicMock()
+        mock_prepared.mount_plan = mount_plan
+        mock_prepared.bundle.load_agent_metadata = MagicMock()
+
+        settings = _make_app_settings(
+            config_overrides={"hooks-routing": {"_bundle_root": "/project/.amplifier"}},
+            routing_config={"matrix": "my-matrix"},
+        )
+
+        with (
+            patch(
+                "amplifier_app_cli.lib.bundle_loader.prepare.load_and_prepare_bundle",
+                new_callable=AsyncMock,
+                return_value=mock_prepared,
+            ),
+            patch("amplifier_app_cli.paths.get_bundle_search_paths", return_value=[]),
+            patch("amplifier_app_cli.lib.bundle_loader.AppBundleDiscovery"),
+        ):
+            result, _ = await resolve_bundle_config(
+                bundle_name="test", app_settings=settings
+            )
+
+        routing_entries = [
+            h for h in result["hooks"] if h.get("module") == "hooks-routing"
+        ]
+        assert len(routing_entries) == 1, (
+            f"Expected exactly one hooks-routing entry (no dup), got {routing_entries}"
+        )
+        cfg = routing_entries[0]["config"]
+        assert cfg.get("default_matrix") == "my-matrix"
+        assert cfg.get("_bundle_root") == "/project/.amplifier"
+        assert cfg.get("existing_key") == "original_value", (
+            f"Original hook config key must be preserved: {cfg}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_routing_keys_beat_overrides_on_collision(self):
+        """Integration: when routing.matrix and overrides.hooks-routing.config.default_matrix
+        both set default_matrix, the routing-section value must win.
+
+        Change A merges extra keys from config_overrides BEFORE the routing-built
+        keys, so {**extra, **routing} means routing always takes precedence.
+        """
+        mount_plan = {
+            "hooks": [],
+        }
+        mock_prepared = MagicMock()
+        mock_prepared.mount_plan = mount_plan
+        mock_prepared.bundle.load_agent_metadata = MagicMock()
+
+        settings = _make_app_settings(
+            # Collision: overrides sets default_matrix to "foo"
+            config_overrides={"hooks-routing": {"default_matrix": "foo"}},
+            # Routing section sets it to "bar" — must win
+            routing_config={"matrix": "bar"},
+        )
+
+        with (
+            patch(
+                "amplifier_app_cli.lib.bundle_loader.prepare.load_and_prepare_bundle",
+                new_callable=AsyncMock,
+                return_value=mock_prepared,
+            ),
+            patch("amplifier_app_cli.paths.get_bundle_search_paths", return_value=[]),
+            patch("amplifier_app_cli.lib.bundle_loader.AppBundleDiscovery"),
+        ):
+            result, _ = await resolve_bundle_config(
+                bundle_name="test", app_settings=settings
+            )
+
+        routing_entries = [
+            h for h in result["hooks"] if h.get("module") == "hooks-routing"
+        ]
+        assert len(routing_entries) == 1
+        assert routing_entries[0]["config"]["default_matrix"] == "bar", (
+            f"routing.matrix ('bar') must beat overrides.hooks-routing.config.default_matrix "
+            f"('foo'), got: {routing_entries[0]['config']}"
+        )
+
     @pytest.mark.asyncio
     async def test_dedicated_overrides_win_in_full_pipeline(self):
         """Dedicated override takes precedence over general in full pipeline."""
