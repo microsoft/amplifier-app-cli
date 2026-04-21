@@ -221,10 +221,28 @@ async def resolve_bundle_config(
             routing_hook_override["config"]["default_matrix"] = routing_config["matrix"]
         if "overrides" in routing_config:
             routing_hook_override["config"]["overrides"] = routing_config["overrides"]
+        # Change A: Enrich with any extra keys from overrides.hooks-routing.config.
+        # Routing-section keys (default_matrix, overrides) always take precedence over
+        # whatever came from the general config overrides block, so the routing-built keys
+        # are written AFTER the extra keys in the merge — later keys win in {**a, **b}.
+        hooks_routing_extra = {
+            k: v
+            for k, v in config_overrides.get("hooks-routing", {}).items()
+            if k not in ("default_matrix", "overrides")
+        }
+        routing_hook_override["config"] = {
+            **hooks_routing_extra,
+            **routing_hook_override["config"],
+        }
         if routing_hook_override["config"]:
             hook_overrides.append(routing_hook_override)
 
-    if hook_overrides and bundle_config.get("hooks"):
+    # Apply hook overrides: merge in-place for hooks already in the bundle, and
+    # append any overrides whose module is absent from the bundle hooks list.
+    # Guard now initialises hooks to [] when absent so the append-missing path can fire
+    # even for bundles that ship with no hooks section at all.
+    if hook_overrides:
+        bundle_config.setdefault("hooks", [])
         bundle_config["hooks"] = _apply_hook_overrides(
             bundle_config["hooks"], hook_overrides
         )
@@ -442,12 +460,23 @@ def _apply_hook_overrides(
     This enables settings like ntfy topic for hooks-notify-push
     to be applied from user settings.
 
+    Hooks that are present in ``overrides`` but absent from the bundle
+    ``hooks`` list are **appended** to the result, mirroring the behaviour
+    of :func:`_apply_tool_overrides`.  This means a routing config
+    (``hooks-routing``) supplied via settings will reach the session even
+    when the active bundle does not pre-register that hook.
+
+    Note on hook execution order: list position does not control execution
+    order.  ``hooks-routing`` registers with explicit ``priority`` values
+    (5 and 15), so appending at the end of the list is safe.
+
     Args:
         hooks: List of hook configurations from bundle
         overrides: List of hook override dicts with module and config keys
 
     Returns:
-        Merged list of hook configurations
+        Merged list of hook configurations (in-place merges first, then
+        any absent hooks appended in override order)
     """
     if not overrides:
         return hooks
@@ -458,7 +487,7 @@ def _apply_hook_overrides(
         if isinstance(override, dict) and "module" in override:
             override_map[override["module"]] = override
 
-    # Apply overrides to matching hooks
+    # Apply overrides to matching hooks (in-place merge path)
     result = []
     for hook in hooks:
         if isinstance(hook, dict) and hook.get("module") in override_map:
@@ -473,6 +502,19 @@ def _apply_hook_overrides(
             result.append(merged)
         else:
             result.append(hook)
+
+    # Change B: Append overrides whose module is absent from the original bundle
+    # hooks list.  Using the *original* hooks set means a hook that was merged
+    # in-place above is NOT in existing_modules and would be double-added — but
+    # that cannot happen because the in-place merge path consumed it first, so
+    # the set must be built from the original ``hooks`` argument, not ``result``.
+    existing_modules = {h.get("module") for h in hooks if isinstance(h, dict)}
+    for override in overrides:
+        if (
+            isinstance(override, dict)
+            and override.get("module") not in existing_modules
+        ):
+            result.append(override)
 
     return result
 
