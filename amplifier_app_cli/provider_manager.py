@@ -27,6 +27,7 @@ _PROVIDER_DISPLAY_NAMES = {
     "ollama": "Ollama",
     "github-copilot": "GitHub Copilot",
     "vllm": "vLLM",
+    "chat-completions": "OpenAI-Compatible",
 }
 
 
@@ -392,9 +393,9 @@ class ProviderManager:
                     # Git source: install with deps on-demand, then retry import.
                     # On a clean install none of the provider SDK dependencies
                     # (anthropic, openai, google-generativeai, …) are present, so
-                    # the initial import always fails.  Installing here makes all 7
-                    # well-known providers appear in the picker regardless of
-                    # installation state.
+                    # the initial import always fails.  Installing here makes all
+                    # entries from DEFAULT_PROVIDER_SOURCES appear in the picker
+                    # regardless of installation state.
                     logger.debug(
                         f"Git provider {module_id} not importable, attempting install: {e}"
                     )

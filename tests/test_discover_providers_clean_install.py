@@ -183,11 +183,19 @@ class TestGitProviderFallbackOnInstallFailure:
             "provider-anthropic": "Anthropic",
             "provider-openai": "OpenAI",
             "provider-azure-openai": "Azure OpenAI",
+            "provider-chat-completions": "OpenAI-Compatible",
             "provider-gemini": "Google Gemini",
             "provider-ollama": "Ollama",
             "provider-github-copilot": "GitHub Copilot",
             "provider-vllm": "vLLM",
         }
+        # Self-audit: this test uses a hardcoded dict (NOT auto-scaling). Without
+        # this guard a forgotten entry would silently pass — see bug-hunter COE
+        # review P1-B for rationale.
+        assert len(expected_names) == len(DEFAULT_PROVIDER_SOURCES), (
+            "expected_names is out of sync with DEFAULT_PROVIDER_SOURCES — "
+            "add the missing entry below with its display name."
+        )
         manager = _make_manager()
         ordered = [(mid, uri) for mid, uri in expected_names.items()]
 
@@ -220,15 +228,15 @@ class TestGitProviderFallbackOnInstallFailure:
 
 
 # ---------------------------------------------------------------------------
-# All 7 well-known providers appear on clean install (integration-style)
+# All known providers appear on clean install (integration-style)
 # ---------------------------------------------------------------------------
 
 
-class TestAllSevenProvidersOnCleanInstall:
-    """All 7 DEFAULT_PROVIDER_SOURCES appear in the list regardless of install outcome."""
+class TestAllKnownProvidersOnCleanInstall:
+    """All DEFAULT_PROVIDER_SOURCES entries appear in the list regardless of install outcome."""
 
     def test_all_providers_appear_when_all_installs_fail(self):
-        """Worst case: every install fails — all 7 providers still appear via fallback."""
+        """Worst case: every install fails — every known provider still appears via fallback."""
         manager = _make_manager()
         ordered = list(DEFAULT_PROVIDER_SOURCES.items())
 
@@ -258,7 +266,7 @@ class TestAllSevenProvidersOnCleanInstall:
             )
 
     def test_all_providers_appear_when_all_installs_succeed(self):
-        """Happy path: every install succeeds — all 7 providers appear with full info."""
+        """Happy path: every install succeeds — every known provider appears with full info."""
         manager = _make_manager()
         ordered = list(DEFAULT_PROVIDER_SOURCES.items())
 
