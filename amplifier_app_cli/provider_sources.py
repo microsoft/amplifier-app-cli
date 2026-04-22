@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_PROVIDER_SOURCES = {
     "provider-anthropic": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
     "provider-azure-openai": "git+https://github.com/microsoft/amplifier-module-provider-azure-openai@main",
+    "provider-chat-completions": "git+https://github.com/microsoft/amplifier-module-provider-chat-completions@main",
     "provider-gemini": "git+https://github.com/microsoft/amplifier-module-provider-gemini@main",
     "provider-github-copilot": "git+https://github.com/microsoft/amplifier-module-provider-github-copilot@main",
     "provider-ollama": "git+https://github.com/microsoft/amplifier-module-provider-ollama@main",
