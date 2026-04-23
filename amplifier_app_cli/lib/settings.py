@@ -563,9 +563,14 @@ class AppSettings:
         notifications = self.get_notification_config()
         overrides: list[dict[str, Any]] = []
 
-        # Desktop notifications (enabled by default)
+        # Desktop notifications (opt-in). Default is False — the hooks-notify
+        # module ships only when the user explicitly enables notifications via
+        # config.notifications.desktop.enabled. Keeping this default in sync
+        # with _build_notification_behaviors() in runtime/config.py is what
+        # prevents the hook override from referencing a module that was never
+        # composed into the bundle.
         desktop_config = notifications.get("desktop", {})
-        if desktop_config.get("enabled", True):
+        if desktop_config and desktop_config.get("enabled", False):
             hook_config: dict[str, Any] = {"enabled": True}
             for key in [
                 "show_device",
