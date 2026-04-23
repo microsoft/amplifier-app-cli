@@ -18,6 +18,25 @@ Scope = Literal["local", "project", "global", "session"]
 ScopeType = Literal["local", "project", "global"]
 
 
+@dataclass(frozen=True)
+class NotificationFlags:
+    """Resolved notification enablement. Single source of truth for the two
+    booleans that drive notification wiring at prepare() time.
+
+    ``desktop_enabled`` maps 1:1 to ``config.notifications.desktop.enabled``.
+    ``push_enabled`` is ``True`` when EITHER ``push.enabled`` OR
+    ``ntfy.enabled`` is set — they are treated as aliases at the enablement
+    level (ntfy is the only push transport today, and users configure it
+    under either key interchangeably). Both consumers — bundle composition
+    in ``runtime/config.py`` and hook-override emission in this file — read
+    these two resolved booleans so they cannot disagree on "is this enabled?"
+    by construction.
+    """
+
+    desktop_enabled: bool
+    push_enabled: bool
+
+
 @dataclass
 class SettingsPaths:
     """Standard paths for settings files."""
@@ -555,22 +574,50 @@ class AppSettings:
         notifications = settings.get("config", {}).get("notifications", {})
         return notifications if isinstance(notifications, dict) else {}
 
+    def get_notification_flags(self) -> NotificationFlags:
+        """Resolve notification enablement into a single source of truth.
+
+        Defaults are defined in exactly one place (here) so that the two
+        consumers — bundle composition at prepare() time and hook-override
+        emission — cannot drift apart. Both compose_behaviors and hook
+        overrides derive from the same ``NotificationFlags`` value.
+
+        ``push_enabled`` is ``True`` when EITHER ``push.enabled`` or
+        ``ntfy.enabled`` is set — they are aliases at the enablement level.
+        """
+        cfg = self.get_notification_config()
+        desktop = cfg.get("desktop") or {}
+        push = cfg.get("push") or {}
+        ntfy = cfg.get("ntfy") or {}
+        return NotificationFlags(
+            desktop_enabled=bool(
+                isinstance(desktop, dict) and desktop.get("enabled", False)
+            ),
+            push_enabled=bool(
+                (isinstance(push, dict) and push.get("enabled", False))
+                or (isinstance(ntfy, dict) and ntfy.get("enabled", False))
+            ),
+        )
+
     def get_notification_hook_overrides(self) -> list[dict[str, Any]]:
         """Return hook overrides derived from notification settings.
 
-        Maps config.notifications.* settings to hook module configs.
+        Maps config.notifications.* settings to hook module configs. The
+        ``enabled?`` question is resolved via ``get_notification_flags()`` —
+        this keeps the "should we wire it up?" decision aligned with
+        ``_build_notification_behaviors()`` in ``runtime/config.py`` by
+        construction. Field-level keys (preview_length, server, tags, etc.)
+        are read from the raw config dicts here only once the flag says yes.
         """
-        notifications = self.get_notification_config()
+        cfg = self.get_notification_config()
+        flags = self.get_notification_flags()
         overrides: list[dict[str, Any]] = []
 
-        # Desktop notifications (opt-in). Default is False — the hooks-notify
-        # module ships only when the user explicitly enables notifications via
-        # config.notifications.desktop.enabled. Keeping this default in sync
-        # with _build_notification_behaviors() in runtime/config.py is what
-        # prevents the hook override from referencing a module that was never
-        # composed into the bundle.
-        desktop_config = notifications.get("desktop", {})
-        if desktop_config and desktop_config.get("enabled", False):
+        # Desktop notifications — opt-in; hook override only emitted when
+        # flags.desktop_enabled is True. Field-level keys are lifted from the
+        # raw desktop config dict.
+        if flags.desktop_enabled:
+            desktop_config = cfg.get("desktop") or {}
             hook_config: dict[str, Any] = {"enabled": True}
             for key in [
                 "show_device",
@@ -588,12 +635,20 @@ class AppSettings:
                     hook_config[key] = desktop_config[key]
             overrides.append({"module": "hooks-notify", "config": hook_config})
 
-        # Push notifications (ntfy)
-        ntfy_config = notifications.get("ntfy", {})
-        push_config = notifications.get("push", {})
-        combined_push = {**push_config, **ntfy_config}
-
-        if combined_push and combined_push.get("enabled", False):
+        # Push notifications (ntfy is the only transport today).
+        # NOTE: For non-"enabled" fields the ntfy block wins over the push
+        # block via dict-merge precedence — this preserves the pre-existing
+        # behavior for users configuring under either alias. The "enabled?"
+        # decision itself is NOT computed here — it lives in
+        # get_notification_flags() so this path and the behavior-composition
+        # path stay in lockstep.
+        if flags.push_enabled:
+            push_config = cfg.get("push") or {}
+            ntfy_config = cfg.get("ntfy") or {}
+            combined_push = {
+                **(push_config if isinstance(push_config, dict) else {}),
+                **(ntfy_config if isinstance(ntfy_config, dict) else {}),
+            }
             hook_config = {"enabled": True, "service": "ntfy"}
             for key in ["server", "priority", "tags", "debug"]:
                 if key in combined_push:

@@ -11,7 +11,7 @@ from typing import Any
 
 from rich.console import Console
 
-from ..lib.settings import AppSettings
+from ..lib.settings import AppSettings, NotificationFlags
 from ..lib.merge_utils import merge_module_items
 from ..lib.merge_utils import merge_tool_configs
 
@@ -84,9 +84,12 @@ async def resolve_bundle_config(
         # Always available - users choose to use /mode commands or not
         compose_behaviors.extend(_build_modes_behaviors())
 
-        # Notification behaviors (desktop and push notifications)
+        # Notification behaviors (desktop and push notifications). The flags
+        # object is the single source of truth for "is this enabled?" — the
+        # hook-override emitter in AppSettings.get_notification_hook_overrides()
+        # reads the same flags so the two paths cannot disagree.
         compose_behaviors.extend(
-            _build_notification_behaviors(app_settings.get_notification_config())
+            _build_notification_behaviors(app_settings.get_notification_flags())
         )
 
         # Add app bundles (user-configured bundles that are always composed)
@@ -798,65 +801,43 @@ def _build_modes_behaviors() -> list[str]:
     ]
 
 
-def _build_notification_behaviors(
-    notifications_config: dict[str, Any] | None,
-) -> list[str]:
-    """Build list of notification behavior URIs based on settings.
+def _build_notification_behaviors(flags: NotificationFlags) -> list[str]:
+    """Build list of notification behavior URIs based on resolved flags.
 
     Notifications are an app-level policy. Rather than injecting hooks after
-    bundle preparation, we compose notification behavior bundles BEFORE prepare()
-    so their modules get properly downloaded and installed.
+    bundle preparation, we compose notification behavior bundles BEFORE
+    prepare() so their modules get properly downloaded and installed.
+
+    The resolved ``NotificationFlags`` must come from
+    ``AppSettings.get_notification_flags()`` — that method is the single
+    source of truth for the "is notifications.X enabled?" question. The
+    sibling consumer ``AppSettings.get_notification_hook_overrides()`` reads
+    the same flags, so the two paths cannot drift apart on defaults.
 
     Args:
-        notifications_config: Dict from settings.yaml config.notifications section
+        flags: Resolved notification enablement.
 
     Returns:
         List of behavior bundle URIs to compose onto the main bundle.
         Empty list if no notifications are enabled.
-
-    Expected config structure:
-        notifications:
-          desktop:
-            enabled: true
-            ...
-          push:
-            enabled: true
-            ...
     """
-    if not notifications_config:
+    if not (flags.desktop_enabled or flags.push_enabled):
         return []
 
     behaviors: list[str] = []
 
-    # Check if any notification type is enabled
-    desktop_config = notifications_config.get("desktop", {})
-    desktop_enabled = desktop_config.get("enabled", False)
+    # Root bundle first — a minimal marker that just identifies the repo
+    # and ensures the bundle gets cached with proper SHA metadata (fixes
+    # the "unknown" version issue during `amplifier update`). The actual
+    # functionality comes from the subdirectory behaviors below.
+    behaviors.append("git+https://github.com/microsoft/amplifier-bundle-notify@main")
 
-    push_config = notifications_config.get("push", {})
-    ntfy_config = notifications_config.get("ntfy", {})
-    push_enabled = push_config.get("enabled", False) or ntfy_config.get(
-        "enabled", False
-    )
-
-    # If any notification is enabled, add the ROOT bundle first.
-    # This ensures the root bundle gets cached with proper SHA metadata,
-    # fixing the "unknown" version issue during `amplifier update`.
-    # The root bundle is a minimal marker that just identifies the repo;
-    # the actual functionality comes from the subdirectory behaviors below.
-    if desktop_enabled or push_enabled:
-        behaviors.append(
-            "git+https://github.com/microsoft/amplifier-bundle-notify@main"
-        )
-
-    # Desktop notifications behavior
-    if desktop_enabled:
+    if flags.desktop_enabled:
         behaviors.append(
             "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/desktop-notifications.yaml"
         )
 
-    # Push notifications behavior (includes desktop as a dependency for the event)
-    # Support both "push:" and "ntfy:" config keys for convenience
-    if push_enabled:
+    if flags.push_enabled:
         behaviors.append(
             "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/push-notifications.yaml"
         )
@@ -979,5 +960,4 @@ __all__ = [
     "_apply_provider_overrides",
     "_ensure_raw_defaults",
     "_map_id_to_instance_id",
-    "_build_notification_behaviors",
 ]
