@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any, cast
@@ -12,6 +13,7 @@ from rich.console import Console
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
+from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
 from ..lib.settings import AppSettings, Scope
 from ..provider_loader import get_provider_info, get_provider_models
 from ..ui.scope import (
@@ -22,6 +24,13 @@ from ..ui.scope import (
 )
 
 console = Console()
+logger = logging.getLogger(__name__)
+
+# Single source of truth for the routing-matrix bundle URL lives in
+# WELL_KNOWN_BUNDLES (discovery.py). The CLI lazy-fetches on first use so
+# that `amplifier routing list` works on a clean install without requiring
+# a prior `amplifier update`.
+_ROUTING_BUNDLE_URI = str(WELL_KNOWN_BUNDLES["routing-matrix"]["remote"])
 
 INFRASTRUCTURE_CONFIG_FIELDS = frozenset(
     {
@@ -61,23 +70,65 @@ def _get_settings() -> AppSettings:
     return AppSettings()
 
 
+def _ensure_routing_bundle_cached() -> None:
+    """Fetch the routing-matrix bundle into the cache if not yet present.
+
+    Called lazily from _discover_matrix_files() so `amplifier routing list`
+    works on a clean install without requiring the user to run
+    `amplifier update` first. FoundationGitSource.resolve() is a sync
+    wrapper that is safe to call from a synchronous CLI command (it spawns
+    a ThreadPoolExecutor internally if an event loop is already running).
+
+    Failures are reported both to the debug log and visibly to the user so
+    that a silent blocking clone followed by a silent empty list can never
+    happen.
+    """
+    from ..lib.bundle_loader.resolvers import FoundationGitSource
+
+    try:
+        FoundationGitSource(_ROUTING_BUNDLE_URI).resolve()
+    except Exception as e:
+        logger.warning("Could not fetch routing-matrix bundle: %s", e)
+        console.print(f"[yellow]Could not fetch routing-matrix bundle: {e}[/yellow]")
+
+
 def _discover_matrix_files() -> list[Path]:
     """Discover available routing matrix YAML files.
 
     Looks in:
     1. ~/.amplifier/cache/amplifier-bundle-routing-matrix-*/routing/*.yaml (bundle)
     2. ~/.amplifier/routing/*.yaml (custom user matrices)
+
+    On a clean install where the bundle is not yet cached, this lazily
+    fetches the routing-matrix bundle on first use. That makes `amplifier
+    routing list` work out of the box instead of silently returning an
+    empty list and telling the user to run a different command.
     """
     home = Path.home()
     files: list[Path] = []
 
-    # Bundle cache matrices
+    # Bundle cache matrices (lazy-fetch on first use)
     cache_base = home / ".amplifier" / "cache"
-    if cache_base.exists():
-        for bundle_dir in cache_base.glob("amplifier-bundle-routing-matrix-*"):
-            routing_dir = bundle_dir / "routing"
-            if routing_dir.is_dir():
-                files.extend(routing_dir.glob("*.yaml"))
+    bundle_dirs = (
+        list(cache_base.glob("amplifier-bundle-routing-matrix-*"))
+        if cache_base.exists()
+        else []
+    )
+    if not bundle_dirs:
+        # First run on a clean install — fetch the bundle with visible feedback.
+        # This can take 5-30s on a slow network so we must NOT block silently.
+        console.print("[dim]Fetching routing-matrix bundle...[/dim]")
+        _ensure_routing_bundle_cached()
+        bundle_dirs = (
+            list(cache_base.glob("amplifier-bundle-routing-matrix-*"))
+            if cache_base.exists()
+            else []
+        )
+
+    for bundle_dir in bundle_dirs:
+        routing_dir = bundle_dir / "routing"
+        if routing_dir.is_dir():
+            files.extend(routing_dir.glob("*.yaml"))
 
     # Custom user matrices
     custom_dir = home / ".amplifier" / "routing"

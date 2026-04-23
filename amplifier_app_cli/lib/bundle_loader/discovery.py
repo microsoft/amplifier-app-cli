@@ -79,6 +79,16 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str | bool]] = {
         "remote": "git+https://github.com/microsoft/amplifier-bundle-modes@main",
         "show_in_list": False,  # Loaded via settings, not standalone
     },
+    # Routing matrices - ships default matrices (anthropic, openai, gemini, ...)
+    # consumed by `amplifier routing list/use` commands and the hooks-routing
+    # runtime module. Registered here so `amplifier update` can track and
+    # fetch it; the routing CLI also lazy-fetches on first use so clean
+    # installs work without requiring a prior `amplifier update`.
+    "routing-matrix": {
+        "package": "",  # No Python package - bundle with embedded matrices
+        "remote": "git+https://github.com/microsoft/amplifier-bundle-routing-matrix@main",
+        "show_in_list": False,  # Consumed via routing commands, not standalone
+    },
 }
 
 
