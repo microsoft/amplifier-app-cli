@@ -20,13 +20,13 @@ Example:
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
 import click
 
 from ..console import console
+from ..utils.cache_management import rmtree_safe
 from ..utils.error_format import escape_markup
 from ..utils.uv_utils import remove_stale_uv_lock as _remove_stale_uv_lock
 from .reset_interactive import ChecklistItem, run_checklist
@@ -302,7 +302,7 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
             return True
 
         try:
-            shutil.rmtree(amplifier_dir)
+            rmtree_safe(amplifier_dir)
             console.print("    [green]Removed entire directory[/green]")
             return True
         except OSError as e:
@@ -339,7 +339,7 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
                     else:
                         # Standard removal (fallback or other items)
                         if item.is_dir():
-                            shutil.rmtree(item)
+                            rmtree_safe(item)
                         else:
                             item.unlink()
                         removed_count += 1

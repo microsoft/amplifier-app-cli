@@ -1,0 +1,58 @@
+name: linked-issue
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check-linked-issue:
+    name: check-linked-issue
+    runs-on: ubuntu-latest
+    steps:
+      - name: check-linked-issue
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as handle:
+              event = json.load(handle)
+
+          pull_request = event["pull_request"]
+          actor = event.get("sender", {}).get("login", "")
+          if actor in {"dependabot[bot]", "github-actions[bot]", "renovate[bot]"}:
+              print(f"Automation PR from {actor}; skipping linked issue requirement.")
+              sys.exit(0)
+
+          labels = {label["name"] for label in pull_request.get("labels", [])}
+          if "no-linked-issue-required" in labels:
+              print("Bypass label present; skipping linked issue requirement.")
+              sys.exit(0)
+
+          content = "\n".join(
+              part for part in [pull_request.get("title", ""), pull_request.get("body", "")]
+              if part
+          )
+          patterns = (
+              r"(?<![A-Za-z0-9_])(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#\d+\b",
+              r"https://github\.com/[^/\s]+/[^/\s]+/issues/\d+\b",
+          )
+
+          if any(re.search(pattern, content, re.IGNORECASE) for pattern in patterns):
+              print("Issue reference found in PR title/body.")
+              sys.exit(0)
+
+          print('::error title=Linked issue required::Add an issue reference to the PR title or body (for example, "Closes #123" or "#123"), or apply the "no-linked-issue-required" label.')
+          sys.exit(1)
+          PY

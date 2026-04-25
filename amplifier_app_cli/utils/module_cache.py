@@ -16,10 +16,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+from .cache_management import rmtree_safe
 
 try:
     import tomllib
@@ -428,7 +429,7 @@ def clear_module_cache(
                 try:
                     if progress_callback:
                         progress_callback(entry.name, "clearing")
-                    shutil.rmtree(entry)
+                    rmtree_safe(entry)
                     cleared += 1
                 except Exception as e:
                     logger.warning(f"Could not clear {entry}: {e}")
@@ -455,7 +456,7 @@ def clear_module_cache(
         # Delete cache directory
         try:
             if module.cache_path.exists():
-                shutil.rmtree(module.cache_path)
+                rmtree_safe(module.cache_path)
                 cleared += 1
                 logger.debug(f"Cleared cache for {module.module_id}@{module.ref}")
         except Exception as e:

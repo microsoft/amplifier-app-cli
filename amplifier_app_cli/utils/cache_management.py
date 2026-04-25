@@ -13,10 +13,35 @@ User data (projects, settings, keys) is NEVER touched by these utilities.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import stat
+import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def rmtree_safe(path: Path) -> None:
+    """Remove a directory tree, handling read-only files on Windows.
+
+    Git pack files (.idx, .pack) are created read-only on Windows, causing
+    shutil.rmtree() to fail with [WinError 5] Access is denied. This wrapper
+    adds an error handler that strips the read-only bit before retrying.
+    """
+    if sys.platform != "win32":
+        shutil.rmtree(path)
+        return
+
+    def _handle_readonly(func: object, path: str, exc: BaseException) -> None:
+        os.chmod(path, stat.S_IWRITE)
+        if callable(func):
+            func(path)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_handle_readonly)
+    else:
+        shutil.rmtree(path, onerror=_handle_readonly)  # type: ignore[call-arg]
 
 
 def get_amplifier_dir() -> Path:
@@ -59,7 +84,7 @@ def clear_download_cache(dry_run: bool = False) -> tuple[int, bool]:
             return (count, True)
 
         # Remove entire cache directory
-        shutil.rmtree(cache_dir)
+        rmtree_safe(cache_dir)
         logger.debug(f"Cleared {count} items from cache")
 
         # Recreate empty cache directory

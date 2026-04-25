@@ -215,7 +215,7 @@ class GitSource:
         Raises:
             InstallError: Git clone failed
         """
-        import shutil
+        from ..utils.cache_management import rmtree_safe
 
         logger.info(f"Installing git repo to {target_dir}: {self.url}@{self.ref}")
 
@@ -225,7 +225,7 @@ class GitSource:
             # Clean up partial install
             if target_dir.exists():
                 logger.debug(f"Cleaning up partial install at {target_dir}")
-                shutil.rmtree(target_dir)
+                rmtree_safe(target_dir)
             raise InstallError(
                 f"Failed to install {self.url}@{self.ref} to {target_dir}: {e}"
             )
