@@ -9,6 +9,43 @@ This module provides app-level policy for how configs should be merged:
 from typing import Any
 
 
+# ===== Module Entry Normalization =====
+
+
+def _normalize_module_entry(
+    item: Any, key_field: str = "module"
+) -> dict[str, Any] | None:
+    """Normalize a module list entry to dict-form.
+
+    Agents may declare tools/hooks/providers using bare-string shorthand, e.g.:
+
+        tools: [terminal_inspector]
+
+    rather than full dict-form:
+
+        tools: [{module: terminal_inspector}]
+
+    This helper converts string entries to ``{key_field: <string>}`` so the
+    rest of the merge logic can call ``.get()`` on every entry uniformly.
+
+    Args:
+        item: A list entry — either a dict (pass-through), a str (normalised
+              to ``{key_field: item}``), or anything else (returns ``None`` so
+              callers can silently discard it rather than crash).
+        key_field: The dict key to use when normalising a bare string.
+                   Defaults to ``"module"``.
+
+    Returns:
+        A ``dict[str, Any]`` or ``None`` for un-normalisable entries.
+    """
+    if isinstance(item, str):
+        return {key_field: item}
+    if isinstance(item, dict):
+        return item
+    # Silently drop garbage (None, int, …) rather than crash.
+    return None
+
+
 # ===== Provider Identity =====
 
 
@@ -41,24 +78,45 @@ def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
 
 
 def merge_module_lists(
-    base: list[dict[str, Any]],
-    overlay: list[dict[str, Any]],
+    base: list[Any],
+    overlay: list[Any],
     key_field: str = "module",
 ) -> list[dict[str, Any]]:
     """Merge module lists by module ID, with overlay configs merged into base.
 
     If a module appears in both lists, configs are deep-merged (overlay wins).
     Modules only in overlay are appended.
+
+    Both ``base`` and ``overlay`` may contain bare strings as shorthand for
+    ``{key_field: <string>}`` — e.g. ``tools: [terminal_inspector]`` in an
+    agent frontmatter.  :func:`_normalize_module_entry` converts them to
+    dict-form before any ``.get()`` calls are made.  Non-string, non-dict
+    entries are silently dropped rather than causing an ``AttributeError``.
     """
+    # Normalise all entries to dict-form first.
+    # This handles:
+    #   - bare strings ("terminal_inspector" → {"module": "terminal_inspector"})
+    #   - garbage entries (None, int, …) → dropped (None returned by helper)
+    norm_base: list[dict[str, Any]] = [
+        n
+        for n in (_normalize_module_entry(i, key_field) for i in base)
+        if n is not None
+    ]
+    norm_overlay: list[dict[str, Any]] = [
+        n
+        for n in (_normalize_module_entry(i, key_field) for i in overlay)
+        if n is not None
+    ]
+
     # Index base by key (id wins over key_field for multi-instance entries)
     base_by_key: dict[str, dict[str, Any]] = {}
-    for item in base:
+    for item in norm_base:
         if key_field in item:
             key = item.get("id") or item[key_field]
             base_by_key[key] = item.copy()
 
     # Merge overlay
-    for item in overlay:
+    for item in norm_overlay:
         key = item.get("id") or item.get(key_field)
         if key and key in base_by_key:
             # Merge configs

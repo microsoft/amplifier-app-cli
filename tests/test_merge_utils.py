@@ -28,6 +28,115 @@ def _write_providers_to_scope(
     settings._write_scope(scope, scope_settings)  # type: ignore[arg-type]
 
 
+class TestMergeModuleListsStringShorthand:
+    """Tests for merge_module_lists() string-shorthand normalization.
+
+    Agents may declare tools/hooks/providers using bare-string shorthand:
+        tools: [terminal_inspector]
+    instead of full dict form:
+        tools: [{module: terminal_inspector}]
+
+    Both forms must be accepted; strings are normalized to {key_field: <string>}.
+    """
+
+    def test_string_overlay_single_entry(self):
+        """String-shorthand overlay entry is normalized to dict-form."""
+        result = merge_module_lists([], ["bash"])
+        assert result == [{"module": "bash"}]
+
+    def test_string_overlay_multiple_entries(self):
+        """Multiple string-shorthand overlay entries are all normalized."""
+        result = merge_module_lists([], ["bash", "filesystem"])
+        assert result == [{"module": "bash"}, {"module": "filesystem"}]
+
+    def test_string_overlay_merges_into_existing_base(self):
+        """String-shorthand overlay merges into matching dict-form base entry."""
+        base = [{"module": "bash", "config": {"timeout": 30}}]
+        result = merge_module_lists(base, ["bash"])
+        # 'bash' string normalises to {"module": "bash"}, which matches the base entry
+        assert len(result) == 1
+        # base config preserved (string overlay carries no extra keys to clobber it)
+        assert result[0]["config"]["timeout"] == 30
+
+    def test_string_overlay_appends_new_entry(self):
+        """String-shorthand overlay entry not in base is appended as dict-form."""
+        base = [{"module": "bash", "config": {"timeout": 30}}]
+        result = merge_module_lists(base, ["filesystem"])
+        assert len(result) == 2
+        modules = [r["module"] for r in result]
+        assert "bash" in modules
+        assert "filesystem" in modules
+
+    def test_mixed_overlay_strings_and_dicts(self):
+        """Overlay list may mix bare strings and full dicts; both are handled."""
+        base: list[dict] = []
+        overlay: list = [
+            "bash",
+            {"module": "filesystem", "config": {"allowed_write_paths": ["/tmp"]}},
+        ]
+        result = merge_module_lists(base, overlay)
+        assert len(result) == 2
+        bash_entry = next(r for r in result if r["module"] == "bash")
+        assert bash_entry == {"module": "bash"}
+        fs_entry = next(r for r in result if r["module"] == "filesystem")
+        assert fs_entry["config"]["allowed_write_paths"] == ["/tmp"]
+
+    def test_string_base_single_entry(self):
+        """String-shorthand base entry is normalized to dict-form."""
+        result = merge_module_lists(["bash"], [])
+        assert result == [{"module": "bash"}]
+
+    def test_string_base_multiple_entries(self):
+        """Multiple string-shorthand base entries are all normalized."""
+        result = merge_module_lists(["bash", "filesystem"], [])
+        assert len(result) == 2
+        modules = {r["module"] for r in result}
+        assert modules == {"bash", "filesystem"}
+
+    def test_mixed_base_strings_and_dicts(self):
+        """Base list may mix bare strings and full dicts; both are handled."""
+        base: list = [
+            "bash",
+            {"module": "filesystem", "config": {"allowed_write_paths": ["/tmp"]}},
+        ]
+        result = merge_module_lists(base, [])
+        assert len(result) == 2
+        bash_entry = next(r for r in result if r["module"] == "bash")
+        assert bash_entry == {"module": "bash"}
+
+    def test_string_base_merged_with_dict_overlay(self):
+        """String base entry is normalized; dict overlay deep-merges into it."""
+        base = ["bash"]
+        overlay = [{"module": "bash", "config": {"timeout": 60}}]
+        result = merge_module_lists(base, overlay)
+        assert len(result) == 1
+        assert result[0]["module"] == "bash"
+        assert result[0]["config"]["timeout"] == 60
+
+    def test_real_world_terminal_inspector(self):
+        """Regression: tools: [terminal_inspector] in agent frontmatter does not crash."""
+        # This is the exact value from reality-check/agents/terminal-tester.md
+        base: list[dict] = []
+        overlay = ["terminal_inspector"]
+        result = merge_module_lists(base, overlay)
+        assert result == [{"module": "terminal_inspector"}]
+
+    def test_key_field_respected_for_string_normalization(self):
+        """String shorthand respects key_field parameter (e.g., 'module' vs custom field)."""
+        result = merge_module_lists([], ["my-hook"], key_field="module")
+        assert result == [{"module": "my-hook"}]
+
+    def test_empty_lists(self):
+        """Empty base and overlay produce empty result without crash."""
+        result = merge_module_lists([], [])
+        assert result == []
+
+    def test_garbage_entries_silently_dropped(self):
+        """Non-string, non-dict entries (e.g., None, int) are silently dropped."""
+        result = merge_module_lists([], [None, 42, "bash"])  # type: ignore[list-item]
+        assert result == [{"module": "bash"}]
+
+
 class TestMergeModuleLists:
     """Tests for merge_module_lists() multi-instance provider behavior."""
 
