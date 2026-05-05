@@ -92,6 +92,32 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str | bool]] = {
 }
 
 
+def _normalize_bundle_base_uri(uri: str) -> str:
+    """Normalize a git URI for base-repo comparison.
+
+    Strips the ``git+`` prefix, ``@branch`` suffix (except for ``file://`` URIs),
+    and any trailing slash so that two URIs pointing to the same upstream repo
+    compare equal regardless of how they were specified.
+
+    Examples::
+
+        git+https://github.com/microsoft/amplifier-bundle-foo@main
+        -> https://github.com/microsoft/amplifier-bundle-foo
+
+        https://github.com/microsoft/amplifier-bundle-foo
+        -> https://github.com/microsoft/amplifier-bundle-foo
+
+        file:///home/user/my-bundle  (trailing slash stripped only)
+        -> file:///home/user/my-bundle
+    """
+    if uri.startswith("git+"):
+        uri = uri[4:]
+    # Preserve @ref for file:// URIs (they may use it as a path component)
+    if not uri.startswith("file://") and "@" in uri:
+        uri = uri.split("@")[0]
+    return uri.rstrip("/")
+
+
 class AppBundleDiscovery:
     """CLI-specific bundle discovery with filesystem search paths.
 
@@ -430,14 +456,13 @@ class AppBundleDiscovery:
         - User-added bundles from settings.yaml
 
         Filters out:
-        - Subdirectory bundles (#subdirectory= in URI) since those share
-          a repo with their parent and updating the parent updates them too
-        - Exception: user-added bundles (bundle.added in settings.yaml) are
-          ALWAYS included even if their URI contains #subdirectory=. When the
-          user explicitly adds a behavior bundle via `amplifier bundle add
-          ...#subdirectory=...`, there is no separate parent being tracked —
-          the subdirectory bundle IS the thing to update. Filtering it out
-          would silently break `amplifier update` for those bundles.
+        - Subdirectory bundles (#subdirectory= in URI) whose underlying repo is
+          already represented by another root bundle in the list (e.g.
+          ``amplifier-tester-behavior`` is filtered when ``amplifier-tester``
+          is also present because they share the same git repo).
+        - Exception: if a sub-bundle is the ONLY entry for its repo (i.e. no
+          non-subdirectory root bundle with the same base URI exists), it is
+          kept — it is the thing to update.
 
         This is used by `amplifier update` to check for updates on ALL locally
         cached root bundles, not just the filtered list shown to users.
@@ -484,24 +509,57 @@ class AppBundleDiscovery:
         except Exception as e:
             logger.debug(f"Could not read bundles from settings: {e}")
 
-        # 4. Filter out subdirectory bundles from registry roots
-        # (registry stores URI, check it for subdirectory marker)
-        # User-added bundles are exempt: they were explicitly added and must
-        # always appear in update checks regardless of their registry URI.
+        # 4. Filter out sub-bundles that are redundant with already-tracked root bundles.
+        #
+        # A sub-bundle (URI contains #subdirectory=) is redundant when another root
+        # bundle in the list points to the same underlying git repo (same base URI
+        # before the # fragment).  In that case updating the root bundle covers the
+        # sub-bundle too, so showing the sub-bundle is just noise.
+        #
+        # A sub-bundle is KEPT when its underlying repo is not yet tracked by any
+        # non-subdirectory root bundle — it is the only update-checkable entry for
+        # that repo (e.g. the user added only a behaviour bundle, not the root).
+        #
+        # URI priority for resolving a bundle's URI:
+        #   registry data > user-added settings (added_bundles) > WELL_KNOWN_BUNDLES
         registry_path = Path.home() / ".amplifier" / "registry.json"
         if registry_path.exists():
             try:
                 with open(registry_path, encoding="utf-8") as f:
                     data = json.load(f)
-                user_added_names = set(added_bundles.keys())
+
+                def _get_uri(name: str) -> str:
+                    """Best-available URI for *name* using registry > added_bundles > well-known priority."""
+                    uri: str = data.get("bundles", {}).get(name, {}).get("uri", "")
+                    if not uri:
+                        uri = added_bundles.get(name, "")
+                    if not uri:
+                        wk = WELL_KNOWN_BUNDLES.get(name, {})
+                        raw = wk.get("remote", "")
+                        uri = str(raw) if raw else ""
+                    return uri
+
+                # Build the set of normalized base URIs for all non-subdirectory bundles
+                # currently in root_bundles — these are the "tracked" repos.
+                tracked_base_uris: set[str] = set()
+                for name in root_bundles:
+                    uri = _get_uri(name)
+                    if uri and "#subdirectory=" not in uri:
+                        tracked_base_uris.add(_normalize_bundle_base_uri(uri))
+
+                # Discard any sub-bundle whose base repo URI is already tracked.
                 for name in list(root_bundles):
-                    if name in user_added_names:
-                        # Explicitly user-added — never filter out
-                        continue
-                    bundle_data = data.get("bundles", {}).get(name, {})
-                    uri = bundle_data.get("uri", "")
-                    if "#subdirectory=" in uri:
+                    uri = _get_uri(name)
+                    if "#subdirectory=" not in uri:
+                        continue  # Not a sub-bundle — nothing to filter
+                    base_uri = _normalize_bundle_base_uri(uri.split("#")[0])
+                    if base_uri in tracked_base_uris:
+                        logger.debug(
+                            f"Filtering redundant sub-bundle '{name}': "
+                            f"base repo already tracked by another root bundle"
+                        )
                         root_bundles.discard(name)
+                    # base_uri not tracked → keep the sub-bundle (it IS the update target)
             except Exception as e:
                 logger.debug(f"Could not filter subdirectory bundles: {e}")
 
