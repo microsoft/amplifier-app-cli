@@ -69,6 +69,7 @@ async def test_spawn_bridge_registers_child_cost_on_parent():
     parent_coord.register_contributor = capture_register
 
     from amplifier_app_cli.session_spawner import _bridge_child_cost
+
     await _bridge_child_cost(
         child_coordinator=child_coord,
         parent_coordinator=parent_coord,
@@ -91,6 +92,7 @@ async def test_spawn_bridge_skips_registration_when_no_cost():
     parent_coord.register_contributor = MagicMock()
 
     from amplifier_app_cli.session_spawner import _bridge_child_cost
+
     await _bridge_child_cost(
         child_coordinator=child_coord,
         parent_coordinator=parent_coord,
@@ -117,6 +119,7 @@ async def test_resume_bridge_registers_child_cost_on_parent():
     parent_coord.register_contributor = capture_register
 
     from amplifier_app_cli.session_spawner import _bridge_child_cost
+
     await _bridge_child_cost(
         child_coordinator=child_coord,
         parent_coordinator=parent_coord,
