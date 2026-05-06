@@ -5,6 +5,7 @@ Implements sub-session creation with configuration inheritance and overlays.
 
 import logging
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 from amplifier_core import AmplifierSession
@@ -13,6 +14,27 @@ from amplifier_foundation import generate_sub_session_id
 from .agent_config import merge_configs
 
 logger = logging.getLogger(__name__)
+
+
+# Intentionally duplicated across provider-anthropic, foundation, and hooks-streaming-ui.
+# These are separate repos with no shared utility dependency. The function is 10 lines —
+# the coordination cost of sharing outweighs the duplication cost.
+def _sum_cost_usd(contributions: list) -> Decimal | None:
+    """Sum cost_usd values from collect_contributions() results.
+
+    Returns Decimal total, or None if no cost data is present.
+    None != 0: None means unknown cost (no rate data), 0 means known-free.
+    """
+    total: Decimal | None = None
+    for c in contributions:
+        if c and isinstance(c, dict):
+            cost = c.get("cost_usd")
+            if cost is not None:
+                total = (total or Decimal("0")) + (
+                    cost if isinstance(cost, Decimal) else Decimal(str(cost))
+                )
+    return total
+
 
 # Capture default sys.path entries at import time.
 # Used to filter out bundle-added paths when forwarding sys_paths to subprocess children.
@@ -714,7 +736,11 @@ async def spawn_sub_session(
     }
 
 
-async def resume_sub_session(sub_session_id: str, instruction: str, parent_session: AmplifierSession | None = None) -> dict:
+async def resume_sub_session(
+    sub_session_id: str,
+    instruction: str,
+    parent_session: AmplifierSession | None = None,
+) -> dict:
     """Resume existing sub-session for multi-turn engagement.
 
     Loads previously saved sub-session state, recreates the session with
@@ -1016,7 +1042,10 @@ async def resume_sub_session(sub_session_id: str, instruction: str, parent_sessi
     finally:
         # Unregister child cancellation token before cleanup
         # MUST run even if execution was cancelled (CancelledError) or failed
-        if resume_parent_cancellation is not None and resume_child_cancellation is not None:
+        if (
+            resume_parent_cancellation is not None
+            and resume_child_cancellation is not None
+        ):
             resume_parent_cancellation.unregister_child(resume_child_cancellation)
             logger.debug(
                 f"Unregistered child cancellation token for resumed sub-session {sub_session_id}"
