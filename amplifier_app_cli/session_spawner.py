@@ -36,6 +36,28 @@ def _sum_cost_usd(contributions: list) -> Decimal | None:
     return total
 
 
+async def _bridge_child_cost(
+    child_coordinator,
+    parent_coordinator,
+    child_session_id: str,
+) -> None:
+    """Propagate child session cost to parent's session.cost channel.
+
+    Called after child_session.execute() returns and before child_session.cleanup().
+    The child coordinator is still alive in this window.
+    """
+    child_contributions = await child_coordinator.collect_contributions("session.cost")
+    child_total = _sum_cost_usd(child_contributions)
+
+    if child_total is not None:
+        # Freeze value in default arg — child coordinator will be torn down after this
+        parent_coordinator.register_contributor(
+            "session.cost",
+            f"delegate:{child_session_id}",
+            lambda total=child_total: {"cost_usd": total},
+        )
+
+
 # Capture default sys.path entries at import time.
 # Used to filter out bundle-added paths when forwarding sys_paths to subprocess children.
 _DEFAULT_SYS_PATHS: frozenset[str] = frozenset(sys.path)
@@ -709,6 +731,13 @@ async def spawn_sub_session(
         store = SessionStore()
         store.save(sub_session_id, transcript, metadata)
         logger.debug(f"Sub-session {sub_session_id} state persisted")
+
+        # Bridge child session costs to parent coordinator before child is torn down
+        await _bridge_child_cost(
+            child_coordinator=child_session.coordinator,
+            parent_coordinator=parent_session.coordinator,
+            child_session_id=sub_session_id,
+        )
 
     finally:
         # Unregister child cancellation token before cleanup
