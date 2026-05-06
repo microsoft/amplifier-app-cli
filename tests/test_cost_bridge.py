@@ -98,3 +98,29 @@ async def test_spawn_bridge_skips_registration_when_no_cost():
     )
 
     parent_coord.register_contributor.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resume_bridge_registers_child_cost_on_parent():
+    """resume_sub_session also bridges child costs after execute()."""
+    child_coord = MagicMock()
+    child_coord.collect_contributions = AsyncMock(
+        return_value=[{"cost_usd": Decimal("0.04")}]
+    )
+
+    parent_coord = MagicMock()
+    registered = {}
+
+    def capture_register(channel, name, callback):
+        registered[(channel, name)] = callback
+
+    parent_coord.register_contributor = capture_register
+
+    from amplifier_app_cli.session_spawner import _bridge_child_cost
+    await _bridge_child_cost(
+        child_coordinator=child_coord,
+        parent_coordinator=parent_coord,
+        child_session_id="resumed-child-789",
+    )
+
+    assert ("session.cost", "delegate:resumed-child-789") in registered
