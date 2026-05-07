@@ -9,16 +9,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from amplifier_foundation.bundle._prepared import _bridge_child_cost, _sum_cost_usd
+from amplifier_foundation import bridge_child_cost, sum_cost_usd
 
 
 def test_sums_single_contribution():
-    result = _sum_cost_usd([{"cost_usd": Decimal("0.05")}])
+    result = sum_cost_usd([{"cost_usd": Decimal("0.05")}])
     assert result == Decimal("0.05")
 
 
 def test_sums_multiple_contributions():
-    result = _sum_cost_usd(
+    result = sum_cost_usd(
         [
             {"cost_usd": Decimal("0.03")},
             {"cost_usd": Decimal("0.05")},
@@ -29,23 +29,23 @@ def test_sums_multiple_contributions():
 
 
 def test_returns_none_for_empty_list():
-    result = _sum_cost_usd([])
+    result = sum_cost_usd([])
     assert result is None
 
 
 def test_returns_none_when_all_none():
-    result = _sum_cost_usd([{"cost_usd": None}, None, {}])
+    result = sum_cost_usd([{"cost_usd": None}, None, {}])
     assert result is None
 
 
 def test_accepts_string_cost_usd():
-    result = _sum_cost_usd([{"cost_usd": "0.05"}])
+    result = sum_cost_usd([{"cost_usd": "0.05"}])
     assert result == Decimal("0.05")
     assert isinstance(result, Decimal)
 
 
 def test_skips_none_entries_in_mixed_list():
-    result = _sum_cost_usd(
+    result = sum_cost_usd(
         [
             {"cost_usd": Decimal("0.03")},
             None,
@@ -72,7 +72,7 @@ async def test_spawn_bridge_registers_child_cost_on_parent():
 
     parent_coord.register_contributor = capture_register
 
-    await _bridge_child_cost(
+    await bridge_child_cost(
         child_coordinator=child_coord,
         parent_coordinator=parent_coord,
         child_session_id="test-child-123",
@@ -95,7 +95,7 @@ async def test_bridge_swallows_exception_and_logs():
     parent_coord.register_contributor = MagicMock()
 
     # Must not raise
-    await _bridge_child_cost(
+    await bridge_child_cost(
         child_coordinator=child_coord,
         parent_coordinator=parent_coord,
         child_session_id="test-child-err",
@@ -114,7 +114,7 @@ async def test_spawn_bridge_skips_registration_when_no_cost():
     parent_coord = MagicMock()
     parent_coord.register_contributor = MagicMock()
 
-    await _bridge_child_cost(
+    await bridge_child_cost(
         child_coordinator=child_coord,
         parent_coordinator=parent_coord,
         child_session_id="test-child-456",
@@ -139,7 +139,7 @@ async def test_resume_bridge_registers_child_cost_on_parent():
 
     parent_coord.register_contributor = capture_register
 
-    await _bridge_child_cost(
+    await bridge_child_cost(
         child_coordinator=child_coord,
         parent_coordinator=parent_coord,
         child_session_id="resumed-child-789",
@@ -165,7 +165,7 @@ async def test_resume_bridge_accumulates_incremental_costs():
     Verified properties:
     - Both calls use the same (channel, name) key — standard contributor identity.
     - Each callback carries only the incremental cost of its resume.
-    - _sum_cost_usd([cb1(), cb2()]) == first_cost + second_cost (no double-count).
+    - sum_cost_usd([cb1(), cb2()]) == first_cost + second_cost (no double-count).
     """
 
     parent_coord = MagicMock()
@@ -181,7 +181,7 @@ async def test_resume_bridge_accumulates_incremental_costs():
     child_coord_1.collect_contributions = AsyncMock(
         return_value=[{"cost_usd": Decimal("0.04")}]
     )
-    await _bridge_child_cost(
+    await bridge_child_cost(
         child_coordinator=child_coord_1,
         parent_coordinator=parent_coord,
         child_session_id="test-child-xyz",
@@ -192,7 +192,7 @@ async def test_resume_bridge_accumulates_incremental_costs():
     child_coord_2.collect_contributions = AsyncMock(
         return_value=[{"cost_usd": Decimal("0.06")}]
     )
-    await _bridge_child_cost(
+    await bridge_child_cost(
         child_coordinator=child_coord_2,
         parent_coordinator=parent_coord,
         child_session_id="test-child-xyz",
@@ -216,7 +216,7 @@ async def test_resume_bridge_accumulates_incremental_costs():
 
     # Simulate what collect_contributions + _sum_cost_usd would produce:
     # both entries are returned, summed to $0.10 (no double-counting)
-    total = _sum_cost_usd([cb1(), cb2()])
+    total = sum_cost_usd([cb1(), cb2()])
     assert total == Decimal("0.10"), (
         f"Expected $0.10 from two incremental contributions, got {total!r}"
     )

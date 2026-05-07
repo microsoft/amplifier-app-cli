@@ -9,7 +9,7 @@ from pathlib import Path
 
 from amplifier_core import AmplifierSession
 from amplifier_foundation import generate_sub_session_id
-from amplifier_foundation.bundle._prepared import _bridge_child_cost
+from amplifier_foundation import bridge_child_cost
 
 from .agent_config import merge_configs
 
@@ -690,8 +690,8 @@ async def spawn_sub_session(
         store.save(sub_session_id, transcript, metadata)
         logger.debug(f"Sub-session {sub_session_id} state persisted")
 
-        # Bridge child session costs to parent coordinator (_bridge_child_cost never raises)
-        await _bridge_child_cost(
+        # Bridge child session costs to parent coordinator (bridge_child_cost never raises)
+        await bridge_child_cost(
             child_coordinator=child_session.coordinator,
             parent_coordinator=parent_session.coordinator,
             child_session_id=sub_session_id,
@@ -1026,9 +1026,9 @@ async def resume_sub_session(
             f"Sub-session {sub_session_id} state updated (turn {metadata['turn_count']})"
         )
 
-        # Bridge child session costs to parent coordinator (_bridge_child_cost never raises)
+        # Bridge child session costs to parent coordinator (bridge_child_cost never raises)
         if parent_session is not None:
-            await _bridge_child_cost(
+            await bridge_child_cost(
                 child_coordinator=child_session.coordinator,
                 parent_coordinator=parent_session.coordinator,
                 child_session_id=sub_session_id,
