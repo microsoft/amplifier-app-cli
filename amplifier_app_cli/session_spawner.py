@@ -5,56 +5,15 @@ Implements sub-session creation with configuration inheritance and overlays.
 
 import logging
 import sys
-from decimal import Decimal
 from pathlib import Path
 
 from amplifier_core import AmplifierSession
 from amplifier_foundation import generate_sub_session_id
+from amplifier_foundation.bundle._prepared import _bridge_child_cost
 
 from .agent_config import merge_configs
 
 logger = logging.getLogger(__name__)
-
-
-# Collects cost_usd contributions from a session.cost channel and returns the
-# total as Decimal, or None when no cost data is present (e.g. self-hosted models).
-def _sum_cost_usd(contributions: list) -> Decimal | None:
-    """Sum cost_usd values from collect_contributions() results.
-
-    Returns Decimal total, or None if no cost data is present.
-    None != 0: None means unknown cost (no rate data), 0 means known-free.
-    """
-    total: Decimal | None = None
-    for c in contributions:
-        if c and isinstance(c, dict):
-            cost = c.get("cost_usd")
-            if cost is not None:
-                total = (total or Decimal("0")) + (
-                    cost if isinstance(cost, Decimal) else Decimal(str(cost))
-                )
-    return total
-
-
-async def _bridge_child_cost(
-    child_coordinator,
-    parent_coordinator,
-    child_session_id: str,
-) -> None:
-    """Propagate child session cost to parent's session.cost channel.
-
-    Called after child_session.execute() returns and before child_session.cleanup().
-    The child coordinator is still alive in this window.
-    """
-    child_contributions = await child_coordinator.collect_contributions("session.cost")
-    child_total = _sum_cost_usd(child_contributions)
-
-    if child_total is not None:
-        # Freeze value in default arg — child coordinator will be torn down after this
-        parent_coordinator.register_contributor(
-            "session.cost",
-            f"delegate:{child_session_id}",
-            lambda total=child_total: {"cost_usd": total},
-        )
 
 
 # Capture default sys.path entries at import time.
@@ -731,19 +690,12 @@ async def spawn_sub_session(
         store.save(sub_session_id, transcript, metadata)
         logger.debug(f"Sub-session {sub_session_id} state persisted")
 
-        # Bridge child session costs to parent coordinator before child is torn down
-        try:
-            await _bridge_child_cost(
-                child_coordinator=child_session.coordinator,
-                parent_coordinator=parent_session.coordinator,
-                child_session_id=sub_session_id,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to bridge child session cost for %s; skipping",
-                sub_session_id,
-                exc_info=True,
-            )
+        # Bridge child session costs to parent coordinator (_bridge_child_cost never raises)
+        await _bridge_child_cost(
+            child_coordinator=child_session.coordinator,
+            parent_coordinator=parent_session.coordinator,
+            child_session_id=sub_session_id,
+        )
 
     finally:
         # Unregister child cancellation token before cleanup
@@ -1074,20 +1026,13 @@ async def resume_sub_session(
             f"Sub-session {sub_session_id} state updated (turn {metadata['turn_count']})"
         )
 
-        # Bridge child session costs to parent coordinator before child is torn down
+        # Bridge child session costs to parent coordinator (_bridge_child_cost never raises)
         if parent_session is not None:
-            try:
-                await _bridge_child_cost(
-                    child_coordinator=child_session.coordinator,
-                    parent_coordinator=parent_session.coordinator,
-                    child_session_id=sub_session_id,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to bridge child session cost for %s; skipping",
-                    sub_session_id,
-                    exc_info=True,
-                )
+            await _bridge_child_cost(
+                child_coordinator=child_session.coordinator,
+                parent_coordinator=parent_session.coordinator,
+                child_session_id=sub_session_id,
+            )
 
     finally:
         # Unregister child cancellation token before cleanup

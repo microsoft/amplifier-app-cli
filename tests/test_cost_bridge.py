@@ -1,11 +1,15 @@
-"""Tests for _sum_cost_usd helper in session_spawner."""
+"""Tests for spawn cost bridge helpers.
+
+_sum_cost_usd and _bridge_child_cost live in amplifier_foundation.bundle._prepared
+and are imported directly from there (app-cli delegates, not reimplements).
+"""
 
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from amplifier_app_cli.session_spawner import _sum_cost_usd
+from amplifier_foundation.bundle._prepared import _bridge_child_cost, _sum_cost_usd
 
 
 def test_sums_single_contribution():
@@ -68,8 +72,6 @@ async def test_spawn_bridge_registers_child_cost_on_parent():
 
     parent_coord.register_contributor = capture_register
 
-    from amplifier_app_cli.session_spawner import _bridge_child_cost
-
     await _bridge_child_cost(
         child_coordinator=child_coord,
         parent_coordinator=parent_coord,
@@ -83,6 +85,27 @@ async def test_spawn_bridge_registers_child_cost_on_parent():
 
 
 @pytest.mark.asyncio
+async def test_bridge_swallows_exception_and_logs():
+    """_bridge_child_cost never raises — errors are logged as warnings."""
+    child_coord = MagicMock()
+    # Simulate a failure inside collect_contributions
+    child_coord.collect_contributions = AsyncMock(side_effect=RuntimeError("simulated"))
+
+    parent_coord = MagicMock()
+    parent_coord.register_contributor = MagicMock()
+
+    # Must not raise
+    await _bridge_child_cost(
+        child_coordinator=child_coord,
+        parent_coordinator=parent_coord,
+        child_session_id="test-child-err",
+    )
+
+    # No contributor registered because the bridge failed before it could register
+    parent_coord.register_contributor.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_spawn_bridge_skips_registration_when_no_cost():
     """If child has no cost data, no contributor is registered on parent."""
     child_coord = MagicMock()
@@ -90,8 +113,6 @@ async def test_spawn_bridge_skips_registration_when_no_cost():
 
     parent_coord = MagicMock()
     parent_coord.register_contributor = MagicMock()
-
-    from amplifier_app_cli.session_spawner import _bridge_child_cost
 
     await _bridge_child_cost(
         child_coordinator=child_coord,
@@ -117,8 +138,6 @@ async def test_resume_bridge_registers_child_cost_on_parent():
         registered[(channel, name)] = callback
 
     parent_coord.register_contributor = capture_register
-
-    from amplifier_app_cli.session_spawner import _bridge_child_cost
 
     await _bridge_child_cost(
         child_coordinator=child_coord,
@@ -148,7 +167,6 @@ async def test_resume_bridge_accumulates_incremental_costs():
     - Each callback carries only the incremental cost of its resume.
     - _sum_cost_usd([cb1(), cb2()]) == first_cost + second_cost (no double-count).
     """
-    from amplifier_app_cli.session_spawner import _bridge_child_cost, _sum_cost_usd
 
     parent_coord = MagicMock()
     all_register_calls: list[tuple] = []
