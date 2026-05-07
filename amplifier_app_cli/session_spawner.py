@@ -16,9 +16,8 @@ from .agent_config import merge_configs
 logger = logging.getLogger(__name__)
 
 
-# Intentionally duplicated across provider-anthropic, foundation, and hooks-streaming-ui.
-# These are separate repos with no shared utility dependency. The function is 10 lines —
-# the coordination cost of sharing outweighs the duplication cost.
+# Collects cost_usd contributions from a session.cost channel and returns the
+# total as Decimal, or None when no cost data is present (e.g. self-hosted models).
 def _sum_cost_usd(contributions: list) -> Decimal | None:
     """Sum cost_usd values from collect_contributions() results.
 
