@@ -171,6 +171,24 @@ async def load_and_prepare_bundle(
                 logger.warning(f"Failed to compose behavior '{behavior_uri}': {e}")
                 # Continue without this behavior - notifications are optional
 
+    # 3b. Load agent metadata BEFORE prepare so the agent's declared modules
+    # (tools/providers/hooks with `source:` URIs in their .md frontmatter) are
+    # present in `mount_plan["agents"][name]` when `Bundle.prepare()` walks the
+    # agent section to pre-activate child-session modules.
+    #
+    # `_parse_agents` only puts `{"name": name}` into `bundle.agents` for each
+    # entry in `agents.include:`. The full frontmatter (tools, providers, hooks,
+    # session) lives on disk and is loaded by `load_agent_metadata()`, which
+    # uses `source_base_paths` (now fully populated after compose) to resolve
+    # each agent's .md file. Calling it here, BEFORE prepare, lets agent-side
+    # tool sources be activated at compose time alongside parent-side ones.
+    #
+    # Without this ordering, agent sub-sessions inherit the parent's prepared
+    # module set and silently fail to load any tool the parent didn't also
+    # declare. The downstream call at runtime/config.py is now redundant for
+    # description population but kept idempotent for backward safety.
+    bundle.load_agent_metadata()
+
     # 4. Prepare: download modules from git sources, install deps
     # Build source resolver callback if overrides provided
     def make_source_resolver(
