@@ -127,3 +127,78 @@ async def test_resume_bridge_registers_child_cost_on_parent():
     )
 
     assert ("session.cost", "delegate:resumed-child-789") in registered
+
+
+@pytest.mark.asyncio
+async def test_resume_bridge_accumulates_incremental_costs():
+    """Resuming the same session twice correctly accumulates incremental costs.
+
+    Each resume_sub_session call creates a FRESH child coordinator.  The provider
+    re-mounts from zero, so the child's session.cost channel only contains costs
+    for THAT resume's turns — not the full session history.
+
+    _bridge_child_cost therefore passes the incremental cost for each resume.
+
+    register_contributor in amplifier-core APPENDS (coordinator.rs: .push(entry)) —
+    it does NOT overwrite on duplicate name.  Both entries are returned by
+    collect_contributions and summed correctly by _sum_cost_usd.
+
+    Verified properties:
+    - Both calls use the same (channel, name) key — standard contributor identity.
+    - Each callback carries only the incremental cost of its resume.
+    - _sum_cost_usd([cb1(), cb2()]) == first_cost + second_cost (no double-count).
+    """
+    from amplifier_app_cli.session_spawner import _bridge_child_cost, _sum_cost_usd
+
+    parent_coord = MagicMock()
+    all_register_calls: list[tuple] = []
+
+    def capture_register(channel, name, callback):
+        all_register_calls.append((channel, name, callback))
+
+    parent_coord.register_contributor = capture_register
+
+    # First resume: fresh child coordinator accumulated $0.04 (turn 1 only)
+    child_coord_1 = MagicMock()
+    child_coord_1.collect_contributions = AsyncMock(
+        return_value=[{"cost_usd": Decimal("0.04")}]
+    )
+    await _bridge_child_cost(
+        child_coordinator=child_coord_1,
+        parent_coordinator=parent_coord,
+        child_session_id="test-child-xyz",
+    )
+
+    # Second resume: fresh child coordinator accumulated $0.06 (turn 2 only)
+    child_coord_2 = MagicMock()
+    child_coord_2.collect_contributions = AsyncMock(
+        return_value=[{"cost_usd": Decimal("0.06")}]
+    )
+    await _bridge_child_cost(
+        child_coordinator=child_coord_2,
+        parent_coordinator=parent_coord,
+        child_session_id="test-child-xyz",
+    )
+
+    assert len(all_register_calls) == 2, "Expected exactly two register_contributor calls"
+
+    channel1, name1, _ = all_register_calls[0]
+    channel2, name2, _ = all_register_calls[1]
+
+    # Same channel + name: register_contributor appends both, collect_contributions
+    # returns both, _sum_cost_usd sums them — no key uniqueness required.
+    assert channel1 == channel2 == "session.cost"
+    assert name1 == name2 == "delegate:test-child-xyz"
+
+    # Verify incremental values and that their sum is correct
+    _, _, cb1 = all_register_calls[0]
+    _, _, cb2 = all_register_calls[1]
+    assert cb1()["cost_usd"] == Decimal("0.04")
+    assert cb2()["cost_usd"] == Decimal("0.06")
+
+    # Simulate what collect_contributions + _sum_cost_usd would produce:
+    # both entries are returned, summed to $0.10 (no double-counting)
+    total = _sum_cost_usd([cb1(), cb2()])
+    assert total == Decimal("0.10"), (
+        f"Expected $0.10 from two incremental contributions, got {total!r}"
+    )

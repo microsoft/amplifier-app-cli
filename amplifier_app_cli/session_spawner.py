@@ -732,11 +732,18 @@ async def spawn_sub_session(
         logger.debug(f"Sub-session {sub_session_id} state persisted")
 
         # Bridge child session costs to parent coordinator before child is torn down
-        await _bridge_child_cost(
-            child_coordinator=child_session.coordinator,
-            parent_coordinator=parent_session.coordinator,
-            child_session_id=sub_session_id,
-        )
+        try:
+            await _bridge_child_cost(
+                child_coordinator=child_session.coordinator,
+                parent_coordinator=parent_session.coordinator,
+                child_session_id=sub_session_id,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to bridge child session cost for %s; skipping",
+                sub_session_id,
+                exc_info=True,
+            )
 
     finally:
         # Unregister child cancellation token before cleanup
@@ -1069,11 +1076,18 @@ async def resume_sub_session(
 
         # Bridge child session costs to parent coordinator before child is torn down
         if parent_session is not None:
-            await _bridge_child_cost(
-                child_coordinator=child_session.coordinator,
-                parent_coordinator=parent_session.coordinator,
-                child_session_id=sub_session_id,
-            )
+            try:
+                await _bridge_child_cost(
+                    child_coordinator=child_session.coordinator,
+                    parent_coordinator=parent_session.coordinator,
+                    child_session_id=sub_session_id,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to bridge child session cost for %s; skipping",
+                    sub_session_id,
+                    exc_info=True,
+                )
 
     finally:
         # Unregister child cancellation token before cleanup
