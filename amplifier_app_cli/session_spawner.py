@@ -9,10 +9,12 @@ from pathlib import Path
 
 from amplifier_core import AmplifierSession
 from amplifier_foundation import generate_sub_session_id
+from amplifier_foundation import bridge_child_cost
 
 from .agent_config import merge_configs
 
 logger = logging.getLogger(__name__)
+
 
 # Capture default sys.path entries at import time.
 # Used to filter out bundle-added paths when forwarding sys_paths to subprocess children.
@@ -688,6 +690,13 @@ async def spawn_sub_session(
         store.save(sub_session_id, transcript, metadata)
         logger.debug(f"Sub-session {sub_session_id} state persisted")
 
+        # Bridge child session costs to parent coordinator (bridge_child_cost never raises)
+        await bridge_child_cost(
+            child_coordinator=child_session.coordinator,
+            parent_coordinator=parent_session.coordinator,
+            child_session_id=sub_session_id,
+        )
+
     finally:
         # Unregister child cancellation token before cleanup
         # MUST run even if execution was cancelled (CancelledError) or failed
@@ -714,7 +723,11 @@ async def spawn_sub_session(
     }
 
 
-async def resume_sub_session(sub_session_id: str, instruction: str, parent_session: AmplifierSession | None = None) -> dict:
+async def resume_sub_session(
+    sub_session_id: str,
+    instruction: str,
+    parent_session: AmplifierSession | None = None,
+) -> dict:
     """Resume existing sub-session for multi-turn engagement.
 
     Loads previously saved sub-session state, recreates the session with
@@ -1013,10 +1026,21 @@ async def resume_sub_session(sub_session_id: str, instruction: str, parent_sessi
             f"Sub-session {sub_session_id} state updated (turn {metadata['turn_count']})"
         )
 
+        # Bridge child session costs to parent coordinator (bridge_child_cost never raises)
+        if parent_session is not None:
+            await bridge_child_cost(
+                child_coordinator=child_session.coordinator,
+                parent_coordinator=parent_session.coordinator,
+                child_session_id=sub_session_id,
+            )
+
     finally:
         # Unregister child cancellation token before cleanup
         # MUST run even if execution was cancelled (CancelledError) or failed
-        if resume_parent_cancellation is not None and resume_child_cancellation is not None:
+        if (
+            resume_parent_cancellation is not None
+            and resume_child_cancellation is not None
+        ):
             resume_parent_cancellation.unregister_child(resume_child_cancellation)
             logger.debug(
                 f"Unregistered child cancellation token for resumed sub-session {sub_session_id}"

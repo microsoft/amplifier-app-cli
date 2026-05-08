@@ -659,6 +659,7 @@ class TestSpawnEnrichment:
 
         child_coordinator.get = child_get
         child_coordinator.mount = AsyncMock()
+        child_coordinator.collect_contributions = AsyncMock(return_value=[])
 
         async def mock_execute(instruction):
             # Simulate orchestrator emitting orchestrator:complete during execute
@@ -769,6 +770,7 @@ class TestSpawnEnrichment:
 
         child_coordinator.get = child_get
         child_coordinator.mount = AsyncMock()
+        child_coordinator.collect_contributions = AsyncMock(return_value=[])
 
         child_session = MagicMock()
         child_session.coordinator = child_coordinator
@@ -1052,6 +1054,7 @@ class TestSessionMetadataFlow:
 
         child_coordinator.get = child_get
         child_coordinator.mount = AsyncMock()
+        child_coordinator.collect_contributions = AsyncMock(return_value=[])
 
         child_session = MagicMock()
         child_session.coordinator = child_coordinator
@@ -1217,6 +1220,7 @@ class TestRoutingFallbackFromAgentConfig:
 
         child_coordinator.get = child_get
         child_coordinator.mount = AsyncMock()
+        child_coordinator.collect_contributions = AsyncMock(return_value=[])
 
         child_session = MagicMock()
         child_session.coordinator = child_coordinator
@@ -1335,6 +1339,7 @@ class TestRoutingFallbackFromAgentConfig:
 
         child_coordinator.get = child_get
         child_coordinator.mount = AsyncMock()
+        child_coordinator.collect_contributions = AsyncMock(return_value=[])
 
         child_session = MagicMock()
         child_session.coordinator = child_coordinator
@@ -1445,6 +1450,7 @@ class TestRoutingFallbackFromAgentConfig:
 
         child_coordinator.get = child_get
         child_coordinator.mount = AsyncMock()
+        child_coordinator.collect_contributions = AsyncMock(return_value=[])
 
         child_session = MagicMock()
         child_session.coordinator = child_coordinator
@@ -1561,6 +1567,7 @@ class TestRoutingCapabilityPropagation:
 
         child_coordinator.get = child_get
         child_coordinator.mount = AsyncMock()
+        child_coordinator.collect_contributions = AsyncMock(return_value=[])
 
         child_session = MagicMock()
         child_session.coordinator = child_coordinator
@@ -1657,6 +1664,7 @@ class TestRoutingCapabilityPropagation:
 
         child_coordinator.get = child_get
         child_coordinator.mount = AsyncMock()
+        child_coordinator.collect_contributions = AsyncMock(return_value=[])
 
         child_session = MagicMock()
         child_session.coordinator = child_coordinator
