@@ -1018,19 +1018,21 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
 
     # Check umbrella first
     from ..utils.umbrella_discovery import discover_umbrella_source
-    from ..utils.update_executor import check_umbrella_dependencies_for_updates
+    from ..utils.update_executor import check_umbrella_dependencies_for_updates  # noqa: F401 — kept for future reporting use; no longer gates execution
 
     umbrella_info = discover_umbrella_source()
     has_umbrella_updates = False
 
     if umbrella_info:
-        if force:
-            has_umbrella_updates = True  # Force update umbrella
-        else:
-            console.print("  Checking Amplifier dependencies...")
-            has_umbrella_updates = asyncio.run(
-                check_umbrella_dependencies_for_updates(umbrella_info)
-            )
+        # Always route the umbrella update through uv. The previous
+        # check_umbrella_dependencies_for_updates() check only inspected
+        # git-sourced deps and silently missed PyPI version bumps
+        # (e.g. amplifier-core), causing `amplifier update` to report
+        # "All sources up to date" while actually being stale.
+        # uv knows the full dependency tree and will decide what (if anything)
+        # needs upgrading. The cost is one extra `uv tool install` call per
+        # `amplifier update`; the alternative is silent staleness.
+        has_umbrella_updates = True
 
     # Check modules
     if not force:
@@ -1155,6 +1157,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
                 report,
                 umbrella_info=umbrella_info if has_umbrella_updates else None,
                 progress_callback=_on_update_progress,
+                force=force,
             )
         )
 

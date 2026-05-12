@@ -418,6 +418,7 @@ def _invalidate_modules_with_missing_deps() -> tuple[int, int]:
 async def execute_self_update(
     umbrella_info: UmbrellaInfo,
     progress_callback: Callable[[str, str], None] | None = None,
+    force: bool = False,
 ) -> ExecutionResult:
     """Delegate to 'uv tool install --upgrade --reinstall'.
 
@@ -429,9 +430,19 @@ async def execute_self_update(
     are still satisfied.
 
     Progress reporting: The progress_callback receives two kinds of phase values:
-    - Structured keywords: "installing", "checking_deps" (stable, mapped by caller)
+    - Structured keywords: "installing", "checking_deps", "clearing" (stable, mapped by caller)
     - Raw uv output lines: e.g. "Resolved 15 packages in 2.31s" (streamed from stderr)
     The caller's format function should handle both (see _format_update_progress).
+
+    Args:
+        umbrella_info: Discovered umbrella source info (URL and ref).
+        progress_callback: Optional callback(name, phase) for progress reporting.
+        force: When True, run `uv cache clean` before installing. `--upgrade`/
+            `--reinstall` imply `--refresh`, but `--refresh` is a conditional
+            revalidation that PyPI's CDN can satisfy with a stale 304 during a
+            release rollout window. `uv cache clean` is unconditional — matching
+            what `amplifier reset` does (the only update path users currently
+            report as reliable).
     """
     url = f"git+{umbrella_info.url}@{umbrella_info.ref}"
 
@@ -463,6 +474,27 @@ async def execute_self_update(
                     progress_callback("amplifier", clean)
 
     try:
+        # In --force mode, run `uv cache clean` to unconditionally invalidate
+        # uv's HTTP metadata cache. `--upgrade`/`--reinstall` imply `--refresh`,
+        # but `--refresh` is a conditional revalidation that can be defeated by
+        # a PyPI CDN serving 304 Not Modified during a release rollout window.
+        # `uv cache clean` matches what `amplifier reset` does, which is the
+        # only update path users currently report as reliable.
+        if force:
+            if progress_callback:
+                progress_callback("amplifier", "clearing")
+            try:
+                subprocess.run(
+                    ["uv", "cache", "clean"],
+                    check=False,
+                    capture_output=True,
+                    timeout=60,
+                )
+            except Exception:
+                # Cache clean is defense-in-depth; never block the update on
+                # its failure.
+                pass
+
         # Remove orphaned lock file before running uv. A stale uv.lock (from
         # a killed uv process) causes uv tool install to hang indefinitely
         # waiting to acquire it — same guard applied in reset._clean_uv_cache().
@@ -556,6 +588,7 @@ async def execute_updates(
     report: UpdateReport,
     umbrella_info: UmbrellaInfo | None = None,
     progress_callback: Callable[[str, str], None] | None = None,
+    force: bool = False,
 ) -> ExecutionResult:
     """Orchestrate all updates based on report.
 
@@ -565,6 +598,8 @@ async def execute_updates(
         report: Update status report from check_all_sources
         umbrella_info: Optional umbrella info if already checked for updates
         progress_callback: Optional callback(name, phase) for progress reporting
+        force: When True, forwarded to execute_self_update to enable unconditional
+            cache-clean before the uv install step.
     """
     all_updated = []
     all_failed = []
@@ -592,7 +627,9 @@ async def execute_updates(
     if umbrella_info:
         logger.info("Updating Amplifier (umbrella dependencies have updates)...")
         result = await execute_self_update(
-            umbrella_info, progress_callback=progress_callback
+            umbrella_info,
+            progress_callback=progress_callback,
+            force=force,
         )
 
         all_updated.extend(result.updated)
