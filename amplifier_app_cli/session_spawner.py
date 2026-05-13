@@ -211,6 +211,10 @@ async def spawn_sub_session(
     """
     Spawn sub-session with agent configuration overlay.
 
+    Precedence policy (this app's choice, not a kernel contract): see
+    ``docs/SPAWN_PRECEDENCE.md``. Other apps that register the
+    ``session.spawn`` capability may use different precedence.
+
     Args:
         agent_name: Name of agent from configuration
         instruction: Task for agent to execute
