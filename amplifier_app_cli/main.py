@@ -550,9 +550,18 @@ class CommandProcessor:
 
     async def _handle_mode(self, args: str) -> str:
         """Handle /mode command for setting, toggling, or clearing modes."""
-        args = args.strip().lower()
+        args = args.strip()
+        args_lower = args.lower()
         session_state = self.session.coordinator.session_state
         current_mode = session_state.get("active_mode")
+
+        # /mode info <name> — full details for a specific mode
+        if args_lower.startswith("info ") or args_lower == "info":
+            mode_name = args[5:].strip().lower() if args_lower.startswith("info ") else ""
+            return await self._mode_info(mode_name)
+
+        # Continue with lower-case args for remaining /mode subcommands
+        args = args_lower
 
         # /mode off - clear any active mode
         if args == "off":
@@ -621,7 +630,16 @@ class CommandProcessor:
             return f"Mode: {mode_name}" + (f" — {description}" if description else "")
 
     async def _list_modes(self) -> str:
-        """List available modes, grouped by source bundle."""
+        """List available modes, grouped by source bundle.
+
+        Shows ALL modes — advertised and unadvertised. Unadvertised modes are
+        marked with ``(hidden)`` to signal that they are available via slash
+        command but are not surfaced to agents via the mode(list) tool.
+
+        Layout: one line per mode, terminal-width-aware truncation, aligned
+        columns within each source group. No line wrapping.
+        """
+        import shutil
         from collections import defaultdict
 
         session_state = self.session.coordinator.session_state
@@ -637,42 +655,139 @@ class CommandProcessor:
             return "No modes found. Create modes in .amplifier/modes/ or include a bundle with modes."
 
         current_mode = session_state.get("active_mode")
+        terminal_cols = shutil.get_terminal_size((100, 24)).columns
 
-        # Group by source (supports both 2-tuple and 3-tuple formats)
-        groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        # Parse each entry — supports ModeListing NamedTuple (name/desc/source/advertised)
+        # and legacy tuple formats (2-tuple or 3-tuple) for backward compat.
+        # Group: source → list of (name, description, advertised)
+        groups: dict[str, list[tuple[str, str, bool]]] = defaultdict(list)
         for item in modes:
-            if len(item) >= 3:
-                name, description, source = item[0], item[1], item[2]
-            else:
-                name, description = item[0], item[1]
-                source = ""
-            groups[source or "other"].append((name, description))
+            name = item[0]
+            description = item[1] if len(item) > 1 else ""
+            source = item[2] if len(item) > 2 else ""
+            # ModeListing has 4 elements; old tuples have 2 or 3 — advertised defaults to True
+            advertised = item[3] if len(item) > 3 else getattr(item, "advertised", True)
+            groups[source or "other"].append((name, description, bool(advertised)))
+
+        has_hidden = any(
+            not advertised
+            for source_modes in groups.values()
+            for _, _, advertised in source_modes
+        )
 
         lines = ["Available modes:"]
 
-        if len(groups) == 1 and "" in groups:
-            # No source info — flat list (backward compat with old hooks-mode)
-            for name, description in groups[""]:
-                indicator = " *" if name == current_mode else ""
+        for source in sorted(groups.keys()):
+            source_modes = sorted(groups[source], key=lambda x: x[0])
+            lines.append(f"\n  {source}:")
+
+            # Name column width: widest (name + optional " (hidden)" suffix) in this group
+            name_col = max(
+                len(name) + (len(" (hidden)") if not adv else 0)
+                for name, _, adv in source_modes
+            )
+
+            # Description gets the remaining space: total - indent(4) - name - gap(3)
+            desc_max = terminal_cols - 4 - name_col - 3
+            if desc_max < 10:
+                desc_max = 10  # minimum visible width
+
+            for name, description, advertised in source_modes:
+                hidden_sfx = " (hidden)" if not advertised else ""
+                active_sfx = " *" if name == current_mode else ""
+                name_field = f"{name}{hidden_sfx}{active_sfx}"
+
                 if description:
-                    lines.append(f"  {name}{indicator} — {description}")
+                    truncated = (
+                        description
+                        if len(description) <= desc_max
+                        else description[: desc_max - 3] + "..."
+                    )
+                    lines.append(f"    {name_field:<{name_col}}   {truncated}")
                 else:
-                    lines.append(f"  {name}{indicator}")
-        else:
-            # Grouped display
-            for source, source_modes in sorted(groups.items()):
-                lines.append(f"\n  {source}:")
-                for name, description in source_modes:
-                    indicator = " *" if name == current_mode else ""
-                    if description:
-                        lines.append(f"    {name}{indicator} — {description}")
-                    else:
-                        lines.append(f"    {name}{indicator}")
+                    lines.append(f"    {name_field}")
 
         if current_mode:
             lines.append(f"\nActive: {current_mode}")
 
-        lines.append("\nUse /mode <name> to activate, /mode off to clear.")
+        if has_hidden:
+            lines.append(
+                "\n(hidden) = available only via slash command, not advertised to agents."
+            )
+
+        lines.append("Use /mode <name> to activate, /mode off to clear.")
+        return "\n".join(lines)
+
+    async def _mode_info(self, mode_name: str) -> str:
+        """Show full details for a specific mode.
+
+        Usage: /mode info <name>
+        """
+        if not mode_name:
+            return "Usage: /mode info <name>  — show full details for a mode"
+
+        session_state = self.session.coordinator.session_state
+        discovery = session_state.get("mode_discovery")
+
+        if not discovery:
+            return "Mode system not available. Include the modes bundle to enable modes."
+
+        mode_def = discovery.find(mode_name)
+        if not mode_def:
+            return f"Mode '{mode_name}' not found. Use /modes to see available modes."
+
+        advertised_label = (
+            "yes"
+            if getattr(mode_def, "advertised", True)
+            else "no (hidden — not advertised to agents)"
+        )
+
+        lines = [
+            f"{mode_def.name}"
+            + (" (hidden)" if not getattr(mode_def, "advertised", True) else ""),
+            f"  Source:      {getattr(mode_def, 'source', 'unknown')}",
+            f"  Advertised:  {advertised_label}",
+        ]
+
+        if mode_def.description:
+            lines.append(f"  Description: {mode_def.description}")
+
+        shortcut = getattr(mode_def, "shortcut", None)
+        if shortcut:
+            lines.append(f"  Shortcut:    /{shortcut}")
+
+        default_action = getattr(mode_def, "default_action", None)
+        if default_action:
+            lines.append(f"  Default:     {default_action}")
+
+        # Tool policies
+        has_tools = any(
+            getattr(mode_def, attr, [])
+            for attr in ("safe_tools", "warn_tools", "confirm_tools", "block_tools")
+        )
+        if has_tools:
+            lines.append("  Tools:")
+            for label, attr in (
+                ("safe", "safe_tools"),
+                ("warn", "warn_tools"),
+                ("confirm", "confirm_tools"),
+                ("block", "block_tools"),
+            ):
+                tools = getattr(mode_def, attr, [])
+                if tools:
+                    lines.append(f"    {label}: {', '.join(tools)}")
+
+        # Contributions (mode-design style)
+        contributes = getattr(mode_def, "contributes", {})
+        if contributes:
+            lines.append("  Contributes:")
+            for kind, items in contributes.items():
+                if isinstance(items, list):
+                    for item in items:
+                        lines.append(f"    {kind}: {item}")
+                else:
+                    lines.append(f"    {kind}: {items}")
+
         return "\n".join(lines)
 
     async def _save_transcript(self, filename: str) -> str:
@@ -931,7 +1046,11 @@ class CommandProcessor:
                 lines.append("")
                 lines.append("Mode Shortcuts:")
                 for item in modes:
-                    # Support both 2-tuple (name, desc) and 3-tuple (name, desc, source)
+                    # Show only advertised modes in help (LLM-facing shortcuts)
+                    # ModeListing has .advertised; old tuples default to True
+                    advertised = item[3] if len(item) > 3 else getattr(item, "advertised", True)
+                    if not advertised:
+                        continue
                     name, description = item[0], item[1]
                     if description:
                         lines.append(f"  /{name:<11} - {description}")
