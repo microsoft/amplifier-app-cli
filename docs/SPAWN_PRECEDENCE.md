@@ -14,6 +14,8 @@ slot; it does not enforce a precedence.
 | 2    | Agent overlay's `provider_preferences`            | Either (a) hard-pinned in the agent's `.md` frontmatter, OR (b) written by a routing hook's `session:start` event handler (e.g. `amplifier-bundle-routing-matrix` does this when the frontmatter declares `model_role`). Used only when rank 1 is not present. |
 | 3    | Parent session's mount-plan defaults              | From the user's `settings.yaml` — provider priority order + each provider's `default_model`. Used when no preferences are supplied at ranks 1 or 2.                                                                                                            |
 
+**The dual-source design at Rank 2 is intentional.** Frontmatter `provider_preferences:` is the bundle-portable fallback that flows through unchanged when no routing bundle is installed. When a routing bundle (such as `amplifier-bundle-routing-matrix`) IS installed, its `session:start` hook may overwrite that value with resolution from `model_role:`. The two fields together support graceful degradation — agents work everywhere; routing bundles enhance when present.
+
 ## How the application mechanism works
 
 When a non-None `provider_preferences` value is in play (caller-passed OR
