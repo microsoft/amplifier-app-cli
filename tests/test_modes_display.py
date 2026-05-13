@@ -196,8 +196,6 @@ def test_no_description_exceeds_terminal_width(terminal_width: int, monkeypatch)
 
 def test_long_description_truncated_with_ellipsis() -> None:
     """Long descriptions must be truncated with '...' suffix."""
-    import shutil
-
     long_desc = "A" * 200  # definitely too long for any terminal
 
     listings = [
