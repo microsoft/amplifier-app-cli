@@ -3,6 +3,7 @@
 Implements sub-session creation with configuration inheritance and overlays.
 """
 
+import copy
 import logging
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ from pathlib import Path
 from amplifier_core import AmplifierSession
 from amplifier_foundation import generate_sub_session_id
 from amplifier_foundation import bridge_child_cost
+from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
 
 from .agent_config import merge_configs
 
@@ -258,6 +260,35 @@ async def spawn_sub_session(
     # Merge parent config with agent overlay
     merged_config = merge_configs(parent_session.config, agent_config)
 
+    # === Issue #233 fix: propagate live agent registry to child ===
+    #
+    # parent_session.config is the STATIC snapshot captured at session-init.
+    # Runtime additions (mode contributions via RuntimeOverlay) live in
+    # parent_session.coordinator.config["agents"] and are NOT in the static
+    # snapshot. Without this propagation, mode-contributed agents cannot
+    # delegate to same-mode siblings.
+    #
+    # Design: read coordinator.config directly (source of truth), not from
+    # any caller-supplied parameter. This ensures the fix works regardless
+    # of which code path invoked spawn (tool-delegate, recipe orchestrator,
+    # programmatic spawn, etc.). Local (agent_config) declarations win over
+    # inherited live registry — never overwrite.
+    #
+    # Snapshot semantics: child gets a deep-copy at spawn time. Subsequent
+    # mode changes in the parent do NOT propagate to an already-running child.
+    parent_coord = getattr(parent_session, "coordinator", None)
+    if parent_coord is not None:
+        try:
+            live_agents = (parent_coord.config or {}).get("agents") or {}
+        except AttributeError:
+            live_agents = {}
+        if live_agents:
+            child_agents = merged_config.setdefault("agents", {})
+            for name, cfg in live_agents.items():
+                if name not in child_agents:
+                    child_agents[name] = copy.deepcopy(cfg)
+    # === end issue #233 fix (agents) ===
+
     # Apply tool inheritance filtering if specified
     if tool_inheritance and "tools" in merged_config:
         # Get agent's explicit tool modules to preserve them
@@ -482,6 +513,33 @@ async def spawn_sub_session(
     # Initialize child session (mounts modules per merged config)
     # Now the resolver is available for loading modules with source: directives
     await child_session.initialize()
+
+    # === Issue #233 fix: propagate runtime_skill_overlay capability ===
+    #
+    # Mode-contributed skills are registered as a coordinator capability
+    # (RUNTIME_SKILL_OVERLAY_CAPABILITY) rather than in static config.
+    # tool-skills in a sub-session reads its OWN coordinator's capability,
+    # which is empty unless we propagate from parent here.
+    #
+    # Note: RUNTIME_CONTEXT_OVERLAY_CAPABILITY is intentionally NOT propagated.
+    # Mode-contributed context belongs to "the mode is active here" — that state
+    # is root-session only (hooks-mode's provider:request handler lives there).
+    # Skills are different: they're discoverable resources, not mode state.
+    child_coord = getattr(child_session, "coordinator", None)
+    if parent_coord is not None and child_coord is not None:
+        try:
+            overlay_skills = parent_coord.get_capability(RUNTIME_SKILL_OVERLAY_CAPABILITY)
+        except (AttributeError, KeyError):
+            overlay_skills = None
+        if overlay_skills:
+            try:
+                child_coord.register_capability(
+                    RUNTIME_SKILL_OVERLAY_CAPABILITY,
+                    list(overlay_skills),  # snapshot copy
+                )
+            except AttributeError:
+                pass  # child coordinator without capability support; safe to skip
+    # === end issue #233 fix (skill capability) ===
 
     # Note: Parent context inheritance is now handled by tool-task formatting
     # the parent messages directly into the instruction text. This ensures the
