@@ -442,8 +442,8 @@ inner list:
   ],
   "include_paths": [
     [
-      { "bundle": "amplifier-dev", "version": null, "uri": null },
-      { "bundle": "foundation", "version": "1.0.0", "uri": "git+https://..." }
+      { "bundle": "amplifier-dev", "version": null, "uri": null, "is_root": true },
+      { "bundle": "foundation", "version": "1.0.0", "uri": "git+https://...", "is_root": false }
     ]
   ],
   "runtime_injection": "static"
@@ -469,13 +469,13 @@ contains one inner list per distinct root→leaf path:
   ],
   "include_paths": [
     [
-      { "bundle": "amplifier-dev", "version": null, "uri": null },
-      { "bundle": "foundation", "version": "1.0.0", "uri": "git+https://..." },
-      { "bundle": "behavior-apply-patch", "version": null, "uri": null }
+      { "bundle": "amplifier-dev", "version": null, "uri": null, "is_root": true },
+      { "bundle": "foundation", "version": "1.0.0", "uri": "git+https://...", "is_root": false },
+      { "bundle": "behavior-apply-patch", "version": null, "uri": null, "is_root": false }
     ],
     [
-      { "bundle": "amplifier-dev", "version": null, "uri": null },
-      { "bundle": "foundation", "version": "1.0.0", "uri": "git+https://..." }
+      { "bundle": "amplifier-dev", "version": null, "uri": null, "is_root": true },
+      { "bundle": "foundation", "version": "1.0.0", "uri": "git+https://...", "is_root": false }
     ]
   ],
   "runtime_injection": "static"
@@ -499,7 +499,35 @@ contains one inner list per distinct root→leaf path:
 | `include_paths[][].bundle` | string | Bundle name at this step in a path |
 | `include_paths[][].version` | string \| null | Bundle version, or null |
 | `include_paths[][].uri` | string \| null | Source URI at this step, or null |
+| `include_paths[][].is_root` | boolean | **Experimental** — `true` when this bundle is a topological root in the include graph (no further ancestors). Identifies user-explicit entry points such as the active bundle (`bundle use`) or app-list behaviors. Rendered as `*` prefix in CLI text output. |
 | `runtime_injection` | string \| null | How the item arrived: `static`, `mode`, `hook`, `skills`, `mcp`, `task`, or null |
+
+### `*` prefix in CLI text output (root-bundle marker)
+
+In `bundle show <name> --detailed` and item detail views, topological root bundles
+in include chains are prefixed with `*` (rustup-style).  A root bundle is one
+with no further ancestors in the `included_by` graph — i.e., a user-explicit
+entry point into the composition.
+
+```
+included_by:
+  *amplifier-dev → foundation
+  *reality-check-behavior → browser-tester → foundation
+  terminal-tester → terminal-tester → foundation    ← no * because terminal-tester has parents
+  *reality-check-behavior → terminal-tester → foundation
+  *modes → foundation
+```
+
+Rules:
+- Only the **first node in the chain** (the topological root) can receive `*`.
+- A node gets `*` if and only if `IncludeStep.is_root == true` in JSON output.
+- Intermediate nodes and leaf nodes never receive `*`.
+- If the same bundle appears in multiple chains (e.g., `reality-check-behavior`),
+  it gets `*` in each chain where it is the root.
+
+The `*` prefix is **rendering-only** — the JSON output carries the information as
+the boolean `is_root` field on each `IncludeStep` object.  Automation should use
+`is_root` directly rather than parsing the `*` from text output.
 
 ### Usage
 

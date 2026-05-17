@@ -386,7 +386,15 @@ def bundle_show(name: str, compact: bool, detailed: bool, fmt: str):
         "enabled": bundle_obj.name == active_bundle,
         "source_uri": bundle_obj.uri if hasattr(bundle_obj, "uri") else None,
         "include_paths": [
-            [{"bundle": s.bundle, "version": s.version, "uri": s.uri} for s in path]
+            [
+                {
+                    "bundle": s.bundle,
+                    "version": s.version,
+                    "uri": s.uri,
+                    "is_root": getattr(s, "is_root", False),
+                }
+                for s in path
+            ]
             for path in include_chains
         ],
         "config_summary": {
@@ -447,20 +455,22 @@ def _render_bundle_show_text(
 
     # Included_by chains — primary acceptance test output
     if include_chains:
+        # Root-bundle marker: prefix the chain-start node with "*" when it is a
+        # topological root (IncludeStep.is_root=True).  This visually identifies
+        # the user-explicit entry points into the composition (rustup-style).
+        def _fmt_step(s: Any) -> str:
+            name = s.bundle if hasattr(s, "bundle") else str(s)
+            prefix = "*" if getattr(s, "is_root", False) else ""
+            return f"{prefix}{escape_markup(name)}"
+
         if len(include_chains) == 1:
-            path_str = " → ".join(
-                escape_markup(s.bundle if hasattr(s, "bundle") else str(s))
-                for s in include_chains[0]
-            )
+            path_str = " → ".join(_fmt_step(s) for s in include_chains[0])
             console.print(f"{indent}included_by:")
             console.print(f"{indent}  {path_str}")
         else:
             console.print(f"{indent}included_by:")
             for path in include_chains:
-                path_str = " → ".join(
-                    escape_markup(s.bundle if hasattr(s, "bundle") else str(s))
-                    for s in path
-                )
+                path_str = " → ".join(_fmt_step(s) for s in path)
                 console.print(f"{indent}  {path_str}")
 
     active = bundle_obj.name == active_bundle

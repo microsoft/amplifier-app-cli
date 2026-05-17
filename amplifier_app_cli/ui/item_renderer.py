@@ -405,21 +405,23 @@ class ItemRenderer:
 
         # Include paths (bundle-on-disk graph) — singular or plural
         if include_paths:
+            # Root-bundle marker: prefix topological-root steps with "*".
+            # IncludeStep.is_root=True identifies user-explicit entry points.
+            def _fmt_step(s: Any) -> str:
+                name = getattr(s, "bundle", str(s))
+                prefix = "*" if getattr(s, "is_root", False) else ""
+                return f"{prefix}{escape_markup(name)}"
+
             if len(include_paths) == 1:
                 # Single path: compact single-line format
                 self._console.print(f"[dim]{indent}include_path:[/dim]")
-                path_str = " → ".join(
-                    escape_markup(getattr(s, "bundle", str(s)))
-                    for s in include_paths[0]
-                )
+                path_str = " → ".join(_fmt_step(s) for s in include_paths[0])
                 self._console.print(f"[dim]{indent}  {path_str}[/dim]")
             else:
                 # Multiple paths: one per line under include_paths:
                 self._console.print(f"[dim]{indent}include_paths:[/dim]")
                 for path in include_paths:
-                    path_str = " → ".join(
-                        escape_markup(getattr(s, "bundle", str(s))) for s in path
-                    )
+                    path_str = " → ".join(_fmt_step(s) for s in path)
                     self._console.print(f"[dim]{indent}  {path_str}[/dim]")
 
         # Config
