@@ -58,6 +58,8 @@ from .key_manager import KeyManager
 from .session_store import SessionStore
 from .ui.dashboard_renderer import DashboardRenderer
 from .ui.dashboard_renderer import _redact_value as _dr_redact_value
+from .ui.item_renderer import ItemRenderer
+from .ui.view_policy import resolve_view
 from .ui.error_display import display_llm_error
 from .ui.error_display import display_validation_error
 from .ui.log_filter import LLMErrorLogFilter
@@ -267,6 +269,34 @@ def _show_manual_instructions(shell: str, config_file: Path):
         )
 
     console.print("\n[dim]Then reload your shell or start a new terminal.[/dim]")
+
+
+def _parse_config_flags(
+    parts: list[str],
+) -> tuple[list[str], bool, bool, str]:
+    """Strip --compact, --detailed, --format <fmt> from a parts list.
+
+    Returns:
+        (remaining_parts, compact_flag, detailed_flag, format_string)
+    """
+    compact = False
+    detailed = False
+    fmt = "text"
+    remaining: list[str] = []
+    i = 0
+    while i < len(parts):
+        p = parts[i]
+        if p == "--compact":
+            compact = True
+        elif p == "--detailed":
+            detailed = True
+        elif p == "--format" and i + 1 < len(parts):
+            fmt = parts[i + 1].lower()
+            i += 1
+        else:
+            remaining.append(p)
+        i += 1
+    return remaining, compact, detailed, fmt
 
 
 class CommandProcessor:
@@ -557,7 +587,9 @@ class CommandProcessor:
 
         # /mode info <name> — full details for a specific mode
         if args_lower.startswith("info ") or args_lower == "info":
-            mode_name = args[5:].strip().lower() if args_lower.startswith("info ") else ""
+            mode_name = (
+                args[5:].strip().lower() if args_lower.startswith("info ") else ""
+            )
             return await self._mode_info(mode_name)
 
         # Continue with lower-case args for remaining /mode subcommands
@@ -730,7 +762,9 @@ class CommandProcessor:
         discovery = session_state.get("mode_discovery")
 
         if not discovery:
-            return "Mode system not available. Include the modes bundle to enable modes."
+            return (
+                "Mode system not available. Include the modes bundle to enable modes."
+            )
 
         mode_def = discovery.find(mode_name)
         if not mode_def:
@@ -1048,7 +1082,9 @@ class CommandProcessor:
                 for item in modes:
                     # Show only advertised modes in help (LLM-facing shortcuts)
                     # ModeListing has .advertised; old tuples default to True
-                    advertised = item[3] if len(item) > 3 else getattr(item, "advertised", True)
+                    advertised = (
+                        item[3] if len(item) > 3 else getattr(item, "advertised", True)
+                    )
                     if not advertised:
                         continue
                     name, description = item[0], item[1]
@@ -1104,6 +1140,7 @@ class CommandProcessor:
         DashboardRenderer(console).render_hooks_section(
             items, trailing_newline=trailing_newline
         )
+
     _CAT_LABELS: dict[str, str] = {
         "context": "context",
         "tools": "tools",
@@ -1123,6 +1160,7 @@ class CommandProcessor:
         DashboardRenderer(console).render_behaviors_section(
             items, trailing_newline=trailing_newline
         )
+
     def _render_items_with_behavior_attribution(
         self,
         console: Any,
@@ -1160,50 +1198,97 @@ class CommandProcessor:
             items, "agents", trailing_newline=trailing_newline
         )
 
-
     async def _get_config_display(self, args: str = "") -> str:
         """Display current configuration or handle subcommands.
 
         Parses args and dispatches to subcommand handlers:
-        - No args → _render_config_dashboard()
+        - No args → _render_config_help()
+        - 'show' [--compact|--detailed|--format json] → ItemRenderer dashboard
+        - 'show' <category> <name> → ItemRenderer single-item detail
         - 'diff' → _handle_config_diff()
-        - 'save' → _handle_config_save(scope)
-        - 'set' → _handle_config_set(path, value)
-        - <category> → _render_config_category(category)
+        - 'save' [--scope <scope>] → _handle_config_save(scope)
+        - 'set' <path> <value> → _handle_config_set(path, value)
+        - <category> [--compact|--detailed|--format json] → ItemRenderer category list
         - <category> disable/enable <name> → _handle_config_toggle(...)
+        - <category> <name> → ItemRenderer single-item detail
         """
         configurator = getattr(self, "configurator", None)
         if configurator is None:
             return await self._render_legacy_config()
 
-        parts = args.strip().split() if args.strip() else []
+        raw_parts = args.strip().split() if args.strip() else []
 
-        if not parts:
+        if not raw_parts:
             return self._render_config_help()
 
-        subcmd = parts[0].lower()
+        # Strip global flags from the parts list
+        remaining_parts, compact_flag, detailed_flag, fmt = _parse_config_flags(
+            raw_parts
+        )
 
+        if not remaining_parts:
+            # Only flags, no subcommand — show dashboard with flags applied
+            return await self._render_config_dashboard_v2(
+                compact=compact_flag, detailed=detailed_flag, fmt=fmt
+            )
+
+        subcmd = remaining_parts[0].lower()
+
+        # ── show ──────────────────────────────────────────────────────────────
         if subcmd == "show":
-            return await self._render_config_dashboard()
+            show_parts = remaining_parts[1:]
 
+            _VALID_CATEGORIES = {
+                "context",
+                "tools",
+                "hooks",
+                "providers",
+                "agents",
+                "behaviors",
+            }
+
+            if len(show_parts) >= 2 and show_parts[0].lower() in _VALID_CATEGORIES:
+                # /config show <category> <name>
+                category = show_parts[0].lower()
+                name = show_parts[1]
+                return await self._render_config_item(category, name)
+
+            if len(show_parts) == 1 and show_parts[0].lower() in _VALID_CATEGORIES:
+                # /config show <category>  — treat as category list
+                return await self._render_config_category(
+                    show_parts[0].lower(),
+                    compact=compact_flag,
+                    detailed=detailed_flag,
+                    fmt=fmt,
+                )
+
+            # /config show  (with optional flags)
+            return await self._render_config_dashboard_v2(
+                compact=compact_flag, detailed=detailed_flag, fmt=fmt
+            )
+
+        # ── diff ──────────────────────────────────────────────────────────────
         if subcmd == "diff":
             return await self._handle_config_diff()
 
+        # ── save ──────────────────────────────────────────────────────────────
         if subcmd == "save":
             scope = "global"
-            remaining = parts[1:]
-            for i, p in enumerate(remaining):
-                if p == "--scope" and i + 1 < len(remaining):
-                    scope = remaining[i + 1]
+            save_remaining = remaining_parts[1:]
+            for i, p in enumerate(save_remaining):
+                if p == "--scope" and i + 1 < len(save_remaining):
+                    scope = save_remaining[i + 1]
             return await self._handle_config_save(scope)
 
+        # ── set ───────────────────────────────────────────────────────────────
         if subcmd == "set":
-            if len(parts) < 3:
+            if len(remaining_parts) < 3:
                 return "Usage: /config set <path> <value>"
-            path = parts[1]
-            value = parts[2]
+            path = remaining_parts[1]
+            value = remaining_parts[2]
             return await self._handle_config_set(path, value)
 
+        # ── <category> ────────────────────────────────────────────────────────
         _VALID_CATEGORIES = {
             "context",
             "tools",
@@ -1215,16 +1300,30 @@ class CommandProcessor:
 
         if subcmd in _VALID_CATEGORIES:
             category = subcmd
-            if len(parts) == 1:
-                return await self._render_config_category(category)
-            if len(parts) >= 3 and parts[1].lower() in ("disable", "enable"):
-                action = parts[1].lower()
-                name = parts[2]
+            cat_remaining = remaining_parts[1:]
+
+            if not cat_remaining:
+                # /config <category>  [--flags]
+                return await self._render_config_category(
+                    category, compact=compact_flag, detailed=detailed_flag, fmt=fmt
+                )
+
+            if len(cat_remaining) >= 2 and cat_remaining[0].lower() in (
+                "disable",
+                "enable",
+            ):
+                action = cat_remaining[0].lower()
+                name = cat_remaining[1]
                 return await self._handle_config_toggle(category, action, name)
-            return await self._render_config_category(category)
+
+            # /config <category> <name>  → single-item detail
+            name = cat_remaining[0]
+            return await self._render_config_item(category, name)
 
         # Unknown subcommand — show dashboard
-        return await self._render_config_dashboard()
+        return await self._render_config_dashboard_v2(
+            compact=compact_flag, detailed=detailed_flag, fmt=fmt
+        )
 
     def _render_config_help(self) -> str:
         """Render a concise help listing of /config subcommands."""
@@ -1289,7 +1388,6 @@ class CommandProcessor:
             items, trailing_newline=trailing_newline
         )
 
-
     async def _render_config_dashboard(self) -> str:
         """Render the full configuration dashboard using SessionConfigurator."""
         from .console import console
@@ -1347,7 +1445,6 @@ class CommandProcessor:
 
         return ""  # Output already printed via console
 
-
     def _render_category_summary(
         self, console: Any, category: str, items: list
     ) -> None:
@@ -1366,8 +1463,23 @@ class CommandProcessor:
         else:
             self._render_simple_section(console, category.capitalize(), items)
 
-    async def _render_config_category(self, category: str) -> str:
-        """Render a per-category list view using list_methods dict."""
+    async def _render_config_category(
+        self,
+        category: str,
+        *,
+        compact: bool = False,
+        detailed: bool = False,
+        fmt: str = "text",
+    ) -> str:
+        """Render a per-category list view using ItemRenderer.
+
+        Args:
+            category: One of context / tools / hooks / providers / agents / behaviors.
+            compact:  Force compact (one-line) view.
+            detailed: Force detailed (multi-line) view.  For lists this renders
+                      as the "regular" multi-line DashboardRenderer output.
+            fmt:      ``"json"`` to emit JSON; anything else → text.
+        """
         from .console import console
 
         configurator = self.configurator
@@ -1386,8 +1498,203 @@ class CommandProcessor:
             return f"Unknown category: {category}"
 
         items = method()
-        self._render_category_summary(console, category, items)
+
+        if fmt == "json":
+            ItemRenderer(console).render_json(items)
+            return ""
+
+        view = resolve_view(
+            ("config", "category"),
+            compact_flag=compact,
+            detailed_flag=detailed,
+        )
+        # For list contexts, "detailed" falls back to "regular" multi-line output
+        if view == "detailed":
+            view = "regular"
+
+        ItemRenderer(console).render(items, view=view, category=category)  # type: ignore[arg-type]
         return ""  # Output already printed via console
+
+    async def _render_config_dashboard_v2(
+        self,
+        *,
+        compact: bool = False,
+        detailed: bool = False,
+        fmt: str = "text",
+    ) -> str:
+        """Render the full config dashboard using ItemRenderer (Commit 2 surface).
+
+        - Default (no flags): compact one-liner per item across all sections.
+        - ``--detailed``: regular multi-line DashboardRenderer output per section.
+        - ``--format json``: JSON dump of all ItemRecord lists.
+        - ``--compact``: explicit compact (same as default).
+        """
+        from .console import console
+
+        configurator = self.configurator
+
+        context_items = configurator.context_list()
+        tools_items = configurator.tools_list()
+        hooks_items = configurator.hooks_list()
+        providers_items = configurator.providers_list()
+        agents_items = configurator.agents_list()
+        behaviors_items = configurator.behaviors_list()
+        changes = configurator.diff_from_original()
+
+        active_mode = (
+            self.session.coordinator.session_state.get("active_mode") or "none"
+        )
+        change_count = len(changes) if changes else 0
+
+        # Header — always printed in text mode
+        if fmt != "json":
+            renderer_dr = DashboardRenderer(console)
+            renderer_dr.render_header(
+                self._display_bundle_name, active_mode, change_count
+            )
+
+        # JSON output — all categories as a single JSON object
+        if fmt == "json":
+            import dataclasses
+            import json as _json
+
+            def _ser(items: list) -> list:
+                return [
+                    dataclasses.asdict(i)
+                    if dataclasses.is_dataclass(i) and not isinstance(i, type)
+                    else i
+                    for i in items
+                ]
+
+            payload = {
+                "providers": _ser(providers_items),
+                "tools": _ser(tools_items),
+                "hooks": _ser(hooks_items),
+                "context": _ser(context_items),
+                "agents": _ser(agents_items),
+                "behaviors": _ser(behaviors_items),
+            }
+            console.print(_json.dumps(payload, indent=2, default=str))
+            return ""
+
+        # Text output — resolve view mode
+        view = resolve_view(
+            ("config", "show"),
+            compact_flag=compact,
+            detailed_flag=detailed,
+        )
+        # For dashboard (multi-category), "detailed" → "regular" multi-line
+        effective_view: str = view if view != "detailed" else "regular"
+
+        ir = ItemRenderer(console)
+
+        if effective_view == "compact":
+            # Compact: show session block inline first (simple key: value lines)
+            raw_config = self.session.coordinator.config
+            session_config = (
+                raw_config.get("session", {}) if isinstance(raw_config, dict) else {}
+            )
+            if session_config and isinstance(session_config, dict):
+                console.print("── session ──")
+                for field in ["orchestrator", "context"]:
+                    if field in session_config:
+                        value = session_config[field]
+                        if isinstance(value, dict) and "module" in value:
+                            mod_id = value.get("module", "unknown")
+                            console.print(f"  {field}: {mod_id}")
+                        else:
+                            console.print(f"  {field}: {value}")
+                console.print()
+
+            ir.render(providers_items, view="compact", category="providers")
+            ir.render(tools_items, view="compact", category="tools")
+            ir.render(hooks_items, view="compact", category="hooks")
+            ir.render(context_items, view="compact", category="context")
+            ir.render(agents_items, view="compact", category="agents")
+            ir.render(behaviors_items, view="compact", category="behaviors")
+
+        else:
+            # Regular: full multi-line DashboardRenderer output (old dashboard look)
+            raw_config = self.session.coordinator.config
+            session_config = (
+                raw_config.get("session", {}) if isinstance(raw_config, dict) else {}
+            )
+            renderer_dr = DashboardRenderer(console)
+            if session_config and isinstance(session_config, dict):
+                console.print("── session ──")
+                for field in ["orchestrator", "context"]:
+                    if field in session_config:
+                        value = session_config[field]
+                        if isinstance(value, dict) and "module" in value:
+                            mod_id = value.get("module", "unknown")
+                            cfg = value.get("config", {})
+                            console.print(f"  {field}: {mod_id}")
+                            if cfg and isinstance(cfg, dict):
+                                console.print("[dim]    config:[/dim]")
+                                for k, v in cfg.items():
+                                    renderer_dr.render_config_tree(
+                                        {k: v}, "      ", dim=True
+                                    )
+                        else:
+                            console.print(f"  {field}: {value}")
+                console.print()
+
+            renderer_dr.render_providers_section(providers_items)
+            renderer_dr.render_tools_section(tools_items)
+            renderer_dr.render_hooks_section(hooks_items)
+            renderer_dr.render_attributed_section(context_items, "context")
+            renderer_dr.render_attributed_section(agents_items, "agents")
+            renderer_dr.render_behaviors_section(behaviors_items)
+
+        return ""
+
+    async def _render_config_item(self, category: str, name: str) -> str:
+        """Render a single named item in detailed view.
+
+        Looks up the item by name within the category's ItemRecord list and
+        renders it using ItemRenderer.render_one(view="detailed").
+
+        Prints "Item not found" if no item matches *name* in *category*.
+        """
+        from .console import console
+
+        configurator = self.configurator
+
+        list_methods = {
+            "context": configurator.context_list,
+            "tools": configurator.tools_list,
+            "hooks": configurator.hooks_list,
+            "providers": configurator.providers_list,
+            "agents": configurator.agents_list,
+            "behaviors": configurator.behaviors_list,
+        }
+
+        method = list_methods.get(category)
+        if method is None:
+            return f"Unknown category: {category}"
+
+        items = method()
+
+        # Find the matching item (ItemRecord or dict)
+        matched = None
+        for item in items:
+            item_name = (
+                item.name
+                if hasattr(item, "name")
+                else (item.get("name", "") if isinstance(item, dict) else "")
+            )
+            if item_name == name:
+                matched = item
+                break
+
+        if matched is None:
+            console.print(
+                f"[yellow]Item not found: {name!r} in category {category!r}[/yellow]"
+            )
+            return ""
+
+        ItemRenderer(console).render_one(matched, view="detailed")
+        return ""
 
     async def _handle_config_toggle(self, category: str, action: str, name: str) -> str:
         """Map (category, action) to configurator method, handle async/sync, catch errors."""

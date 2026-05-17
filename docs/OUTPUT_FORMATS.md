@@ -397,6 +397,93 @@ This feature follows Amplifier's core principles:
 
 ---
 
+## ItemRecord JSON schema (experimental, subject to change)
+
+The `/config show --format json` and `/config <category> --format json` commands
+emit `ItemRecord` objects serialized via `dataclasses.asdict`.  The shape below is
+the **public schema from the moment this feature ships**.  Field names will not
+change in a patch release, but the schema may evolve until a future version tag
+stabilises it.  Automation that reads this output should treat `origin`, `include_path`,
+and `runtime_injection` as advisory and schema-version-check the field set before
+parsing.
+
+### Top-level structure
+
+```json
+{
+  "providers": [ ... ],
+  "tools":     [ ... ],
+  "hooks":     [ ... ],
+  "context":   [ ... ],
+  "agents":    [ ... ],
+  "behaviors": [ ... ]
+}
+```
+
+### ItemRecord object
+
+```json
+{
+  "category": "tool",
+  "name": "apply_patch",
+  "enabled": true,
+  "module_id": "tool-apply-patch",
+  "source_uri": "git+https://github.com/microsoft/...",
+  "config_summary": {
+    "engine": "native",
+    "allowed_write_paths": ["."]
+  },
+  "origins": [
+    { "bundle": "behavior-apply-patch", "via_behavior": null },
+    { "bundle": "foundation", "via_behavior": "behavior-apply-patch" }
+  ],
+  "include_path": [
+    { "bundle": "foundation", "version": null, "uri": null },
+    { "bundle": "behavior-apply-patch", "version": null, "uri": null }
+  ],
+  "runtime_injection": "static"
+}
+```
+
+### Field reference
+
+| Field | Type | Description |
+|---|---|---|
+| `category` | string | Item category: `provider`, `tool`, `hook`, `agent`, `context`, `behavior`, `session.orchestrator`, `session.context`, `spawn`, `instruction`, `skill`, `mode` |
+| `name` | string | Display name |
+| `enabled` | boolean | Whether the item is currently active |
+| `module_id` | string \| null | Module identifier (e.g. `tool-bash`), or null |
+| `source_uri` | string \| null | Source URI for the module, or null |
+| `config_summary` | object | Redacted configuration dict |
+| `origins` | array | Merge-graph chain (behaviors that contributed) |
+| `origins[].bundle` | string | Bundle name that owns the claim |
+| `origins[].via_behavior` | string \| null | Intermediate parent in the merge graph; null = self-introduced |
+| `include_path` | array | Disk-graph chain (bundles on disk), root-first |
+| `include_path[].bundle` | string | Bundle name at this step |
+| `include_path[].version` | string \| null | Bundle version, or null |
+| `include_path[].uri` | string \| null | Source URI at this step, or null |
+| `runtime_injection` | string \| null | How the item arrived: `static`, `mode`, `hook`, `skills`, `mcp`, `task`, or null |
+
+### Usage
+
+```bash
+# Dump all categories as JSON
+amplifier run --mode chat <<'EOF'
+/config show --format json
+EOF
+
+# Dump a single category
+amplifier run --mode chat <<'EOF'
+/config tools --format json
+EOF
+
+# Process with jq
+# (output goes to the Rich console, so capture stdout of a single-prompt run)
+amplifier run "/config show --format json" 2>/dev/null | jq '.tools[] | {name, module_id, enabled}'
+```
+
+---
+
 ## Related Documentation
 
 - **Session Management**: See `amplifier session list --help` for session queries
