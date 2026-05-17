@@ -11,7 +11,9 @@ from rich.console import Console
 from ..console import Markdown
 
 
-def render_message(message: dict, console: Console, *, show_thinking: bool = False) -> None:
+def render_message(
+    message: dict, console: Console, *, show_thinking: bool = False
+) -> None:
     """Render a single message (user or assistant).
 
     Single source of truth for message formatting. Used by:
@@ -39,9 +41,13 @@ def _render_user_message(message: dict, console: Console) -> None:
     console.print(f"\n[bold green]>[/bold green] {content}")
 
 
-def _render_assistant_message(message: dict, console: Console, show_thinking: bool) -> None:
+def _render_assistant_message(
+    message: dict, console: Console, show_thinking: bool
+) -> None:
     """Render assistant message with green prefix and markdown."""
-    text_blocks, thinking_blocks = _extract_content_blocks(message, show_thinking=show_thinking)
+    text_blocks, thinking_blocks = _extract_content_blocks(
+        message, show_thinking=show_thinking
+    )
 
     # Skip rendering if message is empty (tool-only messages)
     if not text_blocks and not thinking_blocks:
@@ -58,7 +64,9 @@ def _render_assistant_message(message: dict, console: Console, show_thinking: bo
         console.print(Markdown(f"\n💭 **Thinking:**\n{thinking}", style="dim"))
 
 
-def _extract_content_blocks(message: dict, *, show_thinking: bool = False) -> tuple[list[str], list[str]]:
+def _extract_content_blocks(
+    message: dict, *, show_thinking: bool = False
+) -> tuple[list[str], list[str]]:
     """Extract text and thinking blocks separately from message content.
 
     Handles multiple content formats:

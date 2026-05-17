@@ -399,13 +399,17 @@ This feature follows Amplifier's core principles:
 
 ## ItemRecord JSON schema (experimental, subject to change)
 
-The `/config show --format json` and `/config <category> --format json` commands
-emit `ItemRecord` objects serialized via `dataclasses.asdict`.  The shape below is
-the **public schema from the moment this feature ships**.  Field names will not
-change in a patch release, but the schema may evolve until a future version tag
-stabilises it.  Automation that reads this output should treat `origin`, `include_path`,
-and `runtime_injection` as advisory and schema-version-check the field set before
-parsing.
+The `/config show --format json`, `/config <category> --format json`, and any
+CLI list/show command with `--format json` emit `ItemRecord` objects serialized
+via `dataclasses.asdict`.  The shape below is the **public schema from the moment
+this feature ships**.  Field names will not change in a patch release, but the
+schema may evolve until a future version tag stabilises it.  Automation that reads
+this output should treat `origins`, `include_paths`, and `runtime_injection` as
+advisory and schema-version-check the field set before parsing.
+
+**Breaking change in Commit 3 (this release)**: `include_path` (singular, flat
+list) was replaced by `include_paths` (plural, list of lists).  The old shape is
+gone; no back-compat shim is provided.
 
 ### Top-level structure
 
@@ -420,7 +424,36 @@ parsing.
 }
 ```
 
-### ItemRecord object
+### ItemRecord object — single include path
+
+When an item is contributed by exactly one bundle chain, `include_paths` has one
+inner list:
+
+```json
+{
+  "category": "tool",
+  "name": "bash",
+  "enabled": true,
+  "module_id": "tool-bash",
+  "source_uri": "git+https://github.com/microsoft/...",
+  "config_summary": { "timeout": 30 },
+  "origins": [
+    { "bundle": "foundation", "via_behavior": null }
+  ],
+  "include_paths": [
+    [
+      { "bundle": "amplifier-dev", "version": null, "uri": null },
+      { "bundle": "foundation", "version": "1.0.0", "uri": "git+https://..." }
+    ]
+  ],
+  "runtime_injection": "static"
+}
+```
+
+### ItemRecord object — multiple include paths
+
+When an item is contributed by more than one bundle (multi-source), `include_paths`
+contains one inner list per distinct root→leaf path:
 
 ```json
 {
@@ -429,17 +462,21 @@ parsing.
   "enabled": true,
   "module_id": "tool-apply-patch",
   "source_uri": "git+https://github.com/microsoft/...",
-  "config_summary": {
-    "engine": "native",
-    "allowed_write_paths": ["."]
-  },
+  "config_summary": { "engine": "native" },
   "origins": [
     { "bundle": "behavior-apply-patch", "via_behavior": null },
     { "bundle": "foundation", "via_behavior": "behavior-apply-patch" }
   ],
-  "include_path": [
-    { "bundle": "foundation", "version": null, "uri": null },
-    { "bundle": "behavior-apply-patch", "version": null, "uri": null }
+  "include_paths": [
+    [
+      { "bundle": "amplifier-dev", "version": null, "uri": null },
+      { "bundle": "foundation", "version": "1.0.0", "uri": "git+https://..." },
+      { "bundle": "behavior-apply-patch", "version": null, "uri": null }
+    ],
+    [
+      { "bundle": "amplifier-dev", "version": null, "uri": null },
+      { "bundle": "foundation", "version": "1.0.0", "uri": "git+https://..." }
+    ]
   ],
   "runtime_injection": "static"
 }
@@ -458,10 +495,10 @@ parsing.
 | `origins` | array | Merge-graph chain (behaviors that contributed) |
 | `origins[].bundle` | string | Bundle name that owns the claim |
 | `origins[].via_behavior` | string \| null | Intermediate parent in the merge graph; null = self-introduced |
-| `include_path` | array | Disk-graph chain (bundles on disk), root-first |
-| `include_path[].bundle` | string | Bundle name at this step |
-| `include_path[].version` | string \| null | Bundle version, or null |
-| `include_path[].uri` | string \| null | Source URI at this step, or null |
+| `include_paths` | array of arrays | **Plural** — disk-graph chains (bundles on disk). Each inner array is one root→leaf path. Empty outer array when no registry data is available. |
+| `include_paths[][].bundle` | string | Bundle name at this step in a path |
+| `include_paths[][].version` | string \| null | Bundle version, or null |
+| `include_paths[][].uri` | string \| null | Source URI at this step, or null |
 | `runtime_injection` | string \| null | How the item arrived: `static`, `mode`, `hook`, `skills`, `mcp`, `task`, or null |
 
 ### Usage

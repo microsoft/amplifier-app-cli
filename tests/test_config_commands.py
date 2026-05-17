@@ -1515,7 +1515,14 @@ class TestRealConfiguratorRenderIntegration:
             hooks=[],
             providers=[],
         )
-        bundle._provenance = {"tool:tool-bash": ["foundation"]}  # type: ignore[misc]
+        try:
+            from amplifier_foundation.configurator._types import Origin
+
+            bundle.origins = {
+                "tool:tool-bash": [Origin(bundle="foundation", via_behavior=None)]
+            }
+        except ImportError:
+            bundle._provenance = {"tool:tool-bash": ["foundation"]}  # type: ignore[misc]
 
         prepared = MagicMock()
         prepared.bundle = bundle

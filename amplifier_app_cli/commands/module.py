@@ -16,6 +16,9 @@ from rich.table import Table
 from ..console import console
 from ..module_manager import ModuleManager
 from ..paths import ScopeNotAvailableError
+from ..ui.item_renderer import ItemRenderer
+from ..ui.view_policy import resolve_view
+from ..ui.view_policy import view_flags
 from ..utils.error_format import escape_markup
 from ..paths import ScopeType
 from ..paths import create_config_manager
@@ -42,79 +45,77 @@ def module(ctx: click.Context):
     default="all",
     help="Module type to list",
 )
-def list_modules(type: str):
+@view_flags
+def list_modules(type: str, compact: bool, detailed: bool, fmt: str):
     """List installed modules."""
     from amplifier_core.loader import ModuleLoader
 
     loader = ModuleLoader()
     modules_info = asyncio.run(loader.discover())
     resolver = create_foundation_resolver()
+    view = resolve_view(
+        ("module", "list"), compact_flag=compact, detailed_flag=detailed
+    )
+    renderer = ItemRenderer(console)
 
-    if modules_info:
-        table = Table(
-            title="Installed Modules (via entry points)",
-            show_header=True,
-            header_style="bold cyan",
+    items: list[dict[str, Any]] = []
+    for module_info in modules_info:
+        if type != "all" and type != module_info.type:
+            continue
+
+        try:
+            source_obj, origin = resolver.resolve_with_layer(module_info.id)
+            source_str = str(source_obj)
+        except Exception:
+            source_str = "unknown"
+            origin = "unknown"
+
+        items.append(
+            {
+                "name": module_info.id,
+                "enabled": True,
+                "module_id": module_info.id,
+                "source_uri": source_str if source_str != "unknown" else None,
+                "behaviors": [origin] if origin and origin != "unknown" else [],
+                "config_summary": {
+                    "type": module_info.type,
+                    "description": module_info.description,
+                },
+            }
         )
-        table.add_column("Name", style="green")
-        table.add_column("Type", style="yellow")
-        table.add_column("Source", style="magenta")
-        table.add_column("Origin", style="cyan")
-        table.add_column("Description")
 
-        for module_info in modules_info:
-            if type != "all" and type != module_info.type:
-                continue
-
-            try:
-                source_obj, origin = resolver.resolve_with_layer(module_info.id)
-                source_str = str(source_obj)
-                if len(source_str) > 40:
-                    source_str = source_str[:37] + "..."
-            except Exception:
-                source_str = "unknown"
-                origin = "unknown"
-
-            table.add_row(
-                module_info.id,
-                module_info.type,
-                source_str,
-                origin,
-                module_info.description,
-            )
-
-        console.print(table)
-    else:
-        console.print("[dim]No installed modules found[/dim]")
-
-    # Note: Bundle modules are now discovered via the bundle loader, not displayed here.
-    # Use 'amplifier bundle info' to see modules provided by the active bundle.
-
-    # Show cached modules (downloaded from git)
-    # Filter out modules that have local source overrides (local takes precedence)
+    # Cached modules
     local_override_names = _get_local_override_names()
     cached_modules = [
         m for m in _get_cached_modules(type) if m["id"] not in local_override_names
     ]
-    if cached_modules:
-        console.print()
-        table = Table(
-            title="Cached Modules (downloaded from git)",
-            show_header=True,
-            header_style="bold magenta",
+    for mod in cached_modules:
+        items.append(
+            {
+                "name": mod["id"],
+                "enabled": True,
+                "module_id": mod["id"],
+                "source_uri": None,
+                "behaviors": ["cached"],
+                "config_summary": {
+                    "type": mod["type"],
+                    "ref": mod["ref"],
+                    "sha": mod["sha"],
+                    "mutable": "yes" if mod["is_mutable"] else "no",
+                },
+            }
         )
-        table.add_column("Name", style="green")
-        table.add_column("Type", style="yellow")
-        table.add_column("Ref", style="cyan")
-        table.add_column("SHA", style="dim")
-        table.add_column("Mutable", style="magenta")
 
-        for mod in cached_modules:
-            mutable_str = "yes" if mod["is_mutable"] else "no"
-            table.add_row(mod["id"], mod["type"], mod["ref"], mod["sha"], mutable_str)
+    if not items:
+        console.print("[dim]No installed modules found[/dim]")
+        return
 
-        console.print(table)
-        console.print()
+    if fmt == "json":
+        renderer.render_json(items)
+        return
+
+    renderer.render(items, view=view, category="module", section_title="modules")
+    if cached_modules:
         console.print(
             "[dim]Note: Cached modules are downloaded on-demand when used.[/dim]"
         )
@@ -125,7 +126,8 @@ def list_modules(type: str):
 
 @module.command("show")
 @click.argument("module_name")
-def module_show(module_name: str):
+@view_flags
+def module_show(module_name: str, compact: bool, detailed: bool, fmt: str):
     """Show detailed information about a module."""
     from amplifier_core.loader import ModuleLoader
 
@@ -139,16 +141,39 @@ def module_show(module_name: str):
         )
         return
 
-    panel_content = f"""[bold]Name:[/bold] {found_module.id}
-[bold]Type:[/bold] {found_module.type}
-[bold]Description:[/bold] {found_module.description}
-[bold]Mount Point:[/bold] {found_module.mount_point}
-[bold]Version:[/bold] {found_module.version}
-[bold]Origin:[/bold] Installed (entry point)"""
-
-    console.print(
-        Panel(panel_content, title=f"Module: {module_name}", border_style="cyan")
+    view = resolve_view(
+        ("module", "show"), compact_flag=compact, detailed_flag=detailed
     )
+    renderer = ItemRenderer(console)
+
+    try:
+        resolver = create_foundation_resolver()
+        source_obj, origin = resolver.resolve_with_layer(found_module.id)
+        source_str = str(source_obj)
+    except Exception:
+        source_str = "unknown"
+        origin = "unknown"
+
+    item = {
+        "name": found_module.id,
+        "enabled": True,
+        "module_id": found_module.id,
+        "source_uri": source_str if source_str != "unknown" else None,
+        "behaviors": [origin] if origin and origin != "unknown" else [],
+        "config_summary": {
+            "type": found_module.type,
+            "description": found_module.description,
+            "mount_point": str(getattr(found_module, "mount_point", "")),
+            "version": str(getattr(found_module, "version", "")),
+            "origin": "installed (entry point)",
+        },
+    }
+
+    if fmt == "json":
+        renderer.render_json(item)
+        return
+
+    renderer.render_one(item, view=view)
 
 
 @module.command("add")
@@ -893,7 +918,8 @@ def override_remove(module_id: str, scope: str):
     default="all",
     help="Which scope(s) to show (default: all merged)",
 )
-def override_list(scope: str):
+@view_flags
+def override_list(scope: str, compact: bool, detailed: bool, fmt: str):
     """List all module overrides.
 
     Shows overrides from settings.yaml. Use --scope to filter by location.
@@ -911,25 +937,32 @@ def override_list(scope: str):
         )
         return
 
-    table = Table(title="Module Overrides", show_header=True, header_style="bold cyan")
-    table.add_column("Module", style="green")
-    table.add_column("Source", style="magenta")
-    table.add_column("Config", style="yellow")
+    view = resolve_view(
+        ("module", "override", "list"), compact_flag=compact, detailed_flag=detailed
+    )
+    renderer = ItemRenderer(console)
 
+    items: list[dict[str, Any]] = []
     for module_id, override in overrides.items():
         source = override.get("source", "-")
         config = override.get("config", {})
-        config_str = ", ".join(f"{k}={v}" for k, v in config.items()) if config else "-"
+        config_str = ", ".join(f"{k}={v}" for k, v in config.items()) if config else ""
+        items.append(
+            {
+                "name": module_id,
+                "enabled": True,
+                "source_uri": str(source) if source and source != "-" else None,
+                "config_summary": {"config": config_str} if config_str else {},
+            }
+        )
 
-        # Truncate long values
-        if len(str(source)) > 50:
-            source = str(source)[:47] + "..."
-        if len(config_str) > 40:
-            config_str = config_str[:37] + "..."
+    if fmt == "json":
+        renderer.render_json(items)
+        return
 
-        table.add_row(module_id, str(source), config_str)
-
-    console.print(table)
+    renderer.render(
+        items, view=view, category="module", section_title="module overrides"
+    )
 
 
 __all__ = ["module"]

@@ -2,16 +2,18 @@
 
 Usage::
 
-    from amplifier_app_cli.ui.view_policy import resolve_view, DEFAULT_VIEW
+    from amplifier_app_cli.ui.view_policy import resolve_view, DEFAULT_VIEW, view_flags
 
-    view = resolve_view(
-        ("config", "show"),
-        compact_flag=args.compact,
-        detailed_flag=args.detailed,
-    )
+    @tool.command("list")
+    @view_flags
+    def tool_list(compact: bool, detailed: bool, format: str, **kwargs):
+        view = resolve_view(("tool", "list"), compact_flag=compact, detailed_flag=detailed)
+        ...
 """
 
 from __future__ import annotations
+
+from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
 # Default view table
@@ -86,3 +88,53 @@ def resolve_view(
     if detailed_flag:
         return "detailed"
     return DEFAULT_VIEW.get(context, "regular")
+
+
+# ---------------------------------------------------------------------------
+# Shared Click decorator: uniform --compact / --detailed / --format flags
+# ---------------------------------------------------------------------------
+
+
+def view_flags(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Click decorator that adds uniform ``--compact``, ``--detailed``, ``--format`` flags.
+
+    Apply **after** ``@command.command(...)`` and command-specific options
+    (i.e. immediately above the function definition)::
+
+        @tool.command("list")
+        @click.option("--bundle", ...)   # command-specific flags first
+        @view_flags                       # uniform flags last (closest to def)
+        def tool_list(bundle, compact, detailed, fmt, ...):
+            view = resolve_view(("tool", "list"), compact_flag=compact, detailed_flag=detailed)
+
+    The three flags added are:
+        ``--compact``            Force compact one-liner view.
+        ``--detailed``           Force detailed multi-line view.
+        ``--format [text|json]`` Output format (default ``text``).
+
+    Note: ``--format`` maps to the ``fmt`` keyword argument (to avoid
+    shadowing Python's built-in ``format``).
+    """
+    import click
+
+    # Apply options in reverse order so they appear in intuitive help order
+    fn = click.option(
+        "--compact",
+        is_flag=True,
+        default=False,
+        help="Force compact one-liner view.",
+    )(fn)
+    fn = click.option(
+        "--detailed",
+        is_flag=True,
+        default=False,
+        help="Force detailed multi-line view.",
+    )(fn)
+    fn = click.option(
+        "--format",
+        "fmt",
+        type=click.Choice(["text", "json"]),
+        default="text",
+        help="Output format (experimental).",
+    )(fn)
+    return fn

@@ -14,14 +14,15 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import click
-from rich.table import Table
 
 from ..console import console
 from ..lib.settings import AppSettings
 from ..paths import ScopeNotAvailableError
+from ..ui.item_renderer import ItemRenderer
+from ..ui.view_policy import resolve_view, view_flags
 from ..utils.error_format import escape_markup
 from ..paths import ScopeType
 from ..paths import create_foundation_resolver
@@ -432,7 +433,8 @@ def _cleanup_provider_config_source(
 
 
 @source.command("list")
-def source_list():
+@view_flags
+def source_list(compact: bool, detailed: bool, fmt: str):
     """List all source overrides (modules and bundles).
 
     Shows merged overrides from all scopes (project + user).
@@ -453,41 +455,42 @@ def source_list():
         console.print("  [cyan]amplifier source add <identifier> <uri>[/cyan]")
         return
 
-    # Show module overrides
-    if module_sources:
-        table = Table(
-            title="Module Source Overrides", show_header=True, header_style="bold cyan"
+    view = resolve_view(
+        ("source", "list"), compact_flag=compact, detailed_flag=detailed
+    )
+    renderer = ItemRenderer(console)
+
+    items: list[dict[str, Any]] = []
+
+    for module_id, source_uri in sorted(module_sources.items()):
+        items.append(
+            {
+                "name": module_id,
+                "enabled": True,
+                "source_uri": source_uri,
+                "behaviors": ["module"],
+                "config_summary": {"type": "module"},
+            }
         )
-        table.add_column("Module", style="green")
-        table.add_column("Source", style="magenta")
 
-        for module_id, source_uri in sorted(module_sources.items()):
-            display_uri = (
-                source_uri if len(source_uri) <= 60 else source_uri[:57] + "..."
-            )
-            table.add_row(module_id, display_uri)
-
-        console.print(table)
-
-    # Show bundle overrides
-    if bundle_sources:
-        if module_sources:
-            console.print()  # Separator
-        table = Table(
-            title="Bundle Source Overrides",
-            show_header=True,
-            header_style="bold cyan",
+    for bundle_name, source_uri in sorted(bundle_sources.items()):
+        items.append(
+            {
+                "name": bundle_name,
+                "enabled": True,
+                "source_uri": source_uri,
+                "behaviors": ["bundle"],
+                "config_summary": {"type": "bundle"},
+            }
         )
-        table.add_column("Bundle", style="green")
-        table.add_column("Source", style="magenta")
 
-        for bundle_name, source_uri in sorted(bundle_sources.items()):
-            display_uri = (
-                source_uri if len(source_uri) <= 60 else source_uri[:57] + "..."
-            )
-            table.add_row(bundle_name, display_uri)
+    if fmt == "json":
+        renderer.render_json(items)
+        return
 
-        console.print(table)
+    renderer.render(
+        items, view=view, category="source", section_title="source overrides"
+    )
 
 
 @source.command("show")

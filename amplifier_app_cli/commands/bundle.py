@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from typing import TYPE_CHECKING
+from typing import Any
 from typing import cast
 
 import click
@@ -21,6 +22,9 @@ from ..paths import ScopeNotAvailableError
 from ..paths import ScopeType
 from ..paths import create_bundle_registry
 from ..paths import get_effective_scope
+from ..ui.item_renderer import ItemRenderer
+from ..ui.view_policy import resolve_view
+from ..ui.view_policy import view_flags
 from ..utils.display import create_sha_text
 from ..utils.display import create_status_symbol
 from ..utils.display import print_legend
@@ -71,7 +75,8 @@ def bundle(ctx: click.Context):
     is_flag=True,
     help="Show all bundles including dependencies and nested bundles",
 )
-def bundle_list(show_all: bool):
+@view_flags
+def bundle_list(show_all: bool, compact: bool, detailed: bool, fmt: str):
     """List available bundles.
 
     By default, shows bundles intended for user selection:
@@ -85,16 +90,51 @@ def bundle_list(show_all: bool):
     """
     app_settings = AppSettings()
     discovery = AppBundleDiscovery()
-
     active_bundle = app_settings.get_active_bundle()
+    view = resolve_view(
+        ("bundle", "list"), compact_flag=compact, detailed_flag=detailed
+    )
+    renderer = ItemRenderer(console)
 
     if show_all:
-        _show_all_bundles(discovery, active_bundle)
+        _show_all_bundles(
+            discovery, active_bundle, view=view, fmt=fmt, renderer=renderer
+        )
     else:
-        _show_user_bundles(discovery, active_bundle)
+        _show_user_bundles(
+            discovery, active_bundle, view=view, fmt=fmt, renderer=renderer
+        )
 
 
-def _show_user_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
+def _bundle_item(
+    name: str,
+    uri: str | None,
+    active_bundle: str | None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a dict item for a bundle suitable for ItemRenderer."""
+    location = _format_location(uri)
+    status = "active" if name == active_bundle else "available"
+    item: dict[str, Any] = {
+        "name": name,
+        "enabled": name == active_bundle,
+        "source_uri": uri,
+        "behaviors": [location] if location else [],
+        "config_summary": {"status": status, "location": location},
+    }
+    if extra:
+        item["config_summary"].update(extra)
+    return item
+
+
+def _show_user_bundles(
+    discovery: AppBundleDiscovery,
+    active_bundle: str | None,
+    *,
+    view: str,
+    fmt: str,
+    renderer: ItemRenderer,
+) -> None:
     """Show bundles intended for user selection (default view)."""
     bundles = discovery.list_bundles(show_all=False)
     app_settings = AppSettings()
@@ -111,136 +151,137 @@ def _show_user_bundles(discovery: AppBundleDiscovery, active_bundle: str | None)
         )
         return
 
-    table = Table(title="Available Bundles", show_header=True, header_style="bold cyan")
-    table.add_column("Name", style="green")
-    table.add_column("Location", style="yellow")
-    table.add_column("Status")
-
-    # Show regular bundles
+    items: list[dict[str, Any]] = []
     for bundle_name in bundles:
         uri = discovery.find(bundle_name)
-        location = _format_location(uri)
+        items.append(_bundle_item(bundle_name, uri, active_bundle))
 
-        status_parts: list[str] = []
-        if bundle_name == active_bundle:
-            status_parts.append("[bold green]active[/bold green]")
-
-        status = ", ".join(status_parts) if status_parts else ""
-        table.add_row(bundle_name, location, status)
-
-    # Show app bundles (always composed onto sessions)
     for app_uri in app_bundles:
-        # Extract name from URI for display
         app_name = _extract_bundle_name_from_uri(app_uri)
-        location = _format_location(app_uri)
-        table.add_row(app_name, location, "[cyan]app[/cyan]")
+        items.append(_bundle_item(app_name, app_uri, active_bundle, {"type": "app"}))
 
-    console.print(table)
+    if fmt == "json":
+        renderer.render_json(items)
+        return
 
-    # Show current mode
+    renderer.render(items, view=view, category="bundle", section_title="bundles")
+
     if active_bundle:
-        console.print(f"\n[dim]Mode: Bundle ({active_bundle})[/dim]")
+        console.print(f"[dim]Mode: Bundle ({active_bundle})[/dim]")
     else:
-        console.print("\n[dim]Mode: No bundle active (default)[/dim]")
-
+        console.print("[dim]Mode: No bundle active (default)[/dim]")
     console.print(
         "[dim]Use --all to see all bundles including dependencies and nested bundles.[/dim]"
     )
 
 
-def _show_all_bundles(discovery: AppBundleDiscovery, active_bundle: str | None):
+def _show_all_bundles(
+    discovery: AppBundleDiscovery,
+    active_bundle: str | None,
+    *,
+    view: str,
+    fmt: str,
+    renderer: ItemRenderer,
+) -> None:
     """Show all bundles categorized by type (--all view)."""
     categories = discovery.get_bundle_categories()
 
-    # Well-known bundles (built-in, always available)
-    if categories["well_known"]:
-        table = Table(
-            title="Built-in Bundles (always available)",
-            show_header=True,
-            header_style="bold cyan",
-        )
-        table.add_column("Name", style="green")
-        table.add_column("Location", style="yellow")
-        table.add_column("In Default List", style="dim")
-        table.add_column("Status")
+    all_items: list[dict[str, Any]] = []
 
+    # Well-known bundles
+    if categories["well_known"]:
+        items: list[dict[str, Any]] = []
         for bundle_info in sorted(categories["well_known"], key=lambda x: x["name"]):
             name = bundle_info["name"]
-            status = "[bold green]active[/bold green]" if name == active_bundle else ""
-            show = "✓" if bundle_info.get("show_in_list") == "True" else "✗"
-            table.add_row(name, _format_location(bundle_info["uri"]), show, status)
-
-        console.print(table)
-        console.print()
+            show_flag = "✓" if bundle_info.get("show_in_list") == "True" else "✗"
+            items.append(
+                _bundle_item(
+                    name,
+                    bundle_info["uri"],
+                    active_bundle,
+                    {"in_default_list": show_flag},
+                )
+            )
+        if fmt == "json":
+            all_items.extend(items)
+        else:
+            renderer.render(
+                items, view=view, category="bundle", section_title="built-in bundles"
+            )
 
     # User-added bundles
     if categories["user_added"]:
-        table = Table(
-            title="User-Added Bundles", show_header=True, header_style="bold cyan"
-        )
-        table.add_column("Name", style="green")
-        table.add_column("Location", style="yellow")
-        table.add_column("Status")
-
+        items = []
         for bundle_info in sorted(categories["user_added"], key=lambda x: x["name"]):
-            name = bundle_info["name"]
-            status = "[bold green]active[/bold green]" if name == active_bundle else ""
-            table.add_row(name, _format_location(bundle_info["uri"]), status)
-
-        console.print(table)
-        console.print()
-
-    # Discovered root bundles (loaded via includes/namespaces)
-    if categories["dependencies"]:
-        table = Table(
-            title="Discovered Root Bundles (loaded via includes/namespaces)",
-            show_header=True,
-            header_style="bold yellow",
-        )
-        table.add_column("Name", style="green")
-        table.add_column("Location", style="yellow")
-        table.add_column("Loaded By", style="dim")
-
-        for bundle_info in sorted(categories["dependencies"], key=lambda x: x["name"]):
-            table.add_row(
-                bundle_info["name"],
-                _format_location(bundle_info["uri"]),
-                bundle_info.get("included_by", ""),
+            items.append(
+                _bundle_item(
+                    bundle_info["name"],
+                    bundle_info["uri"],
+                    active_bundle,
+                    {"type": "user-added"},
+                )
+            )
+        if fmt == "json":
+            all_items.extend(items)
+        else:
+            renderer.render(
+                items, view=view, category="bundle", section_title="user-added bundles"
             )
 
-        console.print(table)
-        console.print()
+    # Discovered root bundles (dependencies)
+    if categories["dependencies"]:
+        items = []
+        for bundle_info in sorted(categories["dependencies"], key=lambda x: x["name"]):
+            loaded_by = bundle_info.get("included_by", "")
+            items.append(
+                _bundle_item(
+                    bundle_info["name"],
+                    bundle_info["uri"],
+                    active_bundle,
+                    {"loaded_by": loaded_by},
+                )
+            )
+        if fmt == "json":
+            all_items.extend(items)
+        else:
+            renderer.render(
+                items,
+                view=view,
+                category="bundle",
+                section_title="discovered root bundles",
+            )
 
-    # Nested bundles (behaviors, providers - part of a root bundle)
+    # Nested bundles (behaviors, providers)
     if categories["nested_bundles"]:
-        table = Table(
-            title="Nested Bundles (behaviors, providers - part of a root bundle)",
-            show_header=True,
-            header_style="bold magenta",
-        )
-        table.add_column("Name", style="dim green")
-        table.add_column("Root Bundle", style="dim cyan")
-        table.add_column("Location", style="dim yellow")
-
+        items = []
         for bundle_info in sorted(
             categories["nested_bundles"], key=lambda x: x["name"]
         ):
-            table.add_row(
-                bundle_info["name"],
-                bundle_info.get("root", ""),
-                _format_location(bundle_info["uri"]),
+            root = bundle_info.get("root", "")
+            items.append(
+                _bundle_item(
+                    bundle_info["name"],
+                    bundle_info["uri"],
+                    active_bundle,
+                    {"root": root},
+                )
+            )
+        if fmt == "json":
+            all_items.extend(items)
+        else:
+            renderer.render(
+                items, view=view, category="bundle", section_title="nested bundles"
             )
 
-        console.print(table)
-        console.print()
+    if fmt == "json":
+        renderer.render_json(all_items)
+        return
 
-    # Show current mode
     if active_bundle:
         console.print(f"[dim]Mode: Bundle ({active_bundle})[/dim]")
     else:
         console.print("[dim]Mode: No bundle active (default)[/dim]")
 
-    # Footer note explaining relationship to `amplifier update`
     console.print()
     console.print(
         "[dim]ℹ️  Root bundles (Built-in + Discovered) are checked by `amplifier update`.[/dim]"
@@ -299,9 +340,14 @@ def _extract_bundle_name_from_uri(uri: str) -> str:
 
 @bundle.command(name="show")
 @click.argument("name")
-@click.option("--detailed", "-d", is_flag=True, help="Show detailed configuration")
-def bundle_show(name: str, detailed: bool):
-    """Show details of a specific bundle."""
+@view_flags
+def bundle_show(name: str, compact: bool, detailed: bool, fmt: str):
+    """Show details of a specific bundle.
+
+    In detailed view (default), shows the full include chain — what bundles
+    pull in NAME and through which path.  This is the primary way to
+    understand why a bundle is present in your session.
+    """
     registry = create_bundle_registry()
 
     try:
@@ -317,82 +363,189 @@ def bundle_show(name: str, detailed: bool):
         console.print(f"[red]Error:[/red] Failed to load bundle: {escape_markup(exc)}")
         sys.exit(1)
 
-    # Basic info
-    console.print(f"[bold]Bundle:[/bold] {bundle_obj.name}")
-    if bundle_obj.version:
-        console.print(f"[bold]Version:[/bold] {bundle_obj.version}")
-    if bundle_obj.description:
-        console.print(f"[bold]Description:[/bold] {bundle_obj.description}")
-    console.print(f"[bold]Location:[/bold] {bundle_obj.base_path}")
+    view = resolve_view(
+        ("bundle", "show"), compact_flag=compact, detailed_flag=detailed
+    )
 
-    # Mount plan summary
+    # Build include chains from the registry's disk graph.
+    try:
+        from amplifier_foundation.configurator._inspector import walk_include_chains
+
+        registry_dict = dict(registry._registry)
+        include_chains = walk_include_chains(name, registry_dict)
+    except Exception:
+        include_chains = []
+
+    app_settings = AppSettings()
+    active_bundle = app_settings.get_active_bundle()
     mount_plan = bundle_obj.to_mount_plan()
 
-    console.print("\n[bold]Configuration:[/bold]")
+    # Build a bundle item for JSON and compact views
+    bundle_item: dict[str, Any] = {
+        "name": bundle_obj.name,
+        "enabled": bundle_obj.name == active_bundle,
+        "source_uri": bundle_obj.uri if hasattr(bundle_obj, "uri") else None,
+        "include_paths": [
+            [{"bundle": s.bundle, "version": s.version, "uri": s.uri} for s in path]
+            for path in include_chains
+        ],
+        "config_summary": {
+            "version": getattr(bundle_obj, "version", None),
+            "description": getattr(bundle_obj, "description", None),
+            "location": str(getattr(bundle_obj, "base_path", "")),
+            "providers": len(mount_plan.get("providers", [])),
+            "tools": len(mount_plan.get("tools", [])),
+            "hooks": len(mount_plan.get("hooks", [])),
+            "agents": len(mount_plan.get("agents", {})),
+        },
+    }
 
-    # Session
-    if "session" in mount_plan:
-        session = mount_plan["session"]
-        console.print("\n[bold]Session:[/bold]")
-        if "orchestrator" in session:
-            orch = session["orchestrator"]
-            if isinstance(orch, dict):
-                console.print(f"  orchestrator: {orch.get('module', 'unknown')}")
-            else:
-                console.print(f"  orchestrator: {orch}")
-        if "context" in session:
-            ctx = session["context"]
-            if isinstance(ctx, dict):
-                console.print(f"  context: {ctx.get('module', 'unknown')}")
-            else:
-                console.print(f"  context: {ctx}")
+    if fmt == "json":
+        renderer = ItemRenderer(console)
+        renderer.render_json(bundle_item)
+        return
 
-    # Providers
-    providers = mount_plan.get("providers", [])
-    if providers:
-        console.print(f"\n[bold]Providers:[/bold] ({len(providers)})")
-        for p in providers:
-            if isinstance(p, dict):
-                module = p.get("module", "unknown")
-                console.print(f"  • {module}")
-                if detailed and p.get("config"):
-                    for key, value in p["config"].items():
-                        console.print(f"      {key}: {value}")
+    if view == "compact":
+        # Compact: single line with active status
+        renderer = ItemRenderer(console)
+        renderer.render_one(bundle_item, view="compact")
+        return
+
+    # Detailed / regular view: full bundle info + include chains
+    _render_bundle_show_text(
+        bundle_obj, include_chains, active_bundle, mount_plan, view
+    )
+
+
+def _render_bundle_show_text(
+    bundle_obj: Any,
+    include_chains: list[list[Any]],
+    active_bundle: str | None,
+    mount_plan: dict[str, Any],
+    view: str,
+) -> None:
+    """Render bundle show in text mode (regular or detailed)."""
+    indent = "  "
+    console.print()
+    console.print(f"[bold]{escape_markup(bundle_obj.name)}[/bold]")
+
+    version = getattr(bundle_obj, "version", None)
+    if version:
+        console.print(f"{indent}version: {escape_markup(str(version))}")
+
+    description = getattr(bundle_obj, "description", None)
+    if description:
+        console.print(f"{indent}description: {escape_markup(str(description))}")
+
+    uri = getattr(bundle_obj, "uri", None)
+    if uri:
+        console.print(f"{indent}source: {escape_markup(str(uri))}")
+
+    location = getattr(bundle_obj, "base_path", None)
+    if location:
+        console.print(f"[dim]{indent}location: {escape_markup(str(location))}[/dim]")
+
+    # Included_by chains — primary acceptance test output
+    if include_chains:
+        if len(include_chains) == 1:
+            path_str = " → ".join(
+                escape_markup(s.bundle if hasattr(s, "bundle") else str(s))
+                for s in include_chains[0]
+            )
+            console.print(f"{indent}included_by:")
+            console.print(f"{indent}  {path_str}")
+        else:
+            console.print(f"{indent}included_by:")
+            for path in include_chains:
+                path_str = " → ".join(
+                    escape_markup(s.bundle if hasattr(s, "bundle") else str(s))
+                    for s in path
+                )
+                console.print(f"{indent}  {path_str}")
+
+    active = bundle_obj.name == active_bundle
+    console.print(f"{indent}active: {'yes' if active else 'no'}")
+
+    if view == "detailed":
+        # Full mount plan details
+        providers = mount_plan.get("providers", [])
+        if providers:
+            console.print(f"{indent}providers: ({len(providers)})")
+            for p in providers:
+                if isinstance(p, dict):
+                    console.print(f"{indent}  • {p.get('module', 'unknown')}")
+        else:
+            console.print(f"{indent}providers: none")
+
+        tools = mount_plan.get("tools", [])
+        if tools:
+            console.print(f"{indent}tools: ({len(tools)})")
+            for t in tools:
+                if isinstance(t, dict):
+                    console.print(f"{indent}  • {t.get('module', 'unknown')}")
+                else:
+                    console.print(f"{indent}  • {t}")
+
+        hooks = mount_plan.get("hooks", [])
+        if hooks:
+            console.print(f"{indent}hooks: ({len(hooks)})")
+            for h in hooks:
+                if isinstance(h, dict):
+                    console.print(f"{indent}  • {h.get('module', 'unknown')}")
+                else:
+                    console.print(f"{indent}  • {h}")
+
+        agents = mount_plan.get("agents", {})
+        if agents:
+            console.print(f"{indent}agents: ({len(agents)})")
+            for agent_name in sorted(agents.keys()):
+                console.print(f"{indent}  • {agent_name}")
+
+        if bundle_obj.includes:
+            console.print(f"{indent}includes: ({len(bundle_obj.includes)})")
+            for inc in bundle_obj.includes:
+                console.print(f"{indent}  • {inc}")
+
+        # Session config
+        if "session" in mount_plan:
+            session = mount_plan["session"]
+            console.print(f"{indent}session:")
+            if "orchestrator" in session:
+                orch = session["orchestrator"]
+                mod = (
+                    orch.get("module", "unknown")
+                    if isinstance(orch, dict)
+                    else str(orch)
+                )
+                console.print(f"{indent}  orchestrator: {mod}")
+            if "context" in session:
+                ctx = session["context"]
+                mod = (
+                    ctx.get("module", "unknown") if isinstance(ctx, dict) else str(ctx)
+                )
+                console.print(f"{indent}  context: {mod}")
     else:
-        console.print("\n[bold]Providers:[/bold] (none - provider-agnostic bundle)")
+        # Regular: just counts
+        providers = mount_plan.get("providers", [])
+        tools = mount_plan.get("tools", [])
+        hooks = mount_plan.get("hooks", [])
+        agents = mount_plan.get("agents", {})
+        includes = getattr(bundle_obj, "includes", None) or []
+        parts = []
+        if providers:
+            parts.append(f"{len(providers)} providers")
+        if tools:
+            parts.append(f"{len(tools)} tools")
+        if hooks:
+            parts.append(f"{len(hooks)} hooks")
+        if agents:
+            parts.append(f"{len(agents)} agents")
+        if includes:
+            parts.append(f"{len(includes)} includes")
+        if parts:
+            console.print(f"[dim]{indent}contents: {', '.join(parts)}[/dim]")
 
-    # Tools
-    tools = mount_plan.get("tools", [])
-    if tools:
-        console.print(f"\n[bold]Tools:[/bold] ({len(tools)})")
-        for t in tools:
-            if isinstance(t, dict):
-                console.print(f"  • {t.get('module', 'unknown')}")
-            else:
-                console.print(f"  • {t}")
-
-    # Hooks
-    hooks = mount_plan.get("hooks", [])
-    if hooks:
-        console.print(f"\n[bold]Hooks:[/bold] ({len(hooks)})")
-        for h in hooks:
-            if isinstance(h, dict):
-                console.print(f"  • {h.get('module', 'unknown')}")
-            else:
-                console.print(f"  • {h}")
-
-    # Agents
-    agents = mount_plan.get("agents", {})
-    if agents:
-        console.print(f"\n[bold]Agents:[/bold] ({len(agents)})")
-        for agent_name in sorted(agents.keys()):
-            console.print(f"  • {agent_name}")
-
-    # Includes (if available)
-    if bundle_obj.includes:
-        console.print(f"\n[bold]Includes:[/bold] ({len(bundle_obj.includes)})")
-        for inc in bundle_obj.includes:
-            console.print(f"  • {inc}")
+    console.print()
 
 
 @bundle.command(name="use")

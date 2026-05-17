@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from amplifier_app_cli.utils.error_format import escape_markup
 
@@ -65,22 +65,58 @@ def _canonical_title(category: str, section_title: str | None) -> str:
     return _CATEGORY_TITLE.get(category, category)
 
 
-def _item_root_bundle(item: Any) -> str | None:
-    """Return the last Origin's bundle from an item (compact root-bundle label).
+def _item_direct_claimant(item: Any) -> str | None:
+    """Return the first direct claimant bundle name for compact view.
 
-    The "root-bundle" is the *last* entry in item.origins — the outermost
-    bundle in the merge-graph chain (typically the user's active bundle or a
-    top-level behavior that pulled this item in).
+    The direct claimant is the first ``Origin`` entry where
+    ``via_behavior is None`` (self-introduced, not propagated).  Falls back
+    to the first origin entry if none are direct.
 
-    For dict-based items (test mocks), falls back to the last element of the
+    For dict-based items (test mocks), falls back to the first element of the
     'behaviors' or 'source' field.
     """
     if hasattr(item, "origins"):
         origins = item.origins or []
-        return origins[-1].bundle if origins else None
+        # Prefer the first direct claimant (via_behavior=None)
+        for o in origins:
+            if getattr(o, "via_behavior", None) is None:
+                return o.bundle
+        # Fallback: first origin regardless
+        return origins[0].bundle if origins else None
     # Dict-based (legacy / test mock)
     behaviors = _item_get_behaviors(item)
-    return behaviors[-1] if behaviors else None
+    return behaviors[0] if behaviors else None
+
+
+def _item_all_bundle_names(item: Any) -> list[str]:
+    """Return all distinct bundle names from origins, for regular view.
+
+    Order: direct claimants first (via_behavior is None), then propagated
+    entries by insertion order.
+    """
+    if hasattr(item, "origins"):
+        origins = item.origins or []
+        seen: set[str] = set()
+        result: list[str] = []
+        # Direct claimants first
+        for o in origins:
+            if getattr(o, "via_behavior", None) is None and o.bundle not in seen:
+                seen.add(o.bundle)
+                result.append(o.bundle)
+        # Propagated entries
+        for o in origins:
+            if o.bundle not in seen:
+                seen.add(o.bundle)
+                result.append(o.bundle)
+        return result
+    # Dict-based fallback
+    return _item_get_behaviors(item) or []
+
+
+# Keep backward-compat alias (used by tests and DashboardRenderer internally)
+def _item_root_bundle(item: Any) -> str | None:
+    """Return the first direct claimant bundle for compact view (compat alias)."""
+    return _item_direct_claimant(item)
 
 
 def _serialize_item(item: Any) -> Any:
@@ -125,7 +161,7 @@ class ItemRenderer:
         self,
         items: list[Any],
         *,
-        view: Literal["compact", "regular", "detailed"],
+        view: str,
         category: str,
         section_title: str | None = None,
         trailing_newline: bool = True,
@@ -164,7 +200,7 @@ class ItemRenderer:
         self,
         item: Any,
         *,
-        view: Literal["compact", "regular", "detailed"] = "detailed",
+        view: str = "detailed",
     ) -> None:
         """Render a single item.
 
@@ -186,20 +222,26 @@ class ItemRenderer:
             self._render_detailed_one(item)
 
     def render_json(self, items: list[Any] | Any) -> None:
-        """Print items serialized as JSON.
+        """Print items serialized as JSON to stdout.
 
         Accepts a single item or a list of items.  ``ItemRecord`` dataclasses
         are serialized via ``dataclasses.asdict``; plain dicts are passed
         through unchanged.
 
+        Uses ``sys.stdout.write`` rather than Rich console to avoid line-wrap
+        corruption of JSON string values.
+
         The JSON shape is the public schema (experimental — subject to change
         until a future version tag).  See ``docs/OUTPUT_FORMATS.md``.
         """
+        import sys
+
         if isinstance(items, list):
             payload = [_serialize_item(i) for i in items]
         else:
             payload = _serialize_item(items)
-        self._console.print(json.dumps(payload, indent=2, default=str))
+        sys.stdout.write(json.dumps(payload, indent=2, default=str))
+        sys.stdout.write("\n")
 
     # ------------------------------------------------------------------
     # compact view
@@ -212,7 +254,7 @@ class ItemRenderer:
         section_title: str | None,
         trailing_newline: bool,
     ) -> None:
-        """One line per item: ``  [on]  <name>  <root-bundle>``."""
+        """One line per item: ``  [on]  <name>  <direct-claimant>``."""
         if not items:
             return
 
@@ -226,12 +268,13 @@ class ItemRenderer:
         for item in items:
             is_on = _item_get(item, "enabled", True)
             name = escape_markup(str(_item_get(item, "name", "unknown")))
-            root_bundle = _item_root_bundle(item)
+            # Compact view: show the first direct claimant (via_behavior=None)
+            claimant = _item_direct_claimant(item)
 
             status = "\\[on]" if is_on else "\\[off]"
             line = f"  {status}  {name}"
-            if root_bundle:
-                line += f"  {escape_markup(root_bundle)}"
+            if claimant:
+                line += f"  {escape_markup(claimant)}"
             if not is_on:
                 line += "  ← disabled"
             self._console.print(line)
@@ -287,7 +330,7 @@ class ItemRenderer:
     # ------------------------------------------------------------------
 
     def _render_detailed_one(self, item: Any) -> None:
-        """Full drilldown: origin chain, include_path, config, runtime_injection."""
+        """Full drilldown: origin chain, include_paths, config, runtime_injection."""
         is_on = _item_get(item, "enabled", True)
         name = str(_item_get(item, "name", "unknown"))
         module_id = _item_get(item, "module_id", None)
@@ -297,11 +340,22 @@ class ItemRenderer:
 
         # Prefer ItemRecord attributes where available
         origins: list[Any] = []
-        include_path: list[Any] = []
+        # Support both plural include_paths (new) and singular include_path (legacy)
+        include_paths: list[list[Any]] = []
         if hasattr(item, "origins"):
             origins = item.origins or []
-        if hasattr(item, "include_path"):
-            include_path = item.include_path or []
+        if hasattr(item, "include_paths"):
+            raw = item.include_paths or []
+            # Normalise: flat list → wrap as single path, nested list → use as-is
+            if raw and not isinstance(raw[0], list):
+                include_paths = [raw]
+            else:
+                include_paths = raw
+        elif hasattr(item, "include_path"):
+            # Legacy singular field
+            raw_path = item.include_path or []
+            if raw_path:
+                include_paths = [raw_path]
         if hasattr(item, "runtime_injection"):
             runtime_injection = item.runtime_injection
 
@@ -349,13 +403,24 @@ class ItemRenderer:
                 for b in behavior_names:
                     self._console.print(f"[dim]{indent}  {escape_markup(b)}[/dim]")
 
-        # Include path (bundle-on-disk graph)
-        if include_path:
-            self._console.print(f"[dim]{indent}include_path:[/dim]")
-            path_str = " → ".join(
-                escape_markup(getattr(s, "bundle", str(s))) for s in include_path
-            )
-            self._console.print(f"[dim]{indent}  {path_str}[/dim]")
+        # Include paths (bundle-on-disk graph) — singular or plural
+        if include_paths:
+            if len(include_paths) == 1:
+                # Single path: compact single-line format
+                self._console.print(f"[dim]{indent}include_path:[/dim]")
+                path_str = " → ".join(
+                    escape_markup(getattr(s, "bundle", str(s)))
+                    for s in include_paths[0]
+                )
+                self._console.print(f"[dim]{indent}  {path_str}[/dim]")
+            else:
+                # Multiple paths: one per line under include_paths:
+                self._console.print(f"[dim]{indent}include_paths:[/dim]")
+                for path in include_paths:
+                    path_str = " → ".join(
+                        escape_markup(getattr(s, "bundle", str(s))) for s in path
+                    )
+                    self._console.print(f"[dim]{indent}  {path_str}[/dim]")
 
         # Config
         if cfg and isinstance(cfg, dict):

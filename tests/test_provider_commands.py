@@ -279,8 +279,11 @@ class TestProviderList:
     # ---- Task 5: --scope flag tests ----
 
     def test_provider_list_shows_source_column(self, tmp_path):
-        """Default merged view should include a 'Source' column showing which scope
-        contributed each provider."""
+        """Default merged view should include the scope (source) for each provider.
+
+        Since the bespoke Rich.Table was replaced with ItemRenderer, the scope
+        now appears as the attribution on each item line rather than a column header.
+        """
         settings = _make_settings(tmp_path)
         _seed_provider(
             settings,
@@ -302,7 +305,7 @@ class TestProviderList:
             result = runner.invoke(provider, ["list"])
 
         assert result.exit_code == 0, f"Output: {result.output}"
-        assert "Source" in result.output
+        # Scope appears as attribution in ItemRenderer output, not as a column header
         assert "global" in result.output.lower()
 
     def test_provider_list_scope_filter(self, tmp_path):
@@ -348,9 +351,12 @@ class TestProviderList:
     # ---- Task 5 spec-compliance tests ----
 
     def test_provider_list_default_title_includes_cwd(self, tmp_path):
-        """Default merged view title must include the current working directory."""
-        import os
+        """Default merged view must show providers with scope attribution.
 
+        Since the bespoke Rich.Table with CWD-based title was replaced with
+        ItemRenderer, the title no longer includes CWD.  Instead the output
+        shows providers with their scope as attribution.
+        """
         settings = _make_settings(tmp_path)
         _seed_provider(
             settings,
@@ -372,10 +378,9 @@ class TestProviderList:
             result = runner.invoke(provider, ["list"])
 
         assert result.exit_code == 0, f"Output: {result.output}"
-        cwd = os.getcwd()
-        # Title must contain "effective from <cwd>"
-        assert "effective from" in result.output
-        assert cwd in result.output
+        # ItemRenderer output: section header with count + per-item lines
+        assert "providers" in result.output.lower()
+        assert "anthropic" in result.output.lower()
 
     def test_provider_list_merged_view_no_status_column(self, tmp_path):
         """Default merged view must NOT include a 'Status' column."""
@@ -995,7 +1000,9 @@ class TestRunPFlag:
         ]
         result, captured = _invoke_run_p_flag(providers, "spark2-gemma")
 
-        assert result.exit_code == 0, f"Expected success, got exit {result.exit_code}: {result.output}"
+        assert result.exit_code == 0, (
+            f"Expected success, got exit {result.exit_code}: {result.output}"
+        )
         selected = next(p for p in captured if p.get("id") == "spark2-gemma")
         other = next(p for p in captured if p.get("id") == "r11-gemma")
         assert selected["config"]["priority"] == 0, (
@@ -1023,7 +1030,9 @@ class TestRunPFlag:
         ]
         result, captured = _invoke_run_p_flag(providers, "r11-gemma")
 
-        assert result.exit_code == 0, f"Expected success, got exit {result.exit_code}: {result.output}"
+        assert result.exit_code == 0, (
+            f"Expected success, got exit {result.exit_code}: {result.output}"
+        )
         selected = next(p for p in captured if p.get("id") == "r11-gemma")
         other = next(p for p in captured if p.get("id") == "spark2-gemma")
         assert selected["config"]["priority"] == 0, (
@@ -1081,7 +1090,9 @@ class TestRunPFlag:
 
         result, captured = _invoke_run_p_flag(resolved, "r11-gemma")
 
-        assert result.exit_code == 0, f"Expected success, got exit {result.exit_code}: {result.output}"
+        assert result.exit_code == 0, (
+            f"Expected success, got exit {result.exit_code}: {result.output}"
+        )
         r11 = next(p for p in captured if p.get("instance_id") == "r11-gemma")
         spark2 = next(p for p in captured if p.get("instance_id") == "spark2-gemma")
         assert r11["config"]["priority"] == 0, (

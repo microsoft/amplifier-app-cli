@@ -16,6 +16,8 @@ from rich.table import Table
 from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
 from ..lib.settings import AppSettings, Scope
 from ..provider_loader import get_provider_info, get_provider_models
+from ..ui.item_renderer import ItemRenderer
+from ..ui.view_policy import resolve_view, view_flags
 from ..ui.scope import (
     is_scope_change_available,
     print_scope_indicator,
@@ -224,7 +226,8 @@ def routing_group():
 
 
 @routing_group.command("list")
-def routing_list():
+@view_flags
+def routing_list(compact: bool, detailed: bool, fmt: str):
     """List available routing matrices with compatibility indicators."""
     settings = _get_settings()
     matrix_files = _discover_matrix_files()
@@ -241,48 +244,45 @@ def routing_list():
         console.print("[yellow]No valid routing matrices found.[/yellow]")
         return
 
-    # Get active matrix from settings
     routing_config = settings.get_routing_config()
     active_matrix = routing_config.get("matrix", "balanced")
-
-    # Get configured provider types for compatibility check
     provider_types = _get_configured_provider_types(settings)
+    view = resolve_view(
+        ("routing", "list"), compact_flag=compact, detailed_flag=detailed
+    )
+    renderer = ItemRenderer(console)
 
-    table = Table(title="Routing Matrices")
-    table.add_column("", width=2)  # Arrow indicator
-    table.add_column("Name", style="cyan")
-    table.add_column("Description")
-    table.add_column("Compatibility", justify="right")
-    table.add_column("Updated")
-
+    items: list[dict[str, Any]] = []
     for name, data in sorted(matrices.items()):
         is_active = name == active_matrix
-        indicator = "→" if is_active else ""
-
         description = data.get("description", "")
         updated = str(data.get("updated", ""))
 
+        compat_str = "no providers"
         if provider_types:
             covered, total = _check_compatibility(data, provider_types)
-            if covered == total:
-                compat = f"[green]✓ {covered}/{total} roles[/green]"
-            elif covered > 0:
-                compat = f"[yellow]~ {covered}/{total} roles[/yellow]"
-            else:
-                compat = f"[red]✗ {covered}/{total} roles[/red]"
-        else:
-            compat = "[dim]no providers[/dim]"
+            compat_str = f"{covered}/{total} roles"
 
-        name_style = "bold cyan" if is_active else "cyan"
-        table.add_row(
-            indicator,
-            f"[{name_style}]{name}[/{name_style}]",
-            description,
-            compat,
-            updated,
+        items.append(
+            {
+                "name": ("→ " if is_active else "  ") + name,
+                "enabled": is_active,
+                "behaviors": ["active" if is_active else "available"],
+                "config_summary": {
+                    "description": description,
+                    "compatibility": compat_str,
+                    "updated": updated,
+                },
+            }
         )
 
-    console.print(table)
+    if fmt == "json":
+        renderer.render_json(items)
+        return
+
+    renderer.render(
+        items, view=view, category="routing", section_title="routing matrices"
+    )
 
 
 # ============================================================
@@ -328,14 +328,13 @@ def routing_use(matrix_name: str, scope: str):
 
 @routing_group.command("show")
 @click.argument("matrix_name", required=False)
-@click.option(
-    "--detailed",
-    is_flag=True,
-    default=False,
-    help="Show full candidate waterfall instead of resolved view.",
-)
-def routing_show(matrix_name: str | None, detailed: bool):
-    """Show effective model routing for each role."""
+@view_flags
+def routing_show(matrix_name: str | None, compact: bool, detailed: bool, fmt: str):
+    """Show effective model routing for each role.
+
+    Default view shows the resolved role-to-model mapping.
+    Use --detailed to show the full candidate waterfall for each role.
+    """
     settings = _get_settings()
     matrix_files = _discover_matrix_files()
     matrices = _load_all_matrices(matrix_files)
@@ -356,8 +355,18 @@ def routing_show(matrix_name: str | None, detailed: bool):
         )
         return
 
+    view = resolve_view(
+        ("routing", "show"), compact_flag=compact, detailed_flag=detailed
+    )
     matrix_data = matrices[matrix_name]
-    if detailed:
+
+    if fmt == "json":
+        renderer = ItemRenderer(console)
+        renderer.render_json({"matrix": matrix_name, "data": matrix_data})
+        return
+
+    # detailed view → full waterfall; regular/compact → resolved routing
+    if view == "detailed":
         _show_matrix_details(matrix_data, settings)
     else:
         _show_matrix_resolution(matrix_data, settings)
