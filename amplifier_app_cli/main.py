@@ -1351,8 +1351,20 @@ class CommandProcessor:
     def _render_category_summary(
         self, console: Any, category: str, items: list
     ) -> None:
-        """Render one category section with status indicators."""
-        self._render_simple_section(console, category.capitalize(), items)
+        """Render one category section using the appropriate specialized renderer."""
+        renderer = DashboardRenderer(console)
+        if category == "tools":
+            renderer.render_tools_section(items)
+        elif category == "hooks":
+            renderer.render_hooks_section(items)
+        elif category == "providers":
+            renderer.render_providers_section(items)
+        elif category in ("context", "agents"):
+            renderer.render_attributed_section(items, category)
+        elif category == "behaviors":
+            renderer.render_behaviors_section(items)
+        else:
+            self._render_simple_section(console, category.capitalize(), items)
 
     async def _render_config_category(self, category: str) -> str:
         """Render a per-category list view using list_methods dict."""
