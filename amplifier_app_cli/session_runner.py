@@ -312,71 +312,31 @@ async def create_initialized_session(
     )
 
 
+_CLEANUP_EVENTS: tuple[str, ...] = (
+    # PR #183 — cleanup-window diagnostic events emitted by app-cli's main.py only
+    "cleanup:render_begin",
+    "cleanup:render_end",
+    "cleanup:store_begin",
+    "cleanup:store_end",
+    "cleanup:finally_begin",
+    "cleanup:finally_end",
+)
+
+
 def _inject_observability_events(prepared_bundle: "PreparedBundle") -> None:
-    """Inject app-cli event names into subscriber hooks before session creation.
+    """Register app-cli cleanup-window event names (PR #183).
 
-    Both ``hooks-logging`` and ``hook-context-intelligence`` read their mount()
-    config's ``additional_events`` list and register handlers for each name.
-    By populating that list HERE — before ``create_session()`` calls ``mount()``
-    — we ensure the events are subscribed to when the first emit fires.
-
-    Why this is the right layer
-    ---------------------------
-    The Rust kernel owns ``amplifier_core.events.ALL_EVENTS``.  New event names
-    introduced in Python (app-cli or amplifier-core Python layer) cannot be added
-    to that list without a compiled-binary release.  The ``additional_events``
-    config key is the documented escape hatch for exactly this case.
-
-    Events registered here
-    ----------------------
-    - ``session:config`` — emitted by amplifier-core's
-      ``emit_raw_field_if_configured()`` (PR #79) when ``session.raw=True``.
-      Cannot be registered from the Rust binary; registered here as the calling
-      layer (per the task brief).
-    - ``cleanup:render_begin/end``, ``cleanup:store_begin/end``,
-      ``cleanup:finally_begin/end`` — emitted by ``execute_single()`` and
-      ``interactive_chat()`` (PR #183) to instrument the post-prompt:complete
-      window.
+    ``session:config`` is now handled by foundation's create_session().
+    These events are emitted by app-cli's main.py only, so they belong here.
 
     Args:
         prepared_bundle: The PreparedBundle whose mount_plan will be updated
             in-place.  Must be called after inject_user_providers() (step 4b)
             but before create_session() (step 4c).
     """
-    # All seven event names that need additional subscription.
-    _OBSERVABILITY_EVENTS: list[str] = [
-        # PR #79 — amplifier-core raw-session config event
-        "session:config",
-        # PR #183 — cleanup-window diagnostic events
-        "cleanup:render_begin",
-        "cleanup:render_end",
-        "cleanup:store_begin",
-        "cleanup:store_end",
-        "cleanup:finally_begin",
-        "cleanup:finally_end",
-    ]
+    from amplifier_foundation import inject_additional_events
 
-    # Modules that support the additional_events config key.
-    _SUBSCRIBER_MODULES: frozenset[str] = frozenset(
-        {"hooks-logging", "hook-context-intelligence"}
-    )
-
-    hooks: list[Any] = prepared_bundle.mount_plan.get("hooks") or []
-    for hook in hooks:
-        if not isinstance(hook, dict):
-            continue
-        if hook.get("module") not in _SUBSCRIBER_MODULES:
-            continue
-        # Ensure config dict exists and is mutable
-        existing_cfg = hook.get("config")
-        if existing_cfg is None:
-            hook["config"] = {}
-        cfg: dict[str, Any] = hook["config"]
-        existing_events: list[str] = list(cfg.get("additional_events") or [])
-        # Extend, dedup, preserve insertion order (Python 3.7+).
-        # User-configured events come first so they are not displaced.
-        merged = list(dict.fromkeys(existing_events + _OBSERVABILITY_EVENTS))
-        cfg["additional_events"] = merged
+    inject_additional_events(prepared_bundle.mount_plan, _CLEANUP_EVENTS)
 
 
 async def _create_bundle_session(
