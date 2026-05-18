@@ -69,6 +69,26 @@ from .utils.version import get_version
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Cleanup-window observability events
+#
+# These string-literal constants are app-level diagnostic events that
+# instrument the "dead window" between prompt:complete and session:end.
+# They cannot be added to amplifier-core/events.py because that module
+# re-exports from the Rust kernel binary (amplifier_core._engine), which is
+# not editable at the Python layer.  Using string literals here is the
+# documented fallback (see task spec).
+#
+# All six events flow through the same hooks.emit() path as PROMPT_COMPLETE
+# and SESSION_END, so they land in events.jsonl with full timestamps.
+# ---------------------------------------------------------------------------
+CLEANUP_RENDER_BEGIN: str = "cleanup:render_begin"
+CLEANUP_RENDER_END: str = "cleanup:render_end"
+CLEANUP_STORE_BEGIN: str = "cleanup:store_begin"
+CLEANUP_STORE_END: str = "cleanup:store_end"
+CLEANUP_FINALLY_BEGIN: str = "cleanup:finally_begin"
+CLEANUP_FINALLY_END: str = "cleanup:finally_end"
+
 # Suppress duplicate LLM error lines from console output.
 # The CLI renders LLM errors as Rich panels — the logger.error() calls
 # from the provider ("[PROVIDER] Anthropic API error: ...") and session
@@ -2695,12 +2715,26 @@ async def interactive_chat(
 
             try:
                 response = await execute_task
+
+                # Get hooks early for observability around render + prompt:complete + store
+                hooks = session.coordinator.get("hooks")
+
+                # --- cleanup:render_begin ---
+                if hooks:
+                    await hooks.emit(
+                        CLEANUP_RENDER_BEGIN, {"session_id": actual_session_id}
+                    )
                 from .ui import render_message
 
                 render_message({"role": "assistant", "content": response}, console)
 
+                # --- cleanup:render_end ---
+                if hooks:
+                    await hooks.emit(
+                        CLEANUP_RENDER_END, {"session_id": actual_session_id}
+                    )
+
                 # Emit prompt:complete event
-                hooks = session.coordinator.get("hooks")
                 if hooks:
                     from amplifier_core.events import PROMPT_COMPLETE
 
@@ -2713,8 +2747,20 @@ async def interactive_chat(
                         },
                     )
 
+                # --- cleanup:store_begin ---
+                if hooks:
+                    await hooks.emit(
+                        CLEANUP_STORE_BEGIN, {"session_id": actual_session_id}
+                    )
+
                 # Save session after execution (even if cancelled - preserves state)
                 await _save_session()
+
+                # --- cleanup:store_end ---
+                if hooks:
+                    await hooks.emit(
+                        CLEANUP_STORE_END, {"session_id": actual_session_id}
+                    )
 
                 # Return based on cancellation status
                 if session.coordinator.cancellation.is_cancelled:
@@ -2826,25 +2872,17 @@ async def interactive_chat(
                     console.print_exception()
 
     finally:
-        # Only emit session:end if actual work occurred (at least one turn)
-        # This prevents empty sessions from being logged when user immediately exits
-        context = session.coordinator.get("context")
-        turn_count = 0
-        if context and hasattr(context, "get_messages"):
-            try:
-                messages = await context.get_messages()
-                turn_count = len([m for m in messages if m.get("role") == "user"])
-            except Exception:
-                pass  # If we can't get messages, assume no turns
+        # Get hooks first for cleanup-window observability
+        hooks = session.coordinator.get("hooks")
+        if hooks:
+            await hooks.emit(CLEANUP_FINALLY_BEGIN, {"session_id": actual_session_id})
 
-        if turn_count > 0:
-            hooks = session.coordinator.get("hooks")
-            if hooks:
-                from amplifier_core.events import SESSION_END
-
-                await hooks.emit(SESSION_END, {"session_id": actual_session_id})
-
+        # session:end is emitted by session.cleanup() (the canonical kernel path).
+        # Do NOT emit it here — that would duplicate the event.
         await initialized.cleanup()
+        # --- cleanup:finally_end (after cleanup so its duration is visible) ---
+        if hooks:
+            await hooks.emit(CLEANUP_FINALLY_END, {"session_id": actual_session_id})
         console.print(
             "\n[yellow]Session exited - resume anytime with these commands:[/yellow]"
         )
@@ -2976,6 +3014,10 @@ async def execute_single(
                 },
             )
 
+        # --- cleanup:render_begin ---
+        if hooks:
+            await hooks.emit(CLEANUP_RENDER_BEGIN, {"session_id": actual_session_id})
+
         # Output response based on format
         if output_format in ["json", "json-trace"]:
             # Store data for JSON output in finally block (after all hooks fired)
@@ -3000,6 +3042,11 @@ async def execute_single(
             console.print(Markdown(response))
             console.print()  # Add blank line after output to prevent running into shell prompt
 
+        # --- cleanup:render_end / cleanup:store_begin ---
+        if hooks:
+            await hooks.emit(CLEANUP_RENDER_END, {"session_id": actual_session_id})
+            await hooks.emit(CLEANUP_STORE_BEGIN, {"session_id": actual_session_id})
+
         # Always save session (for debugging/archival)
         context = session.coordinator.get("context")
         messages = await context.get_messages() if context else []
@@ -3023,6 +3070,13 @@ async def execute_single(
             store.save(actual_session_id, messages, metadata)
             if verbose and output_format == "text":
                 console.print(f"[dim]Session {actual_session_id[:8]}... saved[/dim]")
+
+        # --- cleanup:store_end ---
+        if hooks:
+            await hooks.emit(
+                CLEANUP_STORE_END,
+                {"session_id": actual_session_id, "message_count": len(messages)},
+            )
 
     except ModuleValidationError as e:
         if output_format in ["json", "json-trace"]:
@@ -3083,13 +3137,15 @@ async def execute_single(
         sys.exit(1)
 
     finally:
-        # Emit session:end event before cleanup to allow hooks to finish
         hooks = session.coordinator.get("hooks")
         if hooks:
-            from amplifier_core.events import SESSION_END
-
-            await hooks.emit(SESSION_END, {"session_id": actual_session_id})
+            await hooks.emit(CLEANUP_FINALLY_BEGIN, {"session_id": actual_session_id})
+        # session:end is emitted by session.cleanup() (the canonical kernel path).
+        # Do NOT emit it explicitly here — that would duplicate the event.
         await initialized.cleanup()
+        # --- cleanup:finally_end (after cleanup so its duration is visible) ---
+        if hooks:
+            await hooks.emit(CLEANUP_FINALLY_END, {"session_id": actual_session_id})
         # Allow async tasks to complete before output
         if output_format in ["json", "json-trace"]:
             await asyncio.sleep(0.1)  # Brief pause for any deferred hook output
