@@ -261,24 +261,31 @@ async def check_umbrella_dependencies_for_updates(umbrella_info: UmbrellaInfo) -
 
 
 async def check_pypi_packages_for_updates() -> bool:
-    """Check if ``amplifier`` or ``amplifier-core`` has a newer version on PyPI.
+    """Check if ``amplifier-core`` has a newer version on PyPI.
 
-    Compares the installed version of each package against the PyPI JSON API.
+    Only ``amplifier-core`` is published to PyPI (per CORE_RELEASE_MANDATE).
+    The umbrella ``amplifier`` package is git-sourced; its version is already
+    covered by the ``amplifier-app-cli`` / ``amplifier-foundation`` git rows in
+    the Amplifier table — do not add it here.
+
     Uses ``packaging.version.Version`` for correct semantic ordering — avoids
     the string-compare bug where ``"1.4.10" < "1.4.9"`` under lexicographic
     ordering.
 
-    **Failure policy — assume stale:**
-    On any failure (network error, timeout, malformed JSON, PyPI 5xx, version
-    parse error) this function returns ``True`` (update assumed available).
-    Rationale: the conservative direction avoids the v1.0.7 silent-staleness
-    pattern where a PyPI dependency bump went undetected and users stayed on
-    the stale version indefinitely.  See: CORE_RELEASE_MANDATE.
+    **Failure policy:**
+    - HTTP 404 → ``False`` (package definitively not on PyPI; skip silently).
+    - HTTP 5xx / 429 / other HTTP error → ``True`` (assume stale, log WARNING).
+    - Transport error (timeout, DNS, connect) → ``True`` (assume stale, log WARNING).
+    - Parse error (bad JSON, missing key, invalid version string) → ``True``
+      (assume stale, log WARNING).
+    Rationale: conservative on uncertainty avoids the v1.0.7 silent-staleness
+    pattern; 404 is a definitive answer, not an outage.  See: CORE_RELEASE_MANDATE.
 
     Returns:
-        ``True``  — at least one package has a newer version on PyPI, **or**
+        ``True``  — ``amplifier-core`` has a newer version on PyPI, **or**
                     PyPI was unreachable / returned an unparseable response.
-        ``False`` — both installed versions are confirmed current.
+        ``False`` — installed version is confirmed current, **or** PyPI returned 404
+                    (package not found — not an error condition worth prompting for).
     """
     import importlib.metadata
     from importlib.metadata import PackageNotFoundError
@@ -286,7 +293,8 @@ async def check_pypi_packages_for_updates() -> bool:
     import httpx
     from packaging.version import InvalidVersion, Version
 
-    _PYPI_PACKAGES = ["amplifier", "amplifier-core"]
+    # Only amplifier-core is published to PyPI. The umbrella is git-sourced.
+    _PYPI_PACKAGES = ["amplifier-core"]
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -302,12 +310,36 @@ async def check_pypi_packages_for_updates() -> bool:
                     resp = await client.get(f"https://pypi.org/pypi/{package}/json")
                     resp.raise_for_status()
                     latest_str = resp.json()["info"]["version"]
-                except Exception as exc:
-                    # Assume stale on any network / parse failure to avoid
-                    # the v1.0.7 silent-staleness pattern (see CORE_RELEASE_MANDATE).
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 404:
+                        # Package not on PyPI — definitive answer, not an outage.
+                        logger.info(
+                            "Package %s not found on PyPI; skipping update check.",
+                            package,
+                        )
+                        continue
+                    # Any other HTTP error (5xx, 429, etc.) — treat as uncertain.
+                    logger.warning(
+                        "PyPI returned HTTP %s for %s — "
+                        "assuming stale to avoid silent-staleness.",
+                        exc.response.status_code,
+                        package,
+                    )
+                    return True
+                except httpx.TransportError as exc:
+                    # Timeout, DNS failure, connection refused, etc.
                     logger.warning(
                         "Could not reach PyPI to check %s for updates: %s — "
                         "assuming stale to avoid silent-staleness.",
+                        package,
+                        exc,
+                    )
+                    return True
+                except Exception as exc:
+                    # JSONDecodeError, KeyError on ["info"]["version"], etc.
+                    logger.warning(
+                        "Unexpected error fetching PyPI data for %s: %s — "
+                        "assuming stale.",
                         package,
                         exc,
                     )

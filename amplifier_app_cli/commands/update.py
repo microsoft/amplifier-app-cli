@@ -176,8 +176,9 @@ async def _get_umbrella_dependency_details(umbrella_info) -> list[dict]:
 
     Uses recursive discovery to find ALL packages with [tool.uv.sources] entries,
     then enriches each with local installation info and remote SHA for comparison.
-    Also appends entries for the ``amplifier`` and ``amplifier-core`` PyPI packages
-    so the table shows the same source of truth that drives the update prompt.
+    Also appends an entry for ``amplifier-core`` (the only Amplifier ecosystem
+    package published to PyPI) so the table shows the same source of truth that
+    drives the update prompt.
 
     Returns:
         List of dicts with {name, local_sha, remote_sha, source_url, has_update,
@@ -258,9 +259,10 @@ async def _get_umbrella_dependency_details(umbrella_info) -> list[dict]:
                     }
                 )
 
-            # Append PyPI packages so the table matches what drives the prompt.
+            # Append amplifier-core (the only PyPI-published ecosystem package)
+            # so the table matches what drives the update prompt.
             # display_type="version" tells the renderer not to truncate to 7 chars.
-            for pypi_pkg in ["amplifier", "amplifier-core"]:
+            for pypi_pkg in ["amplifier-core"]:
                 try:
                     installed_ver = importlib.metadata.version(pypi_pkg)
                 except PackageNotFoundError:

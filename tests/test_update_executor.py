@@ -412,14 +412,18 @@ def test_update_command_exits_early_when_pypi_is_current():
 
 @pytest.mark.asyncio
 async def test_check_pypi_both_current_returns_false():
-    """Both packages at PyPI-confirmed latest → returns False (no update prompt)."""
+    """amplifier-core at PyPI-confirmed latest → returns False (no update prompt).
+
+    Only amplifier-core is checked; the amplifier umbrella is git-sourced and
+    covered by the amplifier-app-cli / amplifier-foundation git rows.
+    """
     import importlib.metadata
     from unittest.mock import AsyncMock, MagicMock
 
     from amplifier_app_cli.utils.update_executor import check_pypi_packages_for_updates
 
-    installed = {"amplifier": "1.5.0", "amplifier-core": "1.0.10"}
-    latest = {"amplifier": "1.5.0", "amplifier-core": "1.0.10"}
+    installed = {"amplifier-core": "1.0.10"}
+    latest = {"amplifier-core": "1.0.10"}
 
     def fake_version(pkg: str) -> str:
         if pkg in installed:
@@ -447,7 +451,7 @@ async def test_check_pypi_both_current_returns_false():
         result = await check_pypi_packages_for_updates()
 
     assert result is False, (
-        f"Expected False when both packages match PyPI latest, but got {result!r}"
+        f"Expected False when amplifier-core matches PyPI latest, but got {result!r}"
     )
 
 
@@ -459,8 +463,8 @@ async def test_check_pypi_amplifier_core_update_returns_true():
 
     from amplifier_app_cli.utils.update_executor import check_pypi_packages_for_updates
 
-    installed = {"amplifier": "1.5.0", "amplifier-core": "1.0.9"}
-    latest = {"amplifier": "1.5.0", "amplifier-core": "1.0.10"}
+    installed = {"amplifier-core": "1.0.9"}
+    latest = {"amplifier-core": "1.0.10"}
 
     def fake_version(pkg: str) -> str:
         if pkg in installed:
@@ -509,7 +513,7 @@ async def test_check_pypi_timeout_returns_true_and_logs_warning(caplog):
     from amplifier_app_cli.utils.update_executor import check_pypi_packages_for_updates
 
     def fake_version(pkg: str) -> str:
-        if pkg in ("amplifier", "amplifier-core"):
+        if pkg == "amplifier-core":
             return "1.0.0"
         raise importlib.metadata.PackageNotFoundError(pkg)
 
@@ -554,8 +558,8 @@ async def test_check_pypi_no_false_positive_on_locally_newer_version():
     from amplifier_app_cli.utils.update_executor import check_pypi_packages_for_updates
 
     # Installed is NEWER than what PyPI reports (e.g. pre-release locally)
-    installed = {"amplifier": "1.4.10", "amplifier-core": "1.4.10"}
-    latest = {"amplifier": "1.4.9", "amplifier-core": "1.4.9"}
+    installed = {"amplifier-core": "1.4.10"}
+    latest = {"amplifier-core": "1.4.9"}
 
     def fake_version(pkg: str) -> str:
         if pkg in installed:
@@ -586,4 +590,125 @@ async def test_check_pypi_no_false_positive_on_locally_newer_version():
         "False positive: installed 1.4.10 was flagged as outdated vs PyPI 1.4.9.\n"
         "This means string comparison is being used instead of packaging.version.Version.\n"
         f"Got: {result!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_check_pypi_returns_false_on_404(caplog):
+    """HTTP 404 from PyPI means 'package not on PyPI' → returns False, INFO logged.
+
+    404 is a definitive answer (not an outage), so we treat it as
+    'no update available for this package' rather than 'assume stale'.
+    This is the fix for the amplifier umbrella always-prompts bug: the
+    amplifier package is not on PyPI and returns 404, which the old code
+    incorrectly treated as an outage and assumed stale.
+    """
+    import importlib.metadata
+    import logging
+    from unittest.mock import AsyncMock, MagicMock
+
+    import httpx
+
+    from amplifier_app_cli.utils.update_executor import check_pypi_packages_for_updates
+
+    def fake_version(pkg: str) -> str:
+        if pkg == "amplifier-core":
+            return "1.0.0"
+        raise importlib.metadata.PackageNotFoundError(pkg)
+
+    async def fake_get_404(url: str, **kwargs):
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        raise httpx.HTTPStatusError(
+            "404 Not Found",
+            request=MagicMock(),
+            response=mock_response,
+        )
+
+    mock_client = MagicMock()
+    mock_client.get = fake_get_404
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with caplog.at_level(
+        logging.INFO, logger="amplifier_app_cli.utils.update_executor"
+    ):
+        with (
+            patch("importlib.metadata.version", side_effect=fake_version),
+            patch("httpx.AsyncClient", return_value=mock_client),
+        ):
+            result = await check_pypi_packages_for_updates()
+
+    assert result is False, (
+        f"Expected False when PyPI returns 404 (package not found), but got {result!r}"
+    )
+    info_msgs = [r.message for r in caplog.records if r.levelno == logging.INFO]
+    assert any(
+        "not found" in m.lower()
+        or "not on pypi" in m.lower()
+        or "skipping" in m.lower()
+        for m in info_msgs
+    ), (
+        "Expected an INFO message indicating the package was not found on PyPI.\n"
+        f"Actual INFO messages: {info_msgs}"
+    )
+    # Specifically must NOT emit a WARNING (404 is not an outage).
+    warning_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not warning_msgs, (
+        "Expected no WARNING for a 404 response (it's a definitive answer, not an outage).\n"
+        f"Actual warnings: {warning_msgs}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_check_pypi_returns_true_on_500(caplog):
+    """HTTP 500 from PyPI → returns True (assume stale) and emits a WARNING.
+
+    A 5xx response means PyPI is having trouble — we can't confirm whether
+    we're up to date, so the conservative policy (assume stale) applies.
+    This is different from 404 which is a definitive 'not on PyPI' answer.
+    """
+    import importlib.metadata
+    import logging
+    from unittest.mock import AsyncMock, MagicMock
+
+    import httpx
+
+    from amplifier_app_cli.utils.update_executor import check_pypi_packages_for_updates
+
+    def fake_version(pkg: str) -> str:
+        if pkg == "amplifier-core":
+            return "1.0.0"
+        raise importlib.metadata.PackageNotFoundError(pkg)
+
+    async def fake_get_500(url: str, **kwargs):
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        raise httpx.HTTPStatusError(
+            "500 Internal Server Error",
+            request=MagicMock(),
+            response=mock_response,
+        )
+
+    mock_client = MagicMock()
+    mock_client.get = fake_get_500
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with caplog.at_level(
+        logging.WARNING, logger="amplifier_app_cli.utils.update_executor"
+    ):
+        with (
+            patch("importlib.metadata.version", side_effect=fake_version),
+            patch("httpx.AsyncClient", return_value=mock_client),
+        ):
+            result = await check_pypi_packages_for_updates()
+
+    assert result is True, (
+        f"Expected True (assume stale) when PyPI returns 500, but got {result!r}"
+    )
+    warning_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("stale" in m.lower() or "assuming" in m.lower() for m in warning_msgs), (
+        "Expected a WARNING mentioning 'stale' or 'assuming' on PyPI 500 response.\n"
+        f"Actual warnings: {warning_msgs}"
     )
