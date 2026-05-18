@@ -3,6 +3,7 @@
 Extracted from CommandProcessor to keep the slash-command handler focused on
 routing and coordination, not presentation details.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -30,6 +31,60 @@ def _redact_value(key: str, value: Any) -> Any:
         if pattern in key_lower:
             return f"{value[:4]}...redacted"
     return value
+
+
+# ---------------------------------------------------------------------------
+# ItemRecord compatibility helpers
+# ---------------------------------------------------------------------------
+
+
+def _item_get(item: Any, key: str, default: Any = None) -> Any:
+    """Get a field from either an ItemRecord (attribute) or a dict (subscript).
+
+    Provides backward compatibility during the migration from dict-based to
+    ItemRecord-based inspector returns.
+    """
+    if isinstance(item, dict):
+        return item.get(key, default)
+    # Handle ItemRecord attribute mapping
+    _ATTR_MAP = {
+        "name": "name",
+        "enabled": "enabled",
+        "module_id": "module_id",
+        "source_uri": "source_uri",
+        "config": "config_summary",
+        "contributions": "config_summary",
+    }
+    attr = _ATTR_MAP.get(key, key)
+    return getattr(item, attr, default)
+
+
+def _item_get_behaviors(item: Any) -> list[str]:
+    """Extract behavior/origin strings from either an ItemRecord or a legacy dict.
+
+    For ItemRecord: returns [o.bundle for o in item.origins].
+    For dict: returns item.get("behaviors") or item.get("source") or [].
+
+    The visible output is a comma-separated list of bundle names — identical
+    to the pre-ItemRecord output.
+    """
+    if isinstance(item, dict):
+        behaviors = item.get("behaviors") or item.get("source")
+        if isinstance(behaviors, list):
+            return [str(b) for b in behaviors if b]
+        if isinstance(behaviors, str) and behaviors:
+            return [behaviors]
+        return []
+    # ItemRecord: extract .origins list
+    origins = getattr(item, "origins", None) or []
+    return [o.bundle for o in origins if hasattr(o, "bundle") and o.bundle]
+
+
+def _item_get_config(item: Any) -> dict:
+    """Get the config/config_summary dict from either ItemRecord or legacy dict."""
+    if isinstance(item, dict):
+        return item.get("config") or {}
+    return getattr(item, "config_summary", None) or {}
 
 
 # ---------------------------------------------------------------------------
@@ -76,20 +131,24 @@ class DashboardRenderer:
             )
         return f"Mode: {active_mode} | No changes from original"
 
-    def build_attribution(self, item: dict) -> str:
-        """Build attribution string from a list of behaviors or source fallback."""
-        behaviors = item.get("behaviors", [])
-        if isinstance(behaviors, list) and behaviors:
-            return ", ".join(str(b) for b in behaviors if b)
-        return str(item.get("source", "") or "")
+    def build_attribution(self, item: Any) -> str:
+        """Build attribution string from origins (ItemRecord) or behaviors/source (dict).
+
+        For ItemRecord items: joins origin bundle names with ', '.
+        For dict items: falls back to 'behaviors' or 'source' fields.
+        The visible output is a comma-separated list of bundle names —
+        identical to the pre-ItemRecord output.
+        """
+        behaviors = _item_get_behaviors(item)
+        if behaviors:
+            return ", ".join(b for b in behaviors if b)
+        return ""
 
     # ------------------------------------------------------------------
     # Config tree
     # ------------------------------------------------------------------
 
-    def render_config_tree(
-        self, cfg: dict, indent: str, *, dim: bool = False
-    ) -> None:
+    def render_config_tree(self, cfg: dict, indent: str, *, dim: bool = False) -> None:
         """Render a config dict as an indented YAML-like tree."""
         _d = "[dim]" if dim else ""
         _e = "[/dim]" if dim else ""
@@ -162,31 +221,29 @@ class DashboardRenderer:
         """Render a simple enabled/disabled section list with status indicators."""
         if not items:
             return
-        enabled = sum(1 for x in items if x.get("enabled", True))
+        enabled = sum(1 for x in items if _item_get(x, "enabled", True))
         disabled = len(items) - enabled
         count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
         self._console.print(f"── {title.lower()} ({count}) ──")
         for item in items:
-            is_on = item.get("enabled", True)
+            is_on = _item_get(item, "enabled", True)
             status = "\\[on]" if is_on else "\\[off]"
-            name = escape_markup(item.get("name", "unknown"))
-            source = item.get("source", "")
+            name = escape_markup(_item_get(item, "name", "unknown"))
+            attribution = self.build_attribution(item)
             line = f"  {status}  {name}"
             if show_config:
-                cfg = item.get("config", {})
+                cfg = _item_get_config(item)
                 if cfg and isinstance(cfg, dict):
                     cfg_items = list(cfg.items())
                     truncated = len(cfg_items) > 3
-                    pairs = [
-                        f"{k}: {_redact_value(k, v)}" for k, v in cfg_items[:3]
-                    ]
+                    pairs = [f"{k}: {_redact_value(k, v)}" for k, v in cfg_items[:3]]
                     summary = "{" + ", ".join(pairs)
                     if truncated:
                         summary += ", ..."
                     summary += "}"
                     line += f"  {summary}"
-            if source:
-                line += f"  ({source})"
+            if attribution:
+                line += f"  ({attribution})"
             if not is_on:
                 line += "  ← disabled"
             self._console.print(line)
@@ -206,19 +263,19 @@ class DashboardRenderer:
         """Render tools section with module ID + attribution on an indented second line."""
         if not items:
             return
-        enabled = sum(1 for x in items if x.get("enabled", True))
+        enabled = sum(1 for x in items if _item_get(x, "enabled", True))
         disabled = len(items) - enabled
         count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
         self._console.print(f"── tools ({count}) ──")
 
         for item in items:
-            is_on = item.get("enabled", True)
-            name = item.get("name", "unknown")
-            behaviors = item.get("behaviors", [])
-            module_id = item.get("module_id", "") or ""
+            is_on = _item_get(item, "enabled", True)
+            name = _item_get(item, "name", "unknown")
+            behavior_names = _item_get_behaviors(item)
+            module_id = _item_get(item, "module_id", "") or ""
 
-            if isinstance(behaviors, list) and behaviors:
-                behavior_str = escape_markup(", ".join(str(b) for b in behaviors if b))
+            if behavior_names:
+                behavior_str = escape_markup(", ".join(b for b in behavior_names if b))
             else:
                 behavior_str = ""
 
@@ -236,7 +293,7 @@ class DashboardRenderer:
                 module_str += f"  ({behavior_str})"
             self._console.print(f"        [dim]{module_str}[/dim]")
 
-            cfg = item.get("config", {})
+            cfg = _item_get_config(item)
             if cfg and isinstance(cfg, dict):
                 self._console.print("[dim]        config:[/dim]")
                 for k, v in cfg.items():
@@ -258,15 +315,20 @@ class DashboardRenderer:
         """Render hooks section listing ALL hooks individually — no collapsing."""
         if not items:
             return
-        enabled = sum(1 for x in items if x.get("enabled", True))
+        enabled = sum(1 for x in items if _item_get(x, "enabled", True))
         disabled = len(items) - enabled
         count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
         self._console.print(f"── hooks ({count}) ──")
 
         for item in items:
-            is_on = item.get("enabled", True)
-            name = item.get("name", "unknown")
-            event = item.get("event", "")
+            is_on = _item_get(item, "enabled", True)
+            name = _item_get(item, "name", "unknown")
+            # Get event from config_summary for ItemRecord, or "event" key for dict
+            cfg_summary = _item_get_config(item)
+            if isinstance(item, dict):
+                event = item.get("event", "")
+            else:
+                event = cfg_summary.get("event", "") if cfg_summary else ""
             attribution = self.build_attribution(item)
 
             safe_name = escape_markup(name)
@@ -301,14 +363,14 @@ class DashboardRenderer:
         """Render the providers section with source URI and full config tree."""
         if not items:
             return
-        enabled = sum(1 for x in items if x.get("enabled", True))
+        enabled = sum(1 for x in items if _item_get(x, "enabled", True))
         disabled = len(items) - enabled
         count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
         self._console.print(f"── providers ({count}) ──")
 
         for item in items:
-            is_on = item.get("enabled", True)
-            name = item.get("name", "unknown")
+            is_on = _item_get(item, "enabled", True)
+            name = _item_get(item, "name", "unknown")
             attribution = escape_markup(self.build_attribution(item))
 
             name_padded = escape_markup(name).ljust(30)
@@ -323,13 +385,13 @@ class DashboardRenderer:
                 line += "[/dim]"
             self._console.print(line)
 
-            source_uri = item.get("source_uri", "")
+            source_uri = _item_get(item, "source_uri", "")
             if source_uri:
                 self._console.print(
                     f"        [dim]source: {escape_markup(source_uri)}[/dim]"
                 )
 
-            cfg = item.get("config", {})
+            cfg = _item_get_config(item)
             if cfg and isinstance(cfg, dict):
                 self._console.print("[dim]        config:[/dim]")
                 for k, v in cfg.items():
@@ -354,20 +416,17 @@ class DashboardRenderer:
         """Render a section where each item has attribution on a single line."""
         if not items:
             return
-        enabled = sum(1 for x in items if x.get("enabled", True))
+        enabled = sum(1 for x in items if _item_get(x, "enabled", True))
         disabled = len(items) - enabled
         count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
         self._console.print(f"── {section_name} ({count}) ──")
 
         for item in items:
-            is_on = item.get("enabled", True)
-            name = escape_markup(item.get("name", "unknown"))
+            is_on = _item_get(item, "enabled", True)
+            name = escape_markup(_item_get(item, "name", "unknown"))
 
-            behaviors = item.get("behaviors", [])
-            if isinstance(behaviors, list) and behaviors:
-                behavior_str = escape_markup(", ".join(behaviors))
-            else:
-                behavior_str = escape_markup(item.get("source", "") or "")
+            behavior_names = _item_get_behaviors(item)
+            behavior_str = escape_markup(", ".join(b for b in behavior_names if b))
 
             if is_on:
                 line = f"  [green]\\[on][/green]  {name}"
@@ -396,7 +455,7 @@ class DashboardRenderer:
         """Render behaviors section showing non-zero categories with item names."""
         if not items:
             return
-        enabled = sum(1 for x in items if x.get("enabled", True))
+        enabled = sum(1 for x in items if _item_get(x, "enabled", True))
         disabled = len(items) - enabled
         count = f"{enabled} composed" + (f", {disabled} disabled" if disabled else "")
         self._console.print(f"── behaviors ({count}) ──")
@@ -411,9 +470,16 @@ class DashboardRenderer:
         }
 
         for item in items:
-            is_on = item.get("enabled", True)
-            name = item.get("name", "unknown")
-            root_ns = item.get("root_namespace") or ""
+            is_on = _item_get(item, "enabled", True)
+            name = _item_get(item, "name", "unknown")
+            # root_namespace: in config_summary for ItemRecord, or direct key for dict
+            if isinstance(item, dict):
+                root_ns = item.get("root_namespace") or ""
+            else:
+                cfg_summary = _item_get_config(item)
+                root_ns = (
+                    cfg_summary.get("root_namespace", "") if cfg_summary else ""
+                ) or ""
 
             safe_name = escape_markup(name)
             if is_on:
@@ -421,7 +487,12 @@ class DashboardRenderer:
             else:
                 self._console.print(f"  [dim][red]\\[off][/red]  {safe_name}[/dim]")
 
-            contributions = item.get("contributions", {})
+            # contributions: in config_summary for ItemRecord, or "contributions" key for dict
+            if isinstance(item, dict):
+                contributions = item.get("contributions", {})
+            else:
+                contributions = _item_get_config(item)
+
             if isinstance(contributions, dict):
                 for cat in _CAT_ORDER:
                     cat_items = contributions.get(cat, [])

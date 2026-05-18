@@ -17,11 +17,12 @@ from pathlib import Path
 from typing import Any
 
 import click
-from rich.panel import Panel
-from rich.table import Table
 
 from ..console import console
 from ..paths import create_config_manager
+from ..ui.item_renderer import ItemRenderer
+from ..ui.view_policy import resolve_view
+from ..ui.view_policy import view_flags
 from ..utils.error_format import escape_markup
 from ..runtime.config import inject_user_providers
 
@@ -262,16 +263,12 @@ def tool(ctx: click.Context):
 @tool.command(name="list")
 @click.option("--bundle", "-b", help="Bundle to use (default: active bundle)")
 @click.option(
-    "--output",
-    "-o",
-    type=click.Choice(["table", "json"]),
-    default="table",
-    help="Output format",
-)
-@click.option(
     "--modules", "-m", is_flag=True, help="Show module names instead of mounted tools"
 )
-def tool_list(bundle: str | None, output: str, modules: bool):
+@view_flags
+def tool_list(
+    bundle: str | None, modules: bool, compact: bool, detailed: bool, fmt: str
+):
     """List available tools from the active bundle.
 
     By default, shows the actual tool names that can be invoked (e.g., read_file,
@@ -288,16 +285,13 @@ def tool_list(bundle: str | None, output: str, modules: bool):
         default_bundle = bundle
 
     if use_bundle:
-        # Bundle path (primary)
         bundle_name = default_bundle or "foundation"
 
         if modules:
-            # For bundles, --modules is not supported (bundles don't expose module-level info the same way)
             console.print(
                 "[yellow]--modules flag not supported with bundles. Showing mounted tools.[/yellow]"
             )
 
-        # Show actual mounted tool names
         console.print(f"[dim]Mounting tools from bundle '{bundle_name}'...[/dim]")
 
         try:
@@ -312,34 +306,33 @@ def tool_list(bundle: str | None, output: str, modules: bool):
             )
             return
 
-        if output == "json":
-            result = {
-                "bundle": bundle_name,
-                "tools": [
-                    {"name": t["name"], "description": t["description"]} for t in tools
-                ],
+        view = resolve_view(
+            ("tool", "list"), compact_flag=compact, detailed_flag=detailed
+        )
+        renderer = ItemRenderer(console)
+
+        items: list[dict[str, Any]] = [
+            {
+                "name": t["name"],
+                "enabled": True,
+                "behaviors": [bundle_name],
+                "config_summary": {"description": t["description"]},
             }
-            print(json.dumps(result, indent=2))
+            for t in tools
+        ]
+
+        if fmt == "json":
+            renderer.render_json(items)
             return
 
-        # Table output for humans
-        table = Table(
-            title=f"Mounted Tools ({len(tools)} tools from bundle '{bundle_name}')",
-            show_header=True,
-            header_style="bold cyan",
+        renderer.render(
+            items,
+            view=view,
+            category="tool",
+            section_title=f"tools from '{bundle_name}'",
         )
-        table.add_column("Name", style="green")
-        table.add_column("Description", style="yellow")
-
-        for t in tools:
-            desc = t["description"]
-            if len(desc) > 60:
-                desc = desc[:57] + "..."
-            table.add_row(t["name"], desc)
-
-        console.print(table)
         console.print(
-            "\n[dim]Use 'amplifier tool invoke <name> key=value ...' to invoke a tool[/dim]"
+            "[dim]Use 'amplifier tool invoke <name> key=value ...' to invoke a tool[/dim]"
         )
 
 
@@ -347,19 +340,20 @@ def tool_list(bundle: str | None, output: str, modules: bool):
 @click.argument("tool_name")
 @click.option("--bundle", "-b", help="Bundle to use (default: active bundle)")
 @click.option(
-    "--output",
-    "-o",
-    type=click.Choice(["text", "json"]),
-    default="text",
-    help="Output format",
-)
-@click.option(
     "--module",
     "-m",
     is_flag=True,
     help="Look up by module name instead of mounted tool name",
 )
-def tool_info(tool_name: str, bundle: str | None, output: str, module: bool):
+@view_flags
+def tool_info(
+    tool_name: str,
+    bundle: str | None,
+    module: bool,
+    compact: bool,
+    detailed: bool,
+    fmt: str,
+):
     """Show detailed information about a tool.
 
     By default, looks up the actual mounted tool by name (e.g., read_file).
@@ -405,19 +399,28 @@ def tool_info(tool_name: str, bundle: str | None, output: str, module: bool):
                 console.print(f"  - {t['name']}")
             sys.exit(1)
 
-        if output == "json":
-            print(json.dumps(found_tool, indent=2))
+        view = resolve_view(
+            ("tool", "info"), compact_flag=compact, detailed_flag=detailed
+        )
+        renderer = ItemRenderer(console)
+
+        item = {
+            "name": found_tool["name"],
+            "enabled": True,
+            "behaviors": [bundle_name],
+            "config_summary": {
+                "description": found_tool.get("description", "No description"),
+                "invokable": "yes" if found_tool.get("has_execute") else "no",
+            },
+        }
+
+        if fmt == "json":
+            renderer.render_json(item)
             return
 
-        panel_content = f"""[bold]Name:[/bold] {found_tool["name"]}
-[bold]Description:[/bold] {found_tool.get("description", "No description")}
-[bold]Invokable:[/bold] {"Yes" if found_tool.get("has_execute") else "No"}"""
-
+        renderer.render_one(item, view=view)
         console.print(
-            Panel(panel_content, title=f"Tool: {tool_name}", border_style="cyan")
-        )
-        console.print(
-            "\n[dim]Usage: amplifier tool invoke " + tool_name + " key=value ...[/dim]"
+            "[dim]Usage: amplifier tool invoke " + tool_name + " key=value ...[/dim]"
         )
 
 

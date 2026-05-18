@@ -397,6 +397,158 @@ This feature follows Amplifier's core principles:
 
 ---
 
+## ItemRecord JSON schema (experimental, subject to change)
+
+The `/config show --format json`, `/config <category> --format json`, and any
+CLI list/show command with `--format json` emit `ItemRecord` objects serialized
+via `dataclasses.asdict`.  The shape below is the **public schema from the moment
+this feature ships**.  Field names will not change in a patch release, but the
+schema may evolve until a future version tag stabilises it.  Automation that reads
+this output should treat `origins`, `include_paths`, and `runtime_injection` as
+advisory and schema-version-check the field set before parsing.
+
+**Breaking change in Commit 3 (this release)**: `include_path` (singular, flat
+list) was replaced by `include_paths` (plural, list of lists).  The old shape is
+gone; no back-compat shim is provided.
+
+### Top-level structure
+
+```json
+{
+  "providers": [ ... ],
+  "tools":     [ ... ],
+  "hooks":     [ ... ],
+  "context":   [ ... ],
+  "agents":    [ ... ],
+  "behaviors": [ ... ]
+}
+```
+
+### ItemRecord object — single include path
+
+When an item is contributed by exactly one bundle chain, `include_paths` has one
+inner list:
+
+```json
+{
+  "category": "tool",
+  "name": "bash",
+  "enabled": true,
+  "module_id": "tool-bash",
+  "source_uri": "git+https://github.com/microsoft/...",
+  "config_summary": { "timeout": 30 },
+  "origins": [
+    { "bundle": "foundation", "via_behavior": null }
+  ],
+  "include_paths": [
+    [
+      { "bundle": "amplifier-dev", "version": null, "uri": null, "is_root": true },
+      { "bundle": "foundation", "version": "1.0.0", "uri": "git+https://...", "is_root": false }
+    ]
+  ],
+  "runtime_injection": "static"
+}
+```
+
+### ItemRecord object — multiple include paths
+
+When an item is contributed by more than one bundle (multi-source), `include_paths`
+contains one inner list per distinct root→leaf path:
+
+```json
+{
+  "category": "tool",
+  "name": "apply_patch",
+  "enabled": true,
+  "module_id": "tool-apply-patch",
+  "source_uri": "git+https://github.com/microsoft/...",
+  "config_summary": { "engine": "native" },
+  "origins": [
+    { "bundle": "behavior-apply-patch", "via_behavior": null },
+    { "bundle": "foundation", "via_behavior": "behavior-apply-patch" }
+  ],
+  "include_paths": [
+    [
+      { "bundle": "amplifier-dev", "version": null, "uri": null, "is_root": true },
+      { "bundle": "foundation", "version": "1.0.0", "uri": "git+https://...", "is_root": false },
+      { "bundle": "behavior-apply-patch", "version": null, "uri": null, "is_root": false }
+    ],
+    [
+      { "bundle": "amplifier-dev", "version": null, "uri": null, "is_root": true },
+      { "bundle": "foundation", "version": "1.0.0", "uri": "git+https://...", "is_root": false }
+    ]
+  ],
+  "runtime_injection": "static"
+}
+```
+
+### Field reference
+
+| Field | Type | Description |
+|---|---|---|
+| `category` | string | Item category: `provider`, `tool`, `hook`, `agent`, `context`, `behavior`, `session.orchestrator`, `session.context`, `spawn`, `instruction`, `skill`, `mode` |
+| `name` | string | Display name |
+| `enabled` | boolean | Whether the item is currently active |
+| `module_id` | string \| null | Module identifier (e.g. `tool-bash`), or null |
+| `source_uri` | string \| null | Source URI for the module, or null |
+| `config_summary` | object | Redacted configuration dict |
+| `origins` | array | Merge-graph chain (behaviors that contributed) |
+| `origins[].bundle` | string | Bundle name that owns the claim |
+| `origins[].via_behavior` | string \| null | Intermediate parent in the merge graph; null = self-introduced |
+| `include_paths` | array of arrays | **Plural** — disk-graph chains (bundles on disk). Each inner array is one root→leaf path. Empty outer array when no registry data is available. |
+| `include_paths[][].bundle` | string | Bundle name at this step in a path |
+| `include_paths[][].version` | string \| null | Bundle version, or null |
+| `include_paths[][].uri` | string \| null | Source URI at this step, or null |
+| `include_paths[][].is_root` | boolean | **Experimental** — `true` when this bundle is a topological root in the include graph (no further ancestors). Identifies user-explicit entry points such as the active bundle (`bundle use`) or app-list behaviors. Rendered as `*` prefix in CLI text output. |
+| `runtime_injection` | string \| null | How the item arrived: `static`, `mode`, `hook`, `skills`, `mcp`, `task`, or null |
+
+### `*` prefix in CLI text output (root-bundle marker)
+
+In `bundle show <name> --detailed` and item detail views, topological root bundles
+in include chains are prefixed with `*` (rustup-style).  A root bundle is one
+with no further ancestors in the `included_by` graph — i.e., a user-explicit
+entry point into the composition.
+
+```
+included_by:
+  *amplifier-dev → foundation
+  *reality-check-behavior → browser-tester → foundation
+  terminal-tester → terminal-tester → foundation    ← no * because terminal-tester has parents
+  *reality-check-behavior → terminal-tester → foundation
+  *modes → foundation
+```
+
+Rules:
+- Only the **first node in the chain** (the topological root) can receive `*`.
+- A node gets `*` if and only if `IncludeStep.is_root == true` in JSON output.
+- Intermediate nodes and leaf nodes never receive `*`.
+- If the same bundle appears in multiple chains (e.g., `reality-check-behavior`),
+  it gets `*` in each chain where it is the root.
+
+The `*` prefix is **rendering-only** — the JSON output carries the information as
+the boolean `is_root` field on each `IncludeStep` object.  Automation should use
+`is_root` directly rather than parsing the `*` from text output.
+
+### Usage
+
+```bash
+# Dump all categories as JSON
+amplifier run --mode chat <<'EOF'
+/config show --format json
+EOF
+
+# Dump a single category
+amplifier run --mode chat <<'EOF'
+/config tools --format json
+EOF
+
+# Process with jq
+# (output goes to the Rich console, so capture stdout of a single-prompt run)
+amplifier run "/config show --format json" 2>/dev/null | jq '.tools[] | {name, module_id, enabled}'
+```
+
+---
+
 ## Related Documentation
 
 - **Session Management**: See `amplifier session list --help` for session queries

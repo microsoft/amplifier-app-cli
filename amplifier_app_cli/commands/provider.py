@@ -1,6 +1,5 @@
 """Provider management commands."""
 
-import os
 import time
 from typing import Any, cast
 
@@ -20,12 +19,14 @@ from ..provider_manager import ProviderManager
 from ..provider_sources import ensure_provider_installed
 from ..provider_sources import get_effective_provider_sources
 from ..provider_sources import install_known_providers
+from ..ui.item_renderer import ItemRenderer
 from ..ui.scope import (
     is_scope_change_available,
     print_scope_indicator,
     prompt_scope_change,
     validate_scope_cli,
 )
+from ..ui.view_policy import resolve_view, view_flags
 from ..utils.error_format import escape_markup
 
 console = Console()
@@ -339,7 +340,8 @@ def provider_add(ctx: click.Context, provider_type: str | None) -> None:
     type=click.Choice(["global", "project", "local"]),
     help="Show providers from a specific scope only.",
 )
-def provider_list(scope: str | None) -> None:
+@view_flags
+def provider_list(scope: str | None, compact: bool, detailed: bool, fmt: str) -> None:
     """List configured providers.
 
     Shows all configured providers with their type, model, priority, and status.
@@ -352,14 +354,16 @@ def provider_list(scope: str | None) -> None:
     _ensure_providers_ready()
 
     settings = _get_settings()
+    view = resolve_view(
+        ("provider", "list"), compact_flag=compact, detailed_flag=detailed
+    )
+    renderer = ItemRenderer(console)
 
     if scope is not None:
-        # ---- Single-scope view ----
         validate_scope_cli(scope)
         typed_scope = cast(Scope, scope)
         providers = settings.get_scope_provider_overrides(typed_scope)
         scope_path = settings._get_scope_path(typed_scope)  # type: ignore[attr-defined]
-        title = f"Providers in {scope} scope ({scope_path})"
 
         if not providers:
             console.print(
@@ -368,17 +372,12 @@ def provider_list(scope: str | None) -> None:
             console.print("Run: [cyan]amplifier provider add[/cyan]")
             return
 
-        table = Table(title=title)
-        table.add_column("Name/ID", style="cyan")
-        table.add_column("Type", style="green")
-        table.add_column("Default Model")
-        table.add_column("Priority", justify="right")
-
         priorities = [
             (p.get("config", {}) or {}).get("priority", 100) for p in providers
         ]
         min_priority = min(priorities) if priorities else 0
 
+        items: list[dict[str, Any]] = []
         for p in providers:
             module = p.get("module", "unknown")
             display = p.get("id") or _display_name(module)
@@ -389,13 +388,27 @@ def provider_list(scope: str | None) -> None:
             )
             pri = config.get("priority", 100) if isinstance(config, dict) else 100
             is_primary = pri == min_priority
-            name_col = f"★ {display}" if is_primary else f"  {display}"
-            table.add_row(name_col, ptype, model, str(pri))
+            items.append(
+                {
+                    "name": ("★ " if is_primary else "") + display,
+                    "enabled": True,
+                    "behaviors": [scope],
+                    "config_summary": {
+                        "type": ptype,
+                        "model": model,
+                        "priority": str(pri),
+                    },
+                }
+            )
 
-        console.print(table)
+        if fmt == "json":
+            renderer.render_json(items)
+            return
+        renderer.render(
+            items, view=view, category="provider", section_title=f"providers ({scope})"
+        )
 
     else:
-        # ---- Default merged view with Source column ----
         providers = settings.get_provider_overrides()
 
         if not providers:
@@ -403,7 +416,7 @@ def provider_list(scope: str | None) -> None:
             console.print("Run: [cyan]amplifier provider add[/cyan]")
             return
 
-        # Build source_map: highest-priority scope (local > project > global) wins
+        # Build source_map: highest-priority scope wins
         source_map: dict[str, str] = {}
         for check_scope in ("local", "project", "global"):
             scope_providers = settings.get_scope_provider_overrides(check_scope)
@@ -412,21 +425,14 @@ def provider_list(scope: str | None) -> None:
                 if key and key not in source_map:
                     source_map[key] = check_scope
 
-        cwd = os.getcwd()
-        table = Table(title=f"Configured Providers (effective from {cwd})")
-        table.add_column("Name/ID", style="cyan")
-        table.add_column("Type", style="green")
-        table.add_column("Default Model")
-        table.add_column("Priority", justify="right")
-        table.add_column("Source", style="dim")
-
-        priorities = []
+        priorities_list: list[int] = []
         for p in providers:
             config = p.get("config", {})
             pri = config.get("priority", 100) if isinstance(config, dict) else 100
-            priorities.append(pri)
-        min_priority = min(priorities) if priorities else 0
+            priorities_list.append(pri)
+        min_priority = min(priorities_list) if priorities_list else 0
 
+        items = []
         for p in providers:
             module = p.get("module", "unknown")
             display = p.get("id") or _display_name(module)
@@ -437,12 +443,28 @@ def provider_list(scope: str | None) -> None:
             )
             pri = config.get("priority", 100) if isinstance(config, dict) else 100
             is_primary = pri == min_priority
-            name_col = f"★ {display}" if is_primary else f"  {display}"
             key = p.get("id") or module
             source = source_map.get(key, "global")
-            table.add_row(name_col, ptype, model, str(pri), source)
+            items.append(
+                {
+                    "name": ("★ " if is_primary else "") + display,
+                    "enabled": True,
+                    "behaviors": [source],
+                    "config_summary": {
+                        "type": ptype,
+                        "model": model,
+                        "priority": str(pri),
+                        "scope": source,
+                    },
+                }
+            )
 
-        console.print(table)
+        if fmt == "json":
+            renderer.render_json(items)
+            return
+        renderer.render(
+            items, view=view, category="provider", section_title="providers"
+        )
 
 
 # ============================================================

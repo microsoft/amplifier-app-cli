@@ -17,6 +17,8 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from ..console import console
+from ..ui.item_renderer import ItemRenderer
+from ..ui.view_policy import resolve_view, view_flags
 from ..utils.error_format import escape_markup
 from ..lib.settings import AppSettings
 from ..project_utils import get_project_slug
@@ -539,8 +541,15 @@ def register_session_commands(
     @click.option(
         "--tree", "-t", "tree_session", help="Show lineage tree for a session"
     )
+    @view_flags
     def sessions_list(
-        limit: int, all_projects: bool, project: str | None, tree_session: str | None
+        limit: int,
+        all_projects: bool,
+        project: str | None,
+        tree_session: str | None,
+        compact: bool,
+        detailed: bool,
+        fmt: str,
     ):
         """List recent sessions for the current project or across all projects.
 
@@ -717,22 +726,40 @@ def register_session_commands(
                 return
 
             store = SessionStore(base_dir=sessions_dir)
-            _display_project_sessions(store, limit, f"Sessions for {project}")
+            view = resolve_view(
+                ("session", "list"), compact_flag=compact, detailed_flag=detailed
+            )
+            _display_project_sessions(
+                store, limit, f"Sessions for {project}", view=view, fmt=fmt
+            )
             return
 
+        view = resolve_view(
+            ("session", "list"), compact_flag=compact, detailed_flag=detailed
+        )
         store = SessionStore()
         project_slug = get_project_slug()
         _display_project_sessions(
-            store, limit, f"Sessions for Current Project ({project_slug})"
+            store,
+            limit,
+            f"Sessions for Current Project ({project_slug})",
+            view=view,
+            fmt=fmt,
         )
 
     @session.command(name="show")
     @click.argument("session_id")
     @click.option(
-        "--detailed", "-d", is_flag=True, help="Show detailed transcript metadata"
+        "--with-transcript",
+        "-T",
+        is_flag=True,
+        help="Include full transcript in output",
     )
-    def sessions_show(session_id: str, detailed: bool):
-        """Show session metadata and (optionally) transcript."""
+    @view_flags
+    def sessions_show(
+        session_id: str, with_transcript: bool, compact: bool, detailed: bool, fmt: str
+    ):
+        """Show session metadata and details."""
         store = SessionStore()
 
         try:
@@ -750,21 +777,32 @@ def register_session_commands(
             console.print(f"[red]Error loading session:[/red] {escape_markup(exc)}")
             sys.exit(1)
 
-        panel_content = [
-            f"[bold]Session ID:[/bold] {session_id}",
-            f"[bold]Created:[/bold] {metadata.get('created', 'unknown')}",
-            f"[bold]Bundle:[/bold] {metadata.get('bundle', 'unknown')}",
-            f"[bold]Model:[/bold] {metadata.get('model', 'unknown')}",
-            f"[bold]Messages:[/bold] {metadata.get('turn_count', len(transcript))}",
-        ]
-        console.print(
-            Panel("\n".join(panel_content), title="Session Info", border_style="cyan")
+        view = resolve_view(
+            ("session", "show"), compact_flag=compact, detailed_flag=detailed
         )
+        renderer = ItemRenderer(console)
 
-        if detailed:
+        item = {
+            "name": session_id,
+            "enabled": True,
+            "config_summary": {
+                "session_id": session_id,
+                "created": metadata.get("created", "unknown"),
+                "bundle": metadata.get("bundle", "unknown"),
+                "model": metadata.get("model", "unknown"),
+                "messages": str(metadata.get("turn_count", len(transcript))),
+            },
+        }
+
+        if fmt == "json":
+            renderer.render_json(item)
+        else:
+            renderer.render_one(item, view=view)
+
+        if with_transcript:
             console.print("\n[bold]Transcript:[/bold]")
-            for item in transcript:
-                console.print(json.dumps(item, indent=2))
+            for turn in transcript:
+                console.print(json.dumps(turn, indent=2))
 
     @session.command(name="fork")
     @click.argument("session_id")
@@ -1405,19 +1443,21 @@ def _interactive_resume_impl(
             continue
 
 
-def _display_project_sessions(store: SessionStore, limit: int, title: str) -> None:
+def _display_project_sessions(
+    store: SessionStore,
+    limit: int,
+    title: str,
+    *,
+    view: str = "compact",
+    fmt: str = "text",
+) -> None:
     session_ids = store.list_sessions()[:limit]
 
     if not session_ids:
         console.print("[yellow]No sessions found.[/yellow]")
         return
 
-    table = Table(title=title, show_header=True, header_style="bold cyan")
-    table.add_column("Name", style="cyan", max_width=35)
-    table.add_column("Session ID", style="green")
-    table.add_column("Last Modified", style="yellow")
-    table.add_column("Msgs", justify="right")
-
+    items: list[dict] = []
     for session_id in session_ids:
         session_path = store.base_dir / session_id
         try:
@@ -1426,13 +1466,10 @@ def _display_project_sessions(store: SessionStore, limit: int, title: str) -> No
         except Exception:
             modified = "unknown"
 
-        # Get session name from metadata
         session_name = ""
         try:
             metadata = store.get_metadata(session_id)
             session_name = metadata.get("name", "")
-            if len(session_name) > 35:
-                session_name = session_name[:32] + "..."
         except Exception:
             pass
 
@@ -1445,13 +1482,26 @@ def _display_project_sessions(store: SessionStore, limit: int, title: str) -> No
             except Exception:
                 pass
 
-        # Show short session ID
         short_id = session_id[:8] + "..."
-        table.add_row(
-            session_name or "[dim]unnamed[/dim]", short_id, modified, message_count
+        items.append(
+            {
+                "name": session_name or short_id,
+                "enabled": True,
+                "behaviors": [short_id],
+                "config_summary": {
+                    "session_id": short_id,
+                    "modified": modified,
+                    "messages": message_count,
+                },
+            }
         )
 
-    console.print(table)
+    renderer = ItemRenderer(console)
+    if fmt == "json":
+        renderer.render_json(items)
+        return
+
+    renderer.render(items, view=view, category="session", section_title=title)
 
 
 __all__ = ["register_session_commands"]

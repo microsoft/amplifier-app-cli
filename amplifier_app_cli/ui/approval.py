@@ -33,7 +33,11 @@ class CLIApprovalSystem:
         self.cache: dict[str, str] = {}  # Session-scoped approval cache
 
     async def request_approval(
-        self, prompt: str, options: list[str], timeout: float, default: Literal["allow", "deny"]
+        self,
+        prompt: str,
+        options: list[str],
+        timeout: float,
+        default: Literal["allow", "deny"],
     ) -> str:
         """
         Show approval prompt in terminal with timeout.
@@ -54,7 +58,9 @@ class CLIApprovalSystem:
         cache_key = f"{prompt}:{','.join(options)}"
         if cache_key in self.cache:
             cached_decision = self.cache[cache_key]
-            self.console.print(f"[dim]Using cached approval decision: {cached_decision}[/dim]")
+            self.console.print(
+                f"[dim]Using cached approval decision: {cached_decision}[/dim]"
+            )
             return cached_decision
 
         # Display prompt
@@ -68,15 +74,21 @@ class CLIApprovalSystem:
         # Get user input with timeout
         try:
             async with asyncio.timeout(timeout):
-                choice = await asyncio.to_thread(Prompt.ask, "Your choice", choices=options)
+                choice = await asyncio.to_thread(
+                    Prompt.ask, "Your choice", choices=options
+                )
 
                 # Cache "Allow always" decisions
                 if choice == "Allow always":
                     self.cache[cache_key] = "Allow once"  # Cache as simplified "allow"
-                    self.console.print("[green]✓ Approval cached for this session[/green]")
+                    self.console.print(
+                        "[green]✓ Approval cached for this session[/green]"
+                    )
 
                 return choice
 
         except TimeoutError:
-            self.console.print(f"\n[yellow]⏱  Timeout ({timeout}s) - using default: {default}[/yellow]")
+            self.console.print(
+                f"\n[yellow]⏱  Timeout ({timeout}s) - using default: {default}[/yellow]"
+            )
             raise ApprovalTimeoutError(f"User approval timeout after {timeout}s")
