@@ -2877,23 +2877,8 @@ async def interactive_chat(
         if hooks:
             await hooks.emit(CLEANUP_FINALLY_BEGIN, {"session_id": actual_session_id})
 
-        # Only emit session:end if actual work occurred (at least one turn)
-        # This prevents empty sessions from being logged when user immediately exits
-        context = session.coordinator.get("context")
-        turn_count = 0
-        if context and hasattr(context, "get_messages"):
-            try:
-                messages = await context.get_messages()
-                turn_count = len([m for m in messages if m.get("role") == "user"])
-            except Exception:
-                pass  # If we can't get messages, assume no turns
-
-        if turn_count > 0:
-            if hooks:
-                from amplifier_core.events import SESSION_END
-
-                await hooks.emit(SESSION_END, {"session_id": actual_session_id})
-
+        # session:end is emitted by session.cleanup() (the canonical kernel path).
+        # Do NOT emit it here — that would duplicate the event.
         await initialized.cleanup()
         # --- cleanup:finally_end (after cleanup so its duration is visible) ---
         if hooks:
@@ -3152,14 +3137,11 @@ async def execute_single(
         sys.exit(1)
 
     finally:
-        # Emit session:end event before cleanup to allow hooks to finish
         hooks = session.coordinator.get("hooks")
         if hooks:
             await hooks.emit(CLEANUP_FINALLY_BEGIN, {"session_id": actual_session_id})
-        if hooks:
-            from amplifier_core.events import SESSION_END
-
-            await hooks.emit(SESSION_END, {"session_id": actual_session_id})
+        # session:end is emitted by session.cleanup() (the canonical kernel path).
+        # Do NOT emit it explicitly here — that would duplicate the event.
         await initialized.cleanup()
         # --- cleanup:finally_end (after cleanup so its duration is visible) ---
         if hooks:

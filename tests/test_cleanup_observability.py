@@ -80,12 +80,35 @@ def _make_mock_session(
     return mock_session
 
 
-def _make_mock_initialized(session: MagicMock) -> MagicMock:
-    """Return a minimal InitializedSession mock."""
+def _make_mock_initialized(
+    session: MagicMock, hooks: MagicMock | None = None
+) -> MagicMock:
+    """Return a minimal InitializedSession mock.
+
+    If *hooks* is supplied, the cleanup() coroutine will emit ``session:end``
+    exactly once — mirroring what the real ``session.cleanup()`` does via the
+    kernel path.  Tests that assert on ``session:end`` ordering must pass hooks
+    so that cleanup produces the event (instead of the now-removed explicit
+    emit in main.py).
+    """
     mock = MagicMock()
     mock.session = session
     mock.session_id = "test-session-id"
-    mock.cleanup = AsyncMock()
+
+    if hooks is not None:
+        _hooks_ref = hooks  # capture for closure
+
+        async def _cleanup_with_session_end() -> None:
+            from amplifier_core.events import SESSION_END  # type: ignore[import-untyped]
+
+            await _hooks_ref.emit(
+                SESSION_END,
+                {"session_id": "test-session-id", "status": "completed"},
+            )
+
+        mock.cleanup = AsyncMock(side_effect=_cleanup_with_session_end)
+    else:
+        mock.cleanup = AsyncMock()
     return mock
 
 
@@ -177,7 +200,8 @@ class TestExecuteSingleCleanupEvents:
 
         hooks, captured = _make_mock_hooks()
         session = _make_mock_session(hooks)
-        initialized = _make_mock_initialized(session)
+        # Pass hooks so cleanup() emits session:end (simulates real session.cleanup())
+        initialized = _make_mock_initialized(session, hooks=hooks)
 
         with (
             patch(
