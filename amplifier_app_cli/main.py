@@ -273,14 +273,18 @@ def _show_manual_instructions(shell: str, config_file: Path):
 
 def _parse_config_flags(
     parts: list[str],
-) -> tuple[list[str], bool, bool, str]:
-    """Strip --compact, --detailed, --format <fmt> from a parts list.
+) -> tuple[list[str], bool, bool, bool, str]:
+    """Strip --compact, --detailed, --trees, --format <fmt> from a parts list.
+
+    ``--detailed`` and ``--trees`` are mutually exclusive; last one wins
+    (i.e. whichever appears latest in the argument list takes effect).
 
     Returns:
-        (remaining_parts, compact_flag, detailed_flag, format_string)
+        (remaining_parts, compact_flag, detailed_flag, trees_flag, format_string)
     """
     compact = False
     detailed = False
+    trees = False
     fmt = "text"
     remaining: list[str] = []
     i = 0
@@ -290,13 +294,17 @@ def _parse_config_flags(
             compact = True
         elif p == "--detailed":
             detailed = True
+            trees = False  # last flag wins
+        elif p == "--trees":
+            trees = True
+            detailed = False  # last flag wins
         elif p == "--format" and i + 1 < len(parts):
             fmt = parts[i + 1].lower()
             i += 1
         else:
             remaining.append(p)
         i += 1
-    return remaining, compact, detailed, fmt
+    return remaining, compact, detailed, trees, fmt
 
 
 class CommandProcessor:
@@ -1222,14 +1230,14 @@ class CommandProcessor:
             return self._render_config_help()
 
         # Strip global flags from the parts list
-        remaining_parts, compact_flag, detailed_flag, fmt = _parse_config_flags(
-            raw_parts
+        remaining_parts, compact_flag, detailed_flag, trees_flag, fmt = (
+            _parse_config_flags(raw_parts)
         )
 
         if not remaining_parts:
             # Only flags, no subcommand — show dashboard with flags applied
             return await self._render_config_dashboard_v2(
-                compact=compact_flag, detailed=detailed_flag, fmt=fmt
+                compact=compact_flag, detailed=detailed_flag, trees=trees_flag, fmt=fmt
             )
 
         subcmd = remaining_parts[0].lower()
@@ -1259,12 +1267,13 @@ class CommandProcessor:
                     show_parts[0].lower(),
                     compact=compact_flag,
                     detailed=detailed_flag,
+                    trees=trees_flag,
                     fmt=fmt,
                 )
 
             # /config show  (with optional flags)
             return await self._render_config_dashboard_v2(
-                compact=compact_flag, detailed=detailed_flag, fmt=fmt
+                compact=compact_flag, detailed=detailed_flag, trees=trees_flag, fmt=fmt
             )
 
         # ── diff ──────────────────────────────────────────────────────────────
@@ -1305,7 +1314,11 @@ class CommandProcessor:
             if not cat_remaining:
                 # /config <category>  [--flags]
                 return await self._render_config_category(
-                    category, compact=compact_flag, detailed=detailed_flag, fmt=fmt
+                    category,
+                    compact=compact_flag,
+                    detailed=detailed_flag,
+                    trees=trees_flag,
+                    fmt=fmt,
                 )
 
             if len(cat_remaining) >= 2 and cat_remaining[0].lower() in (
@@ -1322,7 +1335,7 @@ class CommandProcessor:
 
         # Unknown subcommand — show dashboard
         return await self._render_config_dashboard_v2(
-            compact=compact_flag, detailed=detailed_flag, fmt=fmt
+            compact=compact_flag, detailed=detailed_flag, trees=trees_flag, fmt=fmt
         )
 
     def _render_config_help(self) -> str:
@@ -1334,6 +1347,12 @@ class CommandProcessor:
         console.print()
         console.print(
             "  [bold]/config show[/bold]                       Show full live config tree"
+        )
+        console.print(
+            "  [bold]/config show --detailed[/bold]            Multi-line attributed view"
+        )
+        console.print(
+            "  [bold]/config show --trees[/bold]               Per-item tree drilldown view"
         )
         console.print(
             "  [bold]/config <category>[/bold]                 List items in a category"
@@ -1469,6 +1488,7 @@ class CommandProcessor:
         *,
         compact: bool = False,
         detailed: bool = False,
+        trees: bool = False,
         fmt: str = "text",
     ) -> str:
         """Render a per-category list view using ItemRenderer.
@@ -1478,6 +1498,8 @@ class CommandProcessor:
             compact:  Force compact (one-line) view.
             detailed: Force detailed (multi-line) view.  For lists this renders
                       as the "regular" multi-line DashboardRenderer output.
+            trees:    Force tree-style per-item drilldown.  Takes precedence over
+                      ``detailed`` (last flag wins in the flag parser).
             fmt:      ``"json"`` to emit JSON; anything else → text.
         """
         from .console import console
@@ -1508,8 +1530,10 @@ class CommandProcessor:
             compact_flag=compact,
             detailed_flag=detailed,
         )
-        # For list contexts, "detailed" falls back to "regular" multi-line output
-        if view == "detailed":
+        # --trees overrides; for non-trees list contexts, "detailed" → "regular"
+        if trees:
+            view = "trees"
+        elif view == "detailed":
             view = "regular"
 
         ItemRenderer(console).render(items, view=view, category=category)  # type: ignore[arg-type]
@@ -1520,14 +1544,18 @@ class CommandProcessor:
         *,
         compact: bool = False,
         detailed: bool = False,
+        trees: bool = False,
         fmt: str = "text",
     ) -> str:
         """Render the full config dashboard using ItemRenderer (Commit 2 surface).
 
         - Default (no flags): compact one-liner per item across all sections.
         - ``--detailed``: regular multi-line DashboardRenderer output per section.
-        - ``--format json``: JSON dump of all ItemRecord lists.
+        - ``--trees``: per-item full drilldown (tree-style chain + include_paths).
+        - ``--format json``: JSON dump of all ItemRecord lists (ignores --trees).
         - ``--compact``: explicit compact (same as default).
+
+        ``--trees`` and ``--detailed`` are mutually exclusive; last flag wins.
         """
         from .console import console
 
@@ -1583,19 +1611,27 @@ class CommandProcessor:
             compact_flag=compact,
             detailed_flag=detailed,
         )
-        # For dashboard (multi-category), "detailed" → "regular" multi-line
-        effective_view: str = view if view != "detailed" else "regular"
+        # Determine effective view:
+        # --trees overrides everything (trees wins when both --detailed and --trees given,
+        # because _parse_config_flags clears the losing flag — last flag wins).
+        # For dashboard (multi-category), "detailed" falls back to "regular" multi-line.
+        if trees:
+            effective_view = "trees"
+        elif view == "detailed":
+            effective_view = "regular"
+        else:
+            effective_view = view
 
         ir = ItemRenderer(console)
+        raw_config = self.session.coordinator.config
+        session_config = (
+            raw_config.get("session", {}) if isinstance(raw_config, dict) else {}
+        )
 
         if effective_view == "compact":
-            # Compact: show session block inline first (simple key: value lines)
-            raw_config = self.session.coordinator.config
-            session_config = (
-                raw_config.get("session", {}) if isinstance(raw_config, dict) else {}
-            )
+            # Compact: show session block with simple key: value lines
             if session_config and isinstance(session_config, dict):
-                console.print("── session ──")
+                console.print("\u2500\u2500 session \u2500\u2500")
                 for field in ["orchestrator", "context"]:
                     if field in session_config:
                         value = session_config[field]
@@ -1613,15 +1649,40 @@ class CommandProcessor:
             ir.render(agents_items, view="compact", category="agents")
             ir.render(behaviors_items, view="compact", category="behaviors")
 
-        else:
-            # Regular: full multi-line DashboardRenderer output (old dashboard look)
-            raw_config = self.session.coordinator.config
-            session_config = (
-                raw_config.get("session", {}) if isinstance(raw_config, dict) else {}
-            )
+        elif effective_view == "trees":
+            # Trees: per-item full drilldown for every item in every section
             renderer_dr = DashboardRenderer(console)
             if session_config and isinstance(session_config, dict):
-                console.print("── session ──")
+                console.print("\u2500\u2500 session \u2500\u2500")
+                for field in ["orchestrator", "context"]:
+                    if field in session_config:
+                        value = session_config[field]
+                        if isinstance(value, dict) and "module" in value:
+                            mod_id = value.get("module", "unknown")
+                            cfg = value.get("config", {})
+                            console.print(f"  {field}: {mod_id}")
+                            if cfg and isinstance(cfg, dict):
+                                console.print("[dim]    config:[/dim]")
+                                for k, v in cfg.items():
+                                    renderer_dr.render_config_tree(
+                                        {k: v}, "      ", dim=True
+                                    )
+                        else:
+                            console.print(f"  {field}: {value}")
+                console.print()
+
+            ir.render(providers_items, view="trees", category="providers")
+            ir.render(tools_items, view="trees", category="tools")
+            ir.render(hooks_items, view="trees", category="hooks")
+            ir.render(context_items, view="trees", category="context")
+            ir.render(agents_items, view="trees", category="agents")
+            ir.render(behaviors_items, view="trees", category="behaviors")
+
+        else:
+            # Regular: full multi-line DashboardRenderer output (old dashboard look)
+            renderer_dr = DashboardRenderer(console)
+            if session_config and isinstance(session_config, dict):
+                console.print("\u2500\u2500 session \u2500\u2500")
                 for field in ["orchestrator", "context"]:
                     if field in session_config:
                         value = session_config[field]
