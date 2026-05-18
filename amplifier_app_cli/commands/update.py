@@ -176,12 +176,21 @@ async def _get_umbrella_dependency_details(umbrella_info) -> list[dict]:
 
     Uses recursive discovery to find ALL packages with [tool.uv.sources] entries,
     then enriches each with local installation info and remote SHA for comparison.
+    Also appends entries for the ``amplifier`` and ``amplifier-core`` PyPI packages
+    so the table shows the same source of truth that drives the update prompt.
 
     Returns:
         List of dicts with {name, local_sha, remote_sha, source_url, has_update,
-                           is_local, path, has_changes}
+                           is_local, path, has_changes}.
+        PyPI entries carry an additional ``display_type: "version"`` key that
+        tells the renderer to show the full version string rather than a
+        truncated 7-character SHA.
     """
+    import importlib.metadata
+    from importlib.metadata import PackageNotFoundError
+
     import httpx
+    from packaging.version import InvalidVersion, Version
 
     from ..utils.source_status import _get_github_commit_sha
     from ..utils.umbrella_discovery import discover_ecosystem_packages
@@ -246,6 +255,46 @@ async def _get_umbrella_dependency_details(umbrella_info) -> list[dict]:
                         "is_local": is_local,
                         "path": path,
                         "has_changes": has_changes,
+                    }
+                )
+
+            # Append PyPI packages so the table matches what drives the prompt.
+            # display_type="version" tells the renderer not to truncate to 7 chars.
+            for pypi_pkg in ["amplifier", "amplifier-core"]:
+                try:
+                    installed_ver = importlib.metadata.version(pypi_pkg)
+                except PackageNotFoundError:
+                    continue
+
+                latest_ver: str | None = None
+                try:
+                    resp = await client.get(
+                        f"https://pypi.org/pypi/{pypi_pkg}/json",
+                        timeout=5.0,
+                    )
+                    resp.raise_for_status()
+                    latest_ver = resp.json()["info"]["version"]
+                except Exception:
+                    latest_ver = "unknown"
+
+                pypi_has_update = False
+                if latest_ver and latest_ver != "unknown":
+                    try:
+                        pypi_has_update = Version(installed_ver) < Version(latest_ver)
+                    except InvalidVersion:
+                        pass  # leave has_update=False on unparseable versions
+
+                details.append(
+                    {
+                        "name": f"{pypi_pkg} (PyPI)",
+                        "local_sha": installed_ver,
+                        "remote_sha": latest_ver or "unknown",
+                        "source_url": f"https://pypi.org/project/{pypi_pkg}/",
+                        "has_update": pypi_has_update,
+                        "is_local": False,
+                        "path": None,
+                        "has_changes": False,
+                        "display_type": "version",
                     }
                 )
 
@@ -517,6 +566,15 @@ def _show_concise_report(
                     dep["local_sha"], dep["local_sha"], dep.get("has_changes", False)
                 )
                 remote_display = Text("-", style="dim")
+            elif dep.get("display_type") == "version":
+                # PyPI package: show full version strings, not 7-char SHA truncation.
+                # The "Local" column shows installed version; "Remote" shows PyPI latest.
+                name_display = dep["name"]
+                local_display = Text(dep["local_sha"] or "unknown", style="dim")
+                remote_display = Text(dep["remote_sha"] or "unknown", style="dim")
+                status_symbol = create_status_symbol(
+                    dep["local_sha"], dep["remote_sha"]
+                )
             else:
                 # Standard git install - compare local vs remote
                 name_display = dep["name"]
@@ -1018,21 +1076,27 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
 
     # Check umbrella first
     from ..utils.umbrella_discovery import discover_umbrella_source
-    from ..utils.update_executor import check_umbrella_dependencies_for_updates  # noqa: F401 — kept for future reporting use; no longer gates execution
+    from ..utils.update_executor import check_umbrella_dependencies_for_updates  # noqa: F401 — kept for future reporting use; checks git-sourced deps only
+    from ..utils.update_executor import check_pypi_packages_for_updates
 
     umbrella_info = discover_umbrella_source()
     has_umbrella_updates = False
 
     if umbrella_info:
-        # Always route the umbrella update through uv. The previous
-        # check_umbrella_dependencies_for_updates() check only inspected
-        # git-sourced deps and silently missed PyPI version bumps
+        # Ask PyPI whether amplifier or amplifier-core has a newer release.
+        # check_umbrella_dependencies_for_updates() only walks git-sourced deps
+        # via direct_url.json and silently misses PyPI version bumps
         # (e.g. amplifier-core), causing `amplifier update` to report
         # "All sources up to date" while actually being stale.
-        # uv knows the full dependency tree and will decide what (if anything)
-        # needs upgrading. The cost is one extra `uv tool install` call per
-        # `amplifier update`; the alternative is silent staleness.
-        has_umbrella_updates = True
+        #
+        # check_pypi_packages_for_updates() queries the PyPI JSON API for both
+        # `amplifier` and `amplifier-core` and uses packaging.version.Version
+        # for correct semantic comparison.
+        #
+        # Failure policy: returns True (assume stale) on any network / parse
+        # error to avoid the v1.0.7 silent-staleness pattern.
+        # See: CORE_RELEASE_MANDATE.
+        has_umbrella_updates = asyncio.run(check_pypi_packages_for_updates())
 
     # Check modules
     if not force:
