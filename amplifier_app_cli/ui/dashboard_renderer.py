@@ -10,6 +10,8 @@ from typing import Any
 
 from amplifier_app_cli.utils.error_format import escape_markup
 
+from ._attribution import dedupe_behavior_chain, truncate_attribution_chain
+
 # ---------------------------------------------------------------------------
 # Module-level sensitive-key handling (moved from CommandProcessor)
 # ---------------------------------------------------------------------------
@@ -134,14 +136,17 @@ class DashboardRenderer:
     def build_attribution(self, item: Any) -> str:
         """Build attribution string from origins (ItemRecord) or behaviors/source (dict).
 
-        For ItemRecord items: joins origin bundle names with ', '.
-        For dict items: falls back to 'behaviors' or 'source' fields.
-        The visible output is a comma-separated list of bundle names —
-        identical to the pre-ItemRecord output.
+        Applies deduplication (drops unsuffixed ``X`` when ``X-behavior`` is
+        also present) then truncation (elides middle entries when the chain
+        has more than three distinct bundle names).
+
+        Does **not** modify the raw ``origins`` data — only the display string.
         """
         behaviors = _item_get_behaviors(item)
         if behaviors:
-            return ", ".join(b for b in behaviors if b)
+            chain = [b for b in behaviors if b]
+            chain = dedupe_behavior_chain(chain)
+            return truncate_attribution_chain(chain)
         return ""
 
     # ------------------------------------------------------------------
@@ -275,7 +280,9 @@ class DashboardRenderer:
             module_id = _item_get(item, "module_id", "") or ""
 
             if behavior_names:
-                behavior_str = escape_markup(", ".join(b for b in behavior_names if b))
+                chain = [b for b in behavior_names if b]
+                chain = dedupe_behavior_chain(chain)
+                behavior_str = escape_markup(truncate_attribution_chain(chain))
             else:
                 behavior_str = ""
 
@@ -426,7 +433,9 @@ class DashboardRenderer:
             name = escape_markup(_item_get(item, "name", "unknown"))
 
             behavior_names = _item_get_behaviors(item)
-            behavior_str = escape_markup(", ".join(b for b in behavior_names if b))
+            raw_chain = [b for b in behavior_names if b]
+            raw_chain = dedupe_behavior_chain(raw_chain)
+            behavior_str = escape_markup(truncate_attribution_chain(raw_chain))
 
             if is_on:
                 line = f"  [green]\\[on][/green]  {name}"

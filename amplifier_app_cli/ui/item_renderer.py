@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from amplifier_app_cli.utils.error_format import escape_markup
 
+from ._attribution import dedupe_behavior_chain, truncate_attribution_chain
 from .dashboard_renderer import (
     DashboardRenderer,
     _item_get,
@@ -35,6 +36,11 @@ from .dashboard_renderer import (
 
 if TYPE_CHECKING:
     pass
+
+# Re-export attribution helpers as public module-level names so callers can
+# import them directly from item_renderer without needing to know the internal
+# module layout.
+__all__ = ["ItemRenderer", "dedupe_behavior_chain", "truncate_attribution_chain"]
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -170,19 +176,31 @@ class ItemRenderer:
 
         Args:
             items:          List of ``ItemRecord`` or dict items.
-            view:           ``"compact"``, ``"regular"``, or ``"detailed"``.
+            view:           ``"compact"``, ``"regular"``, ``"detailed"``, or
+                            ``"trees"``.
             category:       Category key (``"tools"``, ``"providers"``, etc.).
             section_title:  Override the section header; derived from *category*
                             when ``None``.
             trailing_newline: Emit a blank line after the section.
 
-        Note:
+        Notes:
             ``view="detailed"`` applied to a list renders as ``"regular"``
             (the multi-line DashboardRenderer output) rather than per-item
             full drilldown.  Use ``render_one`` for single-item detailed view.
+
+            ``view="trees"`` renders a section header followed by the full
+            single-item drilldown (``_render_detailed_one``) for every item.
+            This is the ``--trees`` mode: maximum precision, intentionally
+            verbose, opt-in only.
         """
         if view == "compact":
             self._render_compact(
+                items,
+                section_title=_canonical_title(category, section_title),
+                trailing_newline=trailing_newline,
+            )
+        elif view == "trees":
+            self._render_trees(
                 items,
                 section_title=_canonical_title(category, section_title),
                 trailing_newline=trailing_newline,
@@ -324,6 +342,43 @@ class ItemRenderer:
                 items,
                 trailing_newline=trailing_newline,
             )
+
+    # ------------------------------------------------------------------
+    # trees view (per-item detailed drilldown for a whole section)
+    # ------------------------------------------------------------------
+
+    def _render_trees(
+        self,
+        items: list[Any],
+        *,
+        section_title: str | None,
+        trailing_newline: bool,
+    ) -> None:
+        """Section header + full single-item drilldown for every item.
+
+        This is the ``--trees`` mode: the same output as ``render_one(view="detailed")``
+        applied to every item in the section, with a section-count header prepended.
+
+        ``_render_detailed_one`` already emits a leading and trailing blank line
+        around each item, so no additional trailing newline is needed here (the
+        ``trailing_newline`` argument is accepted for API symmetry but ignored —
+        the last item's own blank line serves that purpose).
+        """
+        if not items:
+            return
+
+        enabled = sum(1 for x in items if _item_get(x, "enabled", True))
+        disabled = len(items) - enabled
+        count = f"{enabled} active" + (f", {disabled} disabled" if disabled else "")
+
+        if section_title:
+            self._console.print(f"\u2500\u2500 {section_title} ({count}) \u2500\u2500")
+
+        for item in items:
+            self._render_detailed_one(item)
+
+        # _render_detailed_one ends with console.print() already; no extra blank
+        # line needed.  The trailing_newline param is kept for symmetry.
 
     # ------------------------------------------------------------------
     # detailed view (single item)
