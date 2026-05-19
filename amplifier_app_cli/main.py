@@ -631,6 +631,10 @@ class CommandProcessor:
                 mode_hooks = session_state.get("mode_hooks")
                 if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                     mode_hooks.reset_warnings()
+                # Emit mode:cleared so hooks-mode revokes contributes.* (overlay.revoke)
+                await self.session.coordinator.hooks.emit(
+                    "mode:cleared", {"name": current_mode, "previous_mode": current_mode}
+                )
                 return f"Mode off: {current_mode}"
             return "No mode active"
 
@@ -660,10 +664,21 @@ class CommandProcessor:
         if explicit_state == "on":
             if current_mode == mode_name:
                 return f"Already in {mode_name} mode"
+            _prev = current_mode
             session_state["active_mode"] = mode_name
             mode_hooks = session_state.get("mode_hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
+            # Emit lifecycle event so hooks-mode applies contributes.* (overlay.apply)
+            if _prev and _prev != mode_name:
+                await self.session.coordinator.hooks.emit(
+                    "mode:changed",
+                    {"old": _prev, "from_mode": _prev, "new": mode_name, "to_mode": mode_name},
+                )
+            else:
+                await self.session.coordinator.hooks.emit(
+                    "mode:activated", {"name": mode_name, "mode": mode_name}
+                )
             return f"Mode: {mode_name}" + (f" — {description}" if description else "")
 
         if explicit_state == "off":
@@ -673,6 +688,10 @@ class CommandProcessor:
             mode_hooks = session_state.get("mode_hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
+            # Emit mode:cleared so hooks-mode revokes contributes.* (overlay.revoke)
+            await self.session.coordinator.hooks.emit(
+                "mode:cleared", {"name": mode_name, "previous_mode": mode_name}
+            )
             return f"Mode off: {mode_name}"
 
         # Toggle behavior (no explicit on/off)
@@ -681,12 +700,27 @@ class CommandProcessor:
             mode_hooks = session_state.get("mode_hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
+            # Emit mode:cleared so hooks-mode revokes contributes.* (overlay.revoke)
+            await self.session.coordinator.hooks.emit(
+                "mode:cleared", {"name": mode_name, "previous_mode": mode_name}
+            )
             return f"Mode off: {mode_name}"
         else:
+            _prev_toggle = current_mode
             session_state["active_mode"] = mode_name
             mode_hooks = session_state.get("mode_hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
+            # Emit lifecycle event so hooks-mode applies contributes.* (overlay.apply)
+            if _prev_toggle:
+                await self.session.coordinator.hooks.emit(
+                    "mode:changed",
+                    {"old": _prev_toggle, "from_mode": _prev_toggle, "new": mode_name, "to_mode": mode_name},
+                )
+            else:
+                await self.session.coordinator.hooks.emit(
+                    "mode:activated", {"name": mode_name, "mode": mode_name}
+                )
             return f"Mode: {mode_name}" + (f" — {description}" if description else "")
 
     async def _list_modes(self) -> str:
