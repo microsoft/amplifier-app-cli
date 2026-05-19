@@ -490,7 +490,12 @@ class DashboardRenderer:
                     cfg_summary.get("root_namespace", "") if cfg_summary else ""
                 ) or ""
 
-            safe_name = escape_markup(name)
+            # Root-bundle marker: prefix with "*" when this bundle was the
+            # user's explicit entry point (BundleState.explicitly_requested=True).
+            # Matches the "*" convention already used in include_path display.
+            explicitly_req = _item_get(item, "explicitly_requested", False)
+            marker = "* " if explicitly_req else ""
+            safe_name = escape_markup(f"{marker}{name}")
             if is_on:
                 self._console.print(f"  [green]\\[on][/green]  {safe_name}")
             else:
