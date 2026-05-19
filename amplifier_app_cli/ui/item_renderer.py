@@ -285,7 +285,14 @@ class ItemRenderer:
 
         for item in items:
             is_on = _item_get(item, "enabled", True)
-            name = escape_markup(str(_item_get(item, "name", "unknown")))
+            raw_name = str(_item_get(item, "name", "unknown"))
+            # Root-bundle marker: prefix with "*" when this bundle was the
+            # user's explicit entry point (BundleState.explicitly_requested=True).
+            # Matches the "*" convention used in include_path display and
+            # render_behaviors_section(). Only triggers for behaviors items.
+            explicitly_req = _item_get(item, "explicitly_requested", False)
+            marker = "* " if explicitly_req else ""
+            name = escape_markup(f"{marker}{raw_name}")
             # Compact view: show the first direct claimant (via_behavior=None)
             claimant = _item_direct_claimant(item)
 
