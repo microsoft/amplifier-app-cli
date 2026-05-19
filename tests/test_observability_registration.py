@@ -1,14 +1,25 @@
 """Tests for observability event registration via the additional_events mechanism.
 
-Verifies that session:config (PR #79) and the six cleanup:* events (PR #183)
-are registered with hooks-logging and hook-context-intelligence via the
-``additional_events`` config key injected into the mount plan before
-``create_session()`` is called.
+Verifies that the six cleanup:* events (PR #183) are registered with
+hooks-logging and hook-context-intelligence via the ``additional_events``
+config key injected into the mount plan by ``_inject_observability_events()``
+before ``create_session()`` is called.
+
+MIGRATION NOTE (see foundation PR feat/move-observability-injection-to-foundation)
+---------
+``session:config`` (PR #79) has been moved to foundation's
+``PreparedBundle.create_session()`` via
+``amplifier_foundation.bundle._observability.inject_additional_events()``.
+The tests that formerly asserted on ``session:config`` here have been migrated
+to ``amplifier-foundation/tests/test_observability_injection.py``.
+
+App-cli now owns ONLY the six ``cleanup:*`` events — events emitted by
+``amplifier_app_cli.main`` that no other layer knows about.
 
 ROOT CAUSE BEING TESTED
 -----------------------
-Both PRs emitted new events via ``hooks.emit("event:name", ...)`` but the
-events never appeared in events.jsonl because hooks-logging only subscribes
+PR #183 emits new events via ``hooks.emit("cleanup:...", ...)`` but the
+events would never appear in events.jsonl because hooks-logging only subscribes
 to events in ``amplifier_core.events.ALL_EVENTS`` plus whatever is in its
 ``additional_events`` config key.  The fix injects the new names into the
 mount plan before ``create_session()`` runs.
@@ -35,9 +46,9 @@ import pytest
 
 _MODULE = "amplifier_app_cli.session_runner"
 
-# The 7 events that must be registered
+# The 6 cleanup events app-cli owns.
+# session:config is now handled by foundation — NOT in this list.
 EXPECTED_EVENTS = [
-    "session:config",
     "cleanup:render_begin",
     "cleanup:render_end",
     "cleanup:store_begin",
@@ -76,20 +87,18 @@ class TestInjectObservabilityEventsFunction:
     """Unit tests for _inject_observability_events(prepared_bundle).
 
     These tests FAIL before the function is added to session_runner.py
-    (ImportError) and FAIL if the function stops injecting events.
+    (ImportError) and FAIL if the function stops injecting cleanup events.
     """
 
     def _import_fn(self):
-        from amplifier_app_cli.session_runner import (  # noqa: PLC0415
-            _inject_observability_events,
-        )
+        from amplifier_app_cli.session_runner import _inject_observability_events  # noqa: PLC0415  # type: ignore[reportAttributeAccessIssue]
 
         return _inject_observability_events
 
     # --- hooks-logging ---
 
-    def test_injects_all_events_into_hooks_logging(self):
-        """All 7 events are added to hooks-logging config['additional_events']."""
+    def test_injects_all_cleanup_events_into_hooks_logging(self):
+        """All 6 cleanup events are added to hooks-logging config['additional_events']."""
         inject = self._import_fn()
         bundle = _bundle_with_hooks("hooks-logging")
 
@@ -99,8 +108,8 @@ class TestInjectObservabilityEventsFunction:
         for ev in EXPECTED_EVENTS:
             assert ev in added, f"'{ev}' missing from hooks-logging additional_events"
 
-    def test_injects_all_events_into_hook_context_intelligence(self):
-        """All 7 events are added to hook-context-intelligence config."""
+    def test_injects_all_cleanup_events_into_hook_context_intelligence(self):
+        """All 6 cleanup events are added to hook-context-intelligence config."""
         inject = self._import_fn()
         bundle = _bundle_with_hooks("hook-context-intelligence")
 
@@ -111,6 +120,20 @@ class TestInjectObservabilityEventsFunction:
             assert ev in added, (
                 f"'{ev}' missing from hook-context-intelligence additional_events"
             )
+
+    def test_session_config_not_injected_by_app_cli(self):
+        """session:config is NOT injected by app-cli (handled by foundation now)."""
+        inject = self._import_fn()
+        bundle = _bundle_with_hooks("hooks-logging")
+
+        inject(bundle)
+
+        added = bundle.mount_plan["hooks"][0]["config"].get("additional_events", [])
+        assert "session:config" not in added, (
+            "session:config should NOT be injected by app-cli — "
+            "foundation's create_session() handles it now. "
+            "See feat/move-observability-injection-to-foundation PR."
+        )
 
     def test_does_not_inject_into_unrelated_hooks(self):
         """Non-subscriber hooks are left untouched."""
@@ -172,7 +195,7 @@ class TestInjectObservabilityEventsFunction:
         inject(bundle)
 
         added = bundle.mount_plan["hooks"][0]["config"]["additional_events"]
-        assert "session:config" in added
+        assert "cleanup:render_begin" in added
 
     def test_handles_hooks_logging_without_config_key(self):
         """Handles hooks-logging entry that has no 'config' key at all."""
@@ -185,7 +208,7 @@ class TestInjectObservabilityEventsFunction:
         inject(bundle)
 
         added = bundle.mount_plan["hooks"][0]["config"]["additional_events"]
-        assert "session:config" in added
+        assert "cleanup:render_begin" in added
 
     def test_both_subscribers_in_same_plan(self):
         """When both subscribers are present, both get injected."""
@@ -196,9 +219,42 @@ class TestInjectObservabilityEventsFunction:
 
         for i, module in enumerate(["hooks-logging", "hook-context-intelligence"]):
             added = bundle.mount_plan["hooks"][i]["config"]["additional_events"]
-            assert "session:config" in added, f"{module} missing session:config"
             assert "cleanup:render_begin" in added, (
                 f"{module} missing cleanup:render_begin"
+            )
+            assert "cleanup:finally_end" in added, (
+                f"{module} missing cleanup:finally_end"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Tests: _CLEANUP_EVENTS constant is accessible from session_runner
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupEventsConstant:
+    """Verify the _CLEANUP_EVENTS tuple has the right shape (no session:config)."""
+
+    def test_cleanup_events_has_six_events(self):
+        from amplifier_app_cli.session_runner import _CLEANUP_EVENTS  # noqa: PLC0415  # type: ignore[reportAttributeAccessIssue]
+
+        assert len(_CLEANUP_EVENTS) == 6, (
+            f"Expected 6 cleanup events, got {len(_CLEANUP_EVENTS)}: {_CLEANUP_EVENTS}"
+        )
+
+    def test_cleanup_events_has_no_session_config(self):
+        from amplifier_app_cli.session_runner import _CLEANUP_EVENTS  # noqa: PLC0415  # type: ignore[reportAttributeAccessIssue]
+
+        assert "session:config" not in _CLEANUP_EVENTS, (
+            "session:config must NOT be in _CLEANUP_EVENTS — it moved to foundation"
+        )
+
+    def test_cleanup_events_are_all_cleanup_prefix(self):
+        from amplifier_app_cli.session_runner import _CLEANUP_EVENTS  # noqa: PLC0415  # type: ignore[reportAttributeAccessIssue]
+
+        for ev in _CLEANUP_EVENTS:
+            assert ev.startswith("cleanup:"), (
+                f"Non-cleanup event in _CLEANUP_EVENTS: {ev!r}"
             )
 
 
@@ -217,10 +273,8 @@ class TestInjectCalledFromCreateBundleSession:
     async def test_inject_is_called_during_bundle_session_creation(self):
         """_inject_observability_events must be called inside _create_bundle_session."""
         # Import the private functions we expect to exist
-        from amplifier_app_cli.session_runner import (  # noqa: PLC0415
-            _create_bundle_session,
-            _inject_observability_events,
-        )
+        from amplifier_app_cli.session_runner import _create_bundle_session  # noqa: PLC0415  # type: ignore[reportAttributeAccessIssue]
+        from amplifier_app_cli.session_runner import _inject_observability_events  # noqa: PLC0415  # type: ignore[reportAttributeAccessIssue]
         from amplifier_app_cli.session_runner import (  # noqa: PLC0415
             SessionConfig,
         )
@@ -295,7 +349,7 @@ class TestInjectCalledFromCreateBundleSession:
 
         assert len(call_record) >= 1, (
             "_inject_observability_events was NOT called from _create_bundle_session. "
-            "The production event-registration path is broken: new events will be emitted "
+            "The production event-registration path is broken: cleanup events will be emitted "
             "but never logged to events.jsonl."
         )
 
@@ -356,43 +410,6 @@ class TestHooksLoggingProductionPath:
         reason="hooks-logging not found in amplifier cache — skipping production path tests",
     )
     @pytest.mark.asyncio
-    async def test_hooks_logging_registers_handler_for_session_config(
-        self, tmp_path: Path
-    ):
-        """When session:config is in additional_events, hooks-logging registers it."""
-        _setup_and_register = self._import_setup_fn()
-
-        registered_events: list[str] = []
-
-        coordinator = MagicMock()
-        coordinator.get_capability.return_value = None  # no legacy capability
-
-        # Simulate collect_contributions returning nothing (test only additional_events)
-        coordinator.collect_contributions = AsyncMock(return_value=[])
-
-        def _track_register(event, handler, priority=0, name=None):
-            registered_events.append(event)
-
-        coordinator.hooks = MagicMock()
-        coordinator.hooks.register = _track_register
-
-        config = {
-            "additional_events": ["session:config"],
-            "session_log_template": str(tmp_path / "{project}/{session_id}.jsonl"),
-        }
-
-        await _setup_and_register(coordinator, config, use_collect=False)
-
-        assert "session:config" in registered_events, (
-            "hooks-logging did NOT register a handler for session:config even though "
-            "it was listed in additional_events. The event will never appear in events.jsonl."
-        )
-
-    @pytest.mark.skipif(
-        not _hooks_logging_available,
-        reason="hooks-logging not found in amplifier cache — skipping production path tests",
-    )
-    @pytest.mark.asyncio
     async def test_hooks_logging_registers_handlers_for_all_cleanup_events(
         self, tmp_path: Path
     ):
@@ -438,15 +455,12 @@ class TestHooksLoggingProductionPath:
         reason="hooks-logging not found in amplifier cache — skipping production path tests",
     )
     @pytest.mark.asyncio
-    async def test_hooks_logging_writes_session_config_event_to_jsonl(
-        self, tmp_path: Path
-    ):
-        """When session:config is registered via additional_events, it is written to events.jsonl."""
+    async def test_hooks_logging_writes_cleanup_event_to_jsonl(self, tmp_path: Path):
+        """When cleanup:render_begin is registered via additional_events, it is written to events.jsonl."""
         import json
 
         _setup_and_register = self._import_setup_fn()
 
-        # Use a simple template that writes directly into tmp_path
         log_template = str(tmp_path / "{session_id}.jsonl")
 
         coordinator = MagicMock()
@@ -462,37 +476,34 @@ class TestHooksLoggingProductionPath:
         coordinator.hooks.register = _track_register
 
         config = {
-            "additional_events": ["session:config"],
+            "additional_events": ["cleanup:render_begin"],
             "session_log_template": log_template,
         }
 
         await _setup_and_register(coordinator, config, use_collect=False)
 
-        assert "session:config" in registered_handlers, (
-            "No handler registered for session:config"
+        assert "cleanup:render_begin" in registered_handlers, (
+            "No handler registered for cleanup:render_begin"
         )
 
-        # Simulate emitting the event
-        handler = registered_handlers["session:config"]
+        handler = registered_handlers["cleanup:render_begin"]
         await handler(
-            "session:config",
+            "cleanup:render_begin",
             {
-                "session_id": "test-session-abc",
+                "session_id": "test-session-cleanup",
                 "timestamp": "2026-01-01T00:00:00.000+00:00",
-                "raw": {"session": {"orchestrator": "test"}},
             },
         )
 
-        # With our simple template, the log path is predictable
-        log_path = tmp_path / "test-session-abc.jsonl"
+        log_path = tmp_path / "test-session-cleanup.jsonl"
 
         assert log_path.exists(), (
             f"events.jsonl not found at {log_path} — "
-            "session:config was registered but not written to disk."
+            "cleanup:render_begin was registered but not written to disk."
         )
 
         lines = [json.loads(line) for line in log_path.read_text().splitlines()]
         events = [line["event"] for line in lines]
-        assert "session:config" in events, (
-            f"session:config not in events.jsonl. Got: {events}"
+        assert "cleanup:render_begin" in events, (
+            f"cleanup:render_begin not in events.jsonl. Got: {events}"
         )
