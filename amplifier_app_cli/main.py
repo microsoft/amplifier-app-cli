@@ -626,15 +626,15 @@ class CommandProcessor:
         # /mode off - clear any active mode
         if args == "off":
             if current_mode:
+                # Emit mode:cleared BEFORE state mutation so hooks see the old state
+                await self.session.coordinator.hooks.emit(
+                    "mode:cleared", {"name": current_mode, "previous_mode": current_mode}
+                )
                 session_state["active_mode"] = None
                 # Reset warnings in mode hooks if present
                 mode_hooks = session_state.get("mode_hooks")
                 if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                     mode_hooks.reset_warnings()
-                # Emit mode:cleared so hooks-mode revokes contributes.* (overlay.revoke)
-                await self.session.coordinator.hooks.emit(
-                    "mode:cleared", {"name": current_mode, "previous_mode": current_mode}
-                )
                 return f"Mode off: {current_mode}"
             return "No mode active"
 
@@ -665,62 +665,112 @@ class CommandProcessor:
             if current_mode == mode_name:
                 return f"Already in {mode_name} mode"
             _prev = current_mode
+            # Emit lifecycle event BEFORE state mutation so hooks see the old state.
+            # Build full payload from mode_def when discovery is available.
+            if _prev and _prev != mode_name:
+                _payload: dict = {
+                    "old": _prev,
+                    "new": mode_name,
+                    "from_mode": _prev,
+                    "to_mode": mode_name,
+                }
+                if discovery:
+                    _payload.update(
+                        {
+                            "description": mode_def.description,
+                            "default_action": mode_def.default_action,
+                            "safe_tools": mode_def.safe_tools,
+                            "warn_tools": mode_def.warn_tools,
+                            "confirm_tools": mode_def.confirm_tools,
+                            "block_tools": mode_def.block_tools,
+                        }
+                    )
+                await self.session.coordinator.hooks.emit("mode:changed", _payload)
+            else:
+                _payload = {"name": mode_name, "mode": mode_name}
+                if discovery:
+                    _payload.update(
+                        {
+                            "description": mode_def.description,
+                            "default_action": mode_def.default_action,
+                            "safe_tools": mode_def.safe_tools,
+                            "warn_tools": mode_def.warn_tools,
+                            "confirm_tools": mode_def.confirm_tools,
+                            "block_tools": mode_def.block_tools,
+                        }
+                    )
+                await self.session.coordinator.hooks.emit("mode:activated", _payload)
             session_state["active_mode"] = mode_name
             mode_hooks = session_state.get("mode_hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
-            # Emit lifecycle event so hooks-mode applies contributes.* (overlay.apply)
-            if _prev and _prev != mode_name:
-                await self.session.coordinator.hooks.emit(
-                    "mode:changed",
-                    {"old": _prev, "from_mode": _prev, "new": mode_name, "to_mode": mode_name},
-                )
-            else:
-                await self.session.coordinator.hooks.emit(
-                    "mode:activated", {"name": mode_name, "mode": mode_name}
-                )
             return f"Mode: {mode_name}" + (f" — {description}" if description else "")
 
         if explicit_state == "off":
             if current_mode != mode_name:
                 return f"Not in {mode_name} mode"
+            # Emit mode:cleared BEFORE state mutation so hooks see the old state
+            await self.session.coordinator.hooks.emit(
+                "mode:cleared", {"name": mode_name, "previous_mode": mode_name}
+            )
             session_state["active_mode"] = None
             mode_hooks = session_state.get("mode_hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
-            # Emit mode:cleared so hooks-mode revokes contributes.* (overlay.revoke)
-            await self.session.coordinator.hooks.emit(
-                "mode:cleared", {"name": mode_name, "previous_mode": mode_name}
-            )
             return f"Mode off: {mode_name}"
 
         # Toggle behavior (no explicit on/off)
         if current_mode == mode_name:
+            # Emit mode:cleared BEFORE state mutation so hooks see the old state
+            await self.session.coordinator.hooks.emit(
+                "mode:cleared", {"name": mode_name, "previous_mode": mode_name}
+            )
             session_state["active_mode"] = None
             mode_hooks = session_state.get("mode_hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
-            # Emit mode:cleared so hooks-mode revokes contributes.* (overlay.revoke)
-            await self.session.coordinator.hooks.emit(
-                "mode:cleared", {"name": mode_name, "previous_mode": mode_name}
-            )
             return f"Mode off: {mode_name}"
         else:
             _prev_toggle = current_mode
+            # Emit lifecycle event BEFORE state mutation so hooks see the old state.
+            # Build full payload from mode_def when discovery is available.
+            if _prev_toggle:
+                _payload = {
+                    "old": _prev_toggle,
+                    "new": mode_name,
+                    "from_mode": _prev_toggle,
+                    "to_mode": mode_name,
+                }
+                if discovery:
+                    _payload.update(
+                        {
+                            "description": mode_def.description,
+                            "default_action": mode_def.default_action,
+                            "safe_tools": mode_def.safe_tools,
+                            "warn_tools": mode_def.warn_tools,
+                            "confirm_tools": mode_def.confirm_tools,
+                            "block_tools": mode_def.block_tools,
+                        }
+                    )
+                await self.session.coordinator.hooks.emit("mode:changed", _payload)
+            else:
+                _payload = {"name": mode_name, "mode": mode_name}
+                if discovery:
+                    _payload.update(
+                        {
+                            "description": mode_def.description,
+                            "default_action": mode_def.default_action,
+                            "safe_tools": mode_def.safe_tools,
+                            "warn_tools": mode_def.warn_tools,
+                            "confirm_tools": mode_def.confirm_tools,
+                            "block_tools": mode_def.block_tools,
+                        }
+                    )
+                await self.session.coordinator.hooks.emit("mode:activated", _payload)
             session_state["active_mode"] = mode_name
             mode_hooks = session_state.get("mode_hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
                 mode_hooks.reset_warnings()
-            # Emit lifecycle event so hooks-mode applies contributes.* (overlay.apply)
-            if _prev_toggle:
-                await self.session.coordinator.hooks.emit(
-                    "mode:changed",
-                    {"old": _prev_toggle, "from_mode": _prev_toggle, "new": mode_name, "to_mode": mode_name},
-                )
-            else:
-                await self.session.coordinator.hooks.emit(
-                    "mode:activated", {"name": mode_name, "mode": mode_name}
-                )
             return f"Mode: {mode_name}" + (f" — {description}" if description else "")
 
     async def _list_modes(self) -> str:
