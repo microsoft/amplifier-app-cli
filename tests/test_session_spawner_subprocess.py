@@ -91,7 +91,7 @@ class TestSubprocessRouting:
         # Verify subprocess runner was called
         fake_module.run_session_in_subprocess.assert_called_once()
         call_kwargs = fake_module.run_session_in_subprocess.call_args
-        assert call_kwargs.kwargs["config"] == {"session": {}}
+        assert call_kwargs.kwargs["config"] == {"agents": {}, "session": {}}
         assert call_kwargs.kwargs["prompt"] == "Do something"
         assert call_kwargs.kwargs["parent_id"] == "parent-session-id"
         assert call_kwargs.kwargs["session_id"] == "fixed-test-id"
