@@ -682,26 +682,23 @@ async def spawn_sub_session(
     ).get("instruction")
     if system_instruction:
         context = child_session.coordinator.get("context")
-        if context and hasattr(context, "add_message"):
-            await context.add_message({"role": "system", "content": system_instruction})
-        # Expand @-mentions in agent body and inject resolved content as developer messages.
-        # Mirrors _process_runtime_mentions() semantics: file content travels as separate
-        # developer messages so the LLM actually sees it, not the literal @mention string.
-        from amplifier_app_cli.lib.mention_loading import MentionLoader
-        from amplifier_app_cli.utils.mentions import has_mentions
+        # Expand @-mentions in the agent body before injecting as system message.
+        # Content lands inline as <context_file> XML blocks prepended to the instruction.
+        _resolver = child_session.coordinator.get_capability("mention_resolver")
+        if _resolver is not None:
+            from amplifier_foundation.mentions import expand_mentions_in_instruction
 
-        if has_mentions(system_instruction):
-            _resolver = child_session.coordinator.get_capability("mention_resolver")
             _deduplicator = child_session.coordinator.get_capability("mention_deduplicator")
             _wd = child_session.coordinator.get_capability("session.working_dir")
             _rel_to = Path(_wd) if _wd else Path.cwd()
-            _loader = MentionLoader(resolver=_resolver)
-            _ctx_msgs = _loader.load_mentions(
-                system_instruction, relative_to=_rel_to, deduplicator=_deduplicator
+            system_instruction = await expand_mentions_in_instruction(
+                system_instruction,
+                resolver=_resolver,
+                deduplicator=_deduplicator,
+                relative_to=_rel_to,
             )
-            if _ctx_msgs and context and hasattr(context, "add_message"):
-                for _ctx_msg in _ctx_msgs:
-                    await context.add_message(_ctx_msg.model_dump())
+        if context and hasattr(context, "add_message"):
+            await context.add_message({"role": "system", "content": system_instruction})
 
     # Register temporary hook to capture orchestrator:complete data
     # This gives us status, turn_count, and metadata from the orchestrator
@@ -722,26 +719,22 @@ async def spawn_sub_session(
             name="_spawn_capture",
         )
 
-    # Expand @-mentions in delegation instruction and inject resolved content as developer
-    # messages before executing.  Same semantics as _process_runtime_mentions() in main.py.
+    # Expand @-mentions in delegation instruction before executing.
+    # Content lands inline as <context_file> XML blocks prepended to the instruction.
     if instruction:
-        from amplifier_app_cli.lib.mention_loading import MentionLoader
-        from amplifier_app_cli.utils.mentions import has_mentions
+        _instr_resolver = child_session.coordinator.get_capability("mention_resolver")
+        if _instr_resolver is not None:
+            from amplifier_foundation.mentions import expand_mentions_in_instruction
 
-        if has_mentions(instruction):
-            _instr_resolver = child_session.coordinator.get_capability("mention_resolver")
             _instr_dedup = child_session.coordinator.get_capability("mention_deduplicator")
             _instr_wd = child_session.coordinator.get_capability("session.working_dir")
             _instr_rel = Path(_instr_wd) if _instr_wd else Path.cwd()
-            _instr_loader = MentionLoader(resolver=_instr_resolver)
-            _instr_msgs = _instr_loader.load_mentions(
-                instruction, relative_to=_instr_rel, deduplicator=_instr_dedup
+            instruction = await expand_mentions_in_instruction(
+                instruction,
+                resolver=_instr_resolver,
+                deduplicator=_instr_dedup,
+                relative_to=_instr_rel,
             )
-            if _instr_msgs:
-                _instr_ctx = child_session.coordinator.get("context")
-                if _instr_ctx and hasattr(_instr_ctx, "add_message"):
-                    for _instr_msg in _instr_msgs:
-                        await _instr_ctx.add_message(_instr_msg.model_dump())
 
     # Execute instruction in child session; cleanup MUST run even on CancelledError
     try:
@@ -1108,6 +1101,23 @@ async def resume_sub_session(
     else:
         resume_parent_cancellation = None
         resume_child_cancellation = None
+
+    # Expand @-mentions in the resumed instruction (consistent with spawn path).
+    # Content lands inline as <context_file> XML blocks prepended to the instruction.
+    if instruction:
+        _resume_resolver = child_session.coordinator.get_capability("mention_resolver")
+        if _resume_resolver is not None:
+            from amplifier_foundation.mentions import expand_mentions_in_instruction
+
+            _resume_dedup = child_session.coordinator.get_capability("mention_deduplicator")
+            _resume_wd = child_session.coordinator.get_capability("session.working_dir")
+            _resume_rel = Path(_resume_wd) if _resume_wd else Path.cwd()
+            instruction = await expand_mentions_in_instruction(
+                instruction,
+                resolver=_resume_resolver,
+                deduplicator=_resume_dedup,
+                relative_to=_resume_rel,
+            )
 
     # Execute new instruction with full context; cleanup MUST run even on CancelledError
     try:

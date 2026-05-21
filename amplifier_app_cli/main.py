@@ -2452,48 +2452,35 @@ def cli(ctx, install_completion):
         )
 
 
-async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> None:
+async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> str:
     """Process @mentions in user input at runtime.
 
+    Returns the prompt with <context_file> XML blocks prepended for any resolved
+    @mentions, or the original prompt unchanged if no mentions resolve.
+
     Args:
-        session: Active session to add context messages to
+        session: Active session for capability lookup
         prompt: User's input that may contain @mentions
+
+    Returns:
+        Expanded prompt string (original unchanged when no mentions resolve).
     """
-    from .lib.mention_loading import MentionLoader
-    from .utils.mentions import has_mentions
-
-    if not has_mentions(prompt):
-        return
-
-    logger.info("Processing @mentions in user input")
-
-    # Load @mentioned files (resolve relative to current working directory)
     from pathlib import Path
 
-    # Use the same mention_resolver registered for tools (ensures consistency)
+    from amplifier_foundation.mentions import expand_mentions_in_instruction
+
     mention_resolver = session.coordinator.get_capability("mention_resolver")
-    loader = MentionLoader(resolver=mention_resolver)
+    if mention_resolver is None:
+        return prompt
+
+    logger.info("Processing @mentions in user input")
     deduplicator = session.coordinator.get_capability("mention_deduplicator")
-    context_messages = loader.load_mentions(
-        prompt, relative_to=Path.cwd(), deduplicator=deduplicator
+    return await expand_mentions_in_instruction(
+        prompt,
+        resolver=mention_resolver,
+        deduplicator=deduplicator,
+        relative_to=Path.cwd(),
     )
-
-    if not context_messages:
-        logger.debug("No files found for runtime @mentions (or all already loaded)")
-        return
-
-    logger.info(
-        f"Loaded {len(context_messages)} unique context files from runtime @mentions"
-    )
-
-    # Add context messages to session as developer messages (before user message)
-    context = session.coordinator.get("context")
-    for i, msg in enumerate(context_messages):
-        msg_dict = msg.model_dump()
-        logger.debug(
-            f"Adding runtime context {i + 1}/{len(context_messages)}: {len(msg.content)} chars"
-        )
-        await context.add_message(msg_dict)
 
 
 def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSession:
@@ -2871,7 +2858,7 @@ async def interactive_chat(
         console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
 
         # Process runtime @mentions in initial prompt
-        await _process_runtime_mentions(session, initial_prompt)
+        initial_prompt = await _process_runtime_mentions(session, initial_prompt)
         await _execute_with_interrupt(initial_prompt)
 
     # === REPL LOOP ===
@@ -2893,8 +2880,8 @@ async def interactive_chat(
                         console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
 
                         # Process runtime @mentions in user input
-                        await _process_runtime_mentions(session, data["text"])
-                        await _execute_with_interrupt(data["text"])
+                        _expanded_text = await _process_runtime_mentions(session, data["text"])
+                        await _execute_with_interrupt(_expanded_text)
 
                     else:
                         if action == "load_skill":
@@ -2908,7 +2895,7 @@ async def interactive_chat(
                                 console.print(
                                     "\n[dim]Processing... (Ctrl+C to cancel)[/dim]"
                                 )
-                                await _process_runtime_mentions(session, text)
+                                text = await _process_runtime_mentions(session, text)
                                 await _execute_with_interrupt(text)
                             else:
                                 console.print(f"[cyan]{text}[/cyan]")
@@ -2925,7 +2912,7 @@ async def interactive_chat(
                             console.print(
                                 "\n[dim]Processing... (Ctrl+C to cancel)[/dim]"
                             )
-                            await _process_runtime_mentions(session, trailing_prompt)
+                            trailing_prompt = await _process_runtime_mentions(session, trailing_prompt)
                             await _execute_with_interrupt(trailing_prompt)
 
             except EOFError:
@@ -3064,7 +3051,7 @@ async def execute_single(
                 )
 
         # Process runtime @mentions in user input
-        await _process_runtime_mentions(session, prompt)
+        prompt = await _process_runtime_mentions(session, prompt)
 
         if verbose:
             console.print(f"[dim]Executing: {prompt}[/dim]")
