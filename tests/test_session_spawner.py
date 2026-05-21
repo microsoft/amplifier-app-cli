@@ -1697,3 +1697,191 @@ class TestRoutingCapabilityPropagation:
         assert "session.routing" not in registered_capabilities, (
             "session.routing must not be registered on child when parent has none (Bug C)"
         )
+
+
+class TestSpawnMentionExpansion:
+    """@-mentions in subagent instructions must be expanded before reaching the LLM.
+
+    Bug: spawn_sub_session injected the agent body (system_instruction) and the
+    runtime delegation instruction verbatim into the child session context without
+    expanding @-mention file references.  Result: the LLM received literal
+    '@bundle:path' strings instead of the file content those mentions point to.
+
+    Fix: after the mention_resolver capability is propagated to the child session
+    (which already happens), call MentionLoader.load_mentions() on both strings
+    and inject the resolved file content as developer messages — mirroring
+    _process_runtime_mentions() in main.py.
+    """
+
+    def _make_sessions(self, tmp_path, resolver):
+        """Return (parent_session, child_session, added_messages list) with working capability store."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        registered_capabilities: dict = {}
+
+        def parent_get_cap(name):
+            if name == "mention_resolver":
+                return resolver
+            return None
+
+        def child_reg_cap(name, value):
+            registered_capabilities[name] = value
+
+        def child_get_cap(name):
+            return registered_capabilities.get(name)
+
+        parent_coordinator = MagicMock()
+        parent_coordinator.get.return_value = None
+        parent_coordinator.get_capability.side_effect = parent_get_cap
+        parent_coordinator.display_system = MagicMock()
+        parent_coordinator.cancellation = MagicMock()
+        parent_coordinator.cancellation.register_child = MagicMock()
+        parent_coordinator.cancellation.unregister_child = MagicMock()
+
+        parent_session = MagicMock()
+        parent_session.coordinator = parent_coordinator
+        parent_session.config = {
+            "session": {"orchestrator": "loop-basic", "context": "context-simple"},
+        }
+        parent_session.session_id = "parent-mention-test"
+        parent_session.trace_id = "trace-mention-test"
+        parent_session.loader = None
+
+        added_messages: list = []
+
+        class FakeHooks:
+            def register(self, event, handler, priority=0, name=None):
+                def _unregister():
+                    pass
+                return _unregister
+
+            async def emit(self, event, data):
+                pass
+
+        fake_ctx = AsyncMock()
+        fake_ctx.get_messages = AsyncMock(return_value=[])
+
+        async def capture_add_message(msg):
+            added_messages.append(msg)
+
+        fake_ctx.add_message = capture_add_message
+
+        child_coordinator = MagicMock()
+        child_coordinator.register_capability.side_effect = child_reg_cap
+        child_coordinator.get_capability.side_effect = child_get_cap
+        child_coordinator.display_system = MagicMock()
+
+        def child_get(name):
+            if name == "hooks":
+                return FakeHooks()
+            if name == "context":
+                return fake_ctx
+            return None
+
+        child_coordinator.get = child_get
+        child_coordinator.mount = AsyncMock()
+
+        child_session = MagicMock()
+        child_session.coordinator = child_coordinator
+        child_session.initialize = AsyncMock()
+        child_session.execute = AsyncMock(return_value="response")
+        child_session.cleanup = AsyncMock()
+        child_session.session_id = "child-mention-001"
+
+        return parent_session, child_session, added_messages
+
+    async def test_system_instruction_mentions_are_expanded(self, tmp_path, monkeypatch):
+        """@-mentions in agent body (system_instruction) must produce developer messages."""
+        from unittest.mock import patch
+
+        from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
+        from amplifier_app_cli.session_spawner import spawn_sub_session
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        FIXTURE_CONTENT = "SENTINEL_FIXTURE_SYSTEM_CONTENT_12345"
+        fixture_file = tmp_path / "fixture.md"
+        fixture_file.write_text(FIXTURE_CONTENT)
+
+        resolver = AppMentionResolver(bundle_mappings={"testbundle": tmp_path})
+        parent_session, child_session, added_messages = self._make_sessions(tmp_path, resolver)
+
+        agent_configs = {
+            "test-agent": {
+                "instruction": (
+                    "I am an agent.\n\n@testbundle:fixture.md\n\nEnd of instructions."
+                ),
+            },
+        }
+
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            return_value=child_session,
+        ):
+            with patch(
+                "amplifier_app_cli.session_spawner.generate_sub_session_id",
+                return_value="child-mention-001",
+            ):
+                with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                    with patch("amplifier_app_cli.session_store.SessionStore.save"):
+                        await spawn_sub_session(
+                            agent_name="test-agent",
+                            instruction="Do something without mentions",
+                            parent_session=parent_session,
+                            agent_configs=agent_configs,
+                        )
+
+        developer_messages = [m for m in added_messages if m.get("role") == "developer"]
+        contents = "\n".join(m.get("content", "") for m in developer_messages)
+        assert FIXTURE_CONTENT in contents, (
+            f"Expected {FIXTURE_CONTENT!r} in developer messages from system_instruction "
+            f"expansion, but got messages: {developer_messages}"
+        )
+
+    async def test_delegation_instruction_mentions_are_expanded(self, tmp_path, monkeypatch):
+        """@-mentions in the runtime delegation instruction must produce developer messages."""
+        from unittest.mock import patch
+
+        from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
+        from amplifier_app_cli.session_spawner import spawn_sub_session
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        FIXTURE_CONTENT = "SENTINEL_FIXTURE_INSTRUCTION_67890"
+        fixture_file = tmp_path / "task.md"
+        fixture_file.write_text(FIXTURE_CONTENT)
+
+        resolver = AppMentionResolver(bundle_mappings={"testbundle": tmp_path})
+        parent_session, child_session, added_messages = self._make_sessions(tmp_path, resolver)
+
+        agent_configs = {
+            "test-agent": {
+                "description": "A test agent",  # no @-mentions in body
+            },
+        }
+
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            return_value=child_session,
+        ):
+            with patch(
+                "amplifier_app_cli.session_spawner.generate_sub_session_id",
+                return_value="child-mention-001",
+            ):
+                with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                    with patch("amplifier_app_cli.session_store.SessionStore.save"):
+                        await spawn_sub_session(
+                            agent_name="test-agent",
+                            instruction=(
+                                "Please do this task:\n\n@testbundle:task.md\n\nThat is all."
+                            ),
+                            parent_session=parent_session,
+                            agent_configs=agent_configs,
+                        )
+
+        developer_messages = [m for m in added_messages if m.get("role") == "developer"]
+        contents = "\n".join(m.get("content", "") for m in developer_messages)
+        assert FIXTURE_CONTENT in contents, (
+            f"Expected {FIXTURE_CONTENT!r} in developer messages from delegation instruction "
+            f"expansion, but got messages: {developer_messages}"
+        )
