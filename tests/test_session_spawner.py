@@ -1707,10 +1707,9 @@ class TestSpawnMentionExpansion:
     expanding @-mention file references.  Result: the LLM received literal
     '@bundle:path' strings instead of the file content those mentions point to.
 
-    Fix: after the mention_resolver capability is propagated to the child session
-    (which already happens), call MentionLoader.load_mentions() on both strings
-    and inject the resolved file content as developer messages — mirroring
-    _process_runtime_mentions() in main.py.
+    Fix: use expand_mentions_in_instruction() to inline file content as
+    <context_file> XML blocks prepended to the instruction string, consistent
+    with the system-prompt path and the foundation helper.
     """
 
     def _make_sessions(self, tmp_path, resolver):
@@ -1791,7 +1790,7 @@ class TestSpawnMentionExpansion:
         return parent_session, child_session, added_messages
 
     async def test_system_instruction_mentions_are_expanded(self, tmp_path, monkeypatch):
-        """@-mentions in agent body (system_instruction) must produce developer messages."""
+        """@-mentions in agent body (system_instruction) must be inlined as XML blocks."""
         from unittest.mock import patch
 
         from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
@@ -1831,15 +1830,29 @@ class TestSpawnMentionExpansion:
                             agent_configs=agent_configs,
                         )
 
+        # After the change: content is inlined as <context_file> XML in the system message.
+        # No developer messages should be produced for mention expansion.
         developer_messages = [m for m in added_messages if m.get("role") == "developer"]
-        contents = "\n".join(m.get("content", "") for m in developer_messages)
-        assert FIXTURE_CONTENT in contents, (
-            f"Expected {FIXTURE_CONTENT!r} in developer messages from system_instruction "
-            f"expansion, but got messages: {developer_messages}"
+        assert not developer_messages, (
+            f"No developer messages expected for system_instruction expansion, "
+            f"but got: {developer_messages}"
+        )
+        system_messages = [m for m in added_messages if m.get("role") == "system"]
+        assert len(system_messages) == 1, (
+            f"Expected one system message, got: {system_messages}"
+        )
+        system_content = system_messages[0].get("content", "")
+        assert FIXTURE_CONTENT in system_content, (
+            f"Expected {FIXTURE_CONTENT!r} in system message content from system_instruction "
+            f"expansion, but got: {system_content[:300]!r}"
+        )
+        assert "<context_file" in system_content, (
+            f"Expected <context_file> XML block prepended to system message, "
+            f"got: {system_content[:300]!r}"
         )
 
     async def test_delegation_instruction_mentions_are_expanded(self, tmp_path, monkeypatch):
-        """@-mentions in the runtime delegation instruction must produce developer messages."""
+        """@-mentions in the runtime delegation instruction must be inlined as XML blocks."""
         from unittest.mock import patch
 
         from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
@@ -1879,9 +1892,145 @@ class TestSpawnMentionExpansion:
                             agent_configs=agent_configs,
                         )
 
+        # After the change: content is inlined as <context_file> XML in the instruction
+        # string, not injected as separate developer messages.
         developer_messages = [m for m in added_messages if m.get("role") == "developer"]
-        contents = "\n".join(m.get("content", "") for m in developer_messages)
-        assert FIXTURE_CONTENT in contents, (
-            f"Expected {FIXTURE_CONTENT!r} in developer messages from delegation instruction "
-            f"expansion, but got messages: {developer_messages}"
+        assert not developer_messages, (
+            f"No developer messages expected for delegation instruction expansion, "
+            f"but got: {developer_messages}"
+        )
+        # The expanded instruction is passed directly to child_session.execute().
+        execute_call_arg = child_session.execute.call_args[0][0]
+        assert FIXTURE_CONTENT in execute_call_arg, (
+            f"Expected {FIXTURE_CONTENT!r} in instruction passed to execute(), "
+            f"but got: {execute_call_arg[:300]!r}"
+        )
+        assert "<context_file" in execute_call_arg, (
+            f"Expected <context_file> XML block in instruction, got: {execute_call_arg[:300]!r}"
+        )
+
+
+class TestResumeMentionExpansion:
+    """@-mentions in resume instructions must be expanded before reaching the LLM.
+
+    Bug: resume_sub_session passes the instruction directly to execute() without
+    expanding @-mention file references. Result: the LLM receives literal
+    '@bundle:path' strings instead of the file content those mentions point to.
+
+    Fix: apply the same expand_mentions_in_instruction() helper before execute().
+    File content lands inline as <context_file> XML blocks prepended to the instruction.
+    """
+
+    def _make_child_session(self):
+        """Build a minimal mock child session with real capability storage."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        registered_capabilities: dict = {}
+
+        def reg_cap(name, value):
+            registered_capabilities[name] = value
+
+        def get_cap(name):
+            return registered_capabilities.get(name)
+
+        class FakeHooks:
+            def register(self, event, handler, priority=0, name=None):
+                def _unregister():
+                    pass
+
+                return _unregister
+
+            async def emit(self, event, data):
+                pass
+
+        fake_ctx = AsyncMock()
+        fake_ctx.get_messages = AsyncMock(return_value=[])
+        fake_ctx.add_message = AsyncMock()
+
+        coordinator = MagicMock()
+        coordinator.register_capability.side_effect = reg_cap
+        coordinator.get_capability.side_effect = get_cap
+        coordinator.display_system = MagicMock()
+        coordinator.cancellation = MagicMock()
+        coordinator.cancellation.register_child = MagicMock()
+        coordinator.cancellation.unregister_child = MagicMock()
+        coordinator.mount = AsyncMock()
+
+        def child_get(name):
+            if name == "hooks":
+                return FakeHooks()
+            if name == "context":
+                return fake_ctx
+            return None
+
+        coordinator.get = child_get
+
+        child_session = MagicMock()
+        child_session.coordinator = coordinator
+        child_session.initialize = AsyncMock()
+        child_session.execute = AsyncMock(return_value="response")
+        child_session.cleanup = AsyncMock()
+        child_session.session_id = "child-resume-001"
+
+        return child_session
+
+    async def test_resume_instruction_mentions_are_expanded(self, tmp_path, monkeypatch):
+        """@-mentions in resume instruction must be inlined as XML blocks before execute()."""
+        from unittest.mock import patch
+
+        from amplifier_app_cli.session_spawner import resume_sub_session
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        FIXTURE_CONTENT = "SENTINEL_FIXTURE_RESUME_CONTENT_99999"
+        fixture_file = tmp_path / "resume_task.md"
+        fixture_file.write_text(FIXTURE_CONTENT)
+
+        child_session = self._make_child_session()
+
+        # Metadata includes bundle_context so mention_mappings are restored.
+        metadata = {
+            "config": {
+                "session": {"orchestrator": "loop-basic", "context": "context-simple"},
+            },
+            "agent_name": "test-agent",
+            "parent_id": "parent-001",
+            "trace_id": "trace-001",
+            "bundle_context": {
+                "mention_mappings": {"testbundle": str(tmp_path)},
+                "module_paths": {},
+            },
+        }
+
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            return_value=child_session,
+        ):
+            with patch(
+                "amplifier_app_cli.session_store.SessionStore"
+            ) as MockStore:
+                store_instance = MockStore.return_value
+                store_instance.exists.return_value = True
+                store_instance.load.return_value = ([], metadata)
+                store_instance.save.return_value = None
+                with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                    with patch("amplifier_app_cli.ui.CLIApprovalSystem"):
+                        with patch("amplifier_app_cli.ui.CLIDisplaySystem"):
+                            await resume_sub_session(
+                                sub_session_id="child-resume-001",
+                                instruction=(
+                                    "Continue with:\n\n@testbundle:resume_task.md"
+                                ),
+                            )
+
+        # execute() must have been called with the expanded instruction.
+        assert child_session.execute.called, "child_session.execute() was never called"
+        execute_call_arg = child_session.execute.call_args[0][0]
+        assert FIXTURE_CONTENT in execute_call_arg, (
+            f"Expected {FIXTURE_CONTENT!r} in instruction passed to execute() on resume, "
+            f"but got: {execute_call_arg[:300]!r}"
+        )
+        assert "<context_file" in execute_call_arg, (
+            f"Expected <context_file> XML block in resumed instruction, "
+            f"got: {execute_call_arg[:300]!r}"
         )
