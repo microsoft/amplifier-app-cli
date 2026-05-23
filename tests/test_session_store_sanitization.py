@@ -40,8 +40,13 @@ def test_sanitize_message_with_thinking_block():
             {
                 "role": "assistant",
                 "content": "I'll help you with that.",
-                "thinking_block": NonSerializable("some thinking"),  # Non-serializable object
-                "content_blocks": [NonSerializable("block1"), NonSerializable("block2")],  # More non-serializable
+                "thinking_block": NonSerializable(
+                    "some thinking"
+                ),  # Non-serializable object
+                "content_blocks": [
+                    NonSerializable("block1"),
+                    NonSerializable("block2"),
+                ],  # More non-serializable
             },
         ]
 
@@ -58,7 +63,9 @@ def test_sanitize_message_with_thinking_block():
 
         # Check that non-serializable fields were removed
         assert len(loaded_transcript) == 2
-        assert message_matches_ignoring_timestamp(loaded_transcript[0], {"role": "user", "content": "Hello"})
+        assert message_matches_ignoring_timestamp(
+            loaded_transcript[0], {"role": "user", "content": "Hello"}
+        )
         assert loaded_transcript[1]["role"] == "assistant"
         assert loaded_transcript[1]["content"] == "I'll help you with that."
         assert "thinking_block" not in loaded_transcript[1]
@@ -76,7 +83,9 @@ def test_sanitize_message_preserves_serializable():
             {
                 "role": "assistant",
                 "content": "Response",
-                "tool_calls": [{"id": "1", "tool": "test", "arguments": {"arg": "value"}}],
+                "tool_calls": [
+                    {"id": "1", "tool": "test", "arguments": {"arg": "value"}}
+                ],
                 "metadata": {"key": "value", "nested": {"deep": "value"}},
             },
         ]
@@ -112,7 +121,12 @@ def test_sanitize_nested_non_serializable():
                         "level2": NonSerializable("deep"),
                         "safe": "value",
                     },
-                    "list": [1, 2, NonSerializable("in list"), {"key": NonSerializable("in dict")}],
+                    "list": [
+                        1,
+                        2,
+                        NonSerializable("in list"),
+                        {"key": NonSerializable("in dict")},
+                    ],
                 },
             }
         ]
@@ -151,7 +165,10 @@ def test_sanitize_with_thinking_text():
             {
                 "role": "assistant",
                 "content": "Response",
-                "thinking_block": {"text": "This is my thinking process", "raw": NonSerializable("raw data")},
+                "thinking_block": {
+                    "text": "This is my thinking process",
+                    "raw": NonSerializable("raw data"),
+                },
             }
         ]
 
@@ -164,3 +181,83 @@ def test_sanitize_with_thinking_text():
 
         assert loaded_transcript[0]["thinking_text"] == "This is my thinking process"
         assert "thinking_block" not in loaded_transcript[0]
+
+
+def test_metadata_secrets_redacted_on_save():
+    """Test that secrets in metadata are redacted before writing to disk."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = SessionStore(Path(temp_dir))
+
+        # Simulate sub-session metadata with provider config containing secrets
+        metadata = {
+            "session_id": "test-session",
+            "parent_id": "parent-123",
+            "config": {
+                "providers": [
+                    {
+                        "module": "provider-anthropic",
+                        "config": {
+                            "api_key": "sk-ant-api03-REAL-SECRET-KEY",
+                            "model": "claude-sonnet-4-20250514",
+                        },
+                    }
+                ],
+                "tools": [{"module": "tool-bash"}],
+            },
+        }
+
+        transcript = [{"role": "user", "content": "Hello"}]
+        store.save("test-session", transcript, metadata)
+
+        # Load the raw JSON from disk to verify redaction
+        import json
+
+        metadata_file = Path(temp_dir) / "test-session" / "metadata.json"
+        on_disk = json.loads(metadata_file.read_text())
+
+        # Secret should be redacted
+        provider_config = on_disk["config"]["providers"][0]["config"]
+        assert provider_config["api_key"] == "[REDACTED]"
+
+        # Non-secret fields should be preserved
+        assert provider_config["model"] == "claude-sonnet-4-20250514"
+        assert on_disk["session_id"] == "test-session"
+        assert on_disk["config"]["tools"] == [{"module": "tool-bash"}]
+
+
+def test_metadata_redaction_covers_common_secret_keys():
+    """Test that all common secret key patterns are redacted."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = SessionStore(Path(temp_dir))
+
+        metadata = {
+            "session_id": "test-session",
+            "api_key": "secret1",
+            "password": "secret2",
+            "token": "secret3",
+            "secret": "secret4",
+            "credentials": "secret5",
+            "private_key": "secret6",
+            "authorization": "secret7",
+            "safe_field": "not-a-secret",
+        }
+
+        store.save("test-session", [], metadata)
+
+        import json
+
+        metadata_file = Path(temp_dir) / "test-session" / "metadata.json"
+        on_disk = json.loads(metadata_file.read_text())
+
+        # All sensitive keys should be redacted
+        assert on_disk["api_key"] == "[REDACTED]"
+        assert on_disk["password"] == "[REDACTED]"
+        assert on_disk["token"] == "[REDACTED]"
+        assert on_disk["secret"] == "[REDACTED]"
+        assert on_disk["credentials"] == "[REDACTED]"
+        assert on_disk["private_key"] == "[REDACTED]"
+        assert on_disk["authorization"] == "[REDACTED]"
+
+        # Non-secret fields preserved
+        assert on_disk["safe_field"] == "not-a-secret"
+        assert on_disk["session_id"] == "test-session"
