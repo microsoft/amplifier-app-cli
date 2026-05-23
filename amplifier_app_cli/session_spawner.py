@@ -532,7 +532,9 @@ async def spawn_sub_session(
     child_coord = getattr(child_session, "coordinator", None)
     if parent_coord is not None and child_coord is not None:
         try:
-            overlay_skills = parent_coord.get_capability(RUNTIME_SKILL_OVERLAY_CAPABILITY)
+            overlay_skills = parent_coord.get_capability(
+                RUNTIME_SKILL_OVERLAY_CAPABILITY
+            )
         except (AttributeError, KeyError):
             overlay_skills = None
         if overlay_skills:
@@ -688,7 +690,9 @@ async def spawn_sub_session(
         if _resolver is not None:
             from amplifier_foundation.mentions import expand_mentions_in_instruction
 
-            _deduplicator = child_session.coordinator.get_capability("mention_deduplicator")
+            _deduplicator = child_session.coordinator.get_capability(
+                "mention_deduplicator"
+            )
             _wd = child_session.coordinator.get_capability("session.working_dir")
             _rel_to = Path(_wd) if _wd else Path.cwd()
             system_instruction = await expand_mentions_in_instruction(
@@ -726,7 +730,9 @@ async def spawn_sub_session(
         if _instr_resolver is not None:
             from amplifier_foundation.mentions import expand_mentions_in_instruction
 
-            _instr_dedup = child_session.coordinator.get_capability("mention_deduplicator")
+            _instr_dedup = child_session.coordinator.get_capability(
+                "mention_deduplicator"
+            )
             _instr_wd = child_session.coordinator.get_capability("session.working_dir")
             _instr_rel = Path(_instr_wd) if _instr_wd else Path.cwd()
             instruction = await expand_mentions_in_instruction(
@@ -865,6 +871,33 @@ async def resume_sub_session(
         raise RuntimeError(
             f"Corrupted session metadata for '{sub_session_id}'. Cannot reconstruct session without config."
         )
+
+    # --- Credential refresh ---------------------------------------------------
+    # On-disk metadata has API keys redacted to "[REDACTED]" (security fix in
+    # SessionStore._save_metadata).  Re-derive live provider credentials from
+    # user settings + environment variables — the same pipeline that runs at
+    # root-session startup — and splice them back into the loaded config before
+    # creating the session.
+    # --------------------------------------------------------------------------
+    if merged_config.get("providers"):
+        from amplifier_app_cli.lib.settings import AppSettings
+        from amplifier_app_cli.runtime.config import (
+            _apply_provider_overrides,
+            _map_id_to_instance_id,
+            expand_env_vars,
+        )
+
+        _live_overrides = AppSettings().get_provider_overrides()
+        if _live_overrides:
+            _refreshed = _apply_provider_overrides(
+                merged_config["providers"], _live_overrides
+            )
+            _refreshed = _map_id_to_instance_id(_refreshed)
+            merged_config = expand_env_vars({**merged_config, "providers": _refreshed})
+            logger.debug(
+                "Refreshed credentials for %d provider(s) at resume time",
+                len(_refreshed),
+            )
 
     parent_id = metadata.get("parent_id")
     agent_name = metadata.get("agent_name", "unknown")
@@ -1109,7 +1142,9 @@ async def resume_sub_session(
         if _resume_resolver is not None:
             from amplifier_foundation.mentions import expand_mentions_in_instruction
 
-            _resume_dedup = child_session.coordinator.get_capability("mention_deduplicator")
+            _resume_dedup = child_session.coordinator.get_capability(
+                "mention_deduplicator"
+            )
             _resume_wd = child_session.coordinator.get_capability("session.working_dir")
             _resume_rel = Path(_resume_wd) if _resume_wd else Path.cwd()
             instruction = await expand_mentions_in_instruction(
