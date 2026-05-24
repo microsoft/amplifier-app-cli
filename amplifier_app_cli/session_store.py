@@ -16,6 +16,7 @@ from datetime import UTC
 from datetime import datetime
 from pathlib import Path
 
+from amplifier_core.utils.truncate import redact_secrets
 from amplifier_foundation import sanitize_message
 from amplifier_foundation import write_with_backup
 
@@ -166,7 +167,7 @@ class SessionStore:
             metadata: Metadata dictionary
         """
         metadata_file = session_dir / "metadata.json"
-        content = json.dumps(metadata, indent=2, ensure_ascii=False)
+        content = json.dumps(redact_secrets(metadata), indent=2, ensure_ascii=False)
         write_with_backup(metadata_file, content)
 
     def load(self, session_id: str) -> tuple[list, dict]:
