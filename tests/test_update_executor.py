@@ -712,3 +712,146 @@ async def test_check_pypi_returns_true_on_500(caplog):
         "Expected a WARNING mentioning 'stale' or 'assuming' on PyPI 500 response.\n"
         f"Actual warnings: {warning_msgs}"
     )
+
+
+def test_update_command_applies_when_git_deps_stale_but_pypi_current():
+    """Regression: stale git deps trigger the update even when PyPI is current.
+
+    Bug scenario (fixed by this PR):
+    - amplifier-app-cli has local SHA 3d4f953, remote SHA 51a5138 → has_update=True
+    - amplifier-foundation has local SHA a27d582, remote SHA edb8054 → has_update=True
+    - amplifier-core on PyPI: 1.6.0 installed == 1.6.0 latest → no PyPI update
+
+    Before the fix, check_pypi_packages_for_updates() returned False, so
+    has_umbrella_updates stayed False, nothing_to_update became True, and
+    `amplifier update` printed "All sources up to date" and exited — even though
+    the table correctly showed the SHA mismatches.
+
+    After the fix, any d.get("has_update") in umbrella_deps sets
+    has_umbrella_updates=True, and execute_updates IS called.
+    """
+    from click.testing import CliRunner
+
+    from amplifier_app_cli.commands.update import update
+    from amplifier_app_cli.utils.source_status import UpdateReport
+    from amplifier_app_cli.utils.update_executor import ExecutionResult
+
+    fake_info = UmbrellaInfo(
+        url="https://github.com/microsoft/amplifier",
+        ref="main",
+        commit_id=None,
+    )
+    captured: dict = {}
+
+    async def fake_execute_updates(
+        report, umbrella_info=None, progress_callback=None, force=False
+    ):
+        captured["umbrella_info"] = umbrella_info
+        return ExecutionResult(success=True, updated=["amplifier"], messages=[])
+
+    # PyPI reports amplifier-core is current — this is the key precondition.
+    async def fake_pypi_current():
+        return False
+
+    empty_report = UpdateReport(local_file_sources=[], cached_git_sources=[])
+
+    async def fake_check_all_sources(**kwargs):
+        return empty_report
+
+    async def fake_check_all_bundle_status():
+        return {}
+
+    # Two git-sourced deps are stale — this is what the table already shows correctly.
+    async def fake_get_umbrella_dep_details(info):
+        return [
+            {
+                "name": "amplifier-app-cli",
+                "local_sha": "3d4f953",
+                "remote_sha": "51a5138",
+                "source_url": "https://github.com/microsoft/amplifier-app-cli",
+                "has_update": True,
+                "is_local": False,
+                "path": None,
+                "has_changes": False,
+            },
+            {
+                "name": "amplifier-foundation",
+                "local_sha": "a27d582",
+                "remote_sha": "edb8054",
+                "source_url": "https://github.com/microsoft/amplifier-foundation",
+                "has_update": True,
+                "is_local": False,
+                "path": None,
+                "has_changes": False,
+            },
+            {
+                "name": "amplifier-core (PyPI)",
+                "local_sha": "1.6.0",
+                "remote_sha": "1.6.0",
+                "source_url": "https://pypi.org/project/amplifier-core/",
+                "has_update": False,
+                "is_local": False,
+                "path": None,
+                "has_changes": False,
+                "display_type": "version",
+            },
+        ]
+
+    with (
+        patch(
+            "amplifier_app_cli.utils.umbrella_discovery.discover_umbrella_source",
+            return_value=fake_info,
+        ),
+        patch(
+            "amplifier_app_cli.utils.update_executor.check_pypi_packages_for_updates",
+            side_effect=fake_pypi_current,
+        ),
+        patch(
+            "amplifier_app_cli.commands.update.check_all_sources",
+            side_effect=fake_check_all_sources,
+        ),
+        patch(
+            "amplifier_app_cli.commands.update._check_all_bundle_status",
+            side_effect=fake_check_all_bundle_status,
+        ),
+        patch(
+            "amplifier_app_cli.commands.update._get_umbrella_dependency_details",
+            side_effect=fake_get_umbrella_dep_details,
+        ),
+        patch(
+            "amplifier_app_cli.commands.update.execute_updates",
+            side_effect=fake_execute_updates,
+        ),
+        patch(
+            "amplifier_app_cli.commands.update._refresh_skills_cache",
+            return_value=None,
+        ),
+        patch(
+            "amplifier_app_cli.commands.update.save_update_last_check",
+            return_value=None,
+        ),
+    ):
+        runner = CliRunner()
+        result = runner.invoke(update, ["--yes"])
+
+    if result.exception and not isinstance(result.exception, SystemExit):
+        import traceback
+
+        raise AssertionError(
+            f"update command raised an exception:\n"
+            f"{''.join(traceback.format_exception(type(result.exception), result.exception, result.exception.__traceback__))}\n"
+            f"Output:\n{result.output}"
+        )
+
+    assert captured.get("umbrella_info") is not None, (
+        "execute_updates was NOT called even though git deps are stale.\n"
+        "check_pypi_packages_for_updates() returned False (PyPI current), but\n"
+        "umbrella_deps contained has_update=True entries for amplifier-app-cli\n"
+        "and amplifier-foundation — the update path must still trigger.\n"
+        f"captured={captured!r}\n"
+        f"Command output:\n{result.output}"
+    )
+    assert "all sources up to date" not in result.output.lower(), (
+        "Command reported 'All sources up to date' despite stale git deps.\n"
+        f"Command output:\n{result.output}"
+    )

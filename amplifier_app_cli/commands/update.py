@@ -1129,6 +1129,13 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         else []
     )
 
+    # check_pypi_packages_for_updates() only queries PyPI (amplifier-core).
+    # Git-sourced deps (amplifier-app-cli, amplifier-foundation, …) are tracked
+    # by umbrella_deps but were never wired back into the apply decision.
+    # If any git dep is stale, the update path must trigger regardless of PyPI.
+    if any(d.get("has_update") for d in umbrella_deps):
+        has_umbrella_updates = True
+
     # Display results based on verbosity
     if verbose:
         _show_verbose_report(
