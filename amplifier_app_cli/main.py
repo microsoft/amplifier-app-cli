@@ -2797,7 +2797,20 @@ async def interactive_chat(
                     )
                 from .ui import render_message
 
-                render_message({"role": "assistant", "content": response}, console)
+                # If a streaming hook painted tokens live during this turn,
+                # it set coordinator.session_state["streamed_this_turn"]=True.
+                # In that case the assistant text already reached the user's
+                # terminal; skip the batch render to avoid double-output.
+                # History display (commands/session.py) and replay mode also
+                # call render_message but read from persisted dicts — they
+                # never observe this flag and stay batch-only.
+                _streamed = session.coordinator.session_state.get(
+                    "streamed_this_turn", False
+                )
+                if not _streamed:
+                    render_message(
+                        {"role": "assistant", "content": response}, console
+                    )
 
                 # --- cleanup:render_end ---
                 if hooks:
