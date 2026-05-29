@@ -485,12 +485,22 @@ class CommandProcessor:
                         data["trailing_prompt"] = trailing
                 return "handle_mode", data
 
-            # Check for skill shortcuts (e.g., /simplify -> load_skill)
+            # Check for skill shortcuts (e.g., /simplify -> load_skill).
+            # The dispatch dict value may include a "name" key giving the
+            # canonical skill name when the lookup key is an alias (the
+            # skill's `shortcut:` frontmatter field). Older skills bundles
+            # don't populate "name" — fall back to the lookup key.
             if shortcut_name in self.SKILL_SHORTCUTS:
+                entry = self.SKILL_SHORTCUTS[shortcut_name]
+                canonical = (
+                    entry.get("name", shortcut_name)
+                    if isinstance(entry, dict)
+                    else shortcut_name
+                )
                 return (
                     "load_skill",
                     {
-                        "skill_name": shortcut_name,
+                        "skill_name": canonical,
                         "arguments": args.strip(),
                         "command": command,
                     },
@@ -628,7 +638,8 @@ class CommandProcessor:
             if current_mode:
                 # Emit mode:cleared BEFORE state mutation so hooks see the old state
                 await self.session.coordinator.hooks.emit(
-                    "mode:cleared", {"name": current_mode, "previous_mode": current_mode}
+                    "mode:cleared",
+                    {"name": current_mode, "previous_mode": current_mode},
                 )
                 session_state["active_mode"] = None
                 # Reset warnings in mode hooks if present
@@ -2880,7 +2891,9 @@ async def interactive_chat(
                         console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
 
                         # Process runtime @mentions in user input
-                        _expanded_text = await _process_runtime_mentions(session, data["text"])
+                        _expanded_text = await _process_runtime_mentions(
+                            session, data["text"]
+                        )
                         await _execute_with_interrupt(_expanded_text)
 
                     else:
@@ -2912,7 +2925,9 @@ async def interactive_chat(
                             console.print(
                                 "\n[dim]Processing... (Ctrl+C to cancel)[/dim]"
                             )
-                            trailing_prompt = await _process_runtime_mentions(session, trailing_prompt)
+                            trailing_prompt = await _process_runtime_mentions(
+                                session, trailing_prompt
+                            )
                             await _execute_with_interrupt(trailing_prompt)
 
             except EOFError:
