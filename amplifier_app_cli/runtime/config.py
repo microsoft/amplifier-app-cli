@@ -167,7 +167,7 @@ async def resolve_bundle_config(
                     override_cfg = config_overrides[module_id]
                     if override_cfg:
                         base_cfg = item.get("config", {}) or {}
-                        item["config"] = {**base_cfg, **override_cfg}
+                        item["config"] = deep_merge(base_cfg, override_cfg)
 
     # Apply provider overrides
     provider_overrides = app_settings.get_provider_overrides()
@@ -497,11 +497,11 @@ def _apply_hook_overrides(
             override = override_map[hook["module"]]
             # Merge the hook-level fields first
             merged = merge_module_items(hook, override)
-            # Then merge configs (simple override, no special union logic needed for hooks)
+            # Deep-merge configs so nested sub-dicts are merged rather than clobbered.
             base_config = hook.get("config", {}) or {}
             override_config = override.get("config", {}) or {}
             if base_config or override_config:
-                merged["config"] = {**base_config, **override_config}
+                merged["config"] = deep_merge(base_config, override_config)
             result.append(merged)
         else:
             result.append(hook)
