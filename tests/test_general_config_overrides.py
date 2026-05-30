@@ -5,6 +5,7 @@ Exercises the code path directly and also through the full async function.
 """
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+from amplifier_app_cli.lib.merge_utils import deep_merge
 from amplifier_app_cli.runtime.config import (
     _apply_hook_overrides,
     _apply_provider_overrides,
@@ -36,7 +37,7 @@ def _apply_general_config_overrides(bundle_config: dict, config_overrides: dict)
                     override_cfg = config_overrides[module_id]
                     if override_cfg:
                         base_cfg = item.get("config", {}) or {}
-                        item["config"] = {**base_cfg, **override_cfg}
+                        item["config"] = deep_merge(base_cfg, override_cfg)
     return bundle_config
 
 
@@ -205,6 +206,104 @@ class TestEdgeCases:
         bundle = {"hooks": [{"module": "h", "config": {"key": "old"}}]}
         _apply_general_config_overrides(bundle, {"h": {"key": "new"}})
         assert bundle["hooks"][0]["config"]["key"] == "new"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PART 1b: Regression tests — nested sub-dict overrides must deep-merge
+#
+# Before the fix, overrides.<id>.config used a shallow dict-unpack:
+#   item["config"] = {**base_cfg, **override_cfg}
+# A nested key in override_cfg REPLACES the whole sub-dict from base_cfg,
+# silently dropping all sibling keys inside that sub-dict.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestDeepMergeNestedConfigOverrides:
+    """Nested config overrides must deep-merge, not clobber sibling keys."""
+
+    def test_nested_hook_override_preserves_sibling_keys(self):
+        """Partial override of a nested sub-dict preserves the other keys.
+
+        Reproduces the real-world scenario: hooks-streaming-ui has
+        config.ui.{show_thinking_stream, show_tool_lines, show_token_usage}
+        and the user sets overrides.hooks-streaming-ui.config.ui.stream_tokens=True.
+        All four ui keys must be present after the override.
+        """
+        bundle = {
+            "hooks": [
+                {
+                    "module": "hooks-streaming-ui",
+                    "config": {
+                        "ui": {
+                            "show_thinking_stream": True,
+                            "show_tool_lines": 5,
+                            "show_token_usage": True,
+                        }
+                    },
+                }
+            ]
+        }
+        # Only override one key inside "ui"; the other three must survive.
+        overrides = {"hooks-streaming-ui": {"ui": {"stream_tokens": True}}}
+
+        _apply_general_config_overrides(bundle, overrides)
+
+        ui = bundle["hooks"][0]["config"]["ui"]
+        # The overriding key must be present.
+        assert ui["stream_tokens"] is True
+        # Siblings that were NOT overridden must be preserved.
+        # Shallow merge drops these — that is the bug this test catches.
+        assert ui["show_thinking_stream"] is True, "shallow merge dropped show_thinking_stream"
+        assert ui["show_tool_lines"] == 5, "shallow merge dropped show_tool_lines"
+        assert ui["show_token_usage"] is True, "shallow merge dropped show_token_usage"
+
+    def test_nested_provider_override_preserves_sibling_keys(self):
+        """Same deep-merge guarantee for providers (not just hooks)."""
+        bundle = {
+            "providers": [
+                {
+                    "module": "provider-anthropic",
+                    "config": {
+                        "defaults": {
+                            "max_tokens": 8192,
+                            "temperature": 1.0,
+                        }
+                    },
+                }
+            ]
+        }
+        overrides = {"provider-anthropic": {"defaults": {"temperature": 0.5}}}
+
+        _apply_general_config_overrides(bundle, overrides)
+
+        defaults = bundle["providers"][0]["config"]["defaults"]
+        assert defaults["temperature"] == 0.5, "override key must win"
+        assert defaults["max_tokens"] == 8192, "shallow merge dropped max_tokens"
+
+    def test_deeply_nested_merge(self):
+        """Merge recurses into arbitrary depth, not just one level."""
+        bundle = {
+            "tools": [
+                {
+                    "module": "tool-x",
+                    "config": {
+                        "level1": {
+                            "level2": {
+                                "keep": "original",
+                                "change": "old",
+                            }
+                        }
+                    },
+                }
+            ]
+        }
+        overrides = {"tool-x": {"level1": {"level2": {"change": "new"}}}}
+
+        _apply_general_config_overrides(bundle, overrides)
+
+        l2 = bundle["tools"][0]["config"]["level1"]["level2"]
+        assert l2["change"] == "new", "override key must win"
+        assert l2["keep"] == "original", "sibling key must survive deep merge"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
