@@ -12,7 +12,11 @@ from ..console import Markdown
 
 
 def render_message(
-    message: dict, console: Console, *, show_thinking: bool = False
+    message: dict,
+    console: Console,
+    *,
+    show_thinking: bool = False,
+    show_label: bool = True,
 ) -> None:
     """Render a single message (user or assistant).
 
@@ -25,13 +29,16 @@ def render_message(
         message: Message dictionary with 'role' and 'content'
         console: Rich Console instance for output
         show_thinking: Whether to include thinking blocks (default: False)
+        show_label: Whether to print the 'Amplifier:' label prefix (default: True).
+            Pass False when the streaming overlay has already printed the label so
+            it appears exactly once.
     """
     role = message.get("role")
 
     if role == "user":
         _render_user_message(message, console)
     elif role == "assistant":
-        _render_assistant_message(message, console, show_thinking)
+        _render_assistant_message(message, console, show_thinking, show_label)
     # Skip system/developer (implementation details, not conversation)
 
 
@@ -42,7 +49,7 @@ def _render_user_message(message: dict, console: Console) -> None:
 
 
 def _render_assistant_message(
-    message: dict, console: Console, show_thinking: bool
+    message: dict, console: Console, show_thinking: bool, show_label: bool = True
 ) -> None:
     """Render assistant message with green prefix and markdown."""
     text_blocks, thinking_blocks = _extract_content_blocks(
@@ -53,7 +60,8 @@ def _render_assistant_message(
     if not text_blocks and not thinking_blocks:
         return
 
-    console.print("\n[bold green]Amplifier:[/bold green]")
+    if show_label:
+        console.print("\n[bold green]Amplifier:[/bold green]")
 
     # Render text blocks with default styling
     if text_blocks:

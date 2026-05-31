@@ -2351,6 +2351,57 @@ class CommandProcessor:
             return True, f'Use the load_skill tool to load the skill "{skill_name}".'
 
 
+def _streaming_overlay_active(session) -> bool:
+    """True when the hooks-streaming-ui token-streaming overlay is active.
+
+    Mirrors that hook's own activation gate: ui.stream_tokens AND a real TTY.
+    Reads the hook's config out of the resolved session config (the hooks list),
+    because ``ui`` is nested under the hook entry, not at the config top level.
+
+    The real session.config shape (confirmed via amplifier_core/_session_init.py):
+    ::
+
+        {
+            "hooks": [
+                {
+                    "module": "hooks-streaming-ui",
+                    "config": {
+                        "ui": {
+                            "stream_tokens": True,   # ← here, not at top level
+                            ...
+                        }
+                    }
+                },
+                ...
+            ],
+            ...
+        }
+
+    ``session.config.get("ui")`` always returns ``{}`` or ``None``; there is no
+    top-level ``ui`` key.  The bug in the original inline code was using exactly
+    that non-existent key, so ``overlay_active`` was always False and app-cli
+    never suppressed its label, producing a double "Amplifier:" label during
+    streaming.
+
+    Aligned to the streaming contract convention, not shared code.
+    """
+    if not sys.stdout.isatty():
+        return False
+    cfg = getattr(session, "config", None) or {}
+    # Primary: scan the hooks list for the streaming-ui entry's ui.stream_tokens.
+    # Hook entries are plain dicts (confirmed via _session_init.py hook loading loop).
+    for entry in cfg.get("hooks", []) or []:
+        mod = entry.get("module", "") if isinstance(entry, dict) else getattr(entry, "module", "")
+        if isinstance(mod, str) and ("streaming-ui" in mod or "streaming_ui" in mod):
+            ecfg = (entry.get("config", {}) if isinstance(entry, dict) else getattr(entry, "config", {})) or {}
+            ui = (ecfg.get("ui", {}) or {}) if isinstance(ecfg, dict) else {}
+            if bool(ui.get("stream_tokens", False)):
+                return True
+    # Fallback: tolerate a top-level ui block if some future config shape provides one.
+    top_ui = cfg.get("ui", {}) if isinstance(cfg, dict) else {}
+    return bool(isinstance(top_ui, dict) and top_ui.get("stream_tokens", False))
+
+
 def get_module_search_paths() -> list[Path]:
     """
     Determine module search paths for ModuleLoader.
@@ -2808,7 +2859,19 @@ async def interactive_chat(
                     )
                 from .ui import render_message
 
-                render_message({"role": "assistant", "content": response}, console)
+                # Determine whether the streaming overlay is active so we can
+                # suppress the duplicate 'Amplifier:' label.  The overlay
+                # prints the label permanently before the transient Live region
+                # starts (so it survives the clear); printing it again here
+                # would duplicate it.  See _streaming_overlay_active() for
+                # the correct config-path lookup (hooks list, not top-level ui).
+                overlay_active = _streaming_overlay_active(session)
+
+                render_message(
+                    {"role": "assistant", "content": response},
+                    console,
+                    show_label=not overlay_active,
+                )
 
                 # --- cleanup:render_end ---
                 if hooks:
