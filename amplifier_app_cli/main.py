@@ -2797,8 +2797,25 @@ async def interactive_chat(
                     )
                 from .ui import render_message
 
+                # Determine whether the streaming overlay is active so we can
+                # suppress the duplicate 'Amplifier:' label.  The overlay
+                # prints the label permanently before the transient Live region
+                # starts (so it survives the clear); printing it again here
+                # would duplicate it.  Mirrors the activation gate in
+                # hooks-streaming-ui: stream_tokens=True AND a real TTY.
+                _ui_cfg = (
+                    session.config.get("ui", {})
+                    if hasattr(session, "config")
+                    else {}
+                ) or {}
+                overlay_active = bool(
+                    _ui_cfg.get("stream_tokens", False)
+                ) and sys.stdout.isatty()
+
                 render_message(
-                    {"role": "assistant", "content": response}, console
+                    {"role": "assistant", "content": response},
+                    console,
+                    show_label=not overlay_active,
                 )
 
                 # --- cleanup:render_end ---
