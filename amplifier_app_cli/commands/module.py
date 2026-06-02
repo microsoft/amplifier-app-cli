@@ -53,12 +53,10 @@ def list_modules(type: str, compact: bool, detailed: bool, fmt: str):
     loader = ModuleLoader()
     modules_info = asyncio.run(loader.discover())
     resolver = create_foundation_resolver()
-    view = resolve_view(
-        ("module", "list"), compact_flag=compact, detailed_flag=detailed
-    )
     renderer = ItemRenderer(console)
 
-    items: list[dict[str, Any]] = []
+    # Collect installed and cached modules separately (for rich table path)
+    installed_items: list[dict[str, Any]] = []
     for module_info in modules_info:
         if type != "all" and type != module_info.type:
             continue
@@ -70,7 +68,7 @@ def list_modules(type: str, compact: bool, detailed: bool, fmt: str):
             source_str = "unknown"
             origin = "unknown"
 
-        items.append(
+        installed_items.append(
             {
                 "name": module_info.id,
                 "enabled": True,
@@ -80,17 +78,19 @@ def list_modules(type: str, compact: bool, detailed: bool, fmt: str):
                 "config_summary": {
                     "type": module_info.type,
                     "description": module_info.description,
+                    "source": source_str,
+                    "origin": origin,
                 },
             }
         )
 
-    # Cached modules
     local_override_names = _get_local_override_names()
     cached_modules = [
         m for m in _get_cached_modules(type) if m["id"] not in local_override_names
     ]
+    cached_items: list[dict[str, Any]] = []
     for mod in cached_modules:
-        items.append(
+        cached_items.append(
             {
                 "name": mod["id"],
                 "enabled": True,
@@ -106,16 +106,82 @@ def list_modules(type: str, compact: bool, detailed: bool, fmt: str):
             }
         )
 
-    if not items:
+    all_items = installed_items + cached_items
+    if not all_items:
         console.print("[dim]No installed modules found[/dim]")
         return
 
     if fmt == "json":
-        renderer.render_json(items)
+        renderer.render_json(all_items)
         return
 
-    renderer.render(items, view=view, category="module", section_title="modules")
-    if cached_modules:
+    if compact:
+        renderer.render(
+            all_items, view="compact", category="module", section_title="modules"
+        )
+        if cached_items:
+            console.print(
+                "[dim]Note: Cached modules are downloaded on-demand when used.[/dim]"
+            )
+            console.print(
+                "[dim]Use 'amplifier module update' to update cached modules.[/dim]"
+            )
+        return
+
+    # Restored Rich Tables (default and --detailed)
+    if installed_items:
+        table = Table(
+            title="Installed Modules (via entry points)",
+            show_header=True,
+            header_style="bold cyan",
+        )
+        table.add_column("Name", style="green")
+        table.add_column("Type", style="yellow")
+        table.add_column("Source", style="magenta")
+        table.add_column("Origin", style="cyan")
+        table.add_column("Description")
+
+        for item in installed_items:
+            cs = item["config_summary"]
+            source_str = cs.get("source", "unknown")
+            if len(source_str) > 40:
+                source_str = source_str[:37] + "..."
+            origin = cs.get("origin", "unknown")
+            table.add_row(
+                item["name"],
+                cs.get("type", ""),
+                source_str,
+                origin,
+                cs.get("description", ""),
+            )
+        console.print(table)
+    else:
+        console.print("[dim]No installed modules found[/dim]")
+
+    if cached_items:
+        console.print()
+        table = Table(
+            title="Cached Modules (downloaded from git)",
+            show_header=True,
+            header_style="bold magenta",
+        )
+        table.add_column("Name", style="green")
+        table.add_column("Type", style="yellow")
+        table.add_column("Ref", style="cyan")
+        table.add_column("SHA", style="dim")
+        table.add_column("Mutable", style="magenta")
+
+        for item in cached_items:
+            cs = item["config_summary"]
+            table.add_row(
+                item["name"],
+                cs.get("type", ""),
+                cs.get("ref", ""),
+                cs.get("sha", ""),
+                cs.get("mutable", ""),
+            )
+        console.print(table)
+        console.print()
         console.print(
             "[dim]Note: Cached modules are downloaded on-demand when used.[/dim]"
         )

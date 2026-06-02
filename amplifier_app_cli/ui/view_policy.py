@@ -34,14 +34,17 @@ DEFAULT_VIEW: dict[tuple[str, ...], str] = {
     ("module", "list"): "compact",
     ("module", "show"): "detailed",
     ("provider", "list"): "regular",
-    ("tool", "list"): "compact",
+    ("tool", "list"): "regular",
     ("tool", "info"): "detailed",
     ("source", "list"): "compact",
     ("session", "list"): "compact",
     ("session", "show"): "detailed",
     ("routing", "list"): "regular",
     ("routing", "show"): "detailed",
-    ("agents", "list"): "compact",
+    (
+        "agents",
+        "list",
+    ): "compact",  # regular and compact produce identical output for agents
     ("agents", "show"): "detailed",
     ("module", "override", "list"): "compact",
 }

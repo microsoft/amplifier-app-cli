@@ -91,18 +91,15 @@ def bundle_list(show_all: bool, compact: bool, detailed: bool, fmt: str):
     app_settings = AppSettings()
     discovery = AppBundleDiscovery()
     active_bundle = app_settings.get_active_bundle()
-    view = resolve_view(
-        ("bundle", "list"), compact_flag=compact, detailed_flag=detailed
-    )
     renderer = ItemRenderer(console)
 
     if show_all:
         _show_all_bundles(
-            discovery, active_bundle, view=view, fmt=fmt, renderer=renderer
+            discovery, active_bundle, compact=compact, fmt=fmt, renderer=renderer
         )
     else:
         _show_user_bundles(
-            discovery, active_bundle, view=view, fmt=fmt, renderer=renderer
+            discovery, active_bundle, compact=compact, fmt=fmt, renderer=renderer
         )
 
 
@@ -117,7 +114,7 @@ def _bundle_item(
     status = "active" if name == active_bundle else "available"
     item: dict[str, Any] = {
         "name": name,
-        "enabled": name == active_bundle,
+        "enabled": True,  # bundles are available/loadable — active-ness shown via status
         "source_uri": uri,
         "behaviors": [location] if location else [],
         "config_summary": {"status": status, "location": location},
@@ -131,7 +128,7 @@ def _show_user_bundles(
     discovery: AppBundleDiscovery,
     active_bundle: str | None,
     *,
-    view: str,
+    compact: bool,
     fmt: str,
     renderer: ItemRenderer,
 ) -> None:
@@ -164,12 +161,37 @@ def _show_user_bundles(
         renderer.render_json(items)
         return
 
-    renderer.render(items, view=view, category="bundle", section_title="bundles")
+    if compact:
+        renderer.render(
+            items, view="compact", category="bundle", section_title="bundles"
+        )
+    else:
+        # Restored Rich Table (default and --detailed both use this path)
+        table = Table(
+            title="Available Bundles", show_header=True, header_style="bold cyan"
+        )
+        table.add_column("Name", style="green")
+        table.add_column("Location", style="yellow")
+        table.add_column("Status")
+
+        for item in items:
+            name = item["name"]
+            location = item["config_summary"]["location"]
+            item_type = item["config_summary"].get("type", "")
+            if item_type == "app":
+                status = "[cyan]app[/cyan]"
+            elif item["config_summary"]["status"] == "active":
+                status = "[bold green]active[/bold green]"
+            else:
+                status = ""
+            table.add_row(name, location, status)
+
+        console.print(table)
 
     if active_bundle:
-        console.print(f"[dim]Mode: Bundle ({active_bundle})[/dim]")
+        console.print(f"\n[dim]Mode: Bundle ({active_bundle})[/dim]")
     else:
-        console.print("[dim]Mode: No bundle active (default)[/dim]")
+        console.print("\n[dim]Mode: No bundle active (default)[/dim]")
     console.print(
         "[dim]Use --all to see all bundles including dependencies and nested bundles.[/dim]"
     )
@@ -179,7 +201,7 @@ def _show_all_bundles(
     discovery: AppBundleDiscovery,
     active_bundle: str | None,
     *,
-    view: str,
+    compact: bool,
     fmt: str,
     renderer: ItemRenderer,
 ) -> None:
@@ -204,10 +226,37 @@ def _show_all_bundles(
             )
         if fmt == "json":
             all_items.extend(items)
-        else:
+        elif compact:
             renderer.render(
-                items, view=view, category="bundle", section_title="built-in bundles"
+                items,
+                view="compact",
+                category="bundle",
+                section_title="built-in bundles",
             )
+        else:
+            table = Table(
+                title="Built-in Bundles (always available)",
+                show_header=True,
+                header_style="bold cyan",
+            )
+            table.add_column("Name", style="green")
+            table.add_column("Location", style="yellow")
+            table.add_column("In Default List", style="dim")
+            table.add_column("Status")
+            for item in items:
+                status = (
+                    "[bold green]active[/bold green]"
+                    if item["config_summary"]["status"] == "active"
+                    else ""
+                )
+                table.add_row(
+                    item["name"],
+                    item["config_summary"]["location"],
+                    item["config_summary"].get("in_default_list", ""),
+                    status,
+                )
+            console.print(table)
+            console.print()
 
     # User-added bundles
     if categories["user_added"]:
@@ -223,10 +272,33 @@ def _show_all_bundles(
             )
         if fmt == "json":
             all_items.extend(items)
-        else:
+        elif compact:
             renderer.render(
-                items, view=view, category="bundle", section_title="user-added bundles"
+                items,
+                view="compact",
+                category="bundle",
+                section_title="user-added bundles",
             )
+        else:
+            table = Table(
+                title="User-Added Bundles", show_header=True, header_style="bold cyan"
+            )
+            table.add_column("Name", style="green")
+            table.add_column("Location", style="yellow")
+            table.add_column("Status")
+            for item in items:
+                status = (
+                    "[bold green]active[/bold green]"
+                    if item["config_summary"]["status"] == "active"
+                    else ""
+                )
+                table.add_row(
+                    item["name"],
+                    item["config_summary"]["location"],
+                    status,
+                )
+            console.print(table)
+            console.print()
 
     # Discovered root bundles (dependencies)
     if categories["dependencies"]:
@@ -243,13 +315,30 @@ def _show_all_bundles(
             )
         if fmt == "json":
             all_items.extend(items)
-        else:
+        elif compact:
             renderer.render(
                 items,
-                view=view,
+                view="compact",
                 category="bundle",
                 section_title="discovered root bundles",
             )
+        else:
+            table = Table(
+                title="Discovered Root Bundles (loaded via includes/namespaces)",
+                show_header=True,
+                header_style="bold yellow",
+            )
+            table.add_column("Name", style="green")
+            table.add_column("Location", style="yellow")
+            table.add_column("Loaded By", style="dim")
+            for item in items:
+                table.add_row(
+                    item["name"],
+                    item["config_summary"]["location"],
+                    item["config_summary"].get("loaded_by", ""),
+                )
+            console.print(table)
+            console.print()
 
     # Nested bundles (behaviors, providers)
     if categories["nested_bundles"]:
@@ -268,10 +357,27 @@ def _show_all_bundles(
             )
         if fmt == "json":
             all_items.extend(items)
-        else:
+        elif compact:
             renderer.render(
-                items, view=view, category="bundle", section_title="nested bundles"
+                items, view="compact", category="bundle", section_title="nested bundles"
             )
+        else:
+            table = Table(
+                title="Nested Bundles (behaviors, providers - part of a root bundle)",
+                show_header=True,
+                header_style="bold magenta",
+            )
+            table.add_column("Name", style="dim green")
+            table.add_column("Root Bundle", style="dim cyan")
+            table.add_column("Location", style="dim yellow")
+            for item in items:
+                table.add_row(
+                    item["name"],
+                    item["config_summary"].get("root", ""),
+                    item["config_summary"]["location"],
+                )
+            console.print(table)
+            console.print()
 
     if fmt == "json":
         renderer.render_json(all_items)
@@ -383,7 +489,7 @@ def bundle_show(name: str, compact: bool, detailed: bool, fmt: str):
     # Build a bundle item for JSON and compact views
     bundle_item: dict[str, Any] = {
         "name": bundle_obj.name,
-        "enabled": bundle_obj.name == active_bundle,
+        "enabled": True,  # bundles are available/loadable — active-ness shown via active: yes/no
         "source_uri": bundle_obj.uri if hasattr(bundle_obj, "uri") else None,
         "include_paths": [
             [
