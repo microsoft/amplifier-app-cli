@@ -37,7 +37,7 @@ DEFAULT_VIEW: dict[tuple[str, ...], str] = {
     ("tool", "list"): "regular",
     ("tool", "info"): "detailed",
     ("source", "list"): "compact",
-    ("session", "list"): "compact",
+    ("session", "list"): "regular",
     ("session", "show"): "detailed",
     ("routing", "list"): "regular",
     ("routing", "show"): "detailed",

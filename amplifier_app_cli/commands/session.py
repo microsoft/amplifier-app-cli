@@ -1496,12 +1496,35 @@ def _display_project_sessions(
             }
         )
 
-    renderer = ItemRenderer(console)
     if fmt == "json":
-        renderer.render_json(items)
+        ItemRenderer(console).render_json(items)
         return
 
-    renderer.render(items, view=view, category="session", section_title=title)
+    if view == "compact":
+        ItemRenderer(console).render(
+            items, view=view, category="session", section_title=title
+        )
+        return
+
+    # Default (regular/detailed): a Rich table — mirrors the --all-projects table
+    # minus the Project column. Session listings are tabular records, not the
+    # on/off config items the shared ItemRenderer was built for, so the table
+    # actually shows the modified-time and message-count columns that the
+    # compact view computes but never displays.
+    table = Table(title=title, show_header=True, header_style="bold cyan")
+    table.add_column("Name", style="cyan", max_width=40)
+    table.add_column("Session ID", style="green")
+    table.add_column("Modified", style="yellow")
+    table.add_column("Msgs", justify="right")
+    for item in items:
+        cfg = item["config_summary"]
+        table.add_row(
+            item["name"],
+            cfg["session_id"],
+            cfg["modified"],
+            cfg["messages"],
+        )
+    console.print(table)
 
 
 __all__ = ["register_session_commands"]
