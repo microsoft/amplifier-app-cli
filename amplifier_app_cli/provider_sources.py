@@ -102,8 +102,10 @@ def get_effective_provider_sources(
     sources = dict(DEFAULT_PROVIDER_SOURCES)
 
     if config_manager:
-        # 1. Apply source overrides for known providers
-        overrides = config_manager.get_module_sources()
+        # 1. Apply source overrides for known providers.
+        # SECURITY: trusted_only=True — sources.modules is code-introducing; a cloned
+        # repo must not redirect module resolution to attacker-controlled git sources.
+        overrides = config_manager.get_module_sources(trusted_only=True)
         for module_id in list(sources.keys()):
             if module_id in overrides:
                 sources[module_id] = overrides[module_id]

@@ -165,7 +165,9 @@ class AppBundleDiscovery:
         from amplifier_app_cli.lib.settings import AppSettings
 
         app_settings = AppSettings()
-        added_bundles = app_settings.get_added_bundles()
+        # SECURITY: trusted_only=True — bundle URI mappings are code-introducing;
+        # a cloned repo must not redirect bundle names to attacker-controlled git sources.
+        added_bundles = app_settings.get_added_bundles(trusted_only=True)
         for name, uri in added_bundles.items():
             self._registry.register({name: uri})
             logger.debug(f"Loaded user bundle '{name}' → {uri}")

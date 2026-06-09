@@ -17,6 +17,11 @@ Scope = Literal["local", "project", "global", "session"]
 # Backward compatibility alias (OLD AppSettings used ScopeType without "session")
 ScopeType = Literal["local", "project", "global"]
 
+# Scopes that live OUTSIDE the working directory; only these may introduce or point
+# at code (module/bundle sources, source overrides, app/added bundle URIs).
+# project/local live inside the possibly-cloned working directory and must never do so.
+TRUSTED_CODE_SCOPES = ("global", "session")
+
 
 @dataclass(frozen=True)
 class NotificationFlags:
@@ -95,19 +100,10 @@ class AppSettings:
         new_paths = SettingsPaths.with_session(session_id, project_slug)
         return AppSettings(new_paths)
 
-    def get_merged_settings(self) -> dict[str, Any]:
-        """Load and merge settings from all scopes."""
+    def _merge_paths(self, paths: list[Path]) -> dict[str, Any]:
+        """Merge settings from the given ordered list of paths (later paths win)."""
         result: dict[str, Any] = {}
-        # Order: global -> project -> local -> session (most specific wins)
-        paths_to_check = [
-            self.paths.global_settings,
-            self.paths.project_settings,
-            self.paths.local_settings,
-        ]
-        if self.paths.session_settings:
-            paths_to_check.append(self.paths.session_settings)
-
-        for path in paths_to_check:
+        for path in paths:
             if path.exists():
                 try:
                     with open(path, encoding="utf-8") as f:
@@ -116,6 +112,35 @@ class AppSettings:
                 except Exception:
                     pass  # Skip malformed files
         return result
+
+    def _trusted_paths(self) -> list[Path]:
+        """Return the ordered list of trusted (outside-cwd) settings paths."""
+        paths = [self.paths.global_settings]
+        if self.paths.session_settings:
+            paths.append(self.paths.session_settings)
+        return paths
+
+    def get_merged_settings(self) -> dict[str, Any]:
+        """Load and merge settings from all scopes."""
+        # Order: global -> project -> local -> session (most specific wins)
+        paths_to_check = [
+            self.paths.global_settings,
+            self.paths.project_settings,
+            self.paths.local_settings,
+        ]
+        if self.paths.session_settings:
+            paths_to_check.append(self.paths.session_settings)
+        return self._merge_paths(paths_to_check)
+
+    def get_trusted_settings(self) -> dict[str, Any]:
+        """Merge ONLY scopes outside the working directory (global + session).
+
+        Use this instead of get_merged_settings() when reading code-introducing
+        settings (module/bundle sources, source overrides, app/added bundle URIs).
+        project/local scopes live inside the possibly-cloned working directory and
+        must not be allowed to introduce or redirect code.
+        """
+        return self._merge_paths(self._trusted_paths())
 
     # ----- Bundle settings -----
 
@@ -158,15 +183,21 @@ class AppSettings:
 
     # ----- App bundle settings -----
 
-    def get_app_bundles(self) -> list[str]:
+    def get_app_bundles(self, *, trusted_only: bool = False) -> list[str]:
         """Get list of app bundle URIs that are always composed.
 
         App bundles are composed onto every session AFTER the primary bundle.
         They enable team-wide or user-wide behaviors.
 
         Reads from bundle.app setting (list of URIs).
+
+        Args:
+            trusted_only: When True, read only from trusted scopes (global + session).
+                          Use for run/prepare paths to prevent folder-origin code injection.
         """
-        settings = self.get_merged_settings()
+        settings = (
+            self.get_trusted_settings() if trusted_only else self.get_merged_settings()
+        )
         bundle_settings = settings.get("bundle") or {}
         app_bundles = bundle_settings.get("app", [])
         return app_bundles if isinstance(app_bundles, list) else []
@@ -213,16 +244,22 @@ class AppSettings:
     # User-added bundles via `bundle add` - name → URI mappings
     # This replaces the separate bundle-registry.yaml file
 
-    def get_added_bundles(self) -> dict[str, str]:
+    def get_added_bundles(self, *, trusted_only: bool = False) -> dict[str, str]:
         """Get user-added bundle mappings (name → URI).
 
         Returns merged bundle.added from all scopes.
         Also migrates from legacy bundle-registry.yaml if present.
+
+        Args:
+            trusted_only: When True, read only from trusted scopes (global + session).
+                          Use for run/prepare paths to prevent folder-origin code injection.
         """
         # First, check for legacy bundle-registry.yaml and migrate if needed
         self._migrate_legacy_registry()
 
-        settings = self.get_merged_settings()
+        settings = (
+            self.get_trusted_settings() if trusted_only else self.get_merged_settings()
+        )
         bundle_settings = settings.get("bundle") or {}
         added = bundle_settings.get("added", {})
         return added if isinstance(added, dict) else {}
@@ -335,24 +372,39 @@ class AppSettings:
 
     # ----- Provider override settings (config.providers) -----
 
-    def get_provider_overrides(self) -> list[dict[str, Any]]:
+    def get_provider_overrides(
+        self, *, trusted_only: bool = False
+    ) -> list[dict[str, Any]]:
         """Return merged provider overrides from config.providers across all scopes.
 
         Merges by provider identity key (id if present, else module).
         More-specific scopes override less-specific: global < project < local < session.
         Providers not present in higher scopes pass through from lower scopes.
+
+        Args:
+            trusted_only: When True, merge only global + session scopes (skip project +
+                          local). Use for run/prepare paths to prevent folder-origin
+                          provider sources from injecting code.
         """
         from .merge_utils import _provider_key, merge_module_items  # noqa: F401
 
         result: list[dict[str, Any]] = []
 
-        # Scope priority order: global (lowest) → project → local → session (highest)
-        paths_to_check: list[Path | None] = [
-            self.paths.global_settings,
-            self.paths.project_settings,
-            self.paths.local_settings,
-            self.paths.session_settings,
-        ]
+        # When trusted_only=True, skip project + local (those live inside the cwd).
+        # Order is always: global (lowest) → [project → local] → session (highest).
+        if trusted_only:
+            paths_to_check: list[Path | None] = [
+                self.paths.global_settings,
+                self.paths.session_settings,
+            ]
+        else:
+            # Scope priority order: global (lowest) → project → local → session (highest)
+            paths_to_check = [
+                self.paths.global_settings,
+                self.paths.project_settings,
+                self.paths.local_settings,
+                self.paths.session_settings,
+            ]
 
         for path in paths_to_check:
             if path is None or not path.exists():
@@ -466,9 +518,16 @@ class AppSettings:
 
     # ----- Source override settings -----
 
-    def get_module_sources(self) -> dict[str, str]:
-        """Get merged module source overrides from all scopes."""
-        settings = self.get_merged_settings()
+    def get_module_sources(self, *, trusted_only: bool = False) -> dict[str, str]:
+        """Get merged module source overrides from all scopes.
+
+        Args:
+            trusted_only: When True, read only from trusted scopes (global + session).
+                          Use for run/prepare paths to prevent folder-origin code injection.
+        """
+        settings = (
+            self.get_trusted_settings() if trusted_only else self.get_merged_settings()
+        )
         return settings.get("sources", {}).get("modules", {})
 
     def add_source_override(
@@ -498,9 +557,16 @@ class AppSettings:
             return True
         return False
 
-    def get_bundle_sources(self) -> dict[str, str]:
-        """Get merged bundle source overrides from all scopes."""
-        settings = self.get_merged_settings()
+    def get_bundle_sources(self, *, trusted_only: bool = False) -> dict[str, str]:
+        """Get merged bundle source overrides from all scopes.
+
+        Args:
+            trusted_only: When True, read only from trusted scopes (global + session).
+                          Use for run/prepare paths to prevent folder-origin code injection.
+        """
+        settings = (
+            self.get_trusted_settings() if trusted_only else self.get_merged_settings()
+        )
         return settings.get("sources", {}).get("bundles", {})
 
     def add_bundle_source_override(
@@ -1092,7 +1158,9 @@ class AppSettings:
 
     # ----- Module override settings (overrides section) -----
 
-    def get_module_overrides(self) -> dict[str, dict[str, Any]]:
+    def get_module_overrides(
+        self, *, trusted_only: bool = False
+    ) -> dict[str, dict[str, Any]]:
         """Return unified module overrides from overrides section.
 
         Expected structure:
@@ -1101,17 +1169,27 @@ class AppSettings:
                 source: /local/path/to/module
                 config:
                   inherit_context: recent
+
+        Args:
+            trusted_only: When True, read only from trusted scopes (global + session).
+                          Use for run/prepare paths to prevent folder-origin code injection.
         """
-        settings = self.get_merged_settings()
+        settings = (
+            self.get_trusted_settings() if trusted_only else self.get_merged_settings()
+        )
         overrides = settings.get("overrides", {})
         return overrides if isinstance(overrides, dict) else {}
 
-    def get_source_overrides(self) -> dict[str, str]:
+    def get_source_overrides(self, *, trusted_only: bool = False) -> dict[str, str]:
         """Return source overrides only (module_id -> source_uri).
 
         Convenience method for Bundle.prepare(source_resolver=...).
+
+        Args:
+            trusted_only: When True, read only from trusted scopes (global + session).
+                          Use for run/prepare paths to prevent folder-origin code injection.
         """
-        overrides = self.get_module_overrides()
+        overrides = self.get_module_overrides(trusted_only=trusted_only)
         return {
             module_id: override["source"]
             for module_id, override in overrides.items()
@@ -1119,8 +1197,15 @@ class AppSettings:
         }
 
     def get_config_overrides(self) -> dict[str, dict[str, Any]]:
-        """Return config overrides only (module_id -> config_dict)."""
-        overrides = self.get_module_overrides()
+        """Return config overrides only (module_id -> config_dict).
+
+        Always reads from the full merge (all scopes).  Config values are
+        select-by-name, not code-introducing, so folder-local overrides are
+        permitted here.  Do NOT add trusted_only to this method.
+        """
+        overrides = (
+            self.get_module_overrides()
+        )  # Always full-merge — not code-introducing
         return {
             module_id: override.get("config", {})
             for module_id, override in overrides.items()
