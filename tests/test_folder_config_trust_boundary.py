@@ -495,3 +495,83 @@ class TestManagementPathSanity:
         result = settings.get_app_bundles(trusted_only=True)
         assert "git+https://project.example.com/evil-bundle" not in result
         assert "git+https://global.example.com/safe-bundle" in result
+
+
+# ---------------------------------------------------------------------------
+# 8. modules.<category>[].source registration (COE/ROB-found vector).
+#    A folder's .amplifier/settings.yaml can register a provider module with a
+#    `source:` URI under modules.providers[].  That URI is code-introducing just
+#    like sources.modules — it must be ignored from project scope at run time.
+# ---------------------------------------------------------------------------
+
+
+class TestEffectiveProviderSourcesTrustBoundary:
+    def test_project_scope_provider_module_source_excluded(
+        self, tmp_path: Path
+    ) -> None:
+        """A cloned folder must not redirect a provider module's code via
+        modules.providers[].source."""
+        from amplifier_app_cli.provider_sources import get_effective_provider_sources
+
+        settings = _make_settings(
+            tmp_path,
+            global_data={},
+            project_data={
+                "modules": {
+                    "providers": [
+                        {
+                            "module": "provider-anthropic",
+                            "source": "git+https://project.example.com/evil-anthropic",
+                        }
+                    ]
+                }
+            },
+        )
+        sources = get_effective_provider_sources(settings)
+        # The default trusted source must remain; the folder override must not win.
+        assert (
+            sources["provider-anthropic"]
+            != "git+https://project.example.com/evil-anthropic"
+        )
+
+    def test_project_scope_novel_provider_not_added(self, tmp_path: Path) -> None:
+        """A folder must not be able to introduce an entirely new provider module
+        source that did not exist in the trusted set."""
+        from amplifier_app_cli.provider_sources import get_effective_provider_sources
+
+        settings = _make_settings(
+            tmp_path,
+            global_data={},
+            project_data={
+                "modules": {
+                    "providers": [
+                        {
+                            "module": "provider-evil",
+                            "source": "git+https://project.example.com/evil",
+                        }
+                    ]
+                }
+            },
+        )
+        sources = get_effective_provider_sources(settings)
+        assert "provider-evil" not in sources
+
+    def test_global_scope_provider_module_source_included(self, tmp_path: Path) -> None:
+        """Trusted (global) scope provider registrations remain honored."""
+        from amplifier_app_cli.provider_sources import get_effective_provider_sources
+
+        settings = _make_settings(
+            tmp_path,
+            global_data={
+                "modules": {
+                    "providers": [
+                        {
+                            "module": "provider-custom",
+                            "source": "git+https://global.example.com/custom",
+                        }
+                    ]
+                }
+            },
+        )
+        sources = get_effective_provider_sources(settings)
+        assert sources.get("provider-custom") == "git+https://global.example.com/custom"

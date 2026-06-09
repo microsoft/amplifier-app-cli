@@ -432,7 +432,15 @@ def create_foundation_resolver() -> "FoundationSettingsResolver":
             sources = dict(settings.get_module_sources(trusted_only=trusted_only))
 
             # Extract sources from registered modules (modules.providers[], modules.tools[], etc.)
-            merged = settings.get_merged_settings()
+            # SECURITY: modules.<category>[].source is code-introducing exactly like
+            # sources.modules.  When trusted_only=True, read these registrations from the
+            # trusted (global + session) merge only, so a cloned folder's .amplifier/
+            # settings cannot redirect a module's code to an attacker source.
+            merged = (
+                settings.get_trusted_settings()
+                if trusted_only
+                else settings.get_merged_settings()
+            )
             modules_section = merged.get("modules", {})
 
             # Check each module type category
