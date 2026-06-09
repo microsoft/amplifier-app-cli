@@ -22,6 +22,12 @@ ScopeType = Literal["local", "project", "global"]
 # project/local live inside the possibly-cloned working directory and must never do so.
 TRUSTED_CODE_SCOPES = ("global", "session")
 
+# URI prefixes that the bundle loader (bundle_loader/prepare.py) loads DIRECTLY as
+# code, bypassing trusted bundle discovery. A bundle *selector* (bundle.active) using
+# one of these is code introduction, not a name -- so it is honored only from a
+# trusted scope (global/session), never from the project/local working directory.
+BUNDLE_URI_PREFIXES = ("git+", "file://", "http://", "https://", "zip+")
+
 
 @dataclass(frozen=True)
 class NotificationFlags:
@@ -145,15 +151,30 @@ class AppSettings:
     # ----- Bundle settings -----
 
     def get_active_bundle(self) -> str | None:
-        """Get currently active bundle name.
+        """Get the currently active bundle selector (bundle.active).
 
-        Reads from bundle.active setting.
+        A bundle *name* is honored from any scope: a name can only resolve
+        against bundle sources, which are themselves read trusted-only, so a
+        name can never introduce code.
+
+        A raw *URI* selector (git+/file:///http(s):///zip+) is loaded directly
+        by the bundle loader, bypassing trusted discovery -- it IS code
+        introduction. A URI is therefore honored only when it originates from a
+        trusted scope (global/session). A URI appearing only in the
+        project/local scope -- which lives inside a possibly-cloned working
+        directory -- is dropped, falling back to the trusted selector (or None).
         """
-        settings = self.get_merged_settings()
-        bundle_settings = settings.get("bundle") or {}
-        return (
-            bundle_settings.get("active") if isinstance(bundle_settings, dict) else None
-        )
+        merged = self.get_merged_settings().get("bundle") or {}
+        active = merged.get("active") if isinstance(merged, dict) else None
+        if not isinstance(active, str) or not active.startswith(BUNDLE_URI_PREFIXES):
+            return active  # a name (or None) is always safe
+
+        # active is a raw URI: honor it only if a trusted scope (global/session) set it.
+        trusted = self.get_trusted_settings().get("bundle") or {}
+        trusted_active = trusted.get("active") if isinstance(trusted, dict) else None
+        if trusted_active == active:
+            return active
+        return trusted_active if isinstance(trusted_active, str) else None
 
     def set_active_bundle(self, name: str, scope: Scope = "global") -> None:
         """Set the active bundle at specified scope.

@@ -131,9 +131,7 @@ def register_run_command(
         # Check for active bundle from settings (via 'amplifier bundle use')
         # CLI --bundle flag takes precedence over settings
         if not bundle:
-            bundle_settings = config_manager.get_merged_settings().get("bundle", {})
-            if isinstance(bundle_settings, dict):
-                bundle = bundle_settings.get("active")
+            bundle = config_manager.get_active_bundle()
 
         # Default to foundation bundle when no explicit bundle is configured
         if not bundle:
@@ -219,8 +217,7 @@ def register_run_command(
             target_idx = None
             for i, entry in enumerate(providers_list):
                 if isinstance(entry, dict) and (
-                    entry.get("id") == provider
-                    or entry.get("instance_id") == provider
+                    entry.get("id") == provider or entry.get("instance_id") == provider
                 ):
                     target_idx = i
                     break
@@ -229,7 +226,10 @@ def register_run_command(
                 # Pass 2: fallback — module-type match (original behavior).
                 # Preserves single-instance usage: -p anthropic → provider-anthropic.
                 for i, entry in enumerate(providers_list):
-                    if isinstance(entry, dict) and entry.get("module") == provider_module:
+                    if (
+                        isinstance(entry, dict)
+                        and entry.get("module") == provider_module
+                    ):
                         target_idx = i
                         break
 

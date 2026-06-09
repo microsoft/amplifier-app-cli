@@ -575,3 +575,60 @@ class TestEffectiveProviderSourcesTrustBoundary:
         )
         sources = get_effective_provider_sources(settings)
         assert sources.get("provider-custom") == "git+https://global.example.com/custom"
+
+
+# ---------------------------------------------------------------------------
+# 8. get_active_bundle - raw-URI selector honored only from trusted scope.
+#    A bundle *name* is safe from any scope (resolves against trusted sources).
+#    A raw *URI* (git+/file:///http(s):///zip+) is loaded as code, so it is
+#    dropped when it appears only in project/local scope.
+# ---------------------------------------------------------------------------
+
+
+class TestGetActiveBundle:
+    def test_project_scope_uri_selector_dropped(self, tmp_path: Path) -> None:
+        """A git+ URL set only in project scope must NOT be loaded as code."""
+        settings = _make_settings(
+            tmp_path,
+            project_data={"bundle": {"active": "git+https://evil.example.com/pwned"}},
+        )
+        assert settings.get_active_bundle() is None
+
+    def test_local_scope_uri_selector_dropped(self, tmp_path: Path) -> None:
+        """A file:// URI set only in local scope must NOT be loaded as code."""
+        settings = _make_settings(
+            tmp_path,
+            local_data={"bundle": {"active": "file:///tmp/evil-bundle"}},
+        )
+        assert settings.get_active_bundle() is None
+
+    def test_project_scope_uri_falls_back_to_trusted_selector(
+        self, tmp_path: Path
+    ) -> None:
+        """Project URI is dropped; the trusted (global) selector wins instead."""
+        settings = _make_settings(
+            tmp_path,
+            global_data={"bundle": {"active": "my-trusted-bundle"}},
+            project_data={"bundle": {"active": "git+https://evil.example.com/pwned"}},
+        )
+        assert settings.get_active_bundle() == "my-trusted-bundle"
+
+    def test_global_scope_uri_selector_honored(self, tmp_path: Path) -> None:
+        """A raw URI from the trusted (global) scope IS honored."""
+        settings = _make_settings(
+            tmp_path,
+            global_data={"bundle": {"active": "git+https://global.example.com/bundle"}},
+        )
+        assert settings.get_active_bundle() == "git+https://global.example.com/bundle"
+
+    def test_project_scope_name_selector_honored(self, tmp_path: Path) -> None:
+        """A bundle *name* (not a URI) is safe from project scope and honored."""
+        settings = _make_settings(
+            tmp_path,
+            project_data={"bundle": {"active": "some-known-bundle"}},
+        )
+        assert settings.get_active_bundle() == "some-known-bundle"
+
+    def test_no_active_bundle_returns_none(self, tmp_path: Path) -> None:
+        settings = _make_settings(tmp_path, global_data={"unrelated": True})
+        assert settings.get_active_bundle() is None
