@@ -9,13 +9,17 @@ Test layout:
     1. get_trusted_settings — merges only global+session; ignores project+local.
     2. get_module_sources(trusted_only=True) — excludes project-scope source,
        includes global-scope source; default includes both.
-    3. get_added_bundles(trusted_only=True) — excludes project-scope added bundle.
-    4. get_provider_overrides(trusted_only=True) — excludes project-scope provider source.
-    5. get_source_overrides(trusted_only=True) — excludes project-scope overrides.<id>.source.
-    6. get_config_overrides() — STILL includes project-scope overrides.<id>.config
+    3. get_bundle_sources(trusted_only=True) — excludes project-scope bundle source,
+       includes global-scope source; default includes both.
+    4. get_added_bundles(trusted_only=True) — excludes project-scope added bundle.
+    5. get_provider_overrides(trusted_only=True) — excludes project-scope provider source.
+    6. get_source_overrides(trusted_only=True) — excludes project-scope overrides.<id>.source.
+    7. get_config_overrides() — STILL includes project-scope overrides.<id>.config
        (regression guard: config values remain folder-honorable).
-    7. Management path sanity: get_app_bundles() (default) still returns
+    8. Management path sanity: get_app_bundles() (default) still returns
        project-scope app bundles so list/management UX is unchanged.
+    9. _warn_dropped_code_config() — emits a stderr notice when project/local scope
+       code-introducing settings are silently dropped; silent when nothing dropped.
 """
 
 from pathlib import Path
@@ -24,6 +28,7 @@ import pytest
 import yaml
 
 from amplifier_app_cli.lib.settings import AppSettings, SettingsPaths
+from amplifier_app_cli.runtime.config import _warn_dropped_code_config
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +233,91 @@ class TestGetModuleSources:
 
 
 # ---------------------------------------------------------------------------
-# 3. get_added_bundles — trusted_only filters project scope
+# 3. get_bundle_sources — trusted_only filters project scope
+# ---------------------------------------------------------------------------
+
+
+class TestGetBundleSources:
+    def test_trusted_only_excludes_project_scope_source(self, tmp_path: Path) -> None:
+        settings = _make_settings(
+            tmp_path,
+            global_data={
+                "sources": {
+                    "bundles": {"my-bundle": "git+https://global.example.com/my-bundle"}
+                }
+            },
+            project_data={
+                "sources": {
+                    "bundles": {"evil-bundle": "git+https://evil.example.com/pwned"}
+                }
+            },
+        )
+        result = settings.get_bundle_sources(trusted_only=True)
+        assert "evil-bundle" not in result, (
+            "project-scope bundle source must be excluded when trusted_only=True"
+        )
+        assert "my-bundle" in result, "global-scope bundle source must be present"
+
+    def test_default_includes_both_scopes(self, tmp_path: Path) -> None:
+        settings = _make_settings(
+            tmp_path,
+            global_data={
+                "sources": {
+                    "bundles": {"my-bundle": "git+https://global.example.com/my-bundle"}
+                }
+            },
+            project_data={
+                "sources": {
+                    "bundles": {"extra-bundle": "git+https://project.example.com/extra"}
+                }
+            },
+        )
+        result = settings.get_bundle_sources()
+        assert "my-bundle" in result
+        assert "extra-bundle" in result
+
+    def test_trusted_only_project_override_of_global_key_is_blocked(
+        self, tmp_path: Path
+    ) -> None:
+        """A project-scope source must not redirect a globally-defined bundle."""
+        settings = _make_settings(
+            tmp_path,
+            global_data={
+                "sources": {
+                    "bundles": {
+                        "amplifier-bundle-modes": "git+https://good.example.com/modes"
+                    }
+                }
+            },
+            project_data={
+                "sources": {
+                    "bundles": {
+                        "amplifier-bundle-modes": "git+https://evil.example.com/modes"
+                    }
+                }
+            },
+        )
+        trusted = settings.get_bundle_sources(trusted_only=True)
+        full = settings.get_bundle_sources()
+        assert trusted["amplifier-bundle-modes"] == "git+https://good.example.com/modes"
+        assert full["amplifier-bundle-modes"] == "git+https://evil.example.com/modes"
+
+    def test_session_source_is_trusted(self, tmp_path: Path) -> None:
+        settings = _make_settings(
+            tmp_path,
+            global_data={},
+            session_data={
+                "sources": {
+                    "bundles": {"my-bundle": "git+https://session.example.com/bundle"}
+                }
+            },
+        )
+        result = settings.get_bundle_sources(trusted_only=True)
+        assert "my-bundle" in result
+
+
+# ---------------------------------------------------------------------------
+# 4. get_added_bundles — trusted_only filters project scope
 # ---------------------------------------------------------------------------
 
 
@@ -738,3 +827,97 @@ class TestGetActiveBundle:
         )
         monkeypatch.chdir(tmp_path / "cwd")
         assert settings.get_active_bundle() == "registry-bundle"
+
+
+# ---------------------------------------------------------------------------
+# 9. _warn_dropped_code_config — stderr notice for dropped code-introducing config
+# ---------------------------------------------------------------------------
+
+
+class TestWarnDroppedCodeConfig:
+    """_warn_dropped_code_config emits a single stderr line when project/local
+    scope code-introducing settings are silently dropped at run time."""
+
+    def _trusted_kwargs(self, settings: AppSettings) -> dict:
+        """Build the trusted_* kwargs matching what resolve_bundle_config passes."""
+        trusted_provider_overrides = settings.get_provider_overrides(trusted_only=True)
+        return {
+            "trusted_app_bundles": settings.get_app_bundles(trusted_only=True),
+            "trusted_module_sources": settings.get_module_sources(trusted_only=True),
+            "trusted_bundle_sources": settings.get_bundle_sources(trusted_only=True),
+            "trusted_source_overrides": settings.get_source_overrides(trusted_only=True),
+            "trusted_added_bundles": settings.get_added_bundles(trusted_only=True),
+            "trusted_provider_sources": {
+                p["module"]: p["source"]
+                for p in trusted_provider_overrides
+                if isinstance(p, dict) and "module" in p and "source" in p
+            },
+        }
+
+    def test_fires_when_bundle_source_dropped(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A project-scope bundle source triggers the warning."""
+        settings = _make_settings(
+            tmp_path,
+            project_data={
+                "sources": {
+                    "bundles": {"evil": "git+https://evil.example.com/bundle"}
+                }
+            },
+        )
+        _warn_dropped_code_config(settings, **self._trusted_kwargs(settings))
+        err = capsys.readouterr().err
+        assert "bundle sources" in err
+        assert "Ignored" in err
+
+    def test_fires_when_module_source_dropped(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A project-scope module source triggers the warning."""
+        settings = _make_settings(
+            tmp_path,
+            project_data={
+                "sources": {
+                    "modules": {"tool-evil": "git+https://evil.example.com/tool"}
+                }
+            },
+        )
+        _warn_dropped_code_config(settings, **self._trusted_kwargs(settings))
+        err = capsys.readouterr().err
+        assert "module sources" in err
+
+    def test_silent_when_nothing_dropped(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Clean config — no project-scope code config — produces no output."""
+        settings = _make_settings(
+            tmp_path,
+            global_data={
+                "sources": {
+                    "modules": {"tool-bash": "git+https://global.example.com/bash"}
+                }
+            },
+        )
+        _warn_dropped_code_config(settings, **self._trusted_kwargs(settings))
+        err = capsys.readouterr().err
+        assert err == ""
+
+    def test_single_line_for_multiple_dropped_categories(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Multiple dropped categories produce a single consolidated warning line."""
+        settings = _make_settings(
+            tmp_path,
+            project_data={
+                "sources": {
+                    "modules": {"tool-evil": "git+https://evil.example.com/tool"},
+                    "bundles": {"evil-bundle": "git+https://evil.example.com/bundle"},
+                }
+            },
+        )
+        _warn_dropped_code_config(settings, **self._trusted_kwargs(settings))
+        err = capsys.readouterr().err
+        assert err.count("\n") <= 1, "warning must be at most one line"
+        assert "module sources" in err
+        assert "bundle sources" in err
