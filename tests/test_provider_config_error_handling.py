@@ -900,3 +900,95 @@ class TestRunPFlagErrorMessage:
             f"Expected 'r11-gemma' in error output (instance id should be listed), "
             f"got: {result.output!r}"
         )
+
+
+# ============================================================
+# Boolean field re-configuration: existing value may be a
+# native YAML boolean, not a string
+# ============================================================
+
+
+class TestPromptForFieldBooleanCoercion:
+    """_prompt_for_field() must accept an existing boolean-field value that is
+    a native Python bool (unquoted YAML `true`), not only a string."""
+
+    @staticmethod
+    def _bool_field():
+        return {
+            "id": "enable_prompt_caching",
+            "display_name": "Prompt Caching",
+            "field_type": "boolean",
+            "prompt": "Enable prompt caching?",
+            "default": "true",
+            "required": False,
+        }
+
+    def test_existing_value_native_bool_does_not_crash(self):
+        """Regression: a bool existing value previously raised
+        'bool' object has no attribute 'lower'."""
+        from amplifier_app_cli.provider_config_utils import _prompt_for_field
+
+        with (
+            patch("amplifier_app_cli.provider_config_utils.console", MagicMock()),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Confirm.ask",
+                return_value=True,
+            ) as mock_ask,
+        ):
+            field_id, value = _prompt_for_field(
+                self._bool_field(),
+                MagicMock(),
+                {},
+                existing_config={"enable_prompt_caching": True},
+            )
+
+        assert field_id == "enable_prompt_caching"
+        assert value == "true"
+        # default derived from the existing bool should be True
+        assert mock_ask.call_args.kwargs["default"] is True
+
+    def test_existing_value_native_bool_false(self):
+        """A native False existing value yields default=False without crashing."""
+        from amplifier_app_cli.provider_config_utils import _prompt_for_field
+
+        with (
+            patch("amplifier_app_cli.provider_config_utils.console", MagicMock()),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Confirm.ask",
+                return_value=False,
+            ) as mock_ask,
+        ):
+            field_id, value = _prompt_for_field(
+                self._bool_field(),
+                MagicMock(),
+                {},
+                existing_config={"enable_prompt_caching": False},
+            )
+
+        assert field_id == "enable_prompt_caching"
+        assert value == "false"
+        # False is falsy, so the existing value is ignored and the schema
+        # default ("true") drives default_bool
+        assert mock_ask.call_args.kwargs["default"] is True
+
+    def test_existing_value_string_still_works(self):
+        """The pre-existing string path must remain unchanged."""
+        from amplifier_app_cli.provider_config_utils import _prompt_for_field
+
+        with (
+            patch("amplifier_app_cli.provider_config_utils.console", MagicMock()),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Confirm.ask",
+                return_value=True,
+            ) as mock_ask,
+        ):
+            field_id, value = _prompt_for_field(
+                self._bool_field(),
+                MagicMock(),
+                {},
+                existing_config={"enable_prompt_caching": "true"},
+            )
+
+        assert field_id == "enable_prompt_caching"
+        assert value == "true"
+        assert mock_ask.call_args.kwargs["default"] is True

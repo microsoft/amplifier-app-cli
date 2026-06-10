@@ -262,7 +262,7 @@ def _prompt_for_field(
     # Handle different field types
     if field_type == "boolean":
         if existing_value:
-            default_bool = existing_value.lower() in ("true", "1", "yes")
+            default_bool = str(existing_value).lower() in ("true", "1", "yes")
         else:
             default_bool = default and default.lower() in ("true", "1", "yes")
 
