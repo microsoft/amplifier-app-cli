@@ -253,11 +253,13 @@ def test_resume_refresh_ignores_folder_scope_provider_source(tmp_path: Path) -> 
     assert anthropic["config"]["api_key"] == "sk-ant-trusted-key"
 
 
-def test_resume_call_site_uses_trusted_only(tmp_path: Path) -> None:
-    """Guard against a revert: the resume read passes trusted_only=True.
+def test_get_provider_overrides_trusted_only_excludes_project_scope(tmp_path: Path) -> None:
+    """get_provider_overrides(trusted_only=True) excludes project-scope entries.
 
-    A folder-scope provider source is present; if the resume path ever reverts
-    to a folder-trusting read (trusted_only=False / default), this fails.
+    The resume path (session_spawner.py:resume_sub_session) calls this with
+    trusted_only=True. This test verifies the method's exclusion behaviour;
+    see test_resume_refresh_ignores_folder_scope_provider_source for the
+    end-to-end security scenario.
     """
     settings = _make_settings(
         tmp_path,
