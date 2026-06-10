@@ -281,3 +281,67 @@ def test_get_provider_overrides_trusted_only_excludes_project_scope(tmp_path: Pa
     # folder file is wired up — while the trusted read the resume path uses does not.
     assert any(p.get("module") == "provider-x" for p in full)
     assert all(p.get("module") != "provider-x" for p in trusted)
+
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_resume_sub_session_uses_trusted_only_for_credential_refresh() -> None:
+    """Regression guard: resume_sub_session() must call get_provider_overrides(trusted_only=True).
+
+    Pins session_spawner.py:897. Both existing tests in this file exercise
+    get_provider_overrides in isolation; this test drives the actual call site.
+    If trusted_only=True is removed from session_spawner.py:897, this test fails.
+    """
+    import amplifier_foundation
+    from unittest.mock import AsyncMock, patch
+
+    # Shim any amplifier_foundation symbols that session_spawner needs but that
+    # may be absent in an older installed version of the package.
+    if not hasattr(amplifier_foundation, "bridge_child_cost"):
+        amplifier_foundation.bridge_child_cost = AsyncMock()
+    if not hasattr(amplifier_foundation, "RUNTIME_SKILL_OVERLAY_CAPABILITY"):
+        amplifier_foundation.RUNTIME_SKILL_OVERLAY_CAPABILITY = "runtime-skill-overlay"
+
+    from amplifier_app_cli.lib.settings import AppSettings
+    from amplifier_app_cli.session_spawner import resume_sub_session
+
+    metadata = {
+        "config": {
+            "providers": [
+                {"module": "provider-anthropic", "config": {"api_key": "[REDACTED]"}}
+            ]
+        }
+    }
+
+    with (
+        patch("amplifier_app_cli.session_store.SessionStore") as MockStore,
+        patch.object(AppSettings, "get_provider_overrides", return_value=[]) as mock_overrides,
+        # Stop execution after the credential-refresh section so we don't need
+        # to stub the full session-creation pipeline.
+        patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+        patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+        patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            side_effect=RuntimeError("test-stop"),
+        ),
+    ):
+        mock_store = MockStore.return_value
+        mock_store.exists.return_value = True
+        mock_store.load.return_value = ([], metadata)
+
+        with pytest.raises(RuntimeError, match="test-stop"):
+            await resume_sub_session("test-session-id", "test instruction")
+
+    # The call site at session_spawner.py:897 must have used trusted_only=True.
+    assert mock_overrides.call_args_list, (
+        "get_provider_overrides was never called — session_spawner.py:897 may be missing"
+    )
+    assert any(
+        call.kwargs.get("trusted_only") is True
+        for call in mock_overrides.call_args_list
+    ), (
+        "resume_sub_session must call get_provider_overrides(trusted_only=True); "
+        "trusted_only=True at session_spawner.py:897 was likely changed or removed"
+    )
