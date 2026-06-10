@@ -12,7 +12,7 @@ from typing import Any
 
 from rich.console import Console
 
-from ..lib.settings import AppSettings, BUNDLE_URI_PREFIXES, NotificationFlags
+from ..lib.settings import AppSettings, NotificationFlags
 from ..lib.merge_utils import merge_module_items
 from ..lib.merge_utils import merge_tool_configs
 
@@ -68,16 +68,13 @@ def _warn_dropped_code_config(
     if full_provider_sources != trusted_provider_sources:
         dropped.append("provider sources")
 
-    # Active bundle selector: a raw-URI bundle.active (git+/file:///http(s):///zip+) is
-    # loaded directly as code. get_active_bundle() drops such a selector when it only
-    # appears in project/local scope; if the gated value differs from the raw merged
-    # value, a folder-origin URI was silenced.
+    # Active bundle selector: get_active_bundle() drops a code-introducing
+    # bundle.active that originates only in the project/local (cwd) scope -- both a
+    # raw URI (git+/file:///http(s):///zip+) and a bare name that resolves into the
+    # cwd's .amplifier/bundles/ . If the gated value differs from the raw merged
+    # value, a folder-origin selector was silenced.
     raw_active = (app_settings.get_merged_settings().get("bundle") or {}).get("active")
-    if (
-        isinstance(raw_active, str)
-        and raw_active.startswith(BUNDLE_URI_PREFIXES)
-        and raw_active != app_settings.get_active_bundle()
-    ):
+    if isinstance(raw_active, str) and raw_active != app_settings.get_active_bundle():
         dropped.append("active bundle")
 
     if dropped:

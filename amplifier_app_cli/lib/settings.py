@@ -29,6 +29,20 @@ TRUSTED_CODE_SCOPES = ("global", "session")
 BUNDLE_URI_PREFIXES = ("git+", "file://", "http://", "https://", "zip+")
 
 
+def _name_resolves_into_cwd(name: str) -> bool:
+    """True if a bare bundle *name* would resolve to a bundle inside the cwd.
+
+    Bundle discovery (bundle_loader/discovery.py:_default_search_paths) searches
+    ``Path.cwd()/.amplifier/bundles/`` at the highest filesystem precedence. A
+    name with no trusted registry entry therefore resolves into the
+    possibly-cloned working directory and loads attacker-authored bundle code.
+    This mirrors that one search path so a settings-driven name selection can be
+    gated to trusted origin, the same way a raw URI selector already is.
+    """
+    base = Path.cwd() / ".amplifier" / "bundles" / name
+    return (base / "bundle.md").exists() or (base / "bundle.yaml").exists()
+
+
 @dataclass(frozen=True)
 class NotificationFlags:
     """Resolved notification enablement. Single source of truth for the two
@@ -153,28 +167,50 @@ class AppSettings:
     def get_active_bundle(self) -> str | None:
         """Get the currently active bundle selector (bundle.active).
 
-        A bundle *name* is honored from any scope: a name can only resolve
-        against bundle sources, which are themselves read trusted-only, so a
-        name can never introduce code.
+        Both forms of selector can introduce code from the untrusted working
+        directory, so both are gated to a trusted (global/session) origin when
+        they would load from inside the cwd:
 
-        A raw *URI* selector (git+/file:///http(s):///zip+) is loaded directly
-        by the bundle loader, bypassing trusted discovery -- it IS code
-        introduction. A URI is therefore honored only when it originates from a
-        trusted scope (global/session). A URI appearing only in the
-        project/local scope -- which lives inside a possibly-cloned working
-        directory -- is dropped, falling back to the trusted selector (or None).
+        - A raw *URI* selector (git+/file:///http(s):///zip+) is loaded directly
+          by the bundle loader, bypassing trusted discovery -- it IS code
+          introduction. It is honored only when a trusted scope set it; a URI
+          appearing only in project/local scope is dropped.
+
+        - A bundle *name* normally resolves against the bundle registry, which is
+          read trusted-only -- safe. But bundle discovery also searches
+          ``Path.cwd()/.amplifier/bundles/`` at the highest filesystem precedence
+          (discovery.py). A name with no trusted registry entry resolves into the
+          possibly-cloned working directory and loads attacker-authored bundle
+          code: system prompt, which tools (bash/filesystem) are active, context,
+          and module ``source:`` URIs that get pip-installed (RCE). A name is
+          therefore dropped when it would resolve into the cwd, unless a trusted
+          scope selected it.
+
+        A dropped selector falls back to the trusted selector (or None). An
+        explicit ``--bundle`` flag bypasses this method entirely and remains a
+        per-invocation, user-initiated trust decision.
         """
         merged = self.get_merged_settings().get("bundle") or {}
         active = merged.get("active") if isinstance(merged, dict) else None
-        if not isinstance(active, str) or not active.startswith(BUNDLE_URI_PREFIXES):
-            return active  # a name (or None) is always safe
+        if not isinstance(active, str):
+            return active  # None
 
-        # active is a raw URI: honor it only if a trusted scope (global/session) set it.
         trusted = self.get_trusted_settings().get("bundle") or {}
         trusted_active = trusted.get("active") if isinstance(trusted, dict) else None
+        trusted_name = trusted_active if isinstance(trusted_active, str) else None
+
+        # A trusted scope selecting this exact value always wins.
         if trusted_active == active:
             return active
-        return trusted_active if isinstance(trusted_active, str) else None
+
+        if active.startswith(BUNDLE_URI_PREFIXES):
+            # Raw URI from project/local scope only -> code from the cwd. Drop it.
+            return trusted_name
+
+        # A name. Safe unless it would resolve into the untrusted cwd.
+        if _name_resolves_into_cwd(active):
+            return trusted_name
+        return active
 
     def set_active_bundle(self, name: str, scope: Scope = "global") -> None:
         """Set the active bundle at specified scope.

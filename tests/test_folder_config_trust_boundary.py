@@ -20,6 +20,7 @@ Test layout:
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from amplifier_app_cli.lib.settings import AppSettings, SettingsPaths
@@ -632,3 +633,76 @@ class TestGetActiveBundle:
     def test_no_active_bundle_returns_none(self, tmp_path: Path) -> None:
         settings = _make_settings(tmp_path, global_data={"unrelated": True})
         assert settings.get_active_bundle() is None
+
+    def test_project_scope_name_resolving_into_cwd_dropped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A name set only in project scope that resolves to a bundle dir inside
+        the cwd loads attacker-authored bundle code (system prompt, active tools,
+        module source: URIs) and must be dropped, the same as an untrusted URI."""
+        settings = _make_settings(
+            tmp_path,
+            project_data={"bundle": {"active": "evil-local"}},
+        )
+        bundle_dir = tmp_path / "cwd" / ".amplifier" / "bundles" / "evil-local"
+        bundle_dir.mkdir(parents=True)
+        (bundle_dir / "bundle.md").write_text("# pwned")
+        monkeypatch.chdir(tmp_path / "cwd")
+        assert settings.get_active_bundle() is None
+
+    def test_local_scope_name_resolving_into_cwd_dropped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same gate for a bundle.yaml-based bundle set only in local scope."""
+        settings = _make_settings(
+            tmp_path,
+            local_data={"bundle": {"active": "evil-local"}},
+        )
+        bundle_dir = tmp_path / "cwd" / ".amplifier" / "bundles" / "evil-local"
+        bundle_dir.mkdir(parents=True)
+        (bundle_dir / "bundle.yaml").write_text("name: pwned")
+        monkeypatch.chdir(tmp_path / "cwd")
+        assert settings.get_active_bundle() is None
+
+    def test_cwd_name_falls_back_to_trusted_selector(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A project-scope name resolving into the cwd is dropped; the trusted
+        (global) selector wins instead."""
+        settings = _make_settings(
+            tmp_path,
+            global_data={"bundle": {"active": "my-trusted-bundle"}},
+            project_data={"bundle": {"active": "evil-local"}},
+        )
+        bundle_dir = tmp_path / "cwd" / ".amplifier" / "bundles" / "evil-local"
+        bundle_dir.mkdir(parents=True)
+        (bundle_dir / "bundle.md").write_text("# pwned")
+        monkeypatch.chdir(tmp_path / "cwd")
+        assert settings.get_active_bundle() == "my-trusted-bundle"
+
+    def test_trusted_scope_name_resolving_into_cwd_honored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A trusted (global) scope selecting a name is honored even when a cwd
+        bundle dir of that name exists -- trusted origin wins."""
+        settings = _make_settings(
+            tmp_path,
+            global_data={"bundle": {"active": "my-bundle"}},
+        )
+        bundle_dir = tmp_path / "cwd" / ".amplifier" / "bundles" / "my-bundle"
+        bundle_dir.mkdir(parents=True)
+        (bundle_dir / "bundle.md").write_text("# local copy")
+        monkeypatch.chdir(tmp_path / "cwd")
+        assert settings.get_active_bundle() == "my-bundle"
+
+    def test_project_scope_name_not_in_cwd_honored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A name with no cwd bundle dir resolves trusted-only (registry) and is
+        honored from project scope -- the common, safe case is unaffected."""
+        settings = _make_settings(
+            tmp_path,
+            project_data={"bundle": {"active": "registry-bundle"}},
+        )
+        monkeypatch.chdir(tmp_path / "cwd")
+        assert settings.get_active_bundle() == "registry-bundle"
