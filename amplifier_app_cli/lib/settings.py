@@ -32,15 +32,22 @@ BUNDLE_URI_PREFIXES = ("git+", "file://", "http://", "https://", "zip+")
 def _name_resolves_into_cwd(name: str) -> bool:
     """True if a bare bundle *name* would resolve to a bundle inside the cwd.
 
-    Bundle discovery (bundle_loader/discovery.py:_default_search_paths) searches
-    ``Path.cwd()/.amplifier/bundles/`` at the highest filesystem precedence. A
-    name with no trusted registry entry therefore resolves into the
-    possibly-cloned working directory and loads attacker-authored bundle code.
-    This mirrors that one search path so a settings-driven name selection can be
-    gated to trusted origin, the same way a raw URI selector already is.
+    Bundle discovery searches ``Path.cwd()/.amplifier/bundles/`` at the highest
+    filesystem precedence. A name with no trusted registry entry therefore
+    resolves into the possibly-cloned working directory and loads
+    attacker-authored bundle code. A settings-driven name selection must be
+    gated to trusted origin the same way a raw URI selector already is.
+
+    Resolution is delegated to ``resolve_bundle_in_path`` -- the exact same
+    resolver the loader's ``_find_in_path`` uses -- so this guard sees every
+    bundle form the loader would load (directory ``bundle.md``/``bundle.yaml``
+    AND single-file ``name.yaml``/``name.md``). Re-implementing the form list
+    here would let the two drift, leaving a form loadable but unguarded.
     """
-    base = Path.cwd() / ".amplifier" / "bundles" / name
-    return (base / "bundle.md").exists() or (base / "bundle.yaml").exists()
+    from amplifier_app_cli.lib.bundle_loader.discovery import resolve_bundle_in_path
+
+    project_bundles = Path.cwd() / ".amplifier" / "bundles"
+    return resolve_bundle_in_path(project_bundles, name) is not None
 
 
 @dataclass(frozen=True)

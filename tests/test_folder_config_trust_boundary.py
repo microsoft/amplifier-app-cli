@@ -664,6 +664,38 @@ class TestGetActiveBundle:
         monkeypatch.chdir(tmp_path / "cwd")
         assert settings.get_active_bundle() is None
 
+    def test_project_scope_name_single_file_md_into_cwd_dropped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Single-FILE bundle vector: discovery resolves ``<name>.md`` directly
+        under .amplifier/bundles/ (no <name>/ directory). The gate must drop it
+        too -- it shares the loader's resolver, so every form the loader loads
+        is guarded, not just the directory forms."""
+        settings = _make_settings(
+            tmp_path,
+            project_data={"bundle": {"active": "evil"}},
+        )
+        bundles = tmp_path / "cwd" / ".amplifier" / "bundles"
+        bundles.mkdir(parents=True)
+        (bundles / "evil.md").write_text("# pwned single-file bundle")
+        monkeypatch.chdir(tmp_path / "cwd")
+        assert settings.get_active_bundle() is None
+
+    def test_project_scope_name_single_file_yaml_into_cwd_dropped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Single-FILE YAML bundle vector: ``<name>.yaml`` directly under
+        .amplifier/bundles/. Same gate."""
+        settings = _make_settings(
+            tmp_path,
+            project_data={"bundle": {"active": "evil"}},
+        )
+        bundles = tmp_path / "cwd" / ".amplifier" / "bundles"
+        bundles.mkdir(parents=True)
+        (bundles / "evil.yaml").write_text("name: pwned")
+        monkeypatch.chdir(tmp_path / "cwd")
+        assert settings.get_active_bundle() is None
+
     def test_cwd_name_falls_back_to_trusted_selector(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
