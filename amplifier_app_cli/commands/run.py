@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import uuid
 from collections.abc import Callable
@@ -348,6 +349,7 @@ def register_run_command(
                 from .session import _display_session_history
 
                 _display_session_history(transcript, metadata or {})
+                os.environ["AMPLIFIER_SESSION_ID"] = resume
                 asyncio.run(
                     interactive_chat(
                         config_data,
@@ -363,6 +365,7 @@ def register_run_command(
             else:
                 # New session - banner displayed by interactive_chat
                 session_id = str(uuid.uuid4())
+                os.environ["AMPLIFIER_SESSION_ID"] = session_id
                 asyncio.run(
                     interactive_chat(
                         config_data,
@@ -392,6 +395,7 @@ def register_run_command(
                 if transcript is None:
                     console.print("[red]Error:[/red] Failed to load session transcript")
                     sys.exit(1)
+                os.environ["AMPLIFIER_SESSION_ID"] = resume
                 asyncio.run(
                     execute_single(
                         prompt,
@@ -408,6 +412,7 @@ def register_run_command(
             else:
                 # Create new session
                 session_id = str(uuid.uuid4())
+                os.environ["AMPLIFIER_SESSION_ID"] = session_id
                 if output_format == "text":
                     config_summary = get_effective_config_summary(
                         config_data, config_source_name
