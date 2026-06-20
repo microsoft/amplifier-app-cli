@@ -2341,11 +2341,21 @@ class CommandProcessor:
             available = ", ".join(s[0] for s in skills) if skills else "none"
             return False, f"Unknown skill: {skill_name}. Available: {available}"
 
-        # Construct synthetic prompt for session.execute()
+        # Construct synthetic prompt for session.execute().
+        #
+        # When the user supplies argument text (e.g. `/council <target>`), the
+        # model MUST forward it as the load_skill `arguments` parameter. This is
+        # the only channel by which the text reaches a fork skill's $ARGUMENTS:
+        # a forked sub-session cannot see this parent conversation, so passing it
+        # as "additional context" here is not enough on its own.
         if arguments:
             return (
                 True,
-                f'Use the load_skill tool to load the skill "{skill_name}". Additional context from the user: {arguments}',
+                f'Use the load_skill tool to load the skill "{skill_name}", '
+                f"passing the user's input as the `arguments` parameter "
+                f'(load_skill(skill_name="{skill_name}", arguments=...)) so the skill '
+                f"receives it — this is required for fork skills, which cannot otherwise "
+                f"see it. The user's input is: {arguments}",
             )
         else:
             return True, f'Use the load_skill tool to load the skill "{skill_name}".'
