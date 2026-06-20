@@ -352,7 +352,7 @@ def register_run_command(
                 from .session import _display_session_history
 
                 _display_session_history(transcript, metadata or {})
-                setproctitle.setproctitle(f"amplifier session={resume}")
+                setproctitle.setproctitle(f"amplifier resume {resume}")
                 asyncio.run(
                     interactive_chat(
                         config_data,
@@ -368,7 +368,7 @@ def register_run_command(
             else:
                 # New session - banner displayed by interactive_chat
                 session_id = str(uuid.uuid4())
-                setproctitle.setproctitle(f"amplifier session={session_id}")
+                setproctitle.setproctitle(f"amplifier resume {session_id}")
                 asyncio.run(
                     interactive_chat(
                         config_data,
@@ -398,7 +398,7 @@ def register_run_command(
                 if transcript is None:
                     console.print("[red]Error:[/red] Failed to load session transcript")
                     sys.exit(1)
-                setproctitle.setproctitle(f"amplifier session={resume}")
+                setproctitle.setproctitle(f"amplifier resume {resume}")
                 asyncio.run(
                     execute_single(
                         prompt,
@@ -415,7 +415,7 @@ def register_run_command(
             else:
                 # Create new session
                 session_id = str(uuid.uuid4())
-                setproctitle.setproctitle(f"amplifier session={session_id}")
+                setproctitle.setproctitle(f"amplifier resume {session_id}")
                 if output_format == "text":
                     config_summary = get_effective_config_summary(
                         config_data, config_source_name
