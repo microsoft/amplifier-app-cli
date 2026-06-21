@@ -7,6 +7,20 @@ import logging
 import sys
 import uuid
 
+# setproctitle rewrites the process's argv[0] in-place in the original memory
+# block, making the new title visible in /proc/<pid>/cmdline (Linux) and via
+# KERN_PROCARGS2 sysctl (macOS). This is used so that terminal multiplexers
+# (e.g. muxterm) can discover which amplifier session is running in a given
+# terminal pane by reading the foreground process's command line from outside
+# the process — without needing IPC or a sidecar file.
+#
+# Crucially, os.environ["KEY"] = value does NOT work for this purpose: the
+# kernel's /proc/<pid>/environ reflects only the initial environment at exec
+# time, not runtime modifications. setproctitle is the correct mechanism
+# because it modifies the same memory region that /proc/<pid>/cmdline reads.
+#
+# The title is set to "amplifier resume <session-id>" — the exact command a
+# multiplexer should re-run to restore the session after a crash or restart.
 import setproctitle
 from collections.abc import Callable
 from typing import Any
