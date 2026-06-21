@@ -10,9 +10,9 @@ import uuid
 # setproctitle rewrites the process's argv[0] in-place in the original memory
 # block, making the new title visible in /proc/<pid>/cmdline (Linux) and via
 # KERN_PROCARGS2 sysctl (macOS). This is used so that terminal multiplexers
-# (e.g. muxterm) can discover which amplifier session is running in a given
-# terminal pane by reading the foreground process's command line from outside
-# the process — without needing IPC or a sidecar file.
+# (e.g. tmux with muxplex, muxterm) can discover which amplifier session is
+# running in a given terminal pane by reading the foreground process's command
+# line from outside the process — without needing IPC or a sidecar file.
 #
 # Crucially, os.environ["KEY"] = value does NOT work for this purpose: the
 # kernel's /proc/<pid>/environ reflects only the initial environment at exec
