@@ -412,6 +412,8 @@ async def _create_bundle_session(
                     session_id=session_id,
                     approval_system=approval_system,
                     display_system=display_system,
+                    session_cwd=Path.cwd(),  # CLI uses CWD for local @-mentions
+                    is_resumed=config.is_resume,  # Pass resume flag to kernel
                 )
                 # Warn if retry still has issues
                 if _should_attempt_self_healing(session, prepared_bundle):
