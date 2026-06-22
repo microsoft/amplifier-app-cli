@@ -285,7 +285,7 @@ def tool_list(
         default_bundle = bundle
 
     if use_bundle:
-        bundle_name = default_bundle or "foundation"
+        bundle_name = default_bundle or "anchors"
 
         if modules:
             console.print(
@@ -371,7 +371,7 @@ def tool_info(
 
     if use_bundle:
         # Bundle path (primary)
-        bundle_name = default_bundle or "foundation"
+        bundle_name = default_bundle or "anchors"
 
         if module:
             # For bundles, --module is not supported
