@@ -719,7 +719,7 @@ def bundle_use(name: str, scope_flag: str | None):
         console.print("  File: ~/.amplifier/settings.yaml")
 
     console.print(
-        "\n[dim]Tip: Use 'amplifier bundle clear' to revert to default (foundation bundle)[/dim]"
+        "\n[dim]Tip: Use 'amplifier bundle clear' to revert to default (anchors bundle)[/dim]"
     )
 
 
@@ -824,11 +824,11 @@ def bundle_current():
             console.print(f"[bold]Location:[/bold] {_format_location(uri)}")
 
         console.print(
-            "\n[dim]Use 'amplifier bundle clear' to revert to default (foundation bundle)[/dim]"
+            "\n[dim]Use 'amplifier bundle clear' to revert to default (anchors bundle)[/dim]"
         )
     else:
         console.print("[bold]Mode:[/bold] Bundle (default)")
-        console.print("[bold]Active bundle:[/bold] foundation (default)")
+        console.print("[bold]Active bundle:[/bold] anchors (default)")
         console.print(
             "\n[dim]Use 'amplifier bundle use <name>' to switch to a different bundle[/dim]"
         )
