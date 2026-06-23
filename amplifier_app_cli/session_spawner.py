@@ -514,6 +514,19 @@ async def spawn_sub_session(
             f"Shared {len(paths_to_share)} sys.path entries from parent to child session"
         )
 
+    # Working directory - register BEFORE initialize() so hooks reading it in
+    # on_session_ready (which fires during initialize()) see the capability.
+    # Without this ordering, context-intelligence detects working_dir=None and
+    # disables fan-out for the child session, silently dropping hook data.
+    # Fall back to cwd so the value is never empty even when the parent
+    # session was created without an explicit working_dir capability.
+    _child_working_dir = parent_session.coordinator.get_capability(
+        "session.working_dir"
+    ) or str(Path.cwd().resolve())
+    child_session.coordinator.register_capability(
+        "session.working_dir", _child_working_dir
+    )
+
     # Initialize child session (mounts modules per merged config)
     # Now the resolver is available for loading modules with source: directives
     await child_session.initialize()
@@ -587,17 +600,6 @@ async def spawn_sub_session(
         # Fallback to fresh deduplicator if parent doesn't have one
         child_session.coordinator.register_capability(
             "mention_deduplicator", ContentDeduplicator()
-        )
-
-    # Working directory - inherit from parent for consistent path resolution
-    # This ensures child sessions use the same project directory as parent
-    # (critical for server/web deployments where process cwd differs from user's project)
-    parent_working_dir = parent_session.coordinator.get_capability(
-        "session.working_dir"
-    )
-    if parent_working_dir:
-        child_session.coordinator.register_capability(
-            "session.working_dir", parent_working_dir
         )
 
     # Routing capability — inherit so child's hooks-routing can compose runtime overrides.
@@ -974,6 +976,24 @@ async def resume_sub_session(
         resolver = create_foundation_resolver()
     await child_session.coordinator.mount("module-source-resolver", resolver)
 
+    # Working directory - register BEFORE initialize() so hooks reading it in
+    # on_session_ready (which fires during initialize()) see the capability.
+    # Prefer the value saved in metadata at original spawn time, then fall back
+    # to the parent's working_dir if a parent session was supplied, and finally
+    # to cwd — so the capability is never absent/empty.
+    _child_resume_working_dir = (
+        metadata.get("working_dir")
+        or (
+            parent_session.coordinator.get_capability("session.working_dir")
+            if parent_session is not None
+            else None
+        )
+        or str(Path.cwd().resolve())
+    )
+    child_session.coordinator.register_capability(
+        "session.working_dir", _child_resume_working_dir
+    )
+
     # Initialize session (mounts modules per config)
     # Now the resolver is available for loading modules with source: directives
     await child_session.initialize()
@@ -1007,14 +1027,6 @@ async def resume_sub_session(
     child_session.coordinator.register_capability(
         "self_delegation_depth", self_delegation_depth
     )
-
-    # Working directory - restore from metadata for consistent path resolution
-    # (critical for server/web deployments where process cwd differs from user's project)
-    saved_working_dir = metadata.get("working_dir")
-    if saved_working_dir:
-        child_session.coordinator.register_capability(
-            "session.working_dir", saved_working_dir
-        )
 
     # Register session spawning capabilities on resumed child session
     # This enables nested agent delegation (child can spawn grandchildren)
