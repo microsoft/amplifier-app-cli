@@ -529,8 +529,9 @@ class TestCapabilityRegistrationIntegration:
         """Test that resume_sub_session always registers session.working_dir.
 
         Even when metadata has no working_dir key, the capability is registered
-        with a cwd fallback so that on_session_ready hooks (e.g. context-intelligence)
-        never see working_dir=None and silently disable fan-out.
+        with a cwd fallback so that on_session_ready hooks never see
+        working_dir=None — any capability a hook consumes in on_session_ready
+        must be registered before initialize().
         """
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -584,8 +585,8 @@ class TestCapabilityRegistrationIntegration:
         # Verify session.working_dir IS registered (cwd fallback) even with no metadata value
         assert "session.working_dir" in registered_capabilities, (
             "session.working_dir must always be registered on resume — even when metadata "
-            "has no working_dir key. The fix uses cwd as fallback so that hooks like "
-            "context-intelligence do not silently disable fan-out."
+            "has no working_dir key. The fix uses cwd as fallback so that "
+            "on_session_ready hooks never see working_dir=None."
         )
         assert registered_capabilities["session.working_dir"], (
             "session.working_dir fallback value must be non-empty. "

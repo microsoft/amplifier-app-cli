@@ -514,10 +514,10 @@ async def spawn_sub_session(
             f"Shared {len(paths_to_share)} sys.path entries from parent to child session"
         )
 
-    # Working directory - register BEFORE initialize() so hooks reading it in
-    # on_session_ready (which fires during initialize()) see the capability.
-    # Without this ordering, context-intelligence detects working_dir=None and
-    # disables fan-out for the child session, silently dropping hook data.
+    # Working directory - register BEFORE initialize(). Any capability a hook
+    # consumes in on_session_ready must be registered before initialize()/mount,
+    # because on_session_ready fires during initialize(); a capability registered
+    # afterwards is invisible to it (the hook sees it as absent).
     # Fall back to cwd so the value is never empty even when the parent
     # session was created without an explicit working_dir capability.
     _child_working_dir = parent_session.coordinator.get_capability(

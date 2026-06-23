@@ -5,11 +5,10 @@ ROOT CAUSE:
   initialize()) received working_dir=None because the registration happened
   AFTER initialize() in both the new-session and resume paths.
 
-  Symptom observed (context-intelligence hook):
-    "session.working_dir capability is unavailable; fan-out disabled for this
-     session (local JSONL only)"
-  This caused the hook to silently drop all write fan-out even when the user
-  had valid destinations configured.
+  General rule: any capability a hook consumes in on_session_ready must be
+  registered before initialize()/mount; a capability registered afterwards is
+  invisible to on_session_ready, so the hook sees it as absent and may silently
+  disable behavior that depends on it.
 
 FIX:
   Move register_capability("session.working_dir", ...) to BEFORE
@@ -125,8 +124,8 @@ class TestSpawnWorkingDirBeforeInit:
         """register_capability('session.working_dir') must precede initialize().
 
         This ensures hooks that read session.working_dir inside on_session_ready
-        (which fires during initialize()) see a non-None value and do not
-        silently disable capabilities like context-intelligence fan-out.
+        (which fires during initialize()) see a non-None value. Any capability a
+        hook consumes in on_session_ready must be registered before initialize().
         """
         from amplifier_app_cli.session_spawner import spawn_sub_session
 
@@ -185,8 +184,8 @@ class TestSpawnWorkingDirBeforeInit:
 
         assert wd_idx < init_idx, (
             "session.working_dir must be registered BEFORE initialize() so that "
-            "on_session_ready hooks (e.g. context-intelligence) see the working_dir "
-            "value and do not silently disable fan-out. "
+            "on_session_ready hooks see the working_dir value (any capability a "
+            "hook consumes in on_session_ready must be registered before initialize()). "
             f"Actual order: {call_log} "
             f"(register:session.working_dir at index {wd_idx}, "
             f"initialize at index {init_idx})"
