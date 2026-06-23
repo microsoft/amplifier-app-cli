@@ -529,9 +529,9 @@ class TestCapabilityRegistrationIntegration:
         """Test that resume_sub_session always registers session.working_dir.
 
         Even when metadata has no working_dir key, the capability is registered
-        with a cwd fallback so that on_session_ready hooks never see
-        working_dir=None — any capability a hook consumes in on_session_ready
-        must be registered before initialize().
+        with a cwd fallback so that any module reading it during initialize()
+        never sees working_dir=None — any capability a module consumes during
+        initialize() must be registered before initialize(), not just hooks.
         """
         from unittest.mock import AsyncMock, MagicMock, patch
 

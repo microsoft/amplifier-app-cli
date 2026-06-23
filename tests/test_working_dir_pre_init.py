@@ -1,14 +1,16 @@
 """Regression test: session.working_dir registered BEFORE child_session.initialize().
 
 ROOT CAUSE:
-  Hooks that read capabilities during on_session_ready (which fires DURING
-  initialize()) received working_dir=None because the registration happened
-  AFTER initialize() in both the new-session and resume paths.
+  Modules that read capabilities while mounting or during on_session_ready
+  (both run DURING initialize()) received working_dir=None because the
+  registration happened AFTER initialize() in both the new-session and resume
+  paths.
 
-  General rule: any capability a hook consumes in on_session_ready must be
-  registered before initialize()/mount; a capability registered afterwards is
-  invisible to on_session_ready, so the hook sees it as absent and may silently
-  disable behavior that depends on it.
+  General rule: any capability a module consumes while mounting or in
+  on_session_ready must be registered before initialize(); a capability
+  registered afterwards is invisible to them, so the module sees it as absent
+  and may silently disable behavior that depends on it. This affects ANY module,
+  not just hooks.
 
 FIX:
   Move register_capability("session.working_dir", ...) to BEFORE
@@ -123,9 +125,10 @@ class TestSpawnWorkingDirBeforeInit:
     async def test_working_dir_registered_before_initialize(self) -> None:
         """register_capability('session.working_dir') must precede initialize().
 
-        This ensures hooks that read session.working_dir inside on_session_ready
-        (which fires during initialize()) see a non-None value. Any capability a
-        hook consumes in on_session_ready must be registered before initialize().
+        This ensures any module that reads session.working_dir while mounting or
+        inside on_session_ready (both run during initialize()) sees a non-None
+        value. Any capability a module consumes during initialize() must be
+        registered before initialize() — this affects ANY module, not just hooks.
         """
         from amplifier_app_cli.session_spawner import spawn_sub_session
 
@@ -184,8 +187,9 @@ class TestSpawnWorkingDirBeforeInit:
 
         assert wd_idx < init_idx, (
             "session.working_dir must be registered BEFORE initialize() so that "
-            "on_session_ready hooks see the working_dir value (any capability a "
-            "hook consumes in on_session_ready must be registered before initialize()). "
+            "any module reading it during initialize() sees the working_dir value "
+            "(any capability a module consumes during initialize() must be "
+            "registered before initialize() — not just hooks). "
             f"Actual order: {call_log} "
             f"(register:session.working_dir at index {wd_idx}, "
             f"initialize at index {init_idx})"
@@ -342,7 +346,7 @@ class TestResumeWorkingDirBeforeInit:
 
         assert wd_idx < init_idx, (
             "session.working_dir must be registered BEFORE initialize() on resume so "
-            "that on_session_ready hooks see the working_dir value. "
+            "that any module reading it during initialize() sees the working_dir value. "
             f"Actual order: {call_log} "
             f"(register:session.working_dir at index {wd_idx}, "
             f"initialize at index {init_idx})"

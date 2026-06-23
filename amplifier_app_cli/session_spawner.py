@@ -514,10 +514,11 @@ async def spawn_sub_session(
             f"Shared {len(paths_to_share)} sys.path entries from parent to child session"
         )
 
-    # Working directory - register BEFORE initialize(). Any capability a hook
-    # consumes in on_session_ready must be registered before initialize()/mount,
-    # because on_session_ready fires during initialize(); a capability registered
-    # afterwards is invisible to it (the hook sees it as absent).
+    # Working directory - register BEFORE initialize(). Any capability a module
+    # consumes while mounting or in on_session_ready must be registered before
+    # initialize(), because module mounting and on_session_ready both run during
+    # initialize(); a capability registered afterwards is invisible to them (the
+    # module sees it as absent). This affects ANY module, not just hooks.
     # Fall back to cwd so the value is never empty even when the parent
     # session was created without an explicit working_dir capability.
     _child_working_dir = parent_session.coordinator.get_capability(
@@ -976,8 +977,9 @@ async def resume_sub_session(
         resolver = create_foundation_resolver()
     await child_session.coordinator.mount("module-source-resolver", resolver)
 
-    # Working directory - register BEFORE initialize() so hooks reading it in
-    # on_session_ready (which fires during initialize()) see the capability.
+    # Working directory - register BEFORE initialize() so any module reading it
+    # while mounting or in on_session_ready (both run during initialize()) sees
+    # the capability. This affects ANY module, not just hooks.
     # Prefer the value saved in metadata at original spawn time, then fall back
     # to the parent's working_dir if a parent session was supplied, and finally
     # to cwd — so the capability is never absent/empty.
