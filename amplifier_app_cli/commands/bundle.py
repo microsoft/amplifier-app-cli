@@ -719,7 +719,7 @@ def bundle_use(name: str, scope_flag: str | None):
         console.print("  File: ~/.amplifier/settings.yaml")
 
     console.print(
-        "\n[dim]Tip: Use 'amplifier bundle clear' to revert to default (foundation bundle)[/dim]"
+        "\n[dim]Tip: Use 'amplifier bundle clear' to revert to default (anchors bundle)[/dim]"
     )
 
 
@@ -733,7 +733,7 @@ def bundle_use(name: str, scope_flag: str | None):
 )
 @click.option("--all", "clear_all", is_flag=True, help="Clear settings from all scopes")
 def bundle_clear(scope_flag: str | None, clear_all: bool):
-    """Clear bundle settings (reverts to default foundation bundle).
+    """Clear bundle settings (reverts to default anchors bundle).
 
     Without scope flags, auto-detects and clears from wherever settings are found.
     Use --all to clear from all scopes.
@@ -759,14 +759,14 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
         else:
             console.print("[yellow]No bundle settings found to clear[/yellow]")
 
-        console.print("[green]Now using default: foundation bundle[/green]")
+        console.print("[green]Now using default: anchors bundle[/green]")
         return
 
     if scope_flag is None:
         detected_scope = _find_bundle_scope(app_settings)
         if detected_scope is None:
             console.print("[yellow]No bundle settings found in any scope[/yellow]")
-            console.print("[dim]Already using default: foundation bundle[/dim]")
+            console.print("[dim]Already using default: anchors bundle[/dim]")
             return
         scope = detected_scope
         console.print(f"[dim]Auto-detected settings in {scope} scope[/dim]")
@@ -801,7 +801,7 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
         )
         console.print("[dim]Use --all to clear from all scopes[/dim]")
     else:
-        console.print("[green]Now using default: foundation bundle[/green]")
+        console.print("[green]Now using default: anchors bundle[/green]")
 
 
 @bundle.command(name="current")
@@ -824,11 +824,11 @@ def bundle_current():
             console.print(f"[bold]Location:[/bold] {_format_location(uri)}")
 
         console.print(
-            "\n[dim]Use 'amplifier bundle clear' to revert to default (foundation bundle)[/dim]"
+            "\n[dim]Use 'amplifier bundle clear' to revert to default (anchors bundle)[/dim]"
         )
     else:
         console.print("[bold]Mode:[/bold] Bundle (default)")
-        console.print("[bold]Active bundle:[/bold] foundation (default)")
+        console.print("[bold]Active bundle:[/bold] anchors (default)")
         console.print(
             "\n[dim]Use 'amplifier bundle use <name>' to switch to a different bundle[/dim]"
         )

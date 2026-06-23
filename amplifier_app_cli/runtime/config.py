@@ -885,7 +885,7 @@ async def resolve_config_async(
         )
         return config_data, prepared_bundle
     else:
-        default_bundle = "foundation"
+        default_bundle = "anchors"
         if console:
             console.print(
                 f"[dim]No bundle specified, using default: {default_bundle}[/dim]"

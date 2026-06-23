@@ -43,6 +43,13 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str | bool]] = {
         "remote": "git+https://github.com/microsoft/amplifier-foundation@main",
         "show_in_list": True,
     },
+    # Lean principle-driven bundle (foundation/bundles/anchors). CLI default for
+    # new sessions when no bundle is explicitly configured.
+    "anchors": {
+        "package": "",  # No Python package - bundle-only
+        "remote": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md",
+        "show_in_list": True,
+    },
     "recipes": {
         "package": "",  # No Python package - bundle-only
         "remote": "git+https://github.com/microsoft/amplifier-bundle-recipes@main",

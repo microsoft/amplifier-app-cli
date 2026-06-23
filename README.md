@@ -30,7 +30,7 @@ amplifier init
 # Install shell completion (optional, one-time setup)
 amplifier --install-completion
 
-# Single command (uses foundation bundle by default)
+# Single command (uses anchors bundle by default)
 amplifier run "Create a Python function to calculate fibonacci numbers"
 
 # Single command via stdin (useful for scripts/pipelines)
@@ -57,7 +57,7 @@ amplifier bundle list                                 # List available bundles
 amplifier bundle show <name>                          # Show bundle details
 amplifier bundle add <git-url> [--name alias]         # Register a bundle (name auto-derived)
 amplifier bundle remove <name>                        # Unregister a bundle
-amplifier bundle clear                                # Reset to default (foundation)
+amplifier bundle clear                                # Reset to default (anchors)
 
 # Provider management
 amplifier provider add <name> [--local|--project|--global]  # Add/configure a provider

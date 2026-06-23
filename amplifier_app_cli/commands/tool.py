@@ -80,15 +80,15 @@ def _should_use_bundle() -> tuple[bool, str | None, str | None]:
     Logic (mirrors run.py):
     1. If active bundle is set → use bundle
     2. Always use bundle system
-    3. Default to 'foundation' bundle
+    3. Default to 'anchors' bundle
     """
     # Check for active bundle
     bundle_name = _get_active_bundle_name()
     if bundle_name:
         return (True, bundle_name, None)
 
-    # Default to foundation bundle
-    return (True, "foundation", None)
+    # Default to anchors bundle
+    return (True, "anchors", None)
 
 
 # ============================================================================
@@ -285,7 +285,7 @@ def tool_list(
         default_bundle = bundle
 
     if use_bundle:
-        bundle_name = default_bundle or "foundation"
+        bundle_name = default_bundle or "anchors"
 
         if modules:
             console.print(
@@ -371,7 +371,7 @@ def tool_info(
 
     if use_bundle:
         # Bundle path (primary)
-        bundle_name = default_bundle or "foundation"
+        bundle_name = default_bundle or "anchors"
 
         if module:
             # For bundles, --module is not supported

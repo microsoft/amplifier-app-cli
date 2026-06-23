@@ -135,9 +135,9 @@ def register_run_command(
             if isinstance(bundle_settings, dict):
                 bundle = bundle_settings.get("active")
 
-        # Default to foundation bundle when no explicit bundle is configured
+        # Default to anchors bundle when no explicit bundle is configured
         if not bundle:
-            bundle = "foundation"
+            bundle = "anchors"
 
         # Check if first run init is needed
         # This runs unconditionally - --provider just selects from configured providers,
