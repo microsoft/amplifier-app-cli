@@ -523,10 +523,16 @@ class TestCapabilityRegistrationIntegration:
         )
         assert registered_capabilities["session.working_dir"] == "/test/project/path"
 
-    async def test_resume_without_working_dir_skips_registration(
+    async def test_resume_without_working_dir_uses_cwd_fallback(
         self, tmp_path, monkeypatch
     ):
-        """Test that resume_sub_session handles missing working_dir gracefully."""
+        """Test that resume_sub_session always registers session.working_dir.
+
+        Even when metadata has no working_dir key, the capability is registered
+        with a cwd fallback so that any module reading it during initialize()
+        never sees working_dir=None — any capability a module consumes during
+        initialize() must be registered before initialize(), not just hooks.
+        """
         from unittest.mock import AsyncMock, MagicMock, patch
 
         monkeypatch.setenv("HOME", str(tmp_path))
@@ -542,7 +548,7 @@ class TestCapabilityRegistrationIntegration:
             "config": {
                 "session": {"orchestrator": "loop-basic", "context": "context-simple"}
             },
-            # working_dir intentionally omitted
+            # working_dir intentionally omitted — fix must use cwd fallback
             "self_delegation_depth": 0,
         }
         store.save(session_id, transcript, metadata)
@@ -576,12 +582,18 @@ class TestCapabilityRegistrationIntegration:
                         except Exception:
                             pass
 
-        # Verify session.working_dir was NOT registered (no value to restore)
-        assert "session.working_dir" not in registered_capabilities, (
-            "session.working_dir should not be registered when metadata has no working_dir"
+        # Verify session.working_dir IS registered (cwd fallback) even with no metadata value
+        assert "session.working_dir" in registered_capabilities, (
+            "session.working_dir must always be registered on resume — even when metadata "
+            "has no working_dir key. The fix uses cwd as fallback so that "
+            "on_session_ready hooks never see working_dir=None."
+        )
+        assert registered_capabilities["session.working_dir"], (
+            "session.working_dir fallback value must be non-empty. "
+            f"Got: {registered_capabilities['session.working_dir']!r}"
         )
 
-        # But session.spawn/resume should still be registered
+        # session.spawn/resume should still be registered
         assert "session.spawn" in registered_capabilities
         assert "session.resume" in registered_capabilities
 
