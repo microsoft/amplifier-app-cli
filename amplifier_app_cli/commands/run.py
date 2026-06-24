@@ -6,6 +6,22 @@ import asyncio
 import logging
 import sys
 import uuid
+
+# setproctitle rewrites the process's argv[0] in-place in the original memory
+# block, making the new title visible in /proc/<pid>/cmdline (Linux) and via
+# KERN_PROCARGS2 sysctl (macOS). This is used so that terminal multiplexers
+# (e.g. tmux with muxplex, muxterm) can discover which amplifier session is
+# running in a given terminal pane by reading the foreground process's command
+# line from outside the process — without needing IPC or a sidecar file.
+#
+# Crucially, os.environ["KEY"] = value does NOT work for this purpose: the
+# kernel's /proc/<pid>/environ reflects only the initial environment at exec
+# time, not runtime modifications. setproctitle is the correct mechanism
+# because it modifies the same memory region that /proc/<pid>/cmdline reads.
+#
+# The title is set to "amplifier resume <session-id>" — the exact command a
+# multiplexer should re-run to restore the session after a crash or restart.
+import setproctitle
 from collections.abc import Callable
 from typing import Any
 
@@ -219,8 +235,7 @@ def register_run_command(
             target_idx = None
             for i, entry in enumerate(providers_list):
                 if isinstance(entry, dict) and (
-                    entry.get("id") == provider
-                    or entry.get("instance_id") == provider
+                    entry.get("id") == provider or entry.get("instance_id") == provider
                 ):
                     target_idx = i
                     break
@@ -229,7 +244,10 @@ def register_run_command(
                 # Pass 2: fallback — module-type match (original behavior).
                 # Preserves single-instance usage: -p anthropic → provider-anthropic.
                 for i, entry in enumerate(providers_list):
-                    if isinstance(entry, dict) and entry.get("module") == provider_module:
+                    if (
+                        isinstance(entry, dict)
+                        and entry.get("module") == provider_module
+                    ):
                         target_idx = i
                         break
 
@@ -348,6 +366,7 @@ def register_run_command(
                 from .session import _display_session_history
 
                 _display_session_history(transcript, metadata or {})
+                setproctitle.setproctitle(f"amplifier resume {resume}")
                 asyncio.run(
                     interactive_chat(
                         config_data,
@@ -363,6 +382,7 @@ def register_run_command(
             else:
                 # New session - banner displayed by interactive_chat
                 session_id = str(uuid.uuid4())
+                setproctitle.setproctitle(f"amplifier resume {session_id}")
                 asyncio.run(
                     interactive_chat(
                         config_data,
@@ -392,6 +412,7 @@ def register_run_command(
                 if transcript is None:
                     console.print("[red]Error:[/red] Failed to load session transcript")
                     sys.exit(1)
+                setproctitle.setproctitle(f"amplifier resume {resume}")
                 asyncio.run(
                     execute_single(
                         prompt,
@@ -408,6 +429,7 @@ def register_run_command(
             else:
                 # Create new session
                 session_id = str(uuid.uuid4())
+                setproctitle.setproctitle(f"amplifier resume {session_id}")
                 if output_format == "text":
                     config_summary = get_effective_config_summary(
                         config_data, config_source_name
