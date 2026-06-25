@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import re
+import sys
 from typing import TYPE_CHECKING
 from typing import Any
 
@@ -20,6 +21,70 @@ if TYPE_CHECKING:
     from amplifier_foundation.bundle import PreparedBundle
 
 logger = logging.getLogger(__name__)
+
+
+def _warn_dropped_code_config(
+    app_settings: AppSettings,
+    *,
+    trusted_app_bundles: list[str],
+    trusted_module_sources: dict[str, str],
+    trusted_bundle_sources: dict[str, str],
+    trusted_source_overrides: dict[str, str],
+    trusted_added_bundles: dict[str, str],
+    trusted_provider_sources: dict[str, str],
+) -> None:
+    """Emit a single stderr notice when project/local scopes contain code-introducing config.
+
+    Compares full-merge values against trusted-only values to detect settings that were
+    silenced.  Emits at most one line so the user knows their folder config was ignored
+    without listing attacker-controlled URIs or values.
+    """
+    dropped: list[str] = []
+
+    # Full-merge counterparts (includes project + local scopes)
+    full_app_bundles = app_settings.get_app_bundles()
+    full_module_sources = app_settings.get_module_sources()
+    full_bundle_sources = app_settings.get_bundle_sources()
+    full_source_overrides = app_settings.get_source_overrides()
+    full_added_bundles = app_settings.get_added_bundles()
+
+    full_provider_overrides = app_settings.get_provider_overrides()
+    full_provider_sources = {
+        p["module"]: p["source"]
+        for p in full_provider_overrides
+        if isinstance(p, dict) and "module" in p and "source" in p
+    }
+
+    if set(full_app_bundles) != set(trusted_app_bundles):
+        dropped.append("app bundles")
+    if full_module_sources != trusted_module_sources:
+        dropped.append("module sources")
+    if full_bundle_sources != trusted_bundle_sources:
+        dropped.append("bundle sources")
+    if full_source_overrides != trusted_source_overrides:
+        dropped.append("source overrides")
+    if full_added_bundles != trusted_added_bundles:
+        dropped.append("added bundles")
+    if full_provider_sources != trusted_provider_sources:
+        dropped.append("provider sources")
+
+    # Active bundle selector: get_active_bundle() drops a code-introducing
+    # bundle.active that originates only in the project/local (cwd) scope -- both a
+    # raw URI (git+/file:///http(s):///zip+) and a bare name that resolves into the
+    # cwd's .amplifier/bundles/ . If the gated value differs from the raw merged
+    # value, a folder-origin selector was silenced.
+    raw_active = (app_settings.get_merged_settings().get("bundle") or {}).get("active")
+    if isinstance(raw_active, str) and raw_active != app_settings.get_active_bundle():
+        dropped.append("active bundle")
+
+    if dropped:
+        labels = ", ".join(dropped)
+        print(
+            f"Ignored code-introducing configuration from this folder's .amplifier/ settings "
+            f"for safety: {labels}. "
+            f"Move it to your global (~/.amplifier/settings.yaml) settings to apply it.",
+            file=sys.stderr,
+        )
 
 
 async def resolve_bundle_config(
@@ -92,26 +157,32 @@ async def resolve_bundle_config(
             _build_notification_behaviors(app_settings.get_notification_flags())
         )
 
-        # Add app bundles (user-configured bundles that are always composed)
-        # App bundles are explicit user configuration, composed AFTER notification behaviors
-        app_bundles = app_settings.get_app_bundles()
+        # Add app bundles (user-configured bundles that are always composed).
+        # SECURITY: trusted_only=True — only honor app bundles from global/session
+        # scopes (outside the working directory).  A cloned repo must not be able
+        # to inject arbitrary bundles by placing them in .amplifier/settings.yaml.
+        app_bundles = app_settings.get_app_bundles(trusted_only=True)
         if app_bundles:
             compose_behaviors = compose_behaviors + app_bundles
 
-        # Get source overrides from unified settings
-        # This enables settings.yaml overrides to take effect at prepare time
-        source_overrides = app_settings.get_source_overrides()
+        # Get source overrides from unified settings.
+        # SECURITY: trusted_only=True — overrides.<id>.source is code-introducing.
+        source_overrides = app_settings.get_source_overrides(trusted_only=True)
 
-        # Get module sources from 'amplifier source add' (sources.modules in settings.yaml)
-        module_sources = app_settings.get_module_sources()
+        # Get module sources from 'amplifier source add' (sources.modules in settings.yaml).
+        # SECURITY: trusted_only=True — sources.modules is code-introducing.
+        module_sources = app_settings.get_module_sources(trusted_only=True)
 
-        # CRITICAL: Also extract provider sources from config.providers[]
+        # CRITICAL: Also extract provider sources from config.providers[].
         # Providers are configured via 'amplifier provider use' and stored in config.providers,
         # not in overrides section. Bundle.prepare() needs these sources to download provider modules.
-        provider_overrides = app_settings.get_provider_overrides()
+        # SECURITY: trusted_only=True — provider source URIs are code-introducing.
+        provider_overrides_for_prepare = app_settings.get_provider_overrides(
+            trusted_only=True
+        )
         provider_sources = {
             provider["module"]: provider["source"]
-            for provider in provider_overrides
+            for provider in provider_overrides_for_prepare
             if isinstance(provider, dict)
             and "module" in provider
             and "source" in provider
@@ -121,8 +192,21 @@ async def resolve_bundle_config(
         # sources.modules (general) < overrides.<id>.source (specific) < config.providers[].source (most specific)
         combined_sources = {**module_sources, **source_overrides, **provider_sources}
 
-        # Get bundle source overrides from settings (sources.bundles in settings.yaml)
-        bundle_sources = app_settings.get_bundle_sources()
+        # Get bundle source overrides from settings (sources.bundles in settings.yaml).
+        # SECURITY: trusted_only=True — sources.bundles is code-introducing.
+        bundle_sources = app_settings.get_bundle_sources(trusted_only=True)
+
+        # Detect code-introducing settings from project/local scopes that were silenced,
+        # and emit a single warning so the user understands why their folder config was ignored.
+        _warn_dropped_code_config(
+            app_settings,
+            trusted_app_bundles=app_bundles,
+            trusted_module_sources=module_sources,
+            trusted_bundle_sources=bundle_sources,
+            trusted_source_overrides=source_overrides,
+            trusted_added_bundles=app_settings.get_added_bundles(trusted_only=True),
+            trusted_provider_sources=provider_sources,
+        )
 
         # Load and prepare bundle (downloads modules from git sources)
         # If compose_behaviors is provided, those behaviors are composed onto the bundle
@@ -169,8 +253,16 @@ async def resolve_bundle_config(
                         base_cfg = item.get("config", {}) or {}
                         item["config"] = deep_merge(base_cfg, override_cfg)
 
-    # Apply provider overrides
+    # Apply provider overrides (full merge — runtime config is policy, not source resolution).
+    # `source` is a prepare/install-time directive: it was already honored above via
+    # get_provider_overrides(trusted_only=True) when building provider_sources for
+    # Bundle.prepare().  Strip it here so a folder-origin provider entry cannot inject
+    # an arbitrary module source into the running session's provider config.
     provider_overrides = app_settings.get_provider_overrides()
+    provider_overrides = [
+        {k: v for k, v in p.items() if k != "source"} if isinstance(p, dict) else p
+        for p in provider_overrides
+    ]
     if provider_overrides:
         if bundle_config.get("providers"):
             # Bundle has providers - merge overrides with existing

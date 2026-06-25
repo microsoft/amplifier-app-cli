@@ -890,7 +890,14 @@ async def resume_sub_session(
             expand_env_vars,
         )
 
-        _live_overrides = AppSettings().get_provider_overrides()
+        # SECURITY: trusted_only=True — resume must not assume a clean working
+        # directory.  Credential refresh reads only trusted scopes (global +
+        # session); a folder-origin provider entry (e.g. one carrying a
+        # code-introducing `source:`) must never be merged into a resumed
+        # session's provider config.  Mirrors the prepare-path defense in
+        # runtime/config.py (trusted_only=True for source extraction; source
+        # stripped from the full-merge policy read).
+        _live_overrides = AppSettings().get_provider_overrides(trusted_only=True)
         if _live_overrides:
             _refreshed = _apply_provider_overrides(
                 merged_config["providers"], _live_overrides

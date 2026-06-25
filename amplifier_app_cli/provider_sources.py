@@ -102,8 +102,10 @@ def get_effective_provider_sources(
     sources = dict(DEFAULT_PROVIDER_SOURCES)
 
     if config_manager:
-        # 1. Apply source overrides for known providers
-        overrides = config_manager.get_module_sources()
+        # 1. Apply source overrides for known providers.
+        # SECURITY: trusted_only=True — sources.modules is code-introducing; a cloned
+        # repo must not redirect module resolution to attacker-controlled git sources.
+        overrides = config_manager.get_module_sources(trusted_only=True)
         for module_id in list(sources.keys()):
             if module_id in overrides:
                 sources[module_id] = overrides[module_id]
@@ -113,7 +115,11 @@ def get_effective_provider_sources(
 
         # 2. Add user-added provider modules from settings
         # These are providers added via `amplifier module add provider-X --source ...`
-        merged = config_manager.get_merged_settings()
+        # SECURITY: read modules.providers[].source from the trusted (global + session)
+        # merge only — these source URIs are code-introducing, exactly like the explicit
+        # sources.modules overrides above.  A cloned folder's .amplifier/ settings must not
+        # be able to redirect a provider module's code to an attacker-controlled source.
+        merged = config_manager.get_trusted_settings()
         settings_providers = merged.get("modules", {}).get("providers", [])
         for provider in settings_providers:
             if isinstance(provider, dict):

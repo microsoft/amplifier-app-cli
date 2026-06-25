@@ -184,8 +184,13 @@ class FoundationPackageSource:
 class SettingsProviderProtocol(Protocol):
     """Interface for settings access."""
 
-    def get_module_sources(self) -> dict[str, str]:
-        """Get module source overrides from settings."""
+    def get_module_sources(self, *, trusted_only: bool = False) -> dict[str, str]:
+        """Get module source overrides from settings.
+
+        Args:
+            trusted_only: When True, return only sources from trusted scopes
+                          (global + session), excluding project/local scopes.
+        """
         ...
 
 
@@ -265,9 +270,13 @@ class FoundationSettingsResolver:
             logger.debug(f"[module:resolve] {module_id} -> workspace")
             return (workspace_source, "workspace")
 
-        # Layer 3: Settings provider (collapsed project + user settings)
+        # Layer 3: Settings provider (trusted scopes only at run time).
+        # SECURITY: pass trusted_only=True so folder-local settings cannot redirect
+        # module resolution to arbitrary sources.  trusted_only is part of
+        # SettingsProviderProtocol — a provider that does not honor it must fail loud
+        # rather than silently fall back to the untrusted full merge.
         if self.settings_provider:
-            sources = self.settings_provider.get_module_sources()
+            sources = self.settings_provider.get_module_sources(trusted_only=True)
             if module_id in sources:
                 logger.debug(f"[module:resolve] {module_id} -> settings")
                 return (self._parse_source(sources[module_id], module_id), "settings")
@@ -401,9 +410,13 @@ class FoundationSettingsResolver:
         Returns:
             String source URI, or None if not found.
         """
-        # Check settings provider
+        # Check settings provider (trusted scopes only at run time).
+        # SECURITY: pass trusted_only=True so folder-local settings cannot redirect
+        # module resolution to arbitrary sources.  trusted_only is part of
+        # SettingsProviderProtocol — a provider that does not honor it must fail loud
+        # rather than silently fall back to the untrusted full merge.
         if self.settings_provider:
-            sources = self.settings_provider.get_module_sources()
+            sources = self.settings_provider.get_module_sources(trusted_only=True)
             if module_id in sources:
                 return sources[module_id]
 

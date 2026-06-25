@@ -410,7 +410,7 @@ def create_foundation_resolver() -> "FoundationSettingsResolver":
     class CLISettingsProvider:
         """CLI implementation of SettingsProviderProtocol."""
 
-        def get_module_sources(self) -> dict[str, str]:
+        def get_module_sources(self, *, trusted_only: bool = False) -> dict[str, str]:
             """Get all module sources from CLI settings.
 
             Merges sources from multiple locations:
@@ -421,12 +421,26 @@ def create_foundation_resolver() -> "FoundationSettingsResolver":
 
             Module-specific sources take precedence over explicit overrides
             to ensure user-added modules are properly resolved.
+
+            Args:
+                trusted_only: When True, read only from trusted scopes (global + session)
+                              for the explicit sources.modules lookup.  Pass-through to
+                              AppSettings.get_module_sources(trusted_only=trusted_only).
             """
-            # Start with explicit source overrides
-            sources = dict(settings.get_module_sources())
+            # Start with explicit source overrides (SECURITY: pass trusted_only through
+            # so folder-local sources.modules cannot inject arbitrary module sources).
+            sources = dict(settings.get_module_sources(trusted_only=trusted_only))
 
             # Extract sources from registered modules (modules.providers[], modules.tools[], etc.)
-            merged = settings.get_merged_settings()
+            # SECURITY: modules.<category>[].source is code-introducing exactly like
+            # sources.modules.  When trusted_only=True, read these registrations from the
+            # trusted (global + session) merge only, so a cloned folder's .amplifier/
+            # settings cannot redirect a module's code to an attacker source.
+            merged = (
+                settings.get_trusted_settings()
+                if trusted_only
+                else settings.get_merged_settings()
+            )
             modules_section = merged.get("modules", {})
 
             # Check each module type category
@@ -450,8 +464,8 @@ def create_foundation_resolver() -> "FoundationSettingsResolver":
             return sources
 
         def get_module_source(self, module_id: str) -> str | None:
-            """Get module source from CLI settings."""
-            return self.get_module_sources().get(module_id)
+            """Get module source from CLI settings (trusted scopes only at run time)."""
+            return self.get_module_sources(trusted_only=True).get(module_id)
 
     return FoundationSettingsResolver(
         settings_provider=CLISettingsProvider(),

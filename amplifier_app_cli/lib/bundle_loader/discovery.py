@@ -99,6 +99,57 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str | bool]] = {
 }
 
 
+def resolve_bundle_in_path(base_path: Path, name: str) -> str | None:
+    """Resolve a bundle *name* to a URI within a single search path.
+
+    Single source of truth for the forms a bundle name can take inside one
+    directory. Looks for (in order):
+
+    1. ``base_path/name/bundle.md``   (directory bundle, markdown)
+    2. ``base_path/name/bundle.yaml`` (directory bundle, YAML)
+    3. ``base_path/name.yaml``        (single-file YAML bundle)
+    4. ``base_path/name.md``          (single-file markdown bundle)
+
+    BOTH the loader path (``AppBundleDiscovery._find_in_path``) and the settings
+    trust gate (which must drop a ``bundle.active`` *name* that would resolve
+    into the untrusted working directory) call this function. Routing both
+    through one resolver is deliberate: the guard cannot resolve a name
+    differently from the loader, so a new bundle form can never be loadable yet
+    unguarded (the divergence a hand-copied form list would reintroduce).
+
+    Args:
+        base_path: Base directory to search.
+        name: Bundle name (may contain ``/`` for nested paths).
+
+    Returns:
+        ``file://`` URI pointing to the bundle directory (directory bundles) or
+        the bundle file (single-file bundles). None if the name does not resolve
+        within ``base_path``.
+    """
+    # Handle nested names (e.g., "foundation/providers/anthropic")
+    name_path = Path(name)
+    target_dir = base_path / name_path
+
+    # Directory bundle formats - return directory URI for consistency
+    # with _find_packaged_bundle() which also returns directory URIs.
+    if target_dir.is_dir():
+        if (target_dir / "bundle.md").exists():
+            return f"file://{target_dir.resolve()}"
+        if (target_dir / "bundle.yaml").exists():
+            return f"file://{target_dir.resolve()}"
+
+    # Single-file formats - return file URI (no directory exists).
+    yaml_file = base_path / f"{name}.yaml"
+    if yaml_file.exists():
+        return f"file://{yaml_file.resolve()}"
+
+    md_file = base_path / f"{name}.md"
+    if md_file.exists():
+        return f"file://{md_file.resolve()}"
+
+    return None
+
+
 def _normalize_bundle_base_uri(uri: str) -> str:
     """Normalize a git URI for base-repo comparison.
 
@@ -172,7 +223,9 @@ class AppBundleDiscovery:
         from amplifier_app_cli.lib.settings import AppSettings
 
         app_settings = AppSettings()
-        added_bundles = app_settings.get_added_bundles()
+        # SECURITY: trusted_only=True — bundle URI mappings are code-introducing;
+        # a cloned repo must not redirect bundle names to attacker-controlled git sources.
+        added_bundles = app_settings.get_added_bundles(trusted_only=True)
         for name, uri in added_bundles.items():
             self._registry.register({name: uri})
             logger.debug(f"Loaded user bundle '{name}' → {uri}")
@@ -292,13 +345,11 @@ class AppBundleDiscovery:
         return None
 
     def _find_in_path(self, base_path: Path, name: str) -> str | None:
-        """Search for bundle in a single base path.
+        """Search for a bundle in a single base path.
 
-        Looks for (in order):
-        1. base_path/name/bundle.md (directory bundle with markdown)
-        2. base_path/name/bundle.yaml (directory bundle with YAML)
-        3. base_path/name.yaml (single file YAML bundle)
-        4. base_path/name.md (single file markdown bundle)
+        Thin wrapper over the module-level ``resolve_bundle_in_path`` so the
+        loader and the settings trust gate share one resolver (see that
+        function's docstring for the search forms and the rationale).
 
         Args:
             base_path: Base directory to search.
@@ -308,31 +359,7 @@ class AppBundleDiscovery:
             file:// URI pointing to the bundle directory (for directory bundles)
             or the bundle file (for single-file bundles). None if not found.
         """
-        # Handle nested names (e.g., "foundation/providers/anthropic")
-        name_path = Path(name)
-        target_dir = base_path / name_path
-
-        # Check directory bundle formats - return directory URI for consistency
-        # with _find_packaged_bundle() which also returns directory URIs
-        if target_dir.is_dir():
-            bundle_md = target_dir / "bundle.md"
-            if bundle_md.exists():
-                return f"file://{target_dir.resolve()}"
-
-            bundle_yaml = target_dir / "bundle.yaml"
-            if bundle_yaml.exists():
-                return f"file://{target_dir.resolve()}"
-
-        # Check single file formats - return file URI (no directory exists)
-        yaml_file = base_path / f"{name}.yaml"
-        if yaml_file.exists():
-            return f"file://{yaml_file.resolve()}"
-
-        md_file = base_path / f"{name}.md"
-        if md_file.exists():
-            return f"file://{md_file.resolve()}"
-
-        return None
+        return resolve_bundle_in_path(base_path, name)
 
     def register(self, name: str, uri: str) -> None:
         """Register a bundle name to URI mapping.

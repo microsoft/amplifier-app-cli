@@ -481,10 +481,7 @@ async def _get_file_bundle_status(
 
 def _get_active_bundle_name() -> str | None:
     """Get the name of the currently active bundle, if any."""
-    config_manager = create_config_manager()
-    merged = config_manager.get_merged_settings()
-    bundle_settings = merged.get("bundle", {})
-    return bundle_settings.get("active") if isinstance(bundle_settings, dict) else None
+    return create_config_manager().get_active_bundle()
 
 
 def _create_local_package_table(packages: list[dict], title: str) -> Table | None:

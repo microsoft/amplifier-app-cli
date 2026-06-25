@@ -65,10 +65,7 @@ def _get_active_bundle_name() -> str | None:
     Returns None if no bundle is explicitly configured.
     """
     config_manager = create_config_manager()
-    bundle_settings = config_manager.get_merged_settings().get("bundle", {})
-    if isinstance(bundle_settings, dict):
-        return bundle_settings.get("active")
-    return None
+    return config_manager.get_active_bundle()
 
 
 def _should_use_bundle() -> tuple[bool, str | None, str | None]:
