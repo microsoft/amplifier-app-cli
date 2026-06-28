@@ -95,10 +95,17 @@ class SteeringInputManager:
     # Hook callback (registered on "orchestrator:steering_injected")
     # ------------------------------------------------------------------
 
-    async def on_steering_injected(self, event_data: dict) -> None:
+    async def on_steering_injected(self, event: str, data: dict[str, Any]) -> None:
         """Decrement badge counter when the orchestrator drains one steer.
 
+        Signature matches the Amplifier hook dispatcher calling convention:
+        ``handler(event_type: str, payload: dict)`` — two positional arguments
+        (see ``IncrementalSaveHook.on_tool_post`` in ``incremental_save.py`` for
+        the canonical reference).
+
         One ``orchestrator:steering_injected`` event == one drained message.
+        Payload keys emitted by the orchestrator: ``orchestrator``, ``content``,
+        ``iteration``, ``queued_remaining``, ``metadata``.
         Counter is guarded against going below zero.
         """
         if self._pending_count > 0:
@@ -108,6 +115,26 @@ class SteeringInputManager:
                 self._pt_session.app.invalidate()
             except Exception:
                 pass  # App not running or already cleaned up; non-fatal
+
+    # ------------------------------------------------------------------
+    # Prompt message (callable passed to prompt_toolkit as ``message=``)
+    # ------------------------------------------------------------------
+
+    def _prompt_message(self) -> Any:
+        """Return the current prompt message with live queued-count annotation.
+
+        Passed as ``message=self._prompt_message`` (a callable) so
+        prompt_toolkit re-evaluates it on each ``app.invalidate()`` call,
+        keeping the queued count visible without bottom-toolbar CPR support.
+
+        When N messages are queued: ``"  steer (N queued ⧗): "``
+        When no messages are pending: ``"  steer: "``
+        """
+        from prompt_toolkit.formatted_text import HTML
+
+        if self._pending_count > 0:
+            return HTML(f"  steer ({self._pending_count} queued \u29d7): ")
+        return HTML("  steer: ")
 
     # ------------------------------------------------------------------
     # Bottom toolbar (callable passed to prompt_toolkit)
@@ -152,6 +179,12 @@ class SteeringInputManager:
             self._pending_count += 1
             # Show in scrollback above the prompt so the user sees the ack.
             self._console.print(f"[dim]\u29d7 queued: {text}[/dim]")
+            # Refresh the prompt so the callable message re-renders with the new count.
+            if self._pt_session is not None:
+                try:
+                    self._pt_session.app.invalidate()
+                except Exception:
+                    pass
         except Exception as exc:  # ValueError, SteeringQueueFull, etc.
             self._console.print(f"[red]Steering rejected: {exc}[/red]")
 
@@ -168,10 +201,11 @@ class SteeringInputManager:
         """
         if self._input_provider is None:
             from prompt_toolkit import PromptSession
-            from prompt_toolkit.formatted_text import HTML
 
             self._pt_session = PromptSession()
-            _message: Any = HTML("<ansiblue>  steer: </ansiblue>")
+            # Pass a callable so prompt_toolkit re-evaluates the message on each
+            # app.invalidate() call, keeping the queued count live in the prompt.
+            _message: Any = self._prompt_message
         else:
             _message = None  # not used in the test / injected path
 
