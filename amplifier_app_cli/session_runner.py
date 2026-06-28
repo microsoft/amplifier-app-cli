@@ -275,10 +275,14 @@ async def create_initialized_session(
 
     # Step 10: Register approval provider (app-layer policy)
     from .approval_provider import CLIApprovalProvider
+    from .stdin_arbiter import StdinArbiter
+
+    arbiter = StdinArbiter()
+    session.coordinator.register_capability("cli.stdin_arbiter", arbiter)
 
     register_provider = session.coordinator.get_capability("approval.register_provider")
     if register_provider:
-        approval_provider = CLIApprovalProvider(console)
+        approval_provider = CLIApprovalProvider(console, arbiter=arbiter)
         register_provider(approval_provider)
         logger.debug("Registered CLIApprovalProvider for interactive approvals")
 

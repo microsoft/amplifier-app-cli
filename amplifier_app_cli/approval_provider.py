@@ -1,5 +1,7 @@
 """CLI approval provider for interactive user approval."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 
@@ -8,6 +10,8 @@ from amplifier_core import ApprovalResponse
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm
+
+from .stdin_arbiter import StdinArbiter
 
 logger = logging.getLogger(__name__)
 
@@ -19,14 +23,16 @@ class CLIApprovalProvider:
     Implements ApprovalProvider protocol for CLI environments.
     """
 
-    def __init__(self, console: Console):
+    def __init__(self, console: Console, arbiter: StdinArbiter | None = None):
         """
         Initialize CLI approval provider.
 
         Args:
             console: Rich console for output
+            arbiter: Optional stdin arbiter for coordinating with steering reader
         """
         self.console = console
+        self._arbiter = arbiter
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalResponse:
         """
@@ -41,6 +47,18 @@ class CLIApprovalProvider:
         Raises:
             TimeoutError: If request.timeout expires
         """
+        # Claim stdin before rendering the panel so the steering reader
+        # cannot consume keystrokes meant for the approval prompt.
+        if self._arbiter is not None:
+            self._arbiter.begin_approval()
+        try:
+            return await self._do_request_approval(request)
+        finally:
+            if self._arbiter is not None:
+                self._arbiter.end_approval()
+
+    async def _do_request_approval(self, request: ApprovalRequest) -> ApprovalResponse:
+        """Inner implementation of request_approval (wrapped by arbiter claim)."""
         # Build rich panel with request details
         risk_color = self._get_risk_color(request.risk_level)
 

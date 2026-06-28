@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import select
 import signal
 import sys
 from collections.abc import Callable
@@ -2505,6 +2506,66 @@ async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> s
     )
 
 
+def _stdin_ready(timeout: float) -> bool:
+    """Return True if stdin has data within *timeout* seconds (POSIX only).
+
+    Uses select() with a bounded timeout so the caller never holds a blocking
+    read indefinitely.  Swallows OS errors (e.g. stdin is not a real fd in
+    tests or non-TTY contexts) and returns False instead.
+    """
+    try:
+        r, _, _ = select.select([sys.stdin], [], [], timeout)
+        return bool(r)
+    except (OSError, ValueError):
+        return False
+
+
+async def _steering_reader(steer_cap, arbiter, stop_event: asyncio.Event, console) -> None:
+    """Read stdin lines during a running turn and forward to session.steer.
+
+    Runs only while *stop_event* is unset.  Uses _stdin_ready (select-based,
+    bounded to 0.1 s) so teardown leaves no outstanding blocking read.
+    Suspends entirely while an approval prompt owns stdin via *arbiter*.
+
+    Fail-loud contract:
+    - steer_cap is None  -> prints visible "unavailable" message, never drops silently.
+    - SteeringQueueFull  -> prints visible rejection, turn continues.
+    - Empty/whitespace lines are ignored (not forwarded).
+    """
+    loop = asyncio.get_event_loop()
+    while not stop_event.is_set():
+        # Approval owns stdin while active — do not read.
+        if arbiter is not None and arbiter.approval_active:
+            await asyncio.sleep(0.05)
+            continue
+        # Bounded readiness check off the event-loop thread; returns within 0.1 s
+        # so stop_event is honoured promptly (no leaked blocking read at teardown).
+        ready = await loop.run_in_executor(None, _stdin_ready, 0.1)
+        if not ready:
+            continue
+        # Re-check: approval may have claimed stdin between select and read.
+        if arbiter is not None and arbiter.approval_active:
+            continue
+        line = sys.stdin.readline()  # data is ready → returns a full TTY line
+        if line == "":  # EOF
+            break
+        text = line.strip()
+        if not text:
+            continue  # ignore blank / whitespace-only lines
+        if steer_cap is None:
+            # Fail loud — never silently drop a typed line.
+            console.print(
+                "[yellow]Steering unavailable: this orchestrator does not "
+                "support session.steer.[/yellow]"
+            )
+            continue
+        try:
+            steer_cap(text)
+            console.print("[dim]queued \u2014 applies after current step[/dim]")
+        except Exception as e:  # ValueError, SteeringQueueFull, etc.
+            console.print(f"[red]Steering rejected: {e}[/red]")
+
+
 def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSession:
     """Create configured PromptSession for REPL.
 
@@ -2795,6 +2856,14 @@ async def interactive_chat(
 
         original_handler = signal.signal(signal.SIGINT, sigint_handler)
 
+        # Mid-turn steering: start concurrent stdin reader for the duration of this turn.
+        steer_cap = session.coordinator.get_capability("session.steer")
+        _arbiter = session.coordinator.get_capability("cli.stdin_arbiter")
+        _stop_event = asyncio.Event()
+        _reader_task = asyncio.create_task(
+            _steering_reader(steer_cap, _arbiter, _stop_event, console)
+        )
+
         try:
             execute_task = asyncio.create_task(session.execute(prompt_text))
 
@@ -2876,6 +2945,14 @@ async def interactive_chat(
 
         finally:
             signal.signal(signal.SIGINT, original_handler)
+            # Teardown the steering reader: signal it to stop, then wait for it
+            # to finish so it cannot consume the next REPL prompt's input.
+            _stop_event.set()
+            _reader_task.cancel()
+            try:
+                await _reader_task
+            except asyncio.CancelledError:
+                pass
             # Don't reset cancellation here - session.py handles status
 
     # Execute initial prompt if provided
