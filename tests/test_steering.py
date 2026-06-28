@@ -1,13 +1,36 @@
-"""Unit tests for mid-turn steering (app-cli side).
+"""Unit tests for mid-turn steering UX (app-cli side).
 
-Covers spec tests 9–14 from docs/designs/steering.md §7 (App-CLI section):
+Tests the SteeringInputManager introduced in the anchored-input + queued-badge
+feature.  All tests cover the logic layer (_enqueue, on_steering_injected,
+_toolbar, run() with injected input) so no real TTY or prompt_toolkit app is
+required.
 
-9.  fail-loud-no-capability
-10. steer-on-line
-11. empty-line-ignored
-12. stdin/approval arbitration suspends reader
-13. teardown leaves no leak / does not steal next prompt
-14. overflow surfaced
+Spec coverage
+~~~~~~~~~~~~~
+Counter:
+  - increments after a successful session.steer() enqueue
+  - decrements on each simulated 'orchestrator:steering_injected' callback
+  - drains exactly to 0 (not negative) when all steers are injected
+
+Empty / whitespace:
+  - blank and whitespace-only lines are silently ignored
+
+Fail-loud:
+  - steer_cap is None  → visible "unavailable" message
+  - steer_cap raises SteeringQueueFull → visible "rejected" message
+
+Arbiter:
+  - while approval_active the run() loop does NOT forward input
+  - after end_approval() the reader resumes and processes the next line
+
+Teardown:
+  - setting stop_event causes run() to exit within the poll interval
+
+Toolbar text:
+  - empty string when no messages queued
+  - badge text including count when messages are queued
+
+StdinArbiter and CLIApprovalProvider integration tests are preserved unchanged.
 """
 
 from __future__ import annotations
@@ -17,14 +40,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from amplifier_app_cli.main import _steering_reader  # type: ignore[attr-defined]
 from amplifier_app_cli.stdin_arbiter import StdinArbiter
+from amplifier_app_cli.steering_input import SteeringInputManager
 
 
 # ---------------------------------------------------------------------------
-# Stub for SteeringQueueFull (produced by the orchestrator module, which is
-# not a test dependency here — we just need something that is a RuntimeError
-# subclass to verify the error path).
+# Stub for SteeringQueueFull (produced by the orchestrator, not a test dep)
 # ---------------------------------------------------------------------------
 
 
@@ -41,315 +62,388 @@ def _make_console() -> MagicMock:
     return MagicMock()
 
 
-async def _drive_reader(
-    steer_cap,
-    arbiter: StdinArbiter | None,
+def _make_manager(
+    steer_cap=None,
+    arbiter=None,
     *,
-    ready_values: list[bool],
-    readline_values: list[str],
-    stop_after_reads: bool = True,
-    timeout: float = 5.0,
-) -> MagicMock:
-    """Run _steering_reader with controlled stdin data, return the console mock.
-
-    *ready_values* controls what _stdin_ready returns on successive calls.
-    *readline_values* is the sequence sys.stdin.readline returns.
-
-    The reader is stopped by setting stop_event when ready_values are exhausted
-    (or when steer_cap is called, if stop_after_reads=True).
-    """
+    stop_event: asyncio.Event | None = None,
+    input_provider=None,
+) -> tuple[SteeringInputManager, asyncio.Event]:
+    """Create a SteeringInputManager wired for testing."""
+    stop = stop_event or asyncio.Event()
     console = _make_console()
-    stop_event = asyncio.Event()
-
-    ready_iter = iter(ready_values)
-    exhausted = False
-
-    def fake_ready(_timeout: float) -> bool:
-        nonlocal exhausted
-        try:
-            val = next(ready_iter)
-        except StopIteration:
-            exhausted = True
-            stop_event.set()
-            return False
-        return val
-
-    with (
-        patch("amplifier_app_cli.main._stdin_ready", fake_ready),
-        patch("sys.stdin") as mock_stdin,
-    ):
-        mock_stdin.readline.side_effect = readline_values
-
-        await asyncio.wait_for(
-            _steering_reader(steer_cap, arbiter, stop_event, console),
-            timeout=timeout,
-        )
-
-    return console
+    manager = SteeringInputManager(
+        steer_cap,
+        arbiter,
+        stop,
+        console,
+        _input_provider=input_provider,
+    )
+    return manager, stop
 
 
 # ---------------------------------------------------------------------------
-# Test 9 — fail-loud-no-capability
+# Counter: increments on enqueue
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_counter_increments_on_enqueue():
+    """Successful steer enqueue increments pending_count by 1."""
+    steer_cap = MagicMock()
+    manager, _ = _make_manager(steer_cap=steer_cap)
+
+    assert manager.pending_count == 0
+    await manager._enqueue("do X")
+    assert manager.pending_count == 1
+    steer_cap.assert_called_once_with("do X")
+
+
+@pytest.mark.asyncio
+async def test_counter_increments_multiple_times():
+    """Each successful enqueue increments the counter independently."""
+    steer_cap = MagicMock()
+    manager, _ = _make_manager(steer_cap=steer_cap)
+
+    await manager._enqueue("first")
+    await manager._enqueue("second")
+    await manager._enqueue("third")
+    assert manager.pending_count == 3
+
+
+# ---------------------------------------------------------------------------
+# Counter: decrements on orchestrator:steering_injected hook callback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_counter_decrements_on_injected_hook():
+    """on_steering_injected() decrements pending_count by 1."""
+    steer_cap = MagicMock()
+    manager, _ = _make_manager(steer_cap=steer_cap)
+
+    await manager._enqueue("do X")
+    assert manager.pending_count == 1
+
+    await manager.on_steering_injected({"content": "do X"})
+    assert manager.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_counter_drains_exactly_to_zero():
+    """Enqueueing N messages and injecting N events leaves counter at exactly 0."""
+    steer_cap = MagicMock()
+    manager, _ = _make_manager(steer_cap=steer_cap)
+
+    n = 5
+    for i in range(n):
+        await manager._enqueue(f"msg {i}")
+    assert manager.pending_count == n
+
+    for _ in range(n):
+        await manager.on_steering_injected({})
+    assert manager.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_counter_never_goes_below_zero():
+    """Extra injection events do not push the counter below 0."""
+    manager, _ = _make_manager(steer_cap=MagicMock())
+
+    await manager._enqueue("once")
+    # Inject more times than we enqueued
+    await manager.on_steering_injected({})
+    await manager.on_steering_injected({})  # extra — should be clamped
+    assert manager.pending_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Empty / whitespace ignored
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_empty_string_ignored():
+    """Empty string does not call steer_cap or change counter."""
+    steer_cap = MagicMock()
+    manager, _ = _make_manager(steer_cap=steer_cap)
+
+    await manager._enqueue("")
+    steer_cap.assert_not_called()
+    assert manager.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_whitespace_only_ignored():
+    """Whitespace-only strings (spaces, tabs, newlines) are silently ignored."""
+    steer_cap = MagicMock()
+    manager, _ = _make_manager(steer_cap=steer_cap)
+
+    for text in ("   ", "\t", "\n", "  \t  \n  "):
+        await manager._enqueue(text)
+
+    steer_cap.assert_not_called()
+    assert manager.pending_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Fail-loud: steer_cap is None
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_fail_loud_no_capability():
-    """Spec 9: steer_cap is None → visible message, no crash, no silent drop."""
-    console = await _drive_reader(
-        steer_cap=None,
-        arbiter=None,
-        ready_values=[True, False],  # ready once, then exhaust
-        readline_values=["redirect: do this instead\n"],
+    """When steer_cap is None a visible 'unavailable' message is printed; no crash."""
+    manager, _ = _make_manager(steer_cap=None)
+
+    await manager._enqueue("redirect me")
+
+    printed = [str(c) for c in manager._console.print.call_args_list]
+    assert any("Steering unavailable" in msg for msg in printed), (
+        f"Expected 'Steering unavailable'; got: {printed}"
     )
-
-    # A visible "unavailable" message must be printed
-    printed_messages = [str(call) for call in console.print.call_args_list]
-    assert any("Steering unavailable" in msg for msg in printed_messages), (
-        f"Expected 'Steering unavailable' in console output; got: {printed_messages}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Test 10 — steer-on-line
-# ---------------------------------------------------------------------------
+    assert manager.pending_count == 0
 
 
 @pytest.mark.asyncio
-async def test_steer_on_line():
-    """Spec 10: a non-empty typed line calls steer_cap and prints ack."""
-    steer_cap = MagicMock()
-    arbiter = StdinArbiter()
-    stop_event = asyncio.Event()
-    console = _make_console()
+async def test_fail_loud_no_capability_no_crash_on_repeated_calls():
+    """Multiple enqueues with no steer_cap each print a visible message."""
+    manager, _ = _make_manager(steer_cap=None)
 
-    call_count = 0
+    await manager._enqueue("first")
+    await manager._enqueue("second")
 
-    def fake_ready(_timeout: float) -> bool:
-        nonlocal call_count
-        call_count += 1
-        return call_count == 1  # True on first call only
-
-    async def stopper():
-        """Wait for steer_cap to be invoked, then stop the reader."""
-        while not steer_cap.called:
-            await asyncio.sleep(0.005)
-        stop_event.set()
-
-    with (
-        patch("amplifier_app_cli.main._stdin_ready", fake_ready),
-        patch("sys.stdin") as mock_stdin,
-    ):
-        mock_stdin.readline.return_value = "do X\n"
-
-        await asyncio.gather(
-            asyncio.wait_for(
-                _steering_reader(steer_cap, arbiter, stop_event, console),
-                timeout=5.0,
-            ),
-            stopper(),
-        )
-
-    steer_cap.assert_called_once_with("do X")
-    printed = [str(c) for c in console.print.call_args_list]
-    assert any("queued" in msg for msg in printed), (
-        f"Expected ack in output; got: {printed}"
-    )
+    calls = manager._console.print.call_args_list
+    printed = [str(c) for c in calls]
+    unavailable_count = sum(1 for msg in printed if "Steering unavailable" in msg)
+    assert unavailable_count == 2
 
 
 # ---------------------------------------------------------------------------
-# Test 11 — empty-line-ignored
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_empty_line_ignored():
-    """Spec 11: blank and whitespace-only lines do not call steer_cap."""
-    steer_cap = MagicMock()
-    console = await _drive_reader(
-        steer_cap=steer_cap,
-        arbiter=None,
-        ready_values=[True, True, True, False],  # 3 reads, then exhaust
-        readline_values=["   \n", "\n", "\t  \n"],
-    )
-
-    steer_cap.assert_not_called()
-    # No ack should have been printed either
-    printed = [str(c) for c in console.print.call_args_list]
-    assert not any("queued" in msg for msg in printed)
-
-
-# ---------------------------------------------------------------------------
-# Test 12 — stdin / approval arbitration
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_arbitration_suspends_reader_during_approval():
-    """Spec 12: while arbiter.approval_active, reader does not call _stdin_ready or steer_cap."""
-    steer_cap = MagicMock()
-    arbiter = StdinArbiter()
-    stop_event = asyncio.Event()
-    console = _make_console()
-
-    ready_calls_approval_state: list[bool] = []
-
-    def fake_ready(_timeout: float) -> bool:
-        # Record whether approval was active at the time of each _stdin_ready call.
-        ready_calls_approval_state.append(arbiter.approval_active)
-        return True  # Always data-ready once we get here
-
-    # Phase 1: approval active from the start
-    arbiter.begin_approval()
-
-    async def controller():
-        # Verify no reads happen during approval
-        await asyncio.sleep(0.15)
-        assert not steer_cap.called, (
-            "steer_cap must not be called while approval is active"
-        )
-        assert not ready_calls_approval_state, (
-            "_stdin_ready must not be called during approval"
-        )
-
-        # Phase 2: release approval — reader should now pick up the one queued line
-        arbiter.end_approval()
-
-    with (
-        patch("amplifier_app_cli.main._stdin_ready", fake_ready),
-        patch("sys.stdin") as mock_stdin,
-    ):
-        # readline returns the line once, then "" (EOF) so the reader exits cleanly
-        # without needing stop_event and without calling steer_cap more than once.
-        mock_stdin.readline.side_effect = ["do X\n", ""]
-
-        await asyncio.gather(
-            asyncio.wait_for(
-                _steering_reader(steer_cap, arbiter, stop_event, console),
-                timeout=5.0,
-            ),
-            controller(),
-        )
-
-    # After approval ended, the line was processed exactly once
-    steer_cap.assert_called_once_with("do X")
-    # _stdin_ready was only called when approval was NOT active
-    assert all(not was_active for was_active in ready_calls_approval_state), (
-        "ready() was called while approval was active"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Test 13 — teardown / no stolen next-prompt input
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_teardown_reader_exits_on_stop_event():
-    """Spec 13: reader exits cleanly within the bounded select interval after stop_event is set."""
-    console = _make_console()
-    arbiter = StdinArbiter()
-    stop_event = asyncio.Event()
-
-    # _stdin_ready returns False (no data) every call — reader loops without reading
-    with patch("amplifier_app_cli.main._stdin_ready", lambda _t: False):
-
-        async def set_stop():
-            await asyncio.sleep(0.05)
-            stop_event.set()
-
-        # Both tasks must complete: reader exits, stopper finishes
-        await asyncio.gather(
-            asyncio.wait_for(
-                _steering_reader(None, arbiter, stop_event, console),
-                timeout=2.0,
-            ),
-            set_stop(),
-        )
-
-    # Reader exited cleanly
-    assert stop_event.is_set()
-
-
-@pytest.mark.asyncio
-async def test_teardown_cancel_exits_promptly():
-    """Spec 13: reader task can be cancelled and awaited without hanging."""
-    arbiter = StdinArbiter()
-    stop_event = asyncio.Event()
-
-    with patch("amplifier_app_cli.main._stdin_ready", lambda _t: False):
-        task = asyncio.create_task(
-            _steering_reader(None, arbiter, stop_event, _make_console())
-        )
-
-        # Let it start
-        await asyncio.sleep(0.05)
-
-        # Signal stop then cancel (matching the finally block in _execute_with_interrupt)
-        stop_event.set()
-        task.cancel()
-        try:
-            await asyncio.wait_for(task, timeout=1.0)
-        except asyncio.CancelledError:
-            pass
-
-        assert task.done()
-
-
-# ---------------------------------------------------------------------------
-# Test 14 — overflow surfaced
+# Overflow surfaced
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_overflow_surfaced():
-    """Spec 14: SteeringQueueFull → reader prints visible rejection; turn continues."""
+    """SteeringQueueFull → visible rejection message; counter unchanged."""
     steer_cap = MagicMock(side_effect=_SteeringQueueFull("queue full"))
+    manager, _ = _make_manager(steer_cap=steer_cap)
+
+    await manager._enqueue("do X")
+
+    steer_cap.assert_called_once_with("do X")
+    printed = [str(c) for c in manager._console.print.call_args_list]
+    assert any("Steering rejected" in msg for msg in printed), (
+        f"Expected 'Steering rejected'; got: {printed}"
+    )
+    # Counter must NOT increment on failure
+    assert manager.pending_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Toolbar text
+# ---------------------------------------------------------------------------
+
+
+def test_toolbar_empty_when_no_pending():
+    """Toolbar returns empty string when pending_count == 0."""
+    manager, _ = _make_manager()
+    assert manager._toolbar() == ""
+
+
+def test_toolbar_singular_when_one_pending():
+    """Toolbar shows 'message' (singular) when pending_count == 1."""
+    steer_cap = MagicMock()
+    manager, _ = _make_manager(steer_cap=steer_cap)
+    manager._pending_count = 1
+    toolbar = manager._toolbar()
+    assert "1 message queued" in toolbar
+    assert "messages" not in toolbar
+
+
+def test_toolbar_plural_when_multiple_pending():
+    """Toolbar shows 'messages' (plural) when pending_count > 1."""
+    manager, _ = _make_manager()
+    manager._pending_count = 3
+    toolbar = manager._toolbar()
+    assert "3 messages queued" in toolbar
+
+
+def test_toolbar_contains_queued_indicator():
+    """Toolbar includes the ⧗ indicator when messages are pending."""
+    manager, _ = _make_manager()
+    manager._pending_count = 2
+    toolbar = manager._toolbar()
+    assert "\u29d7" in toolbar  # ⧗
+
+
+def test_toolbar_empty_string_hides_strip():
+    """Toolbar returning '' causes prompt_toolkit to hide the bottom strip."""
+    manager, _ = _make_manager()
+    assert manager._toolbar() == ""
+
+
+# ---------------------------------------------------------------------------
+# run() with injected input: arbiter releases reader when approval_active
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_arbiter_suspends_reader_during_approval():
+    """While arbiter.approval_active the run() loop does not forward input."""
+    input_queue: asyncio.Queue[str] = asyncio.Queue()
+
+    async def mock_input() -> str:
+        return await input_queue.get()
+
+    steer_cap = MagicMock()
     arbiter = StdinArbiter()
     stop_event = asyncio.Event()
     console = _make_console()
 
-    call_count = 0
+    manager = SteeringInputManager(
+        steer_cap,
+        arbiter,
+        stop_event,
+        console,
+        _input_provider=mock_input,
+    )
 
-    def fake_ready(_timeout: float) -> bool:
-        nonlocal call_count
-        call_count += 1
-        return call_count == 1
+    # Activate approval before starting run()
+    arbiter.begin_approval()
+    run_task = asyncio.create_task(manager.run())
 
-    async def stopper():
-        # Wait until steer_cap is attempted, then stop
-        while not steer_cap.called:
-            await asyncio.sleep(0.005)
-        stop_event.set()
+    # Give the loop a chance to spin a few times — approval is active
+    await asyncio.sleep(0.15)
+    assert not steer_cap.called, (
+        "steer_cap must not be called while approval_active is True"
+    )
 
-    with (
-        patch("amplifier_app_cli.main._stdin_ready", fake_ready),
-        patch("sys.stdin") as mock_stdin,
-    ):
-        mock_stdin.readline.return_value = "do X\n"
+    # Release approval and deliver one line of input
+    arbiter.end_approval()
+    await input_queue.put("do X")
 
-        await asyncio.gather(
-            asyncio.wait_for(
-                _steering_reader(steer_cap, arbiter, stop_event, console),
-                timeout=5.0,
-            ),
-            stopper(),
-        )
+    # Wait for the line to be processed
+    await asyncio.sleep(0.15)
 
-    # steer_cap was called
+    # Cleanup
+    stop_event.set()
+    run_task.cancel()
+    try:
+        await asyncio.wait_for(run_task, timeout=1.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+
     steer_cap.assert_called_once_with("do X")
 
-    # A visible rejection message must be printed
-    printed = [str(c) for c in console.print.call_args_list]
-    assert any("Steering rejected" in msg for msg in printed), (
-        f"Expected rejection message; got: {printed}"
+
+@pytest.mark.asyncio
+async def test_arbiter_resumes_after_approval_ends():
+    """After end_approval() the reader processes the next queued line."""
+    input_queue: asyncio.Queue[str] = asyncio.Queue()
+
+    async def mock_input() -> str:
+        return await input_queue.get()
+
+    steer_cap = MagicMock()
+    arbiter = StdinArbiter()
+    stop_event = asyncio.Event()
+    console = _make_console()
+
+    manager = SteeringInputManager(
+        steer_cap,
+        arbiter,
+        stop_event,
+        console,
+        _input_provider=mock_input,
     )
-    # The ack must NOT be printed
-    assert not any("queued" in msg for msg in printed)
+
+    run_task = asyncio.create_task(manager.run())
+
+    # Put a line while approval is inactive — should be processed
+    await input_queue.put("before approval")
+    await asyncio.sleep(0.15)
+    assert steer_cap.call_count == 1
+
+    # Activate approval, put a second line — should NOT be processed yet
+    arbiter.begin_approval()
+    await input_queue.put("during approval")
+    await asyncio.sleep(0.15)
+    # Prompt was aborted for approval; "during approval" is still in the queue
+    # but the run loop is waiting for approval to end.
+    # Because we put "during approval" into the queue WHILE approval was active
+    # and the prompt task was cancelled, it will be picked up once approval ends.
+
+    # Release approval
+    arbiter.end_approval()
+    await asyncio.sleep(0.2)
+
+    stop_event.set()
+    run_task.cancel()
+    try:
+        await asyncio.wait_for(run_task, timeout=1.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+
+    # Both messages should have been processed
+    assert steer_cap.call_count >= 2
 
 
 # ---------------------------------------------------------------------------
-# StdinArbiter unit tests (belt-and-suspenders)
+# run() teardown: stop_event causes clean exit
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_teardown_on_stop_event():
+    """Setting stop_event causes run() to exit within the poll interval."""
+    # mock_input blocks indefinitely so the loop is in the polling phase
+    never_returns: asyncio.Event = asyncio.Event()
+
+    async def mock_input() -> str:
+        await never_returns.wait()  # blocks until we set it
+        return ""
+
+    manager, stop = _make_manager(input_provider=mock_input)
+    run_task = asyncio.create_task(manager.run())
+
+    # Let the prompt task start
+    await asyncio.sleep(0.05)
+
+    # Signal stop
+    stop.set()
+
+    # run() should exit within ~100 ms (one poll cycle)
+    await asyncio.wait_for(run_task, timeout=1.0)
+    assert run_task.done()
+
+
+@pytest.mark.asyncio
+async def test_teardown_cancel_is_clean():
+    """Cancelling the run() task does not raise unhandled exceptions."""
+    never_returns: asyncio.Event = asyncio.Event()
+
+    async def mock_input() -> str:
+        await never_returns.wait()
+        return ""
+
+    manager, _ = _make_manager(input_provider=mock_input)
+    run_task = asyncio.create_task(manager.run())
+
+    await asyncio.sleep(0.05)
+    run_task.cancel()
+
+    try:
+        await asyncio.wait_for(run_task, timeout=1.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+
+    assert run_task.done()
+
+
+# ---------------------------------------------------------------------------
+# StdinArbiter unit tests (unchanged)
 # ---------------------------------------------------------------------------
 
 
@@ -376,13 +470,13 @@ def test_arbiter_multiple_cycles():
 
 
 # ---------------------------------------------------------------------------
-# approval_provider arbiter integration (test begin/end called correctly)
+# CLIApprovalProvider arbiter integration (unchanged)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_approval_provider_sets_arbiter():
-    """Approval provider sets arbiter.approval_active before and clears after request."""
+    """Approval provider sets arbiter.approval_active before and clears after."""
     from amplifier_app_cli.approval_provider import CLIApprovalProvider
     from amplifier_core import ApprovalRequest
 
@@ -392,7 +486,6 @@ async def test_approval_provider_sets_arbiter():
 
     provider = CLIApprovalProvider(console, arbiter=arbiter)  # type: ignore[call-arg]
 
-    # Track arbiter state during _do_request_approval
     states_during: list[bool] = []
 
     async def fake_do_request(req):
@@ -410,9 +503,8 @@ async def test_approval_provider_sets_arbiter():
     with patch.object(provider, "_do_request_approval", side_effect=fake_do_request):
         assert not arbiter.approval_active
         await provider.request_approval(request)
-        assert not arbiter.approval_active  # cleared in finally
+        assert not arbiter.approval_active
 
-    # Was active during the inner call
     assert states_during == [True]
 
 

@@ -616,4 +616,80 @@ revive rule (§3.6) guarantees action even if typed during the final generation.
 - **Bricks & studs:** the orchestrator has zero knowledge of the app; the app has zero
   knowledge of the orchestrator's internals. The only contract is the `session.steer`
   capability (+ the `cli.stdin_arbiter` capability internal to the app).
-```
+
+---
+
+## 9. UX: anchored input + queued badge
+
+**Status:** Implemented in `amplifier_app_cli/steering_input.py`  
+**Branch:** `feat/steering`
+
+### What was built
+
+The raw-TTY `select`-based stdin reader (`_stdin_ready` + `_steering_reader` in
+`main.py`) was replaced with a `prompt_toolkit`-based `SteeringInputManager` in the
+new module `amplifier_app_cli/steering_input.py`.
+
+**Anchored input line** — During a turn, `SteeringInputManager.run()` runs as a
+concurrent `asyncio` task. It calls `PromptSession.prompt_async()` with a
+`message=HTML("<ansiblue>  steer: </ansiblue>")` and a `bottom_toolbar` callable.
+The prompt line is pinned at the bottom of the terminal; all agent output (Rich
+`console.print` from hooks and `CLIDisplaySystem`) is wrapped in `patch_stdout()` and
+appears above it.
+
+**patch_stdout scope** — `patch_stdout()` is now activated in
+`_execute_with_interrupt` for the *entire* turn (not just the REPL wait between
+turns). Rich's `Console.file` property reads `sys.stdout` dynamically at write time
+(`self._file` is `None` by default for the singleton created at module import), so
+patched output is picked up automatically — no changes to `console.py` were required.
+
+**Queued-message badge** — `SteeringInputManager` maintains a `_pending_count`
+integer:
+- Incremented by 1 inside `_enqueue()` after each successful `steer_cap()` call.
+- Decremented by 1 in `on_steering_injected()`, which is registered as a hook on
+  `"orchestrator:steering_injected"` (one event == one drained message) in
+  `_execute_with_interrupt`.
+- The `_toolbar()` callable returns `"⧗ N message(s) queued · applies after the
+  current step"` when `N > 0`, and an empty string (no strip rendered) when `N == 0`.
+- After each decrement, `PromptSession.app.invalidate()` is called to refresh the
+  toolbar immediately. (`PromptSession.app` is the persistent `Application` object
+  created once in `__init__` and reused across `prompt_async()` calls;
+  `Application.invalidate()` is thread-safe via `loop.call_soon_threadsafe`.)
+
+**Scrollback ack** — On successful enqueue, a `[dim]⧗ queued: <text>[/dim]` line
+is printed to the scrollback via `console.print()` (which flows through
+`patch_stdout()` and appears above the pinned prompt).
+
+### How each correctness interaction is handled
+
+| # | Interaction | Mechanism |
+|---|-------------|-----------|
+| 1 | `patch_stdout` active for the whole turn | `with patch_stdout():` wraps the reader task creation AND `execute_task` in `_execute_with_interrupt`. Rich's `Console.file` is a dynamic property (`self._file or sys.stdout`), so the proxy is picked up at write time without any console.py changes. |
+| 2 | StdinArbiter / approval contention | When `arbiter.approval_active` becomes `True` while `prompt_async()` is awaiting input, a watcher inside the `run()` polling loop cancels the `prompt_task` (releasing the terminal from prompt_toolkit's raw mode), then polls until `approval_active` is `False`, then restarts the outer loop. `Confirm.ask` (running in a thread executor) gets exclusive stdin access. |
+| 3 | Ctrl-C must still cancel the turn | The `sigint_handler` installed by `_execute_with_interrupt` fires synchronously via `signal.signal` when SIGINT arrives and updates the cancellation token regardless of whether the steering prompt is active. `KeyboardInterrupt` raised from `prompt_async()` by prompt_toolkit's key binding is caught in the `run()` loop and handled with `continue` — the signal handler has already set the graceful/immediate state. |
+| 4 | Teardown | The `finally` block inside `with patch_stdout():` sets `_stop_event`, cancels and awaits `_reader_task`. This runs on normal completion, graceful/immediate cancel (Ctrl-C), and on error. The outermost `finally` restores the SIGINT handler. The prompt is guaranteed down before control returns to the REPL. |
+| 5 | Empty/whitespace ignored; fail-loud; overflow | `_enqueue()` returns early for empty text. If `steer_cap` is `None`, a yellow `[yellow]Steering unavailable[/yellow]` message is printed. If `steer_cap` raises (e.g. `SteeringQueueFull`), a red `[red]Steering rejected: …[/red]` message is printed. No silent drops. |
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `amplifier_app_cli/steering_input.py` | **New.** `SteeringInputManager` class with `run()`, `_enqueue()`, `on_steering_injected()`, `_toolbar()`, and `_input_provider` injection for tests. |
+| `amplifier_app_cli/main.py` | Removed `import select`, `_stdin_ready()`, `_steering_reader()`. Updated `_execute_with_interrupt`: creates `SteeringInputManager`, registers the decrement hook, wraps the turn with `with patch_stdout():`. |
+| `tests/test_steering.py` | Replaced select-based reader tests with 24 unit tests covering counter semantics, empty/whitespace, fail-loud, overflow, arbiter suspension, teardown, and toolbar text. |
+
+### What was NOT verified by unit test (flagged honestly)
+
+- **Visual behavior (pinned input, live badge)** — cannot be confirmed without a real
+  terminal. The positioning of the prompt at the bottom and the real-time toolbar
+  refresh must be verified in an interactive session with a real TTY.
+- **patch_stdout rendering** — the test suite confirms that `console.print` flows
+  through the dynamic `Console.file` property, but the visual ordering of output
+  above the prompt versus inline can only be checked visually.
+- **Ctrl-C interaction with prompt_toolkit** — the tests confirm that
+  `KeyboardInterrupt` is caught and the loop continues, but the interplay between
+  the OS SIGINT signal and prompt_toolkit's key binding cannot be exercised in a
+  headless test environment.
+- **Approval contention with real `Confirm.ask`** — the arbiter logic is
+  unit-tested via `_input_provider` injection; the actual terminal hand-off between
+  `prompt_async()` and a `run_in_executor(Confirm.ask)` requires a TTY to prove.
