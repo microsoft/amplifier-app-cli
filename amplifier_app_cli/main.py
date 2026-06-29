@@ -2827,7 +2827,15 @@ async def interactive_chat(
             # Rich's Console.file property reads sys.stdout dynamically at write
             # time (self._file is None by default), so the patched proxy is
             # picked up automatically — no changes to console.py are needed.
-            with patch_stdout():
+            #
+            # raw=True is REQUIRED: prompt_toolkit's StdoutProxy defaults to
+            # raw=False, which routes writes through Vt100_Output.write() ->
+            # data.replace("\x1b", "?"), stripping every ESC byte. Rich emits
+            # ANSI (colors, cursor control); without raw=True those escapes are
+            # mangled into literal "?[2m" text and rules/markdown smear across
+            # the pinned prompt. raw=True uses write_raw() and passes ANSI
+            # through intact (run_in_terminal still owns prompt erase/restore).
+            with patch_stdout(raw=True):
                 _reader_task = asyncio.create_task(_manager.run())
 
                 try:
