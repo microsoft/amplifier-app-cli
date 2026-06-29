@@ -75,7 +75,11 @@ class SteeringInputManager:
         self._arbiter = arbiter
         self._stop_event = stop_event
         self._console = console
-        self._pending_count: int = 0
+        # Monotonic pair — increment-only counters that are the single source
+        # of truth for the badge.  Badge = max(0, _enqueued_total - _injected_total).
+        # Order-insensitive: cannot go negative; self-heals once events catch up.
+        self._enqueued_total: int = 0
+        self._injected_total: int = 0
         # PromptSession is created lazily in run(); stored here so
         # on_steering_injected() can call self._pt_session.app.invalidate().
         self._pt_session: Any = None
@@ -88,15 +92,21 @@ class SteeringInputManager:
 
     @property
     def pending_count(self) -> int:
-        """Number of messages currently queued but not yet injected."""
-        return self._pending_count
+        """Number of messages currently queued but not yet injected.
+
+        Derived from the monotonic pair: ``max(0, _enqueued_total -
+        _injected_total)``.  The ``max(0, …)`` clamp prevents the badge from
+        going negative if an inject event arrives from a cross-turn carry
+        (§3.4 of steering-drain.md).
+        """
+        return max(0, self._enqueued_total - self._injected_total)
 
     # ------------------------------------------------------------------
     # Hook callback (registered on "orchestrator:steering_injected")
     # ------------------------------------------------------------------
 
     async def on_steering_injected(self, event: str, data: dict[str, Any]) -> None:
-        """Decrement badge counter when the orchestrator drains one steer.
+        """Increment injected_total when the orchestrator drains one steer.
 
         Signature matches the Amplifier hook dispatcher calling convention:
         ``handler(event_type: str, payload: dict)`` — two positional arguments
@@ -106,10 +116,12 @@ class SteeringInputManager:
         One ``orchestrator:steering_injected`` event == one drained message.
         Payload keys emitted by the orchestrator: ``orchestrator``, ``content``,
         ``iteration``, ``queued_remaining``, ``metadata``.
-        Counter is guarded against going below zero.
+
+        Badge derives from ``max(0, _enqueued_total - _injected_total)`` so an
+        extra/foreign inject event cannot drive it below zero — the ``max``
+        clamp in ``pending_count`` handles that.
         """
-        if self._pending_count > 0:
-            self._pending_count -= 1
+        self._injected_total += 1
         if self._pt_session is not None:
             try:
                 self._pt_session.app.invalidate()
@@ -132,8 +144,9 @@ class SteeringInputManager:
         """
         from prompt_toolkit.formatted_text import HTML
 
-        if self._pending_count > 0:
-            return HTML(f"  steer ({self._pending_count} queued \u29d7): ")
+        n = self.pending_count  # derived from monotonic pair
+        if n > 0:
+            return HTML(f"  steer ({n} queued \u29d7): ")
         return HTML("  steer: ")
 
     # ------------------------------------------------------------------
@@ -141,10 +154,14 @@ class SteeringInputManager:
     # ------------------------------------------------------------------
 
     async def _enqueue(self, text: str) -> None:
-        """Validate *text*, call steer_cap, increment counter, print ack.
+        """Validate *text*, call steer_cap, increment enqueued_total, print ack.
 
         Empty / whitespace-only *text* is silently ignored (not forwarded).
         All other failures are surfaced as visible console messages (fail-loud).
+
+        Ack gating (§5.3 of steering-drain.md):
+          * ``stop_event`` **not** set (turn live): ``⧗ queued: {text}``
+          * ``stop_event`` **set** (turn ending/ended): ``⧗ queued for next turn: {text}``
         """
         if not text.strip():
             return  # Silently ignore blank / whitespace-only lines
@@ -158,9 +175,14 @@ class SteeringInputManager:
 
         try:
             self._steer_cap(text)
-            self._pending_count += 1
-            # Show in scrollback above the prompt so the user sees the ack.
-            self._console.print(f"[dim]\u29d7 queued: {text}[/dim]")
+            self._enqueued_total += 1
+            # Gate the ack on whether the turn is still live (§5.3 steering-drain.md).
+            # stop_event set  → steer will apply to the NEXT turn (turn ending/ended)
+            # stop_event clear → steer will be consumed by the current turn (live)
+            if self._stop_event.is_set():
+                self._console.print(f"[dim]\u29d7 queued for next turn: {text}[/dim]")
+            else:
+                self._console.print(f"[dim]\u29d7 queued: {text}[/dim]")
             # Refresh the prompt so the callable message re-renders with the new count.
             if self._pt_session is not None:
                 try:

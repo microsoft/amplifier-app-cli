@@ -306,7 +306,7 @@ def test_prompt_message_no_pending_shows_plain_steer():
 def test_prompt_message_with_pending_shows_count_and_queued():
     """_prompt_message includes the count and 'queued' when pending_count > 0."""
     manager, _ = _make_manager()
-    manager._pending_count = 3
+    manager._enqueued_total = 3  # monotonic model: badge = max(0, 3 - 0) = 3
     msg = manager._prompt_message()
     text = msg.value
     assert "queued" in text
@@ -323,8 +323,8 @@ async def test_prompt_message_updates_after_decrement_via_dispatcher():
     steer_cap = MagicMock()
     manager, _ = _make_manager(steer_cap=steer_cap)
 
-    # Manually set counter (bypassing _enqueue to avoid a real prompt_toolkit App)
-    manager._pending_count = 1
+    # Manually set enqueued counter (bypassing _enqueue to avoid a real prompt_toolkit App)
+    manager._enqueued_total = 1  # monotonic model: badge = max(0, 1 - 0) = 1
     assert "queued" in manager._prompt_message().value
 
     registry = _FakeHooksRegistry()
@@ -585,3 +585,267 @@ async def test_approval_provider_clears_arbiter_on_exception():
             await provider.request_approval(request)
 
     assert not arbiter.approval_active
+
+
+# ===========================================================================
+# Spec §4.2 — app-cli drain-semantics hardening (steering-drain.md)
+# A1–A6: failing-test-first per spec
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# A1: badge == enqueued_total − injected_total (FAILS under old code)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_badge_is_enqueued_minus_injected():
+    """Badge = max(0, _enqueued_total - _injected_total) at every step.
+
+    The monotonic pair (_enqueued_total, _injected_total) must be the
+    authoritative source of truth for pending_count.  Interleaves enqueue
+    and inject in several orders and asserts the invariant at each step.
+
+    **FAILS under old code** (lone _pending_count): _enqueued_total and
+    _injected_total do not exist → AttributeError.
+    """
+    steer_cap = MagicMock()
+    manager, _ = _make_manager(steer_cap=steer_cap)
+
+    # Initial state
+    assert manager._enqueued_total == 0  # AttributeError on old code → FAIL
+    assert manager._injected_total == 0
+    assert manager.pending_count == 0
+
+    # Enqueue first steer
+    await manager._enqueue("alpha")
+    assert manager._enqueued_total == 1
+    assert manager._injected_total == 0
+    assert manager.pending_count == max(0, 1 - 0)  # 1
+
+    # Inject it
+    await manager.on_steering_injected("orchestrator:steering_injected", {})
+    assert manager._enqueued_total == 1
+    assert manager._injected_total == 1
+    assert manager.pending_count == max(0, 1 - 1)  # 0
+
+    # Enqueue two more in quick succession
+    await manager._enqueue("beta")
+    await manager._enqueue("gamma")
+    assert manager._enqueued_total == 3
+    assert manager._injected_total == 1
+    assert manager.pending_count == max(0, 3 - 1)  # 2
+
+    # Drain one
+    await manager.on_steering_injected("orchestrator:steering_injected", {})
+    assert manager.pending_count == max(0, 3 - 2)  # 1
+
+    # Drain the last
+    await manager.on_steering_injected("orchestrator:steering_injected", {})
+    assert manager.pending_count == max(0, 3 - 3)  # 0
+    assert manager._enqueued_total == 3
+    assert manager._injected_total == 3
+
+
+# ---------------------------------------------------------------------------
+# A2: badge never negative — regression guard under new model (PASSES now)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_extra_injected_event_cannot_drive_badge_negative():
+    """Extra inject events beyond enqueued count cannot drive badge below 0.
+
+    PASSES under old code (guard ``if _pending_count > 0``) and must continue
+    to pass under the monotonic model (``max(0, ...)``).  Added as an
+    explicit regression guard per spec §3.4.
+    """
+    steer_cap = MagicMock()
+    manager, _ = _make_manager(steer_cap=steer_cap)
+
+    registry = _FakeHooksRegistry()
+    registry.register("orchestrator:steering_injected", manager.on_steering_injected)
+
+    await manager._enqueue("one")
+    assert manager.pending_count == 1
+
+    # Fire 5 inject events — 4 more than enqueued
+    for _ in range(5):
+        await registry.emit("orchestrator:steering_injected", {})
+
+    assert manager.pending_count == 0
+    assert manager.pending_count >= 0  # explicit non-negative guard
+
+
+# ---------------------------------------------------------------------------
+# A3: lost inject event does not stick phantom (FAILS under old code)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lost_injected_event_does_not_stick_phantom():
+    """Monotonic pair self-heals: a late inject event drives the badge to 0.
+
+    Scenario: two steers are enqueued; one inject event is delayed (simulating
+    a lost/out-of-order event).  The badge reflects the true outstanding count
+    while the event is delayed.  When the delayed event finally arrives, the
+    badge self-heals to the correct value.
+
+    Under the old lone-decrement model the internal counter is a single
+    opaque int with no memory of how many events were received vs enqueued.
+    The monotonic pair makes the state fully inspectable.
+
+    **FAILS under old code**: _enqueued_total / _injected_total do not exist
+    → AttributeError.
+    """
+    steer_cap = MagicMock()
+    manager, _ = _make_manager(steer_cap=steer_cap)
+
+    # Enqueue two steers
+    await manager._enqueue("msg1")
+    await manager._enqueue("msg2")
+    assert manager._enqueued_total == 2  # AttributeError on old code → FAIL
+    assert manager._injected_total == 0
+    assert manager.pending_count == 2
+
+    # Only one inject event arrives (the other is "delayed")
+    await manager.on_steering_injected("orchestrator:steering_injected", {})
+    assert manager._enqueued_total == 2
+    assert manager._injected_total == 1
+    assert manager.pending_count == 1  # one genuinely outstanding
+
+    # The delayed inject event finally arrives — badge self-heals to 0
+    await manager.on_steering_injected("orchestrator:steering_injected", {})
+    assert manager._enqueued_total == 2
+    assert manager._injected_total == 2
+    assert manager.pending_count == 0  # no phantom "1 queued" remains
+
+
+# ---------------------------------------------------------------------------
+# A4: overflow shows visible rejection — regression guard (PASSES now)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_overflow_shows_visible_rejection():
+    """SteeringQueueFull raises a visible rejection; badge does NOT increment.
+
+    PASSES under old code (already working).  Added as explicit regression
+    guard per spec §3.1.
+    """
+    steer_cap = MagicMock(side_effect=_SteeringQueueFull("queue full"))
+    manager, _ = _make_manager(steer_cap=steer_cap)
+
+    await manager._enqueue("too much")
+
+    steer_cap.assert_called_once_with("too much")
+
+    printed = [str(c) for c in manager._console.print.call_args_list]
+    assert any("rejected" in msg.lower() for msg in printed), (
+        f"Expected visible 'rejected' message on overflow; got: {printed}"
+    )
+    # Badge must NOT increment on failure
+    assert manager.pending_count == 0
+
+
+# ---------------------------------------------------------------------------
+# A5: late steer ack communicates next-turn deferral (FAILS under old code)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_next_turn_steer_ack_communicates_deferral():
+    """When stop_event is set (turn ending/ended), _enqueue must print an ack
+    that communicates the steer will apply to the NEXT turn.
+
+    **FAILS under old code**: _enqueue always prints ``⧗ queued: …`` with no
+    stop_event check; there is no "next turn" acknowledgment.
+
+    Per spec §5.3 gate rule:
+      stop_event set   → ``⧗ queued for next turn: {text}``
+      stop_event clear → ``⧗ queued: {text}``  (unchanged)
+    """
+    steer_cap = MagicMock()
+    stop = asyncio.Event()
+    manager, _ = _make_manager(steer_cap=steer_cap, stop_event=stop)
+
+    # Simulate turn-ending state
+    stop.set()
+
+    await manager._enqueue("steer at turn end")
+
+    # steer_cap was still called — steer is enqueued (for the next turn)
+    steer_cap.assert_called_once_with("steer at turn end")
+
+    # Badge increments (the steer is in the orchestrator queue)
+    assert manager.pending_count == 1
+
+    # Ack must communicate "next turn"
+    printed = [str(c) for c in manager._console.print.call_args_list]
+    assert any("next turn" in msg.lower() for msg in printed), (
+        f"Expected 'next turn' in ack when stop_event is set; got: {printed}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_turn_steer_ack_does_not_say_next_turn():
+    """When stop_event is NOT set (turn live), the ack is ``⧗ queued: …``
+    without any "next turn" text.
+
+    Companion guard for A5 — verifies the normal live-turn path is unchanged.
+    PASSES under both old and new code.
+    """
+    steer_cap = MagicMock()
+    stop = asyncio.Event()
+    manager, _ = _make_manager(steer_cap=steer_cap, stop_event=stop)
+
+    # stop_event NOT set — turn is live
+    assert not stop.is_set()
+
+    await manager._enqueue("live steer")
+
+    steer_cap.assert_called_once_with("live steer")
+
+    printed = [str(c) for c in manager._console.print.call_args_list]
+    assert any("queued" in msg.lower() for msg in printed), (
+        f"Expected a 'queued' ack for live-turn steer; got: {printed}"
+    )
+    assert not any("next turn" in msg.lower() for msg in printed), (
+        f"Live-turn ack must NOT say 'next turn'; got: {printed}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# A6: ANSI/OSC escape split probe — xfail (parked, investigating §3.5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=False,
+    reason=(
+        "Probe for §3.5 of steering-drain.md: patch_stdout(raw=True) may "
+        "split an ANSI/OSC escape sequence across two writes with a prompt "
+        "redraw interleaved. Unconfirmed reproduction — tracking as risk. "
+        "Do NOT implement a fix without first reproducing corruption in a "
+        "real terminal session. Parked."
+    ),
+)
+@pytest.mark.asyncio
+async def test_split_ansi_escape_survives_prompt_redraw():
+    """PROBE: A split ANSI/OSC escape written across two flush-calls should
+    survive a prompt_toolkit ``app.invalidate()`` redraw interleaved between
+    the halves.
+
+    This test cannot be reproduced with the unit-test harness because
+    ``_input_provider`` is injected (no real ``_pt_session``, so
+    ``invalidate()`` is never called).  It is kept as a tracking placeholder
+    so the risk described in §3.5 stays visible in the test suite rather than
+    being silently closed.
+
+    Current status: unconfirmed reproduction.  Assess before fixing.
+    """
+    pytest.xfail(
+        "Cannot reproduce with unit-test harness (no real PTY / PromptSession). "
+        "Tracking per §3.5 of steering-drain.md. Reassess if real-terminal "
+        "corruption is observed."
+    )
