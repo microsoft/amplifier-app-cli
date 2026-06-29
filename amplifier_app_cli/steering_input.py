@@ -2,7 +2,7 @@
 
 ``SteeringInputManager`` runs a ``prompt_toolkit`` prompt pinned at the bottom
 of the terminal while the agent works a turn.  Typed input is forwarded to
-``session.steer()``; a live "N queued" badge in the bottom toolbar stays
+``session.steer()``; a live "N queued" badge in the prompt line stays
 visible until all steers have been drained by the orchestrator.
 
 Design notes
@@ -137,24 +137,6 @@ class SteeringInputManager:
         return HTML("  steer: ")
 
     # ------------------------------------------------------------------
-    # Bottom toolbar (callable passed to prompt_toolkit)
-    # ------------------------------------------------------------------
-
-    def _toolbar(self) -> str:
-        """Return badge text for the bottom toolbar.
-
-        Returns an empty string when there are no queued messages so
-        prompt_toolkit renders no toolbar strip.
-        """
-        if self._pending_count > 0:
-            s = "s" if self._pending_count != 1 else ""
-            return (
-                f"\u29d7 {self._pending_count} message{s} queued"
-                " \u00b7 applies after the current step"
-            )
-        return ""
-
-    # ------------------------------------------------------------------
     # Enqueue
     # ------------------------------------------------------------------
 
@@ -227,7 +209,6 @@ class SteeringInputManager:
                     prompt_task = asyncio.create_task(
                         self._pt_session.prompt_async(
                             message=_message,
-                            bottom_toolbar=self._toolbar,
                         )
                     )
 

@@ -2,8 +2,8 @@
 
 Tests the SteeringInputManager introduced in the anchored-input + queued-badge
 feature.  All tests cover the logic layer (_enqueue, on_steering_injected,
-_toolbar, run() with injected input) so no real TTY or prompt_toolkit app is
-required.
+_prompt_message, run() with injected input) so no real TTY or prompt_toolkit
+app is required.
 
 Spec coverage
 ~~~~~~~~~~~~~
@@ -286,49 +286,6 @@ async def test_overflow_surfaced():
     )
     # Counter must NOT increment on failure
     assert manager.pending_count == 0
-
-
-# ---------------------------------------------------------------------------
-# Toolbar text
-# ---------------------------------------------------------------------------
-
-
-def test_toolbar_empty_when_no_pending():
-    """Toolbar returns empty string when pending_count == 0."""
-    manager, _ = _make_manager()
-    assert manager._toolbar() == ""
-
-
-def test_toolbar_singular_when_one_pending():
-    """Toolbar shows 'message' (singular) when pending_count == 1."""
-    steer_cap = MagicMock()
-    manager, _ = _make_manager(steer_cap=steer_cap)
-    manager._pending_count = 1
-    toolbar = manager._toolbar()
-    assert "1 message queued" in toolbar
-    assert "messages" not in toolbar
-
-
-def test_toolbar_plural_when_multiple_pending():
-    """Toolbar shows 'messages' (plural) when pending_count > 1."""
-    manager, _ = _make_manager()
-    manager._pending_count = 3
-    toolbar = manager._toolbar()
-    assert "3 messages queued" in toolbar
-
-
-def test_toolbar_contains_queued_indicator():
-    """Toolbar includes the ⧗ indicator when messages are pending."""
-    manager, _ = _make_manager()
-    manager._pending_count = 2
-    toolbar = manager._toolbar()
-    assert "\u29d7" in toolbar  # ⧗
-
-
-def test_toolbar_empty_string_hides_strip():
-    """Toolbar returning '' causes prompt_toolkit to hide the bottom strip."""
-    manager, _ = _make_manager()
-    assert manager._toolbar() == ""
 
 
 # ---------------------------------------------------------------------------
