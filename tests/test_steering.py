@@ -494,6 +494,117 @@ async def test_teardown_cancel_is_clean():
 
 
 # ---------------------------------------------------------------------------
+# Ctrl-C regression: _CtrlCInterrupt must not escape run() as a crash
+# ---------------------------------------------------------------------------
+# Background: the old code used PromptSession(interrupt_exception=KeyboardInterrupt).
+# When Ctrl-C was pressed, prompt_toolkit called app.exit(exception=KeyboardInterrupt()).
+# That KeyboardInterrupt propagated through the prompt_async() coroutine and into
+# asyncio's Task.__step_run_and_handle_result(), which:
+#
+#     except (KeyboardInterrupt, SystemExit) as exc:
+#         super().set_exception(exc)
+#         raise   ← re-raised!
+#
+# The re-raise escaped through Handle._run() (also re-raises KeyboardInterrupt),
+# through EventLoop._run_once(), and straight into asyncio.run() — crashing the
+# process.  No try/except in user code can intercept it at that stage.
+#
+# Fix: PromptSession(interrupt_exception=_CtrlCInterrupt) where _CtrlCInterrupt
+# is a plain Exception subclass.  asyncio stores it normally (no re-raise), so
+# await prompt_task raises _CtrlCInterrupt in the normal place and the
+# except _CtrlCInterrupt: continue clause in run() handles it.
+# ---------------------------------------------------------------------------
+
+
+def test_ctrl_c_interrupt_sentinel_is_plain_exception():
+    """_CtrlCInterrupt must be a regular Exception, not a BaseException.
+
+    If it were KeyboardInterrupt (or any BaseException that is not also an
+    Exception), asyncio's Task.__step_run_and_handle_result() would re-raise it
+    after storing it, crashing asyncio.run().
+    """
+    from amplifier_app_cli.steering_input import _CtrlCInterrupt
+
+    assert issubclass(_CtrlCInterrupt, Exception), (
+        "_CtrlCInterrupt must be a plain Exception subclass so asyncio's task "
+        "machinery does NOT re-raise it"
+    )
+    assert not issubclass(_CtrlCInterrupt, KeyboardInterrupt), (
+        "_CtrlCInterrupt must NOT be KeyboardInterrupt; using KeyboardInterrupt "
+        "triggers the Task.__step_run_and_handle_result() re-raise bug"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_during_prompt_does_not_crash_run_loop():
+    """_CtrlCInterrupt raised by the prompt is caught; run() continues normally.
+
+    Regression test for: Ctrl-C during the steering prompt crashed
+    asyncio.run() because KeyboardInterrupt escaped asyncio's task machinery.
+
+    The fix uses PromptSession(interrupt_exception=_CtrlCInterrupt).  This
+    test verifies that:
+    1. When the input provider raises _CtrlCInterrupt, run() does NOT exit/crash.
+    2. run() continues processing and enqueues the NEXT input normally.
+    """
+    from amplifier_app_cli.steering_input import _CtrlCInterrupt
+
+    call_count = 0
+    # Gate that fires when steer_cap is actually invoked (not just when the
+    # input coroutine returns — the enqueue happens one await later).
+    steer_called = asyncio.Event()
+
+    captured_texts: list[str] = []
+
+    def recording_steer_cap(text: str) -> None:
+        captured_texts.append(text)
+        steer_called.set()
+
+    async def mock_input() -> str | None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # Simulate Ctrl-C: prompt_async() would raise _CtrlCInterrupt
+            raise _CtrlCInterrupt()
+        if call_count == 2:
+            # Normal input on the next iteration — proves run() continued
+            return "steer text"
+        # Block so stop_event can terminate cleanly
+        await asyncio.sleep(10)
+        return None
+
+    stop = asyncio.Event()
+    manager = SteeringInputManager(
+        steer_cap=recording_steer_cap,
+        arbiter=None,
+        stop_event=stop,
+        console=MagicMock(),
+        _input_provider=mock_input,
+    )
+
+    run_task = asyncio.create_task(manager.run())
+
+    # Wait until steer_cap is actually called (proves loop continued + enqueued)
+    await asyncio.wait_for(steer_called.wait(), timeout=1.0)
+
+    # "steer text" was forwarded to steer_cap (loop continued after _CtrlCInterrupt)
+    assert captured_texts == ["steer text"], (
+        f"Expected ['steer text'] after Ctrl-C recovery, got {captured_texts}"
+    )
+
+    # run() must still be alive (stop_event not yet set, not crashed)
+    assert not run_task.done(), "run() unexpectedly exited after _CtrlCInterrupt"
+
+    # Clean up
+    stop.set()
+    run_task.cancel()
+    try:
+        await asyncio.wait_for(run_task, timeout=1.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+
+
+# ---------------------------------------------------------------------------
 # StdinArbiter unit tests (unchanged)
 # ---------------------------------------------------------------------------
 
@@ -749,41 +860,41 @@ async def test_overflow_shows_visible_rejection():
 
 
 # ---------------------------------------------------------------------------
-# A5: late steer ack communicates next-turn deferral (FAILS under old code)
+# A5: turn-end steer is NOT sent, and the ack is honest (no false promise)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_next_turn_steer_ack_communicates_deferral():
-    """When stop_event is set (turn ending/ended), _enqueue must print an ack
-    that communicates the steer will apply to the NEXT turn.
+async def test_turn_end_steer_is_not_sent_and_ack_is_honest():
+    """When stop_event is set (turn ending/ended), a steer would be wiped by the
+    orchestrator's execute()-entry clear() before the next turn — so _enqueue must
+    NOT forward it and must NOT promise "next turn". It acks honestly instead.
 
-    **FAILS under old code**: _enqueue always prints ``⧗ queued: …`` with no
-    stop_event check; there is no "next turn" acknowledgment.
-
-    Per spec §5.3 gate rule:
-      stop_event set   → ``⧗ queued for next turn: {text}``
-      stop_event clear → ``⧗ queued: {text}``  (unchanged)
+    Guards against the false-promise bug a DTU run caught: acking
+    "queued for next turn" while the orchestrator discards the steer.
     """
     steer_cap = MagicMock()
     stop = asyncio.Event()
     manager, _ = _make_manager(steer_cap=steer_cap, stop_event=stop)
 
-    # Simulate turn-ending state
+    # Simulate turn-ending/ended state
     stop.set()
 
     await manager._enqueue("steer at turn end")
 
-    # steer_cap was still called — steer is enqueued (for the next turn)
-    steer_cap.assert_called_once_with("steer at turn end")
+    # NOT forwarded — the orchestrator would clear it at next execute() entry.
+    steer_cap.assert_not_called()
 
-    # Badge increments (the steer is in the orchestrator queue)
-    assert manager.pending_count == 1
+    # Badge must NOT increment for an undelivered steer (no phantom "1 queued").
+    assert manager.pending_count == 0
 
-    # Ack must communicate "next turn"
+    # Ack is honest: says it was not sent, and does NOT falsely promise "next turn".
     printed = [str(c) for c in manager._console.print.call_args_list]
-    assert any("next turn" in msg.lower() for msg in printed), (
-        f"Expected 'next turn' in ack when stop_event is set; got: {printed}"
+    assert any("not sent" in msg.lower() for msg in printed), (
+        f"Expected an honest 'not sent' ack when the turn has ended; got: {printed}"
+    )
+    assert not any("next turn" in msg.lower() for msg in printed), (
+        f"Ack must NOT falsely promise 'next turn'; got: {printed}"
     )
 
 

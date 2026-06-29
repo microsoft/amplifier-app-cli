@@ -28,9 +28,41 @@ Correctness interactions handled
 2. **StdinArbiter** – when ``arbiter.approval_active`` is ``True`` the running
    ``prompt_async()`` task is cancelled (releasing the terminal), the manager
    waits for approval to finish, then restarts the prompt.
-3. **Ctrl-C / SIGINT** – ``KeyboardInterrupt`` raised from ``prompt_async()``
-   is caught and the loop continues; the ``sigint_handler`` installed by
-   ``_execute_with_interrupt`` has already updated the cancellation token.
+3. **Ctrl-C / SIGINT** – Two independent events arrive when Ctrl-C is pressed:
+   the OS SIGINT signal and the ``\\x03`` TTY byte read by prompt_toolkit.
+
+   Without special handling, prompt_toolkit's default ``c-c`` / ``<sigint>``
+   key binding calls ``app.exit(exception=KeyboardInterrupt())``.  That
+   ``KeyboardInterrupt`` propagates through the ``prompt_async()`` coroutine
+   and into asyncio's ``Task.__step_run_and_handle_result()``, which catches
+   ``KeyboardInterrupt``/``SystemExit`` and *re-raises* after storing the
+   exception (CPython 3.11+).  The re-raise then escapes through
+   ``Handle._run()`` (also re-raises ``KeyboardInterrupt``) and
+   ``EventLoop._run_once()`` straight into ``asyncio.run()`` — crashing the
+   process before any ``except KeyboardInterrupt`` clause in user code can
+   catch it.  The ``except KeyboardInterrupt: continue`` that appears in
+   ``run()`` around ``await prompt_task`` is therefore unreachable when the
+   default binding is in use.
+
+   Additionally, prompt_toolkit's ``Application.run_async()`` calls
+   ``loop.add_signal_handler(SIGINT, ...)`` which **overrides** the
+   ``signal.signal(SIGINT, sigint_handler)`` installed by
+   ``_execute_with_interrupt``, so that handler (which updates the
+   cancellation token) is never invoked.
+
+   The fix uses two ``PromptSession`` parameters together:
+
+   * ``interrupt_exception=_CtrlCInterrupt`` — replaces ``KeyboardInterrupt``
+     with a plain ``Exception`` subclass.  asyncio's task machinery stores it
+     as a normal task exception (no re-raise), so ``await prompt_task`` raises
+     it in the normal place and the ``except _CtrlCInterrupt: continue`` clause
+     in ``run()`` catches it cleanly.
+
+   * ``handle_sigint=False`` passed to ``prompt_async()`` — prevents
+     ``Application.run_async()`` from calling ``loop.add_signal_handler()``,
+     leaving ``sigint_handler`` active so the cancellation token is updated
+     correctly for graceful → immediate cancellation.
+
 4. **Teardown** – ``stop_event.set()`` + ``task.cancel()`` + ``await`` in the
    ``finally`` block of ``_execute_with_interrupt``; the inner polling loop
    honours ``stop_event`` within the next 50 ms tick.
@@ -47,6 +79,21 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+class _CtrlCInterrupt(Exception):
+    """Sentinel raised by the steering PromptSession when Ctrl-C is pressed.
+
+    Using a plain ``Exception`` subclass instead of ``KeyboardInterrupt``
+    prevents asyncio's ``Task.__step_run_and_handle_result()`` from re-raising
+    the exception after storing it (CPython 3.11+ re-raises only
+    ``KeyboardInterrupt`` and ``SystemExit``).  The re-raise would otherwise
+    escape through ``Handle._run()`` and crash ``asyncio.run()``.
+
+    The actual SIGINT signal is handled separately by the ``sigint_handler``
+    installed in ``_execute_with_interrupt`` (kept active because we pass
+    ``handle_sigint=False`` to ``prompt_async()``).
+    """
 
 
 class SteeringInputManager:
@@ -159,9 +206,11 @@ class SteeringInputManager:
         Empty / whitespace-only *text* is silently ignored (not forwarded).
         All other failures are surfaced as visible console messages (fail-loud).
 
-        Ack gating (§5.3 of steering-drain.md):
-          * ``stop_event`` **not** set (turn live): ``⧗ queued: {text}``
-          * ``stop_event`` **set** (turn ending/ended): ``⧗ queued for next turn: {text}``
+        Turn-end gating:
+          * ``stop_event`` **not** set (turn live): forward + ``⧗ queued: {text}``
+          * ``stop_event`` **set** (turn ending/ended): do NOT forward — the
+            orchestrator's execute()-entry clear() would discard it — and print
+            an honest "turn ended — not sent" ack instead of a false promise.
         """
         if not text.strip():
             return  # Silently ignore blank / whitespace-only lines
@@ -173,16 +222,23 @@ class SteeringInputManager:
             )
             return
 
+        # Turn already ending/ended: a steer enqueued now is wiped by the
+        # orchestrator's execute()-entry clear() before the next turn runs, so it
+        # would NOT be delivered. Be honest (no false "queued for next turn"
+        # promise) and do not enqueue it. Cross-turn delivery is the parked
+        # FollowUpQueue's job, not the mid-turn SteeringQueue's.
+        if self._stop_event.is_set():
+            self._console.print(
+                f"[yellow]\u29d7 turn ended \u2014 not sent: {text}\n"
+                "  steering applies mid-turn; resend it while the agent is "
+                "working.[/yellow]"
+            )
+            return
+
         try:
             self._steer_cap(text)
             self._enqueued_total += 1
-            # Gate the ack on whether the turn is still live (§5.3 steering-drain.md).
-            # stop_event set  → steer will apply to the NEXT turn (turn ending/ended)
-            # stop_event clear → steer will be consumed by the current turn (live)
-            if self._stop_event.is_set():
-                self._console.print(f"[dim]\u29d7 queued for next turn: {text}[/dim]")
-            else:
-                self._console.print(f"[dim]\u29d7 queued: {text}[/dim]")
+            self._console.print(f"[dim]\u29d7 queued: {text}[/dim]")
             # Refresh the prompt so the callable message re-renders with the new count.
             if self._pt_session is not None:
                 try:
@@ -206,7 +262,13 @@ class SteeringInputManager:
         if self._input_provider is None:
             from prompt_toolkit import PromptSession
 
-            self._pt_session = PromptSession()
+            # interrupt_exception=_CtrlCInterrupt: replace the default
+            # KeyboardInterrupt with a plain Exception subclass so that asyncio's
+            # Task.__step_run_and_handle_result() does NOT re-raise after storing
+            # the exception.  The re-raise only applies to KeyboardInterrupt /
+            # SystemExit (CPython 3.11+) and would otherwise propagate through
+            # Handle._run() → _run_once() → asyncio.run(), crashing the process.
+            self._pt_session = PromptSession(interrupt_exception=_CtrlCInterrupt)
             # Pass a callable so prompt_toolkit re-evaluates the message on each
             # app.invalidate() call, keeping the queued count live in the prompt.
             _message: Any = self._prompt_message
@@ -231,6 +293,12 @@ class SteeringInputManager:
                     prompt_task = asyncio.create_task(
                         self._pt_session.prompt_async(
                             message=_message,
+                            # handle_sigint=False: do NOT let prompt_toolkit call
+                            # loop.add_signal_handler(SIGINT, ...), which would
+                            # override the sigint_handler installed by
+                            # _execute_with_interrupt and prevent the cancellation
+                            # token from being updated when Ctrl-C is pressed.
+                            handle_sigint=False,
                         )
                     )
 
@@ -294,10 +362,21 @@ class SteeringInputManager:
                     text = await prompt_task
                 except asyncio.CancelledError:
                     continue
+                except _CtrlCInterrupt:
+                    # Ctrl-C while the steering prompt was active.
+                    # PromptSession raised _CtrlCInterrupt (not KeyboardInterrupt)
+                    # so asyncio's task machinery stores it normally and does NOT
+                    # re-raise, allowing this except clause to be reached.
+                    # The OS SIGINT was handled by sigint_handler in
+                    # _execute_with_interrupt (kept active via handle_sigint=False),
+                    # which updated the cancellation token.  The poll loop in
+                    # _execute_with_interrupt will detect the cancellation on its
+                    # next 50 ms tick and cancel execute_task.
+                    continue
                 except KeyboardInterrupt:
-                    # Ctrl-C: sigint_handler in _execute_with_interrupt has
-                    # already updated the cancellation token.  Just continue —
-                    # the poll loop will detect it and cancel execute_task.
+                    # Safety net: should not be raised with the current
+                    # PromptSession(interrupt_exception=_CtrlCInterrupt) setup,
+                    # but kept in case a future code path reaches this point.
                     continue
                 except EOFError:
                     # Ctrl-D: user is done with steering input.
