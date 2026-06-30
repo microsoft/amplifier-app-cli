@@ -293,24 +293,25 @@ async def test_overflow_surfaced():
 # ---------------------------------------------------------------------------
 
 
-def test_prompt_message_no_pending_shows_plain_steer():
-    """_prompt_message returns a plain 'steer:' prompt when no messages are queued."""
+def test_prompt_message_no_pending_hides_steer_label():
+    """_prompt_message hides the 'steer' label (empty) when no messages are queued."""
     manager, _ = _make_manager()
     msg = manager._prompt_message()
-    # HTML.value holds the raw string; check it contains 'steer' and NOT 'queued'.
+    # HTML.value holds the raw string; the 'steer' label is hidden, and no 'queued'.
     text = msg.value
-    assert "steer" in text
+    assert "steer" not in text
     assert "queued" not in text
 
 
 def test_prompt_message_with_pending_shows_count_and_queued():
-    """_prompt_message includes the count and 'queued' when pending_count > 0."""
+    """_prompt_message shows the count + 'queued' (no 'steer' label) when pending_count > 0."""
     manager, _ = _make_manager()
     manager._enqueued_total = 3  # monotonic model: badge = max(0, 3 - 0) = 3
     msg = manager._prompt_message()
     text = msg.value
     assert "queued" in text
     assert "3" in text
+    assert "steer" not in text
 
 
 @pytest.mark.asyncio

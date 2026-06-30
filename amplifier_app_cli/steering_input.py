@@ -186,15 +186,15 @@ class SteeringInputManager:
         prompt_toolkit re-evaluates it on each ``app.invalidate()`` call,
         keeping the queued count visible without bottom-toolbar CPR support.
 
-        When N messages are queued: ``"  steer (N queued ⧗): "``
-        When no messages are pending: ``"  steer: "``
+        When N messages are queued: ``"  (N queued ⧗) "``
+        When no messages are pending: empty string (the "steer" label is hidden).
         """
         from prompt_toolkit.formatted_text import HTML
 
         n = self.pending_count  # derived from monotonic pair
         if n > 0:
-            return HTML(f"  steer ({n} queued \u29d7): ")
-        return HTML("  steer: ")
+            return HTML(f"  ({n} queued \u29d7) ")
+        return HTML("")
 
     # ------------------------------------------------------------------
     # Enqueue
