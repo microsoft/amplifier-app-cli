@@ -116,12 +116,24 @@ class SteeringInputManager:
         stop_event: asyncio.Event,
         console: Any,
         *,
+        command_processor: Any | None = None,
+        session: Any = None,
         _input_provider: (Callable[[], Coroutine[Any, Any, str | None]] | None) = None,
+        _mentions_expander: (
+            Callable[[Any, str], Coroutine[Any, Any, str]] | None
+        ) = None,
     ) -> None:
         self._steer_cap = steer_cap
         self._arbiter = arbiter
         self._stop_event = stop_event
         self._console = console
+        # Reuse path (docs/designs/steering-input-reuse.md, Fork A, locked):
+        # the SAME CommandProcessor + session used by the REPL, so steered
+        # input goes through the SAME classification + @-mention expansion.
+        # Both optional (None preserves the old raw-passthrough behavior) so
+        # existing constructors/tests are unaffected.
+        self._command_processor = command_processor
+        self._session = session
         # Monotonic pair — increment-only counters that are the single source
         # of truth for the badge.  Badge = max(0, _enqueued_total - _injected_total).
         # Order-insensitive: cannot go negative; self-heals once events catch up.
@@ -132,6 +144,10 @@ class SteeringInputManager:
         self._pt_session: Any = None
         # Injectable for tests (avoids real TTY requirement).
         self._input_provider = _input_provider
+        # Injectable for tests (avoids importing the real main.py module).
+        # When None, the real amplifier_app_cli.main.process_runtime_mentions
+        # is lazily imported in _enqueue -- same function the REPL calls.
+        self._mentions_expander = _mentions_expander
 
     # ------------------------------------------------------------------
     # Public state
@@ -234,6 +250,40 @@ class SteeringInputManager:
                 "working.[/yellow]"
             )
             return
+
+        # Reuse path (docs/designs/steering-input-reuse.md, Fork A, locked):
+        # run steered text through the SAME CommandProcessor.process_input the
+        # REPL uses, then the SAME process_runtime_mentions @-mention
+        # expansion, before delivering it.  command_processor is optional
+        # (None preserves the old raw-passthrough behavior for any caller that
+        # does not wire it).
+        if self._command_processor is not None:
+            action, data = self._command_processor.process_input(text)
+
+            if action != "prompt":
+                # Locked command policy: REJECT-ALL mid-turn. No /mode
+                # whitelist, no handle_command call on the steering path \u2014
+                # an honest, actionable rejection instead of silent drop or
+                # raw injection.
+                self._console.print(
+                    f"[yellow]\u29d7 commands aren't applied mid-turn \u2014 finish "
+                    f"or cancel the turn first, then run it: {text}[/yellow]"
+                )
+                return
+
+            expander = self._mentions_expander
+            if expander is None:
+                from .main import process_runtime_mentions as expander
+
+            try:
+                text = await expander(self._session, data["text"])
+            except Exception as exc:
+                # Must never strand the drain loop: catch, fail loud, do not
+                # steer a half-expanded message.
+                self._console.print(
+                    f"[red]\u29d7 couldn't expand mentions: {exc}[/red]"
+                )
+                return
 
         try:
             self._steer_cap(text)

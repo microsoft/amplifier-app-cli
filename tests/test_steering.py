@@ -961,3 +961,233 @@ async def test_split_ansi_escape_survives_prompt_redraw():
         "Tracking per §3.5 of steering-drain.md. Reassess if real-terminal "
         "corruption is observed."
     )
+
+
+# ===========================================================================
+# Steering input reuse -- @-mention expansion + mid-turn command rejection
+# (docs/designs/steering-input-reuse.md, "Decisions (locked, post-council)")
+#
+# Fork A (locked): _enqueue reuses the EXISTING CommandProcessor.process_input
+# + process_runtime_mentions directly -- no shared wrapper, no REPL changes.
+# Command policy (locked): REJECT-ALL mid-turn -- no /mode whitelist, no
+# handle_command call on the steering path.
+#
+# These tests construct SteeringInputManager with the new ``command_processor``
+# / ``session`` / ``_mentions_expander`` constructor kwargs that do not exist
+# yet on current code -- they MUST fail (TypeError: unexpected keyword
+# argument) until SteeringInputManager.__init__ is updated.
+# ===========================================================================
+
+
+def _make_reuse_manager(
+    *,
+    steer_cap=None,
+    command_processor=None,
+    session=None,
+    mentions_expander=None,
+    stop_event: asyncio.Event | None = None,
+) -> tuple[SteeringInputManager, asyncio.Event]:
+    """Construct a SteeringInputManager wired for the input-reuse path.
+
+    Kept separate from ``_make_manager`` so the pre-existing 30 tests are
+    unaffected by this helper (and by the constructor surface it exercises).
+    """
+    stop = stop_event or asyncio.Event()
+    console = _make_console()
+    manager = SteeringInputManager(
+        steer_cap,
+        None,  # arbiter
+        stop,
+        console,
+        command_processor=command_processor,
+        session=session,
+        _mentions_expander=mentions_expander,
+    )
+    return manager, stop
+
+
+@pytest.mark.asyncio
+async def test_steered_mention_input_is_expanded_before_steer():
+    """A steered '@file.py look at this' is classified as a prompt by the
+    SAME CommandProcessor.process_input used by the REPL, then @-mentions are
+    expanded via the SAME process_runtime_mentions -- steer_cap must receive
+    the EXPANDED text, not the raw '@file.py ...' string.
+
+    FAILS now: SteeringInputManager.__init__ does not accept
+    command_processor/session/_mentions_expander, so this raises TypeError.
+    """
+    raw = "@file.py look at this"
+    expanded_text = "<context_file path='file.py'>...</context_file>\nlook at this"
+
+    command_processor = MagicMock()
+    command_processor.process_input.return_value = ("prompt", {"text": raw})
+
+    expander_calls: list[tuple[Any, str]] = []
+
+    async def fake_expander(session, text):
+        expander_calls.append((session, text))
+        return expanded_text
+
+    steer_cap = MagicMock()
+    session_sentinel = object()
+
+    manager, _ = _make_reuse_manager(
+        steer_cap=steer_cap,
+        command_processor=command_processor,
+        session=session_sentinel,
+        mentions_expander=fake_expander,
+    )
+
+    await manager._enqueue(raw)
+
+    command_processor.process_input.assert_called_once_with(raw)
+    assert expander_calls == [(session_sentinel, raw)]
+    # The critical assertion: steer_cap got the EXPANDED text, not the raw one.
+    steer_cap.assert_called_once_with(expanded_text)
+    assert manager.pending_count == 1
+
+
+@pytest.mark.parametrize("steered_text", ["/mode plan", "/foo"])
+@pytest.mark.asyncio
+async def test_steered_slash_command_is_rejected_mid_turn(steered_text):
+    """A steered slash command (whitelisted /mode or unrecognized /foo) is
+    REJECTED mid-turn per the locked command policy -- NOT applied, NOT
+    injected raw. steer_cap must not be called; badge must not increment;
+    an honest, actionable rejection must be printed. No handle_command call.
+
+    FAILS now: current _enqueue has no command-classification step at all and
+    forwards the raw slash text straight to steer_cap.
+    """
+    command_processor = MagicMock()
+    command_processor.process_input.return_value = (
+        "handle_mode" if steered_text.startswith("/mode") else "unknown_command",
+        {"command": steered_text.split()[0]},
+    )
+
+    steer_cap = MagicMock()
+    manager, _ = _make_reuse_manager(
+        steer_cap=steer_cap,
+        command_processor=command_processor,
+        session=object(),
+    )
+
+    await manager._enqueue(steered_text)
+
+    steer_cap.assert_not_called()
+    assert manager.pending_count == 0
+    # No handle_command path exists on the manager at all -- nothing to call.
+    assert not command_processor.handle_command.called
+
+    printed = [str(c) for c in manager._console.print.call_args_list]
+    assert any("mid-turn" in msg.lower() and steered_text in msg for msg in printed), (
+        f"Expected an honest mid-turn rejection naming the command; got: {printed}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_steered_mention_expansion_exception_is_caught_fail_loud():
+    """If process_runtime_mentions raises (bad/huge/missing @path, permission
+    error), _enqueue must catch it, print a fail-loud console message, NOT
+    call steer_cap, NOT increment the badge, and the exception must NEVER
+    escape (it would strand the drain loop per the locked edge-handling
+    requirement).
+
+    FAILS now: no expansion step exists, so nothing can raise from it and
+    this test fails on the missing constructor kwargs (TypeError).
+    """
+    command_processor = MagicMock()
+    command_processor.process_input.return_value = (
+        "prompt",
+        {"text": "@missing/huge/file.bin look"},
+    )
+
+    async def boom_expander(session, text):
+        raise PermissionError("cannot read @missing/huge/file.bin")
+
+    steer_cap = MagicMock()
+    manager, _ = _make_reuse_manager(
+        steer_cap=steer_cap,
+        command_processor=command_processor,
+        session=object(),
+        mentions_expander=boom_expander,
+    )
+
+    # Must not raise -- the exception must never escape _enqueue.
+    await manager._enqueue("@missing/huge/file.bin look")
+
+    steer_cap.assert_not_called()
+    assert manager.pending_count == 0
+
+    printed = [str(c) for c in manager._console.print.call_args_list]
+    assert any(
+        "couldn't expand mentions" in msg.lower() or "expand" in msg.lower()
+        for msg in printed
+    ), f"Expected a fail-loud expansion-error message; got: {printed}"
+
+
+@pytest.mark.asyncio
+async def test_steered_plain_text_still_steered_no_regression():
+    """Plain text with no @-mentions and no slash still reaches steer_cap
+    (via the same classify + expand pipeline; the expander returns it
+    unchanged since there's nothing to expand). No regression vs. the old
+    raw-passthrough behavior for the common case.
+    """
+    command_processor = MagicMock()
+    command_processor.process_input.return_value = ("prompt", {"text": "hello"})
+
+    async def passthrough_expander(session, text):
+        return text  # nothing to expand
+
+    steer_cap = MagicMock()
+    manager, _ = _make_reuse_manager(
+        steer_cap=steer_cap,
+        command_processor=command_processor,
+        session=object(),
+        mentions_expander=passthrough_expander,
+    )
+
+    await manager._enqueue("hello")
+
+    steer_cap.assert_called_once_with("hello")
+    assert manager.pending_count == 1
+
+
+@pytest.mark.parametrize(
+    "text,action,data",
+    [
+        ("/", "unknown_command", {"command": "/"}),
+        ("//x", "unknown_command", {"command": "//x"}),
+        ("@", "prompt", {"text": "@"}),
+        ("@ ", "prompt", {"text": "@ "}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_steered_delimiter_only_inputs_do_not_crash(text, action, data):
+    """Delimiter-only inputs ('/', '//x', '@', '@ ') must classify + handle
+    without crashing -- per the locked edge-handling requirements. '/' and
+    '//x' classify as unrecognized commands (rejected, not steered); '@' and
+    '@ ' classify as prompts (steered after expansion).
+    """
+    command_processor = MagicMock()
+    command_processor.process_input.return_value = (action, data)
+
+    async def identity_expander(session, t):
+        return t
+
+    steer_cap = MagicMock()
+    manager, _ = _make_reuse_manager(
+        steer_cap=steer_cap,
+        command_processor=command_processor,
+        session=object(),
+        mentions_expander=identity_expander,
+    )
+
+    # Must not raise.
+    await manager._enqueue(text)
+
+    if action == "prompt":
+        steer_cap.assert_called_once()
+        assert manager.pending_count == 1
+    else:
+        steer_cap.assert_not_called()
+        assert manager.pending_count == 0

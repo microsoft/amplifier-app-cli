@@ -2473,7 +2473,7 @@ def cli(ctx, install_completion):
         )
 
 
-async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> str:
+async def process_runtime_mentions(session: AmplifierSession, prompt: str) -> str:
     """Process @mentions in user input at runtime.
 
     Returns the prompt with <context_file> XML blocks prepended for any resolved
@@ -2806,6 +2806,12 @@ async def interactive_chat(
             arbiter=session.coordinator.get_capability("cli.stdin_arbiter"),
             stop_event=_stop_event,
             console=console,
+            # Reuse path (docs/designs/steering-input-reuse.md, Fork A,
+            # locked): steered input goes through the SAME
+            # CommandProcessor.process_input + process_runtime_mentions the
+            # REPL uses (see _enqueue), not a second raw-injection path.
+            command_processor=command_processor,
+            session=session,
         )
 
         # Register a hook so the badge counter decrements each time the
@@ -2941,7 +2947,7 @@ async def interactive_chat(
         console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
 
         # Process runtime @mentions in initial prompt
-        initial_prompt = await _process_runtime_mentions(session, initial_prompt)
+        initial_prompt = await process_runtime_mentions(session, initial_prompt)
         await _execute_with_interrupt(initial_prompt)
 
     # === REPL LOOP ===
@@ -2963,7 +2969,7 @@ async def interactive_chat(
                         console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
 
                         # Process runtime @mentions in user input
-                        _expanded_text = await _process_runtime_mentions(
+                        _expanded_text = await process_runtime_mentions(
                             session, data["text"]
                         )
                         await _execute_with_interrupt(_expanded_text)
@@ -2980,7 +2986,7 @@ async def interactive_chat(
                                 console.print(
                                     "\n[dim]Processing... (Ctrl+C to cancel)[/dim]"
                                 )
-                                text = await _process_runtime_mentions(session, text)
+                                text = await process_runtime_mentions(session, text)
                                 await _execute_with_interrupt(text)
                             else:
                                 console.print(f"[cyan]{text}[/cyan]")
@@ -2997,7 +3003,7 @@ async def interactive_chat(
                             console.print(
                                 "\n[dim]Processing... (Ctrl+C to cancel)[/dim]"
                             )
-                            trailing_prompt = await _process_runtime_mentions(
+                            trailing_prompt = await process_runtime_mentions(
                                 session, trailing_prompt
                             )
                             await _execute_with_interrupt(trailing_prompt)
@@ -3138,7 +3144,7 @@ async def execute_single(
                 )
 
         # Process runtime @mentions in user input
-        prompt = await _process_runtime_mentions(session, prompt)
+        prompt = await process_runtime_mentions(session, prompt)
 
         if verbose:
             console.print(f"[dim]Executing: {prompt}[/dim]")
