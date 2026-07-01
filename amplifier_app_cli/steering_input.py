@@ -164,6 +164,30 @@ class SteeringInputManager:
         """
         return max(0, self._enqueued_total - self._injected_total)
 
+    @property
+    def is_composing(self) -> bool:
+        """True while the user is actively mid-typing a steer.
+
+        THROTTLE/COALESCE spike (revertable, display-only): consumed by
+        hooks-streaming-ui via ``_execute_with_interrupt`` publishing this
+        property as a callback (``hooks_instance._composing_fn``), so the
+        streaming Live preview can reduce its repaint cadence instead of
+        fighting the pinned steering prompt for the terminal.
+
+        True iff a ``PromptSession`` is currently open (``_pt_session`` is
+        not None) AND its in-progress buffer text is non-empty.  Defensive:
+        ``_pt_session`` is None (not prompting) or any exception while
+        inspecting prompt_toolkit internals (e.g. a torn-down Application)
+        resolves to False rather than raising.
+        """
+        session = self._pt_session
+        if session is None:
+            return False
+        try:
+            return bool(session.app.current_buffer.text)
+        except Exception:
+            return False
+
     # ------------------------------------------------------------------
     # Hook callback (registered on "orchestrator:steering_injected")
     # ------------------------------------------------------------------

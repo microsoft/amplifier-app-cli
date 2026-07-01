@@ -337,6 +337,78 @@ async def test_prompt_message_updates_after_decrement_via_dispatcher():
 
 
 # ---------------------------------------------------------------------------
+# is_composing: mid-turn compose-state used by the streaming-ui coalesce gate
+# ---------------------------------------------------------------------------
+#
+# FAILING-TEST-FIRST: SteeringInputManager has no ``is_composing`` property
+# on an unmodified checkout, so these tests fail with AttributeError until
+# the property is added.  Spec:
+#   - _pt_session is None (not prompting)          -> False
+#   - _pt_session exists, current_buffer.text == "" -> False
+#   - _pt_session exists, current_buffer.text != "" -> True
+#   - any exception while inspecting internals      -> False (defensive)
+
+
+class _FakeBuffer:
+    def __init__(self, text: str = "") -> None:
+        self.text = text
+
+
+class _FakeApp:
+    def __init__(self, text: str = "") -> None:
+        self.current_buffer = _FakeBuffer(text)
+
+
+class _FakePromptSession:
+    """Minimal stand-in for prompt_toolkit's PromptSession.
+
+    Only exposes the ``.app.current_buffer.text`` path that
+    ``is_composing`` reads -- no real TTY / Application required.
+    """
+
+    def __init__(self, text: str = "") -> None:
+        self.app: Any = _FakeApp(text)
+
+
+class _RaisingApp:
+    """Simulates a torn-down / errored Application: any attribute access raises."""
+
+    @property
+    def current_buffer(self) -> Any:
+        raise RuntimeError("app not running")
+
+
+def test_is_composing_false_when_no_session():
+    """No _pt_session (not currently prompting) -> is_composing is False."""
+    manager, _ = _make_manager()
+    assert manager._pt_session is None
+    assert manager.is_composing is False
+
+
+def test_is_composing_false_when_buffer_empty():
+    """_pt_session exists but current_buffer.text is empty -> False."""
+    manager, _ = _make_manager()
+    manager._pt_session = _FakePromptSession("")
+    assert manager.is_composing is False
+
+
+def test_is_composing_true_when_buffer_nonempty():
+    """_pt_session exists and current_buffer.text is non-empty -> True."""
+    manager, _ = _make_manager()
+    manager._pt_session = _FakePromptSession("draft steer text")
+    assert manager.is_composing is True
+
+
+def test_is_composing_false_on_internal_exception():
+    """Any exception while inspecting prompt_toolkit internals -> False (defensive)."""
+    manager, _ = _make_manager()
+    broken_session = _FakePromptSession.__new__(_FakePromptSession)
+    broken_session.app = _RaisingApp()
+    manager._pt_session = broken_session
+    assert manager.is_composing is False
+
+
+# ---------------------------------------------------------------------------
 # run() with injected input: arbiter releases reader when approval_active
 # ---------------------------------------------------------------------------
 

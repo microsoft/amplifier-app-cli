@@ -2826,6 +2826,23 @@ async def interactive_chat(
                 name=f"_steering_badge_{id(_manager)}",
             )
 
+        # THROTTLE/COALESCE spike (revertable, display-only): publish this
+        # turn's compose-state so hooks-streaming-ui can coalesce its
+        # streaming Live repaints while the user is composing a mid-turn
+        # steer, instead of fighting the pinned steering prompt for the
+        # terminal. GUARDED for back-compat: an unmodified (or older)
+        # hooks-streaming-ui module won't have registered the
+        # "ui.streaming_hooks" capability (get_capability returns None) or
+        # won't define _composing_fn on its StreamingUIHooks instance
+        # (hasattr guard) -- either way app-cli runs unaffected.
+        _streaming_hooks_instance = session.coordinator.get_capability(
+            "ui.streaming_hooks"
+        )
+        if _streaming_hooks_instance is not None and hasattr(
+            _streaming_hooks_instance, "_composing_fn"
+        ):
+            _streaming_hooks_instance._composing_fn = _manager.is_composing
+
         try:
             # patch_stdout() must wrap the ENTIRE turn so that any Rich writes
             # (from session.execute(), hooks, etc.) flow through the proxy and
@@ -2938,6 +2955,13 @@ async def interactive_chat(
         finally:
             signal.signal(signal.SIGINT, original_handler)
             # Don't reset cancellation here - session.py handles status
+            # THROTTLE/COALESCE spike: clear the compose-state callback so a
+            # stale bound method from this (finished) manager can never be
+            # queried by a future turn's streaming-ui hooks instance.
+            if _streaming_hooks_instance is not None and hasattr(
+                _streaming_hooks_instance, "_composing_fn"
+            ):
+                _streaming_hooks_instance._composing_fn = None
 
     # Execute initial prompt if provided
     if initial_prompt:
