@@ -2839,15 +2839,15 @@ async def interactive_chat(
         # terminal. GUARDED for back-compat: an unmodified (or older)
         # hooks-streaming-ui module won't have registered the
         # "ui.streaming_hooks" capability (get_capability returns None) or
-        # won't define _composing_fn on its StreamingUIHooks instance
+        # won't expose set_composing_source on its StreamingUIHooks instance
         # (hasattr guard) -- either way app-cli runs unaffected.
         _streaming_hooks_instance = session.coordinator.get_capability(
             "ui.streaming_hooks"
         )
         if _streaming_hooks_instance is not None and hasattr(
-            _streaming_hooks_instance, "_composing_fn"
+            _streaming_hooks_instance, "set_composing_source"
         ):
-            _streaming_hooks_instance._composing_fn = _manager.is_composing
+            _streaming_hooks_instance.set_composing_source(_manager.is_composing)
 
         try:
             # patch_stdout() must wrap the ENTIRE turn so that any Rich writes
@@ -2970,9 +2970,9 @@ async def interactive_chat(
             # stale bound method from this (finished) manager can never be
             # queried by a future turn's streaming-ui hooks instance.
             if _streaming_hooks_instance is not None and hasattr(
-                _streaming_hooks_instance, "_composing_fn"
+                _streaming_hooks_instance, "set_composing_source"
             ):
-                _streaming_hooks_instance._composing_fn = None
+                _streaming_hooks_instance.set_composing_source(None)
 
     # Execute initial prompt if provided
     if initial_prompt:
