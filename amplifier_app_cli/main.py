@@ -2815,11 +2815,17 @@ async def interactive_chat(
         )
 
         # Register a hook so the badge counter decrements each time the
-        # orchestrator drains one queued steer.  Use a unique name derived
-        # from the manager's id so multiple turns don't accumulate callbacks.
+        # orchestrator drains one queued steer.  Capture the unregister handle
+        # and release it in the finally below: a fresh SteeringInputManager is
+        # created every turn, so without an explicit unregister the callbacks
+        # (each bound to a now-finished manager) accumulate on the shared hooks
+        # registry across turns.  The unique per-turn name does NOT prevent
+        # that -- it defeats name-based dedup -- the unregister does.  Mirrors
+        # the register/unregister-in-finally pattern in session_spawner.py.
         _hooks = session.coordinator.get("hooks")
+        _unregister_badge_hook = None
         if _hooks and hasattr(_hooks, "register"):
-            _hooks.register(
+            _unregister_badge_hook = _hooks.register(
                 "orchestrator:steering_injected",
                 _manager.on_steering_injected,
                 priority=500,
@@ -2955,6 +2961,11 @@ async def interactive_chat(
         finally:
             signal.signal(signal.SIGINT, original_handler)
             # Don't reset cancellation here - session.py handles status
+            # Unregister this turn's badge hook so callbacks bound to this
+            # finished per-turn manager don't accumulate on the shared hooks
+            # registry across turns.
+            if _unregister_badge_hook is not None:
+                _unregister_badge_hook()
             # THROTTLE/COALESCE spike: clear the compose-state callback so a
             # stale bound method from this (finished) manager can never be
             # queried by a future turn's streaming-ui hooks instance.
