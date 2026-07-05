@@ -160,9 +160,17 @@ def _load_all_matrices(matrix_files: list[Path]) -> dict[str, dict[str, Any]]:
 
 
 def _get_configured_provider_types(settings: AppSettings) -> set[str]:
-    """Get the set of configured provider type names (without 'provider-' prefix).
+    """Get the set of configured provider identifiers a matrix candidate may reference.
 
-    E.g., {'anthropic', 'openai', 'github-copilot'}
+    Includes both the bare module type (without 'provider-' prefix) AND each
+    provider's instance `id:`, when set. Matrix candidates can legitimately
+    reference a provider either way -- by bare module type (single-instance
+    providers) or by instance id (multi-instance disambiguation, e.g. two
+    provider-chat-completions entries named "qwen-3.6" and "ornith") -- and
+    both forms must be recognized as "configured" here to match how
+    find_provider_by_type() resolves candidates at actual routing time.
+
+    E.g., {'anthropic', 'openai', 'github-copilot', 'ornith', 'qwen-3.6'}
     """
     providers = settings.get_provider_overrides()
     types: set[str] = set()
@@ -172,6 +180,9 @@ def _get_configured_provider_types(settings: AppSettings) -> set[str]:
             types.add(module.removeprefix("provider-"))
         else:
             types.add(module)
+        provider_id = p.get("id")
+        if provider_id:
+            types.add(provider_id)
     return types
 
 
