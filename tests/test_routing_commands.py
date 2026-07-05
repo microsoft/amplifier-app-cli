@@ -1187,6 +1187,107 @@ class TestRoutingCreateModelCache:
         )
 
 
+class TestModelDiscoveryResolvesInstanceId:
+    """Tests that model-discovery call sites resolve instance ids to module ids.
+
+    _get_provider_names() returns an instance id (e.g. "ornith") instead of a
+    module type name when multiple instances of the same module are
+    configured. get_provider_models() -> load_provider_class() needs the real
+    module id (e.g. "provider-chat-completions"), not the instance id, or
+    class resolution silently fails and no models are returned ("could not
+    fetch models" in the wizard). _build_model_cache() and
+    _list_models_for_provider() must resolve via _resolve_provider_module()
+    before calling get_provider_models(), exactly like the already-working
+    call site in _edit_role().
+    """
+
+    def _seed_multi_instance(self, settings):
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-chat-completions",
+                    "id": "qwen-3.6",
+                    "config": {"base_url": "http://box:8080/v1"},
+                },
+                {
+                    "module": "provider-chat-completions",
+                    "id": "ornith",
+                    "config": {"base_url": "http://r11:8081/v1"},
+                },
+            ],
+        )
+
+    def test_build_model_cache_resolves_instance_ids_for_both_providers(
+        self, tmp_path
+    ):
+        """_build_model_cache must fetch models for BOTH instance ids of a
+        multi-instance module -- not silently return [] for either."""
+        from unittest.mock import MagicMock
+
+        from amplifier_app_cli.commands.routing import _build_model_cache
+
+        settings = _make_settings(tmp_path)
+        self._seed_multi_instance(settings)
+
+        mock_model = MagicMock()
+        mock_model.id = "some-model"
+        mock_model.name = "some-model"
+
+        calls: list[str] = []
+
+        def fake_get_provider_models(provider_name, collected_config=None):
+            calls.append(provider_name)
+            return [mock_model]
+
+        with patch(
+            "amplifier_app_cli.commands.routing.get_provider_models",
+            side_effect=fake_get_provider_models,
+        ):
+            result = _build_model_cache(["qwen-3.6", "ornith"], settings)
+
+        # get_provider_models must be called with the resolved module id
+        # (provider-chat-completions), never the raw instance id.
+        assert calls == ["provider-chat-completions", "provider-chat-completions"], (
+            f"Expected get_provider_models called with resolved module id "
+            f"for both instances, got: {calls}"
+        )
+
+        # Cache must still be keyed by the ORIGINAL instance id so downstream
+        # lookups by display name (e.g. model_cache.get(provider)) work.
+        assert result.get("qwen-3.6") == [mock_model], (
+            f"Expected models cached under instance id 'qwen-3.6', got: {result}"
+        )
+        assert result.get("ornith") == [mock_model], (
+            f"Expected models cached under instance id 'ornith', got: {result}"
+        )
+
+    def test_list_models_for_provider_resolves_instance_id(self, tmp_path):
+        """_list_models_for_provider must resolve an instance id to its
+        module id before calling get_provider_models()."""
+        from amplifier_app_cli.commands.routing import _list_models_for_provider
+
+        settings = _make_settings(tmp_path)
+        self._seed_multi_instance(settings)
+
+        captured: dict[str, str] = {}
+
+        def fake_get_provider_models(provider_name, collected_config=None):
+            captured["provider_name"] = provider_name
+            return []
+
+        with patch(
+            "amplifier_app_cli.provider_loader.get_provider_models",
+            side_effect=fake_get_provider_models,
+        ):
+            _list_models_for_provider("ornith", settings=settings)
+
+        assert captured.get("provider_name") == "provider-chat-completions", (
+            f"Expected get_provider_models called with resolved module id "
+            f"'provider-chat-completions', got: {captured.get('provider_name')}"
+        )
+
+
 # ============================================================
 # Task 5: DRY _prompt_provider_and_model() — calls _prompt_model_selection()
 # ============================================================

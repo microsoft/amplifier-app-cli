@@ -863,7 +863,13 @@ def _build_model_cache(
         for pname in provider_names:
             try:
                 cfg = _get_provider_config(pname, settings)
-                models = get_provider_models(pname, collected_config=cfg)
+                # pname may be an instance id (e.g. "ornith") when multiple
+                # instances of one module are configured -- resolve to the
+                # actual module id so the right provider implementation is
+                # loaded for model listing. The cache stays keyed by the
+                # original pname so downstream lookups by display name work.
+                provider_id = _resolve_provider_module(pname, settings)
+                models = get_provider_models(provider_id, collected_config=cfg)
                 model_cache[pname] = models
             except Exception:
                 model_cache[pname] = []
@@ -891,7 +897,19 @@ def _list_models_for_provider(
         collected_config = (
             _get_provider_config(provider_name, settings) if settings else None
         )
-        models = get_provider_models(provider_name, collected_config=collected_config)
+        # provider_name may be an instance id (e.g. "ornith") when multiple
+        # instances of one module are configured -- resolve to the actual
+        # module id so the right provider implementation is loaded.
+        provider_id = (
+            _resolve_provider_module(provider_name, settings)
+            if settings
+            else (
+                f"provider-{provider_name}"
+                if not provider_name.startswith("provider-")
+                else provider_name
+            )
+        )
+        models = get_provider_models(provider_id, collected_config=collected_config)
         return [str(getattr(m, "name", m)) for m in models]
     except Exception:
         return []
