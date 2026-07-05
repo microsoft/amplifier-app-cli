@@ -18,6 +18,21 @@ Scope = Literal["local", "project", "global", "session"]
 ScopeType = Literal["local", "project", "global"]
 
 
+def get_custom_routing_dir() -> Path:
+    """Single source of truth for where user-authored routing matrices live.
+
+    ``amplifier routing save`` / ``amplifier init`` (see
+    ``commands/routing.py`` ``save_custom_matrix()``) write user matrices
+    here. Both ``commands/routing.py`` (``_discover_matrix_files()``, used by
+    ``amplifier routing list``/``show``) and ``runtime/config.py``
+    (``resolve_bundle_config()``, used at session start) must resolve this
+    same directory, or a matrix that is *listable* can silently fail to be
+    *loadable* -- the exact "Matrix file not found -- routing disabled" bug
+    this function exists to prevent by construction.
+    """
+    return Path.home() / ".amplifier" / "routing"
+
+
 @dataclass(frozen=True)
 class NotificationFlags:
     """Resolved notification enablement. Single source of truth for the two
