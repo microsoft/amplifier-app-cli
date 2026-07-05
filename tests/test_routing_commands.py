@@ -1218,9 +1218,7 @@ class TestModelDiscoveryResolvesInstanceId:
             ],
         )
 
-    def test_build_model_cache_resolves_instance_ids_for_both_providers(
-        self, tmp_path
-    ):
+    def test_build_model_cache_resolves_instance_ids_for_both_providers(self, tmp_path):
         """_build_model_cache must fetch models for BOTH instance ids of a
         multi-instance module -- not silently return [] for either."""
         from unittest.mock import MagicMock
@@ -2647,3 +2645,122 @@ class TestApplyHookOverridesGuard:
         notify_entries = [h for h in result if h.get("module") == "hooks-notify"]
         assert len(notify_entries) == 1
         assert notify_entries[0]["config"]["topic"] == "alerts"
+
+
+# ============================================================
+# Bug fix: instance-id providers not recognized as "configured"
+# ============================================================
+#
+# _get_configured_provider_types() only ever returned bare module type
+# names (e.g. "chat-completions"), never a provider's instance `id:`
+# (e.g. "ornith", "qwen-3.6"). Matrix candidates that legitimately
+# reference a provider by instance id (added for disambiguation when
+# 2+ instances of the same module are configured) were therefore always
+# reported as "not configured" by the compatibility check, role
+# resolver, and detail-view display -- even though the same id resolves
+# correctly at real routing/delegate time via find_provider_by_type().
+
+
+def _seed_multi_instance_providers(settings: AppSettings) -> None:
+    """Seed two instances of the same module, distinguished by id.
+
+    Mirrors the real-world bug report: two provider-chat-completions
+    entries for different backends ("qwen-3.6" and "ornith"), each with
+    a distinct `id:` but the same `module:`.
+    """
+    scope_settings = settings._read_scope("global")
+    scope_settings["config"] = {
+        "providers": [
+            {
+                "id": "qwen-3.6",
+                "module": "provider-chat-completions",
+                "config": {"priority": 1},
+            },
+            {
+                "id": "ornith",
+                "module": "provider-chat-completions",
+                "config": {"priority": 2},
+            },
+        ]
+    }
+    settings._write_scope("global", scope_settings)
+
+
+class TestConfiguredProviderTypesInstanceId:
+    """Bug fix: instance ids must be recognized as 'configured', not just bare module types."""
+
+    def test_includes_bare_module_type_and_both_instance_ids(self, tmp_path):
+        """Today only {'chat-completions'} is returned; must also include instance ids."""
+        from amplifier_app_cli.commands.routing import _get_configured_provider_types
+
+        settings = _make_settings(tmp_path)
+        _seed_multi_instance_providers(settings)
+
+        result = _get_configured_provider_types(settings)
+
+        assert result == {"chat-completions", "qwen-3.6", "ornith"}, (
+            f"Expected bare module type AND both instance ids, got: {result}"
+        )
+
+    def test_check_compatibility_counts_instance_id_candidate_as_covered(
+        self, tmp_path
+    ):
+        """A role whose only candidate names an instance id ('ornith') must count as covered."""
+        from amplifier_app_cli.commands.routing import (
+            _check_compatibility,
+            _get_configured_provider_types,
+        )
+
+        settings = _make_settings(tmp_path)
+        _seed_multi_instance_providers(settings)
+        provider_types = _get_configured_provider_types(settings)
+
+        matrix_data = {
+            "name": "ornith-only",
+            "roles": {
+                "general": {
+                    "candidates": [
+                        {"provider": "ornith", "model": "ornith-1.0-35b"},
+                    ],
+                },
+            },
+        }
+
+        covered, total = _check_compatibility(matrix_data, provider_types)
+
+        assert (covered, total) == (1, 1), (
+            f"Expected role served by instance id 'ornith' to be covered, got {covered}/{total}"
+        )
+
+    def test_show_matrix_details_marks_instance_id_candidate_as_active(self, tmp_path):
+        """The waterfall display must mark an instance-id candidate as configured/active, not 'not configured'."""
+        from amplifier_app_cli.commands.routing import _show_matrix_details
+
+        settings = _make_settings(tmp_path)
+        _seed_multi_instance_providers(settings)
+
+        matrix = {
+            "name": "ornith-detail",
+            "description": "Instance id detail test",
+            "updated": "2026-07-05",
+            "roles": {
+                "general": {
+                    "description": "Versatile catch-all",
+                    "candidates": [
+                        {"provider": "ornith", "model": "ornith-1.0-35b"},
+                    ],
+                }
+            },
+        }
+
+        con, buf = _make_test_console()
+        with patch("amplifier_app_cli.commands.routing.console", con):
+            _show_matrix_details(matrix, settings)
+
+        rendered = buf.getvalue()
+        assert "not configured" not in rendered, (
+            f"Instance-id candidate 'ornith' incorrectly shown as not configured:\n{rendered}"
+        )
+        assert "active" in rendered, (
+            f"Instance-id candidate 'ornith' should be marked active:\n{rendered}"
+        )
