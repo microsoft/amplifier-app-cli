@@ -11,7 +11,7 @@ from typing import Any
 
 from rich.console import Console
 
-from ..lib.settings import AppSettings, NotificationFlags
+from ..lib.settings import AppSettings, NotificationFlags, get_custom_routing_dir
 from ..lib.merge_utils import merge_module_items
 from ..lib.merge_utils import merge_tool_configs
 
@@ -224,6 +224,17 @@ async def resolve_bundle_config(
             routing_hook_override["config"]["default_matrix"] = routing_config["matrix"]
         if "overrides" in routing_config:
             routing_hook_override["config"]["overrides"] = routing_config["overrides"]
+        # Always advertise the user's custom routing dir so a matrix named by
+        # routing.matrix that ONLY exists at get_custom_routing_dir() (e.g.
+        # written by `amplifier init`/`amplifier routing save`) is resolvable
+        # at runtime, not just listable via `amplifier routing list`. This is
+        # the fix for "Matrix file not found -- routing disabled" when the
+        # matrix genuinely exists in ~/.amplifier/routing/.
+        custom_routing_dir = get_custom_routing_dir()
+        if custom_routing_dir.is_dir():
+            routing_hook_override["config"]["custom_routing_dirs"] = [
+                str(custom_routing_dir)
+            ]
         # Change A: Enrich with any extra keys from overrides.hooks-routing.config.
         # Routing-section keys (default_matrix, overrides) always take precedence over
         # whatever came from the general config overrides block, so the routing-built keys

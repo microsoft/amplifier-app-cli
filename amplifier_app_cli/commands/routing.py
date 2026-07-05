@@ -14,7 +14,7 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
-from ..lib.settings import AppSettings, Scope
+from ..lib.settings import AppSettings, Scope, get_custom_routing_dir
 from ..provider_loader import get_provider_info, get_provider_models
 from ..ui.item_renderer import ItemRenderer
 from ..ui.view_policy import resolve_view, view_flags
@@ -132,8 +132,8 @@ def _discover_matrix_files() -> list[Path]:
         if routing_dir.is_dir():
             files.extend(routing_dir.glob("*.yaml"))
 
-    # Custom user matrices
-    custom_dir = home / ".amplifier" / "routing"
+    # Custom user matrices (single source of truth: get_custom_routing_dir())
+    custom_dir = get_custom_routing_dir()
     if custom_dir.is_dir():
         files.extend(custom_dir.glob("*.yaml"))
 
@@ -737,32 +737,104 @@ def save_custom_matrix(
 # ============================================================
 
 
+def _provider_type_name(p: dict[str, Any]) -> str:
+    """Strip the 'provider-' prefix from a provider entry's module name."""
+    module = p.get("module", "")
+    return (
+        module.removeprefix("provider-") if module.startswith("provider-") else module
+    )
+
+
 def _get_provider_names(settings: AppSettings) -> list[str]:
-    """Get list of unique configured provider type names."""
+    """Get list of provider selectors for routing matrix candidates.
+
+    Returns the short module type name (e.g. ``"anthropic"``) when exactly
+    one instance of that module is configured -- the common case, and what
+    the routing matrix resolver's type-name mode
+    (``find_provider_by_type()``) expects.
+
+    When MULTIPLE instances of the same module are configured (e.g. two
+    ``provider-chat-completions`` entries with distinct ``id:`` values, such
+    as ``qwen-3.6`` and ``ornith``), the bare type name is ambiguous: the
+    routing matrix resolver has no way to tell which mounted instance a
+    candidate naming just ``"chat-completions"`` should target, and would
+    silently resolve to whichever instance happens to be mounted under that
+    key. In that case each instance's ``id:`` is returned instead, so a
+    saved matrix (see ``save_custom_matrix()``) can address the exact
+    instance via ``find_provider_by_type()``'s instance-ID mode.
+    """
     providers = settings.get_provider_overrides()
+
+    # Count instances per module type first so ambiguous (multi-instance)
+    # types can be told apart from the common single-instance case.
+    type_counts: dict[str, int] = {}
+    for p in providers:
+        name = _provider_type_name(p)
+        if name:
+            type_counts[name] = type_counts.get(name, 0) + 1
+
     seen: set[str] = set()
     names: list[str] = []
     for p in providers:
-        module = p.get("module", "")
-        name = (
-            module.removeprefix("provider-")
-            if module.startswith("provider-")
-            else module
-        )
-        if name and name not in seen:
-            seen.add(name)
-            names.append(name)
+        name = _provider_type_name(p)
+        if not name:
+            continue
+        # Ambiguous (2+ instances of the same module): prefer the instance
+        # id, which is what makes the provider addressable in a matrix.
+        # Falls back to the type name if the instance has no id set -- a
+        # config the CLI can't disambiguate any further than before.
+        selector = p.get("id") or name if type_counts[name] > 1 else name
+        if selector not in seen:
+            seen.add(selector)
+            names.append(selector)
     return names
+
+
+def _resolve_provider_module(provider_selector: str, settings: AppSettings) -> str:
+    """Resolve a provider selector (type name or instance id) to its module id.
+
+    ``_get_provider_names()`` may return an instance id (e.g. ``"ornith"``)
+    instead of a module type name when multiple instances of one module are
+    configured. Model-listing helpers (``get_provider_models()``,
+    ``get_provider_info()``) need the actual module id (e.g.
+    ``"provider-chat-completions"``) to load the right provider
+    implementation -- passing the instance id straight through as
+    ``f"provider-{selector}"`` would look for a nonexistent
+    ``provider-ornith`` module.
+
+    Returns the module id with a ``provider-`` prefix. Falls back to
+    treating ``provider_selector`` as the type name itself when no matching
+    settings entry is found (preserves prior behavior for callers without a
+    matching provider override, e.g. defaults with no explicit config).
+    """
+    for p in settings.get_provider_overrides():
+        module = p.get("module", "")
+        if not module:
+            continue
+        if (
+            p.get("id") == provider_selector
+            or _provider_type_name(p) == provider_selector
+        ):
+            return module if module.startswith("provider-") else f"provider-{module}"
+    return (
+        f"provider-{provider_selector}"
+        if not provider_selector.startswith("provider-")
+        else provider_selector
+    )
 
 
 def _get_provider_config(
     provider_name: str, settings: AppSettings
 ) -> dict[str, Any] | None:
-    """Look up the stored config dict for a provider by type name or module name.
+    """Look up the stored config dict for a provider by type name, module name,
+    or instance id.
 
-    Accepts either the short type name (e.g. ``"anthropic"``) or the full module
-    name (e.g. ``"provider-anthropic"``).  Returns the provider's ``config``
-    sub-dict, or ``None`` if no matching provider is found.
+    Accepts the short type name (e.g. ``"anthropic"``), the full module name
+    (e.g. ``"provider-anthropic"``), or an instance ``id:`` (e.g.
+    ``"ornith"`` -- the selector _get_provider_names() returns for one of
+    multiple configured instances of the same module).  Returns the
+    provider's ``config`` sub-dict, or ``None`` if no matching provider is
+    found.
     """
     for p in settings.get_provider_overrides():
         p_module = p.get("module", "")
@@ -771,7 +843,11 @@ def _get_provider_config(
             if p_module.startswith("provider-")
             else p_module
         )
-        if p_type == provider_name or p_module == provider_name:
+        if (
+            p.get("id") == provider_name
+            or p_type == provider_name
+            or p_module == provider_name
+        ):
             return p.get("config", {})
     return None
 
@@ -865,8 +941,15 @@ def _prompt_provider_and_model(
 
     from ..provider_config_utils import _prompt_model_selection
 
+    # provider may be an instance id (e.g. "ornith") when multiple instances
+    # of one module are configured -- resolve to the actual module id so the
+    # right provider implementation is loaded for model listing.
     provider_id = (
-        f"provider-{provider}" if not provider.startswith("provider-") else provider
+        _resolve_provider_module(provider, settings)
+        if settings
+        else (
+            f"provider-{provider}" if not provider.startswith("provider-") else provider
+        )
     )
     selected = _prompt_model_selection(
         provider_id,
@@ -961,9 +1044,10 @@ def _edit_role(
         else None
     )
 
-    provider_id = (
-        f"provider-{provider}" if not provider.startswith("provider-") else provider
-    )
+    # provider may be an instance id (e.g. "ornith") when multiple instances
+    # of one module are configured -- resolve to the actual module id so the
+    # right provider implementation is loaded for model listing.
+    provider_id = _resolve_provider_module(provider, settings)
     selected_model = _prompt_model_selection(
         provider_id,
         default_model=default_model,

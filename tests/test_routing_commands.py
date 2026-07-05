@@ -675,10 +675,18 @@ def _seed_provider(settings: AppSettings, providers: list[dict]) -> None:
 
 
 class TestGetProviderNames:
-    """Tests for _get_provider_names() deduplication."""
+    """Tests for _get_provider_names() disambiguation.
 
-    def test_get_provider_names_deduplicates_same_module(self, tmp_path):
-        """Two providers sharing a module but with different ids yield one type name."""
+    BUG 4 regression coverage: two instances of the same module used to
+    silently collapse to one ambiguous type-name selector (e.g.
+    "chat-completions"), which the routing matrix resolver's
+    find_provider_by_type() cannot use to address a specific instance when
+    both are mounted under distinct ids (e.g. "qwen-3.6", "ornith").
+    """
+
+    def test_get_provider_names_disambiguates_multi_instance_by_id(self, tmp_path):
+        """Two providers sharing a module WITH different ids yield each
+        instance's id, not one collapsed/ambiguous type name."""
         from amplifier_app_cli.commands.routing import _get_provider_names
 
         settings = _make_settings(tmp_path)
@@ -692,7 +700,47 @@ class TestGetProviderNames:
 
         names = _get_provider_names(settings)
 
-        assert names == ["openai"], f"Expected ['openai'], got {names}"
+        assert names == ["openai-1", "openai-2"], (
+            f"Expected distinct instance ids, got {names}. Returning the bare "
+            "type name for both would make them indistinguishable to the "
+            "routing matrix resolver."
+        )
+
+    def test_get_provider_names_single_instance_uses_type_name(self, tmp_path):
+        """A single instance of a module (with or without an id) still uses
+        the short type name -- the common case, unaffected by the fix."""
+        from amplifier_app_cli.commands.routing import _get_provider_names
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [{"module": "provider-anthropic", "id": "my-anthropic"}],
+        )
+
+        names = _get_provider_names(settings)
+
+        assert names == ["anthropic"], f"Expected ['anthropic'], got {names}"
+
+    def test_get_provider_names_multi_instance_without_ids_falls_back_to_type(
+        self, tmp_path
+    ):
+        """Multiple instances of the same module with NO id set at all can't
+        be disambiguated any further than before -- falls back to the (still
+        ambiguous) type name rather than raising."""
+        from amplifier_app_cli.commands.routing import _get_provider_names
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {"module": "provider-openai"},
+                {"module": "provider-openai"},
+            ],
+        )
+
+        names = _get_provider_names(settings)
+
+        assert names == ["openai"]
 
     def test_get_provider_names_returns_all_unique_types(self, tmp_path):
         """Three providers with distinct modules all appear in the result."""
@@ -1845,6 +1893,82 @@ class TestGetProviderConfig:
         config = _get_provider_config("nonexistent", settings)
 
         assert config is None, f"Expected None for unknown provider, got: {config}"
+
+    def test_get_provider_config_finds_provider_by_instance_id(self, tmp_path):
+        """BUG 4 regression: when _get_provider_names() returns an instance id
+        (e.g. "ornith") for one of several multi-instance providers,
+        _get_provider_config() must be able to look up that exact instance's
+        config by id -- not just by type/module name."""
+        from amplifier_app_cli.commands.routing import _get_provider_config
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-chat-completions",
+                    "id": "qwen-3.6",
+                    "config": {"base_url": "http://r11:8080/v1"},
+                },
+                {
+                    "module": "provider-chat-completions",
+                    "id": "ornith",
+                    "config": {"base_url": "http://r11:8081/v1"},
+                },
+            ],
+        )
+
+        config = _get_provider_config("ornith", settings)
+
+        assert config is not None
+        assert config.get("base_url") == "http://r11:8081/v1", (
+            f"Expected ornith's own config (not qwen-3.6's), got: {config}"
+        )
+
+
+class TestResolveProviderModule:
+    """Tests for _resolve_provider_module() -- BUG 4 fix.
+
+    _get_provider_names() may return an instance id instead of a module type
+    name. Model-listing helpers need the actual module id to load the right
+    provider implementation; this resolves selector -> module id.
+    """
+
+    def test_resolves_instance_id_to_module(self, tmp_path):
+        from amplifier_app_cli.commands.routing import _resolve_provider_module
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {"module": "provider-chat-completions", "id": "qwen-3.6"},
+                {"module": "provider-chat-completions", "id": "ornith"},
+            ],
+        )
+
+        assert (
+            _resolve_provider_module("ornith", settings) == "provider-chat-completions"
+        )
+        assert (
+            _resolve_provider_module("qwen-3.6", settings)
+            == "provider-chat-completions"
+        )
+
+    def test_resolves_type_name_to_module(self, tmp_path):
+        from amplifier_app_cli.commands.routing import _resolve_provider_module
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(settings, [{"module": "provider-anthropic"}])
+
+        assert _resolve_provider_module("anthropic", settings) == "provider-anthropic"
+
+    def test_falls_back_to_selector_as_type_when_unmatched(self, tmp_path):
+        """No matching settings entry -- preserves prior naive behavior."""
+        from amplifier_app_cli.commands.routing import _resolve_provider_module
+
+        settings = _make_settings(tmp_path)
+
+        assert _resolve_provider_module("openai", settings) == "provider-openai"
 
 
 # ============================================================

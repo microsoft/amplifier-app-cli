@@ -3,6 +3,9 @@
 Tests the actual config override logic that was added to resolve_bundle_config().
 Exercises the code path directly and also through the full async function.
 """
+
+from pathlib import Path
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from amplifier_app_cli.lib.merge_utils import deep_merge
@@ -19,7 +22,9 @@ from amplifier_app_cli.runtime.config import (
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _apply_general_config_overrides(bundle_config: dict, config_overrides: dict) -> dict:
+def _apply_general_config_overrides(
+    bundle_config: dict, config_overrides: dict
+) -> dict:
     """Replicate the exact logic from resolve_bundle_config() lines 153-167.
 
     This IS the fix — copied verbatim so the test exercises the real behavior.
@@ -44,9 +49,7 @@ def _apply_general_config_overrides(bundle_config: dict, config_overrides: dict)
 class TestHookConfigOverridesApplied:
     def test_hook_config_merges_new_keys(self):
         """overrides.hook-ci.config adds new keys to hook config."""
-        bundle = {
-            "hooks": [{"module": "hook-ci", "config": {"base_key": "original"}}]
-        }
+        bundle = {"hooks": [{"module": "hook-ci", "config": {"base_key": "original"}}]}
         overrides = {"hook-ci": {"enable_graph": True, "uri": "bolt://localhost"}}
 
         _apply_general_config_overrides(bundle, overrides)
@@ -75,9 +78,7 @@ class TestHookConfigOverridesApplied:
 class TestToolConfigOverridesApplied:
     def test_tool_config_merges_new_keys(self):
         """overrides.tool-fs.config adds new keys to tool config."""
-        bundle = {
-            "tools": [{"module": "tool-fs", "config": {"root": "/tmp"}}]
-        }
+        bundle = {"tools": [{"module": "tool-fs", "config": {"root": "/tmp"}}]}
         overrides = {"tool-fs": {"timeout": 300}}
 
         _apply_general_config_overrides(bundle, overrides)
@@ -105,9 +106,7 @@ class TestProviderConfigOverridesApplied:
 class TestPrecedence:
     def test_dedicated_hook_override_wins_over_general(self):
         """Dedicated notification hook overrides take precedence."""
-        bundle = {
-            "hooks": [{"module": "hooks-notify", "config": {"base": True}}]
-        }
+        bundle = {"hooks": [{"module": "hooks-notify", "config": {"base": True}}]}
         general = {"hooks-notify": {"enabled": False, "topic": "general"}}
         dedicated = [{"module": "hooks-notify", "config": {"enabled": True}}]
 
@@ -124,9 +123,7 @@ class TestPrecedence:
 
     def test_dedicated_tool_override_wins_over_general(self):
         """Dedicated modules.tools[] overrides take precedence."""
-        bundle = {
-            "tools": [{"module": "tool-fs", "config": {"root": "/tmp"}}]
-        }
+        bundle = {"tools": [{"module": "tool-fs", "config": {"root": "/tmp"}}]}
         general = {"tool-fs": {"timeout": 100, "root": "/bad"}}
         dedicated = [{"module": "tool-fs", "config": {"timeout": 999}}]
 
@@ -138,9 +135,7 @@ class TestPrecedence:
 
     def test_dedicated_provider_override_wins_over_general(self):
         """Dedicated config.providers[] overrides take precedence."""
-        bundle = {
-            "providers": [{"module": "provider-x", "config": {"model": "old"}}]
-        }
+        bundle = {"providers": [{"module": "provider-x", "config": {"model": "old"}}]}
         general = {"provider-x": {"model": "general-model", "extra": "val"}}
         dedicated = [{"module": "provider-x", "config": {"model": "dedicated-model"}}]
 
@@ -253,7 +248,9 @@ class TestDeepMergeNestedConfigOverrides:
         assert ui["stream_tokens"] is True
         # Siblings that were NOT overridden must be preserved.
         # Shallow merge drops these — that is the bug this test catches.
-        assert ui["show_thinking_stream"] is True, "shallow merge dropped show_thinking_stream"
+        assert ui["show_thinking_stream"] is True, (
+            "shallow merge dropped show_thinking_stream"
+        )
         assert ui["show_tool_lines"] == 5, "shallow merge dropped show_tool_lines"
         assert ui["show_token_usage"] is True, "shallow merge dropped show_token_usage"
 
@@ -317,7 +314,9 @@ def _make_app_settings(config_overrides=None, **kwargs):
     settings.get_config_overrides.return_value = config_overrides or {}
     settings.get_provider_overrides.return_value = kwargs.get("provider_overrides", [])
     settings.get_tool_overrides.return_value = kwargs.get("tool_overrides", [])
-    settings.get_notification_hook_overrides.return_value = kwargs.get("hook_overrides", [])
+    settings.get_notification_hook_overrides.return_value = kwargs.get(
+        "hook_overrides", []
+    )
     settings.get_routing_config.return_value = kwargs.get("routing_config", None)
     settings.get_source_overrides.return_value = {}
     settings.get_module_sources.return_value = {}
@@ -581,6 +580,88 @@ class TestFullPipelineIntegration:
             f"routing.matrix ('bar') must beat overrides.hooks-routing.config.default_matrix "
             f"('foo'), got: {routing_entries[0]['config']}"
         )
+
+    @pytest.mark.asyncio
+    async def test_custom_routing_dir_injected_when_it_exists(self):
+        """Regression test for "Matrix file not found -- routing disabled":
+        when routing.matrix is set AND the user's custom routing dir
+        (get_custom_routing_dir()) exists on disk, resolve_bundle_config()
+        must inject custom_routing_dirs into the hooks-routing config so the
+        runtime hook (amplifier-bundle-routing-matrix) can find a matrix that
+        `amplifier init`/`amplifier routing save` wrote there -- not just list
+        it via `amplifier routing list`.
+        """
+        mount_plan = {"hooks": []}
+        mock_prepared = MagicMock()
+        mock_prepared.mount_plan = mount_plan
+        mock_prepared.bundle.load_agent_metadata = MagicMock()
+
+        settings = _make_app_settings(routing_config={"matrix": "ornith"})
+
+        with (
+            patch(
+                "amplifier_app_cli.lib.bundle_loader.prepare.load_and_prepare_bundle",
+                new_callable=AsyncMock,
+                return_value=mock_prepared,
+            ),
+            patch("amplifier_app_cli.paths.get_bundle_search_paths", return_value=[]),
+            patch("amplifier_app_cli.lib.bundle_loader.AppBundleDiscovery"),
+            patch(
+                "amplifier_app_cli.runtime.config.get_custom_routing_dir",
+                return_value=Path("/fake/home/.amplifier/routing"),
+            ),
+            patch.object(Path, "is_dir", return_value=True),
+        ):
+            result, _ = await resolve_bundle_config(
+                bundle_name="test", app_settings=settings
+            )
+
+        routing_entries = [
+            h for h in result["hooks"] if h.get("module") == "hooks-routing"
+        ]
+        assert len(routing_entries) == 1
+        cfg = routing_entries[0]["config"]
+        assert cfg.get("default_matrix") == "ornith"
+        assert cfg.get("custom_routing_dirs") == ["/fake/home/.amplifier/routing"], (
+            f"Expected custom_routing_dirs to be injected, got: {cfg}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_custom_routing_dir_not_injected_when_absent(self):
+        """When the user has no ~/.amplifier/routing/ directory at all, no
+        custom_routing_dirs key is injected -- the hook falls back to the
+        bundle's own routing dir exactly as before this fix."""
+        mount_plan = {"hooks": []}
+        mock_prepared = MagicMock()
+        mock_prepared.mount_plan = mount_plan
+        mock_prepared.bundle.load_agent_metadata = MagicMock()
+
+        settings = _make_app_settings(routing_config={"matrix": "balanced"})
+
+        with (
+            patch(
+                "amplifier_app_cli.lib.bundle_loader.prepare.load_and_prepare_bundle",
+                new_callable=AsyncMock,
+                return_value=mock_prepared,
+            ),
+            patch("amplifier_app_cli.paths.get_bundle_search_paths", return_value=[]),
+            patch("amplifier_app_cli.lib.bundle_loader.AppBundleDiscovery"),
+            patch(
+                "amplifier_app_cli.runtime.config.get_custom_routing_dir",
+                return_value=Path("/fake/home/.amplifier/routing"),
+            ),
+            patch.object(Path, "is_dir", return_value=False),
+        ):
+            result, _ = await resolve_bundle_config(
+                bundle_name="test", app_settings=settings
+            )
+
+        routing_entries = [
+            h for h in result["hooks"] if h.get("module") == "hooks-routing"
+        ]
+        assert len(routing_entries) == 1
+        cfg = routing_entries[0]["config"]
+        assert "custom_routing_dirs" not in cfg
 
     @pytest.mark.asyncio
     async def test_dedicated_overrides_win_in_full_pipeline(self):
