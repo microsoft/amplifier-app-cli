@@ -2024,6 +2024,79 @@ class TestGetProviderConfig:
             f"Expected ornith's own config (not qwen-3.6's), got: {config}"
         )
 
+    def test_selects_highest_priority_instance_when_type_is_ambiguous(self, tmp_path):
+        """BUG 2 regression: two instances of the same module, each with its
+        OWN distinct id (so ``get_provider_overrides()`` keeps them as two
+        separate entries -- id-less duplicates of the same module collapse
+        into one entry at the settings merge layer, which is a different,
+        already-handled case; see
+        test_get_provider_names_multi_instance_without_ids_falls_back_to_type).
+
+        When ``_get_provider_config()`` is called with the bare TYPE name
+        (e.g. ``"openai"``, as opposed to either instance's id), both entries
+        match on ``p_type == provider_name``. It must resolve to the
+        highest-priority (lowest priority number) instance -- not whichever
+        happens to be first in list order.
+
+        Config-spec-based, priority-aware resolution per amplifier-foundation
+        PR #267 / amplifier-bundle-routing-matrix PR #31.
+        """
+        from amplifier_app_cli.commands.routing import _get_provider_config
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-openai",
+                    "id": "openai-secondary",
+                    "config": {"priority": 2, "default_model": "wrong-instance"},
+                },
+                {
+                    "module": "provider-openai",
+                    "id": "openai-primary",
+                    "config": {"priority": 1, "default_model": "correct-instance"},
+                },
+            ],
+        )
+
+        config = _get_provider_config("openai", settings)
+
+        assert config is not None, "Expected a config dict, got None"
+        assert config.get("default_model") == "correct-instance", (
+            "_get_provider_config() must resolve to the highest-priority "
+            f"(lowest priority number) instance, got: {config}"
+        )
+
+    def test_selects_highest_priority_when_matched_by_module_name(self, tmp_path):
+        """Same priority-ambiguity bug, but matching via the full module name
+        (e.g. 'provider-anthropic') rather than the bare type name."""
+        from amplifier_app_cli.commands.routing import _get_provider_config
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-anthropic",
+                    "id": "anthropic-secondary",
+                    "config": {"priority": 5, "default_model": "wrong-instance"},
+                },
+                {
+                    "module": "provider-anthropic",
+                    "id": "anthropic-primary",
+                    "config": {"priority": 1, "default_model": "correct-instance"},
+                },
+            ],
+        )
+
+        config = _get_provider_config("provider-anthropic", settings)
+
+        assert config is not None
+        assert config.get("default_model") == "correct-instance", (
+            f"Expected the priority=1 instance's config, got: {config}"
+        )
+
 
 class TestResolveProviderModule:
     """Tests for _resolve_provider_module() -- BUG 4 fix.
