@@ -1086,12 +1086,32 @@ def _manage_edit_provider(
     if entry.get("source"):
         updated_entry["source"] = entry["source"]
 
+    # Update in settings — replace the matching entry in the target scope.
+    #
+    # Same anti-pattern (and same fix) as provider_edit(): the write-back
+    # must target the SAME entry that was resolved for reading, not
+    # independently re-match `name` against each per-scope candidate in
+    # isolation. Here `entry` was selected via list index into the merged,
+    # cross-scope `providers` view (settings.get_provider_overrides()) --
+    # which can itself have already collapsed 2+ id-less same-module
+    # instances into a single deep-merged row (see
+    # AppSettings._merge_provider_lists()). Re-matching `name` per
+    # candidate against the RAW per-scope list
+    # (`_find_provider_entry([p], name)`) discards any tie-break and hits
+    # whichever raw entry happens to be first in list order, regardless of
+    # which instance's values were actually shown to the user.
+    #
+    # Fix: resolve the target entry ONCE against the full scope_providers
+    # list (the same priority-based algorithm used elsewhere), then
+    # replace by object identity.
     name = entry.get("id") or _display_name(module_id)
     scope_providers = settings.get_scope_provider_overrides(scope)
+    target_entry = _find_provider_entry(scope_providers, name)
+
     new_list = []
     replaced = False
     for p in scope_providers:
-        if not replaced and _find_provider_entry([p], name) is not None:
+        if not replaced and target_entry is not None and p is target_entry:
             new_list.append(updated_entry)
             replaced = True
         else:
