@@ -187,21 +187,36 @@ class ProviderManager:
             logger.debug("get_provider_config: reading from merged settings")
 
         logger.debug(f"get_provider_config: found {len(providers)} providers")
+        matches: list[dict[str, Any]] = []
         for provider in providers:
             module = provider.get("module")
             logger.debug(
                 f"get_provider_config: checking module '{module}' against '{provider_id}'"
             )
             if module == provider_id:
-                config = provider.get("config", {})
-                logger.debug(
-                    f"get_provider_config: found matching config with keys: {list(config.keys())}"
-                )
-                return config
+                matches.append(provider)
+
+        if not matches:
+            logger.debug(
+                f"get_provider_config: no matching provider found for '{provider_id}'"
+            )
+            return None
+
+        # Multiple instances of the same module can be configured (distinct
+        # ids, different priorities). Matching on 'module' alone is
+        # ambiguous, so resolve deterministically to the highest-priority
+        # (lowest priority number) instance rather than the first in list
+        # order. Mirrors _select_provider_by_priority() in effective_config.py.
+        def _priority(p: dict[str, Any]) -> int:
+            config = p.get("config", {})
+            return config.get("priority", 100) if isinstance(config, dict) else 100
+
+        best = min(matches, key=_priority)
+        config = best.get("config", {})
         logger.debug(
-            f"get_provider_config: no matching provider found for '{provider_id}'"
+            f"get_provider_config: found matching config with keys: {list(config.keys())}"
         )
-        return None
+        return config
 
     def list_providers(self) -> list[tuple[str, str, str]]:
         """List available provider module IDs via dynamic discovery.
