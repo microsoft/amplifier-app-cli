@@ -2361,7 +2361,6 @@ class CommandProcessor:
             return True, f'Use the load_skill tool to load the skill "{skill_name}".'
 
 
-
 def get_module_search_paths() -> list[Path]:
     """
     Determine module search paths for ModuleLoader.
@@ -2474,7 +2473,7 @@ def cli(ctx, install_completion):
         )
 
 
-async def _process_runtime_mentions(session: AmplifierSession, prompt: str) -> str:
+async def process_runtime_mentions(session: AmplifierSession, prompt: str) -> str:
     """Process @mentions in user input at runtime.
 
     Returns the prompt with <context_file> XML blocks prepended for any resolved
@@ -2795,88 +2794,185 @@ async def interactive_chat(
 
         original_handler = signal.signal(signal.SIGINT, sigint_handler)
 
+        # Mid-turn steering: create the anchored-input manager.
+        # patch_stdout() (below) ensures all Rich console.print calls that
+        # originate from session.execute() or hooks appear ABOVE the pinned
+        # steering prompt rather than corrupting it.
+        from .steering_input import SteeringInputManager
+
+        _stop_event = asyncio.Event()
+        _manager = SteeringInputManager(
+            steer_cap=session.coordinator.get_capability("session.steer"),
+            arbiter=session.coordinator.get_capability("cli.stdin_arbiter"),
+            stop_event=_stop_event,
+            console=console,
+            # Reuse path (docs/designs/steering-input-reuse.md, Fork A,
+            # locked): steered input goes through the SAME
+            # CommandProcessor.process_input + process_runtime_mentions the
+            # REPL uses (see _enqueue), not a second raw-injection path.
+            command_processor=command_processor,
+            session=session,
+        )
+
+        # Register a hook so the badge counter decrements each time the
+        # orchestrator drains one queued steer.  Capture the unregister handle
+        # and release it in the finally below: a fresh SteeringInputManager is
+        # created every turn, so without an explicit unregister the callbacks
+        # (each bound to a now-finished manager) accumulate on the shared hooks
+        # registry across turns.  The unique per-turn name does NOT prevent
+        # that -- it defeats name-based dedup -- the unregister does.  Mirrors
+        # the register/unregister-in-finally pattern in session_spawner.py.
+        _hooks = session.coordinator.get("hooks")
+        _unregister_badge_hook = None
+        if _hooks and hasattr(_hooks, "register"):
+            _unregister_badge_hook = _hooks.register(
+                "orchestrator:steering_injected",
+                _manager.on_steering_injected,
+                priority=500,
+                name=f"_steering_badge_{id(_manager)}",
+            )
+
+        # THROTTLE/COALESCE spike (revertable, display-only): publish this
+        # turn's compose-state so hooks-streaming-ui can coalesce its
+        # streaming Live repaints while the user is composing a mid-turn
+        # steer, instead of fighting the pinned steering prompt for the
+        # terminal. GUARDED for back-compat: an unmodified (or older)
+        # hooks-streaming-ui module won't have registered the
+        # "ui.streaming_hooks" capability (get_capability returns None) or
+        # won't expose set_composing_source on its StreamingUIHooks instance
+        # (hasattr guard) -- either way app-cli runs unaffected.
+        _streaming_hooks_instance = session.coordinator.get_capability(
+            "ui.streaming_hooks"
+        )
+        if _streaming_hooks_instance is not None and hasattr(
+            _streaming_hooks_instance, "set_composing_source"
+        ):
+            _streaming_hooks_instance.set_composing_source(_manager.is_composing)
+
         try:
-            execute_task = asyncio.create_task(session.execute(prompt_text))
+            # patch_stdout() must wrap the ENTIRE turn so that any Rich writes
+            # (from session.execute(), hooks, etc.) flow through the proxy and
+            # appear above the pinned steering prompt rather than overwriting it.
+            # Rich's Console.file property reads sys.stdout dynamically at write
+            # time (self._file is None by default), so the patched proxy is
+            # picked up automatically — no changes to console.py are needed.
+            #
+            # raw=True is REQUIRED: prompt_toolkit's StdoutProxy defaults to
+            # raw=False, which routes writes through Vt100_Output.write() ->
+            # data.replace("\x1b", "?"), stripping every ESC byte. Rich emits
+            # ANSI (colors, cursor control); without raw=True those escapes are
+            # mangled into literal "?[2m" text and rules/markdown smear across
+            # the pinned prompt. raw=True uses write_raw() and passes ANSI
+            # through intact (run_in_terminal still owns prompt erase/restore).
+            with patch_stdout(raw=True):
+                _reader_task = asyncio.create_task(_manager.run())
 
-            # Poll task while checking for cancellation
-            while not execute_task.done():
-                # Check for immediate cancellation - cancel the task
-                if session.coordinator.cancellation.is_immediate:
-                    execute_task.cancel()
-                    break
-                await asyncio.sleep(0.05)
+                try:
+                    execute_task = asyncio.create_task(session.execute(prompt_text))
 
-            try:
-                response = await execute_task
+                    # Poll task while checking for cancellation
+                    while not execute_task.done():
+                        # Check for immediate cancellation - cancel the task
+                        if session.coordinator.cancellation.is_immediate:
+                            execute_task.cancel()
+                            break
+                        await asyncio.sleep(0.05)
 
-                # Get hooks early for observability around render + prompt:complete + store
-                hooks = session.coordinator.get("hooks")
+                    try:
+                        response = await execute_task
 
-                # --- cleanup:render_begin ---
-                if hooks:
-                    await hooks.emit(
-                        CLEANUP_RENDER_BEGIN, {"session_id": actual_session_id}
-                    )
-                from .ui import render_message
-                # The streaming-UI hook no longer paints the final response;
-                # app-cli is the sole owner of the final render in all cases
-                # (fixes #256 double-render).
-                render_message(
-                    {"role": "assistant", "content": response},
-                    console,
-                    show_label=True,
-                )
+                        # Get hooks early for observability around render + prompt:complete + store
+                        hooks = session.coordinator.get("hooks")
 
-                # --- cleanup:render_end ---
-                if hooks:
-                    await hooks.emit(
-                        CLEANUP_RENDER_END, {"session_id": actual_session_id}
-                    )
+                        # --- cleanup:render_begin ---
+                        if hooks:
+                            await hooks.emit(
+                                CLEANUP_RENDER_BEGIN, {"session_id": actual_session_id}
+                            )
+                        from .ui import render_message
 
-                # Emit prompt:complete event
-                if hooks:
-                    from amplifier_core.events import PROMPT_COMPLETE
+                        # The streaming-UI hook no longer paints the final response;
+                        # app-cli is the sole owner of the final render in all cases
+                        # (fixes #256 double-render).
+                        render_message(
+                            {"role": "assistant", "content": response},
+                            console,
+                            show_label=True,
+                        )
 
-                    await hooks.emit(
-                        PROMPT_COMPLETE,
-                        {
-                            "prompt": prompt_text,
-                            "response": response,
-                            "session_id": actual_session_id,
-                        },
-                    )
+                        # --- cleanup:render_end ---
+                        if hooks:
+                            await hooks.emit(
+                                CLEANUP_RENDER_END, {"session_id": actual_session_id}
+                            )
 
-                # --- cleanup:store_begin ---
-                if hooks:
-                    await hooks.emit(
-                        CLEANUP_STORE_BEGIN, {"session_id": actual_session_id}
-                    )
+                        # Emit prompt:complete event
+                        if hooks:
+                            from amplifier_core.events import PROMPT_COMPLETE
 
-                # Save session after execution (even if cancelled - preserves state)
-                await _save_session()
+                            await hooks.emit(
+                                PROMPT_COMPLETE,
+                                {
+                                    "prompt": prompt_text,
+                                    "response": response,
+                                    "session_id": actual_session_id,
+                                },
+                            )
 
-                # --- cleanup:store_end ---
-                if hooks:
-                    await hooks.emit(
-                        CLEANUP_STORE_END, {"session_id": actual_session_id}
-                    )
+                        # --- cleanup:store_begin ---
+                        if hooks:
+                            await hooks.emit(
+                                CLEANUP_STORE_BEGIN, {"session_id": actual_session_id}
+                            )
 
-                # Return based on cancellation status
-                if session.coordinator.cancellation.is_cancelled:
-                    console.print("\n[yellow]Cancelled[/yellow]")
-                    return False
-                return True
+                        # Save session after execution (even if cancelled - preserves state)
+                        await _save_session()
 
-            except asyncio.CancelledError:
-                # Immediate cancellation - task was force-cancelled
-                console.print("\n[yellow]Cancelled[/yellow]")
-                # Still save session to preserve any partial progress
-                await _save_session()
-                return False
+                        # --- cleanup:store_end ---
+                        if hooks:
+                            await hooks.emit(
+                                CLEANUP_STORE_END, {"session_id": actual_session_id}
+                            )
+
+                        # Return based on cancellation status
+                        if session.coordinator.cancellation.is_cancelled:
+                            console.print("\n[yellow]Cancelled[/yellow]")
+                            return False
+                        return True
+
+                    except asyncio.CancelledError:
+                        # Immediate cancellation - task was force-cancelled
+                        console.print("\n[yellow]Cancelled[/yellow]")
+                        # Still save session to preserve any partial progress
+                        await _save_session()
+                        return False
+
+                finally:
+                    # Teardown the steering reader inside the patch_stdout()
+                    # context: signal it to stop, then wait for it to finish so
+                    # it cannot consume the next REPL prompt's input.
+                    _stop_event.set()
+                    _reader_task.cancel()
+                    try:
+                        await _reader_task
+                    except asyncio.CancelledError:
+                        pass
 
         finally:
             signal.signal(signal.SIGINT, original_handler)
             # Don't reset cancellation here - session.py handles status
+            # Unregister this turn's badge hook so callbacks bound to this
+            # finished per-turn manager don't accumulate on the shared hooks
+            # registry across turns.
+            if _unregister_badge_hook is not None:
+                _unregister_badge_hook()
+            # THROTTLE/COALESCE spike: clear the compose-state callback so a
+            # stale bound method from this (finished) manager can never be
+            # queried by a future turn's streaming-ui hooks instance.
+            if _streaming_hooks_instance is not None and hasattr(
+                _streaming_hooks_instance, "set_composing_source"
+            ):
+                _streaming_hooks_instance.set_composing_source(None)
 
     # Execute initial prompt if provided
     if initial_prompt:
@@ -2886,7 +2982,7 @@ async def interactive_chat(
         console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
 
         # Process runtime @mentions in initial prompt
-        initial_prompt = await _process_runtime_mentions(session, initial_prompt)
+        initial_prompt = await process_runtime_mentions(session, initial_prompt)
         await _execute_with_interrupt(initial_prompt)
 
     # === REPL LOOP ===
@@ -2908,7 +3004,7 @@ async def interactive_chat(
                         console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
 
                         # Process runtime @mentions in user input
-                        _expanded_text = await _process_runtime_mentions(
+                        _expanded_text = await process_runtime_mentions(
                             session, data["text"]
                         )
                         await _execute_with_interrupt(_expanded_text)
@@ -2925,7 +3021,7 @@ async def interactive_chat(
                                 console.print(
                                     "\n[dim]Processing... (Ctrl+C to cancel)[/dim]"
                                 )
-                                text = await _process_runtime_mentions(session, text)
+                                text = await process_runtime_mentions(session, text)
                                 await _execute_with_interrupt(text)
                             else:
                                 console.print(f"[cyan]{text}[/cyan]")
@@ -2942,7 +3038,7 @@ async def interactive_chat(
                             console.print(
                                 "\n[dim]Processing... (Ctrl+C to cancel)[/dim]"
                             )
-                            trailing_prompt = await _process_runtime_mentions(
+                            trailing_prompt = await process_runtime_mentions(
                                 session, trailing_prompt
                             )
                             await _execute_with_interrupt(trailing_prompt)
@@ -3083,7 +3179,7 @@ async def execute_single(
                 )
 
         # Process runtime @mentions in user input
-        prompt = await _process_runtime_mentions(session, prompt)
+        prompt = await process_runtime_mentions(session, prompt)
 
         if verbose:
             console.print(f"[dim]Executing: {prompt}[/dim]")
