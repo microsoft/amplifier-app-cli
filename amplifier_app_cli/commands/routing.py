@@ -16,6 +16,7 @@ from rich.table import Table
 from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
 from ..lib.settings import AppSettings, Scope, get_custom_routing_dir
 from ..provider_loader import get_provider_info, get_provider_models
+from ..provider_manager import resolve_provider_entry
 from ..ui.item_renderer import ItemRenderer
 from ..ui.view_policy import resolve_view, view_flags
 from ..ui.scope import (
@@ -846,35 +847,14 @@ def _get_provider_config(
     multiple configured instances of the same module).  Returns the
     provider's ``config`` sub-dict, or ``None`` if no matching provider is
     found.
+
+    Delegates matching (including ambiguous-instance priority tie-break) to
+    the shared resolve_provider_entry() -- see provider_manager.py.
     """
-    matches: list[dict[str, Any]] = []
-    for p in settings.get_provider_overrides():
-        p_module = p.get("module", "")
-        p_type = (
-            p_module.removeprefix("provider-")
-            if p_module.startswith("provider-")
-            else p_module
-        )
-        if (
-            p.get("id") == provider_name
-            or p_type == provider_name
-            or p_module == provider_name
-        ):
-            matches.append(p)
-
-    if not matches:
+    entry = resolve_provider_entry(settings.get_provider_overrides(), provider_name)
+    if entry is None:
         return None
-
-    # Multiple instances of the same module can share a bare type/module
-    # name match (matching by 'id' is already unambiguous). Resolve
-    # deterministically to the highest-priority (lowest config.priority
-    # number) instance instead of whichever is first in list order.
-    def _priority(p: dict[str, Any]) -> int:
-        config = p.get("config", {})
-        return config.get("priority", 100) if isinstance(config, dict) else 100
-
-    best = min(matches, key=_priority)
-    return best.get("config", {})
+    return entry.get("config", {})
 
 
 def _build_model_cache(

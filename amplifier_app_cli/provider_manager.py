@@ -46,6 +46,79 @@ def _get_provider_display_name(module_id: str) -> str:
     return _PROVIDER_DISPLAY_NAMES.get(name, name.replace("-", " ").title())
 
 
+def resolve_provider_entry(
+    providers: list[dict[str, Any]], name: str
+) -> dict[str, Any] | None:
+    """Resolve a caller-supplied provider name/type to its raw config entry.
+
+    Shared resolver consolidating matching logic that was independently
+    duplicated -- and independently bugfixed for the same first-match-wins
+    priority anti-pattern in PR #214 and #215 -- across three call sites:
+      - ProviderManager.get_provider_config() (this module)
+      - commands/routing.py::_get_provider_config()
+      - commands/provider.py::_find_provider_entry()
+
+    All three consume the exact same underlying data shape: a list[dict]
+    from AppSettings.get_provider_overrides() / get_scope_provider_overrides(),
+    each dict having sibling 'module' / 'id' (optional) / 'config' keys, with
+    'priority' living inside 'config'.
+
+    Matching, in order:
+      1. 'id' field match -- unambiguous by convention (ids are expected to
+         be unique), returned immediately with no priority tie-break.
+      2. 'module' field match, tried against the union of forms used by the
+         original 3 implementations:
+           - module == name                              (full match)
+           - module == f"provider-{name}"                 (prefixed match)
+           - module.removeprefix("provider-") == name      (stripped match)
+           - module.replace("provider-", "") == name       (display-name
+             match -- mirrors commands/provider.py::_display_name(); unlike
+             removeprefix() this strips ALL occurrences of "provider-", not
+             just a leading prefix)
+         If 0 entries match, returns None. If 1+ match, resolves
+         deterministically to the highest-priority (lowest
+         config.get("priority", 100)) instance rather than whichever happens
+         to be first in list order.
+
+    Args:
+        providers: Raw provider override dicts, as returned by
+            AppSettings.get_provider_overrides() or
+            get_scope_provider_overrides().
+        name: Caller-supplied selector -- a bare type name (e.g.
+            "anthropic"), a full module id (e.g. "provider-anthropic"), or
+            an instance id.
+
+    Returns:
+        The matching provider entry dict (with its 'module'/'id'/'config'
+        keys intact), or None if no entry matches.
+    """
+    for p in providers:
+        if p.get("id") == name:
+            return p
+
+    def _module_matches(p: dict[str, Any]) -> bool:
+        module = p.get("module", "")
+        if not module:
+            return False
+        return (
+            module == name
+            or module == f"provider-{name}"
+            or module.removeprefix("provider-") == name
+            or module.replace("provider-", "") == name
+        )
+
+    matches: list[dict[str, Any]] = [p for p in providers if _module_matches(p)]
+
+    if not matches:
+        return None
+
+    def _priority(p: dict[str, Any]) -> int:
+        config = p.get("config", {})
+        return config.get("priority", 100) if isinstance(config, dict) else 100
+
+    return min(matches, key=_priority)
+
+
 @dataclass
 class ProviderInfo:
     """Information about active provider."""
@@ -187,32 +260,15 @@ class ProviderManager:
             logger.debug("get_provider_config: reading from merged settings")
 
         logger.debug(f"get_provider_config: found {len(providers)} providers")
-        matches: list[dict[str, Any]] = []
-        for provider in providers:
-            module = provider.get("module")
-            logger.debug(
-                f"get_provider_config: checking module '{module}' against '{provider_id}'"
-            )
-            if module == provider_id:
-                matches.append(provider)
+        entry = resolve_provider_entry(providers, provider_id)
 
-        if not matches:
+        if entry is None:
             logger.debug(
                 f"get_provider_config: no matching provider found for '{provider_id}'"
             )
             return None
 
-        # Multiple instances of the same module can be configured (distinct
-        # ids, different priorities). Matching on 'module' alone is
-        # ambiguous, so resolve deterministically to the highest-priority
-        # (lowest priority number) instance rather than the first in list
-        # order. Mirrors _select_provider_by_priority() in effective_config.py.
-        def _priority(p: dict[str, Any]) -> int:
-            config = p.get("config", {})
-            return config.get("priority", 100) if isinstance(config, dict) else 100
-
-        best = min(matches, key=_priority)
-        config = best.get("config", {})
+        config = entry.get("config", {})
         logger.debug(
             f"get_provider_config: found matching config with keys: {list(config.keys())}"
         )
