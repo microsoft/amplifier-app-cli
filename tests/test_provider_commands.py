@@ -747,6 +747,201 @@ class TestProviderEdit:
         )
 
 
+class TestProviderEditMultiInstance:
+    """Regression tests for the write-back-targets-wrong-entry bug.
+
+    provider_edit() resolves the entry to edit via resolve_provider_entry()
+    (priority-based, unambiguous) for the READ side, but the WRITE-back loop
+    previously re-matched each scope-provider candidate independently via
+    ``_find_provider_entry([p], name)`` on a single-element list -- discarding
+    the priority resolution and updating whichever id-less/module-matching
+    entry happened to be first in list order instead of the entry that was
+    actually read and shown in the wizard.
+
+    Confirmed via live DTU repro: 2 same-module instances, low-priority
+    entry ("wrong-instance") listed first, high-priority entry
+    ("correct-instance") listed second. `provider edit anthropic` correctly
+    READ "correct-instance" into the wizard, but the write-back loop matched
+    and overwrote "wrong-instance" instead -- leaving a duplicate
+    `id: correct-instance` and corrupting "wrong-instance"'s config in place.
+    """
+
+    def _seed_two_instance_scope(self, settings: AppSettings) -> None:
+        """Seed 2 same-module instances directly (bypasses set_provider_override,
+        which dedupes by module and would drop one of them).
+
+        Order matters for reproducing the bug: the low-priority ("less
+        preferred") entry is listed FIRST, the high-priority ("preferred",
+        lower config.priority number wins) entry is listed SECOND -- matching
+        the exact DTU repro list order.
+        """
+        scope_data = {
+            "config": {
+                "providers": [
+                    {
+                        "id": "wrong-instance",
+                        "module": "provider-anthropic",
+                        "config": {
+                            "default_model": "claude-old-wrong",
+                            "api_key": "wrong-key",
+                            "priority": 10,
+                        },
+                    },
+                    {
+                        "id": "correct-instance",
+                        "module": "provider-anthropic",
+                        "config": {
+                            "default_model": "claude-old-correct",
+                            "api_key": "correct-key",
+                            "priority": 1,
+                        },
+                    },
+                ]
+            }
+        }
+        settings._write_scope("global", scope_data)
+
+    def test_provider_edit_ambiguous_multi_instance_updates_resolved_entry(
+        self, tmp_path
+    ):
+        """`provider edit anthropic` (bare type name) must update the entry
+        that was actually resolved for reading (highest priority /
+        lowest config.priority number = "correct-instance"), leaving the
+        other same-module instance ("wrong-instance") completely untouched
+        and producing no duplicate/orphaned entry.
+        """
+        settings = _make_settings(tmp_path)
+        self._seed_two_instance_scope(settings)
+
+        from amplifier_app_cli.commands.provider import provider
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                return_value={
+                    "default_model": "claude-new",
+                    "api_key": "new-key",
+                },
+            ),
+            patch("amplifier_app_cli.commands.provider.KeyManager"),
+        ):
+            result = runner.invoke(provider, ["edit", "anthropic"])
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+
+        providers = settings.get_scope_provider_overrides("global")
+
+        # No duplicate/orphaned entry: exactly 2 entries, unique ids.
+        ids = [p.get("id") for p in providers]
+        assert len(providers) == 2, f"Expected 2 entries, got: {providers}"
+        assert len(set(ids)) == 2, f"Duplicate id created: {providers}"
+        assert set(ids) == {"wrong-instance", "correct-instance"}
+
+        by_id = {p["id"]: p for p in providers}
+
+        # correct-instance (the one actually resolved+shown by the wizard)
+        # must have received the edit.
+        correct = by_id["correct-instance"]
+        assert correct["config"]["default_model"] == "claude-new"
+        assert correct["config"]["api_key"] == "new-key"
+        assert correct["config"]["priority"] == 1  # priority preserved
+
+        # wrong-instance must be completely unchanged.
+        wrong = by_id["wrong-instance"]
+        assert wrong["config"]["default_model"] == "claude-old-wrong"
+        assert wrong["config"]["api_key"] == "wrong-key"
+        assert wrong["config"]["priority"] == 10
+
+    def test_provider_edit_by_distinct_id_unaffected(self, tmp_path):
+        """Regression: editing by an explicit, distinct instance id must
+        continue to update only that instance (unambiguous by definition),
+        leaving the sibling instance untouched.
+        """
+        settings = _make_settings(tmp_path)
+        self._seed_two_instance_scope(settings)
+
+        from amplifier_app_cli.commands.provider import provider
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                return_value={
+                    "default_model": "claude-new",
+                    "api_key": "new-key",
+                },
+            ),
+            patch("amplifier_app_cli.commands.provider.KeyManager"),
+        ):
+            result = runner.invoke(provider, ["edit", "wrong-instance"])
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+
+        providers = settings.get_scope_provider_overrides("global")
+        by_id = {p["id"]: p for p in providers}
+        assert len(providers) == 2
+
+        assert by_id["wrong-instance"]["config"]["default_model"] == "claude-new"
+        assert by_id["wrong-instance"]["config"]["api_key"] == "new-key"
+
+        # correct-instance untouched
+        assert (
+            by_id["correct-instance"]["config"]["default_model"] == "claude-old-correct"
+        )
+        assert by_id["correct-instance"]["config"]["api_key"] == "correct-key"
+
+    def test_provider_edit_single_instance_unaffected(self, tmp_path):
+        """Regression: the normal single-instance case (no ambiguity at all)
+        must still update the sole entry in place.
+        """
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet-4-6", "api_key": "old-key"},
+            priority=1,
+        )
+
+        from amplifier_app_cli.commands.provider import provider
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                return_value={
+                    "default_model": "claude-opus-4-6",
+                    "api_key": "new-key",
+                },
+            ),
+            patch("amplifier_app_cli.commands.provider.KeyManager"),
+        ):
+            result = runner.invoke(provider, ["edit", "anthropic"])
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+
+        providers = settings.get_scope_provider_overrides("global")
+        assert len(providers) == 1
+        assert providers[0]["config"]["default_model"] == "claude-opus-4-6"
+        assert providers[0]["config"]["api_key"] == "new-key"
+        assert providers[0]["config"]["priority"] == 1
+
+
 # ============================================================
 # Task 10: provider test
 # ============================================================

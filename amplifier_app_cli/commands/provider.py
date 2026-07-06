@@ -598,13 +598,32 @@ def provider_edit(name: str, scope: str) -> None:
     if entry.get("source"):
         updated_entry["source"] = entry["source"]
 
-    # Update in settings — replace the matching entry in the target scope
+    # Update in settings — replace the matching entry in the target scope.
+    #
+    # We must replace the SAME entry that was resolved (by priority) above
+    # for reading, not independently re-match `name` against each candidate
+    # in isolation. Re-matching `_find_provider_entry([p], name)` per
+    # iteration discards the priority tie-break: with 2+ id-less/module-
+    # matching instances, whichever happens to be first in scope_providers
+    # would "match" regardless of which entry was actually read into the
+    # wizard, silently overwriting the wrong instance (see PR history in
+    # resolve_provider_entry()'s docstring for the read-side version of this
+    # anti-pattern).
+    #
+    # Fix: resolve the target entry ONCE against the full scope_providers
+    # list (same priority-based algorithm used for the read above, applied
+    # to this specific scope), then replace by object identity. entry
+    # objects returned by resolve_provider_entry()/_find_provider_entry()
+    # are references into the list passed in — never copies — so identity
+    # comparison against scope_providers is reliable.
     target_scope = cast(Scope, scope)
     scope_providers = settings.get_scope_provider_overrides(target_scope)
+    target_entry = _find_provider_entry(scope_providers, name)
+
     new_list = []
     replaced = False
     for p in scope_providers:
-        if not replaced and _find_provider_entry([p], name) is not None:
+        if not replaced and target_entry is not None and p is target_entry:
             new_list.append(updated_entry)
             replaced = True
         else:
