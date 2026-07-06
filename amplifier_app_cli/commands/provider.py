@@ -16,6 +16,7 @@ from ..paths import create_config_manager
 from ..provider_config_utils import configure_provider
 from ..provider_loader import get_provider_models
 from ..provider_manager import ProviderManager
+from ..provider_manager import resolve_provider_entry
 from ..provider_sources import ensure_provider_installed
 from ..provider_sources import get_effective_provider_sources
 from ..provider_sources import install_known_providers
@@ -73,33 +74,14 @@ def _find_provider_entry(
       them (or multiple of them) have a distinct id set. In that ambiguous
       case, resolve deterministically to the highest-priority (lowest
       `config.priority` value, defaulting to 100 when absent) instance
-      instead of whichever happens to be first in list order. Mirrors
-      ProviderManager.get_provider_config() and
-      commands/routing.py::_get_provider_config().
+      instead of whichever happens to be first in list order.
+
+    Delegates to the shared resolve_provider_entry() -- see
+    provider_manager.py -- which also backs
+    ProviderManager.get_provider_config() and
+    commands/routing.py::_get_provider_config().
     """
-    for p in providers:
-        if p.get("id") == name:
-            return p
-
-    matches: list[dict[str, Any]] = [
-        p
-        for p in providers
-        if (module := p.get("module", ""))
-        and (
-            module == name
-            or module == f"provider-{name}"
-            or _display_name(module) == name
-        )
-    ]
-
-    if not matches:
-        return None
-
-    def _priority(p: dict[str, Any]) -> int:
-        config = p.get("config", {})
-        return config.get("priority", 100) if isinstance(config, dict) else 100
-
-    return min(matches, key=_priority)
+    return resolve_provider_entry(providers, name)
 
 
 def _get_max_priority(providers: list[dict[str, Any]]) -> int:
