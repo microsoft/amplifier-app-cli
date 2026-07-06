@@ -14,6 +14,7 @@ The canonical initialization order (enforced by this module):
 5. Register mention handling capability
 6. Register session spawning capability
 7. Restore transcript (resume only)
+7.5. Restore cumulative session cost (resume only)
 8. Register approval provider
 
 Philosophy:
@@ -272,6 +273,22 @@ async def create_initialized_session(
             logger.warning(
                 "Context module lacks set_messages - transcript NOT restored"
             )
+
+    # Step 7.5: Restore cumulative session cost (resume only) - issue #284
+    # Provider cost accumulators live in each provider's mount() closure and are
+    # zeroed on resume, so the running session-cost total would otherwise restart
+    # from zero. Re-seed the "session.cost" channel from the persisted
+    # events.jsonl (sibling of transcript.jsonl in the session directory) by
+    # registering a synthetic historical contributor on this session's own
+    # coordinator. Best-effort: never blocks startup.
+    if config.is_resume:
+        from .cost_history import restore_session_cost
+
+        try:
+            events_path = SessionStore().base_dir / session_id / "events.jsonl"
+            restore_session_cost(session.coordinator, session_id, events_path)
+        except Exception:
+            logger.debug("Prior session cost restore skipped", exc_info=True)
 
     # Step 10: Register approval provider (app-layer policy)
     from .approval_provider import CLIApprovalProvider
