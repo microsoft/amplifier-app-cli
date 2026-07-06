@@ -66,23 +66,40 @@ def _find_provider_entry(
     """Find a provider entry by name/id.
 
     Matches against:
-    - 'id' field (for multi-instance providers)
-    - 'module' field stripped of 'provider-' prefix
-    - full 'module' field
+    - 'id' field (for multi-instance providers) -- unambiguous by definition
+      (ids are expected to be unique), so an id match is returned immediately.
+    - 'module' field stripped of 'provider-' prefix, or the full 'module'
+      field -- this can match 2+ instances of the same module when none of
+      them (or multiple of them) have a distinct id set. In that ambiguous
+      case, resolve deterministically to the highest-priority (lowest
+      `config.priority` value, defaulting to 100 when absent) instance
+      instead of whichever happens to be first in list order. Mirrors
+      ProviderManager.get_provider_config() and
+      commands/routing.py::_get_provider_config().
     """
     for p in providers:
-        # Match by id field
         if p.get("id") == name:
             return p
-        # Match by module name (with or without prefix)
-        module = p.get("module", "")
-        if (
+
+    matches: list[dict[str, Any]] = [
+        p
+        for p in providers
+        if (module := p.get("module", ""))
+        and (
             module == name
             or module == f"provider-{name}"
             or _display_name(module) == name
-        ):
-            return p
-    return None
+        )
+    ]
+
+    if not matches:
+        return None
+
+    def _priority(p: dict[str, Any]) -> int:
+        config = p.get("config", {})
+        return config.get("priority", 100) if isinstance(config, dict) else 100
+
+    return min(matches, key=_priority)
 
 
 def _get_max_priority(providers: list[dict[str, Any]]) -> int:

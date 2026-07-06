@@ -1103,3 +1103,119 @@ class TestRunPFlag:
             f"spark2-gemma should keep original priority 2, "
             f"got {spark2['config']['priority']}"
         )
+
+
+class TestFindProviderEntryPrioritySelection:
+    """BUG 3 regression: ``_find_provider_entry()`` is the third function with
+    the same first-match-wins anti-pattern already fixed twice in this repo
+    (PR #214, for ``ProviderManager.get_provider_config()`` and
+    ``commands/routing.py::_get_provider_config()``).
+
+    It matches on 'id' first (unambiguous, ids are unique), then falls back to
+    matching on the bare/full 'module' name. Nothing enforces that only one
+    id-less (or display-name-colliding) instance of a module exists -- if a
+    user hand-edits settings.yaml to create 2+ such instances, the function
+    silently returns whichever is first in list order instead of being
+    priority-aware, exactly like the two sibling bugs fixed in PR #214.
+
+    Called from provider_remove(), provider_edit(), and provider_test() --
+    all 3 CLI-facing sites where a user types a bare provider type name.
+    """
+
+    def test_selects_highest_priority_instance_not_first_in_list(self):
+        """Two id-less instances of the same module ('anthropic'), with the
+        LOWER priority instance (priority=5) listed BEFORE the HIGHER
+        priority instance (priority=1, lower number = higher precedence).
+        Must resolve to the priority=1 instance, not whichever is first in
+        list order.
+        """
+        from amplifier_app_cli.commands.provider import _find_provider_entry
+
+        providers = [
+            {
+                "module": "provider-anthropic",
+                "config": {"priority": 5, "default_model": "wrong-instance"},
+            },
+            {
+                "module": "provider-anthropic",
+                "config": {"priority": 1, "default_model": "correct-instance"},
+            },
+        ]
+
+        entry = _find_provider_entry(providers, "anthropic")
+
+        assert entry is not None, "Expected a matching entry, got None"
+        assert entry["config"].get("default_model") == "correct-instance", (
+            "_find_provider_entry() must resolve to the highest-priority "
+            f"(lowest priority number) instance, got: {entry}"
+        )
+
+    def test_selects_highest_priority_instance_when_matched_by_full_module_name(
+        self,
+    ):
+        """Same ambiguity, but matching via the full module id
+        ('provider-openai') rather than the bare display name."""
+        from amplifier_app_cli.commands.provider import _find_provider_entry
+
+        providers = [
+            {
+                "module": "provider-openai",
+                "config": {"priority": 3, "default_model": "wrong-instance"},
+            },
+            {
+                "module": "provider-openai",
+                "config": {"priority": 1, "default_model": "correct-instance"},
+            },
+        ]
+
+        entry = _find_provider_entry(providers, "provider-openai")
+
+        assert entry is not None
+        assert entry["config"].get("default_model") == "correct-instance", (
+            f"Expected the priority=1 instance, got: {entry}"
+        )
+
+    def test_id_match_is_unambiguous_and_unaffected_by_priority(self):
+        """Regression guard: matching by an explicit 'id' is unambiguous by
+        definition (ids are unique) and must return that exact entry
+        regardless of priority values on other entries of the same module.
+        """
+        from amplifier_app_cli.commands.provider import _find_provider_entry
+
+        providers = [
+            {
+                "module": "provider-openai",
+                "config": {"priority": 1, "default_model": "unnamed-instance"},
+            },
+            {
+                "id": "openai-2",
+                "module": "provider-openai",
+                "config": {"priority": 99, "default_model": "named-instance"},
+            },
+        ]
+
+        entry = _find_provider_entry(providers, "openai-2")
+
+        assert entry is not None
+        assert entry.get("id") == "openai-2"
+        assert entry["config"].get("default_model") == "named-instance", (
+            f"Expected the id-matched entry, got: {entry}"
+        )
+
+    def test_returns_none_when_no_match_found(self):
+        """Regression guard: the 'genuinely not found' contract must be
+        preserved as None -- all 3 CLI call sites branch on this explicitly
+        for their error messages.
+        """
+        from amplifier_app_cli.commands.provider import _find_provider_entry
+
+        providers = [
+            {
+                "module": "provider-openai",
+                "config": {"priority": 1, "default_model": "gpt-5"},
+            },
+        ]
+
+        entry = _find_provider_entry(providers, "anthropic")
+
+        assert entry is None, f"Expected None for unconfigured module, got: {entry}"
