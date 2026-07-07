@@ -495,5 +495,5 @@ class SteeringInputManager:
                 prompt_task.cancel()
                 try:
                     await prompt_task
-                except (asyncio.CancelledError, KeyboardInterrupt, Exception):
-                    pass
+                except (asyncio.CancelledError, KeyboardInterrupt, Exception) as exc:
+                    logger.debug("Orphan prompt_task cleanup error: %s", exc)
