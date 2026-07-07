@@ -349,6 +349,12 @@ class SteeringInputManager:
         else:
             _message = None  # not used in the test / injected path
 
+        # Tracks the current child input task (if any) so the outer
+        # ``finally`` below can guarantee it is never left orphaned — see
+        # that block for why this is necessary in addition to the explicit
+        # cancel+await branches inside the poll loop.
+        prompt_task: asyncio.Task[str | None] | None = None
+
         try:
             while not self._stop_event.is_set():
                 # Suspend during approval — yield stdin to Confirm.ask.
@@ -359,9 +365,7 @@ class SteeringInputManager:
                 # Launch input as a cancellable task so we can abort it when
                 # approval starts mid-prompt or stop_event fires.
                 if self._input_provider is not None:
-                    prompt_task: asyncio.Task[str | None] = asyncio.create_task(
-                        self._input_provider()
-                    )
+                    prompt_task = asyncio.create_task(self._input_provider())
                 else:
                     assert self._pt_session is not None
                     prompt_task = asyncio.create_task(
@@ -467,3 +471,29 @@ class SteeringInputManager:
 
         finally:
             self._pt_session = None
+            # Orphan-prevention net (see the module docstring's "Teardown"
+            # note and the ``prompt_task`` comment above): cancellation
+            # delivered to run() overwhelmingly lands at the bare
+            # ``await asyncio.sleep(0.05)`` in the inner poll loop above —
+            # a point with no cleanup logic of its own — rather than at one
+            # of the three explicit cancel+await branches inside that loop.
+            # When that happens, control skips straight from the interrupted
+            # await to this ``finally``, leaving ``prompt_task`` alive and
+            # still holding prompt_toolkit's raw_mode() terminal context.
+            # This block is the single, unconditional backstop: whatever
+            # path got us here (return, break, normal fall-through, or a
+            # propagating CancelledError/other exception), any live
+            # prompt_task is cancelled and awaited before run() truly exits.
+            # Safe to run even when the explicit branches already handled
+            # cleanup (prompt_task.done() is then True and this is a no-op),
+            # and safe to await here even while a CancelledError is actively
+            # propagating out of this function (a single external cancel
+            # request delivers exactly one CancelledError at the interrupted
+            # await; further awaits in ``finally`` proceed normally unless
+            # cancelled again).
+            if prompt_task is not None and not prompt_task.done():
+                prompt_task.cancel()
+                try:
+                    await prompt_task
+                except (asyncio.CancelledError, KeyboardInterrupt, Exception):
+                    pass

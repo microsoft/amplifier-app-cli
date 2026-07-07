@@ -567,6 +567,81 @@ async def test_teardown_cancel_is_clean():
 
 
 # ---------------------------------------------------------------------------
+# Orphaned prompt_task regression: cancelling run() while it is suspended at
+# the inner poll's ``asyncio.sleep(0.05)`` must not leak the child prompt
+# task it created.
+# ---------------------------------------------------------------------------
+# Background (confirmed via a real pty + termios harness,
+# investigate_termios_repro.py multi_orphan): run()'s inner poll loop creates
+# a child ``prompt_task`` per prompt attempt and spends most of its time
+# suspended at a bare ``await asyncio.sleep(0.05)`` with NO cleanup logic for
+# that child task. _execute_with_interrupt's teardown does
+# ``stop_event.set(); reader_task.cancel(); await reader_task`` with no
+# yield in between, so CancelledError is delivered to run() at whatever await
+# it happens to be suspended at -- overwhelmingly the bare sleep, not one of
+# the three explicit cancel-branches. run()'s ``finally:`` only resets
+# ``self._pt_session`` and never cancels the orphaned prompt_task, which then
+# lives on holding prompt_toolkit's raw_mode() terminal context until
+# asyncio.run()'s final shutdown sweep -- whose cleanup order is NOT
+# guaranteed LIFO, so a multi-turn session can restore the WRONG (already
+# raw) terminal snapshot, leaving the real terminal echo-off after exit.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_inner_poll_sleep_does_not_orphan_prompt_task():
+    """Cancelling run() while suspended at the inner poll sleep must also
+    cancel+await the live child prompt_task -- not leave it pending.
+
+    ``mock_input`` signals ``started`` and then hangs forever (mirrors a real
+    prompt_async() call waiting on user input).  By the time ``started`` is
+    set, run()'s poll loop has necessarily reached its bare
+    ``await asyncio.sleep(0.05)`` (the unsafe point identified in the root
+    cause) with the child prompt_task still alive and un-awaited.
+    """
+    started = asyncio.Event()
+
+    async def mock_input() -> str:
+        started.set()
+        await asyncio.Future()  # never resolves; must be cancelled to end
+        return ""  # unreachable; satisfies the declared return type
+
+    manager, _ = _make_manager(input_provider=mock_input)
+    run_task = asyncio.create_task(manager.run())
+
+    # Wait until the child prompt_task has actually started -- this only
+    # happens once run_task itself has yielded at the inner poll's sleep.
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    tasks_before_cancel = {
+        t for t in asyncio.all_tasks() if t is not asyncio.current_task()
+    }
+
+    run_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run_task
+
+    # Let the loop process any scheduling fallout from the cancellation.
+    await asyncio.sleep(0)
+
+    leftover = [
+        t
+        for t in asyncio.all_tasks()
+        if t is not asyncio.current_task() and not t.done()
+    ]
+    assert leftover == [], (
+        f"run() cancellation orphaned live task(s): {leftover!r} -- the "
+        "child prompt_task must be cancelled+awaited before run() returns "
+        "or propagates CancelledError, in every exit path"
+    )
+
+    # Every task that existed while the prompt was in flight must now be
+    # finished (done, whether cancelled or not) -- none left pending.
+    for t in tasks_before_cancel:
+        assert t.done(), f"orphaned task left pending: {t!r}"
+
+
+# ---------------------------------------------------------------------------
 # Ctrl-C regression: _CtrlCInterrupt must not escape run() as a crash
 # ---------------------------------------------------------------------------
 # Background: the old code used PromptSession(interrupt_exception=KeyboardInterrupt).
