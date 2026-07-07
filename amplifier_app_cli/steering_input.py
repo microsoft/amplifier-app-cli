@@ -216,6 +216,69 @@ class SteeringInputManager:
                 pass  # App not running or already cleaned up; non-fatal
 
     # ------------------------------------------------------------------
+    # Ctrl-C forwarding (see the module docstring's "Ctrl-C / SIGINT"
+    # section and the ``except _CtrlCInterrupt`` clause in ``run()``)
+    # ------------------------------------------------------------------
+
+    def _handle_ctrl_c(self) -> None:
+        """Forward a steering-prompt Ctrl-C to ``session.coordinator.cancellation``.
+
+        Mirrors ``_execute_with_interrupt``'s ``sigint_handler`` in
+        ``main.py`` *exactly* -- same escalation (first Ctrl-C this turn ->
+        ``request_graceful()``, a subsequent one -> ``request_immediate()``)
+        and the same visible console messages -- because a physical Ctrl-C
+        pressed while this prompt holds ``raw_mode()`` never reaches that
+        OS-signal handler at all (``raw_mode()`` clears ``ISIG`` along with
+        ``ECHO``/``ICANON``, so the ``\\x03`` byte never becomes a
+        kernel-delivered ``SIGINT`` while the steering prompt has focus).
+
+        Operates on ``self._session.coordinator.cancellation`` -- the SAME
+        shared ``CancellationToken`` object ``_execute_with_interrupt``'s own
+        poll loop reads (``cancellation.is_immediate``) to decide whether to
+        cancel the running ``execute_task``. Because both paths mutate the
+        identical object, the downstream effect (whether the turn actually
+        stops, and how) is identical regardless of which path caught the
+        keypress -- no separate turn-cancellation wiring is needed here.
+
+        Defensive: silently does nothing if ``self._session`` is ``None``
+        (back-compat for callers/tests that don't wire a session -- the
+        pre-fix behavior) or if ``session.coordinator.cancellation`` is
+        unavailable/misbehaves for any reason (logged at debug, never
+        raised -- must not crash the steering loop).
+        """
+        if self._session is None:
+            return
+        try:
+            cancellation = self._session.coordinator.cancellation
+        except Exception as exc:
+            logger.debug("Steering Ctrl-C: no cancellation token available: %s", exc)
+            return
+
+        try:
+            if cancellation.is_cancelled:
+                # Second (or later) Ctrl-C this turn - request immediate
+                # cancellation. Message matches sigint_handler's verbatim.
+                cancellation.request_immediate()
+                self._console.print("\n[bold red]Cancelling immediately...[/bold red]")
+            else:
+                # First Ctrl-C this turn - request graceful cancellation.
+                # Message matches sigint_handler's verbatim, including the
+                # running-tools variant.
+                cancellation.request_graceful()
+                running_tools = cancellation.running_tool_names
+                if running_tools:
+                    tools_str = ", ".join(running_tools)
+                    self._console.print(
+                        f"\n[yellow]Stopping after current operation in [bold]{tools_str}[/bold]... (Ctrl+C again to force)[/yellow]"
+                    )
+                else:
+                    self._console.print(
+                        "\n[yellow]Stopping after current operation completes... (Ctrl+C again to force)[/yellow]"
+                    )
+        except Exception as exc:
+            logger.debug("Steering Ctrl-C cancellation forwarding failed: %s", exc)
+
+    # ------------------------------------------------------------------
     # Prompt message (callable passed to prompt_toolkit as ``message=``)
     # ------------------------------------------------------------------
 
@@ -349,6 +412,12 @@ class SteeringInputManager:
         else:
             _message = None  # not used in the test / injected path
 
+        # Tracks the current child input task (if any) so the outer
+        # ``finally`` below can guarantee it is never left orphaned — see
+        # that block for why this is necessary in addition to the explicit
+        # cancel+await branches inside the poll loop.
+        prompt_task: asyncio.Task[str | None] | None = None
+
         try:
             while not self._stop_event.is_set():
                 # Suspend during approval — yield stdin to Confirm.ask.
@@ -359,9 +428,7 @@ class SteeringInputManager:
                 # Launch input as a cancellable task so we can abort it when
                 # approval starts mid-prompt or stop_event fires.
                 if self._input_provider is not None:
-                    prompt_task: asyncio.Task[str | None] = asyncio.create_task(
-                        self._input_provider()
-                    )
+                    prompt_task = asyncio.create_task(self._input_provider())
                 else:
                     assert self._pt_session is not None
                     prompt_task = asyncio.create_task(
@@ -441,16 +508,41 @@ class SteeringInputManager:
                     # PromptSession raised _CtrlCInterrupt (not KeyboardInterrupt)
                     # so asyncio's task machinery stores it normally and does NOT
                     # re-raise, allowing this except clause to be reached.
-                    # The OS SIGINT was handled by sigint_handler in
-                    # _execute_with_interrupt (kept active via handle_sigint=False),
-                    # which updated the cancellation token.  The poll loop in
-                    # _execute_with_interrupt will detect the cancellation on its
-                    # next 50 ms tick and cancel execute_task.
+                    #
+                    # IMPORTANT: the OS SIGINT does NOT reach sigint_handler here.
+                    # prompt_toolkit's raw_mode() (active for the entire duration
+                    # the steering prompt holds focus) clears ISIG along with
+                    # ECHO/ICANON on the tty (see
+                    # prompt_toolkit.input.vt100.raw_mode._patch_lflag), so a
+                    # physical Ctrl-C keypress never generates a kernel-delivered
+                    # SIGINT while this prompt is active -- it arrives ONLY as
+                    # the raw ``\x03`` byte, consumed entirely by this except
+                    # clause. Confirmed empirically (real pty + real
+                    # CancellationToken harness, and live in a running CLI
+                    # session): before this forwarding call, a Ctrl-C pressed
+                    # mid-turn had NO effect on cancellation at all -- the turn
+                    # ran to full completion as if nothing had been pressed.
+                    #
+                    # _handle_ctrl_c() mirrors _execute_with_interrupt's
+                    # sigint_handler escalation exactly (same
+                    # request_graceful()/request_immediate() calls on the SAME
+                    # shared session.coordinator.cancellation object, same
+                    # visible console messages), so the downstream effect is
+                    # identical regardless of which path caught the keypress:
+                    # main.py's execute-task poll loop reacts to
+                    # cancellation.is_immediate the same way either way.
+                    self._handle_ctrl_c()
                     continue
                 except KeyboardInterrupt:
                     # Safety net: should not be raised with the current
                     # PromptSession(interrupt_exception=_CtrlCInterrupt) setup,
                     # but kept in case a future code path reaches this point.
+                    # Mirrors the _CtrlCInterrupt branch above exactly -- if
+                    # this safety net is ever actually exercised, a Ctrl-C
+                    # must still forward to session.coordinator.cancellation
+                    # the same way, or the bug just fixed above would
+                    # silently reappear on this path.
+                    self._handle_ctrl_c()
                     continue
                 except EOFError:
                     # Ctrl-D: user is done with steering input.
@@ -467,3 +559,29 @@ class SteeringInputManager:
 
         finally:
             self._pt_session = None
+            # Orphan-prevention net (see the module docstring's "Teardown"
+            # note and the ``prompt_task`` comment above): cancellation
+            # delivered to run() overwhelmingly lands at the bare
+            # ``await asyncio.sleep(0.05)`` in the inner poll loop above —
+            # a point with no cleanup logic of its own — rather than at one
+            # of the three explicit cancel+await branches inside that loop.
+            # When that happens, control skips straight from the interrupted
+            # await to this ``finally``, leaving ``prompt_task`` alive and
+            # still holding prompt_toolkit's raw_mode() terminal context.
+            # This block is the single, unconditional backstop: whatever
+            # path got us here (return, break, normal fall-through, or a
+            # propagating CancelledError/other exception), any live
+            # prompt_task is cancelled and awaited before run() truly exits.
+            # Safe to run even when the explicit branches already handled
+            # cleanup (prompt_task.done() is then True and this is a no-op),
+            # and safe to await here even while a CancelledError is actively
+            # propagating out of this function (a single external cancel
+            # request delivers exactly one CancelledError at the interrupted
+            # await; further awaits in ``finally`` proceed normally unless
+            # cancelled again).
+            if prompt_task is not None and not prompt_task.done():
+                prompt_task.cancel()
+                try:
+                    await prompt_task
+                except (asyncio.CancelledError, KeyboardInterrupt, Exception) as exc:
+                    logger.debug("Orphan prompt_task cleanup error: %s", exc)

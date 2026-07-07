@@ -43,6 +43,9 @@ amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundatio
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--import-mode=importlib"
+addopts = "--import-mode=importlib -m \"not integration\""
 asyncio_mode = "strict"
+markers = [
+    "integration: marks tests that fork a real pty child process and probe real termios state (deselected by default; run with '-m integration')",
+]
 
