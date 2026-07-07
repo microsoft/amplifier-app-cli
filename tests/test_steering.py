@@ -958,6 +958,111 @@ async def test_steering_ctrl_c_without_session_does_not_crash():
         pass
 
 
+def test_run_keyboard_interrupt_branch_calls_handle_ctrl_c():
+    """Symmetric guard: the ``except KeyboardInterrupt:`` branch in run()'s
+    poll loop (the "safety net... kept in case a future code path reaches
+    this point") must forward to session.coordinator.cancellation exactly
+    like the ``except _CtrlCInterrupt:`` branch does -- i.e. it must call
+    ``self._handle_ctrl_c()`` too, not a bare ``continue``.
+
+    Without this, the safety net's own comment is self-defeating: the
+    moment that path is ever actually exercised, the just-fixed Ctrl-C bug
+    (keypress has zero effect on cancellation, no console feedback) would
+    silently reappear on this parallel path.
+
+    IMPORTANT (why this is a static/AST check, not a live runtime test):
+    a real ``KeyboardInterrupt`` raised *inside* an ``asyncio.create_task()``
+    coroutine is NOT safely testable end-to-end on CPython 3.11+. This was
+    verified empirically while writing this guard: doing so reproduces
+    exactly the crash the module's own docstring warns about --
+    ``Task.__step_run_and_handle_result()`` catches ``KeyboardInterrupt``,
+    stores it, and *re-raises* it, and that re-raise escapes the event
+    loop's own step handling (``Handle._run()`` / ``_run_once()``)
+    *before* run()'s ``await prompt_task`` ever gets control back to see
+    it -- crashing the whole process (or, as observed while authoring this
+    test, aborting the entire pytest session outright, independent of any
+    try/except in run()). This is precisely why the module never lets a
+    real ``KeyboardInterrupt`` reach ``prompt_task`` in the first place
+    (see ``_CtrlCInterrupt`` and the module docstring's "Ctrl-C / SIGINT"
+    section) -- and precisely why this branch is a dead "safety net" today
+    that can only safely be verified statically, not by reproducing the
+    exact scenario it defends against.
+
+    ``_handle_ctrl_c()``'s own escalation behavior (graceful -> immediate,
+    matching messages) is already thoroughly exercised via the safe
+    ``_CtrlCInterrupt`` path in
+    ``test_steering_ctrl_c_forwards_to_session_cancellation`` above (a
+    plain ``Exception`` subclass, so it does NOT trigger the dangerous
+    Task re-raise) -- this test only needs to confirm the KeyboardInterrupt
+    branch *also* calls that same already-proven method.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from amplifier_app_cli.steering_input import SteeringInputManager
+
+    source = textwrap.dedent(inspect.getsource(SteeringInputManager.run))
+    tree = ast.parse(source)
+
+    keyboard_interrupt_handlers = [
+        handler
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Try)
+        for handler in node.handlers
+        if handler.type is not None
+        and (
+            (
+                isinstance(handler.type, ast.Name)
+                and handler.type.id == "KeyboardInterrupt"
+            )
+            or (
+                isinstance(handler.type, ast.Tuple)
+                and any(
+                    isinstance(elt, ast.Name) and elt.id == "KeyboardInterrupt"
+                    for elt in handler.type.elts
+                )
+            )
+        )
+    ]
+
+    # There are two `except KeyboardInterrupt` mentions in run(): the
+    # dedicated `except KeyboardInterrupt:` clause (the safety net this
+    # test targets) and the tuple-form
+    # `except (asyncio.CancelledError, KeyboardInterrupt, EOFError): pass`
+    # used in the explicit cancel+await cleanup branches (arbiter-abort,
+    # stop_event teardown) -- those are deliberately bare passes (they are
+    # ABORTING prompt_task, not receiving a live keypress) and must NOT be
+    # touched by this guard.
+    dedicated_handlers = [
+        h
+        for h in keyboard_interrupt_handlers
+        if isinstance(h.type, ast.Name) and h.type.id == "KeyboardInterrupt"
+    ]
+    assert len(dedicated_handlers) == 1, (
+        "expected exactly one dedicated `except KeyboardInterrupt:` clause "
+        f"in run(), found {len(dedicated_handlers)} -- this guard's "
+        "assumptions about the source structure no longer hold, update it"
+    )
+    handler = dedicated_handlers[0]
+
+    calls_handle_ctrl_c = any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_handle_ctrl_c"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+        for node in ast.walk(ast.Module(body=handler.body, type_ignores=[]))
+    )
+    assert calls_handle_ctrl_c, (
+        "expected run()'s `except KeyboardInterrupt:` branch to call "
+        "self._handle_ctrl_c() (mirroring the except _CtrlCInterrupt: "
+        "branch) -- found a bare continue/pass instead, which reintroduces "
+        "the just-fixed bug (keypress has zero effect on cancellation) the "
+        "moment this safety-net path is ever actually exercised"
+    )
+
+
 # ---------------------------------------------------------------------------
 # StdinArbiter unit tests (unchanged)
 # ---------------------------------------------------------------------------

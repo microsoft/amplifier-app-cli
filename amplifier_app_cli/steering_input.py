@@ -537,6 +537,12 @@ class SteeringInputManager:
                     # Safety net: should not be raised with the current
                     # PromptSession(interrupt_exception=_CtrlCInterrupt) setup,
                     # but kept in case a future code path reaches this point.
+                    # Mirrors the _CtrlCInterrupt branch above exactly -- if
+                    # this safety net is ever actually exercised, a Ctrl-C
+                    # must still forward to session.coordinator.cancellation
+                    # the same way, or the bug just fixed above would
+                    # silently reappear on this path.
+                    self._handle_ctrl_c()
                     continue
                 except EOFError:
                     # Ctrl-D: user is done with steering input.
