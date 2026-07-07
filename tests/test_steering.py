@@ -753,6 +753,212 @@ async def test_ctrl_c_during_prompt_does_not_crash_run_loop():
 
 
 # ---------------------------------------------------------------------------
+# Ctrl-C functional gap: _CtrlCInterrupt must forward to
+# session.coordinator.cancellation, mirroring main.py's OS-signal
+# sigint_handler escalation semantics
+# ---------------------------------------------------------------------------
+# Background (confirmed via a real pty + real CancellationToken harness,
+# investigate_ctrlc_functional.py, and independently reconfirmed live in a
+# DTU through the actual CLI): a physical Ctrl-C keypress during a turn
+# NEVER generates a real OS SIGINT while the steering prompt holds
+# prompt_toolkit's raw_mode() -- raw_mode() clears ISIG along with ECHO/
+# ICANON (see prompt_toolkit.input.vt100.raw_mode._patch_lflag), so the
+# \x03 byte is consumed entirely by the PromptSession's
+# interrupt_exception=_CtrlCInterrupt key binding and never reaches the
+# kernel-delivered SIGINT that main.py's sigint_handler is registered for.
+#
+# Before this fix, run()'s `except _CtrlCInterrupt: continue` swallowed the
+# keypress with NO console feedback and NO effect on
+# session.coordinator.cancellation -- the turn ran to full completion as if
+# Ctrl-C had never been pressed. This block proves that gap is closed: a
+# _CtrlCInterrupt now escalates through the exact same
+# request_graceful()/request_immediate() sequence and prints the exact same
+# user-visible messages as the OS-signal sigint_handler in
+# _execute_with_interrupt (main.py), because both paths operate on the SAME
+# shared session.coordinator.cancellation object -- so the downstream
+# effect (the execute-task poll loop in main.py reacting to
+# cancellation.is_immediate) is identical regardless of which path caught
+# the keypress.
+# ---------------------------------------------------------------------------
+
+
+class _FakeCancellationToken:
+    """Minimal stand-in for amplifier_core.cancellation.CancellationToken.
+
+    Mirrors the real Rust-backed token's observable API surface exactly
+    (verified against the real amplifier_core._engine.RustCancellationToken
+    in this environment): is_cancelled, is_immediate, is_graceful,
+    running_tool_names, request_graceful(), request_immediate(), reset().
+    """
+
+    def __init__(self) -> None:
+        self.state = "none"
+        self.running_tool_names: list[str] = []
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self.state in ("graceful", "immediate")
+
+    @property
+    def is_graceful(self) -> bool:
+        return self.state == "graceful"
+
+    @property
+    def is_immediate(self) -> bool:
+        return self.state == "immediate"
+
+    def request_graceful(self) -> None:
+        self.state = "graceful"
+
+    def request_immediate(self) -> None:
+        self.state = "immediate"
+
+    def reset(self) -> None:
+        self.state = "none"
+
+
+class _FakeCoordinator:
+    def __init__(self, cancellation: _FakeCancellationToken) -> None:
+        self.cancellation = cancellation
+
+
+class _FakeSession:
+    """Stand-in exposing only what SteeringInputManager needs from
+    ``self._session``: ``.coordinator.cancellation`` -- the same shared
+    object main.py's ``_execute_with_interrupt`` polls and mutates.
+    """
+
+    def __init__(self, cancellation: _FakeCancellationToken) -> None:
+        self.coordinator = _FakeCoordinator(cancellation)
+
+
+@pytest.mark.asyncio
+async def test_steering_ctrl_c_forwards_to_session_cancellation():
+    """First Ctrl-C during the steering prompt = graceful; second = immediate.
+
+    Must exactly mirror main.py's sigint_handler escalation semantics and
+    print the same user-visible messages, since a physical Ctrl-C during a
+    turn is caught here (raw_mode disables ISIG) and never reaches that
+    OS-signal handler at all.
+    """
+    from amplifier_app_cli.steering_input import _CtrlCInterrupt
+
+    cancellation = _FakeCancellationToken()
+    session = _FakeSession(cancellation)
+    console = MagicMock()
+
+    call_count = 0
+
+    async def mock_input() -> str | None:
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            raise _CtrlCInterrupt()
+        await asyncio.sleep(10)
+        return None
+
+    stop = asyncio.Event()
+    manager = SteeringInputManager(
+        steer_cap=None,
+        arbiter=None,
+        stop_event=stop,
+        console=console,
+        session=session,
+        _input_provider=mock_input,
+    )
+
+    run_task = asyncio.create_task(manager.run())
+
+    # Wait for the first _CtrlCInterrupt to be processed.
+    for _ in range(100):
+        if cancellation.state != "none":
+            break
+        await asyncio.sleep(0.02)
+
+    assert cancellation.state == "graceful", (
+        "expected the first Ctrl-C during the steering prompt to call "
+        f"request_graceful() on session.coordinator.cancellation (same as "
+        f"sigint_handler's first-Ctrl-C branch), got state={cancellation.state!r}"
+    )
+    assert any(
+        "Stopping after current operation" in str(call.args[0])
+        for call in console.print.call_args_list
+    ), (
+        "expected the same 'Stopping after current operation...' message "
+        "sigint_handler prints on the first Ctrl-C"
+    )
+
+    # Wait for the second _CtrlCInterrupt to escalate to immediate.
+    for _ in range(100):
+        if cancellation.state == "immediate":
+            break
+        await asyncio.sleep(0.02)
+
+    assert cancellation.state == "immediate", (
+        "expected a second Ctrl-C during the steering prompt to escalate to "
+        f"request_immediate() (same as sigint_handler's second-Ctrl-C "
+        f"branch), got state={cancellation.state!r}"
+    )
+    assert any(
+        "Cancelling immediately" in str(call.args[0])
+        for call in console.print.call_args_list
+    ), (
+        "expected the same 'Cancelling immediately...' message "
+        "sigint_handler prints on the second Ctrl-C"
+    )
+
+    # Clean up.
+    stop.set()
+    run_task.cancel()
+    try:
+        await asyncio.wait_for(run_task, timeout=1.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_steering_ctrl_c_without_session_does_not_crash():
+    """Defensive: when no session was wired (session=None, the pre-fix
+    constructor default), a _CtrlCInterrupt must still be handled the old
+    way (silently continue) -- no AttributeError, no crash. Preserves
+    backward compatibility for any caller that doesn't wire session (e.g.
+    the existing test_ctrl_c_during_prompt_does_not_crash_run_loop above).
+    """
+    from amplifier_app_cli.steering_input import _CtrlCInterrupt
+
+    call_count = 0
+
+    async def mock_input() -> str | None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise _CtrlCInterrupt()
+        await asyncio.sleep(10)
+        return None
+
+    stop = asyncio.Event()
+    manager = SteeringInputManager(
+        steer_cap=None,
+        arbiter=None,
+        stop_event=stop,
+        console=MagicMock(),
+        _input_provider=mock_input,
+    )
+
+    run_task = asyncio.create_task(manager.run())
+    await asyncio.sleep(0.1)
+
+    assert not run_task.done(), "run() should not crash/exit when session is None"
+
+    stop.set()
+    run_task.cancel()
+    try:
+        await asyncio.wait_for(run_task, timeout=1.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+
+
+# ---------------------------------------------------------------------------
 # StdinArbiter unit tests (unchanged)
 # ---------------------------------------------------------------------------
 
