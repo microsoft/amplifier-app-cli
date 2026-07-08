@@ -1005,10 +1005,18 @@ async def resume_sub_session(
         # the real cause. Leave the sentinel in place (a downstream guard at
         # header-assembly time is expected to reject/disable it rather than
         # send it) and log loudly so the gap is visible, not swallowed.
-        _redacted_paths = _find_redacted_values(merged_config.get("hooks", []))
+        #
+        # Scan the ENTIRE merged config, not just hooks. The same silent-
+        # sentinel failure mode exists wherever a secret can live: a provider
+        # entry with no matching live override keeps its redacted key, tools
+        # are not re-hydrated on resume, and any of these can also appear
+        # agent-scoped under agents[*]. _find_redacted_values already recurses
+        # arbitrary structures, so pointing it at the whole config closes the
+        # gap at no extra cost.
+        _redacted_paths = _find_redacted_values(merged_config)
         if _redacted_paths:
             logger.warning(
-                "Sub-session %s: %d hook config field(s) still hold the "
+                "Sub-session %s: %d config field(s) still hold the "
                 "redaction sentinel '%s' after credential refresh (no live "
                 "override found to restore them): %s. These fields are "
                 "mounted as-is; the destination/consumer is expected to "
