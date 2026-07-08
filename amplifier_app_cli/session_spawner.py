@@ -195,6 +195,39 @@ def _filter_hooks(
     return new_config
 
 
+_REDACTION_SENTINEL = "[REDACTED]"
+
+
+def _find_redacted_values(value: object, path: str = "") -> list[str]:
+    """Recursively collect dotted/bracketed paths still holding the redaction sentinel.
+
+    Used at resume time (see resume_sub_session's credential refresh) to detect
+    secret-bearing config fields that were NOT successfully re-hydrated from
+    live settings. redact_secrets() (amplifier_core.utils.truncate) replaces
+    sensitive values with the literal string "[REDACTED]" before persisting
+    session metadata to disk; this is the inverse-direction check that flags
+    any such literal still present after the refresh pass.
+
+    Args:
+        value: Any nested dict/list/scalar structure (e.g. merged_config["hooks"]).
+        path: Internal accumulator for the current traversal path.
+
+    Returns:
+        List of paths (e.g. "[2].config.destinations[0].api_key") where the
+        sentinel value was found. Empty list if nothing is redacted.
+    """
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, sub_value in value.items():
+            found.extend(_find_redacted_values(sub_value, f"{path}.{key}"))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            found.extend(_find_redacted_values(item, f"{path}[{index}]"))
+    elif value == _REDACTION_SENTINEL:
+        found.append(path or "<root>")
+    return found
+
+
 async def spawn_sub_session(
     agent_name: str,
     instruction: str,
@@ -876,30 +909,114 @@ async def resume_sub_session(
         )
 
     # --- Credential refresh ---------------------------------------------------
-    # On-disk metadata has API keys redacted to "[REDACTED]" (security fix in
-    # SessionStore._save_metadata).  Re-derive live provider credentials from
-    # user settings + environment variables — the same pipeline that runs at
-    # root-session startup — and splice them back into the loaded config before
-    # creating the session.
+    # On-disk metadata has secrets (provider api_keys, and hook/destination
+    # secrets like the context-intelligence hook's private destination
+    # api_key) redacted to "[REDACTED]" (security fix in
+    # SessionStore._save_metadata -> redact_secrets()).
+    #
+    # redact_secrets() builds a NEW dict and never mutates its input, so it
+    # only ever touches the PERSISTED snapshot -- the live parent session
+    # config held in memory is never poisoned. That's why a FRESH spawn
+    # (spawn_sub_session, which merges from parent_session.config above) is
+    # unaffected: it always carries real credentials.
+    #
+    # RESUME is different: `merged_config` here was loaded straight from the
+    # redacted on-disk snapshot (metadata["config"]), so EVERY section that
+    # can carry a secret must be re-derived from live settings + environment
+    # before session creation -- the same pipeline that assembles the ROOT
+    # session config in runtime/config.py:resolve_bundle_config() (provider
+    # overrides, then hook overrides, then env-var expansion) -- just applied
+    # to the loaded snapshot instead of a freshly prepared bundle.
     # --------------------------------------------------------------------------
-    if merged_config.get("providers"):
+    if merged_config.get("providers") or merged_config.get("hooks"):
         from amplifier_app_cli.lib.settings import AppSettings
         from amplifier_app_cli.runtime.config import (
+            _apply_hook_overrides,
             _apply_provider_overrides,
             _map_id_to_instance_id,
+            deep_merge,
             expand_env_vars,
         )
 
-        _live_overrides = AppSettings().get_provider_overrides()
-        if _live_overrides:
-            _refreshed = _apply_provider_overrides(
-                merged_config["providers"], _live_overrides
-            )
-            _refreshed = _map_id_to_instance_id(_refreshed)
-            merged_config = expand_env_vars({**merged_config, "providers": _refreshed})
+        _live_settings = AppSettings()
+
+        if merged_config.get("providers"):
+            _live_provider_overrides = _live_settings.get_provider_overrides()
+            if _live_provider_overrides:
+                _refreshed_providers = _apply_provider_overrides(
+                    merged_config["providers"], _live_provider_overrides
+                )
+                _refreshed_providers = _map_id_to_instance_id(_refreshed_providers)
+                merged_config = {**merged_config, "providers": _refreshed_providers}
+                logger.debug(
+                    "Refreshed credentials for %d provider(s) at resume time",
+                    len(_refreshed_providers),
+                )
+
+        if merged_config.get("hooks"):
+            # Generalization of the provider refresh above. Re-derive hook
+            # config from the SAME two live sources resolve_bundle_config()
+            # uses to build a fresh session's hooks section:
+            #   1. "overrides.<module>.config" in settings.yaml -- applies to
+            #      ANY module id, hooks included (AppSettings.get_config_overrides()).
+            #   2. Dedicated notification hook overrides
+            #      (AppSettings.get_notification_hook_overrides()).
+            # This is the piece that was previously MISSING: only providers
+            # were refreshed, so a resumed sub-session kept sending
+            # `Bearer [REDACTED]` for any hook/destination api_key.
+            _config_overrides = _live_settings.get_config_overrides()
+            _refreshed_hooks = merged_config["hooks"]
+            if _config_overrides:
+                _refreshed_hooks = [
+                    {
+                        **hook,
+                        "config": deep_merge(
+                            hook.get("config", {}) or {},
+                            _config_overrides[hook["module"]],
+                        ),
+                    }
+                    if isinstance(hook, dict)
+                    and hook.get("module") in _config_overrides
+                    else hook
+                    for hook in _refreshed_hooks
+                ]
+            _notification_overrides = _live_settings.get_notification_hook_overrides()
+            if _notification_overrides:
+                _refreshed_hooks = _apply_hook_overrides(
+                    _refreshed_hooks, _notification_overrides
+                )
+            merged_config = {**merged_config, "hooks": _refreshed_hooks}
             logger.debug(
-                "Refreshed credentials for %d provider(s) at resume time",
-                len(_refreshed),
+                "Refreshed credentials for %d hook(s) at resume time",
+                len(_refreshed_hooks),
+            )
+
+        # Expand any ${VAR} references now that live overrides have been
+        # spliced in -- covers both providers and hooks in one pass.
+        merged_config = expand_env_vars(merged_config)
+
+        # Fail-loud guard: if a secret-bearing field STILL reads the
+        # redaction sentinel after the refresh above, no live override
+        # existed to restore it (e.g. the secret was baked into the bundle
+        # definition itself rather than sourced from settings.yaml).
+        # Do NOT silently mount "[REDACTED]" as if it were a usable value --
+        # that is exactly how a resumed sub-session ends up sending
+        # `Bearer [REDACTED]` and getting a genuine-looking 401 that masks
+        # the real cause. Leave the sentinel in place (a downstream guard at
+        # header-assembly time is expected to reject/disable it rather than
+        # send it) and log loudly so the gap is visible, not swallowed.
+        _redacted_paths = _find_redacted_values(merged_config.get("hooks", []))
+        if _redacted_paths:
+            logger.warning(
+                "Sub-session %s: %d hook config field(s) still hold the "
+                "redaction sentinel '%s' after credential refresh (no live "
+                "override found to restore them): %s. These fields are "
+                "mounted as-is; the destination/consumer is expected to "
+                "reject them rather than receive a fake credential.",
+                sub_session_id,
+                len(_redacted_paths),
+                _REDACTION_SENTINEL,
+                _redacted_paths,
             )
 
     parent_id = metadata.get("parent_id")
