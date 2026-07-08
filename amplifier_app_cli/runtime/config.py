@@ -14,6 +14,7 @@ from rich.console import Console
 from ..lib.settings import AppSettings, NotificationFlags, get_custom_routing_dir
 from ..lib.merge_utils import merge_module_items
 from ..lib.merge_utils import merge_tool_configs
+from ..lib.merge_utils import _normalize_module_entry
 
 
 if TYPE_CHECKING:
@@ -153,21 +154,37 @@ async def resolve_bundle_config(
     # and hooks alike.  Applied BEFORE the dedicated override sections
     # (config.providers[], modules.tools[], config.notifications.*) so that
     # those more-specific sections take precedence on overlapping keys.
+    #
+    # overrides.<id>.config is keyed by module IDENTITY, not by mount
+    # location -- so it must reach a module wherever it's declared, including
+    # inside a sub-agent's own frontmatter (config["agents"][<name>]["tools"]
+    # etc.), not just the root bundle's providers/tools/hooks lists. Without
+    # this, a tool an agent introduces that never appears in the root lists
+    # (e.g. a query tool declared only in an agent's tools: section) never
+    # receives its override and silently falls back to module defaults / env
+    # vars.
     config_overrides = app_settings.get_config_overrides()
     if config_overrides:
         for section_key in ("providers", "tools", "hooks"):
             section = bundle_config.get(section_key)
             if not section:
                 continue
-            for item in section:
-                if not isinstance(item, dict):
+            bundle_config[section_key] = _apply_config_overrides_to_section(
+                section, config_overrides
+            )
+
+        agents_section = bundle_config.get("agents")
+        if isinstance(agents_section, dict):
+            for agent_cfg in agents_section.values():
+                if not isinstance(agent_cfg, dict):
                     continue
-                module_id = item.get("module")
-                if module_id and module_id in config_overrides:
-                    override_cfg = config_overrides[module_id]
-                    if override_cfg:
-                        base_cfg = item.get("config", {}) or {}
-                        item["config"] = deep_merge(base_cfg, override_cfg)
+                for section_key in ("providers", "tools", "hooks"):
+                    agent_section = agent_cfg.get(section_key)
+                    if not agent_section:
+                        continue
+                    agent_cfg[section_key] = _apply_config_overrides_to_section(
+                        agent_section, config_overrides
+                    )
 
     # Apply provider overrides
     provider_overrides = app_settings.get_provider_overrides()
@@ -429,6 +446,61 @@ def _map_id_to_instance_id(
         ):
             provider = {**provider, "instance_id": provider["id"]}
         result.append(provider)
+    return result
+
+
+def _apply_config_overrides_to_section(
+    section: list[Any], config_overrides: dict[str, Any]
+) -> list[Any]:
+    """Apply overrides.<module-id>.config to every entry in a module list section.
+
+    Shared by the root ``providers``/``tools``/``hooks`` override loop in
+    :func:`resolve_bundle_config` and by the same application to each agent's
+    own ``providers``/``tools``/``hooks`` sections (``config["agents"][name]``).
+    ``overrides.<id>.config`` is keyed by module identity, not by mount
+    location, so it must reach a module wherever it's declared.
+
+    Entries may be bare strings (shorthand for ``{"module": <string>}``) or
+    dicts -- the same shapes :func:`merge_module_lists` already tolerates via
+    ``_normalize_module_entry``. For each entry:
+
+    - Normalize (read-only) to find its module id. Entries that don't
+      normalize to a dict with a ``module`` id are returned unchanged.
+    - If there's no matching override, the ORIGINAL entry is returned
+      unchanged -- bare strings stay bare, dicts are returned by the same
+      reference (no gratuitous copy), so untouched entries are byte-identical.
+    - If there is a matching override, a NEW dict entry is produced: the
+      existing config (if any) deep-merged with the override (override wins
+      on key conflicts), with all other entry keys (``source``, ``module``,
+      ...) preserved.
+
+    Args:
+        section: A module list (providers/tools/hooks), possibly containing
+            bare strings and/or dicts.
+        config_overrides: The ``overrides.<id>.config`` map from settings.
+
+    Returns:
+        A new list with overrides applied. The original ``section`` list and
+        its untouched entries are not mutated.
+    """
+    if not section or not config_overrides:
+        return section
+
+    result: list[Any] = []
+    for item in section:
+        normalized = _normalize_module_entry(item)
+        if normalized is None:
+            result.append(item)
+            continue
+        module_id = normalized.get("module")
+        override_cfg = config_overrides.get(module_id) if module_id else None
+        if not override_cfg:
+            result.append(item)
+            continue
+        base_cfg = normalized.get("config", {}) or {}
+        merged_entry = dict(normalized)
+        merged_entry["config"] = deep_merge(base_cfg, override_cfg)
+        result.append(merged_entry)
     return result
 
 
