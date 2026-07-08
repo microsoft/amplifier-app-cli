@@ -5,12 +5,16 @@ Philosophy: Simple, scope-aware YAML settings.
 
 from __future__ import annotations
 
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from typing import Literal
 
 import yaml
+from filelock import BaseFileLock
+from filelock import FileLock
 
 Scope = Literal["local", "project", "global", "session"]
 
@@ -1211,11 +1215,54 @@ class AppSettings:
             return {}
 
     def _write_scope(self, scope: Scope, settings: dict[str, Any]) -> None:
-        """Write settings to a specific scope."""
+        """Write settings to a specific scope.
+
+        Before the atomic write below, scans any ``config.providers``
+        entries for literal plaintext secrets and rewrites them to
+        ``${VAR}`` placeholders backed by ``~/.amplifier/keys.env``. This
+        is the single bypass-proof funnel used by all provider write call
+        sites, so no scope's settings.yaml -- global, project, or local --
+        can ever end up holding a literal secret value. Runs synchronously
+        before the write proceeds: if it raises, this method's own write
+        never happens and the old scope file is preserved untouched.
+
+        Atomic write (tmp-file-then-replace) so a crash or a concurrent
+        writer mid-write can't corrupt the file -- a reader always sees
+        either the old or the new content, never a partial write. See
+        docs/designs/provider-instance-credentials.md §5.5.
+        """
+        providers = (settings.get("config") or {}).get("providers")
+        if isinstance(providers, list) and providers:
+            # Lazy import breaks the settings<->provider_config_utils
+            # cycle -- same convention already used for merge_utils in
+            # get_provider_overrides() above.
+            from ..provider_config_utils import normalize_provider_secrets
+
+            normalize_provider_secrets(self, settings, scope)
+
         path = self._get_scope_path(scope)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(settings, f, default_flow_style=False)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                yaml.safe_dump(settings, f, default_flow_style=False)
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+
+    def _scope_lock(self, scope: Scope) -> BaseFileLock:
+        """Advisory file lock guarding the read-modify-write critical
+        section for a scope's settings file.
+
+        Callers must hold this for the *entire* read-check-write sequence,
+        not just the final ``_write_scope`` call -- locking only the write
+        and not the read that precedes it does not close the race. See
+        docs/designs/provider-instance-credentials.md §5.5.
+        """
+        path = self._get_scope_path(scope)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return FileLock(str(path) + ".lock", timeout=10)
 
     def _update_setting(self, key: str, value: Any, scope: Scope) -> None:
         """Update a single setting at specified scope."""

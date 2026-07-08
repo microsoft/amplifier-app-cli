@@ -28,14 +28,27 @@ def _seed_provider(
     priority: int = 1,
     provider_id: str | None = None,
 ) -> None:
-    """Seed a provider entry into global settings for testing."""
+    """Seed a provider entry into global settings for testing.
+
+    Bypasses the plaintext-secret normalization that ``_write_scope`` now
+    performs on every provider write (see
+    docs/designs/provider-instance-credentials.md addendum) by making the
+    provider module unresolvable for the duration of the seed write --
+    these tests seed literal config values purely for test setup and are
+    not exercising secret-normalization behavior (that has its own
+    dedicated coverage in test_provider_instance_credentials.py).
+    """
     entry = {
         "module": module,
         "config": {**config, "priority": priority},
     }
     if provider_id is not None:
         entry["id"] = provider_id
-    settings.set_provider_override(entry, scope="global")
+    with patch(
+        "amplifier_app_cli.provider_config_utils.get_provider_info",
+        return_value=None,
+    ):
+        settings.set_provider_override(entry, scope="global")
 
 
 # ============================================================
@@ -53,8 +66,9 @@ class TestProviderAdd:
         command_names = [c.name for c in provider.commands.values()]
         assert "add" in command_names
 
-    def test_provider_add_saves_entry_to_settings(self, tmp_path):
+    def test_provider_add_saves_entry_to_settings(self, tmp_path, monkeypatch):
         """provider add should write a provider entry to config.providers in settings."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         from amplifier_app_cli.commands.provider import provider
 
         settings = _make_settings(tmp_path)
@@ -144,8 +158,9 @@ class TestProviderAdd:
         assert openai_entry is not None
         assert openai_entry["config"]["priority"] >= 2
 
-    def test_provider_add_multi_instance_prompts_for_id(self, tmp_path):
+    def test_provider_add_multi_instance_prompts_for_id(self, tmp_path, monkeypatch):
         """Adding a second provider of same type should include an id field."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         settings = _make_settings(tmp_path)
         _seed_provider(
             settings,
@@ -774,6 +789,14 @@ class TestProviderEditMultiInstance:
         preferred") entry is listed FIRST, the high-priority ("preferred",
         lower config.priority number wins) entry is listed SECOND -- matching
         the exact DTU repro list order.
+
+        Wrapped so the provider module is unresolvable for the duration of
+        this seed write, bypassing the plaintext-secret normalization
+        ``_write_scope`` now performs on every provider write (see
+        docs/designs/provider-instance-credentials.md addendum) -- this
+        test suite is about write-back entry identity, not secret
+        handling, and the literal "*-key" values below are just
+        convenient distinguishable test data.
         """
         scope_data = {
             "config": {
@@ -799,7 +822,11 @@ class TestProviderEditMultiInstance:
                 ]
             }
         }
-        settings._write_scope("global", scope_data)
+        with patch(
+            "amplifier_app_cli.provider_config_utils.get_provider_info",
+            return_value=None,
+        ):
+            settings._write_scope("global", scope_data)
 
     def test_provider_edit_ambiguous_multi_instance_updates_resolved_entry(
         self, tmp_path
@@ -830,6 +857,10 @@ class TestProviderEditMultiInstance:
                 },
             ),
             patch("amplifier_app_cli.commands.provider.KeyManager"),
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=None,
+            ),
         ):
             result = runner.invoke(provider, ["edit", "anthropic"])
 
@@ -883,6 +914,10 @@ class TestProviderEditMultiInstance:
                 },
             ),
             patch("amplifier_app_cli.commands.provider.KeyManager"),
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=None,
+            ),
         ):
             result = runner.invoke(provider, ["edit", "wrong-instance"])
 
@@ -930,6 +965,10 @@ class TestProviderEditMultiInstance:
                 },
             ),
             patch("amplifier_app_cli.commands.provider.KeyManager"),
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=None,
+            ),
         ):
             result = runner.invoke(provider, ["edit", "anthropic"])
 
@@ -978,6 +1017,14 @@ class TestManageEditProviderMultiInstance:
         priority ("correct") listed SECOND -- the exact list order that
         makes get_provider_overrides()'s merge favor "correct"'s values
         for the single collapsed/displayed row.
+
+        Wrapped so the provider module is unresolvable for the duration of
+        this seed write, bypassing the plaintext-secret normalization
+        ``_write_scope`` now performs on every provider write (see
+        docs/designs/provider-instance-credentials.md addendum) -- this
+        test suite is about write-back entry identity, not secret
+        handling, and the literal "*-key" values below are just
+        convenient distinguishable test data.
         """
         scope_data = {
             "config": {
@@ -1001,7 +1048,11 @@ class TestManageEditProviderMultiInstance:
                 ]
             }
         }
-        settings._write_scope("global", scope_data)
+        with patch(
+            "amplifier_app_cli.provider_config_utils.get_provider_info",
+            return_value=None,
+        ):
+            settings._write_scope("global", scope_data)
 
     def test_merged_view_collapses_to_single_correct_leaning_row(self, tmp_path):
         """Sanity check on the premise: get_provider_overrides() must
@@ -1047,6 +1098,10 @@ class TestManageEditProviderMultiInstance:
                 },
             ),
             patch("amplifier_app_cli.commands.provider.KeyManager"),
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=None,
+            ),
         ):
             _manage_edit_provider(settings, "e1", providers, scope="global")
 
@@ -1099,6 +1154,10 @@ class TestManageEditProviderMultiInstance:
                 },
             ),
             patch("amplifier_app_cli.commands.provider.KeyManager"),
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=None,
+            ),
         ):
             _manage_edit_provider(settings, "e1", providers, scope="global")
 
@@ -1140,7 +1199,14 @@ class TestManageEditProviderMultiInstance:
                 ]
             }
         }
-        settings._write_scope("global", scope_data)
+        # Bypasses plaintext-secret normalization for this setup write --
+        # see docs/designs/provider-instance-credentials.md addendum; this
+        # test is about write-back entry identity, not secret handling.
+        with patch(
+            "amplifier_app_cli.provider_config_utils.get_provider_info",
+            return_value=None,
+        ):
+            settings._write_scope("global", scope_data)
 
         providers = settings.get_provider_overrides()
         assert len(providers) == 2  # distinct ids -> not collapsed by merge
@@ -1159,6 +1225,10 @@ class TestManageEditProviderMultiInstance:
                 },
             ),
             patch("amplifier_app_cli.commands.provider.KeyManager"),
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=None,
+            ),
         ):
             _manage_edit_provider(settings, f"e{idx}", providers, scope="global")
 

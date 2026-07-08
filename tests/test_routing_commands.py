@@ -668,10 +668,23 @@ class TestRoutingManageCreateOption:
 
 
 def _seed_provider(settings: AppSettings, providers: list[dict]) -> None:
-    """Seed provider entries with explicit list for fine-grained control."""
+    """Seed provider entries with explicit list for fine-grained control.
+
+    Bypasses the plaintext-secret normalization that ``_write_scope`` now
+    performs on every provider write (see
+    docs/designs/provider-instance-credentials.md addendum) by making the
+    provider module unresolvable for the duration of the seed write --
+    these tests seed literal config values purely for test setup and are
+    not exercising secret-normalization behavior (that has its own
+    dedicated coverage in test_provider_instance_credentials.py).
+    """
     scope_settings = settings._read_scope("global")
     scope_settings["config"] = {"providers": providers}
-    settings._write_scope("global", scope_settings)
+    with patch(
+        "amplifier_app_cli.provider_config_utils.get_provider_info",
+        return_value=None,
+    ):
+        settings._write_scope("global", scope_settings)
 
 
 class TestGetProviderNames:
