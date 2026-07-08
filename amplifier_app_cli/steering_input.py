@@ -464,11 +464,37 @@ class SteeringInputManager:
                         prompt_task.cancel()
                         try:
                             await prompt_task
-                        except (
-                            asyncio.CancelledError,
-                            KeyboardInterrupt,
-                            EOFError,
-                        ):
+                        except asyncio.CancelledError:
+                            # Distinguish "prompt_task itself finished
+                            # cancelling" (expected -- we just cancelled it
+                            # above as part of the normal abort-for-approval
+                            # flow) from "run()'s OWN task was externally
+                            # cancelled while suspended at this await" (must
+                            # be honored, not swallowed).
+                            # Task.cancelling() (3.11+) reports the number of
+                            # pending cancellation requests on the CURRENT
+                            # task specifically -- it is 0 here in the normal
+                            # case (only prompt_task was cancelled), but > 0
+                            # if something called .cancel() on run()'s own
+                            # task while it was suspended right here. Without
+                            # this check, that external cancellation would be
+                            # silently absorbed (classic asyncio anti-pattern:
+                            # catching CancelledError without re-raising does
+                            # not cancel the enclosing task, it just
+                            # continues running) and run() would fall through
+                            # to the "wait for approval to finish" loop below
+                            # -- hanging indefinitely if stop_event is never
+                            # set and approval never ends, relying entirely
+                            # on the caller's stop_event-before-cancel()
+                            # ordering convention instead of being
+                            # self-defending. Re-raising here lets the
+                            # cancellation propagate normally per asyncio's
+                            # expected contract, regardless of caller
+                            # ordering.
+                            current = asyncio.current_task()
+                            if current is not None and current.cancelling():
+                                raise
+                        except (KeyboardInterrupt, EOFError):
                             pass
                         # Wait for approval to finish before restarting.
                         while (

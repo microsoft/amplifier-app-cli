@@ -515,6 +515,114 @@ async def test_arbiter_resumes_after_approval_ends():
 
 
 # ---------------------------------------------------------------------------
+# Arbiter-abort swallowed-cancellation race
+# ---------------------------------------------------------------------------
+# Background (confirmed via Event-gated coordination during the Ctrl-C
+# functional investigation): the arbiter-abort branch inside run()'s poll
+# loop does `prompt_task.cancel(); await prompt_task` and catches
+# `(asyncio.CancelledError, KeyboardInterrupt, EOFError)` with a bare
+# `pass`, then falls through to a "wait for approval to finish" loop and
+# eventually `continue`s the outer loop -- it does NOT `return`.
+#
+# If run()'s OWN task is cancelled from OUTSIDE (by _execute_with_interrupt's
+# teardown) at the exact moment it is suspended inside THIS `await
+# prompt_task`, the bare `except CancelledError: pass` cannot distinguish
+# "prompt_task itself finished cancelling" (expected, normal abort-for-
+# approval flow) from "run()'s own task was just asked to cancel" (must be
+# honored) -- it swallows both identically. Classic asyncio anti-pattern:
+# catching CancelledError without re-raising does not cancel the enclosing
+# task, it just continues running.
+#
+# This is "safe" today ONLY because the single real caller
+# (_execute_with_interrupt) always calls stop_event.set() BEFORE
+# .cancel(), so the very next outer-loop re-check normally ends things
+# quickly -- but nothing INSIDE run() enforces or asserts that ordering.
+# If stop_event is never set (or not set before the cancel lands here),
+# run() spins forever in the "wait for approval to finish" loop, having
+# silently absorbed the external cancellation -- a real, provable hang.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_arbiter_abort_swallows_external_cancellation_regression():
+    """FAILING TEST (proves the bug): external cancellation landing inside
+    the arbiter-abort branch's ``await prompt_task`` must still result in
+    run_task ending up cancelled -- not silently absorbed.
+
+    Uses Event-gated coordination (not sleep-based timing) to force
+    run_task's external cancellation to land exactly inside the
+    arbiter-abort branch's ``await prompt_task``: ``mock_input``, once
+    cancelled, sets ``in_teardown`` and then sleeps before re-raising --
+    widening the window during which run() is suspended at that exact
+    await. Deliberately never sets ``stop_event`` or ends approval, so the
+    only way run_task can end up cancelled is if the branch itself honors
+    the external cancellation instead of falling through to the
+    wait-for-approval loop.
+    """
+    in_teardown = asyncio.Event()
+    started = asyncio.Event()
+
+    async def mock_input() -> str:
+        started.set()
+        try:
+            await asyncio.Future()  # hang until cancelled
+        except asyncio.CancelledError:
+            in_teardown.set()
+            # Widen the window: prompt_task takes a while to actually
+            # finish tearing down after being cancelled (simulates a slow
+            # raw_mode __exit__ or Application shutdown).
+            await asyncio.sleep(0.3)
+            raise
+        return ""  # unreachable; satisfies the declared return type
+
+    arbiter = StdinArbiter()
+    stop_event = asyncio.Event()
+    console = _make_console()
+
+    manager = SteeringInputManager(
+        None,
+        arbiter,
+        stop_event,
+        console,
+        _input_provider=mock_input,
+    )
+
+    run_task = asyncio.create_task(manager.run())
+
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    # Trigger the arbiter-abort branch.
+    arbiter.begin_approval()
+
+    # Wait until prompt_task's OWN CancelledError handler is running --
+    # this means run_task is now suspended at `await prompt_task` inside
+    # the arbiter-abort branch.
+    await asyncio.wait_for(in_teardown.wait(), timeout=1.0)
+
+    # Cancel run_task ITSELF, right now, while it's suspended exactly
+    # there.
+    run_task.cancel()
+
+    # Deliberately do NOT set stop_event and do NOT end_approval() -- if
+    # the swallow bug is present, run_task will hang indefinitely waiting
+    # for approval to end, having silently absorbed the cancellation.
+    done, pending = await asyncio.wait([run_task], timeout=1.0)
+
+    assert run_task not in pending, (
+        "run_task's external cancellation was silently swallowed by the "
+        "arbiter-abort branch's `except CancelledError: pass` -- the task "
+        "is still pending (hung waiting for approval to end) instead of "
+        "properly ending up cancelled, even though neither stop_event nor "
+        "arbiter.approval_active were ever touched"
+    )
+    assert run_task.cancelled(), (
+        "expected run_task to end up cancelled once its own external "
+        f".cancel() was honored; got cancelled()={run_task.cancelled()!r} "
+        f"(done={run_task.done()!r})"
+    )
+
+
+# ---------------------------------------------------------------------------
 # run() teardown: stop_event causes clean exit
 # ---------------------------------------------------------------------------
 
