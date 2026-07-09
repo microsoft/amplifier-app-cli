@@ -6,8 +6,11 @@ Queries provider modules dynamically for model lists and config fields.
 
 import logging
 import os
+import re
+import unicodedata
 from typing import Any
 
+import yaml
 from rich.markup import escape
 
 from rich.console import Console
@@ -15,6 +18,8 @@ from rich.prompt import Confirm
 from rich.prompt import Prompt
 
 from .key_manager import KeyManager
+from .lib.settings import AppSettings
+from .lib.settings import Scope
 from .provider_loader import get_provider_info
 from .provider_loader import get_provider_models
 
@@ -208,11 +213,285 @@ def _resolve_config_value(value: Any) -> Any:
     return value
 
 
+def _normalize_id(value: str) -> str:
+    """NFC-normalize so visually-identical ids differing only in Unicode
+    composition (e.g. precomposed 'é' U+00E9 vs. combining 'e' + U+0301)
+    compare equal.
+
+    Without this, id-uniqueness (Bug 1) and credential-name-collision
+    (§5.4.2) checks are defeated by construction: two ids that render
+    identically in a terminal, and that a user would reasonably believe are
+    'the same id', are treated as distinct byte strings. Copy-paste from a
+    document or a different OS's clipboard is a realistic path to a
+    decomposed form, not a contrived edge case.
+
+    See docs/designs/provider-instance-credentials.md §6, §5.4.2.
+    """
+    return unicodedata.normalize("NFC", value)
+
+
+def _sanitize_env_token(value: str) -> str:
+    """Uppercase and collapse to a token matching ``[A-Z0-9_]*``.
+
+    Any run of characters outside ``[A-Za-z0-9]`` becomes a single
+    underscore; leading/trailing underscores are stripped.
+    """
+    return re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_").upper()
+
+
+def _secret_config_field(module_id: str) -> dict[str, Any] | None:
+    """Return the provider type's secret ConfigField dict
+    (``field_type == "secret"``), if any."""
+    info = get_provider_info(module_id)
+    if not info:
+        return None
+    for field in info.get("config_fields", []):
+        if isinstance(field, dict) and field.get("field_type") == "secret":
+            return field
+    return None
+
+
+def _secret_env_var_for(module_id: str) -> str | None:
+    """Default env var of the provider type's secret ConfigField
+    (field_type == 'secret'), i.e. the collision-prone name."""
+    field = _secret_config_field(module_id)
+    return field.get("env_var") if field else None
+
+
+def _secret_field_id_for(module_id: str) -> str | None:
+    """Config field id of the provider type's secret ConfigField (e.g.
+    'api_key'). Used to locate an instance's stored placeholder value on
+    edit -- see docs/designs/provider-instance-credentials.md §5.3."""
+    field = _secret_config_field(module_id)
+    return field.get("id") if field else None
+
+
+def _claimed_env_vars(settings: AppSettings) -> set[str]:
+    """Env-var names already spoken for, by ANY means, across ALL scopes
+    (global, project, local, session): either referenced by a ``${VAR}``
+    placeholder in some scope's provider config, OR already backed by a
+    real, saved secret in ``~/.amplifier/keys.env``.
+
+    Mirrors ``AppSettings.get_provider_overrides()``'s scope iteration
+    order, but deliberately does NOT mirror its silent
+    ``except Exception: pass`` error handling: a corrupt scope file here
+    must be surfaced loudly, since silently under-counting claimed names
+    would let a new instance claim an already-used env var and reintroduce
+    Bug 3 through a different door.
+
+    A literal (non-placeholder) config value claims nothing BY ITSELF --
+    it's the presence of an actual saved key in keys.env (checked below,
+    once per call) that claims a name, not the shape of the config value
+    referencing it. This matters for the race where one instance's literal
+    secret has just been normalized and saved to keys.env, but another
+    entry's still-unprocessed literal in the same write batch hasn't been
+    touched yet: without this, the second entry's default name would look
+    unclaimed and clobber the first instance's freshly-saved secret in
+    keys.env. See docs/designs/provider-instance-credentials.md §5.4.1.
+    """
+    claimed: set[str] = set()
+    for scope in ("global", "project", "local", "session"):
+        try:
+            path = settings._get_scope_path(scope)  # type: ignore[arg-type]
+        except ValueError:
+            continue  # e.g. session scope with no session_id set
+        if not path.exists():
+            continue
+        if path.stat().st_size == 0:
+            continue
+        raw = path.read_text(encoding="utf-8")
+        try:
+            parsed = yaml.safe_load(raw) or {}
+        except Exception as e:
+            console.print(
+                f"[red]⚠ {scope} settings file exists but failed to parse "
+                f"({e}). Skipping it would under-count in-use credential "
+                f"names and risk a silent collision -- please fix or remove "
+                f"{path} before adding another same-type provider "
+                f"instance.[/red]"
+            )
+            raise
+        providers = (parsed.get("config") or {}).get("providers", [])
+        for p in providers if isinstance(providers, list) else []:
+            if not isinstance(p, dict):
+                continue
+            for v in (p.get("config") or {}).values():
+                if isinstance(v, str) and v.startswith("${") and v.endswith("}"):
+                    claimed.add(v[2:-1])
+
+    # Also claim any name already backed by a real, saved secret in
+    # keys.env, even if no scope's config currently references it via a
+    # placeholder yet (e.g. it was just saved moments ago by another
+    # entry's normalization/configure_provider call within the same
+    # command, before this scope's write has landed). Single read, reused
+    # by the caller's loop -- not re-read per provider entry.
+    claimed |= KeyManager().stored_keys()
+    return claimed
+
+
+def _suggest_instance_env_var(
+    module_id: str, instance_id: str, claimed: set[str]
+) -> str:
+    """``<TYPE_PREFIX>_<ID-SUFFIX>_API_KEY``, NFC-normalized then sanitized
+    to ``^[A-Z_][A-Z0-9_]*$``, de-duplicated against ``claimed``. E.g.
+    ``(anthropic, anthropic-fable) -> ANTHROPIC_FABLE_API_KEY``.
+
+    Raises ``ValueError`` if the sanitized ID-SUFFIX is empty, or if the
+    resulting suggestion already collides with a claimed name after
+    normalization -- e.g. two ids differing only in separator style
+    (``anthropic-fable`` vs ``anthropic_fable``) would otherwise sanitize to
+    the identical suggestion and silently re-create the exact collision
+    this fix exists to prevent. Must fail loudly here, never emit an
+    invalid or re-colliding name.
+
+    See docs/designs/provider-instance-credentials.md §5.4.2.
+    """
+    display = module_id[9:] if module_id.startswith("provider-") else module_id
+    type_prefix = _sanitize_env_token(display)
+
+    norm_instance = _normalize_id(instance_id)
+    # Strip a leading "<display>[-_ ]" prefix so (anthropic, anthropic-fable)
+    # yields suffix "fable" rather than duplicating the type name. If the id
+    # IS (only) the display name -- with or without trailing separators --
+    # this consumes it entirely, correctly producing an empty suffix below:
+    # that id carries no distinguishing information and must raise, not
+    # fall back to re-using the whole (undistinguishing) original string.
+    suffix_source = re.sub(
+        rf"^{re.escape(display)}[-_\s]*", "", norm_instance, flags=re.IGNORECASE
+    )
+    id_suffix = _sanitize_env_token(suffix_source)
+
+    if not id_suffix:
+        raise ValueError(
+            f"Instance id {instance_id!r} doesn't produce a usable "
+            "credential variable name (it sanitizes to an empty suffix). "
+            "Please choose a more distinct id."
+        )
+
+    suggested = f"{type_prefix}_{id_suffix}_API_KEY"
+    if suggested in claimed:
+        raise ValueError(
+            f"Instance id {instance_id!r} doesn't produce a usable "
+            f"credential variable name (it sanitizes to {suggested}, which "
+            "is already in use by another instance). Please choose a more "
+            "distinct id."
+        )
+    return suggested
+
+
+def normalize_provider_secrets(
+    settings_obj: AppSettings, scope_settings: dict[str, Any], scope: Scope
+) -> None:
+    """Rewrite any literal plaintext secret in ``scope_settings``'s provider
+    entries into a ``${VAR}`` placeholder backed by ``~/.amplifier/keys.env``.
+
+    Called synchronously from ``AppSettings._write_scope``, before its own
+    atomic write proceeds -- this is the single bypass-proof funnel used by
+    all provider write call sites, so no scope's settings.yaml can ever end
+    up holding a literal secret value. Applies universally to every scope
+    (global, project, local): this is a deliberate, confirmed decision, not
+    scope-conditional.
+
+    Mutates ``scope_settings`` in place. If a literal is found but no
+    usable env var name can be derived for it, lets the underlying
+    ``ValueError`` from ``_suggest_instance_env_var`` propagate so the
+    caller's write aborts loudly rather than proceeding with an
+    undecided/possibly-colliding name -- ``_write_scope``'s atomic write
+    hasn't run yet at that point, so the old scope file is untouched.
+
+    See docs/designs/provider-instance-credentials.md.
+    """
+    providers = (scope_settings.get("config") or {}).get("providers")
+    if not isinstance(providers, list) or not providers:
+        return
+
+    # Computed lazily, at most once per call, on the FIRST literal secret
+    # actually found -- entries normalized earlier in this same batch must
+    # also be visible to entries normalized later in it, so two literals
+    # sharing a default name in one write don't clobber each other. See
+    # _claimed_env_vars' own cross-scope aggregation. Deferred (rather than
+    # eager) so a batch containing no literals at all -- the common case --
+    # never touches keys.env or constructs a KeyManager.
+    claimed: set[str] | None = None
+    batch_claimed: set[str] = set()
+    key_manager: KeyManager | None = None
+
+    for entry in providers:
+        if not isinstance(entry, dict):
+            continue
+
+        raw_module_id = entry.get("module")
+        raw_entry_id = entry.get("id")
+
+        if not isinstance(raw_module_id, str):
+            unresolved_label = raw_entry_id or raw_module_id
+            console.print(
+                f"[yellow]\u26a0 Could not resolve provider module "
+                f"'{escape(str(raw_module_id))}' for entry "
+                f"'{escape(str(unresolved_label))}' -- skipping "
+                "plaintext-secret scan for this entry.[/yellow]"
+            )
+            continue
+        module_id = raw_module_id
+
+        field_id = _secret_field_id_for(module_id)
+        if field_id is None:
+            unresolved_label = raw_entry_id or module_id
+            console.print(
+                f"[yellow]\u26a0 Could not resolve provider module "
+                f"'{escape(module_id)}' for entry "
+                f"'{escape(str(unresolved_label))}' -- skipping "
+                "plaintext-secret scan for this entry.[/yellow]"
+            )
+            continue
+        entry_label: str = str(raw_entry_id) if raw_entry_id else module_id
+
+        entry_config = entry.get("config") or {}
+        value = entry_config.get(field_id)
+        if not value:
+            continue
+        if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+            continue
+
+        # A literal secret was found -- move it to keys.env. Compute
+        # `claimed` now, on first use (see comment above `claimed`'s
+        # declaration).
+        if claimed is None:
+            claimed = _claimed_env_vars(settings_obj)
+        already_claimed = claimed | batch_claimed
+        default_name = _secret_env_var_for(module_id)
+        if default_name and default_name not in already_claimed:
+            chosen = default_name
+        else:
+            chosen = _suggest_instance_env_var(module_id, entry_label, already_claimed)
+
+        if key_manager is None:
+            key_manager = KeyManager()
+        key_manager.save_key(chosen, value)
+
+        entry["config"][field_id] = f"${{{chosen}}}"
+        batch_claimed.add(chosen)
+
+        message = (
+            f"Note: found a plaintext credential for instance "
+            f"'{entry_label}' \u2014 moved it to keys.env as {chosen}; "
+            f"settings now reference it by ${{{chosen}}}."
+        )
+        if scope == "project":
+            message += (
+                "  (project settings are team-shared/committed to git "
+                "\u2014 the secret is now only in keys.env, not in the "
+                "committed file.)"
+            )
+        console.print(message)
+
+
 def _prompt_for_field(
     field: dict[str, Any],
     key_manager: KeyManager,
     collected_config: dict[str, Any],
     existing_config: dict[str, Any] | None = None,
+    env_var_overrides: dict[str, str] | None = None,
 ) -> tuple[str, Any]:
     """Prompt user for a single config field value.
 
@@ -221,6 +500,10 @@ def _prompt_for_field(
         key_manager: Key manager for secrets
         collected_config: Config values collected so far
         existing_config: Optional existing config for defaults when re-configuring
+        env_var_overrides: Optional map of ``{type_default_env_var:
+            instance_env_var}``, resolved by the caller (design §5.2/§5.3)
+            when a same-type instance needs a distinct credential name from
+            the provider type's declared default.
 
     Returns:
         Tuple of (field_id, value)
@@ -228,7 +511,12 @@ def _prompt_for_field(
     field_id = field["id"]
     field_type = field.get("field_type", "text")
     prompt_text = field["prompt"]
-    env_var = field.get("env_var")
+    declared_env_var = field.get("env_var")
+    env_var = (
+        (env_var_overrides or {}).get(declared_env_var, declared_env_var)
+        if declared_env_var
+        else declared_env_var
+    )
     default = field.get("default")
     required = field.get("required", True)
 
@@ -337,6 +625,8 @@ def configure_provider(
     use_azure_cli: bool | None = None,
     existing_config: dict[str, Any] | None = None,
     non_interactive: bool = False,
+    env_var_overrides: dict[str, str] | None = None,
+    settings: AppSettings | None = None,
 ) -> dict[str, Any] | None:
     """Configure a provider using its self-declared config_fields.
 
@@ -355,6 +645,16 @@ def configure_provider(
         use_azure_cli: Optional Azure CLI auth flag (Azure OpenAI only)
         existing_config: Optional existing config for defaults when re-configuring
         non_interactive: If True, skip all prompts and use CLI values/env vars/defaults only
+        env_var_overrides: Optional map of ``{type_default_env_var:
+            instance_env_var}``. Resolved by the caller (design §5.2/§5.3)
+            when a same-type instance needs a distinct credential name.
+            Mechanism only -- this function does not compute collisions,
+            it just uses whatever name it is handed.
+        settings: Optional AppSettings, used only to detect a same-type
+            credential collision in ``non_interactive`` mode and fail loudly
+            instead of silently reusing the type default (design §5.4.5).
+            When omitted, the non-interactive fail-loud check is skipped
+            (fully backward compatible with existing callers).
 
     Returns:
         Provider configuration dict, or None if configuration failed
@@ -418,7 +718,28 @@ def configure_provider(
 
             # In non-interactive mode, use env var or existing config value
             if non_interactive:
-                env_var = field.get("env_var")
+                declared = field.get("env_var")
+                env_var = (
+                    (env_var_overrides or {}).get(declared, declared)
+                    if declared
+                    else declared
+                )
+                # Fail loud instead of silently reusing the type default when
+                # it's already claimed by another instance (design §5.4.5).
+                if (
+                    settings is not None
+                    and declared
+                    and env_var == declared
+                    and declared not in (env_var_overrides or {})
+                    and declared in _claimed_env_vars(settings)
+                ):
+                    raise ValueError(
+                        f"Non-interactive configuration would reuse the same "
+                        f"credential env var ({declared}) as another "
+                        f"configured instance. Pass an explicit "
+                        f"env_var_overrides mapping for this instance "
+                        f"instead of relying on the type default."
+                    )
                 if env_var and os.environ.get(env_var):
                     collected_config[field_id] = f"${{{env_var}}}"
                 elif existing_config and field_id in existing_config:
@@ -429,7 +750,7 @@ def configure_provider(
 
             # Prompt for the field (pass existing_config for defaults)
             field_id, value = _prompt_for_field(
-                field, key_manager, collected_config, existing_config
+                field, key_manager, collected_config, existing_config, env_var_overrides
             )
             if value is not None:
                 collected_config[field_id] = value
@@ -491,7 +812,28 @@ def configure_provider(
 
             # In non-interactive mode, use env var or existing config value
             if non_interactive:
-                env_var = field.get("env_var")
+                declared = field.get("env_var")
+                env_var = (
+                    (env_var_overrides or {}).get(declared, declared)
+                    if declared
+                    else declared
+                )
+                # Fail loud instead of silently reusing the type default when
+                # it's already claimed by another instance (design §5.4.5).
+                if (
+                    settings is not None
+                    and declared
+                    and env_var == declared
+                    and declared not in (env_var_overrides or {})
+                    and declared in _claimed_env_vars(settings)
+                ):
+                    raise ValueError(
+                        f"Non-interactive configuration would reuse the same "
+                        f"credential env var ({declared}) as another "
+                        f"configured instance. Pass an explicit "
+                        f"env_var_overrides mapping for this instance "
+                        f"instead of relying on the type default."
+                    )
                 if env_var and os.environ.get(env_var):
                     collected_config[field_id] = f"${{{env_var}}}"
                 elif existing_config and field_id in existing_config:
@@ -502,7 +844,7 @@ def configure_provider(
 
             # Prompt for the field (pass existing_config for defaults)
             field_id, value = _prompt_for_field(
-                field, key_manager, collected_config, existing_config
+                field, key_manager, collected_config, existing_config, env_var_overrides
             )
             if value is not None:
                 collected_config[field_id] = value

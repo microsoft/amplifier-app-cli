@@ -1,5 +1,7 @@
 """Provider management commands."""
 
+import os
+import re
 import time
 from typing import Any, cast
 
@@ -13,7 +15,14 @@ from ..key_manager import KeyManager
 from ..lib.merge_utils import _provider_key
 from ..lib.settings import AppSettings, Scope
 from ..paths import create_config_manager
-from ..provider_config_utils import configure_provider
+from ..provider_config_utils import (
+    _claimed_env_vars,
+    _normalize_id,
+    _secret_env_var_for,
+    _secret_field_id_for,
+    _suggest_instance_env_var,
+    configure_provider,
+)
 from ..provider_loader import get_provider_models
 from ..provider_manager import ProviderManager
 from ..provider_manager import resolve_provider_entry
@@ -94,6 +103,176 @@ def _get_max_priority(providers: list[dict[str, Any]]) -> int:
             if isinstance(pri, int) and pri > max_pri:
                 max_pri = pri
     return max_pri
+
+
+# ============================================================
+# Bug 1 (id uniqueness) + Bug 3 (per-instance credential binding) helpers
+# See docs/designs/provider-instance-credentials.md
+# ============================================================
+
+
+def _id_collides(scope_providers: list[dict[str, Any]], candidate_id: str) -> bool:
+    """True if `candidate_id` (NFC-normalized) matches an existing entry's
+    identity key in `scope_providers` (design §6, Bug 1)."""
+    new_key = _normalize_id(candidate_id)
+    return any(_normalize_id(_provider_key(p)) == new_key for p in scope_providers)
+
+
+def _id_collision_status(
+    settings: AppSettings, scope: Scope, candidate_id: str
+) -> tuple[bool, str | None]:
+    """Check `candidate_id` against the Bug 1 id-uniqueness rules.
+
+    Returns ``(blocked, warning)``:
+    - ``blocked=True``: candidate_id collides with an entry already in
+      `scope` itself -- hard stop, caller must reject/re-prompt.
+    - ``warning``: a one-line message when candidate_id matches an entry in
+      a *different* scope -- soft warning only, never blocks (cross-scope
+      shadowing can be intentional override behavior).
+    """
+    if _id_collides(settings.get_scope_provider_overrides(scope), candidate_id):
+        return True, None
+
+    for other_scope in ("global", "project", "local"):
+        if other_scope == scope:
+            continue
+        other_providers = settings.get_scope_provider_overrides(
+            cast(Scope, other_scope)
+        )
+        if _id_collides(other_providers, candidate_id):
+            return False, (
+                f"An instance with id '{candidate_id}' already exists in "
+                f"{other_scope} scope. This new instance will shadow it "
+                f"where both are in effect."
+            )
+    return False, None
+
+
+def _find_claimed_env_var_owner(settings: AppSettings, env_var: str) -> str:
+    """Best-effort label for the existing instance that already uses
+    `env_var`, for the collision-explanation message (design §5.2 step 4a
+    / §6 UX copy). Falls back to a generic label if no matching entry is
+    found (e.g. the claim came from a hand-edited literal value)."""
+    placeholder = f"${{{env_var}}}"
+    for p in settings.get_provider_overrides():
+        config = p.get("config", {})
+        if isinstance(config, dict) and placeholder in config.values():
+            module = p.get("module", "")
+            return p.get("id") or _display_name(module)
+    return "an existing instance"
+
+
+def _prompt_env_var_collision(
+    settings: AppSettings,
+    key_manager: KeyManager,
+    module_id: str,
+    instance_id: str | None,
+    default_name: str,
+    claimed: set[str],
+) -> str:
+    """Interactive resolution for a same-default-name credential collision
+    (design §5.2 step 4). Returns the chosen, validated, unclaimed env var
+    name for this instance. Raises (EOFError, KeyboardInterrupt) on cancel.
+    """
+    owner = _find_claimed_env_var_owner(settings, default_name)
+    console.print(
+        f"\n  [yellow]{module_id} already uses {default_name} "
+        f"(instance '{owner}'). This instance needs its own credential "
+        f"source.[/yellow]"
+    )
+
+    suggested = _suggest_instance_env_var(module_id, instance_id or module_id, claimed)
+
+    # Exact-name prefill only (design §5.4.3) -- a single os.environ.get()
+    # lookup on the name we just derived, never a scan across the
+    # environment (the fuzzy cross-environment scan was cut in v2 review).
+    live_value = os.environ.get(suggested)
+    if live_value:
+        console.print(f"  [dim]({suggested} is already set in your environment)[/dim]")
+
+    while True:
+        try:
+            chosen_name = Prompt.ask(
+                "  Env var for this instance's key", default=suggested
+            )
+        except (EOFError, KeyboardInterrupt):
+            raise
+        if not re.match(r"^[A-Z_][A-Z0-9_]*$", chosen_name):
+            console.print(
+                "  [red]Invalid env var name -- use uppercase letters, "
+                "digits, and underscores only, starting with a letter or "
+                "underscore.[/red]"
+            )
+            continue
+        if chosen_name in claimed:
+            console.print(
+                f"  [red]{chosen_name} is already in use by another "
+                "instance. Choose a different name.[/red]"
+            )
+            continue
+        break
+
+    # Stale-credential check (design §5.4.4): warn-and-reuse when the name
+    # resolves to a keys.env-only leftover, not the live-environment
+    # prefill hit above.
+    if key_manager.has_key(chosen_name) and key_manager.has_stored_key(chosen_name):
+        console.print(
+            f"  [yellow]A stored credential already exists for "
+            f"{chosen_name} from a previous instance. It will be reused "
+            f"for this instance.[/yellow]"
+        )
+
+    return chosen_name
+
+
+def _resolve_env_var_overrides(
+    settings: AppSettings,
+    key_manager: KeyManager,
+    module_id: str,
+    instance_id: str | None,
+) -> dict[str, str]:
+    """Resolve the `env_var_overrides` map for a new provider instance
+    (design §5.2). Empty dict means "use the type default" -- no collision
+    detected. May raise (EOFError, KeyboardInterrupt) on user cancel, or
+    ValueError if the instance id cannot produce a usable, non-colliding
+    suggestion (design §5.4.2) -- caller decides how to react (re-prompt vs.
+    exit).
+    """
+    claimed = _claimed_env_vars(settings)
+    default_name = _secret_env_var_for(module_id)
+    if not default_name or default_name not in claimed:
+        return {}
+
+    chosen_name = _prompt_env_var_collision(
+        settings, key_manager, module_id, instance_id, default_name, claimed
+    )
+    return {default_name: chosen_name}
+
+
+def _recover_env_var_override(
+    module_id: str, existing_config: dict[str, Any] | None
+) -> dict[str, str]:
+    """Recover an instance's existing credential env var from its stored
+    placeholder so re-configuring it doesn't reset to the type default and
+    silently re-collide with another instance (design §5.3 -- the
+    "must not miss" fix).
+    """
+    if not existing_config:
+        return {}
+    default_name = _secret_env_var_for(module_id)
+    field_id = _secret_field_id_for(module_id)
+    if not default_name or not field_id:
+        return {}
+    raw_value = existing_config.get(field_id)
+    if (
+        isinstance(raw_value, str)
+        and raw_value.startswith("${")
+        and raw_value.endswith("}")
+    ):
+        current_name = raw_value[2:-1]
+        if current_name and current_name != default_name:
+            return {default_name: current_name}
+    return {}
 
 
 @click.group()
@@ -214,8 +393,14 @@ def provider_install(
 
 @provider.command("add")
 @click.argument("provider_type", required=False)
+@click.option(
+    "--scope",
+    default="global",
+    type=click.Choice(["global", "project", "local"]),
+    help="Settings scope to write to.",
+)
 @click.pass_context
-def provider_add(ctx: click.Context, provider_type: str | None) -> None:
+def provider_add(ctx: click.Context, provider_type: str | None, scope: str) -> None:
     """Add and configure a provider.
 
     If PROVIDER_TYPE is not specified, shows an interactive picker.
@@ -224,7 +409,10 @@ def provider_add(ctx: click.Context, provider_type: str | None) -> None:
       amplifier provider add anthropic
       amplifier provider add openai
       amplifier provider add          # interactive picker
+      amplifier provider add anthropic --scope project
     """
+    validate_scope_cli(scope)
+    target_scope = cast(Scope, scope)
     _ensure_providers_ready()
 
     settings = _get_settings()
@@ -262,10 +450,41 @@ def provider_add(ctx: click.Context, provider_type: str | None) -> None:
         suggested_id = f"{display}-{len(same_module) + 1}"
         instance_id = Prompt.ask("Enter an ID for this instance", default=suggested_id)
 
-    # Run the configuration wizard
+        # Bug 1: id-uniqueness (NFC-normalized) -- hard-block same-scope
+        # duplicates, soft-warn on cross-scope duplicates (design §6).
+        blocked, warning = _id_collision_status(settings, target_scope, instance_id)
+        if warning:
+            console.print(f"[yellow]{warning}[/yellow]")
+        if blocked:
+            console.print(
+                f"[red]An instance with id '{instance_id}' already exists "
+                f"in {target_scope} scope.[/red]"
+            )
+            ctx.exit(1)
+
+    # Bug 3: resolve this instance's credential env var BEFORE running the
+    # field wizard (design §5.2), so the secret is saved under the right
+    # name in one pass.
     key_manager = KeyManager()
     try:
-        config = configure_provider(module_id, key_manager)
+        env_var_overrides = _resolve_env_var_overrides(
+            settings, key_manager, module_id, instance_id
+        )
+    except ValueError as e:
+        console.print(f"\n  [red]⚠  {escape_markup(str(e))}[/red]\n")
+        ctx.exit(1)
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n[dim]Cancelled.[/dim]")
+        return
+
+    # Run the configuration wizard
+    try:
+        config = configure_provider(
+            module_id,
+            key_manager,
+            env_var_overrides=env_var_overrides,
+            settings=settings,
+        )
     except (click.Abort, click.ClickException):
         raise  # Let Click handle aborts and CLI errors cleanly
     except Exception as e:
@@ -300,31 +519,44 @@ def provider_add(ctx: click.Context, provider_type: str | None) -> None:
     if source:
         provider_entry["source"] = source
 
-    # Save to settings — use raw write to preserve priority properly
-    # We append to the existing providers list rather than using set_provider_override
-    # which would demote existing providers
-    scope_providers = settings.get_scope_provider_overrides("global")
+    # Save to settings — the entire read-check-write sequence is protected
+    # by the scope's advisory lock (design §5.5) so a concurrent writer
+    # can't sneak in a colliding id between the check and the write.
+    with settings._scope_lock(target_scope):
+        scope_settings = settings._read_scope(target_scope)
+        scope_providers = (scope_settings.get("config") or {}).get("providers", [])
+        if not isinstance(scope_providers, list):
+            scope_providers = []
 
-    # For multi-instance, just append. For single instance, replace matching module.
-    if instance_id:
-        scope_providers.append(provider_entry)
-    else:
-        # Replace any existing entry with same module
-        scope_providers = [p for p in scope_providers if p.get("module") != module_id]
-        scope_providers.append(provider_entry)
+        if instance_id and _id_collides(scope_providers, instance_id):
+            console.print(
+                f"[red]An instance with id '{instance_id}' already exists "
+                f"in {target_scope} scope (added concurrently). Please "
+                f"retry with a different id.[/red]"
+            )
+            ctx.exit(1)
 
-    # Write back
-    scope_settings = settings._read_scope("global")
-    if "config" not in scope_settings:
-        scope_settings["config"] = {}
-    scope_settings["config"]["providers"] = scope_providers
-    settings._write_scope("global", scope_settings)
+        # For multi-instance, just append. For single instance, replace matching module.
+        if instance_id:
+            scope_providers.append(provider_entry)
+        else:
+            # Replace any existing entry with same module
+            scope_providers = [
+                p for p in scope_providers if p.get("module") != module_id
+            ]
+            scope_providers.append(provider_entry)
+
+        scope_settings.setdefault("config", {})["providers"] = scope_providers
+        settings._write_scope(target_scope, scope_settings)
 
     # Show confirmation
     model = config.get("default_model", "")
     model_display = f" ({model})" if model else ""
     name_display = instance_id or display
-    console.print(f"\n[green]✓ Provider added: {name_display}{model_display}[/green]")
+    console.print(
+        f"\n[green]✓ Provider added: {name_display}{model_display} "
+        f"(saved to {target_scope} settings)[/green]"
+    )
 
 
 # ============================================================
@@ -572,10 +804,21 @@ def provider_edit(name: str, scope: str) -> None:
     existing_config = entry.get("config", {})
     display = entry.get("id") or _display_name(module_id)
 
+    # Bug 3 (design §5.3, "must not miss"): recover the instance's existing
+    # credential env var from its stored placeholder so re-configuring it
+    # doesn't reset to the type default and silently re-collide.
+    env_var_overrides = _recover_env_var_override(
+        module_id, existing_config if isinstance(existing_config, dict) else None
+    )
+
     # Run configure_provider with existing config as defaults
     key_manager = KeyManager()
     new_config = configure_provider(
-        module_id, key_manager, existing_config=existing_config
+        module_id,
+        key_manager,
+        existing_config=existing_config,
+        env_var_overrides=env_var_overrides,
+        settings=settings,
     )
 
     if new_config is None:
@@ -894,7 +1137,7 @@ def provider_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scop
         if choice == "d":
             return current_scope
         elif choice == "a":
-            _manage_add_provider(settings)
+            _manage_add_provider(settings, scope=current_scope)
         elif choice.startswith("e"):
             _manage_edit_provider(settings, choice, providers, scope=current_scope)
         elif choice.startswith("r"):
@@ -929,7 +1172,7 @@ def _parse_number_from_choice(choice: str, prefix: str, count: int) -> int | Non
         return None
 
 
-def _manage_add_provider(settings: AppSettings) -> None:
+def _manage_add_provider(settings: AppSettings, scope: Scope = "global") -> None:
     """Add a provider from the manage loop."""
     try:
         _ensure_providers_ready()
@@ -967,18 +1210,53 @@ def _manage_add_provider(settings: AppSettings) -> None:
         console.print(
             f"\n  [yellow]A {display} provider is already configured.[/yellow]"
         )
-        try:
-            suggested_id = f"{display}-{len(same_module) + 1}"
-            instance_id = Prompt.ask(
-                "  Enter an ID for this instance", default=suggested_id
-            )
-        except (EOFError, KeyboardInterrupt):
-            return
+        while True:
+            try:
+                suggested_id = f"{display}-{len(same_module) + 1}"
+                candidate_id = Prompt.ask(
+                    "  Enter an ID for this instance", default=suggested_id
+                )
+            except (EOFError, KeyboardInterrupt):
+                return
 
-    # Run configuration wizard
+            # Bug 1: id-uniqueness (NFC-normalized) -- hard-block same-scope
+            # duplicates and re-prompt; soft-warn on cross-scope duplicates
+            # (design §6).
+            blocked, warning = _id_collision_status(settings, scope, candidate_id)
+            if warning:
+                console.print(f"  [yellow]{warning}[/yellow]")
+            if blocked:
+                console.print(
+                    f"  [red]An instance with id '{candidate_id}' already "
+                    f"exists in {scope} scope.[/red]"
+                )
+                continue
+            instance_id = candidate_id
+            break
+
+    # Bug 3: resolve this instance's credential env var BEFORE running the
+    # field wizard (design §5.2), so the secret is saved under the right
+    # name in one pass.
     key_manager = KeyManager()
     try:
-        config = configure_provider(module_id, key_manager)
+        env_var_overrides = _resolve_env_var_overrides(
+            settings, key_manager, module_id, instance_id
+        )
+    except ValueError as e:
+        console.print(f"\n  [red]⚠  {escape_markup(str(e))}[/red]\n")
+        return
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n  [dim]Cancelled.[/dim]")
+        return
+
+    # Run configuration wizard
+    try:
+        config = configure_provider(
+            module_id,
+            key_manager,
+            env_var_overrides=env_var_overrides,
+            settings=settings,
+        )
     except (click.Abort, KeyboardInterrupt, EOFError):
         console.print("\n  [dim]Cancelled.[/dim]")
         return
@@ -1014,25 +1292,41 @@ def _manage_add_provider(settings: AppSettings) -> None:
     if source:
         provider_entry["source"] = source
 
-    # Save to settings
-    scope_providers = settings.get_scope_provider_overrides("global")
-    if instance_id:
-        scope_providers.append(provider_entry)
-    else:
-        scope_providers = [p for p in scope_providers if p.get("module") != module_id]
-        scope_providers.append(provider_entry)
+    # Save to settings — the entire read-check-write sequence is protected
+    # by the scope's advisory lock (design §5.5) so a concurrent writer
+    # can't sneak in a colliding id between the check and the write.
+    with settings._scope_lock(scope):
+        scope_settings = settings._read_scope(scope)
+        scope_providers = (scope_settings.get("config") or {}).get("providers", [])
+        if not isinstance(scope_providers, list):
+            scope_providers = []
 
-    scope_settings = settings._read_scope("global")
-    if "config" not in scope_settings:
-        scope_settings["config"] = {}
-    scope_settings["config"]["providers"] = scope_providers
-    settings._write_scope("global", scope_settings)
+        if instance_id and _id_collides(scope_providers, instance_id):
+            console.print(
+                f"  [red]An instance with id '{instance_id}' already "
+                f"exists in {scope} scope (added concurrently). Please "
+                f"retry with a different id.[/red]"
+            )
+            return
+
+        if instance_id:
+            scope_providers.append(provider_entry)
+        else:
+            scope_providers = [
+                p for p in scope_providers if p.get("module") != module_id
+            ]
+            scope_providers.append(provider_entry)
+
+        scope_settings.setdefault("config", {})["providers"] = scope_providers
+        settings._write_scope(scope, scope_settings)
 
     model = config.get("default_model", "")
     model_display = f" ({model})" if model else ""
     name_display = instance_id or display
-    console.print(f"\n  [green]✓ Provider added: {name_display}{model_display}[/green]")
-    console.print("  [dim]Credentials saved to global settings.[/dim]")
+    console.print(
+        f"\n  [green]✓ Provider added: {name_display}{model_display} "
+        f"(saved to {scope} settings)[/green]"
+    )
 
 
 def _manage_edit_provider(
@@ -1054,10 +1348,21 @@ def _manage_edit_provider(
     existing_config = entry.get("config", {})
     display = entry.get("id") or _display_name(module_id)
 
+    # Bug 3 (design §5.3, "must not miss"): recover the instance's existing
+    # credential env var from its stored placeholder so re-configuring it
+    # doesn't reset to the type default and silently re-collide.
+    env_var_overrides = _recover_env_var_override(
+        module_id, existing_config if isinstance(existing_config, dict) else None
+    )
+
     key_manager = KeyManager()
     try:
         new_config = configure_provider(
-            module_id, key_manager, existing_config=existing_config
+            module_id,
+            key_manager,
+            existing_config=existing_config,
+            env_var_overrides=env_var_overrides,
+            settings=settings,
         )
     except (click.Abort, KeyboardInterrupt, EOFError):
         console.print("\n  [dim]Cancelled.[/dim]")

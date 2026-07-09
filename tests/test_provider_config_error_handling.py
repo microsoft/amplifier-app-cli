@@ -5,6 +5,8 @@ and that _manage_add_provider() / provider_add have safety nets around
 configure_provider().
 """
 
+from pathlib import Path
+
 import click
 from unittest.mock import MagicMock, patch
 
@@ -115,10 +117,11 @@ def _make_settings(tmp_path):
 class TestManageAddProviderSafetyNet:
     """Tests for the safety net around configure_provider() in _manage_add_provider()."""
 
-    def test_exception_prints_error_and_returns(self, tmp_path):
+    def test_exception_prints_error_and_returns(self, tmp_path, monkeypatch):
         """When configure_provider() raises an arbitrary Exception,
         _manage_add_provider() should print a friendly error and return
         (not crash with a traceback)."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         from amplifier_app_cli.commands.provider import _manage_add_provider
 
         settings = _make_settings(tmp_path)
@@ -163,10 +166,11 @@ class TestManageAddProviderSafetyNet:
             f"Expected error message in console output, got: {printed_texts}"
         )
 
-    def test_click_abort_returns_gracefully(self, tmp_path):
+    def test_click_abort_returns_gracefully(self, tmp_path, monkeypatch):
         """When configure_provider() raises click.Abort,
         _manage_add_provider() should catch it and return gracefully
         (printing 'Cancelled.' instead of propagating)."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         from amplifier_app_cli.commands.provider import _manage_add_provider
 
         settings = _make_settings(tmp_path)
@@ -208,10 +212,11 @@ class TestManageAddProviderSafetyNet:
             f"Expected 'Cancelled' in console output, got: {printed_texts}"
         )
 
-    def test_keyboard_interrupt_returns_gracefully(self, tmp_path):
+    def test_keyboard_interrupt_returns_gracefully(self, tmp_path, monkeypatch):
         """When configure_provider() raises KeyboardInterrupt (defense-in-depth),
         _manage_add_provider() should catch it and return gracefully,
         printing 'Cancelled.' instead of crashing."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         from amplifier_app_cli.commands.provider import _manage_add_provider
 
         settings = _make_settings(tmp_path)
@@ -253,10 +258,11 @@ class TestManageAddProviderSafetyNet:
             f"Expected 'Cancelled' in console output, got: {printed_texts}"
         )
 
-    def test_click_exception_handled_as_error(self, tmp_path):
+    def test_click_exception_handled_as_error(self, tmp_path, monkeypatch):
         """When configure_provider() raises click.ClickException,
         it should be caught by the generic Exception handler, print an error
         message, and return gracefully (not propagate)."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         from amplifier_app_cli.commands.provider import _manage_add_provider
 
         settings = _make_settings(tmp_path)
@@ -302,9 +308,10 @@ class TestManageAddProviderSafetyNet:
 class TestProviderAddSafetyNet:
     """Tests for the safety net around configure_provider() in the provider_add command."""
 
-    def test_exception_exits_with_code_1(self, tmp_path):
+    def test_exception_exits_with_code_1(self, tmp_path, monkeypatch):
         """When configure_provider() raises an arbitrary Exception,
         provider_add should show a friendly error and exit with code 1."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         from click.testing import CliRunner
 
         from amplifier_app_cli.commands.provider import provider
@@ -380,9 +387,10 @@ class TestProviderAddSafetyNet:
             f"Expected no traceback, got: {result.output}"
         )
 
-    def test_click_exception_shows_error_message(self, tmp_path):
+    def test_click_exception_shows_error_message(self, tmp_path, monkeypatch):
         """When configure_provider() raises click.ClickException (from _prompt_model_selection),
         provider_add should let Click render it (exit code 1, error message shown, no traceback)."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         from click.testing import CliRunner
 
         from amplifier_app_cli.commands.provider import provider

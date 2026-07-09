@@ -17,6 +17,7 @@ dependencies = [
     "prompt-toolkit>=3.0.52",
     "httpx[socks]>=0.28.1",
     "packaging>=24.0",
+    "filelock>=3.29.6",
 ]
 
 [project.scripts]
