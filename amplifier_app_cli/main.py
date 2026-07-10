@@ -99,6 +99,42 @@ CLEANUP_FINALLY_END: str = "cleanup:finally_end"
 _llm_error_filter = LLMErrorLogFilter()
 
 
+def _ensure_utf8_output() -> None:
+    """Force UTF-8 on stdout/stderr so terminal-rendered Unicode survives copy/paste.
+
+    Amplifier's Rich-rendered output (markdown, syntax highlighting, emoji
+    labels) contains multi-byte UTF-8 characters. If the terminal or the
+    OS console codepage isn't UTF-8 (common on Windows, where the legacy
+    console codepage defaults to something like CP437/CP1252), those bytes
+    get mis-decoded on copy/paste: e.g. an em dash (\u2014) or bullet (\u2022)
+    turns into garbled sequences like "\u00e2" or "\u00e2\u00a2" with the
+    continuation byte silently dropped as a non-printing control character.
+
+    This is a "fix the mechanism, not the symptom" guard: rather than
+    hoping every user's terminal is configured correctly, force our own
+    streams to UTF-8 and, on Windows, force the console's active codepage
+    to UTF-8 (65001) as well so what we emit is decoded the way we wrote
+    it -- everywhere.
+    """
+    import io
+
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass  # Stream doesn't support reconfigure (e.g. some test doubles)
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)  # type: ignore[attr-defined]
+            ctypes.windll.kernel32.SetConsoleCP(65001)  # type: ignore[attr-defined]
+        except (AttributeError, OSError):
+            pass  # Not a real Windows console (e.g. some CI/test environments)
+
+
 def _attach_llm_error_filter() -> None:
     """Attach the LLM error filter to the stderr StreamHandler at runtime.
 
@@ -3401,6 +3437,7 @@ register_session_commands(
 
 def main():
     """Main entry point."""
+    _ensure_utf8_output()
     _attach_llm_error_filter()
     cli()
 
