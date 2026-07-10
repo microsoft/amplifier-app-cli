@@ -4,9 +4,43 @@ from rich.console import Console
 from rich.console import ConsoleOptions
 from rich.console import RenderResult
 from rich.errors import MarkupError
+from rich.markdown import CodeBlock as RichCodeBlock
 from rich.markdown import Heading as RichHeading
 from rich.markdown import Markdown as RichMarkdown
+from rich.rule import Rule
+from rich.syntax import Syntax
 from rich.text import Text
+
+
+class CopyPasteCodeBlock(RichCodeBlock):
+    """Code block with no per-line whitespace padding, for clean copy/paste.
+
+    Rich's stock CodeBlock renders with ``Syntax(..., padding=1)``, which
+    writes a literal space character onto the left (and right) of every
+    line. That space is a real character in the terminal's screen buffer,
+    so a mouse-drag or triple-click copy captures it -- pasting code out of
+    a session then requires manually stripping a leading space from every
+    line.
+
+    This override keeps the block visually identifiable (background tint +
+    syntax highlighting, plus a thin rule above/below) without baking any
+    padding characters into the code lines themselves, so what you copy is
+    exactly the code -- nothing more.
+    """
+
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        code = str(self.text).rstrip()
+        yield Rule(style="dim", characters="\u2500")
+        yield Syntax(
+            code,
+            self.lexer_name,
+            theme=self.theme,
+            word_wrap=True,
+            padding=0,
+        )
+        yield Rule(style="dim", characters="\u2500")
 
 
 class LeftAlignedHeading(RichHeading):
@@ -49,6 +83,8 @@ class Markdown(RichMarkdown):
     elements = {
         **RichMarkdown.elements,
         "heading_open": LeftAlignedHeading,  # Use our custom heading
+        "fence": CopyPasteCodeBlock,  # ``` code blocks: no copy/paste padding
+        "code_block": CopyPasteCodeBlock,  # indented code blocks: same treatment
     }
 
 
