@@ -3094,7 +3094,18 @@ async def interactive_chat(
             except KeyboardInterrupt:
                 # Ctrl-C at prompt - confirm exit to prevent accidental exits when spamming Ctrl-C
                 console.print()  # New line for cleaner output
-                if click.confirm("Exit Amplifier?", default=False):
+                # click.confirm() performs a synchronous, canonical-mode
+                # blocking stdin read (input()) with no executor offload.
+                # Calling it directly here would block the ENTIRE asyncio
+                # event loop thread (this coroutine runs on the main
+                # thread) until Enter is pressed -- freezing any other
+                # in-flight async work. Offload to a worker thread,
+                # mirroring the existing correct pattern in
+                # approval_provider.py's _get_user_input() and
+                # ui/approval.py's request_approval().
+                if await asyncio.to_thread(
+                    click.confirm, "Exit Amplifier?", default=False
+                ):
                     console.print("[dim]Exiting...[/dim]")
                     break
                 # Otherwise continue in the REPL
