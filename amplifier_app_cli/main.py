@@ -2611,7 +2611,14 @@ def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSes
         history=history,
         key_bindings=kb,
         multiline=True,  # Enable multi-line display
-        prompt_continuation="  ",  # Two spaces for alignment (cleaner than "... ")
+        # Empty continuation prefix -- NOT "  " or "... ". A non-empty prefix
+        # is prepended to every wrapped/continuation line by prompt_toolkit,
+        # including lines that only *soft-wrapped* because they hit the
+        # terminal width (not just literal Ctrl-J newlines). That prefix is a
+        # real character in the terminal's screen buffer, so selecting and
+        # copying multi-line input picks it up on every wrapped line --
+        # including mid-word wraps -- requiring manual cleanup after paste.
+        prompt_continuation="",
         enable_history_search=True,  # Enables Ctrl-R
     )
 
