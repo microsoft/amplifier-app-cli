@@ -28,7 +28,6 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.patch_stdout import patch_stdout
 from rich.panel import Panel
 
 from .commands.agents import agents as agents_group
@@ -56,6 +55,7 @@ from .console import console
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
 from .session_store import SessionStore
+from .stdout_offload import patch_stdout_offloaded as patch_stdout
 from .ui.dashboard_renderer import DashboardRenderer
 from .ui.dashboard_renderer import _redact_value as _dr_redact_value
 from .ui.item_renderer import ItemRenderer
@@ -2907,6 +2907,15 @@ async def interactive_chat(
             # mangled into literal "?[2m" text and rules/markdown smear across
             # the pinned prompt. raw=True uses write_raw() and passes ANSI
             # through intact (run_in_terminal still owns prompt erase/restore).
+            #
+            # patch_stdout (imported above as `.stdout_offload.patch_stdout_offloaded`)
+            # is a thread-offloaded drop-in for prompt_toolkit's own patch_stdout():
+            # the stock StdoutProxy hardcodes run_in_terminal(..., in_executor=False),
+            # so a big buffered write against a backpressured pty (busy/backgrounded
+            # tmux pane) blocks the OS write SYNCHRONOUSLY on the asyncio event-loop
+            # thread and wedges the entire loop solid -- including any in-process
+            # delegated sub-agents sharing this stdout (session_spawner.py). See
+            # stdout_offload.py for the full mechanism and a real-pty regression test.
             with patch_stdout(raw=True):
                 _reader_task = asyncio.create_task(_manager.run())
 
@@ -3032,7 +3041,11 @@ async def interactive_chat(
     try:
         while True:
             try:
-                # Get user input with history, editing, and paste support
+                # Get user input with history, editing, and paste support.
+                # patch_stdout here is the thread-offloaded
+                # patch_stdout_offloaded (see stdout_offload.py) -- same
+                # freeze risk applies to any background Rich writes that
+                # land while the user is composing input.
                 with patch_stdout():
                     user_input = await prompt_session.prompt_async()
 
