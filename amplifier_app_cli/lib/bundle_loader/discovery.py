@@ -50,6 +50,11 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str | bool]] = {
         "remote": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md",
         "show_in_list": True,
     },
+    "anchors-amp-dev": {
+        "package": "",  # No Python package - bundle-only
+        "remote": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors-amp-dev/bundle.md",
+        "show_in_list": True,
+    },
     "recipes": {
         "package": "",  # No Python package - bundle-only
         "remote": "git+https://github.com/microsoft/amplifier-bundle-recipes@main",
