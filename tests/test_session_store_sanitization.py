@@ -1,6 +1,7 @@
 """Test session store message sanitization for extended thinking."""
 
 import tempfile
+from decimal import Decimal
 from pathlib import Path
 
 from amplifier_app_cli.session_store import SessionStore
@@ -261,3 +262,27 @@ def test_metadata_redaction_covers_common_secret_keys():
         # Non-secret fields preserved
         assert on_disk["safe_field"] == "not-a-secret"
         assert on_disk["session_id"] == "test-session"
+
+
+def test_decimal_values_are_serialized_in_metadata():
+    """Provider accounting values should never make session save fail."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = SessionStore(Path(temp_dir))
+
+        transcript = [
+            {
+                "role": "assistant",
+                "content": "Done",
+            }
+        ]
+        metadata = {
+            "session_id": "test-session",
+            "total_cost": Decimal("0.32"),
+        }
+
+        store.save("test-session", transcript, metadata)
+
+        loaded_transcript, loaded_metadata = store.load("test-session")
+
+        assert loaded_transcript[0]["content"] == "Done"
+        assert loaded_metadata["total_cost"] == "0.32"

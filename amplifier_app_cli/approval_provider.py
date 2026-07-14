@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from amplifier_core import ApprovalRequest
 from amplifier_core import ApprovalResponse
@@ -23,15 +24,23 @@ class CLIApprovalProvider:
     Implements ApprovalProvider protocol for CLI environments.
     """
 
-    def __init__(self, console: Console, arbiter: StdinArbiter | None = None):
+    def __init__(
+        self,
+        console: Console,
+        approval_system: Any | None = None,
+        *,
+        arbiter: StdinArbiter | None = None,
+    ):
         """
         Initialize CLI approval provider.
 
         Args:
             console: Rich console for output
+            approval_system: Optional layered UI approval system
             arbiter: Optional stdin arbiter for coordinating with steering reader
         """
         self.console = console
+        self.approval_system = approval_system
         self._arbiter = arbiter
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalResponse:
@@ -59,6 +68,20 @@ class CLIApprovalProvider:
 
     async def _do_request_approval(self, request: ApprovalRequest) -> ApprovalResponse:
         """Inner implementation of request_approval (wrapped by arbiter claim)."""
+        if self.approval_system is not None:
+            timeout = request.timeout if request.timeout is not None else 300.0
+            choice = await self.approval_system.request_approval(
+                f"Allow {request.tool_name}: {request.action}?",
+                ["Allow once", "Deny"],
+                timeout,
+                "deny",
+            )
+            approved = choice == "Allow once"
+            return ApprovalResponse(
+                approved=approved,
+                reason="User approved" if approved else "User denied",
+            )
+
         # Build rich panel with request details
         risk_color = self._get_risk_color(request.risk_level)
 

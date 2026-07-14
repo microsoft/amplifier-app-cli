@@ -305,8 +305,10 @@ manual source overrides are required for the built-in providers.
 
 ```bash
 cd amplifier-app-cli
-uv pip install -e .
+uv sync --all-groups
 uv run pytest
+uv run ruff check amplifier_app_cli tests
+uv run pyright
 ```
 
 ### Project Structure

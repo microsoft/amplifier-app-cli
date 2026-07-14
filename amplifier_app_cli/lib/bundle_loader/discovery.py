@@ -18,11 +18,19 @@ from __future__ import annotations
 import importlib
 import logging
 from pathlib import Path
+from typing import TypedDict
 
 from amplifier_foundation import BundleRegistry
 
 
 logger = logging.getLogger(__name__)
+
+
+class WellKnownBundleInfo(TypedDict):
+    package: str
+    remote: str
+    show_in_list: bool
+
 
 # ===========================================================================
 # WELL-KNOWN BUNDLES (APP-LAYER POLICY)
@@ -37,7 +45,7 @@ logger = logging.getLogger(__name__)
 #
 # Local package is checked first for performance (editable installs).
 # Remote URL is used as fallback, ensuring bundles ALWAYS resolve.
-WELL_KNOWN_BUNDLES: dict[str, dict[str, str | bool]] = {
+WELL_KNOWN_BUNDLES: dict[str, WellKnownBundleInfo] = {
     "foundation": {
         "package": "amplifier_foundation",
         "remote": "git+https://github.com/microsoft/amplifier-foundation@main",

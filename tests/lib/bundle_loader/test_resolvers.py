@@ -324,7 +324,6 @@ class TestAppModuleResolver:
         # Mock bundle resolver that raises
         bundle_resolver = MagicMock()
         bundle_resolver.resolve.side_effect = ModuleNotFoundError("not in bundle")
-        bundle_resolver._paths = {}
 
         # Mock settings resolver that also fails
         settings_resolver = MagicMock()
@@ -341,7 +340,7 @@ class TestAppModuleResolver:
     def test_get_module_source_checks_bundle_first(self, tmp_path: Path):
         """get_module_source checks bundle paths first."""
         bundle_resolver = MagicMock()
-        bundle_resolver._paths = {"my-module": tmp_path / "bundle_module"}
+        bundle_resolver.get_module_source.return_value = str(tmp_path / "bundle_module")
 
         app_resolver = AppModuleResolver(bundle_resolver=bundle_resolver)
         result = app_resolver.get_module_source("my-module")
@@ -351,7 +350,7 @@ class TestAppModuleResolver:
     def test_get_module_source_falls_back_to_settings(self):
         """get_module_source falls back to settings resolver."""
         bundle_resolver = MagicMock()
-        bundle_resolver._paths = {}
+        bundle_resolver.get_module_source.return_value = None
 
         settings_resolver = MagicMock()
         settings_resolver.get_module_source.return_value = "/path/to/module"

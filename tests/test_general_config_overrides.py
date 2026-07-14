@@ -11,8 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from amplifier_app_cli.lib.merge_utils import deep_merge
 from amplifier_app_cli.runtime.config import (
     _apply_hook_overrides,
-    _apply_provider_overrides,
+    apply_provider_overrides,
     _apply_tool_overrides,
+    _ensure_cli_hook_policies,
     resolve_bundle_config,
 )
 
@@ -140,7 +141,7 @@ class TestPrecedence:
         dedicated = [{"module": "provider-x", "config": {"model": "dedicated-model"}}]
 
         _apply_general_config_overrides(bundle, general)
-        bundle["providers"] = _apply_provider_overrides(bundle["providers"], dedicated)
+        bundle["providers"] = apply_provider_overrides(bundle["providers"], dedicated)
 
         provider = bundle["providers"][0]
         assert provider["config"]["model"] == "dedicated-model"  # dedicated wins
@@ -301,6 +302,43 @@ class TestDeepMergeNestedConfigOverrides:
         l2 = bundle["tools"][0]["config"]["level1"]["level2"]
         assert l2["change"] == "new", "override key must win"
         assert l2["keep"] == "original", "sibling key must survive deep merge"
+
+
+class TestCliHookPolicies:
+    def test_streaming_ui_thinking_hidden_by_default(self):
+        """The CLI should not print thinking transcripts unless opted in."""
+        hooks = [
+            {
+                "module": "hooks-streaming-ui",
+                "config": {
+                    "ui": {
+                        "show_thinking_stream": True,
+                        "show_token_usage": True,
+                    }
+                },
+            }
+        ]
+
+        result = _ensure_cli_hook_policies(hooks, {})
+
+        ui = result[0]["config"]["ui"]
+        assert ui["show_thinking_stream"] is False
+        assert ui["show_token_usage"] is True
+        assert hooks[0]["config"]["ui"]["show_thinking_stream"] is True
+
+    def test_streaming_ui_thinking_explicit_override_preserved(self):
+        """A user override can still opt into thinking transcript output."""
+        hooks = [
+            {
+                "module": "hooks-streaming-ui",
+                "config": {"ui": {"show_thinking_stream": True}},
+            }
+        ]
+        overrides = {"hooks-streaming-ui": {"ui": {"show_thinking_stream": True}}}
+
+        result = _ensure_cli_hook_policies(hooks, overrides)
+
+        assert result[0]["config"]["ui"]["show_thinking_stream"] is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════

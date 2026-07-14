@@ -4,23 +4,59 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import re
 from typing import TYPE_CHECKING
 from typing import Any
 
 from rich.console import Console
 
-from ..lib.settings import AppSettings, NotificationFlags, get_custom_routing_dir
-from ..lib.merge_utils import merge_module_items
-from ..lib.merge_utils import merge_tool_configs
 from ..lib.merge_utils import _normalize_module_entry
+from ..lib.settings import AppSettings
+from ..lib.settings import get_custom_routing_dir
+from .config_behaviors import _build_modes_behaviors
+from .config_behaviors import _build_notification_behaviors
+from .config_behaviors import _format_progress
+from .config_merge import _merge_module_lists as _merge_module_lists
+from .config_merge import deep_merge
+from .config_merge import expand_env_vars
+from .config_policies import _apply_hook_overrides
+from .config_policies import _apply_tool_overrides
+from .config_policies import _ensure_cli_hook_policies
+from .config_policies import _ensure_cli_tool_policies
+from .config_policies import _ensure_cwd_in_write_paths as _ensure_cwd_in_write_paths
+from .config_policies import _ensure_default_skills_dirs as _ensure_default_skills_dirs
+from .config_policies import (
+    _ensure_streaming_ui_thinking_default as _ensure_streaming_ui_thinking_default,
+)
+from .config_providers import _ensure_raw_defaults
+from .config_providers import _sync_overrides_to_bundle
+from .config_providers import apply_provider_overrides
+from .config_providers import inject_user_providers
+from .config_providers import map_provider_ids_to_instance_ids
 
 
 if TYPE_CHECKING:
     from amplifier_foundation.bundle import PreparedBundle
 
-logger = logging.getLogger(__name__)
+
+def _apply_config_overrides_to_section(
+    section: list[Any], config_overrides: dict[str, Any]
+) -> list[Any]:
+    """Apply module config overrides without mutating untouched entries."""
+    if not section or not config_overrides:
+        return section
+
+    result: list[Any] = []
+    for item in section:
+        normalized = _normalize_module_entry(item)
+        module_id = normalized.get("module") if normalized is not None else None
+        override = config_overrides.get(module_id) if module_id else None
+        if normalized is None or not override:
+            result.append(item)
+            continue
+        merged = dict(normalized)
+        merged["config"] = deep_merge(normalized.get("config") or {}, override)
+        result.append(merged)
+    return result
 
 
 async def resolve_bundle_config(
@@ -153,16 +189,9 @@ async def resolve_bundle_config(
     # consistent path for overriding ANY module's config — providers, tools,
     # and hooks alike.  Applied BEFORE the dedicated override sections
     # (config.providers[], modules.tools[], config.notifications.*) so that
-    # those more-specific sections take precedence on overlapping keys.
-    #
-    # overrides.<id>.config is keyed by module IDENTITY, not by mount
-    # location -- so it must reach a module wherever it's declared, including
-    # inside a sub-agent's own frontmatter (config["agents"][<name>]["tools"]
-    # etc.), not just the root bundle's providers/tools/hooks lists. Without
-    # this, a tool an agent introduces that never appears in the root lists
-    # (e.g. a query tool declared only in an agent's tools: section) never
-    # receives its override and silently falls back to module defaults / env
-    # vars.
+    # those more-specific sections take precedence on overlapping keys. Module
+    # identity is independent of mount location, so apply the same overrides to
+    # agent-scoped declarations as well as the root mount plan.
     config_overrides = app_settings.get_config_overrides()
     if config_overrides:
         for section_key in ("providers", "tools", "hooks"):
@@ -173,25 +202,24 @@ async def resolve_bundle_config(
                 section, config_overrides
             )
 
-        agents_section = bundle_config.get("agents")
-        if isinstance(agents_section, dict):
-            for agent_cfg in agents_section.values():
-                if not isinstance(agent_cfg, dict):
+        agents = bundle_config.get("agents")
+        if isinstance(agents, dict):
+            for agent in agents.values():
+                if not isinstance(agent, dict):
                     continue
                 for section_key in ("providers", "tools", "hooks"):
-                    agent_section = agent_cfg.get(section_key)
-                    if not agent_section:
-                        continue
-                    agent_cfg[section_key] = _apply_config_overrides_to_section(
-                        agent_section, config_overrides
-                    )
+                    section = agent.get(section_key)
+                    if section:
+                        agent[section_key] = _apply_config_overrides_to_section(
+                            section, config_overrides
+                        )
 
     # Apply provider overrides
     provider_overrides = app_settings.get_provider_overrides()
     if provider_overrides:
         if bundle_config.get("providers"):
             # Bundle has providers - merge overrides with existing
-            bundle_config["providers"] = _apply_provider_overrides(
+            bundle_config["providers"] = apply_provider_overrides(
                 bundle_config["providers"], provider_overrides
             )
         else:
@@ -201,11 +229,16 @@ async def resolve_bundle_config(
             # observability when using provider-agnostic bundles.
             bundle_config["providers"] = _ensure_raw_defaults(provider_overrides)
 
+    if bundle_config.get("providers"):
+        bundle_config["providers"] = _ensure_raw_defaults(bundle_config["providers"])
+
     # Map settings 'id' → mount plan 'instance_id' so the kernel can identify
     # provider instances for multi-instance routing.
     # Settings YAML uses 'id'; kernel reads 'instance_id' — this bridges the gap.
     if bundle_config.get("providers"):
-        bundle_config["providers"] = _map_id_to_instance_id(bundle_config["providers"])
+        bundle_config["providers"] = map_provider_ids_to_instance_ids(
+            bundle_config["providers"]
+        )
 
     # Apply tool overrides from settings (e.g., allowed_write_paths for tool-filesystem)
     # Include session-scoped settings if session context provided
@@ -241,12 +274,6 @@ async def resolve_bundle_config(
             routing_hook_override["config"]["default_matrix"] = routing_config["matrix"]
         if "overrides" in routing_config:
             routing_hook_override["config"]["overrides"] = routing_config["overrides"]
-        # Always advertise the user's custom routing dir so a matrix named by
-        # routing.matrix that ONLY exists at get_custom_routing_dir() (e.g.
-        # written by `amplifier init`/`amplifier routing save`) is resolvable
-        # at runtime, not just listable via `amplifier routing list`. This is
-        # the fix for "Matrix file not found -- routing disabled" when the
-        # matrix genuinely exists in ~/.amplifier/routing/.
         custom_routing_dir = get_custom_routing_dir()
         if custom_routing_dir.is_dir():
             routing_hook_override["config"]["custom_routing_dirs"] = [
@@ -276,6 +303,11 @@ async def resolve_bundle_config(
         bundle_config.setdefault("hooks", [])
         bundle_config["hooks"] = _apply_hook_overrides(
             bundle_config["hooks"], hook_overrides
+        )
+
+    if bundle_config.get("hooks"):
+        bundle_config["hooks"] = _ensure_cli_hook_policies(
+            bundle_config["hooks"], config_overrides
         )
 
     if console:
@@ -321,613 +353,6 @@ async def resolve_bundle_config(
     return bundle_config, prepared
 
 
-def _sync_overrides_to_bundle(
-    prepared: "PreparedBundle",
-    bundle_config: dict[str, Any],
-    *,
-    sync_tools: bool = False,
-) -> None:
-    """Sync settings.yaml overrides from mount_plan back to the Bundle dataclass.
-
-    PreparedBundle holds two representations of the session configuration:
-      - ``mount_plan`` (dict) — used by ``create_session()`` for the root session
-      - ``bundle`` (Bundle dataclass) — used by ``PreparedBundle.spawn()`` to
-        build child sessions via ``bundle.compose(child).to_mount_plan()``
-
-    After ``resolve_bundle_config()`` injects settings.yaml providers, tools, and
-    hooks into ``prepared.mount_plan``, this function copies those overrides into
-    ``prepared.bundle`` so that child sessions spawned through the foundation
-    layer inherit them correctly.
-
-    Without this sync, ``coordinator.get("providers")`` returns an empty dict in
-    child sessions because ``bundle.providers`` was never populated with the
-    settings.yaml provider modules.
-    """
-    bundle = getattr(prepared, "bundle", None)
-    if bundle is None:
-        return
-
-    providers = bundle_config.get("providers")
-    if providers and hasattr(bundle, "providers"):
-        bundle.providers = list(providers)
-        logger.debug(
-            "Synced %d provider(s) from settings to bundle.providers: %s",
-            len(providers),
-            [p.get("module", "?") for p in providers],
-        )
-
-    if sync_tools:
-        tools = bundle_config.get("tools")
-        if tools and hasattr(bundle, "tools"):
-            bundle.tools = list(tools)
-
-    hooks = bundle_config.get("hooks")
-    if hooks and hasattr(bundle, "hooks"):
-        bundle.hooks = list(hooks)
-
-
-def _ensure_raw_defaults(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Ensure raw payload default is present when using provider overrides directly.
-
-    When a provider-agnostic bundle (like foundation) uses provider overrides
-    from user settings, those settings typically lack the ``raw`` flag since
-    configure_provider() doesn't add it. This function injects a sensible
-    default for observability:
-    - raw: true (includes full redacted API payload on llm:request/response events)
-
-    Users who explicitly set ``raw: false`` will have that respected (we only
-    set a default, not an override).
-
-    Stale flags from the old 3-tier verbosity system (``debug``, ``raw_debug``)
-    are stripped unconditionally — providers no longer read them, and leaving
-    them in the config causes the ``/config`` display to show misleading keys.
-
-    Args:
-        providers: Provider configurations from user settings.
-
-    Returns:
-        Provider configurations with ``raw`` default injected and stale
-        ``debug``/``raw_debug`` flags removed.
-    """
-    result = []
-    for provider in providers:
-        if isinstance(provider, dict):
-            provider_copy = provider.copy()
-            config = provider_copy.get("config", {})
-            if isinstance(config, dict):
-                config = config.copy()
-                # Remove stale flags from the old 3-tier verbosity system;
-                # providers no longer read them.
-                config.pop("debug", None)
-                config.pop("raw_debug", None)
-                # Inject raw: true as the default unless explicitly set.
-                if "raw" not in config:
-                    config["raw"] = True
-                provider_copy["config"] = config
-            result.append(provider_copy)
-        else:
-            result.append(provider)
-    return result
-
-
-def _map_id_to_instance_id(
-    providers: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Map 'id' field from settings entries to 'instance_id' in mount plan entries.
-
-    The settings YAML uses 'id' as the provider instance identity field:
-        config:
-          providers:
-            - module: provider-anthropic
-              id: anthropic-sonnet    # ← settings uses "id"
-
-    The kernel (amplifier-core) reads 'instance_id' from the mount plan:
-        instance_id = provider_config.get("instance_id")  # ← kernel reads "instance_id"
-
-    This function maps 'id' → 'instance_id' for entries that have an explicit 'id'.
-    Entries without 'id' are left unchanged — they are treated as the "default" instance
-    that mounts under the provider's default name (e.g. "anthropic" for provider-anthropic).
-    The kernel's snapshot-based remapping handles the case where a default instance coexists
-    with explicitly-named instances.
-
-    Args:
-        providers: List of provider config dicts from the assembled mount plan.
-
-    Returns:
-        New list of provider dicts with instance_id added where applicable.
-        Original dicts are not mutated.
-    """
-    result = []
-    for provider in providers:
-        if (
-            isinstance(provider, dict)
-            and "id" in provider
-            and "instance_id" not in provider
-        ):
-            provider = {**provider, "instance_id": provider["id"]}
-        result.append(provider)
-    return result
-
-
-def _apply_config_overrides_to_section(
-    section: list[Any], config_overrides: dict[str, Any]
-) -> list[Any]:
-    """Apply overrides.<module-id>.config to every entry in a module list section.
-
-    Shared by the root ``providers``/``tools``/``hooks`` override loop in
-    :func:`resolve_bundle_config` and by the same application to each agent's
-    own ``providers``/``tools``/``hooks`` sections (``config["agents"][name]``).
-    ``overrides.<id>.config`` is keyed by module identity, not by mount
-    location, so it must reach a module wherever it's declared.
-
-    Entries may be bare strings (shorthand for ``{"module": <string>}``) or
-    dicts -- the same shapes :func:`merge_module_lists` already tolerates via
-    ``_normalize_module_entry``. For each entry:
-
-    - Normalize (read-only) to find its module id. Entries that don't
-      normalize to a dict with a ``module`` id are returned unchanged.
-    - If there's no matching override, the ORIGINAL entry is returned
-      unchanged -- bare strings stay bare, dicts are returned by the same
-      reference (no gratuitous copy), so untouched entries are byte-identical.
-    - If there is a matching override, a NEW dict entry is produced: the
-      existing config (if any) deep-merged with the override (override wins
-      on key conflicts), with all other entry keys (``source``, ``module``,
-      ...) preserved.
-
-    Args:
-        section: A module list (providers/tools/hooks), possibly containing
-            bare strings and/or dicts.
-        config_overrides: The ``overrides.<id>.config`` map from settings.
-
-    Returns:
-        A new list with overrides applied. The original ``section`` list and
-        its untouched entries are not mutated.
-    """
-    if not section or not config_overrides:
-        return section
-
-    result: list[Any] = []
-    for item in section:
-        normalized = _normalize_module_entry(item)
-        if normalized is None:
-            result.append(item)
-            continue
-        module_id = normalized.get("module")
-        override_cfg = config_overrides.get(module_id) if module_id else None
-        if not override_cfg:
-            result.append(item)
-            continue
-        base_cfg = normalized.get("config", {}) or {}
-        merged_entry = dict(normalized)
-        merged_entry["config"] = deep_merge(base_cfg, override_cfg)
-        result.append(merged_entry)
-    return result
-
-
-def _apply_provider_overrides(
-    providers: list[dict[str, Any]], overrides: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Apply provider overrides to bundle providers.
-
-    Merges override configs into matching providers by module ID.
-    """
-    if not overrides:
-        return providers
-
-    # Build lookup for overrides keyed by id-or-module
-    override_map = {}
-    for override in overrides:
-        if isinstance(override, dict) and "module" in override:
-            key = override.get("id") or override["module"]
-            override_map[key] = override
-
-    # Apply overrides to matching providers
-    result = []
-    for provider in providers:
-        if isinstance(provider, dict):
-            key = provider.get("id") or provider.get("module", "")
-            if key in override_map:
-                merged = merge_module_items(provider, override_map[key])
-                result.append(merged)
-            else:
-                result.append(provider)
-        else:
-            result.append(provider)
-
-    return result
-
-
-def _apply_hook_overrides(
-    hooks: list[dict[str, Any]], overrides: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Apply hook overrides to bundle hooks.
-
-    Merges override configs into matching hooks by module ID.
-    This enables settings like ntfy topic for hooks-notify-push
-    to be applied from user settings.
-
-    Hooks that are present in ``overrides`` but absent from the bundle
-    ``hooks`` list are **appended** to the result, mirroring the behaviour
-    of :func:`_apply_tool_overrides`.  This means a routing config
-    (``hooks-routing``) supplied via settings will reach the session even
-    when the active bundle does not pre-register that hook.
-
-    Note on hook execution order: list position does not control execution
-    order.  ``hooks-routing`` registers with explicit ``priority`` values
-    (5 and 15), so appending at the end of the list is safe.
-
-    Args:
-        hooks: List of hook configurations from bundle
-        overrides: List of hook override dicts with module and config keys
-
-    Returns:
-        Merged list of hook configurations (in-place merges first, then
-        any absent hooks appended in override order)
-    """
-    if not overrides:
-        return hooks
-
-    # Build lookup for overrides by module ID
-    override_map = {}
-    for override in overrides:
-        if isinstance(override, dict) and "module" in override:
-            override_map[override["module"]] = override
-
-    # Apply overrides to matching hooks (in-place merge path)
-    result = []
-    for hook in hooks:
-        if isinstance(hook, dict) and hook.get("module") in override_map:
-            override = override_map[hook["module"]]
-            # Merge the hook-level fields first
-            merged = merge_module_items(hook, override)
-            # Deep-merge configs so nested sub-dicts are merged rather than clobbered.
-            base_config = hook.get("config", {}) or {}
-            override_config = override.get("config", {}) or {}
-            if base_config or override_config:
-                merged["config"] = deep_merge(base_config, override_config)
-            result.append(merged)
-        else:
-            result.append(hook)
-
-    # Change B: Append overrides whose module is absent from the original bundle
-    # hooks list.  Using the *original* hooks set means a hook that was merged
-    # in-place above is NOT in existing_modules and would be double-added — but
-    # that cannot happen because the in-place merge path consumed it first, so
-    # the set must be built from the original ``hooks`` argument, not ``result``.
-    existing_modules = {h.get("module") for h in hooks if isinstance(h, dict)}
-    for override in overrides:
-        if (
-            isinstance(override, dict)
-            and override.get("module") not in existing_modules
-        ):
-            result.append(override)
-
-    return result
-
-
-def _apply_tool_overrides(
-    tools: list[dict[str, Any]], overrides: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Apply tool overrides to bundle tools.
-
-    Merges override configs into matching tools by module ID.
-    This enables settings like allowed_write_paths for tool-filesystem
-    to be applied from user settings.
-
-    Permission fields (allowed_write_paths, allowed_read_paths) are UNIONED
-    rather than replaced, so session-scoped paths ADD to bundle defaults.
-
-    Policy: Current working directory (".") is always included in allowed_write_paths
-    for tool-filesystem, ensuring users can always write within their project.
-    """
-    if not overrides:
-        return _ensure_cli_tool_policies(tools)
-
-    # Build lookup for overrides by module ID
-    override_map = {}
-    for override in overrides:
-        if isinstance(override, dict) and "module" in override:
-            override_map[override["module"]] = override
-
-    # Apply overrides to matching tools
-    result = []
-    for tool in tools:
-        if isinstance(tool, dict) and tool.get("module") in override_map:
-            override = override_map[tool["module"]]
-            # Merge the tool-level fields first
-            merged = merge_module_items(tool, override)
-            # Then merge configs with permission field union policy
-            base_config = tool.get("config", {}) or {}
-            override_config = override.get("config", {}) or {}
-            if base_config or override_config:
-                merged["config"] = merge_tool_configs(base_config, override_config)
-            result.append(merged)
-        else:
-            result.append(tool)
-
-    # Add any new tools from overrides that aren't in the base
-    existing_modules = {t.get("module") for t in tools if isinstance(t, dict)}
-    for override in overrides:
-        if (
-            isinstance(override, dict)
-            and override.get("module") not in existing_modules
-        ):
-            result.append(override)
-
-    return _ensure_cli_tool_policies(result)
-
-
-def _ensure_cli_tool_policies(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Apply all CLI policy injections to tool configs.
-
-    Chains all tool-specific policy functions. Each function targets a specific
-    tool module and injects CLI-level defaults that the module itself should not
-    hardcode (because modules sit below the app layer).
-    """
-    tools = _ensure_cwd_in_write_paths(tools)
-    tools = _ensure_default_skills_dirs(tools)
-    return tools
-
-
-def _ensure_cwd_in_write_paths(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Ensure current working directory is always in allowed_write_paths for tool-filesystem.
-
-    This is a CLI policy decision: users should always be able to write within their
-    current working directory and its subdirectories. Without this, explicit paths in
-    settings.yaml would completely replace the module's default, locking users out of
-    their own project directories.
-
-    Args:
-        tools: List of tool configurations
-
-    Returns:
-        Tools with "." guaranteed in tool-filesystem's allowed_write_paths
-    """
-    result = []
-    for tool in tools:
-        if isinstance(tool, dict) and tool.get("module") == "tool-filesystem":
-            tool = tool.copy()
-            config = (tool.get("config") or {}).copy()
-            paths = list(config.get("allowed_write_paths", []))
-            if "." not in paths:
-                paths.insert(0, ".")
-            config["allowed_write_paths"] = paths
-            tool["config"] = config
-        result.append(tool)
-    return result
-
-
-def _ensure_default_skills_dirs(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Ensure workspace and user skill directories are in tool-skills config.
-
-    This is a CLI policy decision: .amplifier/skills/ (workspace) and
-    ~/.amplifier/skills/ (user) follow the same project-first, user-second
-    convention as bundles, agents, and modules. Without this, when behaviors
-    configure explicit remote skill sources, the module's get_default_skills_dirs()
-    fallback is bypassed and workspace skills become invisible.
-
-    Args:
-        tools: List of tool configurations
-
-    Returns:
-        Tools with workspace and user skill dirs in tool-skills's config.skills
-    """
-    default_paths = [".amplifier/skills", "~/.amplifier/skills"]
-
-    result = []
-    for tool in tools:
-        if isinstance(tool, dict) and tool.get("module") == "tool-skills":
-            tool = tool.copy()
-            config = (tool.get("config") or {}).copy()
-            skills = list(config.get("skills", []))
-            for path in default_paths:
-                if path not in skills:
-                    skills.append(path)
-            config["skills"] = skills
-            tool["config"] = config
-        result.append(tool)
-    return result
-
-
-def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    """Deep merge dictionaries with special handling for module lists."""
-    result = base.copy()
-
-    module_list_keys = {"providers", "tools", "hooks", "agents"}
-
-    for key, value in overlay.items():
-        if key in module_list_keys and key in result:
-            if isinstance(result[key], list) and isinstance(value, list):
-                result[key] = _merge_module_lists(result[key], value)
-            else:
-                result[key] = value
-        elif (
-            key in result and isinstance(result[key], dict) and isinstance(value, dict)
-        ):
-            result[key] = deep_merge(result[key], value)
-        else:
-            result[key] = value
-
-    return result
-
-
-def _merge_module_lists(
-    base_modules: list[dict[str, Any]], overlay_modules: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """
-    Merge module lists on module ID, with deep merging.
-
-    Delegates to canonical merger.merge_module_items for DRY compliance.
-    Merges module lists by module ID with deep merging.
-    """
-    # Build dict by ID for efficient lookup
-    result_dict: dict[str, dict[str, Any]] = {}
-
-    # Add all base modules, keying by id first, then module name
-    for module in base_modules:
-        if isinstance(module, dict) and "module" in module:
-            key = module.get("id") or module["module"]
-            result_dict[key] = module
-
-    # Merge or add overlay modules
-    for module in overlay_modules:
-        if isinstance(module, dict) and "module" in module:
-            module_id = module.get("id") or module["module"]
-            if module_id in result_dict:
-                # Module exists in base - deep merge using canonical function
-                result_dict[module_id] = merge_module_items(
-                    result_dict[module_id], module
-                )
-            else:
-                # New module in overlay - add it
-                result_dict[module_id] = module
-
-    # Return as list, preserving base order + new overlays
-    result = []
-    seen_ids: set[str] = set()
-
-    for module in base_modules:
-        if isinstance(module, dict) and "module" in module:
-            module_id = module.get("id") or module["module"]
-            if module_id not in seen_ids:
-                result.append(result_dict[module_id])
-                seen_ids.add(module_id)
-
-    for module in overlay_modules:
-        if isinstance(module, dict) and "module" in module:
-            module_id = module.get("id") or module["module"]
-            if module_id not in seen_ids:
-                result.append(module)
-                seen_ids.add(module_id)
-
-    return result
-
-
-ENV_PATTERN = re.compile(r"\$\{([^}:]+)(?::([^}]*))?}")
-
-
-def expand_env_vars(config: dict[str, Any]) -> dict[str, Any]:
-    """Expand ${VAR} references within configuration values."""
-
-    def replace_value(value: Any) -> Any:
-        if isinstance(value, str):
-            return ENV_PATTERN.sub(_replace_match, value)
-        if isinstance(value, dict):
-            return {k: replace_value(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [replace_value(item) for item in value]
-        return value
-
-    def _replace_match(match: re.Match[str]) -> str:
-        var_name = match.group(1)
-        default = match.group(2)
-        return os.environ.get(var_name, default if default is not None else "")
-
-    return replace_value(config)
-
-
-def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> None:
-    """Inject user-configured providers into bundle's mount plan.
-
-    For provider-agnostic bundles (like foundation), the bundle provides mechanism
-    (tools, agents, context) while the app layer provides policy (which provider).
-
-    This function merges the user's provider settings from resolve_bundle_config()
-    into the bundle's mount_plan before session creation.
-
-    Args:
-        config: App configuration dict containing "providers" key
-        prepared_bundle: PreparedBundle instance to inject providers into
-
-    Note:
-        Only injects if bundle has no providers defined (provider-agnostic design).
-        Bundles with explicit providers are preserved unchanged.
-    """
-    if "providers" in config and not prepared_bundle.mount_plan.get("providers"):
-        prepared_bundle.mount_plan["providers"] = config["providers"]
-
-
-def _format_progress(action: str, detail: str) -> str:
-    """Format a progress callback into a human-readable label for the spinner.
-
-    Maps foundation progress actions to user-friendly descriptions.
-
-    Args:
-        action: Progress action (e.g., "loading", "composing", "activating").
-        detail: Detail string (e.g., module name, bundle name).
-
-    Returns:
-        Human-readable progress label.
-    """
-    labels = {
-        "loading": f"Loading {detail}",
-        "composing": f"Composing {detail}",
-        "installing_package": f"Installing package {detail}",
-        "activating": f"Activating {detail}",
-        "installing": f"Installing {detail}",
-    }
-    return labels.get(action, f"{action}: {detail}")
-
-
-def _build_modes_behaviors() -> list[str]:
-    """Return modes behavior URIs for composition.
-
-    Modes are always available - users choose to use /mode commands or not.
-    No enable/disable needed since modes have no cost when unused.
-
-    Returns:
-        List containing the modes behavior URI.
-    """
-    return [
-        # Only load the behavior, NOT the root bundle (which includes foundation)
-        "git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=behaviors/modes.yaml",
-    ]
-
-
-def _build_notification_behaviors(flags: NotificationFlags) -> list[str]:
-    """Build list of notification behavior URIs based on resolved flags.
-
-    Notifications are an app-level policy. Rather than injecting hooks after
-    bundle preparation, we compose notification behavior bundles BEFORE
-    prepare() so their modules get properly downloaded and installed.
-
-    The resolved ``NotificationFlags`` must come from
-    ``AppSettings.get_notification_flags()`` — that method is the single
-    source of truth for the "is notifications.X enabled?" question. The
-    sibling consumer ``AppSettings.get_notification_hook_overrides()`` reads
-    the same flags, so the two paths cannot drift apart on defaults.
-
-    Args:
-        flags: Resolved notification enablement.
-
-    Returns:
-        List of behavior bundle URIs to compose onto the main bundle.
-        Empty list if no notifications are enabled.
-    """
-    if not (flags.desktop_enabled or flags.push_enabled):
-        return []
-
-    behaviors: list[str] = []
-
-    # Root bundle first — a minimal marker that just identifies the repo
-    # and ensures the bundle gets cached with proper SHA metadata (fixes
-    # the "unknown" version issue during `amplifier update`). The actual
-    # functionality comes from the subdirectory behaviors below.
-    behaviors.append("git+https://github.com/microsoft/amplifier-bundle-notify@main")
-
-    if flags.desktop_enabled:
-        behaviors.append(
-            "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/desktop-notifications.yaml"
-        )
-
-    if flags.push_enabled:
-        behaviors.append(
-            "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/push-notifications.yaml"
-        )
-
-    return behaviors
-
-
 async def resolve_config_async(
     *,
     bundle_name: str | None = None,
@@ -945,7 +370,7 @@ async def resolve_config_async(
     Use resolve_config() for synchronous contexts (e.g., click commands).
 
     Args:
-        bundle_name: Bundle to load (defaults to 'foundation' if not specified)
+        bundle_name: Bundle to load (defaults to 'anchors' if not specified)
         app_settings: Application settings
         console: Optional console for output
         session_id: Optional session ID for session-scoped tool overrides
@@ -997,7 +422,7 @@ def resolve_config(
     For async contexts, use resolve_config_async() directly.
 
     Args:
-        bundle_name: Bundle to load (defaults to 'foundation' if not specified)
+        bundle_name: Bundle to load (defaults to 'anchors' if not specified)
         app_settings: Application settings
         console: Optional console for output
         session_id: Optional session ID for session-scoped tool overrides
@@ -1037,10 +462,11 @@ __all__ = [
     "resolve_config",
     "resolve_config_async",
     "resolve_bundle_config",
+    "_apply_config_overrides_to_section",
     "deep_merge",
     "expand_env_vars",
     "inject_user_providers",
-    "_apply_provider_overrides",
+    "apply_provider_overrides",
     "_ensure_raw_defaults",
-    "_map_id_to_instance_id",
+    "map_provider_ids_to_instance_ids",
 ]

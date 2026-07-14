@@ -280,11 +280,11 @@ def display_llm_error(
     content.append(_extract_message(raw), style="white")
     content.append("\n")
 
-    # Raw Details section
-    content.append("\n")
-    content.append("── Raw Details ──", style="dim")
-    content.append("\n")
-    content.append(raw, style="dim")
+    if verbose:
+        content.append("\n")
+        content.append("── Raw Details ──", style="dim")
+        content.append("\n")
+        content.append(raw, style="dim")
 
     # Print the panel
     console.print()
@@ -310,6 +310,22 @@ def display_llm_error(
             console.print_exception()
 
     return True
+
+
+def concise_llm_error(error: LLMError) -> tuple[str, str]:
+    """Return a safe one-line title and message for interactive transcripts."""
+    if isinstance(error, RateLimitError):
+        title = "Rate limited"
+    elif isinstance(error, AuthenticationError):
+        title = "Authentication failed"
+    elif isinstance(error, ContextLengthError):
+        title = "Context length exceeded"
+    elif isinstance(error, ContentFilterError):
+        title = "Content filtered"
+    else:
+        title = "Provider request failed"
+    message = " ".join(_extract_message(str(error)).split())[:500]
+    return title, message or "No provider error details were returned."
 
 
 def _get_llm_error_tip(error: LLMError) -> str:

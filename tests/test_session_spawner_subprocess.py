@@ -8,8 +8,7 @@ Also verifies that without these flags, the in-process AmplifierSession path is 
 Also verifies spawn_mode is stripped from child config before passing to subprocess runner.
 """
 
-import sys
-from types import ModuleType
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -52,11 +51,13 @@ def _make_parent_session(config=None, session_id="parent-session-id"):
     return parent
 
 
-def _make_subprocess_runner_module():
-    """Create a fake amplifier_foundation.subprocess_runner module."""
-    module = ModuleType("amplifier_foundation.subprocess_runner")
-    module.run_session_in_subprocess = AsyncMock(return_value="subprocess output")
-    return module
+def _make_subprocess_runner_module(monkeypatch):
+    """Patch app-cli's cancellation-safe subprocess adapter."""
+    from amplifier_app_cli.runtime import subprocess_adapter
+
+    runner = AsyncMock(return_value="subprocess output")
+    monkeypatch.setattr(subprocess_adapter, "run_session_in_subprocess", runner)
+    return subprocess_adapter
 
 
 class TestSubprocessRouting:
@@ -67,10 +68,7 @@ class TestSubprocessRouting:
         parent = _make_parent_session()
 
         # Create and inject fake subprocess_runner module
-        fake_module = _make_subprocess_runner_module()
-        monkeypatch.setitem(
-            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
-        )
+        fake_module = _make_subprocess_runner_module(monkeypatch)
 
         with (
             patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge,
@@ -113,10 +111,7 @@ class TestSubprocessRouting:
         """
         parent = _make_parent_session()
 
-        fake_module = _make_subprocess_runner_module()
-        monkeypatch.setitem(
-            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
-        )
+        fake_module = _make_subprocess_runner_module(monkeypatch)
 
         with (
             patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge,
@@ -155,10 +150,7 @@ class TestSubprocessRouting:
         parent = _make_parent_session()
 
         # Set up subprocess module mock to track calls
-        fake_module = _make_subprocess_runner_module()
-        monkeypatch.setitem(
-            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
-        )
+        fake_module = _make_subprocess_runner_module(monkeypatch)
 
         # Use a unique exception to prove AmplifierSession (in-process) path was taken
         class InProcessPathReached(Exception):
@@ -197,10 +189,7 @@ class TestSubprocessRouting:
         """
         parent = _make_parent_session()
 
-        fake_module = _make_subprocess_runner_module()
-        monkeypatch.setitem(
-            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
-        )
+        fake_module = _make_subprocess_runner_module(monkeypatch)
 
         with (
             patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge,
@@ -257,11 +246,8 @@ class TestSubprocessRouting:
                 "metadata": {"tokens_used": 12345},
             }
         )
-        fake_module = ModuleType("amplifier_foundation.subprocess_runner")
-        fake_module.run_session_in_subprocess = AsyncMock(return_value=json_envelope)
-        monkeypatch.setitem(
-            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
-        )
+        fake_module = _make_subprocess_runner_module(monkeypatch)
+        fake_module.run_session_in_subprocess.return_value = json_envelope
 
         with patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge:
             mock_merge.return_value = {"session": {}}
@@ -307,10 +293,7 @@ class TestSubprocessRouting:
         parent.coordinator.get.side_effect = coordinator_get
 
         # Create and inject fake subprocess_runner module
-        fake_module = _make_subprocess_runner_module()
-        monkeypatch.setitem(
-            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
-        )
+        _make_subprocess_runner_module(monkeypatch)
 
         with (
             patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge,
@@ -328,8 +311,7 @@ class TestSubprocessRouting:
                 use_subprocess=True,
             )
 
-        # Verify session:fork event was emitted exactly once with correct data
-        mock_hooks.emit.assert_called_once_with(
+        assert mock_hooks.emit.await_args_list[0].args == (
             "session:fork",
             {
                 "child_session_id": "child-session-id",
@@ -338,6 +320,85 @@ class TestSubprocessRouting:
                 "spawn_mode": "subprocess",
             },
         )
+        assert mock_hooks.emit.await_args_list[1].args == (
+            "session:end",
+            {
+                "session_id": "child-session-id",
+                "parent_session_id": "parent-session-id",
+                "agent_name": "test-agent",
+                "spawn_mode": "subprocess",
+                "status": "success",
+                "success": True,
+                "error": "",
+            },
+        )
+
+    async def test_subprocess_fork_precedes_dispatch_and_failure_ends_task(
+        self, monkeypatch
+    ):
+        parent = _make_parent_session()
+        events = []
+        mock_hooks = AsyncMock()
+
+        async def emit(event, data):
+            events.append((event, data))
+
+        mock_hooks.emit.side_effect = emit
+        parent.coordinator.get.side_effect = lambda key: (
+            mock_hooks if key == "hooks" else None
+        )
+        fake_module = _make_subprocess_runner_module(monkeypatch)
+
+        async def fail_runner(**kwargs):
+            assert events[0][0] == "session:fork"
+            raise RuntimeError("child failed")
+
+        fake_module.run_session_in_subprocess.side_effect = fail_runner
+
+        with patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge:
+            mock_merge.return_value = {"session": {}}
+            from amplifier_app_cli.session_spawner import spawn_sub_session
+
+            with pytest.raises(RuntimeError, match="child failed"):
+                await spawn_sub_session(
+                    agent_name="test-agent",
+                    instruction="Fail",
+                    parent_session=parent,
+                    agent_configs={"test-agent": {}},
+                    sub_session_id="failed-child",
+                    use_subprocess=True,
+                )
+
+        assert [event for event, _ in events] == ["session:fork", "session:end"]
+        assert events[-1][1]["status"] == "failed"
+        assert events[-1][1]["success"] is False
+
+    async def test_subprocess_cancellation_reports_cancelled(self, monkeypatch):
+        parent = _make_parent_session()
+        mock_hooks = AsyncMock()
+        parent.coordinator.get.side_effect = lambda key: (
+            mock_hooks if key == "hooks" else None
+        )
+        fake_module = _make_subprocess_runner_module(monkeypatch)
+        fake_module.run_session_in_subprocess.side_effect = asyncio.CancelledError
+
+        with patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge:
+            mock_merge.return_value = {"session": {}}
+            from amplifier_app_cli.session_spawner import spawn_sub_session
+
+            with pytest.raises(asyncio.CancelledError):
+                await spawn_sub_session(
+                    agent_name="test-agent",
+                    instruction="Cancel",
+                    parent_session=parent,
+                    agent_configs={"test-agent": {}},
+                    sub_session_id="cancelled-child",
+                    use_subprocess=True,
+                )
+
+        terminal = mock_hooks.emit.await_args_list[-1].args
+        assert terminal[0] == "session:end"
+        assert terminal[1]["status"] == "cancelled"
 
     async def test_session_fork_not_emitted_when_no_hooks(self, monkeypatch):
         """No error when parent has no hooks — session:fork is silently skipped.
@@ -347,10 +408,7 @@ class TestSubprocessRouting:
         parent = _make_parent_session()
         # coordinator.get returns None by default (no hooks)
 
-        fake_module = _make_subprocess_runner_module()
-        monkeypatch.setitem(
-            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
-        )
+        _make_subprocess_runner_module(monkeypatch)
 
         with (
             patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge,
@@ -384,37 +442,24 @@ class TestBundleContextSubprocess:
         parent session and pass module_paths, bundle_package_paths, and sys_paths to
         run_session_in_subprocess. Without this, bundle modules are not importable in child.
         """
-        from pathlib import Path
-
         parent = _make_parent_session()
-
-        # Set up a fake BundleModuleResolver on the coordinator
-        fake_paths = {"my_tool": Path("/bundle/tools/my_tool")}
-        fake_resolver = type("FakeBMR", (), {"_paths": fake_paths})()
-
-        def coordinator_get(key):
-            if key == "module-source-resolver":
-                return fake_resolver
-            return None
-
-        parent.coordinator.get.side_effect = coordinator_get
-
-        # bundle_package_paths capability
         bundle_pkg_paths = ["/bundle/src", "/bundle/extra/src"]
+        bundle_context = {
+            "module_paths": {"my_tool": "/bundle/tools/my_tool"},
+            "mention_mappings": {"foundation": "/bundle"},
+            "bundle_package_paths": bundle_pkg_paths,
+        }
 
         def coordinator_get_cap(key):
-            if key == "bundle_package_paths":
-                return bundle_pkg_paths
+            if key == "session.bundle_context":
+                return bundle_context
             if key == "session.working_dir":
                 return None
             return None
 
         parent.coordinator.get_capability.side_effect = coordinator_get_cap
 
-        fake_module = _make_subprocess_runner_module()
-        monkeypatch.setitem(
-            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
-        )
+        fake_module = _make_subprocess_runner_module(monkeypatch)
 
         with patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge:
             mock_merge.return_value = {"session": {}}

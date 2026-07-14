@@ -214,13 +214,12 @@ def register_run_command(
 
             # Find the target provider — two-pass search:
             # Pass 1: exact match on instance id/mount name.
-            # _map_id_to_instance_id copies id → instance_id without stripping id,
+            # Provider ID normalization copies id → instance_id without stripping id,
             # so both fields co-exist on resolved entries; either leg can match.
             target_idx = None
             for i, entry in enumerate(providers_list):
                 if isinstance(entry, dict) and (
-                    entry.get("id") == provider
-                    or entry.get("instance_id") == provider
+                    entry.get("id") == provider or entry.get("instance_id") == provider
                 ):
                     target_idx = i
                     break
@@ -229,7 +228,10 @@ def register_run_command(
                 # Pass 2: fallback — module-type match (original behavior).
                 # Preserves single-instance usage: -p anthropic → provider-anthropic.
                 for i, entry in enumerate(providers_list):
-                    if isinstance(entry, dict) and entry.get("module") == provider_module:
+                    if (
+                        isinstance(entry, dict)
+                        and entry.get("module") == provider_module
+                    ):
                         target_idx = i
                         break
 
@@ -346,8 +348,13 @@ def register_run_command(
                     sys.exit(1)
                 # Display conversation history before resuming (reuse session.py's display)
                 from .session import _display_session_history
+                from .session import _select_history_messages
 
                 _display_session_history(transcript, metadata or {})
+                display_transcript = _select_history_messages(
+                    transcript,
+                    max_messages=10,
+                )
                 asyncio.run(
                     interactive_chat(
                         config_data,
@@ -358,6 +365,7 @@ def register_run_command(
                         prepared_bundle=prepared_bundle,
                         initial_prompt=initial_prompt,
                         initial_transcript=transcript,
+                        initial_display_transcript=display_transcript,
                     )
                 )
             else:

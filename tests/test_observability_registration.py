@@ -352,6 +352,11 @@ class TestInjectCalledFromCreateBundleSession:
             "The production event-registration path is broken: cleanup events will be emitted "
             "but never logged to events.jsonl."
         )
+        registered_names = {
+            call.args[0]
+            for call in mock_session.coordinator.register_capability.call_args_list
+        }
+        assert "session.bundle_context" in registered_names
 
 
 # ---------------------------------------------------------------------------

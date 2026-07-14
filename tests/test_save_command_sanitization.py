@@ -26,6 +26,7 @@ class MockSession:
         self.config = {"test": "config"}
         self.coordinator = MagicMock()
         self.coordinator.session_id = session_id
+        self.coordinator.session_state = {}
 
 
 @pytest.mark.asyncio
@@ -43,8 +44,13 @@ async def test_save_transcript_with_thinking_blocks():
         {
             "role": "assistant",
             "content": "I'll help you.",
-            "thinking_block": MockThinkingBlock("This is my thinking"),  # Non-serializable!
-            "content_blocks": [MockThinkingBlock("block1"), MockThinkingBlock("block2")],  # Also non-serializable!
+            "thinking_block": MockThinkingBlock(
+                "This is my thinking"
+            ),  # Non-serializable!
+            "content_blocks": [
+                MockThinkingBlock("block1"),
+                MockThinkingBlock("block2"),
+            ],  # Also non-serializable!
         },
     ]
     mock_context.get_messages = AsyncMock(return_value=messages_with_thinking)

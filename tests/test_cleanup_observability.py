@@ -12,13 +12,13 @@ string values.
 Design note
 -----------
 These events cannot live in amplifier_core.events (which re-exports from the
-Rust kernel binary); they are defined as module-level string constants in
-amplifier_app_cli.main and emitted via the same hooks.emit() path as the
-kernel events.
+Rust kernel binary); they are owned by the app runtime, re-exported from main
+for compatibility, and emitted via the same hooks.emit() path as kernel events.
 """
 
 from __future__ import annotations
 
+import json
 import sys
 import os
 from pathlib import Path
@@ -339,6 +339,52 @@ class TestExecuteSingleCleanupEvents:
         assert data["message_count"] == 2
 
     @pytest.mark.asyncio
+    async def test_first_single_shot_save_treats_missing_metadata_as_empty(
+        self, tmp_path: Path
+    ):
+        """A new single-shot session has no metadata file before its first save."""
+        from amplifier_app_cli.main import execute_single
+
+        hooks, _captured = _make_mock_hooks()
+        session = _make_mock_session(
+            hooks,
+            messages=[
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hello!"},
+            ],
+        )
+        initialized = _make_mock_initialized(session)
+
+        with (
+            patch(
+                f"{_MODULE}.create_initialized_session",
+                new=AsyncMock(return_value=initialized),
+            ),
+            patch(f"{_MODULE}.SessionStore") as MockStore,
+            patch(f"{_MODULE}.console"),
+            patch(f"{_MODULE}._process_runtime_mentions", new=AsyncMock()),
+        ):
+            store_instance = MockStore.return_value
+            store_instance.get_metadata.side_effect = FileNotFoundError(
+                "Session 'test-session-id' not found"
+            )
+            store_instance.save.return_value = None
+
+            await execute_single(
+                prompt="Hi",
+                config={},
+                search_paths=[tmp_path],
+                verbose=False,
+                output_format="text",
+                bundle_name="test-bundle",
+            )
+
+        store_instance.save.assert_called_once()
+        _session_id, _messages, metadata = store_instance.save.call_args.args
+        assert metadata["session_id"] == "test-session-id"
+        assert metadata["turn_count"] == 1
+
+    @pytest.mark.asyncio
     async def test_all_cleanup_events_carry_session_id(self, tmp_path: Path):
         """Every cleanup event payload must include the session_id."""
         from amplifier_app_cli.main import execute_single
@@ -407,7 +453,8 @@ class TestExecuteSingleCleanupEvents:
             # Capture stdout to prevent JSON from going to terminal
             import io
 
-            sys.stdout = io.StringIO()
+            captured_stdout = io.StringIO()
+            sys.stdout = captured_stdout
             try:
                 await execute_single(
                     prompt="Hi",
@@ -419,6 +466,11 @@ class TestExecuteSingleCleanupEvents:
                 )
             finally:
                 sys.stdout = original_stdout
+
+        json_output = json.loads(captured_stdout.getvalue())
+        assert json_output["status"] == "success"
+        assert json_output["response"] == "Hello!"
+        assert json_output["session_id"] == "test-session-id"
 
         event_names = [e for e, _ in captured]
         for expected in [

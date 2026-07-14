@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 BUNDLE_PREFIX = "bundle:"
 
 
+def _json_default(value: object) -> str:
+    """Last-resort JSON encoder for provider metadata values."""
+    return str(value)
+
+
 def is_top_level_session(session_id: str) -> bool:
     """Check if a session ID is a top-level (main) session.
 
@@ -154,7 +159,9 @@ class SessionStore:
             sanitized_msg = sanitize_message(message)
             # Timestamps are added by context module at creation time (metadata.timestamp)
             # No fallback needed - replay handles missing timestamps via content-based timing
-            lines.append(json.dumps(sanitized_msg, ensure_ascii=False))
+            lines.append(
+                json.dumps(sanitized_msg, ensure_ascii=False, default=_json_default)
+            )
 
         content = "\n".join(lines) + "\n" if lines else ""
         write_with_backup(transcript_file, content)
@@ -167,7 +174,12 @@ class SessionStore:
             metadata: Metadata dictionary
         """
         metadata_file = session_dir / "metadata.json"
-        content = json.dumps(redact_secrets(metadata), indent=2, ensure_ascii=False)
+        content = json.dumps(
+            redact_secrets(metadata),
+            indent=2,
+            ensure_ascii=False,
+            default=_json_default,
+        )
         write_with_backup(metadata_file, content)
 
     def load(self, session_id: str) -> tuple[list, dict]:

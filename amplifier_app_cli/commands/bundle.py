@@ -475,7 +475,7 @@ def bundle_show(name: str, compact: bool, detailed: bool, fmt: str):
 
     # Build include chains from the registry's disk graph.
     try:
-        from amplifier_foundation.configurator._inspector import walk_include_chains
+        from amplifier_foundation.configurator import walk_include_chains
 
         registry_dict = dict(registry._registry)
         include_chains = walk_include_chains(name, registry_dict)
@@ -490,7 +490,7 @@ def bundle_show(name: str, compact: bool, detailed: bool, fmt: str):
     bundle_item: dict[str, Any] = {
         "name": bundle_obj.name,
         "enabled": True,  # bundles are available/loadable — active-ness shown via active: yes/no
-        "source_uri": bundle_obj.uri if hasattr(bundle_obj, "uri") else None,
+        "source_uri": getattr(bundle_obj, "uri", None),
         "include_paths": [
             [
                 {

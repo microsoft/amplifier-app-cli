@@ -545,7 +545,7 @@ class TestProviderScopeMerge:
 
 
 class TestRuntimeConfigMerge:
-    """Tests for _merge_module_lists() and _apply_provider_overrides() in runtime/config.py."""
+    """Tests for module-list merging and public provider overrides."""
 
     def test_runtime_merge_module_lists_preserves_multi_instance(self) -> None:
         """Base list with two entries sharing same module but different ids must both survive."""
@@ -590,7 +590,7 @@ class TestRuntimeConfigMerge:
 
     def test_apply_provider_overrides_preserves_multi_instance(self) -> None:
         """Both override entries (same module, different ids) must be in override_map independently."""
-        from amplifier_app_cli.runtime.config import _apply_provider_overrides
+        from amplifier_app_cli.runtime.config import apply_provider_overrides
 
         providers = [
             {"module": "provider-openai", "config": {"model": "base"}},
@@ -603,11 +603,11 @@ class TestRuntimeConfigMerge:
                 "config": {"model": "gpt-5.4"},
             },
         ]
-        # _apply_provider_overrides only merges into existing bundle providers.
+        # Provider overrides only merge into existing bundle providers.
         # The unnamed override matches the single bundle provider; openai-2 has no bundle match.
         # The key assertion: the unnamed provider's config is updated (not silently overwritten
         # by the openai-2 override because they shared the same map key before the fix).
-        result = _apply_provider_overrides(providers, overrides)
+        result = apply_provider_overrides(providers, overrides)
 
         assert len(result) == 1
         assert result[0]["config"]["model"] == "gpt-5.2"
@@ -618,7 +618,7 @@ class TestSettingsIdToInstanceId:
 
     def test_settings_id_becomes_mount_plan_instance_id(self) -> None:
         """Settings entry with 'id' should have instance_id set in the mount plan."""
-        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+        from amplifier_app_cli.runtime.config import map_provider_ids_to_instance_ids
 
         providers = [
             {
@@ -627,12 +627,12 @@ class TestSettingsIdToInstanceId:
                 "config": {"default_model": "claude-sonnet-4-6", "priority": 1},
             }
         ]
-        result = _map_id_to_instance_id(providers)
+        result = map_provider_ids_to_instance_ids(providers)
         assert result[0]["instance_id"] == "anthropic-sonnet"
 
     def test_settings_no_id_no_instance_id(self) -> None:
         """Settings entry without 'id' should NOT get instance_id (backward compat)."""
-        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+        from amplifier_app_cli.runtime.config import map_provider_ids_to_instance_ids
 
         providers = [
             {
@@ -640,12 +640,12 @@ class TestSettingsIdToInstanceId:
                 "config": {"default_model": "claude-3-5-sonnet"},
             }
         ]
-        result = _map_id_to_instance_id(providers)
+        result = map_provider_ids_to_instance_ids(providers)
         assert "instance_id" not in result[0]
 
     def test_multi_instance_settings_both_get_instance_id(self) -> None:
         """Two settings entries for same module with different ids both get instance_id."""
-        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+        from amplifier_app_cli.runtime.config import map_provider_ids_to_instance_ids
 
         providers = [
             {
@@ -659,13 +659,13 @@ class TestSettingsIdToInstanceId:
                 "config": {"default_model": "claude-haiku-3-5", "priority": 2},
             },
         ]
-        result = _map_id_to_instance_id(providers)
+        result = map_provider_ids_to_instance_ids(providers)
         assert result[0]["instance_id"] == "anthropic-sonnet"
         assert result[1]["instance_id"] == "anthropic-haiku"
 
     def test_existing_instance_id_not_overwritten(self) -> None:
         """If instance_id already present, it should NOT be overwritten by id."""
-        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+        from amplifier_app_cli.runtime.config import map_provider_ids_to_instance_ids
 
         providers = [
             {
@@ -675,12 +675,12 @@ class TestSettingsIdToInstanceId:
                 "config": {},
             }
         ]
-        result = _map_id_to_instance_id(providers)
+        result = map_provider_ids_to_instance_ids(providers)
         assert result[0]["instance_id"] == "already-set"
 
     def test_does_not_mutate_input(self) -> None:
         """Should return new dicts, not mutate the originals."""
-        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+        from amplifier_app_cli.runtime.config import map_provider_ids_to_instance_ids
 
         original = {
             "module": "provider-anthropic",
@@ -688,7 +688,7 @@ class TestSettingsIdToInstanceId:
             "config": {},
         }
         providers = [original]
-        _map_id_to_instance_id(providers)
+        map_provider_ids_to_instance_ids(providers)
         assert "instance_id" not in original
 
     def test_single_instance_no_auto_assign(self) -> None:
@@ -697,7 +697,7 @@ class TestSettingsIdToInstanceId:
         Backward compat: single-instance providers don't need instance_id.
         Auto-assign only triggers when multiple entries share the same module.
         """
-        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+        from amplifier_app_cli.runtime.config import map_provider_ids_to_instance_ids
 
         providers = [
             {
@@ -705,12 +705,12 @@ class TestSettingsIdToInstanceId:
                 "config": {"default_model": "claude-3-5-sonnet"},
             }
         ]
-        result = _map_id_to_instance_id(providers)
+        result = map_provider_ids_to_instance_ids(providers)
         assert "instance_id" not in result[0]
 
     def test_both_have_id_no_auto_assign(self) -> None:
         """Two providers both with 'id' get instance_id from their id — no auto-assign."""
-        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+        from amplifier_app_cli.runtime.config import map_provider_ids_to_instance_ids
 
         providers = [
             {
@@ -724,7 +724,7 @@ class TestSettingsIdToInstanceId:
                 "config": {"default_model": "claude-sonnet-4-6", "priority": 2},
             },
         ]
-        result = _map_id_to_instance_id(providers)
+        result = map_provider_ids_to_instance_ids(providers)
         assert result[0]["instance_id"] == "anthropic-opus"
         assert result[1]["instance_id"] == "anthropic-sonnet"
 
@@ -739,7 +739,7 @@ class TestSettingsIdToInstanceId:
         the snapshot overwrite bug: when instance_id == default_name, the kernel
         skips remapping and the second mount silently overwrites the first instance.
         """
-        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+        from amplifier_app_cli.runtime.config import map_provider_ids_to_instance_ids
 
         providers = [
             {
@@ -753,7 +753,7 @@ class TestSettingsIdToInstanceId:
                 "config": {"default_model": "claude-sonnet-4-6", "priority": 6},
             },
         ]
-        result = _map_id_to_instance_id(providers)
+        result = map_provider_ids_to_instance_ids(providers)
         # First entry: NO instance_id — it's the default, the kernel mounts it as "anthropic"
         assert "instance_id" not in result[0], (
             f"Default entry should NOT have instance_id, got: {result[0].get('instance_id')}"

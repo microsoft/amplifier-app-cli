@@ -1,9 +1,9 @@
-"""Tests for redundancy fixes: session_runner.py setLevel and main.py display_validation_error guards.
+"""Tests for redundancy fixes around validation error display guards.
 
 These tests verify:
 1. session_runner.py except block has no redundant core_logger.setLevel() before display_validation_error
-2. main.py interactive_chat() uses `if not display_validation_error(...)` with fallback
-3. main.py execute_single() uses `if not display_validation_error(...)` with fallback
+2. the interactive REPL runner uses the validation fallback guard
+3. single_execution.py uses `if not display_validation_error(...)` with fallback
 """
 
 import ast
@@ -86,53 +86,52 @@ class TestSessionRunnerRedundantSetLevel:
 
 
 # ---------------------------------------------------------------------------
-# Test 2: main.py interactive_chat() - display_validation_error guard pattern
+# Test 2: interactive_repl_runner.py - display_validation_error guard pattern
 # ---------------------------------------------------------------------------
 
 
 class TestInteractiveChatValidationErrorGuard:
-    """In interactive_chat(), the except ModuleValidationError block should use
+    """The interactive runner's error boundary should use
     `if not display_validation_error(...)` with a console.print fallback,
     not a bare display_validation_error() call."""
 
-    def test_except_block_uses_if_not_guard(self):
-        """The except ModuleValidationError block should use `if not display_validation_error(...)`."""
-        main_module = importlib.import_module("amplifier_app_cli.main")
-
-        source = _get_function_source(main_module, "interactive_chat")
-        handlers = _get_except_handlers(source, "ModuleValidationError")
-
-        assert len(handlers) >= 1, "Expected at least one ModuleValidationError handler"
-        handler = handlers[0]
-
-        # The first statement should be an If with a `not` test on display_validation_error
-        first_stmt = handler.body[0]
-        assert isinstance(first_stmt, ast.If), (
-            f"Expected `if not display_validation_error(...)` guard, "
-            f"got {type(first_stmt).__name__}"
+    def test_error_boundary_uses_if_not_guard(self):
+        """Module validation failures retain the fallback display guard."""
+        from amplifier_app_cli.runtime.interactive_repl_runner import (
+            InteractiveReplRunner,
         )
 
-        # Check it's `if not display_validation_error(...)`
-        test = first_stmt.test
-        assert isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not), (
-            "Expected `if not ...` pattern in the guard"
-        )
+        source = inspect.getsource(InteractiveReplRunner._report_error)
+        tree = ast.parse(textwrap.dedent(source))
+        guarded_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.UnaryOp)
+            and isinstance(node.test.op, ast.Not)
+            and isinstance(node.test.operand, ast.Call)
+            and isinstance(node.test.operand.func, ast.Attribute)
+            and node.test.operand.func.attr == "display_validation_error"
+        ]
+
+        assert guarded_calls, "Expected `if not display_validation_error(...)` guard"
 
 
 # ---------------------------------------------------------------------------
-# Test 3: main.py execute_single() - display_validation_error guard pattern
+# Test 3: single_execution.py run_single_execution() - validation guard pattern
 # ---------------------------------------------------------------------------
 
 
 class TestExecuteSingleValidationErrorGuard:
-    """In execute_single(), the else branch of the except ModuleValidationError block
-    should use `if not display_validation_error(...)` with a console.print fallback."""
+    """The runtime's ModuleValidationError handler keeps the fallback guard."""
 
     def test_else_branch_uses_if_not_guard(self):
         """The else branch should use `if not display_validation_error(...)` guard."""
-        main_module = importlib.import_module("amplifier_app_cli.main")
+        runtime_module = importlib.import_module(
+            "amplifier_app_cli.runtime.single_execution"
+        )
 
-        source = _get_function_source(main_module, "execute_single")
+        source = _get_function_source(runtime_module, "run_single_execution")
         handlers = _get_except_handlers(source, "ModuleValidationError")
 
         assert len(handlers) >= 1, "Expected at least one ModuleValidationError handler"
@@ -142,7 +141,9 @@ class TestExecuteSingleValidationErrorGuard:
         # The else body should contain `if not display_validation_error(...)`
         # Find the if statement checking output_format
         format_if = handler.body[0]
-        assert isinstance(format_if, ast.If), "Expected if statement checking output_format"
+        assert isinstance(format_if, ast.If), (
+            "Expected if statement checking output_format"
+        )
         assert len(format_if.orelse) >= 1, "Expected else branch"
 
         # In the else branch, first statement should be `if not display_validation_error(...)`
