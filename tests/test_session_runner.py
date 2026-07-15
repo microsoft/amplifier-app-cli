@@ -575,9 +575,7 @@ def _configurator_patches(mock_sess):
             new_callable=AsyncMock,
             return_value=mock_sess,
         ),
-        patch(
-            "amplifier_app_cli.commands.init.check_first_run", return_value=False
-        ),
+        patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
         patch(
             "amplifier_app_cli.project_utils.get_project_slug",
             return_value="test-slug",
@@ -852,3 +850,348 @@ class TestSessionConfiguratorWiring:
             r.message for r in caplog.records if r.levelno == logging.WARNING
         ]
         assert warning_messages, "Expected a warning but none was logged"
+
+
+# ---------------------------------------------------------------------------
+# Resume-time provider/model mismatch check (amplifier-support#208, Wave 2)
+# ---------------------------------------------------------------------------
+
+import click as _click  # noqa: E402  (grouped here to stay close to its tests)
+
+from amplifier_app_cli.effective_config import EffectiveConfigSummary  # noqa: E402
+from amplifier_app_cli.session_runner import (  # noqa: E402
+    _normalize_provider_identity,
+    _warn_on_resume_provider_mismatch,
+)
+
+
+def _make_summary(
+    provider_module: str = "provider-anthropic", model: str = "claude-x"
+) -> EffectiveConfigSummary:
+    """Return a minimal EffectiveConfigSummary for mismatch-check tests."""
+    return EffectiveConfigSummary(
+        config_source="bundle:test",
+        provider_name=provider_module.replace("provider-", "").title(),
+        provider_module=provider_module,
+        model=model,
+        orchestrator="loop-basic",
+        tool_count=0,
+        hook_count=0,
+    )
+
+
+class TestNormalizeProviderIdentity:
+    """Unit tests for _normalize_provider_identity()."""
+
+    def test_strips_provider_prefix(self):
+        assert _normalize_provider_identity("provider-anthropic") == "anthropic"
+
+    def test_bare_name_passes_through_unchanged(self):
+        assert _normalize_provider_identity("anthropic") == "anthropic"
+
+    def test_case_insensitive(self):
+        assert _normalize_provider_identity("Provider-Anthropic") == "anthropic"
+        assert _normalize_provider_identity("ANTHROPIC") == "anthropic"
+
+    def test_none_and_empty_string_normalize_to_empty(self):
+        assert _normalize_provider_identity(None) == ""
+        assert _normalize_provider_identity("") == ""
+
+
+class TestWarnOnResumeProviderMismatch:
+    """Unit tests for _warn_on_resume_provider_mismatch() -- the read-side policy."""
+
+    @staticmethod
+    def _resume_config() -> SessionConfig:
+        return _make_session_config(
+            initial_transcript=[{"role": "user", "content": "hi"}]
+        )
+
+    @pytest.mark.asyncio
+    async def test_mismatch_tty_prints_warning_and_confirms_then_proceeds(self):
+        """mismatch + tty -> warning printed AND confirm invoked; accept proceeds."""
+        cfg = self._resume_config()
+        console = MagicMock()
+        session = MagicMock()
+        session.cleanup = AsyncMock()
+
+        with (
+            patch(f"{_MODULE}.SessionStore") as MockStore,
+            patch(
+                f"{_MODULE}.get_effective_config_summary",
+                return_value=_make_summary(
+                    provider_module="provider-openai", model="gpt-x"
+                ),
+            ),
+            patch("sys.stdin.isatty", return_value=True),
+            patch(f"{_MODULE}.click.confirm", return_value=True) as mock_confirm,
+        ):
+            MockStore.return_value.get_metadata.return_value = {
+                "model": "claude-x",
+                "provider": "provider-anthropic",
+            }
+            await _warn_on_resume_provider_mismatch(cfg, "sess-1", console, session)
+
+        console.print.assert_called()
+        mock_confirm.assert_called_once()
+        session.cleanup.assert_not_called()
+        printed = " ".join(str(c) for c in console.print.call_args_list)
+        assert "provider-anthropic/claude-x" in printed
+        assert "provider-openai/gpt-x" in printed
+
+    @pytest.mark.asyncio
+    async def test_mismatch_tty_decline_aborts_cleanly(self):
+        """mismatch + tty + decline -> click.Abort raised, session cleaned up."""
+        cfg = self._resume_config()
+        console = MagicMock()
+        session = MagicMock()
+        session.cleanup = AsyncMock()
+
+        with (
+            patch(f"{_MODULE}.SessionStore") as MockStore,
+            patch(
+                f"{_MODULE}.get_effective_config_summary",
+                return_value=_make_summary(
+                    provider_module="provider-openai", model="gpt-x"
+                ),
+            ),
+            patch("sys.stdin.isatty", return_value=True),
+            patch(f"{_MODULE}.click.confirm", return_value=False),
+        ):
+            MockStore.return_value.get_metadata.return_value = {
+                "model": "claude-x",
+                "provider": "provider-anthropic",
+            }
+            with pytest.raises(_click.Abort):
+                await _warn_on_resume_provider_mismatch(cfg, "sess-1", console, session)
+
+        session.cleanup.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_mismatch_non_tty_warns_and_continues_without_confirm(self):
+        """mismatch + non-tty -> warning printed, NO confirm, proceeds automatically."""
+        cfg = self._resume_config()
+        console = MagicMock()
+        session = MagicMock()
+        session.cleanup = AsyncMock()
+
+        with (
+            patch(f"{_MODULE}.SessionStore") as MockStore,
+            patch(
+                f"{_MODULE}.get_effective_config_summary",
+                return_value=_make_summary(
+                    provider_module="provider-openai", model="gpt-x"
+                ),
+            ),
+            patch("sys.stdin.isatty", return_value=False),
+            patch(f"{_MODULE}.click.confirm") as mock_confirm,
+        ):
+            MockStore.return_value.get_metadata.return_value = {
+                "model": "claude-x",
+                "provider": "provider-anthropic",
+            }
+            await _warn_on_resume_provider_mismatch(cfg, "sess-1", console, session)
+
+        console.print.assert_called()
+        mock_confirm.assert_not_called()
+        session.cleanup.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_provider_and_model_match_is_completely_silent(self):
+        """Exact provider+model match -> no warning, no confirm (zero behavior change)."""
+        cfg = self._resume_config()
+        console = MagicMock()
+        session = MagicMock()
+
+        with (
+            patch(f"{_MODULE}.SessionStore") as MockStore,
+            patch(
+                f"{_MODULE}.get_effective_config_summary",
+                return_value=_make_summary(
+                    provider_module="provider-anthropic", model="claude-x"
+                ),
+            ),
+            patch("sys.stdin.isatty", return_value=True),
+            patch(f"{_MODULE}.click.confirm") as mock_confirm,
+        ):
+            MockStore.return_value.get_metadata.return_value = {
+                "model": "claude-x",
+                "provider": "provider-anthropic",
+            }
+            await _warn_on_resume_provider_mismatch(cfg, "sess-1", console, session)
+
+        console.print.assert_not_called()
+        mock_confirm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_provider_field_model_differs_falls_back_to_model_only(self):
+        """Pre-existing session with no 'provider' field: model-only fallback still warns."""
+        cfg = self._resume_config()
+        console = MagicMock()
+        session = MagicMock()
+
+        with (
+            patch(f"{_MODULE}.SessionStore") as MockStore,
+            patch(
+                f"{_MODULE}.get_effective_config_summary",
+                return_value=_make_summary(
+                    provider_module="provider-openai", model="gpt-x"
+                ),
+            ),
+            patch("sys.stdin.isatty", return_value=False),
+            patch(f"{_MODULE}.click.confirm") as mock_confirm,
+        ):
+            # No "provider" key at all -- simulates a session saved before this PR.
+            MockStore.return_value.get_metadata.return_value = {"model": "claude-x"}
+            await _warn_on_resume_provider_mismatch(cfg, "sess-1", console, session)
+
+        console.print.assert_called()
+        mock_confirm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_provider_field_model_matches_is_silent(self):
+        """Pre-existing session, no 'provider' field, model matches -> silent."""
+        cfg = self._resume_config()
+        console = MagicMock()
+        session = MagicMock()
+
+        with (
+            patch(f"{_MODULE}.SessionStore") as MockStore,
+            patch(
+                f"{_MODULE}.get_effective_config_summary",
+                return_value=_make_summary(
+                    provider_module="provider-anthropic", model="claude-x"
+                ),
+            ),
+            patch("sys.stdin.isatty", return_value=True),
+            patch(f"{_MODULE}.click.confirm") as mock_confirm,
+        ):
+            MockStore.return_value.get_metadata.return_value = {"model": "claude-x"}
+            await _warn_on_resume_provider_mismatch(cfg, "sess-1", console, session)
+
+        console.print.assert_not_called()
+        mock_confirm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_provider_normalization_prevents_false_positive(self):
+        """Stored 'provider-anthropic' vs active bare 'anthropic' -> normalized, no warning."""
+        cfg = self._resume_config()
+        console = MagicMock()
+        session = MagicMock()
+
+        with (
+            patch(f"{_MODULE}.SessionStore") as MockStore,
+            patch(
+                f"{_MODULE}.get_effective_config_summary",
+                return_value=_make_summary(
+                    provider_module="anthropic", model="claude-x"
+                ),
+            ),
+            patch("sys.stdin.isatty", return_value=True),
+            patch(f"{_MODULE}.click.confirm") as mock_confirm,
+        ):
+            MockStore.return_value.get_metadata.return_value = {
+                "model": "claude-x",
+                "provider": "provider-anthropic",
+            }
+            await _warn_on_resume_provider_mismatch(cfg, "sess-1", console, session)
+
+        console.print.assert_not_called()
+        mock_confirm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_prior_metadata_at_all_is_silent(self):
+        """Empty prior metadata (nothing to compare against) -> silent."""
+        cfg = self._resume_config()
+        console = MagicMock()
+        session = MagicMock()
+
+        with (
+            patch(f"{_MODULE}.SessionStore") as MockStore,
+            patch(
+                f"{_MODULE}.get_effective_config_summary", return_value=_make_summary()
+            ),
+            patch(f"{_MODULE}.click.confirm") as mock_confirm,
+        ):
+            MockStore.return_value.get_metadata.return_value = {}
+            await _warn_on_resume_provider_mismatch(cfg, "sess-1", console, session)
+
+        console.print.assert_not_called()
+        mock_confirm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_prior_metadata_load_failure_is_silent_best_effort(self):
+        """Loading prior metadata fails (e.g. corrupted session) -> silent no-op."""
+        cfg = self._resume_config()
+        console = MagicMock()
+        session = MagicMock()
+
+        with (
+            patch(f"{_MODULE}.SessionStore") as MockStore,
+            patch(
+                f"{_MODULE}.get_effective_config_summary", return_value=_make_summary()
+            ),
+        ):
+            MockStore.return_value.get_metadata.side_effect = FileNotFoundError("nope")
+            await _warn_on_resume_provider_mismatch(cfg, "sess-1", console, session)
+
+        console.print.assert_not_called()
+
+
+class TestProviderMismatchCheckWiredIntoChokepoint:
+    """Integration: create_initialized_session gates the check on config.is_resume.
+
+    This is the single chokepoint every resume surface passes through
+    (amplifier run --resume, amplifier session resume, amplifier resume,
+    amplifier continue all funnel through create_initialized_session).
+    """
+
+    @pytest.mark.asyncio
+    async def test_check_never_runs_for_a_new_non_resume_session(self):
+        """is_resume=False (new session) -> the mismatch check must never run."""
+        from contextlib import ExitStack
+
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config()  # no initial_transcript -> is_resume is False
+        console = MagicMock()
+
+        with ExitStack() as stack:
+            for p in _configurator_patches(mock_sess):
+                stack.enter_context(p)
+            mock_check = stack.enter_context(
+                patch(
+                    f"{_MODULE}._warn_on_resume_provider_mismatch",
+                    new_callable=AsyncMock,
+                )
+            )
+            await create_initialized_session(cfg, console)
+
+        mock_check.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_check_runs_for_a_resume_session_with_correct_args(self):
+        """is_resume=True (resume) -> the mismatch check runs with (config, session_id, console, session)."""
+        from contextlib import ExitStack
+
+        mock_sess = _make_mock_session()
+        cfg = _make_session_config(
+            initial_transcript=[{"role": "user", "content": "hi"}]
+        )
+        console = MagicMock()
+
+        with ExitStack() as stack:
+            for p in _configurator_patches(mock_sess):
+                stack.enter_context(p)
+            mock_check = stack.enter_context(
+                patch(
+                    f"{_MODULE}._warn_on_resume_provider_mismatch",
+                    new_callable=AsyncMock,
+                )
+            )
+            result = await create_initialized_session(cfg, console)
+
+        mock_check.assert_called_once()
+        call_args = mock_check.call_args[0]
+        assert call_args[0] is cfg
+        assert call_args[2] is console
+        assert call_args[3] is result.session
