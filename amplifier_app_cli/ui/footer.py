@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 
 from prompt_toolkit.formatted_text import FormattedText
@@ -49,10 +50,17 @@ def format_bottom_toolbar_text(
     last_yield: str | None = None,
     needs_attention_count: int = 0,
     approval_pending: bool = False,
+    palette_open: bool = False,
+    lane_focused: bool = False,
     max_width: int | None = None,
+    hint_overrides: Mapping[str, str] | None = None,
 ) -> str:
     """Render persistent state left and at most three contextual hints right."""
     del activity_label, task_summary  # These belong in the live/notice rows.
+    # No per-capability keybinding-label catalog exists at this revision;
+    # `hint_overrides` is accepted so callers can pass it uniformly but is not
+    # yet consulted when building hint text below.
+    del hint_overrides
     mode = _identifier(active_mode or "chat", 12)
     posture = _posture_variants(
         mode,
@@ -116,6 +124,8 @@ def format_bottom_toolbar_text(
         tasks_available=tasks_available,
         image_paste_available=image_paste_available,
         approval_pending=approval_pending,
+        palette_open=palette_open,
+        lane_focused=lane_focused,
     )
     if max_width is None:
         return _render_two_zones(tiers[0], hints[0], None)
@@ -267,6 +277,8 @@ def _hint_levels(
     tasks_available: bool,
     image_paste_available: bool,
     approval_pending: bool,
+    palette_open: bool = False,
+    lane_focused: bool = False,
 ) -> tuple[tuple[str, ...], ...]:
     del image_paste_available  # Clipboard availability renders in the notice lane.
     if approval_pending:
@@ -276,6 +288,21 @@ def _hint_levels(
             ("arrows", "enter", "esc"),
             ("enter", "esc"),
             ("enter",),
+            (),
+        )
+    if palette_open:
+        return (
+            ("arrows select", "enter run", "esc close"),
+            ("enter run", "esc close"),
+            ("arrows", "enter", "esc"),
+            ("enter", "esc"),
+            ("esc",),
+            (),
+        )
+    if lane_focused:
+        return (
+            ("esc back to parent",),
+            ("esc back",),
             (),
         )
     if is_running:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -13,6 +14,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.utils import get_cwidth
 
 from .footer import format_bottom_toolbar_text
+from .layered_repl_style import TOKENS
 from .repl import format_elapsed
 from .repl import summarize_cell_text
 from .task_status import TaskStatus
@@ -32,7 +34,6 @@ if TYPE_CHECKING:
         _bundle_name: str
         _clipboard_detector: ClipboardImageAvailabilityDetector
         _get_is_running: Callable[[], bool] | None
-        _get_task_title: Callable[[], str | None] | None
         _needs_you: NeedsYouQueue | None
         _outcome_ledger: OutcomeLedger | None
         _running_started_at: float | None
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
 
         def _approval_visible(self) -> bool: ...
 
+        def capability_hint_overrides(self) -> dict[str, str] | None: ...
+
         def _clock(self) -> float: ...
 
         def _is_running(self) -> bool: ...
@@ -53,6 +56,8 @@ if TYPE_CHECKING:
         def _live_agent_lanes(self) -> tuple[tuple[Any, ...], int]: ...
 
         def _live_tree_prefixes(self) -> dict[str, str]: ...
+
+        def _palette_visible(self) -> bool: ...
 
         def _queued_count(self) -> int: ...
 
@@ -74,6 +79,7 @@ class LayeredReplStatusMixin:
             else None
         )
         toolbar = format_bottom_toolbar_text(
+            hint_overrides=self.capability_hint_overrides(),
             bundle_name=self._bundle_name,
             session_id=self._session_id,
             active_mode=self._active_mode(),
@@ -101,6 +107,11 @@ class LayeredReplStatusMixin:
                 self._needs_you.pending_count if self._needs_you is not None else 0
             ),
             approval_pending=self._approval_visible(),
+            palette_open=self._palette_visible(),
+            lane_focused=(
+                self._agent_lanes is not None
+                and self._agent_lanes.focused_session_id != self._session_id
+            ),
             max_width=max(1, self._terminal_size()[1] - 2),
         )
         risk = bool(
@@ -108,7 +119,7 @@ class LayeredReplStatusMixin:
             and self._trust_state.active.requires_risk_treatment
         )
         if not risk:
-            return FormattedText([("class:status", f" {toolbar} ")])
+            return _footer_fragments(toolbar, mode=self._active_mode() or "chat")
         risk_end = _risk_posture_end(toolbar, bundle_name=self._bundle_name)
         return FormattedText(
             [
@@ -180,18 +191,22 @@ class LayeredReplStatusMixin:
         stage_budget = max(1, columns - get_cwidth(details) - 2)
         stage = summarize_cell_text(stage, max_cells=stage_budget)
         glyph = ("✳", "✦", "✧", "✦")[int(now * 5) % 4]
+        hint_start = details.find(" · esc to interrupt")
+        telemetry_details = details if hint_start < 0 else details[:hint_start]
+        hint_details = "" if hint_start < 0 else details[hint_start:]
         fragments: list[tuple[str, str]] = [
             ("class:working.glyph", f"{glyph} "),
-            ("class:working.title", f"{stage}{details}"),
+            ("class:working.title", f"{stage}{telemetry_details}"),
         ]
+        if hint_details:
+            fragments.append((f"class:working fg:{TOKENS['dimmer']}", hint_details))
         tree_prefixes = self._live_tree_prefixes()
         for lane in lanes:
             prefix = tree_prefixes.get(lane.session_id, "`- ")
             prefix = _terminal_tree_prefix(prefix)
             lead = f"  {prefix}● "
             budget = max(1, columns - get_cwidth(lead))
-            rendered = lane.render(max_columns=budget)
-            body = rendered.split(" ", 1)[-1]
+            body = lane.render_tree(max_columns=budget)
             fragments.extend(
                 [
                     ("", "\n"),
@@ -221,23 +236,23 @@ class LayeredReplStatusMixin:
         preview = (
             self._stream_status.preview if self._stream_status is not None else None
         )
-        title = self._get_task_title() if self._get_task_title is not None else None
-        if preview is not None:
-            return "Responding" if preview.kind == "text" else "Thinking"
-        if self._task_tracker is not None:
-            active_step = self._task_tracker.active_step_text()
-            if active_step:
-                return active_step
-        if title:
-            return f"Working on {title}"
+        active_step = (
+            self._task_tracker.active_step_text()
+            if self._task_tracker is not None
+            else None
+        )
+        lane_count = 0
         if lanes:
-            count = (
+            lane_count = (
                 self._task_tracker.counts().running
                 if self._task_tracker
                 else len(lanes)
             )
-            return f"Coordinating {count} {'agent' if count == 1 else 'agents'}"
-        return "working"
+        return current_activity_label(
+            lane_count=lane_count,
+            active_step=active_step,
+            preview_kind=preview.kind if preview is not None else None,
+        )
 
     def _live_agent_lanes(
         self: _LayeredReplStatusOwner,
@@ -263,6 +278,67 @@ class LayeredReplStatusMixin:
         return {
             row.node.session_id: row.prefix for row in self._task_tracker.tree_rows()
         }
+
+
+def current_activity_label(
+    *,
+    lane_count: int,
+    active_step: str | None,
+    preview_kind: str | None,
+) -> str:
+    """Single source of truth for "what's happening right now" in the bottom
+    persistent status bar.
+
+    Precedence: delegated/agent-lane activity > an active plan/tool step >
+    a streaming response > a distinct idle indicator. The turn's original
+    prompt/title is deliberately excluded from this precedence -- it is
+    already the transcript's permanent per-turn record (the committed
+    ``Plan`` block, see ``layered_repl_surfaces.commit_plan_state``);
+    echoing it here too would duplicate that record verbatim in a second,
+    live surface.
+    """
+    if lane_count > 0:
+        return f"Coordinating {lane_count} {'agent' if lane_count == 1 else 'agents'}"
+    if active_step:
+        return active_step
+    if preview_kind is not None:
+        return "Responding" if preview_kind == "text" else "Thinking"
+    return "working"
+
+
+_FOOTER_MODES = frozenset({"chat", "plan", "brainstorm", "build", "auto", "bypass"})
+_FOOTER_ATTENTION = re.compile(r"q\d+|\d+ decisions? waiting|needs-you \d+|ctrl-y")
+_FOOTER_ZONE_GAP = re.compile(r"  +")
+
+
+def _footer_fragments(toolbar: str, *, mode: str) -> FormattedText:
+    """Colorize the plain footer per spec section 6 without changing its text."""
+    gap = _FOOTER_ZONE_GAP.search(toolbar)
+    left = toolbar[: gap.start()] if gap else toolbar
+    hints = toolbar[gap.start() :] if gap else ""
+    dimmer = f"class:status fg:{TOKENS['dimmer']}"
+    fragments: list[tuple[str, str]] = [("class:status", " ")]
+    for index, part in enumerate(left.split(" · ")):
+        if index:
+            fragments.append((dimmer, " · "))
+        fragments.extend(_footer_part(part, first=index == 0, mode=mode))
+    if hints:
+        fragments.append((dimmer, hints))
+    fragments.append(("class:status", " "))
+    return FormattedText(fragments)
+
+
+def _footer_part(part: str, *, first: bool, mode: str) -> list[tuple[str, str]]:
+    if first and part.removeprefix("mode ") == mode and mode in _FOOTER_MODES:
+        return [(f"class:status class:mode.{mode}", part)]
+    if part.endswith("▲"):
+        return [
+            ("class:status", part[:-1]),
+            (f"class:status fg:{TOKENS['green']}", "▲"),
+        ]
+    if _FOOTER_ATTENTION.fullmatch(part):
+        return [(f"class:status fg:{TOKENS['orange']}", part)]
+    return [("class:status", part)]
 
 
 def _risk_posture_end(toolbar: str, *, bundle_name: str) -> int:
@@ -292,7 +368,10 @@ def _working_details(
     tokens: int,
     cost_label: str,
 ) -> str:
-    parts: list[tuple[str, str]] = []
+    parts: list[tuple[str, str]] = [
+        ("elapsed", format_elapsed(elapsed)),
+        ("tokens", f"↓ {format_tokens(tokens)} tok"),
+    ]
     if running_agents:
         parts.append(
             (
@@ -302,14 +381,13 @@ def _working_details(
         )
     parts.extend(
         (
-            ("elapsed", format_elapsed(elapsed)),
-            ("tokens", f"↓ {format_tokens(tokens)} tok"),
             ("cost", cost_label),
             ("interrupt", "esc to interrupt"),
+            ("steer", "type to steer"),
         )
     )
     minimum_stage = min(20, max(7, columns // 3))
-    removable = ("interrupt", "tokens", "agents", "cost")
+    removable = ("steer", "interrupt", "tokens", "agents", "cost")
     while parts:
         details = "".join(f" · {value}" for _, value in parts)
         if get_cwidth(details) <= max(0, columns - minimum_stage - 2):
@@ -323,6 +401,29 @@ def _working_details(
     return "".join(f" · {value}" for _, value in parts)
 
 
+def queued_bar_text(
+    *, count: int, previews: tuple[str, ...], columns: int
+) -> FormattedText:
+    """Render the queued-next bar per spec section 5: quote the first message."""
+    if previews:
+        suffix = f" (+{count - 1} more)" if count > 1 else ""
+        budget = max(1, columns - 60 - get_cwidth(suffix))
+        preview = f'"{summarize_cell_text(previews[0], max_cells=budget)}"{suffix}'
+    else:
+        preview = summarize_cell_text(
+            f"{count} message(s)", max_cells=max(1, columns - 60)
+        )
+    return FormattedText(
+        [
+            (
+                "class:queued",
+                f"  ▹ queued next: {preview} · runs when this turn ends",
+            ),
+            (f"class:queued fg:{TOKENS['dimmer']}", " · alt+up edit"),
+        ]
+    )
+
+
 def format_tokens(tokens: int) -> str:
     if tokens < 1_000:
         return str(tokens)
@@ -331,4 +432,9 @@ def format_tokens(tokens: int) -> str:
     return f"{tokens / 1_000_000:.1f}m"
 
 
-__all__ = ["LayeredReplStatusMixin", "format_tokens"]
+__all__ = [
+    "LayeredReplStatusMixin",
+    "current_activity_label",
+    "format_tokens",
+    "queued_bar_text",
+]

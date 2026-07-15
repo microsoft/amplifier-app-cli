@@ -3,6 +3,19 @@
 from prompt_toolkit.styles import Style
 
 
+# Named color tokens referenced directly (outside prompt_toolkit style classes)
+# by layered_repl_status.py for inline fragment coloring -- e.g. footer hint
+# dimming and footer colorization accents. Only the keys actually consumed
+# today are defined; values mirror the hex colors already used for the same
+# roles in LAYERED_REPL_STYLE below so the two stay visually consistent.
+TOKENS: dict[str, str] = {
+    "bg_chrome": "#353c48",
+    "dimmer": "#4a5163",
+    "green": "#7ec699",
+    "orange": "#e0a458",
+}
+
+
 LAYERED_REPL_STYLE = Style.from_dict(
     {
         "output": "fg:#d1d5db",

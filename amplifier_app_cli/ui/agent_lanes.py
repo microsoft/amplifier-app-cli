@@ -108,6 +108,12 @@ class AgentLaneSnapshot:
         )
         return _truncate_cells(compact, max_columns)
 
+    def render_tree(self, *, max_columns: int = 96) -> str:
+        """Render the in-transcript subagent tree body: name · activity · $cost."""
+        summary = self.summary or _status_summary(self.status)
+        line = f"{self.agent} · {summary} · {_format_cost(self.cost_usd)}"
+        return _truncate_cells(line, max(1, int(max_columns)))
+
 
 @dataclass(frozen=True, slots=True)
 class AgentLaneBoardSnapshot:

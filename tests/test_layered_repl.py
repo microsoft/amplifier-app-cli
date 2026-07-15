@@ -406,7 +406,7 @@ async def test_inline_approval_enter_allows_without_losing_typed_input(tmp_path)
         await asyncio.sleep(0)
 
         assert app._approval_visible() is True
-        pipe_input.send_text("must not enter the hidden draft")
+        pipe_input.send_text("this must not enter it")
         await asyncio.sleep(0.05)
         pipe_input.send_text("\r")
         assert await asyncio.wait_for(decision, timeout=1) == "Allow once"
@@ -795,7 +795,11 @@ def test_working_surface_shows_root_task_and_live_agent_tree(tmp_path, monkeypat
     working = "".join(text for _, text in app._working_text())
     lines = working.splitlines()
 
-    assert "Working on Evaluate Amplifier Flagship missions" in lines[0]
+    # Active agent lanes take precedence over the turn title in the stage
+    # text -- the title is already the transcript's permanent per-turn
+    # record and must not be echoed here too.
+    assert "Coordinating 3 agents" in lines[0]
+    assert "Evaluate Amplifier Flagship missions" not in lines[0]
     assert "3 agents" in lines[0]
     assert "amplifier-expert" in lines[1]
     assert "Inspecting the flagship spec" in lines[1]
@@ -1407,6 +1411,30 @@ def test_non_terminal_plan_lifecycle_commits_to_transcript(tmp_path, lifecycle, 
     assert "✔ Audit paths" in transcript
     assert "■ Implement fix" in transcript
     assert "□ Run tests" in transcript
+
+
+def test_working_bar_does_not_echo_raw_title_without_an_active_plan_step(
+    tmp_path, monkeypatch
+):
+    """When there's no active plan step, no streaming preview, and no active
+    agent lanes, the live working bar must show a distinct idle indicator --
+    never the raw turn prompt/title. That title is already the transcript's
+    permanent per-turn record (the committed ``Plan`` block); echoing it
+    here too would read as a meaningless duplicate of that record."""
+    app = _make_app(
+        tmp_path,
+        get_is_running=lambda: True,
+        get_task_title=lambda: '"figure out how we can make it faster"',
+    )
+    app._terminal_size = lambda: (24, 120)
+    app._running_started_at = 0.0
+    monkeypatch.setattr("amplifier_app_cli.ui.layered_repl.monotonic", lambda: 1.0)
+
+    working = "".join(text for _, text in app._working_text())
+
+    assert "figure out how we can make it faster" not in working
+    assert "Working on" not in working
+    assert "Plan ·" not in working
 
 
 @pytest.mark.asyncio

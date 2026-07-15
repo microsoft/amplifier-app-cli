@@ -44,6 +44,10 @@ if TYPE_CHECKING:
 class LayeredReplTerminalMixin:
     """Emit terminal metadata and temporarily suspend into a shell."""
 
+    def capability_hint_overrides(self) -> dict[str, str] | None:
+        """No per-capability keybinding-label catalog exists at this revision."""
+        return None
+
     def emit_terminal_title(self: _LayeredReplTerminalOwner, title: str) -> None:
         self._emit_terminal_sequence(terminal_title_sequence(title))
 

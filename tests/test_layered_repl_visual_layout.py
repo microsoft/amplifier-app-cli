@@ -23,6 +23,7 @@ from amplifier_app_cli.ui.layered_repl import LayeredReplCompletion
 from amplifier_app_cli.ui.layered_repl import LayeredReplConfig
 from amplifier_app_cli.ui.layered_repl import LayeredReplServices
 from amplifier_app_cli.ui.layered_repl_style import LAYERED_REPL_STYLE
+from amplifier_app_cli.ui.layered_repl_style import TOKENS
 from amplifier_app_cli.ui.interaction_state import TrustState
 from amplifier_app_cli.ui.task_status import TaskStatusTracker
 
@@ -108,7 +109,7 @@ async def test_composer_and_footer_keep_their_visual_hierarchy(
     prompt_background = LAYERED_REPL_STYLE.get_attrs_for_style_str(
         "class:prompt"
     ).bgcolor
-    assert composer_background == "353c48"
+    assert composer_background == TOKENS["bg_chrome"].lstrip("#")
     assert prompt_background == composer_background
     assert all(
         _background(cell) == composer_background
@@ -254,7 +255,11 @@ async def test_live_agent_tree_stays_above_stable_composer_and_footer(
     await asyncio.sleep(0)
     rows = [_row_text(screen, row, width) for row in range(_HEIGHT)]
 
-    assert "Working" in rows[-6]
+    # Active agent lanes take precedence over the turn title in the working
+    # bar's stage text -- the title is already the transcript's permanent
+    # per-turn record and must not be echoed here too. Narrow widths may
+    # truncate the full "Coordinating 3 agents" text, so check the prefix.
+    assert "Coordinating" in rows[-6]
     assert "amplifier-expert" in rows[-5]
     assert "zen-architect" in rows[-4]
     assert "old-engineer" in rows[-3]
