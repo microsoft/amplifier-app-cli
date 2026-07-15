@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from collections.abc import Callable
+from dataclasses import replace
 from time import monotonic
 from typing import Any
 from typing import TextIO
@@ -18,6 +19,7 @@ from rich.console import Console
 from amplifier_app_cli.session_store import SessionStore
 
 from .agent_lanes import AgentLaneViewModel
+from .block_render_cache import BlockRenderCache
 from .bottom_stdout import TranscriptOutput
 from .bottom_stdout import TranscriptOutputBridge
 from .clipboard import ImageAttachment
@@ -45,6 +47,11 @@ from .notices import TransientNoticeState
 from .repl import SlashCommandCompleter
 from .terminal_transcript import TerminalTranscript
 from .text_clipboard import copy_text_to_clipboard
+from .transcript_blocks import AnswerBlock
+from .transcript_blocks import ToolBlock
+from .transcript_blocks import tool_block_from_activity
+from .transcript_reflow import TranscriptReflowController
+from .ui_events import TranscriptClickAction
 from .ui_events import UiEventDispatcher
 
 
@@ -79,6 +86,8 @@ class LayeredReplApp(
         self._get_render_profile = bindings.get_render_profile
         self._get_is_running = bindings.get_is_running
         self._get_queued_count = bindings.get_queued_count
+        self._get_queued_preview = bindings.get_queued_preview
+        self._pop_last_queued = bindings.pop_last_queued
         self._bundle_name = config.bundle_name
         self._session_id = config.session_id
         self._task_tracker = services.task_tracker
@@ -96,6 +105,7 @@ class LayeredReplApp(
         self._steering_queue = services.steering_queue
         self._get_task_title = bindings.get_task_title
         self._on_cycle_mode = bindings.on_cycle_mode
+        self._on_cycle_permission = bindings.on_cycle_permission
         self._on_rewind = bindings.on_rewind
         self._evidence_model = services.evidence_model
         self._clipboard_detector = (
@@ -140,7 +150,7 @@ class LayeredReplApp(
         self._owner_loop: asyncio.AbstractEventLoop | None = None
         self._terminal_file = sys.stdout
         self._typed_output = TranscriptOutput(
-            self._append_transcript_output, stream=self._terminal_file
+            self._append_typed_transcript_output, stream=self._terminal_file
         )
         typed_console = Console(
             file=cast(TextIO, self._typed_output),
@@ -152,6 +162,15 @@ class LayeredReplApp(
         )
         if services.event_dispatcher is not None:
             services.event_dispatcher.bind_console(typed_console)
+        self._ui_events.set_click_ref_resolver(self._resolve_click_ref)
+        self._transcript_view.set_click_action_handler(self._activate_transcript_click)
+        self._block_render_cache = BlockRenderCache()
+        self._transcript_view.set_block_renderer(self._render_block_for_reflow)
+        self._transcript_reflow = TranscriptReflowController(
+            observe_width=self._transcript_view.current_render_width,
+            reflow=self._transcript_view.reflow_to_width,
+            stream_active=self._reflow_stream_active,
+        )
         self._output_bridge = TranscriptOutputBridge(self._capture_untyped_output)
 
         completer = SlashCommandCompleter(
@@ -188,6 +207,7 @@ class LayeredReplApp(
             input=config.input,
         )
         self.application.after_render += self._flush_terminal_sequences
+        self.application.after_render += self._transcript_reflow.observe
         self._transcript_view.set_invalidate(self.application.invalidate)
         if self._task_tracker is not None:
             self._remove_task_listener = self._task_tracker.add_listener(
@@ -220,6 +240,173 @@ class LayeredReplApp(
         return (
             self._get_render_profile() if self._get_render_profile else "conversational"
         )
+
+    def _append_typed_transcript_output(self, text: str) -> None:
+        """Commit one typed block chunk with its click identity and source."""
+        self._append_click_transcript_output(
+            text,
+            self._ui_events.active_click_action,
+            self._ui_events.active_block,
+        )
+
+    def _append_click_transcript_output(
+        self, text: str, action: object | None, block: object | None = None
+    ) -> None:
+        owner_loop = self._owner_loop
+        if owner_loop is not None and not owner_loop.is_closed():
+            try:
+                current_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                current_loop = None
+            if current_loop is not owner_loop:
+                try:
+                    owner_loop.call_soon_threadsafe(
+                        self._append_click_transcript_output, text, action, block
+                    )
+                except RuntimeError:
+                    pass
+                else:
+                    return
+        self._transcript_view.append_output(text, action=action, block=block)
+        self._exit_transcript.write(text)
+
+    def _render_block_for_reflow(self, block: object, width: int) -> str:
+        """Re-render one retained block at a reflow width through the cache."""
+        return self._block_render_cache.render(
+            block,
+            width,
+            lambda source, target_width: self._ui_events.render_to_ansi(
+                cast(Any, source), width=target_width
+            ),
+        )
+
+    def _reflow_stream_active(self) -> bool:
+        """Report whether a reflow must wait for actively streamed output.
+
+        A turn can be "running" for a long stretch without appending anything
+        new to the transcript yet (e.g. mid-tool-call, waiting on a shell
+        command) -- that idle window is safe to reflow immediately. Only a
+        live stream preview (text genuinely being painted) needs to hold the
+        rebuild, so this checks the preview alone rather than the turn's
+        overall running flag.
+        """
+        if self._stream_status is None:
+            return False
+        try:
+            return self._stream_status.preview is not None
+        except Exception:
+            return True
+
+    def _resolve_click_ref(
+        self, action: TranscriptClickAction
+    ) -> TranscriptClickAction | None:
+        """Stamp emit-time identity onto a clickable block span."""
+        kind, ref = action
+        if kind == "terminator":
+            latest = (
+                self._outcome_ledger.latest
+                if self._outcome_ledger is not None
+                else None
+            )
+            return None if latest is None else ("terminator", latest.checkpoint_id)
+        if kind == "answer":
+            answer_id = self._recorded_answer_id(ref)
+            return None if answer_id is None else ("answer", answer_id)
+        return action
+
+    def _recorded_answer_id(self, ref: object) -> str | None:
+        """Match one rendered answer against the latest evidence record."""
+        model = self._evidence_model
+        if model is None or not model.answer_ids or not isinstance(ref, AnswerBlock):
+            return None
+        answer_id = model.answer_ids[-1]
+        snapshot = model.snapshot(answer_id)
+        if snapshot is None:
+            return None
+        recorded = " ".join(snapshot.answer.split())
+        rendered = " ".join(ref.markdown.split())
+        if not recorded or not rendered:
+            return None
+        if recorded == rendered:
+            return answer_id
+        if snapshot.truncated and rendered.startswith(recorded):
+            return answer_id
+        return None
+
+    def _activate_transcript_click(self, action: object) -> bool:
+        """Dispatch a transcript click to its keyboard-equivalent path."""
+        if not isinstance(action, tuple) or len(action) != 2:
+            return False
+        kind, ref = action
+        if kind == "tool" and isinstance(ref, ToolBlock):
+            return self._expand_clicked_tool(ref)
+        if kind == "terminator" and isinstance(ref, str):
+            return self.open_rewind_at_checkpoint(ref)
+        if kind == "answer" and isinstance(ref, str):
+            return self.open_evidence_for_answer(ref)
+        return False
+
+    def _expand_clicked_tool(self, block: ToolBlock) -> bool:
+        if block.expanded or not block.output:
+            return False
+        key = self._clicked_tool_key(block)
+        if key is not None:
+            if key in self._expanded_terminal_tools:
+                return False
+            self._expanded_terminal_tools.add(key)
+        self._emit_ui_event(replace(block, expanded=True))
+        self._notices.show(f"expanded {block.summary}")
+        return True
+
+    def _clicked_tool_key(self, block: ToolBlock) -> tuple[str, str] | None:
+        """Keep ctrl-o from re-expanding a tool a click already expanded."""
+        if self._runtime_status is None:
+            return None
+        for tool in reversed(self._runtime_status.tool_snapshot()):
+            if not tool.terminal or tool.result is None:
+                continue
+            rendered = tool_block_from_activity(tool)
+            if rendered.summary == block.summary and rendered.command == block.command:
+                return (tool.session_id, tool.tool_call_id)
+        return None
+
+    def open_rewind_at_checkpoint(self, checkpoint_id: str) -> bool:
+        """Open the rewind bar with one clicked turn rule preselected."""
+        if not self.open_rewind_picker():
+            return False
+        for index, entry in enumerate(self._rewind_entries()):
+            if entry.checkpoint_id == checkpoint_id:
+                self._rewind_selected_index = index
+                self.application.invalidate()
+                break
+        return True
+
+    def open_evidence_for_answer(self, answer_id: str) -> bool:
+        """Reveal evidence for one clicked answer, mirroring ctrl-e."""
+        model = self._evidence_model
+        if model is None or not model.answer_ids:
+            self._notices.show("no answer evidence yet")
+            return False
+        if answer_id not in model.answer_ids or answer_id == model.answer_ids[-1]:
+            return self.open_evidence_picker()
+        snapshot = model.reveal(answer_id)
+        if snapshot is None or not snapshot.links:
+            self._notices.show("this answer has no supported evidence claims")
+            return False
+        claims = {claim.claim_id: claim for claim in snapshot.claims}
+        evidence_lines = []
+        for link in snapshot.links:
+            claim = claims.get(link.claim_id)
+            tool = model.resolve(answer_id, link.number)
+            claim_text = " ".join(claim.text.split()) if claim is not None else "claim"
+            summary = tool.summary if tool is not None else link.tool_call_id
+            evidence_lines.append(f"{link.marker} {claim_text} -> {summary}")
+        self._emit_ui_event(AnswerBlock("\n".join(evidence_lines), label="Evidence"))
+        self._evidence_answer_id = answer_id
+        self._evidence_selected_index = 0
+        self._evidence_visible_state = True
+        self.application.invalidate()
+        return True
 
     def _clock(self) -> float:
         """Keep the established main-module clock monkeypatch seam."""
