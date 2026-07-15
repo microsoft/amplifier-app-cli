@@ -450,6 +450,7 @@ async def run_interactive_host(
             get_queued_count=queued_count,
             get_task_title=lambda: current_task["title"],
             on_cycle_mode=resources.cycle_mode,
+            on_cycle_permission=resources.cycle_permission,
             on_rewind=rewind_to,
         )
     repl_request = InteractiveReplRequest(

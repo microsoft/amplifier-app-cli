@@ -305,11 +305,10 @@ async def _apply_ui_mode_transition(
 
 def _next_shift_tab_state(
     active_mode: str | None,
-    permission_posture: str,
     mode_profiles: ModeProfileRegistry,
 ) -> tuple[str, str]:
     """Compatibility wrapper for the typed interaction controller."""
-    return next_shift_tab_state(active_mode, permission_posture, mode_profiles)
+    return next_shift_tab_state(active_mode, mode_profiles)
 
 
 async def interactive_chat(

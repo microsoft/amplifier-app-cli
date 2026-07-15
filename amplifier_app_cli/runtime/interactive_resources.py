@@ -143,6 +143,9 @@ class InteractiveSessionResources:
     async def cycle_mode(self) -> None:
         await self.interaction.cycle()
 
+    async def cycle_permission(self) -> None:
+        await self.interaction.cycle_permission()
+
     def notify(self, text: str, *, kind: NoticeKind = NoticeKind.INFO) -> None:
         if self._get_layered_app() is not None:
             self.notice_state.show(text, kind=kind)

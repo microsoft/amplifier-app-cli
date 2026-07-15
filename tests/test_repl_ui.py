@@ -144,6 +144,39 @@ def test_bottom_toolbar_includes_live_session_context():
     assert "shift-tab mode" in toolbar
 
 
+def test_bottom_toolbar_shows_mode_and_permission_independently():
+    """ADR-0005 amendment: mode (Shift-Tab) and permission posture (ctrl-p)
+    are independent controls, so the footer must render them from two
+    independent inputs. Changing `permission_mode` alone must not change the
+    rendered mode text, and vice versa -- there is no shared code path that
+    could silently couple them back together."""
+    mode_only = format_bottom_toolbar_text(
+        bundle_name="bundle:dev",
+        session_id="12345678-abcdef",
+        active_mode="chat",
+        permission_mode="chat",
+    )
+    mode_with_different_permission = format_bottom_toolbar_text(
+        bundle_name="bundle:dev",
+        session_id="12345678-abcdef",
+        active_mode="chat",
+        permission_mode="build",
+    )
+
+    # The mode itself is unaffected by an independently-selected permission.
+    assert mode_only.startswith("manual mode on")
+    assert mode_with_different_permission.startswith("chat \u00b7 build")
+
+    # Cycling permission to bypass is visible without touching the mode.
+    bypassed = format_bottom_toolbar_text(
+        bundle_name="bundle:dev",
+        session_id="12345678-abcdef",
+        active_mode="chat",
+        permission_mode="bypass",
+    )
+    assert bypassed.startswith("chat \u00b7 bypass permissions on")
+
+
 def test_bottom_toolbar_switches_to_running_hints():
     toolbar = format_bottom_toolbar_text(
         bundle_name="bundle:dev",

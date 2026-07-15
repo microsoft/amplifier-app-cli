@@ -64,6 +64,7 @@ class LayeredReplBindings:
     get_queued_count: Callable[[], int] | None = None
     get_task_title: Callable[[], str | None] | None = None
     on_cycle_mode: Callable[[], object] | None = None
+    on_cycle_permission: Callable[[], object] | None = None
     on_rewind: Callable[[TurnOutcome], object] | None = None
 
 

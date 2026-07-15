@@ -28,20 +28,20 @@ def test_registry_exposes_normative_five_modes_and_cycles_postures() -> None:
     assert registry.cycle("chat", -1).name == ModeName.BRAINSTORM
 
 
-def test_shift_tab_cycle_requires_an_explicit_bypass_step() -> None:
+def test_shift_tab_state_is_a_pure_mode_cycle() -> None:
+    """``next_shift_tab_state`` (via the ``_next_shift_tab_state`` compat
+    wrapper) is a pure mode cycle with no permission_posture parameter and no
+    bypass special-case -- that coupling was the bug: from `auto`, Shift-Tab
+    could never reach `brainstorm` because the shared control forced `bypass`
+    instead. Permission now cycles independently via ``TrustState.cycle()``
+    (bound to ctrl-p, not Shift-Tab) -- see ADR-0005 amendment."""
     from amplifier_app_cli.main import _next_shift_tab_state
 
     registry = ModeProfileRegistry()
 
-    assert _next_shift_tab_state("plan", "plan", registry) == ("auto", "auto")
-    assert _next_shift_tab_state("auto", "auto", registry) == (
-        "auto",
-        "bypass",
-    )
-    assert _next_shift_tab_state("auto", "bypass", registry) == (
-        "brainstorm",
-        "brainstorm",
-    )
+    assert _next_shift_tab_state("plan", registry) == ("auto", "auto")
+    assert _next_shift_tab_state("auto", registry) == ("brainstorm", "brainstorm")
+    assert _next_shift_tab_state("brainstorm", registry) == ("chat", "chat")
 
 
 def test_profiles_bind_runtime_and_render_semantics() -> None:

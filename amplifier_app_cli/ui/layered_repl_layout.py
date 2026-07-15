@@ -409,18 +409,29 @@ def _build_key_bindings(owner: Any) -> KeyBindings:
     def show_evidence(event):
         owner.open_evidence_picker()
 
-    @key_bindings.add(
-        "s-tab", filter=Condition(lambda: not owner._approval_visible()), eager=True
-    )
-    def cycle_mode(event):
-        if owner._on_cycle_mode is None:
+    def _invoke_cycle_callback(callback, event) -> None:
+        if callback is None:
             return
-        result = owner._on_cycle_mode()
+        result = callback()
         if asyncio.iscoroutine(result):
             task = asyncio.create_task(result)
             owner._submit_tasks.add(task)
             task.add_done_callback(owner._submission_done)
         event.app.invalidate()
+
+    # Independent controls per ADR-0005 amendment: Shift-Tab cycles mode
+    # only, ctrl-p cycles permission posture only.
+    @key_bindings.add(
+        "s-tab", filter=Condition(lambda: not owner._approval_visible()), eager=True
+    )
+    def cycle_mode(event):
+        _invoke_cycle_callback(owner._on_cycle_mode, event)
+
+    @key_bindings.add(
+        "c-p", filter=Condition(lambda: not owner._approval_visible()), eager=True
+    )
+    def cycle_permission(event):
+        _invoke_cycle_callback(owner._on_cycle_permission, event)
 
     @key_bindings.add(
         "escape",
