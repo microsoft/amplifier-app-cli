@@ -147,6 +147,17 @@ def _prepare_resume_context(
         project_slug=project_slug,
     )
 
+    # Resume-time provider-mismatch guard (issue #208). Advisory: warns on a
+    # cross-provider resume and, on a TTY, lets the user abort. Non-interactive
+    # resumes only log and proceed, so automation is never blocked.
+    from ..provider_guard import check_resume_provider
+
+    if not check_resume_provider(
+        session_id, config_data, console, base_dir=store.base_dir
+    ):
+        console.print("[yellow]Resume cancelled.[/yellow]")
+        raise SystemExit(0)
+
     search_paths = get_module_search_paths()
 
     # Determine active_bundle for display
@@ -1150,6 +1161,25 @@ def register_session_commands(
             f"[green]✓[/green] Removed {removed} sessions older than {cutoff:%Y-%m-%d}"
         )
 
+    @session.command(name="diagnose")
+    @click.argument("session_id")
+    def sessions_diagnose(session_id: str):
+        """Diagnose a session's transcript health (read-only)."""
+        _diagnose_session(SessionStore(), session_id)
+
+    @session.command(name="repair")
+    @click.argument("session_id")
+    def sessions_repair(session_id: str):
+        """Repair structural damage in a session's transcript.
+
+        Fixes tool-call damage (orphaned tool calls, ordering violations,
+        incomplete turns) using the COMPLETE strategy. Writes a timestamped
+        backup before any change and is idempotent (a healthy session is a
+        no-op). Does NOT repair cross-provider thinking-block damage -- that is
+        handled at the provider edge (#207).
+        """
+        _repair_session(SessionStore(), session_id)
+
     # Register interactive resume on root CLI (not session subgroup)
     @cli.command(name="resume")
     @click.argument("session_id", required=False, default=None)
@@ -1284,6 +1314,95 @@ def _get_session_display_info(store: SessionStore, session_id: str) -> dict:
             pass
 
     return info
+
+
+_FOUNDATION_REPAIR_HINT = (
+    "Session repair tooling requires a newer amplifier-foundation than is "
+    "installed. Update with: uv lock --upgrade-package amplifier-foundation"
+)
+
+
+def _diagnose_session(store: SessionStore, session_id: str) -> None:
+    """Print transcript health for a session (read-only)."""
+    try:
+        full_id = store.find_session(session_id, top_level_only=False)
+    except FileNotFoundError:
+        console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
+        sys.exit(1)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {escape_markup(e)}")
+        sys.exit(1)
+
+    try:
+        from amplifier_foundation.session import session_info
+    except ImportError:
+        console.print(f"[red]Error:[/red] {_FOUNDATION_REPAIR_HINT}")
+        sys.exit(1)
+
+    info = session_info(store.base_dir / full_id)
+    if info.get("status") == "healthy":
+        console.print(
+            f"[green]✓[/green] Session {full_id[:8]} is healthy — no repair needed."
+        )
+        return
+    modes = ", ".join(info.get("failure_modes", [])) or "unknown"
+    console.print(f"[yellow]⚠[/yellow] Session {full_id[:8]} is broken: {modes}")
+    console.print(f"  Repair with: [cyan]amplifier session repair {full_id[:8]}[/cyan]")
+
+
+def _repair_session(store: SessionStore, session_id: str) -> None:
+    """Repair tool-call structural damage in a session transcript (COMPLETE strategy)."""
+    try:
+        full_id = store.find_session(session_id, top_level_only=False)
+    except FileNotFoundError:
+        console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
+        sys.exit(1)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {escape_markup(e)}")
+        sys.exit(1)
+
+    try:
+        from amplifier_foundation.session import (
+            TRANSCRIPT_FILENAME,
+            backup,
+            diagnose_transcript,
+            load_transcript_with_lines,
+            repair_transcript,
+            write_transcript,
+        )
+    except ImportError:
+        console.print(f"[red]Error:[/red] {_FOUNDATION_REPAIR_HINT}")
+        sys.exit(1)
+
+    session_dir = store.base_dir / full_id
+    entries = load_transcript_with_lines(session_dir)
+    diagnosis = diagnose_transcript(entries)
+    if diagnosis["status"] != "broken":
+        console.print(
+            f"[green]✓[/green] Session {full_id[:8]} is already healthy — nothing to repair."
+        )
+        return
+
+    backup_path = backup(session_dir / TRANSCRIPT_FILENAME, "repair")
+    repaired = repair_transcript(entries, diagnosis)
+    write_transcript(session_dir, repaired)
+
+    # Self-verify by re-diagnosing the written file.
+    verify = diagnose_transcript(load_transcript_with_lines(session_dir))
+
+    console.print(f"[green]✓[/green] Repaired session {full_id[:8]}")
+    console.print(
+        f"  Fixed: {', '.join(diagnosis.get('failure_modes', [])) or 'structural issues'}"
+    )
+    if backup_path:
+        console.print(f"  Backup: {backup_path}")
+    if verify["status"] == "healthy":
+        console.print("  Verified: transcript is now healthy")
+    else:
+        console.print(
+            f"  [yellow]⚠ Still broken after repair: "
+            f"{', '.join(verify.get('failure_modes', [])) or 'unknown'}[/yellow]"
+        )
 
 
 def _interactive_resume_impl(
