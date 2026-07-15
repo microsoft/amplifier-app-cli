@@ -15,6 +15,7 @@ The canonical initialization order (enforced by this module):
 6. Register session spawning capability
 7. Restore transcript (resume only)
 7.5. Restore cumulative session cost (resume only)
+7.6. Warn (and confirm) on provider/model mismatch at resume (resume only)
 8. Register approval provider
 
 Philosophy:
@@ -25,19 +26,24 @@ Philosophy:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 import uuid
 from collections import Counter
 from dataclasses import dataclass
 from dataclasses import field
+from datetime import UTC
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
 
+import click
 from amplifier_core import AmplifierSession
 from amplifier_core import ModuleValidationError
 
+from .effective_config import get_effective_config_summary
 from .lib.settings import AppSettings
 from .session_store import SessionStore
 from .ui.error_display import display_validation_error
@@ -125,6 +131,7 @@ async def create_initialized_session(
     5. Register mention handling capability
     6. Register session spawning capability
     7. Restore transcript (resume only)
+    7.6. Warn (and confirm) on provider/model mismatch (resume only)
     8. Register approval provider
 
     Args:
@@ -290,6 +297,15 @@ async def create_initialized_session(
         except Exception:
             logger.debug("Prior session cost restore skipped", exc_info=True)
 
+    # Step 7.6: Warn (and, on a tty, confirm) on provider/model mismatch at
+    # resume - amplifier-support#208 Wave 2 / Option A. This is the ONE
+    # chokepoint every resume surface (amplifier run --resume, amplifier
+    # session resume, amplifier resume, amplifier continue) passes through,
+    # before the first session.execute() call. Runs only for resumes; silent
+    # (no console output, no prompt) when there's nothing to warn about.
+    if config.is_resume:
+        await _warn_on_resume_provider_mismatch(config, session_id, console, session)
+
     # Step 10: Register approval provider (app-layer policy)
     from .approval_provider import CLIApprovalProvider
     from .stdin_arbiter import StdinArbiter
@@ -331,6 +347,215 @@ async def create_initialized_session(
         config=config,
         configurator=configurator,
     )
+
+
+# =============================================================================
+# Resume-time provider/model mismatch check (amplifier-support#208, Wave 2)
+# =============================================================================
+#
+# Sessions that switch providers mid-conversation can persist provider-specific
+# content (e.g. Anthropic thinking-block signatures) that bricks the session
+# when replayed against a different provider (400s on invalid signatures).
+# Wave 1 sanitized/repaired that content at the provider boundary. This is
+# the resume-time guardrail (Option A, ack'd by the maintainer): warn -- and,
+# interactively, require confirmation -- when the provider/model about to
+# handle a resumed session differs from whichever provider/model last wrote
+# its metadata.
+
+
+def _normalize_provider_identity(value: str | None) -> str:
+    """Normalize a provider identity for mismatch comparison.
+
+    Provider identity may be recorded as a module id ("provider-anthropic")
+    or a bare provider name ("anthropic") depending on the source/vintage of
+    the metadata. Strip the "provider-" prefix and lowercase so both forms
+    compare equal, regardless of which side (stored metadata vs. active
+    config) uses which form.
+
+    Mirrors the nested _normalize_to_provider_name() helper inside
+    _should_attempt_self_healing() above, but is exposed at module level
+    since it is also needed here to compare against the "provider" field
+    persisted by main.py's session-save code.
+
+    Args:
+        value: Provider identity string (module id or bare name), or None.
+
+    Returns:
+        Lowercased bare provider name (e.g. "anthropic"), or "" if value is
+        falsy.
+    """
+    if not value:
+        return ""
+    normalized = value.strip().lower()
+    if normalized.startswith("provider-"):
+        normalized = normalized[len("provider-") :]
+    return normalized
+
+
+async def _warn_on_resume_provider_mismatch(
+    config: SessionConfig,
+    session_id: str,
+    console: "Console",
+    session: AmplifierSession,
+) -> None:
+    """Warn (and, on a tty, require confirmation) on provider/model mismatch.
+
+    Compares the provider/model that is about to handle this resumed session
+    (the ACTIVE config, resolved with any --provider/--model overrides already
+    applied) against whichever provider/model last wrote this session's
+    metadata.json (the PRIOR writer).
+
+    Feature-detection: pre-existing sessions (saved before this PR) have no
+    "provider" field in their metadata. For those, comparison falls back to
+    model-only. Sessions saved by this PR (or later) carry "provider" and get
+    the full provider+model comparison.
+
+    On match, or when there is no prior metadata to compare against at all:
+    completely silent -- zero behavior change and zero console output.
+
+    On mismatch:
+    - stdin is a tty: print the warning, then require explicit confirmation
+      via `click.confirm` (offloaded to a worker thread -- see the
+      KeyboardInterrupt handler in main.py for why this offload is mandatory:
+      click.confirm() performs a blocking, synchronous stdin read that would
+      otherwise freeze the event loop). Declining raises click.Abort(),
+      which aborts the resume before any session.execute() can run.
+    - stdin is not a tty (CI, piped input, scripted flows): print the warning
+      and continue automatically. Scripted flows must never hang waiting for
+      input that will never arrive.
+
+    This function is best-effort with respect to loading prior metadata: any
+    failure there (corrupt/missing metadata.json, invalid session_id, etc.)
+    is swallowed and treated as "nothing to compare against" -- this check
+    must never turn a resume that would otherwise have succeeded into a
+    failure.
+
+    Args:
+        config: The (already resume-mode) SessionConfig for this session.
+            config.config is the fully-resolved active configuration (CLI
+            --provider/--model overrides are applied before this point, so
+            comparing against it automatically respects them).
+        session_id: The resolved session id being resumed.
+        console: Rich console for the warning. In JSON output modes,
+            create_initialized_session's caller has already redirected
+            console.file to stderr before create_initialized_session is
+            invoked, so this can never contaminate JSON stdout.
+        session: The already-created AmplifierSession (Steps 1-7.5 have run
+            by this point). On decline, this is cleaned up before raising
+            click.Abort so we never leave a half-initialized session behind.
+
+    Raises:
+        click.Abort: if stdin is a tty and the user declines to continue.
+    """
+    try:
+        prior_metadata = SessionStore().get_metadata(session_id)
+    except Exception:
+        logger.debug(
+            "Resume provider-mismatch check: could not load prior metadata "
+            "for session %s",
+            session_id,
+            exc_info=True,
+        )
+        return
+
+    prior_model = prior_metadata.get("model")
+    prior_provider = prior_metadata.get("provider")
+
+    # Nothing recorded to compare against (e.g. corrupted/minimal recovered
+    # metadata, or a session saved before "model" was ever written) -- there
+    # is nothing to warn about.
+    if not prior_model and not prior_provider:
+        return
+
+    summary = get_effective_config_summary(config.config, config.bundle_name)
+    active_provider = summary.provider_module
+    active_model = summary.model
+
+    if prior_provider:
+        # Full comparison: normalized provider identity AND model.
+        if (
+            _normalize_provider_identity(prior_provider)
+            == _normalize_provider_identity(active_provider)
+            and prior_model == active_model
+        ):
+            return  # Exact match -- silent, zero behavior change.
+    else:
+        # Feature-detection fallback for pre-existing sessions that predate
+        # the "provider" metadata field: compare model only.
+        if prior_model == active_model:
+            return  # Silent -- nothing more to check without a prior provider.
+
+    prior_label = f"{prior_provider or 'unknown'}/{prior_model or 'unknown'}"
+    active_label = f"{active_provider}/{active_model}"
+
+    console.print(
+        f"[yellow]\u26a0 Provider/model mismatch:[/yellow] session was last "
+        f"written by {prior_label} \u2014 now resuming with {active_label}\n"
+        "[dim]  Cross-provider replay can fail on provider-specific content "
+        "(e.g. thinking blocks).[/dim]"
+    )
+
+    if sys.stdin.isatty():
+        # click.confirm() performs a synchronous, canonical-mode blocking
+        # stdin read (input()) with no executor offload. Calling it directly
+        # here would block the ENTIRE asyncio event loop thread until Enter
+        # is pressed. Offload to a worker thread, mirroring the existing
+        # pattern in main.py's KeyboardInterrupt handler and
+        # approval_provider.py's _get_user_input().
+        if not await asyncio.to_thread(
+            click.confirm,
+            "Continue resuming with the new provider?",
+            default=False,
+        ):
+            console.print("[dim]Resume cancelled.[/dim]")
+            # Never leave a half-initialized session behind: Steps 1-7.5 have
+            # already created and partially wired up `session` by this point.
+            try:
+                await session.cleanup()
+            except Exception:
+                logger.debug(
+                    "Session cleanup after declined resume failed", exc_info=True
+                )
+            raise click.Abort()
+        _record_provider_mismatch(session_id, prior_label, active_label)
+    else:
+        # Non-interactive (CI, piped stdin, shadow environments): warn-only.
+        # Scripted flows must not hang waiting for input that can't arrive.
+        _record_provider_mismatch(session_id, prior_label, active_label)
+
+
+def _record_provider_mismatch(session_id: str, prior: str, active: str) -> None:
+    """Best-effort audit trail for an accepted (or warned-through) mismatch.
+
+    Mirrors _record_bundle_override() in commands/session.py: appends a
+    timestamped entry to a metadata list rather than overwriting anything.
+    Failures here are swallowed -- this is a diagnostics nicety, never a
+    condition that should fail the resume itself.
+
+    Args:
+        session_id: The session whose metadata should record the mismatch.
+        prior: Display label for the provider/model that last wrote the
+            session (e.g. "provider-anthropic/claude-x").
+        active: Display label for the provider/model now resuming it.
+    """
+    try:
+        store = SessionStore()
+        metadata = store.get_metadata(session_id)
+        mismatches = list(metadata.get("provider_mismatches", []))
+        mismatches.append(
+            {
+                "timestamp": datetime.now(UTC).isoformat(timespec="milliseconds"),
+                "previous": prior,
+                "resumed_with": active,
+            }
+        )
+        store.update_metadata(session_id, {"provider_mismatches": mismatches})
+    except Exception:
+        logger.debug(
+            "Could not record provider-mismatch audit trail for session %s",
+            session_id,
+            exc_info=True,
+        )
 
 
 _CLEANUP_EVENTS: tuple[str, ...] = (

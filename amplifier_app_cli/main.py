@@ -2715,6 +2715,17 @@ async def interactive_chat(
                 )
         return "unknown"
 
+    # Helper to extract the active provider identity from config.
+    #
+    # Uses get_effective_config_summary() -- the same function the resume-time
+    # mismatch check in session_runner.py uses to compute the ACTIVE provider --
+    # so the value written here and the value compared at resume are always
+    # derived the same way. Returns the provider module id (e.g.
+    # "provider-anthropic"); session_runner._normalize_provider_identity()
+    # handles comparing this against older/bare-name forms.
+    def _extract_provider_identity() -> str:
+        return get_effective_config_summary(config, bundle_name).provider_module
+
     # Helper to save session after each turn
     async def _save_session():
         context = session.coordinator.get("context")
@@ -2731,6 +2742,7 @@ async def interactive_chat(
                 ),
                 "bundle": bundle_name,
                 "model": _extract_model_name(),
+                "provider": _extract_provider_identity(),
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
                 # Store working_dir for session sync between CLI and web
                 "working_dir": str(Path.cwd().resolve()),
@@ -3329,6 +3341,12 @@ async def execute_single(
                 ),
                 "bundle": bundle_name,
                 "model": model_name,
+                # Same source (get_effective_config_summary) as the resume-time
+                # mismatch check in session_runner.py -- see _extract_provider_identity()
+                # in interactive_chat() above for the parallel single-shot-vs-chat note.
+                "provider": get_effective_config_summary(
+                    config, bundle_name
+                ).provider_module,
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
                 # Store working_dir for session sync between CLI and web
                 "working_dir": str(Path.cwd().resolve()),
