@@ -52,9 +52,9 @@ def format_task_pane_text(
     ]
     for todo in todos[:todo_limit]:
         marker, style = {
-            "completed": ("[x]", "class:tasks.completed"),
-            "in_progress": ("[*]", "class:tasks.running"),
-        }.get(todo.status, ("[ ]", "class:tasks.muted"))
+            "completed": ("✔", "class:tasks.completed"),
+            "in_progress": ("■", "class:tasks.running"),
+        }.get(todo.status, ("□", "class:tasks.muted"))
         text = _summary(todo.display_text, min(84, max_columns - 6))
         fragments.append((style, f"  {marker} {text}\n"))
     if show_todo_more:
@@ -69,7 +69,7 @@ def format_task_pane_text(
     root_status = "working" if is_running else "idle"
     root_id = session_id[:8] if session_id else "new"
     root_style = "class:tasks.running" if is_running else "class:tasks.muted"
-    root = _summary(f"{root_id} current session [{root_status}]", max_columns - 2)
+    root = _summary(f"{root_id} current session · {root_status}", max_columns - 2)
     fragments.append((root_style, f"  {root}\n"))
 
     visible_rows = _visible_rows(rows, row_limit)
@@ -83,7 +83,8 @@ def format_task_pane_text(
             TaskStatus.INCOMPLETE: "class:tasks.muted",
         }[node.status]
         label = _summary(
-            f"{row.prefix}{node.agent} {node.session_id[:8]} [{node.status.value}]",
+            f"{_tree_prefix(row.prefix)}● {node.agent} {node.session_id[:8]}"
+            f" · {node.status.value}",
             min(92, max_columns - 2),
         )
         fragments.append((status_style, f"  {label}\n"))
@@ -137,6 +138,11 @@ def _visible_rows(rows: tuple[TaskTreeRow, ...], limit: int) -> tuple[TaskTreeRo
         if len(selected) >= limit:
             break
     return tuple(row for row in rows if row.node.session_id in selected)
+
+
+def _tree_prefix(prefix: str) -> str:
+    """Map the tracker's ASCII tree prefixes onto the spec glyphs (├─/└─/│)."""
+    return prefix.replace("|  ", "│  ").replace("|- ", "├─ ").replace("`- ", "└─ ")
 
 
 def _summary(text: str, max_cells: int) -> str:

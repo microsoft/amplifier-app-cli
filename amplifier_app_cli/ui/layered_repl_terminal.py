@@ -12,9 +12,18 @@ from typing import Protocol
 from prompt_toolkit.application import in_terminal
 from prompt_toolkit.application.current import set_app
 
+from .keyboard_protocol import FOCUS_IN_KEY
+from .keyboard_protocol import FOCUS_OUT_KEY
+from .keyboard_protocol import keyboard_enhancement_disable_sequence
+from .keyboard_protocol import keyboard_enhancement_enable_sequence
 from .repl import terminal_notification_sequence
 from .repl import terminal_tab_color_sequence
 from .repl import terminal_title_sequence
+from .terminal_probe import TerminalCapabilities
+from .terminal_probe import capability_hint_overrides
+from .terminal_probe import osc9_notification_sequence
+from .terminal_probe import osc9_notifications_supported
+from .terminal_probe import probe_terminal
 
 if TYPE_CHECKING:
     from prompt_toolkit.application import Application
@@ -28,13 +37,25 @@ if TYPE_CHECKING:
         _background_shell_task: asyncio.Task[None] | None
         _background_terminal_active: bool
         _backgrounded: bool
+        _focus_bindings_installed: bool
+        _keyboard_enhancements_active: bool
         _notices: TransientNoticeState
         _owner_loop: asyncio.AbstractEventLoop | None
         _pending_terminal_sequences: list[str]
         _session_id: str | None
+        _terminal_capabilities: TerminalCapabilities | None
         _terminal_file: Any
+        _terminal_focused: bool
 
         def _emit_terminal_sequence(self, sequence: str) -> None: ...
+
+        def _install_focus_bindings(self, application: Any) -> None: ...
+
+        def _keyboard_enhancement_pop_sequence(self) -> str: ...
+
+        def _set_terminal_focused(self, focused: bool) -> None: ...
+
+        def _sync_keyboard_enhancements(self, application: Any) -> bool: ...
 
         async def _run_background_shell(self) -> None: ...
 
@@ -44,9 +65,64 @@ if TYPE_CHECKING:
 class LayeredReplTerminalMixin:
     """Emit terminal metadata and temporarily suspend into a shell."""
 
-    def capability_hint_overrides(self) -> dict[str, str] | None:
-        """No per-capability keybinding-label catalog exists at this revision."""
-        return None
+    # Class-level defaults; flipped per instance while the application owns
+    # the terminal with keyboard enhancements pushed.
+    _keyboard_enhancements_active = False
+    # One-shot startup probe result; None until ``probe_terminal_capabilities``
+    # runs (embedders and unit tests keep the historical blind push).
+    _terminal_capabilities: TerminalCapabilities | None = None
+    # Focus tracking (mode 1004) state; assumed focused until a report says
+    # otherwise, so notifications never fire without a probed terminal.
+    _terminal_focused = True
+    _focus_bindings_installed = False
+
+    def probe_terminal_capabilities(
+        self: _LayeredReplTerminalOwner,
+    ) -> TerminalCapabilities:
+        """Probe once at startup, before the application reads input.
+
+        Call from the owner right before ``application.run_async`` takes over
+        the terminal: the probe consumes its replies from stdin, which is only
+        safe while nothing else is reading. Also installs the focus-report
+        key handlers, since a probed terminal gets mode 1004 pushed.
+        """
+        capabilities = self._terminal_capabilities
+        if capabilities is None:
+            capabilities = probe_terminal()
+            self._terminal_capabilities = capabilities
+            self._install_focus_bindings(self.application)
+        return capabilities
+
+    def capability_hint_overrides(
+        self: _LayeredReplTerminalOwner,
+    ) -> dict[str, str] | None:
+        """Footer/keymap seam: per-action hint labels for this terminal."""
+        return capability_hint_overrides(self._terminal_capabilities)
+
+    def _install_focus_bindings(
+        self: _LayeredReplTerminalOwner, application: Any
+    ) -> None:
+        """Flip the focused flag on focus reports without any key dispatch."""
+        if self._focus_bindings_installed:
+            return
+        bindings = getattr(application, "key_bindings", None)
+        add = getattr(bindings, "add", None)
+        if add is None:
+            return
+        self._focus_bindings_installed = True
+        owner = self
+
+        def focus_in(event: Any) -> None:
+            owner._set_terminal_focused(True)
+
+        def focus_out(event: Any) -> None:
+            owner._set_terminal_focused(False)
+
+        add(FOCUS_IN_KEY, eager=True)(focus_in)
+        add(FOCUS_OUT_KEY, eager=True)(focus_out)
+
+    def _set_terminal_focused(self: _LayeredReplTerminalOwner, focused: bool) -> None:
+        self._terminal_focused = focused
 
     def emit_terminal_title(self: _LayeredReplTerminalOwner, title: str) -> None:
         self._emit_terminal_sequence(terminal_title_sequence(title))
@@ -105,6 +181,13 @@ class LayeredReplTerminalMixin:
         try:
             with set_app(self.application):
                 async with in_terminal(render_cli_done=False):
+                    if self._keyboard_enhancements_active:
+                        # Hand the shell a legacy keyboard; the next render
+                        # after resume pushes the enhancements again.
+                        self._terminal_file.write(
+                            self._keyboard_enhancement_pop_sequence()
+                        )
+                        self._keyboard_enhancements_active = False
                     self._terminal_file.write(
                         "\nAmplifier is running in the background. "
                         "Type 'exit' to return to the session.\n"
@@ -133,12 +216,19 @@ class LayeredReplTerminalMixin:
         self.commit_plan_state(
             "interrupted" if summary.strip() == "interrupted" else "incomplete"
         )
-        if not self._backgrounded:
+        if self._backgrounded:
+            self._emit_terminal_sequence(
+                terminal_notification_sequence("Amplifier turn complete", summary)
+            )
+            self._backgrounded = False
+            return
+        # Desktop notification only when the turn finished while the terminal
+        # window was unfocused (mode 1004 report) on an allowlisted terminal.
+        if self._terminal_focused or not osc9_notifications_supported():
             return
         self._emit_terminal_sequence(
-            terminal_notification_sequence("Amplifier turn complete", summary)
+            osc9_notification_sequence(f"Amplifier — {summary}")
         )
-        self._backgrounded = False
 
     def notify_turn_failed(self: _LayeredReplTerminalOwner) -> None:
         """Persist a failed plan snapshot before transient turn state clears."""
@@ -159,13 +249,53 @@ class LayeredReplTerminalMixin:
     def _flush_terminal_sequences(
         self: _LayeredReplTerminalOwner, application: Any
     ) -> None:
-        if not self._pending_terminal_sequences:
-            return
-        sequences = tuple(self._pending_terminal_sequences)
-        self._pending_terminal_sequences.clear()
-        for sequence in sequences:
-            application.output.write_raw(sequence)
-        application.output.flush()
+        wrote = self._sync_keyboard_enhancements(application)
+        if self._pending_terminal_sequences:
+            sequences = tuple(self._pending_terminal_sequences)
+            self._pending_terminal_sequences.clear()
+            for sequence in sequences:
+                application.output.write_raw(sequence)
+            wrote = True
+        if wrote:
+            application.output.flush()
+
+    def _sync_keyboard_enhancements(
+        self: _LayeredReplTerminalOwner, application: Any
+    ) -> bool:
+        """Push keyboard enhancements while the application owns the terminal.
+
+        Runs on every render (``after_render``): the first render enables
+        kitty/modifyOtherKeys reporting so real shift+enter arrives (plus
+        focus tracking on probed terminals; the kitty push is gated on the
+        startup probe), and the final done render pops exactly what was
+        pushed so the shell gets a legacy keyboard back. Unsupported
+        terminals ignore every sequence involved.
+        """
+        if self._background_terminal_active:
+            return False
+        if application.is_done:
+            if not self._keyboard_enhancements_active:
+                return False
+            application.output.write_raw(self._keyboard_enhancement_pop_sequence())
+            self._keyboard_enhancements_active = False
+            return True
+        if self._keyboard_enhancements_active:
+            return False
+        capabilities = self._terminal_capabilities
+        application.output.write_raw(
+            keyboard_enhancement_enable_sequence(
+                None if capabilities is None else capabilities.kitty_keyboard
+            )
+        )
+        self._keyboard_enhancements_active = True
+        return True
+
+    def _keyboard_enhancement_pop_sequence(self: _LayeredReplTerminalOwner) -> str:
+        """The disable pair matching what this instance pushes on render."""
+        capabilities = self._terminal_capabilities
+        return keyboard_enhancement_disable_sequence(
+            None if capabilities is None else capabilities.kitty_keyboard
+        )
 
 
 __all__ = ["LayeredReplTerminalMixin"]

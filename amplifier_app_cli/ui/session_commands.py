@@ -18,10 +18,14 @@ from .mcp_commands import McpCommandService
 from .outcome_ledger import OutcomeLedger
 from .runtime_status import RuntimeStatusTracker
 from .task_status import TaskStatusTracker
-from .transcript_blocks import CodeExcerptBlock
+from .transcript_blocks import AnswerBlock
+from .transcript_blocks import DiffBlock
 from .transcript_blocks import TranscriptBlock
 
 _MAX_COMMAND_OUTPUT = 12_000
+_MAX_DIFF_OUTPUT = 262_144
+_MAX_DIFF_FILES = 20
+_MAX_DIFF_FILE_LINES = 400
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,9 +248,8 @@ class SessionCommandService:
         options = frozenset(args.split())
         if not options <= {"staged", "full"}:
             return SessionCommandResult("Usage: /diff [staged] [full]")
-        full = "full" in options
         command = ["git", "diff", "--no-color"]
-        command.append("--unified=2" if full else "--stat")
+        command.append("--unified=3" if "full" in options else "--unified=2")
         if "staged" in options:
             command.insert(2, "--cached")
         process: asyncio.subprocess.Process | None = None
@@ -261,7 +264,7 @@ class SessionCommandService:
             assert process.stderr is not None
             stdout, stderr, _ = await asyncio.wait_for(
                 asyncio.gather(
-                    _read_stream_bounded(process.stdout, _MAX_COMMAND_OUTPUT),
+                    _read_stream_bounded(process.stdout, _MAX_DIFF_OUTPUT),
                     _read_stream_bounded(process.stderr, _MAX_COMMAND_OUTPUT),
                     process.wait(),
                 ),
@@ -280,22 +283,18 @@ class SessionCommandService:
             return SessionCommandResult(text or "Could not read git diff.")
         if not text:
             return SessionCommandResult("Working tree has no diff.")
-        if not full:
+        blocks, dropped_files = parse_diff_blocks(text)
+        if not blocks:
             return SessionCommandResult(text)
-        changed_lines = frozenset(
-            index
-            for index, line in enumerate(text.splitlines(), start=1)
-            if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
-        )
-        return SessionCommandResult(
-            blocks=(
-                CodeExcerptBlock(
-                    text,
-                    language="diff",
-                    changed_lines=changed_lines,
+        result_blocks: tuple[TranscriptBlock, ...] = blocks
+        if dropped_files:
+            result_blocks += (
+                AnswerBlock(
+                    f"…and {dropped_files} more changed file(s) not shown "
+                    f"(/diff shows at most {_MAX_DIFF_FILES} files)"
                 ),
             )
-        )
+        return SessionCommandResult(blocks=result_blocks)
 
     def _review_result(self, args: str) -> SessionCommandResult:
         scope = args or "the current working tree"
@@ -327,6 +326,98 @@ class SessionCommandService:
         return self._runtime.telemetry_snapshot().session.cache_percent
 
 
+def parse_diff_blocks(diff_text: str) -> tuple[tuple[DiffBlock, ...], int]:
+    """Parse ``git diff`` output into bounded per-file ``DiffBlock``s.
+
+    Returns the parsed blocks plus how many changed files were dropped by the
+    ``_MAX_DIFF_FILES`` cap. Per-file bodies are capped at
+    ``_MAX_DIFF_FILE_LINES`` lines with an inline accounting note.
+    """
+    chunks: list[list[str]] = []
+    current: list[str] | None = None
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            current = [line]
+            chunks.append(current)
+        elif current is not None:
+            current.append(line)
+    blocks = tuple(
+        block
+        for chunk in chunks[:_MAX_DIFF_FILES]
+        if (block := _diff_block_from_chunk(chunk)) is not None
+    )
+    dropped = max(0, len(chunks) - _MAX_DIFF_FILES)
+    return blocks, dropped
+
+
+def _diff_block_from_chunk(lines: list[str]) -> DiffBlock | None:
+    """Build one ``DiffBlock`` from a single ``diff --git`` file chunk."""
+    old_path: str | None = None
+    new_path: str | None = None
+    rename_from: str | None = None
+    rename_to: str | None = None
+    binary = False
+    body_start = len(lines)
+    for index, line in enumerate(lines):
+        if line.startswith("@@"):
+            body_start = index
+            break
+        if line.startswith("--- "):
+            old_path = _strip_diff_path(line[4:])
+        elif line.startswith("+++ "):
+            new_path = _strip_diff_path(line[4:])
+        elif line.startswith("rename from "):
+            rename_from = line.removeprefix("rename from ").strip()
+        elif line.startswith("rename to "):
+            rename_to = line.removeprefix("rename to ").strip()
+        elif line.startswith("Binary files "):
+            binary = True
+    move_path: str | None = None
+    if rename_from and rename_to:
+        path, move_path = rename_from, rename_to
+    else:
+        path = new_path or old_path or _path_from_git_header(lines[0])
+    if path is None:
+        return None
+    body = lines[body_start:]
+    added = sum(
+        1 for line in body if line.startswith("+") and not line.startswith("+++")
+    )
+    removed = sum(
+        1 for line in body if line.startswith("-") and not line.startswith("---")
+    )
+    if binary and not body:
+        body = ["(binary file · no text diff)"]
+    if not body:
+        body = ["(no content changes)"]
+    if len(body) > _MAX_DIFF_FILE_LINES:
+        kept = body[: _MAX_DIFF_FILE_LINES - 1]
+        body = [*kept, f"… +{len(body) - len(kept)} more diff lines not shown"]
+    return DiffBlock(
+        path=path,
+        diff_text="\n".join(body),
+        added=added,
+        removed=removed,
+        move_path=move_path,
+    )
+
+
+def _strip_diff_path(raw: str) -> str | None:
+    """Normalize a ``---``/``+++`` header path; ``/dev/null`` becomes None."""
+    path = raw.split("\t", 1)[0].strip().strip('"')
+    if not path or path == "/dev/null":
+        return None
+    if path.startswith(("a/", "b/")):
+        path = path[2:]
+    return path or None
+
+
+def _path_from_git_header(header: str) -> str | None:
+    """Recover the file path from a ``diff --git a/x b/y`` header line."""
+    _, separator, path = header.partition(" b/")
+    return path.strip().strip('"') or None if separator else None
+
+
 async def _read_stream_bounded(
     stream: asyncio.StreamReader,
     limit: int,
@@ -340,4 +431,4 @@ async def _read_stream_bounded(
     return bytes(retained)
 
 
-__all__ = ["SessionCommandResult", "SessionCommandService"]
+__all__ = ["SessionCommandResult", "SessionCommandService", "parse_diff_blocks"]

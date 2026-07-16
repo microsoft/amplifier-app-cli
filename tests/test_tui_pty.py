@@ -202,7 +202,7 @@ def test_interactive_chat_production_path_acceptance(tmp_path) -> None:
                             "height": 36,
                             "approval_row": approval_rows[-1],
                             "prompt_row": next(
-                                (i for i, row in enumerate(rows) if row.startswith("❯")),
+                                (i for i, row in enumerate(rows) if row.startswith("▌")),
                                 -1,
                             ),
                             "footer_row": next(
@@ -338,14 +338,14 @@ def test_interactive_chat_production_path_acceptance(tmp_path) -> None:
     output = bytearray()
     deadline = time.monotonic() + 20
     try:
-        _read_until(master, output, b"shift-tab mode", deadline)
+        _read_until(master, output, b"shift+tab mode", deadline)
         os.write(
             master,
             b"\x1b[200~" + raw_paste.encode("utf-8") + b"\x1b[201~",
         )
         _read_until(master, output, b"[Pasted #1", deadline)
         os.write(master, b"\r")
-        _read_until(master, output, b"working", deadline)
+        _read_until(master, output, b"esc to interrupt", deadline)
         _read_until(master, output, b"Allow load_skill?", deadline)
         os.write(master, b"\r")
         _read_until(master, output, b"amplifier-expert", deadline)
@@ -476,7 +476,7 @@ def test_stable_viewport_and_input_remain_live_during_output(tmp_path) -> None:
     output = bytearray()
     deadline = time.monotonic() + 15
     try:
-        _read_until(master, output, b"shift-tab mode", deadline)
+        _read_until(master, output, b"shift+tab mode", deadline)
         time.sleep(0.05)
         os.write(master, b"typed while streaming\r")
         _read_until(master, output, b"SUBMITTED:typed while streaming", deadline)
@@ -609,7 +609,7 @@ def test_live_transcript_scroll_keeps_composer_and_footer_pinned(tmp_path) -> No
             if (
                 len(rows) >= 30
                 and "ROW-159" in visible
-                and rows[-2].startswith("❯")
+                and rows[-2].startswith("▌")
                 and "ctrl-t" in rows[-1]
             ):
                 break
@@ -657,7 +657,7 @@ def test_live_transcript_scroll_keeps_composer_and_footer_pinned(tmp_path) -> No
         else:
             raise AssertionError(f"draft was not rendered:\n{tail}")
         assert "ROW-159" in tail
-        assert tail_rows[-2].startswith("❯")
+        assert tail_rows[-2].startswith("▌")
         assert "ctrl-t" in tail_rows[-1]
         tail_chrome = tail_rows[-2:]
 
@@ -729,12 +729,12 @@ def test_live_transcript_scroll_keeps_composer_and_footer_pinned(tmp_path) -> No
             rows = resized.splitlines()
             if (
                 len(rows) >= 40
-                and rows[-2].startswith("❯")
+                and rows[-2].startswith("▌")
                 and "DRAFT_SENTINEL" in rows[-2]
             ):
                 break
             time.sleep(0.1)
-        assert rows[-2].startswith("❯")
+        assert rows[-2].startswith("▌")
         assert "DRAFT_SENTINEL" in rows[-2]
         assert "ctrl-t" in rows[-1]
         assert "ROW-159" not in resized
@@ -884,7 +884,7 @@ def test_inline_approval_owns_bottom_rows_and_preserves_hidden_draft(tmp_path) -
             time.sleep(0.1)
         assert "Allow write?" in rows[-2]
         assert "enter confirm" in rows[-1]
-        assert not any(row.startswith("❯") for row in rows[-2:])
+        assert not any(row.startswith(("▌", "❯")) for row in rows[-2:])
 
         subprocess.run(
             ["tmux", "send-keys", "-t", session_name, "x", "Enter"],

@@ -32,7 +32,7 @@ from amplifier_app_cli.ui.layered_repl import LayeredReplBindings
 from amplifier_app_cli.ui.layered_repl import LayeredReplCompletion
 from amplifier_app_cli.ui.layered_repl import LayeredReplConfig
 from amplifier_app_cli.ui.layered_repl import LayeredReplServices
-from amplifier_app_cli.ui.layered_repl_layout import _build_key_bindings
+from amplifier_app_cli.ui.layered_repl_keys import build_layered_key_bindings
 from amplifier_app_cli.ui.evidence_links import EvidenceLinkModel
 from amplifier_app_cli.ui.stream_status import StreamStatusTracker
 from amplifier_app_cli.ui.stream_status import RuntimeStatusTracker
@@ -298,7 +298,7 @@ def test_exit_flush_tolerates_broken_application_output(tmp_path):
 
 def test_transcript_page_keys_are_bound_to_the_internal_viewport(tmp_path):
     app = _make_app(tmp_path)
-    bindings = _build_key_bindings(app)
+    bindings = build_layered_key_bindings(app)
     explicit_keys = {binding.keys for binding in bindings.bindings}
 
     assert (Keys.PageUp,) in explicit_keys
@@ -311,9 +311,10 @@ def test_layered_layout_pins_transcript_above_transient_surfaces_and_input(tmp_p
     root = app.application.layout.container
     children = root.children
 
-    assert len(children) == 14
+    assert len(children) == 16
     assert children[0] is app.transcript_container
-    assert children[1:12] == [
+    assert children[1] is app.separator_window
+    assert children[2:13] == [
         app.plan_container,
         app.steering_container,
         app.preview_container,
@@ -324,13 +325,15 @@ def test_layered_layout_pins_transcript_above_transient_surfaces_and_input(tmp_p
         app.palette_container,
         app.rewind_container,
         app.evidence_container,
-        app.approval_container,
+        app.queued_container,
     ]
-    assert children[12] is app.composer_container
-    assert app.input_row.children[0] is app.prompt_window
-    assert app.input_row.children[1] is app.input_window
-    assert app.input_row.children[2].style == "class:input"
-    assert children[13].style == "class:status"
+    assert children[13] is app.approval_container
+    assert children[14] is app.composer_container
+    assert app.input_row.children[0] is app.composer_edge_window
+    assert app.input_row.children[1] is app.prompt_window
+    assert app.input_row.children[2] is app.input_window
+    assert app.input_row.children[3].style == "class:input"
+    assert children[15].style == "class:status"
 
 
 @pytest.mark.asyncio
@@ -355,10 +358,11 @@ async def test_idle_transient_layout_contains_only_composer_and_footer(tmp_path)
         "".join(screen.data_buffer[row][column].char for column in range(120)).rstrip()
         for row in range(30)
     ]
-    assert rows[-2] == "❯"
+    assert rows[-3] == "─" * 120
+    assert rows[-2].startswith("▌❯ ")
     assert screen.data_buffer[28][119].char == " "
     assert "manual mode on · foundation · 1234 · $0.00" in rows[-1]
-    assert all(not row for row in rows[:-2])
+    assert all(not row for row in rows[:-3])
     assert app.application.full_screen is True
 
 
@@ -387,7 +391,7 @@ async def test_prelaunch_transcript_is_inside_the_scrollable_viewport(tmp_path):
 
     assert app._transcript_view.plain_text().startswith("first answer line")
     assert any("first answer line" in row for row in rows[:-2])
-    assert rows[-2] == "❯"
+    assert rows[-2].startswith("▌❯ ")
     assert "foundation" in rows[-1]
 
 
@@ -840,7 +844,7 @@ def test_runtime_tool_lifecycle_renders_running_and_collapsed_done_blocks(tmp_pa
     transcript = app._transcript_view.plain_text()
     assert "Ran 1 shell command" in transcript
     assert "uv run pytest -q" not in transcript
-    assert "ctrl-o expand" not in transcript
+    assert "ctrl-o expand" in transcript
     assert len(transcript.splitlines()) == 1
 
 
@@ -985,11 +989,11 @@ def test_command_palette_is_inline_bounded_and_source_tagged(tmp_path):
     app.input_buffer.text = "/"
 
     assert app._palette_visible() is True
-    assert app._palette_height().preferred == 8
+    assert app._palette_height().preferred == 9
     rendered = "".join(text for _, text in app._palette_text())
-    assert "During" in rendered
+    assert "DURING" in rendered
     assert "[built-in]" in rendered
-    assert len(rendered.splitlines()) == 8
+    assert len(rendered.splitlines()) == 9
 
 
 def test_command_palette_moves_accepts_and_dismisses(tmp_path):
@@ -1561,7 +1565,7 @@ def test_active_mode_prompt_uses_its_rendered_width(tmp_path):
 
     prompt_text = "".join(text for _, text in app._prompt_text())
 
-    assert prompt_text == "❯ [plan] "
+    assert prompt_text == "[plan] ❯ "
     assert app._prompt_width().preferred == len(prompt_text)
 
 
@@ -1604,8 +1608,8 @@ def test_wide_active_mode_keeps_prompt_marker_visible(tmp_path):
 
     prompt_text = "".join(text for _, text in app._prompt_text())
 
-    assert prompt_text.startswith("❯ [")
-    assert prompt_text.endswith("] ")
+    assert prompt_text.startswith("[")
+    assert prompt_text.endswith("❯ ")
     assert app._prompt_width().preferred <= 32
 
 

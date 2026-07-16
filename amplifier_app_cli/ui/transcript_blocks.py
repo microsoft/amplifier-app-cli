@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -16,6 +17,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from ..console import Markdown
+from .layered_repl_style import TOKENS
 from .runtime_values import ToolActivitySnapshot
 from .runtime_values import ToolActivityStatus
 from .runtime_values import UsageTotalsSnapshot
@@ -25,17 +27,23 @@ _MAX_TEXT_CHARS = 32_768
 _MAX_COMMAND_CHARS = 8_192
 _MAX_DEBUG_LINES = 2_000
 _MAX_PLAN_ITEMS = 100
+_MAX_DIFF_LINES = 400
+_MAX_PATH_CHARS = 500
+_TOOL_OUTPUT_HEAD_LINES = 8
+_TOOL_OUTPUT_TAIL_LINES = 4
 
-_FG = "#c9d1e0"
-_FG_BRIGHT = "#eef2f8"
-_DIM = "#6b7487"
-_DIMMER = "#4a5163"
-_GREEN = "#7ec699"
-_ORANGE = "#e0a458"
-_RED = "#e06c75"
-_TEAL = "#6fc3c3"
-_BLUE = "#7aa2d6"
-_RULE = "#333b4d"
+_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+_FG = TOKENS["fg"]
+_FG_BRIGHT = TOKENS["bright"]
+_DIM = TOKENS["dim"]
+_DIMMER = TOKENS["dimmer"]
+_GREEN = TOKENS["green"]
+_ORANGE = TOKENS["orange"]
+_RED = TOKENS["red"]
+_TEAL = TOKENS["teal"]
+_BLUE = TOKENS["blue"]
+_RULE = TOKENS["rule"]
 
 _MODE_STYLES = {
     "chat": _DIM,
@@ -110,18 +118,28 @@ class Telemetry:
                 raise ValueError("cost must be a finite non-negative decimal")
             object.__setattr__(self, "cost", cost)
 
-    def suffix(self) -> str:
+    def _parts(self, *, token_arrow: bool) -> list[str]:
         parts: list[str] = []
         if self.elapsed_seconds is not None:
             parts.append(_format_elapsed(self.elapsed_seconds))
         if self.tokens is not None:
-            token_part = f"↓ {_format_tokens(self.tokens)} tok"
+            token_part = f"{_format_tokens(self.tokens)} tok"
+            if token_arrow:
+                token_part = f"↓ {token_part}"
             if self.cached_percent is not None:
                 token_part += f", {self.cached_percent}% cached"
             parts.append(token_part)
         if self.cost is not None:
             parts.append(f"${self.cost:.2f}")
+        return parts
+
+    def suffix(self) -> str:
+        parts = self._parts(token_arrow=True)
         return f"({' · '.join(parts)})" if parts else ""
+
+    def label(self) -> str:
+        """Bare turn-rule label: `<secs>s · <tok>k tok, <cache>% cached · $<cost>`."""
+        return " · ".join(self._parts(token_arrow=False))
 
 
 class ToolStatus(str, Enum):
@@ -226,6 +244,34 @@ class CodeExcerptBlock:
 
 
 @dataclass(frozen=True, slots=True)
+class DiffBlock:
+    """One file's unified diff hunks with add/remove counts.
+
+    ``diff_text`` carries hunk lines only (``@@`` headers, ``+``/``-``/context
+    lines); file headers stay in the ``path``/``move_path`` fields. Lines that
+    are not diff syntax (parser notes, ``\\ No newline at end of file``) render
+    as dim annotations without gutter numbers.
+    """
+
+    path: str
+    diff_text: str
+    added: int
+    removed: int
+    move_path: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "path", _single_line(self.path, limit=_MAX_PATH_CHARS))
+        lines = _safe_text(self.diff_text).splitlines()
+        object.__setattr__(self, "diff_text", "\n".join(lines[:_MAX_DIFF_LINES]))
+        if self.added < 0 or self.removed < 0:
+            raise ValueError("added and removed counts must be non-negative")
+        if self.move_path is not None:
+            object.__setattr__(
+                self, "move_path", _single_line(self.move_path, limit=_MAX_PATH_CHARS)
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class PlanItem:
     text: str
     status: PlanItemStatus = PlanItemStatus.PENDING
@@ -296,6 +342,7 @@ class DebugBlock:
 class TurnTerminatorBlock:
     telemetry: Telemetry
     outcome: str = ""
+    shipped: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "outcome", _single_line(self.outcome, limit=240))
@@ -309,6 +356,7 @@ TranscriptBlock: TypeAlias = (
     | ToolBlock
     | BlockedBlock
     | CodeExcerptBlock
+    | DiffBlock
     | PlanBlock
     | StatusBlock
     | RecapBlock
@@ -336,7 +384,7 @@ class TranscriptRenderer:
             if callable(self._render_profile)
             else self._render_profile
         )
-        hidden = (ToolBlock, CodeExcerptBlock, DebugBlock)
+        hidden = (ToolBlock, CodeExcerptBlock, DiffBlock, DebugBlock)
         if profile == "plan" and isinstance(block, hidden):
             return
         if profile == "divergent" and isinstance(block, (*hidden, PlanBlock)):
@@ -375,25 +423,46 @@ class TranscriptRenderer:
 
     def _render_tool(self, block: ToolBlock) -> None:
         if block.status == ToolStatus.BLOCKED:
-            self._render_blocked(BlockedBlock(block.summary, "blocked"))
+            self._render_blocked(
+                BlockedBlock(f"blocked · {block.summary}", "finding safer path")
+            )
             return
         summary_style = _RED if block.status == ToolStatus.FAILED else _DIM
         summary = Text("  ● ", style=summary_style)
         summary.append(block.summary, style=summary_style)
+        if block.output and not block.expanded:
+            summary.append(" · click or ctrl-o expand", style=_DIMMER)
         self.console.print(summary)
         if block.status == ToolStatus.RUNNING and block.command:
-            command = Text("    └ ", style=_DIMMER)
-            command.append(block.command, style=_DIM)
+            command = Text("  └ ", style=_DIMMER)
+            command.append(f"$ {block.command}", style=_DIM)
             self.console.print(command)
-        if not block.output:
-            return
         if block.expanded:
-            for line in block.output:
-                self.console.print(Text(f"      {line}", style=_DIMMER))
-        elif block.status != ToolStatus.COMPLETED:
+            self._render_tool_output(block.output)
+
+    def _render_tool_output(self, output: tuple[str, ...]) -> None:
+        """Print an expanded tool body, eliding the middle of long output.
+
+        Head/tail elision (after codex ``output_lines``): the first
+        ``_TOOL_OUTPUT_HEAD_LINES`` and last ``_TOOL_OUTPUT_TAIL_LINES`` lines
+        stay, with an accounting line for the omitted middle — the same
+        omitted-line accounting DebugBlock reports.
+        """
+        omitted = len(output) - _TOOL_OUTPUT_HEAD_LINES - _TOOL_OUTPUT_TAIL_LINES
+        head = output[:_TOOL_OUTPUT_HEAD_LINES] if omitted > 0 else output
+        tail = output[len(output) - _TOOL_OUTPUT_TAIL_LINES :] if omitted > 0 else ()
+        for line in head:
+            self.console.print(Text(f"      {line}", style=_DIMMER))
+        if omitted > 0:
             self.console.print(
-                Text(f"    ({len(block.output)} lines · ctrl-o expand)", style=_DIMMER)
+                Text(
+                    f"      … +{omitted} lines · full via ctrl-o again "
+                    "or transcript export",
+                    style=_DIM,
+                )
             )
+        for line in tail:
+            self.console.print(Text(f"      {line}", style=_DIMMER))
 
     def _render_blocked(self, block: BlockedBlock) -> None:
         line = Text("  ⊘ ", style=_RED)
@@ -414,6 +483,47 @@ class TranscriptRenderer:
                 background_color="default",
             )
         )
+
+    def _render_diff(self, block: DiffBlock) -> None:
+        header = Text("· ", style=_DIM)
+        header.append(block.path, style=_FG)
+        if block.move_path:
+            header.append(" → ", style=_DIM)
+            header.append(block.move_path, style=_FG)
+        header.append(" (", style=_DIM)
+        header.append(f"+{block.added}", style=_GREEN)
+        header.append(" ", style=_DIM)
+        header.append(f"−{block.removed}", style=_RED)
+        header.append(")", style=_DIM)
+        self.console.print(header)
+        gutter_blank = f"  {'':>4} "
+        old_line = new_line = 0
+        in_hunk = False
+        for line in block.diff_text.splitlines():
+            hunk = _HUNK_HEADER.match(line)
+            if hunk is not None:
+                old_line, new_line = int(hunk.group(1)), int(hunk.group(2))
+                in_hunk = True
+                self.console.print(Text(f"{gutter_blank}{line}", style=_DIMMER))
+                continue
+            if not in_hunk or line.startswith("\\"):
+                self.console.print(Text(f"{gutter_blank}{line}", style=_DIMMER))
+                continue
+            if line.startswith("+"):
+                rendered = Text(f"  {new_line:>4} ", style=_DIMMER)
+                rendered.append(f"+{line[1:]}", style=_GREEN)
+                new_line += 1
+            elif line.startswith("-"):
+                rendered = Text(f"  {old_line:>4} ", style=_DIMMER)
+                rendered.append(f"−{line[1:]}", style=_RED)
+                old_line += 1
+            else:
+                content = line[1:] if line.startswith(" ") else line
+                rendered = Text(f"  {new_line:>4} ", style=_DIMMER)
+                rendered.append(f" {content}", style=_FG)
+                old_line += 1
+                new_line += 1
+            self.console.print(rendered)
 
     def _render_plan(self, block: PlanBlock) -> None:
         header = Text("· ", style=_ORANGE)
@@ -475,13 +585,18 @@ class TranscriptRenderer:
 
     def _render_turnterminator(self, block: TurnTerminatorBlock) -> None:
         title = " · ".join(
-            part for part in (block.telemetry.suffix(), block.outcome) if part
+            part for part in (block.telemetry.label(), block.outcome) if part
         )
+        label_style = _DIM if block.shipped else _DIMMER
         if cell_len(title) + 4 <= self.console.width:
-            self.console.print(Rule(title=title, align="right", style=_RULE))
+            self.console.print(
+                Rule(title=Text(title, style=label_style), align="right", style=_RULE)
+            )
             return
         self.console.print(Rule(style=_RULE))
-        self.console.print(Text(title, style=_DIM, justify="right", overflow="fold"))
+        self.console.print(
+            Text(title, style=label_style, justify="right", overflow="fold")
+        )
 
     @staticmethod
     def _append_telemetry(line: Text, telemetry: Telemetry | None) -> None:
@@ -539,6 +654,7 @@ __all__ = [
     "BlockedBlock",
     "CodeExcerptBlock",
     "DebugBlock",
+    "DiffBlock",
     "NarrationBlock",
     "PlanBlock",
     "PlanItem",

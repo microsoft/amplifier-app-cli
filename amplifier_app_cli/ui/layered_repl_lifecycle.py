@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from .inline_approval import InlineApprovalState
     from .layered_transcript import LayeredTranscriptView
     from .terminal_transcript import TerminalTranscript
+    from .transcript_reflow import TranscriptReflowController
     from .ui_events import UiEventDispatcher
 
     class _LayeredReplLifecycleOwner(Protocol):
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
         _terminal_file: Any
         _text_pastes: LosslessTextPasteState
         _transcript_flushed_on_exit: bool
+        _transcript_reflow: TranscriptReflowController
         _transcript_view: LayeredTranscriptView
         _typed_output: TranscriptOutput
         _ui_events: UiEventDispatcher
@@ -70,6 +72,8 @@ if TYPE_CHECKING:
 
         def exit(self) -> None: ...
 
+        def probe_terminal_capabilities(self) -> Any: ...
+
 
 class LayeredReplLifecycleMixin:
     """Run, stop, and capture output for the full-screen application."""
@@ -77,6 +81,7 @@ class LayeredReplLifecycleMixin:
     async def run_async(self: _LayeredReplLifecycleOwner) -> None:
         owner_loop = asyncio.get_running_loop()
         self._owner_loop = owner_loop
+        self.probe_terminal_capabilities()
         self._clipboard_detector.start()
         try:
             with create_app_session(
@@ -157,6 +162,7 @@ class LayeredReplLifecycleMixin:
     def exit(self: _LayeredReplLifecycleOwner) -> None:
         self.commit_plan_state("incomplete")
         self._stop_focused_transcript_follow()
+        self._transcript_reflow.close()
         self._clipboard_detector.request_stop()
         self._approval_state.close()
         if self._remove_task_listener is not None:

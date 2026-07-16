@@ -235,6 +235,37 @@ def test_a_paused_viewport_stays_anchored_to_its_block_after_reflow() -> None:
     assert pipeline.view.global_cursor_row == _rows_for(pipeline.view, "tool")[0]
 
 
+def test_a_paused_viewport_stays_anchored_mid_span_after_reflow() -> None:
+    """Regression: reflow_to_width used to reset ``target_row`` to the
+    *start* of the anchor span (``target_row = start_row``), discarding how
+    far into that span the paused viewport actually sat.
+
+    Untagged raw writes (no ``block``/``action``) merge into one long span
+    in ``ClickSpanRegistry`` (``_continues``), so a long run of plain
+    appended lines -- like the ``ROW-NNN`` markers used to drive resize --
+    all share a single span. Pausing partway through that run and then
+    reflowing used to jump the viewport all the way back to the first row
+    of the entire run instead of staying on the exact row the user paused
+    on. Raw spans replay verbatim (untouched by width), so the anchor row
+    must be preserved exactly here, not just approximately.
+    """
+    pipeline = _Pipeline(120)
+    pipeline.dispatcher.emit(UserBlock("header", mode="chat"))
+    header_rows = pipeline.view.history_line_count
+    for index in range(160):
+        pipeline.view.append_output(f"ROW-{index:03d}\n")
+    anchor_row = header_rows + 107  # deep inside the merged raw span
+
+    pipeline.view.scroll_to_row(anchor_row)
+    assert pipeline.view.following_tail is False
+    assert pipeline.view.global_cursor_row == anchor_row
+
+    assert pipeline.view.reflow_to_width(80)
+
+    assert pipeline.view.following_tail is False
+    assert pipeline.view.global_cursor_row == anchor_row
+
+
 # --- Bounded retention -----------------------------------------------------
 
 

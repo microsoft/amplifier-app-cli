@@ -34,6 +34,7 @@ class InteractiveInputHandler(Protocol):
         attachments: tuple[ImageAttachment, ...] = (),
         *,
         display_text: str | None = None,
+        queue: bool = False,
     ) -> bool: ...
 
 
@@ -182,6 +183,7 @@ class InteractiveReplRunner:
                 submission.text,
                 submission.attachments,
                 display_text=submission.display_text,
+                queue=submission.queue,
             )
             if not should_continue:
                 self._callbacks.request_exit()

@@ -21,7 +21,8 @@ class RecordingApprovalSystem:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("choice", "approved"), (("Allow once", True), ("Deny", False))
+    ("choice", "approved"),
+    (("Allow once", True), ("Allow always", True), ("Deny", False)),
 )
 async def test_core_approval_provider_uses_shared_inline_system(
     choice: str, approved: bool
@@ -44,7 +45,7 @@ async def test_core_approval_provider_uses_shared_inline_system(
     assert system.requests == [
         (
             "Allow shell: run git status?",
-            ["Allow once", "Deny"],
+            ["Allow once", "Allow always", "Deny"],
             42.0,
             "deny",
         )

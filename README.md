@@ -315,7 +315,11 @@ uv run pyright
 
 ```
 amplifier_app_cli/
-├── commands/          # CLI command implementations (provider, bundle, init, logs, setup)
+├── commands/          # CLI command implementations (provider, bundle, init, session, …)
+├── runtime/           # Session lifecycle: interactive host, turn execution,
+│                      # interrupts, persistence, transcript repair, spawn/resume
+├── ui/                # Interactive TUI: layered REPL surfaces, transcript blocks,
+│                      # footer, approval, palette, slash-command processing
 ├── data/
 │   └── context/       # Bundled context files
 ├── lib/               # Shared libraries
@@ -329,13 +333,14 @@ amplifier_app_cli/
 ├── session_store.py   # Session persistence (transcript, metadata, state)
 ├── session_spawner.py # Agent delegation (spawn and resume sub-sessions)
 ├── agent_config.py    # Agent configuration utilities
-└── main.py            # CLI entry point
-
-toolkit/               # Standalone scenario tool utilities (at repo root)
-├── utilities/         # Structural utilities (file ops, progress, validation)
-├── examples/          # Example tools (tutorial_analyzer)
-└── templates/         # Tool templates
+└── main.py            # CLI entry point (thin click group; delegates to runtime/)
 ```
+
+Interactive entry flow: `main.py` → `runtime/interactive_host.py` →
+`ui/layered_repl*.py`, with rendering in `ui/transcript_blocks.py` and
+`ui/footer.py`. See [Interactive TUI Architecture](docs/designs/interactive-tui-architecture.md)
+for diagrams, and the repo `justfile` (`just check`, `just check-full`,
+`just fmt`, `just regen-goldens`) for the standard verification tasks.
 
 **Note**: Core functionality provided by libraries:
 - `amplifier-foundation` - Bundle loading and composition (primary)
@@ -347,13 +352,14 @@ toolkit/               # Standalone scenario tool utilities (at repo root)
 - [Agent Delegation](docs/AGENT_DELEGATION_IMPLEMENTATION.md) - Sub-session spawning and resumption
 - [Context Loading](docs/CONTEXT_LOADING.md) - @mention system implementation
 - [Interactive Mode](docs/INTERACTIVE_MODE.md) - REPL and slash commands
+- [Interactive TUI Architecture](docs/designs/interactive-tui-architecture.md) - runtime/ vs ui/ split, input→turn→render flow
+- [TUI Presentation Spec](docs/designs/tui-v3-cohesive.md) - approved presentation source of truth (theme, glyphs, layout)
+- [main.py Decomposition Map](docs/MIGRATION-main-decomposition.md) - old monolith → current modules
 - [Architectural Decisions](docs/decisions/) - ADRs for major design choices
 
 **Authoritative Guides** (external, maintained in library repos):
 - **→ [Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md)** - Creating and managing bundles
 - **→ [User Onboarding](https://github.com/microsoft/amplifier/blob/main/docs/USER_ONBOARDING.md)** - Complete user guide and reference
-
-**Toolkit** (for building sophisticated tools):
 
 ## Contributing
 

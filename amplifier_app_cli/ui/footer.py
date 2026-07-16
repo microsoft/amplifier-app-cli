@@ -5,9 +5,12 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
+from functools import partial
 
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.utils import get_cwidth
+
+from .key_bindings_table import hint_label
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
 _CAPABILITY_ORDER = (
@@ -19,9 +22,7 @@ _CAPABILITY_ORDER = (
     "outside-project",
     "subagent",
 )
-_CAPABILITY_INDEX = {
-    capability: index for index, capability in enumerate(_CAPABILITY_ORDER)
-}
+_CAPABILITY_INDEX = {name: index for index, name in enumerate(_CAPABILITY_ORDER)}
 _COMPACT_CAPABILITIES = {
     "read": "r",
     "test": "t",
@@ -31,6 +32,8 @@ _COMPACT_CAPABILITIES = {
     "outside-project": "out",
     "subagent": "sub",
 }
+# At/above this width `mode <id>` survives by abbreviating the trust dial (spec 6).
+_MODE_PREFIX_MIN_WIDTH = 100
 
 
 def format_bottom_toolbar_text(
@@ -56,11 +59,8 @@ def format_bottom_toolbar_text(
     hint_overrides: Mapping[str, str] | None = None,
 ) -> str:
     """Render persistent state left and at most three contextual hints right."""
-    del activity_label, task_summary  # These belong in the live/notice rows.
-    # No per-capability keybinding-label catalog exists at this revision;
-    # `hint_overrides` is accepted so callers can pass it uniformly but is not
-    # yet consulted when building hint text below.
-    del hint_overrides
+    # These belong in the live/notice rows, not the footer.
+    del activity_label, task_summary, image_paste_available
     mode = _identifier(active_mode or "chat", 12)
     posture = _posture_variants(
         mode,
@@ -76,62 +76,52 @@ def format_bottom_toolbar_text(
 
     needs_wide = (
         f"{needs_attention_count} decision"
-        f"{'s' if needs_attention_count != 1 else ''} waiting"
+        f"{'s' if needs_attention_count != 1 else ''} waiting · "
+        f"{hint_label('show_needs_you', hint_overrides)}"
         if needs_attention_count > 0
         else ""
     )
     needs_compact = (
         f"needs-you {needs_attention_count}" if needs_attention_count > 0 else ""
     )
-    queued = f"queued {queued_count}" if queued_count > 0 else ""
+    queued = f"q{queued_count}" if queued_count > 0 else ""
 
-    tiers = _unique(
-        (
-            _join_state(
-                posture.full,
-                _identifier(bundle, 24),
-                session,
-                cost,
-                needs_wide,
-                queued,
-            ),
-            _join_state(
-                posture.compact,
-                _identifier(bundle, 14),
-                session,
-                cost,
-                needs_compact,
-                f"q{queued_count}" if queued_count > 0 else "",
-            ),
-            _join_state(
-                posture.tight,
-                _identifier(bundle, 10),
-                session,
-                cost.replace(" ", ""),
-                needs_compact,
-                f"q{queued_count}" if queued_count > 0 else "",
-            ),
+    def tier(posture_text: str, bundle_cells: int, tier_cost: str, needs: str) -> str:
+        return _join_state(
+            posture_text,
+            _identifier(bundle, bundle_cells),
+            session,
+            tier_cost,
+            needs,
+            queued,
         )
+
+    full_tier = tier(posture.full, 24, cost, needs_wide)
+    compact_tier = tier(posture.compact, 14, cost, needs_compact)
+    tight_tier = tier(posture.tight, 10, cost.replace(" ", ""), needs_compact)
+    tiers = _unique((full_tier, compact_tier, tight_tier))
+    wide_compact_tier = tier(posture.wide_compact, 14, cost, needs_compact)
+    wide_tight_tier = tier(posture.wide_tight, 14, cost, needs_compact)
+    wide_tiers = _unique(
+        (full_tier, wide_compact_tier, wide_tight_tier, compact_tier, tight_tier)
     )
     essential_tier = _join_state(
-        posture.tight,
-        cost.replace(" ", ""),
-        needs_compact,
-        f"q{queued_count}" if queued_count > 0 else "",
+        posture.tight, cost.replace(" ", ""), needs_compact, queued
     )
     hints = _hint_levels(
         is_running=is_running,
         tasks_available=tasks_available,
-        image_paste_available=image_paste_available,
         approval_pending=approval_pending,
         palette_open=palette_open,
         lane_focused=lane_focused,
+        hint_overrides=hint_overrides,
     )
     if max_width is None:
         return _render_two_zones(tiers[0], hints[0], None)
 
     width = max(1, max_width)
-    candidate_states = tiers + ((essential_tier,) if approval_pending else ())
+    state_tiers = wide_tiers if width >= _MODE_PREFIX_MIN_WIDTH else tiers
+    candidate_states = state_tiers + ((essential_tier,) if approval_pending else ())
     multi_hints = tuple(level for level in hints if len(level) >= 2)
     single_hints = tuple(level for level in hints if len(level) == 1)
     for hint_level in multi_hints:
@@ -142,7 +132,7 @@ def format_bottom_toolbar_text(
         for state in candidate_states:
             if _zones_width(state, hint_level) <= width:
                 return _render_two_zones(state, hint_level, width)
-    for state in tiers:
+    for state in state_tiers:
         if get_cwidth(state) <= width:
             return _render_two_zones(state, (), width)
     return _fit_essential_state(
@@ -172,6 +162,9 @@ def format_bottom_toolbar_html(
     last_yield: str | None = None,
     needs_attention_count: int = 0,
     approval_pending: bool = False,
+    palette_open: bool = False,
+    lane_focused: bool = False,
+    hint_overrides: Mapping[str, str] | None = None,
 ) -> FormattedText:
     """Return prompt-toolkit fragments for the compatibility prompt session."""
     text = format_bottom_toolbar_text(
@@ -189,17 +182,31 @@ def format_bottom_toolbar_html(
         last_yield=last_yield,
         needs_attention_count=needs_attention_count,
         approval_pending=approval_pending,
+        palette_open=palette_open,
+        lane_focused=lane_focused,
+        hint_overrides=hint_overrides,
     )
     return FormattedText([("class:bottom-toolbar", f" {text} ")])
 
 
 class _TrustVariants:
-    __slots__ = ("full", "compact", "tight")
+    """Responsive text variants; `wide_*` keep the `mode <id>` prefix (spec 6)."""
 
-    def __init__(self, full: str = "", compact: str = "", tight: str = "") -> None:
+    __slots__ = ("full", "compact", "tight", "wide_compact", "wide_tight")
+
+    def __init__(
+        self,
+        full: str = "",
+        compact: str = "",
+        tight: str = "",
+        wide_compact: str = "",
+        wide_tight: str = "",
+    ) -> None:
         self.full = full
         self.compact = compact or full
         self.tight = tight or compact or full
+        self.wide_compact = wide_compact or self.compact
+        self.wide_tight = wide_tight or self.tight
 
 
 def _trust_variants(summary: str | None) -> _TrustVariants:
@@ -254,9 +261,7 @@ def _format_trust(
     return " · ".join(rendered)
 
 
-def _format_tight_trust(
-    groups: tuple[tuple[str, tuple[str, ...]], ...],
-) -> str:
+def _format_tight_trust(groups: tuple[tuple[str, tuple[str, ...]], ...]) -> str:
     labels = {"auto": "a", "ask": "?", "block": "x", "check": "?"}
     rendered: list[str] = []
     for label, capabilities in groups:
@@ -275,56 +280,71 @@ def _hint_levels(
     *,
     is_running: bool,
     tasks_available: bool,
-    image_paste_available: bool,
     approval_pending: bool,
     palette_open: bool = False,
     lane_focused: bool = False,
+    hint_overrides: Mapping[str, str] | None = None,
 ) -> tuple[tuple[str, ...], ...]:
-    del image_paste_available  # Clipboard availability renders in the notice lane.
-    if approval_pending:
+    label = partial(hint_label, overrides=hint_overrides)
+    enter = label("submit")
+    if approval_pending or palette_open:
+        select_key = label("approval_move" if approval_pending else "palette_move")
+        esc = label("deny_approval" if approval_pending else "close_palette")
+        accept = f"{enter} confirm" if approval_pending else f"{enter} run"
+        close = f"{esc} deny" if approval_pending else f"{esc} close"
         return (
-            ("arrows select", "enter confirm", "esc deny"),
-            ("enter confirm", "esc deny"),
-            ("arrows", "enter", "esc"),
-            ("enter", "esc"),
-            ("enter",),
-            (),
-        )
-    if palette_open:
-        return (
-            ("arrows select", "enter run", "esc close"),
-            ("enter run", "esc close"),
-            ("arrows", "enter", "esc"),
-            ("enter", "esc"),
-            ("esc",),
+            (f"{select_key} select", accept, close),
+            (accept, close),
+            (select_key, enter, esc),
+            (enter, esc),
+            (enter,),
             (),
         )
     if lane_focused:
+        esc = label("close_tasks")
         return (
-            ("esc back to parent",),
-            ("esc back",),
+            (f"{esc} back to parent", "transcript is the subagent's own"),
+            (f"{esc} back to parent",),
+            (f"{esc} back",),
             (),
         )
     if is_running:
-        full = ["esc interrupt", "type to steer"]
-        preferred_one = "esc interrupt"
-        compact = ["esc", "steer"]
+        esc = label("interrupt_running")
+        full = [f"{esc} interrupt", f"{enter} steer", f"{label('queue_message')} queue"]
+        compact = [esc, "steer", "queue"]
+        cap = 3
     else:
-        full = ["/ commands", "shift-tab mode"]
+        # Mode (Shift-Tab) and permission posture (Ctrl-P) are independent
+        # controls (ADR-0005 amendment), so the permission hint now rides
+        # alongside the mode hint wherever it's shown. Tasks keeps its
+        # existing narrow-width priority (it was already protected at tight
+        # widths); permission posture is additive at the 4th, widest slot.
+        slash, mode, perm = (
+            label("open_palette"),
+            label("cycle_mode"),
+            label("cycle_permission"),
+        )
+        compact = [slash, mode]
+        full = [f"{slash} commands", f"{mode} mode"]
         if tasks_available:
-            full.append("ctrl-t tasks")
-        preferred_one = "/ commands"
-        compact = ["/", "shift-tab"]
-        if tasks_available:
-            compact.append("ctrl-t")
-    full = full[:3]
-    levels: list[tuple[str, ...]] = [tuple(full), tuple(compact[:3])]
+            tasks = label("toggle_tasks")
+            compact.append(tasks)
+            full.append(f"{tasks} tasks")
+        compact.append(perm)
+        full.append(f"{perm} perms")
+        cap = 4
+    full = full[:cap]
+    levels: list[tuple[str, ...]] = [tuple(full), tuple(compact[:cap])]
+    if len(full) > 3:
+        levels.append(tuple(full[:3]))
+    if len(compact) > 3:
+        levels.append(tuple(compact[:3]))
     if len(full) > 2:
         levels.append(tuple(full[:2]))
     if len(compact) > 2:
         levels.append(tuple(compact[:2]))
     if len(full) > 1:
-        levels.append((preferred_one,))
+        levels.append((full[0],))
     levels.append(())
     return tuple(dict.fromkeys(levels))
 
@@ -357,17 +377,20 @@ def _posture_variants(
                 "bypass permissions on", "bypass permissions", "bypass"
             )
         return _TrustVariants(
-            f"{mode} · bypass permissions on",
+            f"mode {mode} · bypass permissions on",
             f"{mode} · bypass",
             f"{mode}/bypass",
+            wide_compact=f"mode {mode} · bypass",
         )
     trust = _trust_variants(trust_summary)
     if trust.full:
         mode_name = _identifier(mode, 12)
         return _TrustVariants(
-            f"{mode_name} · {trust.full}",
+            f"mode {mode_name} · {trust.full}",
             f"{mode_name} · {trust.compact}",
             f"{mode_name} · {trust.tight}",
+            wide_compact=f"mode {mode_name} · {trust.compact}",
+            wide_tight=f"mode {mode_name} · {trust.tight}",
         )
     label = _mode_state_label(permission_mode, trust_summary)
     if permission_mode != mode:

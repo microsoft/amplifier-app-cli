@@ -13,6 +13,11 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 
 from .stdin_arbiter import StdinArbiter
+from .ui.inline_approval import STANDARD_APPROVAL_OPTIONS
+from .ui.inline_approval import ApprovalDetail
+from .ui.inline_approval import decision_for_choice
+from .ui.inline_approval import option_labels
+from .ui.inline_approval import stage_approval_detail
 
 logger = logging.getLogger(__name__)
 
@@ -70,13 +75,18 @@ class CLIApprovalProvider:
         """Inner implementation of request_approval (wrapped by arbiter claim)."""
         if self.approval_system is not None:
             timeout = request.timeout if request.timeout is not None else 300.0
+            prompt = f"Allow {request.tool_name}: {request.action}?"
+            # Keep the full payload available to the inline surface (ctrl-a
+            # full-detail view) beyond the bar's bounded summary.
+            stage_approval_detail(prompt, _approval_detail(prompt, request))
             choice = await self.approval_system.request_approval(
-                f"Allow {request.tool_name}: {request.action}?",
-                ["Allow once", "Deny"],
+                prompt,
+                list(option_labels(STANDARD_APPROVAL_OPTIONS)),
                 timeout,
                 "deny",
             )
-            approved = choice == "Allow once"
+            decision = decision_for_choice(STANDARD_APPROVAL_OPTIONS, choice)
+            approved = decision != "deny"
             return ApprovalResponse(
                 approved=approved,
                 reason="User approved" if approved else "User denied",
@@ -170,3 +180,14 @@ class CLIApprovalProvider:
             None, lambda: Confirm.ask("\nApprove this action?", default=False)
         )
         return result
+
+
+def _approval_detail(prompt: str, request: ApprovalRequest) -> ApprovalDetail:
+    """Full request payload (tool, action, risk, details) for ctrl-a."""
+    fields: list[tuple[str, str]] = [
+        ("tool", request.tool_name),
+        ("action", request.action),
+        ("risk", request.risk_level),
+    ]
+    fields.extend((str(key), str(value)) for key, value in request.details.items())
+    return ApprovalDetail(prompt=prompt, fields=tuple(fields))

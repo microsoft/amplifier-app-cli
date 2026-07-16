@@ -158,7 +158,8 @@ class CommandPalette:
             if representative is not None:
                 selected.append(representative)
         selected.extend(command for command in commands if command not in selected)
-        return tuple(selected[: self._max_results])
+        chosen = set(selected[: self._max_results])
+        return tuple(command for command in commands if command in chosen)
 
     def move(self, snapshot: PaletteSnapshot, delta: int) -> PaletteSnapshot:
         if not snapshot.commands:

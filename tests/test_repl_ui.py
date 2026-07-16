@@ -11,6 +11,7 @@ from amplifier_app_cli.ui.repl import format_activity_start
 from amplifier_app_cli.ui.repl import format_bottom_toolbar_text
 from amplifier_app_cli.ui.repl import format_prompt_text
 from amplifier_app_cli.ui.repl import format_task_pane_text
+from amplifier_app_cli.ui.repl import format_task_title
 from amplifier_app_cli.ui.repl import summarize_text
 from amplifier_app_cli.ui.repl import supports_layered_ui
 from amplifier_app_cli.ui.repl import terminal_title_sequence
@@ -141,7 +142,7 @@ def test_bottom_toolbar_includes_live_session_context():
     assert "bundle " not in toolbar
     assert "session " not in toolbar
     assert "/ commands" in toolbar
-    assert "shift-tab mode" in toolbar
+    assert "shift+tab mode" in toolbar
 
 
 def test_bottom_toolbar_shows_mode_and_permission_independently():
@@ -174,7 +175,7 @@ def test_bottom_toolbar_shows_mode_and_permission_independently():
         active_mode="chat",
         permission_mode="bypass",
     )
-    assert bypassed.startswith("chat \u00b7 bypass permissions on")
+    assert bypassed.startswith("mode chat \u00b7 bypass permissions on")
 
 
 def test_bottom_toolbar_switches_to_running_hints():
@@ -213,7 +214,7 @@ def test_bottom_toolbar_shows_queued_count_while_running():
         queued_count=2,
     )
 
-    assert "queued 2" in toolbar
+    assert "q2" in toolbar
     assert "esc interrupt" in toolbar
 
 
@@ -246,7 +247,7 @@ def test_bottom_toolbar_keeps_primary_shortcuts_visible_at_narrow_width():
 
     assert get_cwidth(toolbar) <= 60
     assert toolbar.startswith("plan")
-    assert "shift-tab" in toolbar
+    assert "shift+tab" in toolbar
     assert "ctrl-t" in toolbar
 
 
@@ -262,14 +263,18 @@ def test_bottom_toolbar_has_state_and_hint_zones_with_cost_and_trust():
         max_width=140,
     )
 
-    assert toolbar.startswith("build · auto read,test · ask write,net,spend")
+    assert toolbar.startswith("mode build · auto read,test · ask write,net,spend")
     assert " · foundation · 0179 · " in toolbar
     assert "$0.57" in toolbar
     assert "▲" in toolbar
-    assert toolbar.endswith("/ commands · shift-tab mode · ctrl-t tasks")
+    assert toolbar.endswith("/ commands · shift+tab mode · ctrl-t tasks · ctrl-p perms")
 
 
-def test_bottom_toolbar_never_exposes_more_than_three_hints():
+def test_bottom_toolbar_never_exposes_more_than_four_hints():
+    """Mode (Shift-Tab) and permission posture (Ctrl-P) are independent
+    controls (ADR-0005 amendment), so the hint zone now caps at four --
+    up from three -- to fit both alongside the always-available commands
+    and tasks hints."""
     toolbar = format_bottom_toolbar_text(
         bundle_name="foundation",
         session_id="017954f1",
@@ -281,8 +286,9 @@ def test_bottom_toolbar_never_exposes_more_than_three_hints():
     hint_zone = toolbar.split("  ", maxsplit=1)[1]
     assert hint_zone.split(" · ") == [
         "/ commands",
-        "shift-tab mode",
+        "shift+tab mode",
         "ctrl-t tasks",
+        "ctrl-p perms",
     ]
 
 
@@ -346,7 +352,7 @@ def test_task_pane_prioritizes_new_running_agents_over_old_history():
     )
 
     assert "active-reviewer" in rendered
-    assert "[running]" in rendered
+    assert "· running" in rendered
     assert len(rendered.splitlines()) <= 16
 
 
@@ -465,6 +471,48 @@ def test_summarize_text_collapses_and_truncates_long_input():
     assert summary.endswith("...")
 
 
+def test_format_task_title_quotes_a_short_prompt_verbatim():
+    title = format_task_title("fix the routing display")
+
+    assert title == '"fix the routing display"'
+
+
+def test_format_task_title_truncates_on_a_word_boundary():
+    prompt = "figure out how we can make our app faster by adding a caching layer"
+    title = format_task_title(prompt, max_chars=40)
+
+    assert title.startswith('"')
+    assert title.endswith('..."')
+    inner = title[1:-4]  # strip the leading quote and the trailing `..."`.
+    # The excerpt must be a whole-word prefix of the prompt: never mid-word,
+    # the way a hard character-count slice (`prompt[:37]`) could produce.
+    assert prompt.startswith(inner)
+    next_char = prompt[len(inner) : len(inner) + 1]
+    assert next_char in (" ", "")
+    assert get_cwidth(title) <= 40
+
+
+def test_format_task_title_never_returns_the_full_raw_prompt_when_long():
+    prompt = "x" * 200
+    title = format_task_title(prompt, max_chars=72)
+
+    assert title != f'"{prompt}"'
+    assert title.endswith('..."')
+
+
+def test_format_task_title_collapses_whitespace_and_control_chars():
+    title = format_task_title("line 1\nline 2\t\x07")
+
+    assert "\n" not in title
+    assert "\t" not in title
+    assert title == '"line 1 line 2"'
+
+
+def test_format_task_title_handles_empty_input():
+    assert format_task_title("") == '"chat"'
+    assert format_task_title("   ") == '"chat"'
+
+
 def test_activity_lines_are_prompt_specific_and_elapsed():
     start = format_activity_start("fix the routing display")
     done = format_activity_result("done", 65)
@@ -488,14 +536,23 @@ def test_build_terminal_title_includes_context():
 
     assert "amplifier-app-cli" in title
     assert "Amplifier" in title
-    assert "working" in title
-    assert "✳" in title
     assert "make the terminal UI better" in title
-    assert "mode plan" in title
-    assert "agents 2" in title
-    assert "needs 1" in title
     assert "dev" in title
     assert "12345678" in title
+    assert " — " in title
+    assert title.startswith(("✳", "✦", "✧"))
+
+
+def test_build_terminal_title_reads_ready_when_idle():
+    title = build_terminal_title(
+        cwd="/tmp/amplifier-app-cli",
+        bundle_name="bundle:dev",
+        session_id="12345678-abcdef",
+        is_running=False,
+    )
+
+    assert "ready" in title
+    assert not title.startswith(("✳", "✦", "✧"))
 
 
 def test_terminal_title_sequence_strips_control_characters():

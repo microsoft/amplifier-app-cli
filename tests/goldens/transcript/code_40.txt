@@ -1,0 +1,3 @@
+  41 def save_session(value):
+❱ 42     return
+     durable_store.write(value)

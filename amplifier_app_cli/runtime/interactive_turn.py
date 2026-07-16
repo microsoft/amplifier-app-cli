@@ -17,7 +17,6 @@ from amplifier_app_cli.ui.git_yield import GitDiffSnapshot
 from amplifier_app_cli.ui.interaction_state import SteeringQueue
 from amplifier_app_cli.ui.outcome_ledger import OutcomeLedger
 from amplifier_app_cli.ui.runtime_status import RuntimeStatusTracker
-from amplifier_app_cli.ui.transcript_blocks import NarrationBlock
 from amplifier_app_cli.ui.transcript_blocks import UserBlock
 from amplifier_app_cli.ui.turn_completion import TurnCompletionRenderer
 from amplifier_app_cli.ui.turn_outcomes import build_turn_outcome
@@ -118,7 +117,6 @@ class InteractiveTurnRunner:
             runtime.consume("prompt:submit", {"session_id": self._config.session_id})
         self._bindings.set_running(True)
         self._bindings.refresh_title(title, True)
-        self._services.events.emit(NarrationBlock(f"Working on {title}"))
 
         def handle_sigint(signum: int, frame: object) -> None:
             self._bindings.request_interrupt()
@@ -247,6 +245,7 @@ class InteractiveTurnRunner:
             starting_tool_keys=starting_tool_keys,
             starting_diff=starting_diff,
             ending_diff=ending_diff,
+            active_mode=self._bindings.active_mode(),
         )
         self._services.outcome_ledger.record(outcome)
         self._services.completion.render(outcome)

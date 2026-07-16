@@ -15,19 +15,17 @@ from rich.console import Console
 from amplifier_app_cli.runtime.execution_interrupt import ExecutionInterruptController
 from amplifier_app_cli.runtime.interactive_cleanup import InteractiveSessionCleanup
 from amplifier_app_cli.runtime.interactive_input import InteractiveInputRouter
-from amplifier_app_cli.runtime.interactive_repl_runner import InteractiveReplCallbacks
 from amplifier_app_cli.runtime.interactive_repl_runner import (
+    InteractiveReplCallbacks,
     InteractiveReplDependencies,
+    InteractiveReplRequest,
+    InteractiveReplResult,
+    InteractiveReplRunner,
+    LayeredReplHandle,
 )
-from amplifier_app_cli.runtime.interactive_repl_runner import InteractiveReplRequest
-from amplifier_app_cli.runtime.interactive_repl_runner import InteractiveReplResult
-from amplifier_app_cli.runtime.interactive_repl_runner import InteractiveReplRunner
-from amplifier_app_cli.runtime.interactive_repl_runner import LayeredReplHandle
 from amplifier_app_cli.runtime.interactive_resources import (
     InteractiveResourceDependencies,
-)
-from amplifier_app_cli.runtime.interactive_resources import InteractiveResourceRequest
-from amplifier_app_cli.runtime.interactive_resources import (
+    InteractiveResourceRequest,
     create_interactive_session_resources,
 )
 from amplifier_app_cli.runtime.interactive_session import InteractiveSessionRuntime
@@ -141,6 +139,7 @@ async def run_interactive_host(
 
     from amplifier_app_cli.ui.repl import build_terminal_title
     from amplifier_app_cli.ui.repl import emit_terminal_title
+    from amplifier_app_cli.ui.repl import format_task_title
     from amplifier_app_cli.ui.repl import summarize_text
 
     execution_state = {"running": False}
@@ -165,6 +164,10 @@ async def run_interactive_host(
     def queued_count() -> int:
         runtime = prompt_runtime_state["runtime"]
         return runtime.queued_count if runtime is not None else 0
+
+    def queued_preview() -> tuple[str, ...]:
+        runtime = prompt_runtime_state["runtime"]
+        return runtime.queued_preview() if runtime is not None else ()
 
     def runner_active() -> bool:
         runtime = prompt_runtime_state["runtime"]
@@ -292,7 +295,7 @@ async def run_interactive_host(
         bindings=InteractiveTurnBindings(
             immediate_interrupt=immediate_interrupt,
             request_interrupt=interrupt.request,
-            summarize=summarize_text,
+            summarize=format_task_title,
             set_running=lambda value: execution_state.__setitem__("running", value),
             set_task_title=lambda value: current_task.__setitem__("title", value),
             refresh_title=lambda title, running: set_terminal_title(
@@ -448,6 +451,8 @@ async def run_interactive_host(
             ),
             get_is_running=lambda: execution_state["running"],
             get_queued_count=queued_count,
+            get_queued_preview=queued_preview,
+            pop_last_queued=prompt_runtime.pop_last_queued,
             get_task_title=lambda: current_task["title"],
             on_cycle_mode=resources.cycle_mode,
             on_cycle_permission=resources.cycle_permission,
@@ -487,12 +492,9 @@ async def run_interactive_host(
     if repl_result.requested_session_id:
         return repl_result.requested_session_id
     console.print(
-        "\n[yellow]Session exited - resume anytime with these commands:[/yellow]"
-    )
-    console.print("  [cyan]amplifier resume[/cyan]  # interactive list of sessions")
-    console.print(
+        "\n[yellow]Session exited - resume anytime with these commands:[/yellow]\n"
+        "  [cyan]amplifier resume[/cyan]  # interactive list of sessions\n"
         f"  [cyan]amplifier session resume {actual_session_id[:8]}[/cyan]  "
-        "# jump directly to this session"
+        "# jump directly to this session\n"
     )
-    console.print()
     return None

@@ -7,6 +7,8 @@ from enum import Enum
 import logging
 from typing import Any
 
+from .layered_repl_style import TOKENS
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,7 +53,7 @@ DEFAULT_MODE_PROFILES: tuple[ModeProfile, ...] = (
         "default",
         ReasoningEffort.MEDIUM,
         "chat",
-        "#6b7487",
+        TOKENS["dim"],
     ),
     ModeProfile(
         ModeName.PLAN,
@@ -60,7 +62,7 @@ DEFAULT_MODE_PROFILES: tuple[ModeProfile, ...] = (
         "reasoning",
         ReasoningEffort.HIGH,
         "plan",
-        "#7aa2f7",
+        TOKENS["blue"],
     ),
     ModeProfile(
         ModeName.BRAINSTORM,
@@ -69,7 +71,7 @@ DEFAULT_MODE_PROFILES: tuple[ModeProfile, ...] = (
         "reasoning",
         ReasoningEffort.HIGH,
         "brainstorm",
-        "#6fc3c3",
+        TOKENS["teal"],
     ),
     ModeProfile(
         ModeName.BUILD,
@@ -78,7 +80,7 @@ DEFAULT_MODE_PROFILES: tuple[ModeProfile, ...] = (
         "coding",
         ReasoningEffort.HIGH,
         "build",
-        "#7ec699",
+        TOKENS["green"],
     ),
     ModeProfile(
         ModeName.AUTO,
@@ -87,7 +89,7 @@ DEFAULT_MODE_PROFILES: tuple[ModeProfile, ...] = (
         "coding",
         ReasoningEffort.XHIGH,
         "auto",
-        "#e0a458",
+        TOKENS["orange"],
     ),
 )
 

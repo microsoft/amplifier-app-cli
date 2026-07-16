@@ -290,6 +290,13 @@ async def create_interactive_session_resources(
         notify=notify,
         refresh=refresh,
     )
+    # A persisted permission profile/posture represents a previously explicit
+    # trust choice (see ADR-0005). Latch it before initialize() so a resumed
+    # mode name that collides with a builtin mode (e.g. a bundle mode named
+    # "brainstorm") cannot cause initialize() to apply that mode's default
+    # trust preset over the restored posture.
+    if restored[0] or restored[1]:
+        interaction.mark_trust_explicit()
     await interaction.initialize()
     _restore_trust(trust_state, restored)
     cleanup.approval_trust = _bind_approval_trust(approval_system, trust_state)

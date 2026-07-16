@@ -6,9 +6,12 @@ from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
+import logging
 import re
 from typing import Protocol
 import unicodedata
+
+logger = logging.getLogger(__name__)
 
 _MAX_ACTION_CHARS = 4_096
 _MAX_IDENTIFIER_CHARS = 120
@@ -17,6 +20,12 @@ _MAX_OBSERVATION_CHARS = 32_768
 _MAX_TRANSCRIPT_CHARS = 262_144
 _MAX_TOOL_RESULT_CHARS = 262_144
 _MAX_FINDINGS = 8
+_MAX_DETAIL_CHARS = 1_000
+# Exception reprs are truncated to this length *before* StageEvaluation's
+# NFKC-normalizing sanitizer runs, leaving headroom under _MAX_DETAIL_CHARS
+# so normalization (which can expand some characters) can never push the
+# cleaned detail over the limit and raise from inside an `except` handler.
+_MAX_DETAIL_SOURCE_CHARS = 200
 
 
 def _clean_text(value: str, *, limit: int, multiline: bool = False) -> str:
@@ -245,6 +254,11 @@ class StageEvaluation:
     disposition: StageDisposition
     reason_code: str
     reason: str
+    # Optional, non-contractual debugging detail. Never shown to the user and
+    # never part of the reason_code/reason strings other code matches on;
+    # populated by the fail-closed path below with repr(exc) so the swallowed
+    # exception is still inspectable on the evaluation object itself.
+    detail: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.disposition, StageDisposition):
@@ -253,8 +267,10 @@ class StageEvaluation:
         reason = _clean_text(self.reason, limit=_MAX_ACTION_CHARS)
         if not reason_code or not reason:
             raise ValueError("classifier evaluations require a reason")
+        detail = _clean_text(self.detail, limit=_MAX_DETAIL_CHARS)
         object.__setattr__(self, "reason_code", reason_code)
         object.__setattr__(self, "reason", reason)
+        object.__setattr__(self, "detail", detail)
 
 
 class StageEvaluator(Protocol):
@@ -404,11 +420,19 @@ class TwoStageActionClassifier:
             if not isinstance(result, StageEvaluation):
                 raise TypeError("classifier evaluator returned an invalid result")
             return result
-        except Exception:
+        except Exception as exc:
+            logger.exception(
+                "Stage evaluator raised during %s classification "
+                "(capability=%s action=%r); failing closed",
+                stage.value,
+                evidence.request.capability.value,
+                evidence.request.action,
+            )
             return StageEvaluation(
                 StageDisposition.DENY,
                 "classifier-unavailable",
                 "classifier failed closed",
+                detail=repr(exc)[:_MAX_DETAIL_SOURCE_CHARS],
             )
 
     async def _evaluate_async(
@@ -421,11 +445,19 @@ class TwoStageActionClassifier:
             if not isinstance(result, StageEvaluation):
                 raise TypeError("classifier evaluator returned an invalid result")
             return result
-        except Exception:
+        except Exception as exc:
+            logger.exception(
+                "Stage evaluator raised during %s classification "
+                "(capability=%s action=%r); failing closed",
+                stage.value,
+                evidence.request.capability.value,
+                evidence.request.action,
+            )
             return StageEvaluation(
                 StageDisposition.DENY,
                 "classifier-unavailable",
                 "classifier failed closed",
+                detail=repr(exc)[:_MAX_DETAIL_SOURCE_CHARS],
             )
 
 

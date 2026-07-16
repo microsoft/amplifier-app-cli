@@ -39,6 +39,34 @@ output without an alternate screen.
 - The implementation must not be described as literally compliant with the
   original native-scrollback invariant; this ADR is the intentional exception.
 
+### Amendment (2026-07-14): trade-offs validated against the Codex TUI
+
+A source-level comparison with the OpenAI Codex TUI (`codex-rs/tui/src`),
+which chose the opposite architecture (native scrollback via inserted
+history), validated this decision's concrete trade-offs. See
+`docs/designs/codex-lessons.md` for the full study record.
+
+What we forgo by owning the viewport:
+
+- Terminal-native transcript search (`/` in tmux, cmd-F in the emulator)
+  does not reach app-managed history; only the visible screen is searchable.
+- tmux/emulator copy workflows see the current screen, not the full
+  transcript; full-transcript copy needs the app's own affordances and the
+  plain transcript handoff on exit.
+
+What we avoid — the compensating machinery Codex carries for native
+scrollback (its `insert_history.rs`, `custom_terminal.rs`, and
+`transcript_reflow.rs`):
+
+- ED3 scrollback purges: many terminals clear or truncate scrollback on
+  resize or `clear`, silently destroying inserted history.
+- Per-terminal replay caps: inserted history must respect each emulator's
+  scrollback limits, so long sessions truncate unpredictably per terminal.
+- Reflow scheduling complexity: history already written to the terminal
+  cannot be re-wrapped by the app, so resizes leave stale wrapping or
+  require replay heuristics; our app-owned viewport reflows deterministically
+  (debounced in `ui/transcript_reflow.py`).
+
 ## Non-Goals
 
 This decision does not change batch output, JSON output, or shell command

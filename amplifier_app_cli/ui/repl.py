@@ -7,6 +7,7 @@ import logging
 import re
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from prompt_toolkit import PromptSession
@@ -28,11 +29,41 @@ from .command_registry import CompletionProvider
 from .command_registry import compose_command_registry
 from .footer import format_bottom_toolbar_html as format_bottom_toolbar_html
 from .footer import format_bottom_toolbar_text as format_bottom_toolbar_text
+from .layered_repl_style import TOKENS
 from .task_pane import format_task_pane_text as format_task_pane_text
 
 logger = logging.getLogger(__name__)
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+
+# Most terminals silently truncate titles beyond a few hundred characters;
+# 240 keeps titles readable in tab bars (mirrors codex terminal_title.rs).
+_TITLE_MAX_CHARS = 240
+
+# Trojan-Source bidi controls plus invisible formatting codepoints that could
+# visually reorder or hide title text relative to its underlying bytes. This
+# is the aggressive, titles-only set (codex terminal_title.rs): unlike the
+# shared runtime_values.sanitize(), it also drops ZWJ/ZWNJ and variation
+# selectors because emoji fidelity does not matter in a window title.
+_TITLE_DISALLOWED_CODEPOINTS = frozenset(
+    {
+        0x00AD,  # soft hyphen
+        0x034F,  # combining grapheme joiner
+        0x061C,  # Arabic letter mark
+        0x180E,  # Mongolian vowel separator
+        0xFEFF,  # BOM / zero-width no-break space
+        *range(0x200B, 0x2010),  # ZWSP, ZWNJ, ZWJ, LRM, RLM
+        *range(0x202A, 0x202F),  # bidi embeddings/overrides (Trojan Source)
+        *range(0x2060, 0x2070),  # word joiner, invisible operators, isolates
+        *range(0xFE00, 0xFE10),  # variation selectors
+        *range(0xFFF9, 0xFFFC),  # interlinear annotation controls
+        *range(0x1BCA0, 0x1BCA4),  # shorthand format controls
+        *range(0xE0000, 0xE0080),  # astral tag characters
+        *range(0xE0100, 0xE01F0),  # variation selectors supplement
+    }
+)
+
+_TITLE_SPINNER = ("✳", "✦", "✧", "✦")
 
 
 def supports_layered_ui(input_stream: Any, output_stream: Any) -> bool:
@@ -145,15 +176,46 @@ def format_prompt_text(active_mode: str | None = None) -> HTML:
     )
 
 
+def _collapse_display_text(text: str) -> str:
+    """Collapse whitespace/control characters into one display-safe line."""
+    collapsed = " ".join(str(text).split())
+    return _CONTROL_CHARS.sub(" ", collapsed).strip()
+
+
 def summarize_text(text: str, *, max_chars: int = 72) -> str:
     """Return a single-line display summary without control characters."""
-    collapsed = " ".join(str(text).split())
-    collapsed = _CONTROL_CHARS.sub(" ", collapsed).strip()
+    collapsed = _collapse_display_text(text)
     if not collapsed:
         return "chat"
     if len(collapsed) <= max_chars:
         return collapsed
     return collapsed[: max_chars - 3].rstrip() + "..."
+
+
+def format_task_title(text: str, *, max_chars: int = 72) -> str:
+    """Return a quoted excerpt of ``text`` for use as a turn's task-title label.
+
+    This is deliberately *not* a summary or a generated title -- it is a
+    verbatim excerpt of the user's own prompt, quoted (matching the
+    convention ``queued_bar_text`` already uses for queued-message previews)
+    so it reads as "here is what you asked" rather than an unmarked echo
+    that could be mistaken for something the system generated. Truncation
+    backs off to the previous whole word so long prompts never end mid-word.
+
+    Used as the single source for every place a turn's title is displayed:
+    the live working status, the plan pane, and the transcript's committed
+    plan/recap records.
+    """
+    collapsed = _collapse_display_text(text)
+    if not collapsed:
+        return '"chat"'
+    if len(collapsed) <= max_chars:
+        return f'"{collapsed}"'
+    budget = max(1, max_chars - 3)
+    truncated = collapsed[:budget]
+    if " " in truncated:
+        truncated = truncated.rsplit(" ", 1)[0]
+    return f'"{truncated.rstrip()}..."'
 
 
 def summarize_cell_text(text: str, *, max_cells: int) -> str:
@@ -221,23 +283,28 @@ def build_terminal_title(
     agent_count: int = 0,
     needs_count: int = 0,
 ) -> str:
-    """Build a terminal tab title for the current Amplifier session."""
+    """Build a terminal tab title for the current Amplifier session (spec 7)."""
+    del active_mode, agent_count, needs_count  # spec section 7 drops these segments
     cwd_path = Path(cwd)
     project = cwd_path.name or str(cwd_path)
-    status = "✳ working" if is_running else "ready"
-    parts = [project, "Amplifier", status]
-    if task_summary:
-        parts.append(summarize_text(task_summary, max_chars=52))
-    if active_mode:
-        parts.append(f"mode {active_mode}")
-    if agent_count > 0:
-        parts.append(f"agents {agent_count}")
-    if needs_count > 0:
-        parts.append(f"needs {needs_count}")
-    parts.append(bundle_name.removeprefix("bundle:") or "unknown")
+    if is_running:
+        activity = (
+            summarize_text(task_summary, max_chars=52) if task_summary else "working"
+        )
+    else:
+        activity = "ready"
+    parts = [
+        project,
+        "Amplifier",
+        activity,
+        bundle_name.removeprefix("bundle:") or "unknown",
+    ]
     if session_id:
         parts.append(session_id[:8])
-    return _sanitize_terminal_title(" - ".join(parts))
+    title = " — ".join(parts)
+    if is_running:
+        title = f"{_TITLE_SPINNER[int(monotonic() * 5) % 4]} {title}"
+    return _sanitize_terminal_title(title)
 
 
 def terminal_title_sequence(title: str) -> str:
@@ -248,8 +315,8 @@ def terminal_title_sequence(title: str) -> str:
 def terminal_tab_color_sequence(state: str) -> str:
     """Return iTerm-compatible OSC tab color controls for ambient state."""
     colors = {
-        "running": (224, 164, 88),
-        "needs-you": (224, 108, 117),
+        "running": _token_rgb("orange"),
+        "needs-you": _token_rgb("red"),
     }
     if state not in colors:
         return "\033]6;1;bg;*;default\a"
@@ -261,6 +328,12 @@ def terminal_tab_color_sequence(state: str) -> str:
             f"\033]6;1;bg;blue;brightness;{blue}\a",
         )
     )
+
+
+def _token_rgb(token: str) -> tuple[int, int, int]:
+    """Parse a theme token's hex value into an RGB tuple."""
+    value = TOKENS[token].lstrip("#")
+    return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
 
 
 def terminal_notification_sequence(title: str, body: str) -> str:
@@ -284,7 +357,17 @@ def emit_terminal_title(console: Any, title: str) -> None:
 
 
 def _sanitize_terminal_title(title: str) -> str:
-    return _CONTROL_CHARS.sub(" ", str(title)).strip()
+    """Normalize untrusted title text into a single bounded display line.
+
+    Replaces terminal control characters, drops Trojan-Source bidi controls
+    and invisible formatting codepoints, collapses whitespace runs, and caps
+    the result at ``_TITLE_MAX_CHARS`` characters.
+    """
+    text = _CONTROL_CHARS.sub(" ", str(title))
+    visible = "".join(
+        char for char in text if ord(char) not in _TITLE_DISALLOWED_CODEPOINTS
+    )
+    return " ".join(visible.split())[:_TITLE_MAX_CHARS].rstrip()
 
 
 def create_prompt_session(
@@ -377,7 +460,7 @@ def create_prompt_session(
         reserve_space_for_menu=6,
         style=Style.from_dict(
             {
-                "bottom-toolbar": "noreverse fg:#8a8f98",
+                "bottom-toolbar": f"noreverse bg:{TOKENS['bg_chrome']} fg:{TOKENS['dim']}",
             }
         ),
     )

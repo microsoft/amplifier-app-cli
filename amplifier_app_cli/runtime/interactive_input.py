@@ -71,6 +71,7 @@ class InteractiveInputRouter:
         attachments: tuple[ImageAttachment, ...] = (),
         *,
         display_text: str | None = None,
+        queue: bool = False,
     ) -> bool:
         if user_input.strip().lower() in {"exit", "quit"}:
             return False
@@ -80,7 +81,7 @@ class InteractiveInputRouter:
         action, data = self._commands.process_input(user_input)
         if action == "prompt":
             expanded = await self._expand_prompt(str(data["text"]))
-            if self._is_running() and not attachments:
+            if self._is_running() and not attachments and not queue:
                 steer = self._steering.enqueue(expanded, display_text=display_text)
                 self._notify(
                     f"steer queued · {self._summarize(steer.text, max_chars=72)}",

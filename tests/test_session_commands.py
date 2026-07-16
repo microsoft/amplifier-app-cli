@@ -11,7 +11,7 @@ from amplifier_app_cli.ui.runtime_status import RuntimeStatusTracker
 from amplifier_app_cli.ui import session_commands
 from amplifier_app_cli.ui.session_commands import SessionCommandService
 from amplifier_app_cli.ui.task_status import TaskStatusTracker
-from amplifier_app_cli.ui.transcript_blocks import CodeExcerptBlock
+from amplifier_app_cli.ui.transcript_blocks import DiffBlock
 from amplifier_app_cli.commands.session import _select_history_messages
 
 
@@ -121,7 +121,7 @@ async def test_review_returns_a_prompt_instead_of_claiming_work_happened(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_diff_uses_git_without_a_shell_and_bounds_output(tmp_path):
+async def test_diff_uses_git_without_a_shell_and_emits_diff_blocks(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "app.py").write_text("before = 1\n", encoding="utf-8")
     subprocess.run(
@@ -130,13 +130,16 @@ async def test_diff_uses_git_without_a_shell_and_bounds_output(tmp_path):
 
     result = await _service(tmp_path).execute("/diff", "staged")
 
-    assert "app.py" in result.text
-    assert "1 file changed" in result.text
-    assert not result.blocks
+    assert not result.text
+    assert len(result.blocks) == 1
+    block = result.blocks[0]
+    assert isinstance(block, DiffBlock)
+    assert block.path == "app.py"
+    assert (block.added, block.removed) == (1, 0)
 
 
 @pytest.mark.asyncio
-async def test_diff_emits_a_typed_context_bounded_code_excerpt(tmp_path):
+async def test_diff_full_emits_typed_per_file_diff_blocks(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "app.py").write_text("before = 1\nafter = 2\n", encoding="utf-8")
     subprocess.run(
@@ -148,10 +151,10 @@ async def test_diff_emits_a_typed_context_bounded_code_excerpt(tmp_path):
     assert not result.text
     assert len(result.blocks) == 1
     block = result.blocks[0]
-    assert isinstance(block, CodeExcerptBlock)
-    assert block.language == "diff"
-    assert "@@" in block.code
-    assert block.changed_lines
+    assert isinstance(block, DiffBlock)
+    assert block.path == "app.py"
+    assert "@@" in block.diff_text
+    assert (block.added, block.removed) == (2, 0)
 
 
 @pytest.mark.asyncio

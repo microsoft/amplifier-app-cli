@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
+import os
 from typing import Any
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.keys import Keys
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.layout import ConditionalContainer
 from prompt_toolkit.layout import HSplit
 from prompt_toolkit.layout import Layout
@@ -17,10 +16,27 @@ from prompt_toolkit.layout import Window
 from prompt_toolkit.layout.controls import BufferControl
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.processors import AfterInput
+from prompt_toolkit.layout.processors import ConditionalProcessor
+from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.output.defaults import create_output
 
-from .layered_repl_input import pasted_image_attachments
+from .layered_repl_keys import build_layered_key_bindings
 from .layered_repl_style import LAYERED_REPL_STYLE
+from .layered_repl_style import TOKENS
+
+_COMPOSER_PLACEHOLDER = FormattedText(
+    [
+        (f"fg:{TOKENS['dim']}", "Message Amplifier…  "),
+        (
+            f"fg:{TOKENS['dimmer']}",
+            "( / commands · shift+tab mode · ctrl-p perms · enter send · "
+            "type mid-turn to steer )",
+        ),
+    ]
+)
+
+_EDGE_ACCENT_MODES = frozenset({"plan", "brainstorm", "build", "auto", "bypass"})
 
 
 def build_layered_application(
@@ -30,7 +46,7 @@ def build_layered_application(
     input: Any | None,
 ) -> Application[None]:
     """Build the transient layout and attach its named surfaces to ``owner``."""
-    key_bindings = _build_key_bindings(owner)
+    key_bindings = build_layered_key_bindings(owner)
 
     owner.transcript_window = Window(
         owner._transcript_view.control,
@@ -133,6 +149,16 @@ def build_layered_application(
         ),
         filter=Condition(owner._evidence_visible),
     )
+    owner.queued_container = ConditionalContainer(
+        content=Window(
+            FormattedTextControl(owner._queued_text),
+            height=1,
+            wrap_lines=False,
+            style="class:queued",
+            always_hide_cursor=True,
+        ),
+        filter=Condition(owner._queued_visible),
+    )
     owner.approval_container = ConditionalContainer(
         content=Window(
             FormattedTextControl(owner._approval_text),
@@ -160,6 +186,20 @@ def build_layered_application(
         content=task_window,
         filter=Condition(lambda: owner._tasks_visible),
     )
+
+    def composer_edge_style() -> str:
+        """Mode-accent left edge on the composer; ``rule`` color for chat."""
+        mode = owner._active_mode()
+        if mode in _EDGE_ACCENT_MODES:
+            return f"class:input class:mode.{mode}"
+        return "class:input class:rule"
+
+    owner.composer_edge_window = Window(
+        width=1,
+        height=owner._input_height,
+        char="▌",
+        style=composer_edge_style,
+    )
     owner.prompt_window = Window(
         FormattedTextControl(owner._prompt_text),
         width=owner._prompt_width,
@@ -167,13 +207,23 @@ def build_layered_application(
         style="class:prompt",
     )
     owner.input_window = Window(
-        BufferControl(buffer=owner.input_buffer, key_bindings=key_bindings),
+        BufferControl(
+            buffer=owner.input_buffer,
+            key_bindings=key_bindings,
+            input_processors=[
+                ConditionalProcessor(
+                    AfterInput(_COMPOSER_PLACEHOLDER),
+                    filter=Condition(lambda: not owner.input_buffer.text),
+                ),
+            ],
+        ),
         height=owner._input_height,
         wrap_lines=True,
         style="class:input",
     )
     owner.input_row = VSplit(
         [
+            owner.composer_edge_window,
             owner.prompt_window,
             owner.input_window,
             Window(width=1, height=owner._input_height, char=" ", style="class:input"),
@@ -185,9 +235,13 @@ def build_layered_application(
         filter=Condition(lambda: not owner._approval_visible()),
     )
 
+    # Spec section 5: the mockup draws a border-top rule above the bottom
+    # stack; in the terminal that is one full-width ─ row in the rule color.
+    owner.separator_window = Window(height=1, char="─", style="class:rule")
     root = HSplit(
         [
             owner.transcript_container,
+            owner.separator_window,
             owner.plan_container,
             owner.steering_container,
             owner.preview_container,
@@ -198,13 +252,21 @@ def build_layered_application(
             owner.palette_container,
             owner.rewind_container,
             owner.evidence_container,
+            owner.queued_container,
             owner.approval_container,
             owner.composer_container,
             status_window,
         ],
     )
     app_output = output or create_output(stdout=owner._terminal_file)
-    return Application(
+    # The slate palette's bg_term/bg_chrome distinction quantizes away at 256
+    # colors; honor truecolor terminals so the footer chrome reads as chrome.
+    color_depth = (
+        ColorDepth.DEPTH_24_BIT
+        if os.environ.get("COLORTERM", "").lower() in {"truecolor", "24bit"}
+        else None
+    )
+    application: Application[None] = Application(
         layout=Layout(root, focused_element=owner.input_window),
         key_bindings=key_bindings,
         style=LAYERED_REPL_STYLE,
@@ -212,287 +274,17 @@ def build_layered_application(
         mouse_support=True,
         erase_when_done=False,
         refresh_interval=0.2,
+        color_depth=color_depth,
         output=app_output,
         input=input,
     )
-
-
-def _build_key_bindings(owner: Any) -> KeyBindings:
-    key_bindings = KeyBindings()
-
-    @key_bindings.add(
-        "?",
-        filter=Condition(
-            lambda: (
-                not owner.input_buffer.text
-                and not owner._is_running()
-                and not owner._approval_visible()
-            )
-        ),
-        eager=True,
-    )
-    def show_shortcut_help(event):
-        owner.show_shortcut_help()
-        event.app.invalidate()
-
-    @key_bindings.add("enter", eager=True)
-    def submit(event):
-        if owner._approval_visible():
-            owner._accept_approval()
-            return
-        if owner._tasks_visible:
-            owner.focus_selected_lane()
-            return
-        if owner._evidence_visible():
-            owner._accept_evidence()
-            return
-        if owner._rewind_visible():
-            owner._accept_rewind()
-            return
-        if owner._palette_visible():
-            owner._accept_palette_selection()
-            return
-        owner.submit_current_input()
-
-    for key, direction in ((Keys.PageUp, -1), (Keys.PageDown, 1)):
-
-        @key_bindings.add(
-            key,
-            filter=Condition(lambda: not owner._approval_visible()),
-            eager=True,
-        )
-        def scroll_transcript(event, direction=direction):
-            owner.scroll_transcript_page(direction)
-            event.app.invalidate()
-
-    @key_bindings.add(
-        "up",
-        filter=Condition(
-            lambda: owner._palette_visible() and not owner._approval_visible()
-        ),
-        eager=True,
-    )
-    def palette_up(event):
-        owner._move_palette(-1)
-
-    @key_bindings.add(
-        "down",
-        filter=Condition(
-            lambda: owner._palette_visible() and not owner._approval_visible()
-        ),
-        eager=True,
-    )
-    def palette_down(event):
-        owner._move_palette(1)
-
-    for key, delta in (
-        ("left", -1),
-        ("up", -1),
-        ("right", 1),
-        ("down", 1),
-        ("tab", 1),
-    ):
-
-        @key_bindings.add(
-            key,
-            filter=Condition(owner._approval_visible),
-            eager=True,
-        )
-        def move_approval(event, delta=delta):
-            owner._move_approval(delta)
-
-    @key_bindings.add(
-        Keys.Any,
-        filter=Condition(owner._approval_visible),
-        eager=True,
-    )
-    def ignore_text_during_approval(event):
-        """Keep the hidden draft immutable while approval owns keyboard focus."""
-        return None
-
-    @key_bindings.add(
-        "up",
-        filter=Condition(
-            lambda: owner._tasks_visible and not owner._approval_visible()
-        ),
-        eager=True,
-    )
-    def lane_up(event):
-        owner.select_next_lane(-1)
-
-    @key_bindings.add(
-        "down",
-        filter=Condition(
-            lambda: owner._tasks_visible and not owner._approval_visible()
-        ),
-        eager=True,
-    )
-    def lane_down(event):
-        owner.select_next_lane(1)
-
-    for key, delta in (("left", -1), ("up", -1), ("right", 1), ("down", 1)):
-
-        @key_bindings.add(
-            key,
-            filter=Condition(
-                lambda: owner._rewind_visible() and not owner._approval_visible()
-            ),
-            eager=True,
-        )
-        def move_rewind(event, delta=delta):
-            owner._move_rewind(delta)
-
-        @key_bindings.add(
-            key,
-            filter=Condition(
-                lambda: owner._evidence_visible() and not owner._approval_visible()
-            ),
-            eager=True,
-        )
-        def move_evidence(event, delta=delta):
-            owner._move_evidence(delta)
-
-    @key_bindings.add("c-j", eager=True)
-    def insert_newline(event):
-        event.current_buffer.insert_text("\n")
-
-    @key_bindings.add("c-v", eager=True)
-    def paste_image(event):
-        owner.paste_clipboard_image()
-
-    @key_bindings.add(Keys.BracketedPaste, eager=True)
-    def paste_text_or_image_path(event):
-        normalized = event.data.replace("\r\n", "\n").replace("\r", "\n")
-        attachments = pasted_image_attachments(normalized)
-        if attachments:
-            owner._insert_attachments(attachments)
-            return
-        owner._insert_text_paste(event.data, normalized)
-
-    @key_bindings.add("c-c", eager=True)
-    def interrupt(event):
-        if owner._on_interrupt and owner._on_interrupt():
-            event.app.invalidate()
-            return
-        owner.append_output("\nUse Ctrl-D or type exit to leave Amplifier.\n")
-
-    @key_bindings.add("c-d", eager=True)
-    def exit_repl(event):
-        if event.current_buffer.text:
-            event.current_buffer.delete()
-            return
-        owner.request_exit()
-
-    @key_bindings.add(
-        "c-t", filter=Condition(lambda: not owner._approval_visible()), eager=True
-    )
-    def toggle_tasks(event):
-        owner.toggle_task_pane()
-
-    @key_bindings.add("c-o", eager=True)
-    def expand_latest_tool(event):
-        owner.expand_latest_tool()
-
-    @key_bindings.add("c-l", eager=True)
-    def show_ledger(event):
-        owner.show_ledger()
-
-    @key_bindings.add("c-r", eager=True)
-    def open_rewind(event):
-        owner.open_rewind_picker()
-
-    @key_bindings.add("c-y", eager=True)
-    def show_needs_you(event):
-        owner.show_needs_you()
-
-    @key_bindings.add("c-e", eager=True)
-    def show_evidence(event):
-        owner.open_evidence_picker()
-
-    def _invoke_cycle_callback(callback, event) -> None:
-        if callback is None:
-            return
-        result = callback()
-        if asyncio.iscoroutine(result):
-            task = asyncio.create_task(result)
-            owner._submit_tasks.add(task)
-            task.add_done_callback(owner._submission_done)
-        event.app.invalidate()
-
-    # Independent controls per ADR-0005 amendment: Shift-Tab cycles mode
-    # only, ctrl-p cycles permission posture only.
-    @key_bindings.add(
-        "s-tab", filter=Condition(lambda: not owner._approval_visible()), eager=True
-    )
-    def cycle_mode(event):
-        _invoke_cycle_callback(owner._on_cycle_mode, event)
-
-    @key_bindings.add(
-        "c-p", filter=Condition(lambda: not owner._approval_visible()), eager=True
-    )
-    def cycle_permission(event):
-        _invoke_cycle_callback(owner._on_cycle_permission, event)
-
-    @key_bindings.add(
-        "escape",
-        filter=Condition(
-            lambda: owner._palette_visible() and not owner._approval_visible()
-        ),
-        eager=True,
-    )
-    def close_palette(event):
-        owner._dismiss_palette()
-
-    @key_bindings.add(
-        "escape",
-        filter=Condition(
-            lambda: owner._rewind_visible() and not owner._approval_visible()
-        ),
-        eager=True,
-    )
-    def close_rewind(event):
-        owner._dismiss_rewind()
-
-    @key_bindings.add(
-        "escape",
-        filter=Condition(
-            lambda: owner._evidence_visible() and not owner._approval_visible()
-        ),
-        eager=True,
-    )
-    def close_evidence(event):
-        owner._dismiss_evidence()
-
-    @key_bindings.add("escape", filter=Condition(owner._approval_visible), eager=True)
-    def deny_approval(event):
-        owner._deny_approval()
-
-    @key_bindings.add(
-        "escape",
-        filter=Condition(
-            lambda: owner._tasks_visible and not owner._approval_visible()
-        ),
-        eager=True,
-    )
-    def close_tasks(event):
-        owner.leave_agent_focus()
-
-    @key_bindings.add(
-        "escape",
-        filter=Condition(
-            lambda: (
-                not owner._tasks_visible
-                and not owner._approval_visible()
-                and owner._is_running()
-            )
-        ),
-        eager=True,
-    )
-    def interrupt_with_escape(event):
-        if owner._on_interrupt and owner._on_interrupt():
-            event.app.invalidate()
-
-    return key_bindings
+    # Bare Esc is a prefix of the alt+enter queue binding; keep both flush
+    # timeouts short so Esc-to-interrupt stays snappy. (``ttimeoutlen`` flushes
+    # a lone escape byte, ``timeoutlen`` resolves the prefix-of-longer-match
+    # wait in the key processor.)
+    application.ttimeoutlen = 0.15
+    application.timeoutlen = 0.15
+    return application
 
 
 __all__ = ["build_layered_application"]

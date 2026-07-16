@@ -44,6 +44,7 @@ class TurnCompletionRenderer:
                     cost=outcome.cost,
                 ),
                 outcome=outcome.yield_summary,
+                shipped=outcome.shipped,
             )
         )
         completed_mode = self._interaction.active_mode()
@@ -67,6 +68,11 @@ class TurnCompletionRenderer:
             summary = outcome.yield_summary or (
                 "interrupted" if outcome.interrupted else "answer"
             )
+            # The layered app's terminal mixin turns this one-liner into the
+            # background-shell notification (OSC 777) or, when the turn ends
+            # while the terminal window is unfocused (mode 1004 focus
+            # tracking), an OSC 9 desktop notification on allowlisted
+            # terminals — both through the queued terminal-write path.
             app.notify_turn_complete(summary)
 
 

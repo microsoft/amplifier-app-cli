@@ -1,0 +1,20 @@
+
+Amplifier:
+Result
+
+Bold and italic with docs.
+
+▌ Quoted evidence
+
+ • first item
+ • second item
+
+
+  Check   State
+ ━━━━━━━━━━━━━━━
+  tests   pass
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+value = "a deliberately long value that must wrap safely"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

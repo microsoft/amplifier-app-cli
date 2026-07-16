@@ -11,20 +11,25 @@ from prompt_toolkit.utils import get_cwidth
 
 from .clipboard import ImageAttachment
 from .clipboard_availability import ClipboardAvailabilitySnapshot
-from .inline_approval import ApprovalDefault
+from .inline_approval import ApprovalDecision, ApprovalDefault, ApprovalOption
+from .layered_repl_style import TOKENS
 from .notices import NoticeKind
 from .repl import summarize_cell_text
+from .transcript_blocks import AnswerBlock
 
 if TYPE_CHECKING:
     from prompt_toolkit.application import Application
 
     from .inline_approval import InlineApprovalState
     from .notices import TransientNoticeState
+    from .ui_events import UiEvent
 
     class _LayeredReplApprovalOwner(Protocol):
         application: Application[Any]
         _approval_state: InlineApprovalState
         _notices: TransientNoticeState
+
+        def _emit_ui_event(self, event: UiEvent) -> None: ...
 
         def _copy_text(self, text: str) -> bool: ...
 
@@ -79,6 +84,27 @@ class LayeredReplApprovalMixin:
     def _deny_approval(self: _LayeredReplApprovalOwner) -> None:
         self._approval_state.deny()
 
+    def _resolve_approval(
+        self: _LayeredReplApprovalOwner, decision: ApprovalDecision
+    ) -> None:
+        """Per-option shortcut path (y/a/d), matched before list navigation."""
+        self._approval_state.resolve_decision(decision)
+
+    def show_approval_detail(self: _LayeredReplApprovalOwner) -> None:
+        """ctrl-a: print the full request payload as a transcript block.
+
+        The inline approval bar stays active; the block is scrollback, not an
+        overlay, so the pending decision keeps keyboard focus.
+        """
+        detail = self._approval_state.detail()
+        if detail is None:
+            return
+        lines = [detail.prompt] if detail.prompt else []
+        lines.extend(f"{name}: {value}" for name, value in detail.fields)
+        if not lines:
+            return
+        self._emit_ui_event(AnswerBlock("\n".join(lines), label="Approval request"))
+
     def _clipboard_availability_changed(
         self: _LayeredReplApprovalOwner,
         snapshot: ClipboardAvailabilitySnapshot,
@@ -126,23 +152,24 @@ class LayeredReplApprovalMixin:
         if snapshot is None:
             return FormattedText()
         columns = max(1, self._terminal_size()[1])
-        option_labels = [
-            summarize_cell_text(option, max_cells=18) for option in snapshot.options
-        ]
+        displays = [_display_label(option) for option in snapshot.options]
         prefix = " Approval required · "
-        options_width = sum(get_cwidth(option) + 4 for option in option_labels)
+        options_width = sum(get_cwidth(display) + 4 for display in displays)
         if options_width > columns - min(get_cwidth(prefix), columns):
-            ratio = f"{snapshot.selected_index + 1}/{len(option_labels)}"
+            # Too narrow for every option: show only the selection ratio and
+            # drop the shortcut hints (ctrl-a still opens the full detail).
+            ratio = f"{snapshot.selected_index + 1}/{len(displays)}"
             option_budget = max(3, columns - min(get_cwidth(prefix), columns) - 1)
             label_budget = max(1, option_budget - get_cwidth(ratio) - 1)
             selected = summarize_cell_text(
-                option_labels[snapshot.selected_index], max_cells=label_budget
+                snapshot.selected_option.label, max_cells=label_budget
             )
-            option_labels = [f"{selected} {ratio}"]
+            rendered = [(f"{selected} {ratio}", snapshot.selected_option)]
             selected_index = 0
         else:
+            rendered = list(zip(displays, snapshot.options, strict=True))
             selected_index = snapshot.selected_index
-        options_width = sum(get_cwidth(option) + 4 for option in option_labels)
+        options_width = sum(get_cwidth(display) + 4 for display, _ in rendered)
         prefix = summarize_cell_text(
             prefix,
             max_cells=max(1, columns - options_width),
@@ -156,15 +183,40 @@ class LayeredReplApprovalMixin:
         fragments: list[tuple[str, str]] = [("class:approval.focus", prefix)]
         if question:
             fragments.append(("class:approval", f"{question} "))
-        for index, option in enumerate(option_labels):
-            style = (
-                "class:approval.selected"
-                if index == selected_index
-                else "class:approval.option"
+        for index, (display, option) in enumerate(rendered):
+            fragments.extend(
+                _option_fragments(display, option, selected=index == selected_index)
             )
-            marker = "›" if index == selected_index else " "
-            fragments.append((style, f" {marker} {option} "))
         return FormattedText(fragments)
+
+
+def _display_label(option: ApprovalOption) -> str:
+    """Option label with its bracketed shortcut hint, e.g. ``[y] Allow once``."""
+    label = summarize_cell_text(option.label, max_cells=18)
+    if option.shortcut:
+        return f"[{option.shortcut}] {label}"
+    return label
+
+
+def _option_fragments(
+    display: str, option: ApprovalOption, *, selected: bool
+) -> list[tuple[str, str]]:
+    """Style one rendered option; the ``[y]`` shortcut renders dim (spec §5)."""
+    if selected:
+        style = "class:approval.selected"
+    elif option.decision == "deny":
+        style = f"class:approval.option fg:{TOKENS['red']}"
+    else:
+        style = "class:approval.option"
+    marker = "›" if selected else " "
+    shortcut_prefix = f"[{option.shortcut}] " if option.shortcut else ""
+    if not selected and shortcut_prefix and display.startswith(shortcut_prefix):
+        dim = f"class:approval.option fg:{TOKENS['dimmer']}"
+        return [
+            (dim, f" {marker} {shortcut_prefix}"),
+            (style, f"{display[len(shortcut_prefix) :]} "),
+        ]
+    return [(style, f" {marker} {display} ")]
 
 
 __all__ = ["LayeredReplApprovalMixin"]

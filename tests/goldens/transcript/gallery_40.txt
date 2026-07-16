@@ -1,0 +1,81 @@
+
+❯ [build] Please verify the persistence
+boundary
+
+Amplifier:
+Result
+
+Bold and italic with docs.
+
+▌ Quoted evidence
+
+ • first item
+ • second item
+
+
+  Check   State
+ ━━━━━━━━━━━━━━━
+  tests   pass
+
+
+────────────────────────────────────────
+value = "a deliberately long value that
+must wrap safely"
+────────────────────────────────────────
+● Checking the durable session store
+(1m 08s · ↓ 83.9k tok, 91% cached ·
+$0.17)
+  ● Ran 1 shell command · click or
+ctrl-o expand
+  ● Running test suite
+  └ $ uv run pytest
+tests/test_session_store.py --maxfail=1
+  ● Test suite failed · click or ctrl-o
+expand
+  ● Ran 1 shell command
+      session store check 01 ok
+      session store check 02 ok
+      session store check 03 ok
+      session store check 04 ok
+      session store check 05 ok
+      session store check 06 ok
+      session store check 07 ok
+      session store check 08 ok
+      … +8 lines · full via ctrl-o again
+or transcript export
+      session store check 17 ok
+      session store check 18 ok
+      session store check 19 ok
+      session store check 20 ok
+· amplifier_app_cli/session_store.py →
+amplifier_app_cli/durable_session_store.
+py (+2 −1)
+       @@ -41,4 +41,5 @@
+    41  def save_session(value):
+    42 −    return store.write(value)
+    42 +    payload = sanitize(value)
+    43 +    return
+durable_store.write(payload)
+    44
+       \ No newline at end of file
+  ⊘ git push --force origin main ·
+outside user authorization · finding
+safer path
+  41 def save_session(value):
+❱ 42     return
+     durable_store.write(value)
+· Refactor session store  (1m 08s · ↓
+83.9k tok, 91% cached · $0.17)
+  ✔ Audit persistence paths
+  ■ Migrate durable history
+  □ Add reconciliation
+✳ working · 1m 08s · ↓ 83.9k tok, 91%
+cached · $0.17 · esc to interrupt · type
+to steer
+✳ Goal: durable chat history. Next:
+resume migration from the active
+checkpoint.
+  (2 lines · ctrl-o expand)
+────────────────────────────────────────
+1m 08s · 83.9k tok, 91% cached · $0.17 ·
+3 files · +142/-38 · tests ✔

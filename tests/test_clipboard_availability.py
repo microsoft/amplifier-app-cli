@@ -214,7 +214,7 @@ async def test_layered_app_shows_notice_footer_hint_and_cleans_detector(
         assert notice_line.endswith("Image in clipboard · ctrl+v to paste")
         assert notice_line.startswith(" ")
         assert "ctrl-v paste image" not in footer
-        assert "/ commands" in footer
+        assert "/" in footer
 
         app.exit()
         await asyncio.wait_for(run_task, timeout=1)

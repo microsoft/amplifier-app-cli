@@ -30,13 +30,26 @@ _MAX_SCALAR_CHARS = 1_024
 _ANSI_RE = re.compile(
     r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])"
 )
-_BIDI_CONTROL_CODEPOINTS = {
-    0x061C,
-    0x200E,
-    0x200F,
-    *range(0x202A, 0x202F),
-    *range(0x2066, 0x206A),
-}
+# Trojan-Source bidi controls plus invisible formatting codepoints stripped
+# from every sanitized surface. Deliberately emoji-safe: ZWNJ/ZWJ (U+200C,
+# U+200D) and variation selectors (U+FE00-FE0F) are KEPT because transcript
+# and tool-preview text legitimately contains emoji sequences and complex
+# scripts. The aggressive titles-only set lives in ui/repl.py
+# (_TITLE_DISALLOWED_CODEPOINTS), mirroring codex terminal_title.rs.
+_INVISIBLE_FORMAT_CODEPOINTS = frozenset(
+    {
+        0x061C,  # Arabic letter mark
+        0x200B,  # zero-width space
+        0x200E,  # left-to-right mark
+        0x200F,  # right-to-left mark
+        0xFEFF,  # BOM / zero-width no-break space
+        *range(0x202A, 0x202F),  # bidi embeddings/overrides (Trojan Source)
+        *range(0x2060, 0x2065),  # word joiner + invisible operators
+        *range(0x2066, 0x2070),  # bidi isolates + deprecated formatting
+        *range(0xFFF9, 0xFFFC),  # interlinear annotation controls
+        *range(0xE0000, 0xE0080),  # astral tag characters
+    }
+)
 _SENSITIVE_KEYS = {
     "api_key",
     "apikey",
@@ -377,7 +390,7 @@ def sanitize(value: str) -> str:
     return "".join(
         char
         for char in value
-        if ord(char) not in _BIDI_CONTROL_CODEPOINTS
+        if ord(char) not in _INVISIBLE_FORMAT_CODEPOINTS
         and (char in {"\n", "\t"} or ord(char) >= 0x20)
         and not 0x7F <= ord(char) <= 0x9F
     )

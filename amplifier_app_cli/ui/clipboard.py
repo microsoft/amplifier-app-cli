@@ -66,6 +66,7 @@ class ChatSubmission:
     text: str
     attachments: tuple[ImageAttachment, ...] = ()
     display_text: str | None = None
+    queue: bool = False
 
 
 def build_image_message(

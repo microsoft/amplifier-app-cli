@@ -10,6 +10,7 @@ from prompt_toolkit.input.base import Input
 from prompt_toolkit.output.base import Output
 
 from .clipboard import ChatSubmission
+from .clipboard import ImageAttachment
 from .clipboard_availability import ClipboardImageAvailabilityDetector
 from .command_registry import CommandRegistry
 from .evidence_links import EvidenceLinkModel
@@ -62,6 +63,10 @@ class LayeredReplBindings:
     get_render_profile: Callable[[], str] | None = None
     get_is_running: Callable[[], bool] | None = None
     get_queued_count: Callable[[], int] | None = None
+    get_queued_preview: Callable[[], tuple[str, ...]] | None = None
+    pop_last_queued: (
+        Callable[[], tuple[str, tuple[ImageAttachment, ...]] | None] | None
+    ) = None
     get_task_title: Callable[[], str | None] | None = None
     on_cycle_mode: Callable[[], object] | None = None
     on_cycle_permission: Callable[[], object] | None = None

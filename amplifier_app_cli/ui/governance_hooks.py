@@ -11,6 +11,8 @@ from typing import Any
 from amplifier_core import HookResult
 
 from .governance import ActionGateResult, ActionGovernor, GateDisposition
+from .inline_approval import STANDARD_APPROVAL_OPTIONS, ApprovalDetail
+from .inline_approval import option_labels, stage_approval_detail
 from .interaction_state import NeedsYouQueue, TrustState
 from .safety_classifier import ActionRequest, CapabilityClass
 from .safety_classifier import ClassifierObservation, InjectionInputProbe
@@ -129,10 +131,25 @@ class GovernanceHook:
         if result.disposition == GateDisposition.ALLOW:
             return HookResult(action="continue")
         if result.disposition == GateDisposition.ASK:
+            prompt = f"Allow {action}?"
+            # Full payload for the inline surface's ctrl-a detail view; the
+            # kernel contract itself stays (prompt, list[str] options).
+            stage_approval_detail(
+                prompt,
+                ApprovalDetail(
+                    prompt=prompt,
+                    fields=(
+                        ("command", action),
+                        ("cwd", target or str(self._project_root)),
+                        ("rule", result.reason),
+                        ("capability", str(capability.value)),
+                    ),
+                ),
+            )
             return HookResult(
                 action="ask_user",
-                approval_prompt=f"Allow {action}?",
-                approval_options=["Allow once", "Deny"],
+                approval_prompt=prompt,
+                approval_options=list(option_labels(STANDARD_APPROVAL_OPTIONS)),
                 approval_default="deny",
                 reason=result.reason,
             )

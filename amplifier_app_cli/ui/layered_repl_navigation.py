@@ -13,6 +13,7 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.utils import get_cwidth
 
+from .layered_repl_style import TOKENS
 from .repl import summarize_cell_text
 from .transcript_blocks import AnswerBlock
 from .transcript_blocks import tool_block_from_activity
@@ -73,8 +74,9 @@ class LayeredReplNavigationMixin:
     def show_shortcut_help(self: _LayeredReplNavigationOwner) -> None:
         self._notices.show(
             "drag copy · shift-drag native select · ctrl-j newline · "
-            "shift-tab mode · ctrl-o tool · ctrl-l ledger · ctrl-r rewind · "
-            "ctrl-y decisions · ctrl-e evidence · ctrl-d exit"
+            "shift-tab mode · ctrl-p permission · ctrl-t tasks · ctrl-o tool · "
+            "ctrl-l ledger · ctrl-r rewind · ctrl-y decisions · ctrl-e evidence · "
+            "ctrl-d exit"
         )
 
     def _palette_snapshot(self: _LayeredReplNavigationOwner):
@@ -92,36 +94,49 @@ class LayeredReplNavigationMixin:
         return not self._tasks_visible and bool(self._palette_snapshot().commands)
 
     def _palette_height(self: _LayeredReplNavigationOwner) -> Dimension:
-        return Dimension.exact(len(self._palette_snapshot().commands))
+        snapshot = self._palette_snapshot()
+        lines = len(snapshot.commands)
+        if snapshot.query == "/":
+            lines += len({command.phase for command in snapshot.commands})
+        return Dimension.exact(lines)
 
     def _palette_text(self: _LayeredReplNavigationOwner) -> FormattedText:
         snapshot = self._palette_snapshot()
         width = max(1, self._terminal_size()[1])
+        show_headers = snapshot.query == "/"
+        name_cells = min(24, max(12, width // 4))
         fragments: list[tuple[str, str]] = []
+        current_phase = None
         for index, command in enumerate(snapshot.commands):
+            if fragments:
+                fragments.append(("", "\n"))
+            if show_headers and command.phase is not current_phase:
+                current_phase = command.phase
+                fragments.append(
+                    ("class:palette.phase", f"  {command.phase.value.upper()}")
+                )
+                fragments.append(("", "\n"))
             selected = index == snapshot.selected_index
-            style = "class:palette.selected" if selected else "class:palette"
+            row = "class:palette.selected" if selected else "class:palette"
             marker = "›" if selected else " "
-            phase = summarize_cell_text(command.phase.value, max_cells=8)
-            name = summarize_cell_text(
-                command.name, max_cells=min(24, max(8, width // 4))
-            )
+            name = summarize_cell_text(command.name, max_cells=name_cells)
+            name += " " * max(0, name_cells - get_cwidth(name))
             source = f"[{command.source.value}]"
-            fixed = f"{marker} {phase:<8} {name}  {source}"
-            budget = max(0, width - get_cwidth(fixed) - 2)
+            prefix = f"{marker} {name}  "
+            budget = max(0, width - get_cwidth(prefix) - get_cwidth(source) - 2)
             description = (
                 summarize_cell_text(command.description, max_cells=budget)
                 if budget
                 else ""
             )
-            line = f"{marker} {phase:<8} {name}"
-            if description:
-                line += f"  {description}"
-            line += " " * max(1, width - get_cwidth(line) - get_cwidth(source))
-            line += source
-            if index < len(snapshot.commands) - 1:
-                line += "\n"
-            fragments.append((style, line))
+            pad = " " * max(
+                1, width - get_cwidth(prefix + description) - get_cwidth(source)
+            )
+            fragments.append((row, f"{marker} "))
+            fragments.append((f"{row} class:palette.command", name))
+            fragments.append((row if selected else "class:palette", f"  {description}"))
+            fragments.append((row, pad))
+            fragments.append((f"{row} class:palette.source", source))
         return FormattedText(fragments)
 
     def _move_palette(self: _LayeredReplNavigationOwner, delta: int) -> None:
@@ -167,18 +182,18 @@ class LayeredReplNavigationMixin:
             return FormattedText()
         entry = entries[self._rewind_selected_index]
         outcome = entry.yield_summary or "no recorded yield"
-        text = (
-            f"  rewind › {entry.checkpoint_id} · ${entry.cost:.2f} · {outcome}"
-            " · ←/→ select · enter fork · esc close"
+        dimmer = f"fg:{TOKENS['dimmer']}"
+        tail: list[tuple[str, str]] = [
+            (dimmer, " · ‹ › move · "),
+            ("class:selected", " enter fork "),
+            (dimmer, " · esc close"),
+        ]
+        tail_cells = sum(get_cwidth(text) for _, text in tail)
+        head = summarize_cell_text(
+            f"  rewind › {entry.checkpoint_id} · ${entry.cost:.2f} · {outcome}",
+            max_cells=max(1, self._terminal_size()[1] - tail_cells),
         )
-        return FormattedText(
-            [
-                (
-                    "class:rewind",
-                    summarize_cell_text(text, max_cells=self._terminal_size()[1]),
-                )
-            ]
-        )
+        return FormattedText([("class:rewind", head), *tail])
 
     def _move_rewind(self: _LayeredReplNavigationOwner, delta: int) -> None:
         entries = self._rewind_entries()

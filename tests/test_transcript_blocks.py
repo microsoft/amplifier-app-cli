@@ -9,6 +9,7 @@ from amplifier_app_cli.ui.transcript_blocks import BlockedBlock
 from amplifier_app_cli.ui.transcript_blocks import AnswerBlock
 from amplifier_app_cli.ui.transcript_blocks import CodeExcerptBlock
 from amplifier_app_cli.ui.transcript_blocks import DebugBlock
+from amplifier_app_cli.ui.transcript_blocks import DiffBlock
 from amplifier_app_cli.ui.transcript_blocks import NarrationBlock
 from amplifier_app_cli.ui.transcript_blocks import PlanBlock
 from amplifier_app_cli.ui.transcript_blocks import PlanItem
@@ -24,6 +25,7 @@ from amplifier_app_cli.ui.transcript_blocks import TurnTerminatorBlock
 from amplifier_app_cli.ui.transcript_blocks import UserBlock
 from amplifier_app_cli.ui.transcript_blocks import telemetry_from_usage
 from amplifier_app_cli.ui.transcript_blocks import tool_block_from_activity
+from amplifier_app_cli.ui.session_commands import parse_diff_blocks
 from amplifier_app_cli.ui.runtime_values import BoundedText
 from amplifier_app_cli.ui.runtime_values import ToolActivitySnapshot
 from amplifier_app_cli.ui.runtime_values import ToolActivityStatus
@@ -100,7 +102,7 @@ def test_renderer_enforces_core_block_prefixes_and_plan_states() -> None:
     for expected in (
         "❯ [build]",
         "● Checking",
-        "└ uv run",
+        "└ $ uv run",
         "✔ Inspect",
         "■ Run",
         "□ Publish",
@@ -132,7 +134,7 @@ def test_tool_and_debug_output_collapse_by_default() -> None:
     )
 
     assert output.count("2 lines · ctrl-o expand") == 1
-    assert "  ● Ran 1 shell command\n" in output
+    assert "  ● Ran 1 shell command · click or ctrl-o expand\n" in output
     assert "secret one" not in output
     assert "first" not in output
 
@@ -199,6 +201,184 @@ def test_expanded_debug_and_tool_output_are_visible() -> None:
 
     assert "ok" in output
     assert "detail" in output
+
+
+def test_expanded_tool_output_elides_middle_with_head_and_tail() -> None:
+    output = _render(
+        ToolBlock(
+            "Ran 1 shell command",
+            ToolStatus.COMPLETED,
+            output=tuple(f"line {index:02d}" for index in range(1, 21)),
+            expanded=True,
+        )
+    )
+
+    for visible in ("line 01", "line 08", "line 17", "line 20"):
+        assert visible in output
+    for elided in ("line 09", "line 12", "line 16"):
+        assert elided not in output
+    assert "… +8 lines · full via ctrl-o again or transcript export" in output
+    lines = output.splitlines()
+    assert lines.index("      line 08") < lines.index("      line 17")
+
+
+def test_expanded_tool_output_below_threshold_shows_every_line() -> None:
+    output = _render(
+        ToolBlock(
+            "Ran 1 shell command",
+            ToolStatus.COMPLETED,
+            output=tuple(f"line {index:02d}" for index in range(1, 13)),
+            expanded=True,
+        )
+    )
+
+    for index in range(1, 13):
+        assert f"line {index:02d}" in output
+    assert "… +" not in output
+
+
+def test_diff_block_renders_header_counts_and_gutter_numbers() -> None:
+    output = _render(
+        DiffBlock(
+            path="pkg/module.py",
+            diff_text=(
+                "@@ -3,3 +3,4 @@\n"
+                " context = 1\n"
+                "-removed = 2\n"
+                "+added = 2\n"
+                "+extra = 3\n"
+                "\\ No newline at end of file"
+            ),
+            added=2,
+            removed=1,
+        )
+    )
+
+    assert "· pkg/module.py (+2 −1)" in output
+    assert "@@ -3,3 +3,4 @@" in output
+    assert "   3  context = 1" in output
+    assert "   4 −removed = 2" in output
+    assert "   4 +added = 2" in output
+    assert "   5 +extra = 3" in output
+    assert "\\ No newline at end of file" in output
+
+
+def test_diff_block_shows_rename_arrow_and_caps_body() -> None:
+    output = _render(
+        DiffBlock(
+            path="old/name.py",
+            diff_text="@@ -1 +1 @@\n-a\n+b",
+            added=1,
+            removed=1,
+            move_path="new/name.py",
+        )
+    )
+
+    assert "old/name.py → new/name.py" in output
+
+    capped = DiffBlock("p", "\n".join(str(n) for n in range(1_000)), 0, 0)
+    assert len(capped.diff_text.splitlines()) == 400
+
+
+def test_diff_block_sanitizes_and_rejects_negative_counts() -> None:
+    block = DiffBlock("path\x1b]0;owned\x07.py", "+ok\x07", 1, 0)
+
+    assert "\x1b" not in block.path
+    assert "\x07" not in block.diff_text
+
+    with pytest.raises(ValueError):
+        DiffBlock("p", "+x", -1, 0)
+    with pytest.raises(ValueError):
+        DiffBlock("p", "+x", 0, -2)
+
+
+def test_render_profiles_hide_diff_blocks_like_other_detail() -> None:
+    stream = StringIO()
+    renderer = TranscriptRenderer(
+        Console(file=stream, no_color=True), render_profile="plan"
+    )
+
+    renderer.render(DiffBlock("pkg/module.py", "@@ -1 +1 @@\n+x", 1, 0))
+
+    assert "pkg/module.py" not in stream.getvalue()
+
+
+def test_parse_diff_blocks_handles_edit_rename_and_binary() -> None:
+    diff_text = (
+        "diff --git a/src/app.py b/src/app.py\n"
+        "index 111..222 100644\n"
+        "--- a/src/app.py\n"
+        "+++ b/src/app.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        " keep\n"
+        "-drop\n"
+        "+add one\n"
+        "+add two\n"
+        "diff --git a/docs/old.md b/docs/new.md\n"
+        "similarity index 100%\n"
+        "rename from docs/old.md\n"
+        "rename to docs/new.md\n"
+        "diff --git a/logo.png b/logo.png\n"
+        "index 333..444 100644\n"
+        "Binary files a/logo.png and b/logo.png differ\n"
+    )
+
+    blocks, dropped = parse_diff_blocks(diff_text)
+
+    assert dropped == 0
+    assert [block.path for block in blocks] == [
+        "src/app.py",
+        "docs/old.md",
+        "logo.png",
+    ]
+    edited, renamed, binary = blocks
+    assert (edited.added, edited.removed) == (2, 1)
+    assert edited.move_path is None
+    assert "@@ -1,2 +1,3 @@" in edited.diff_text
+    assert renamed.move_path == "docs/new.md"
+    assert renamed.diff_text == "(no content changes)"
+    assert binary.diff_text == "(binary file · no text diff)"
+    assert (binary.added, binary.removed) == (0, 0)
+
+
+def test_parse_diff_blocks_keeps_no_newline_marker_out_of_counts() -> None:
+    diff_text = (
+        "diff --git a/f b/f\n"
+        "--- a/f\n"
+        "+++ b/f\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "\\ No newline at end of file\n"
+        "+new\n"
+        "\\ No newline at end of file\n"
+    )
+
+    blocks, _ = parse_diff_blocks(diff_text)
+
+    (block,) = blocks
+    assert (block.added, block.removed) == (1, 1)
+    assert block.diff_text.count("\\ No newline at end of file") == 2
+
+
+def test_parse_diff_blocks_bounds_files_and_per_file_lines() -> None:
+    one_file = "diff --git a/f{n} b/f{n}\n--- a/f{n}\n+++ b/f{n}\n@@ -1 +1 @@\n-a\n+b\n"
+    diff_text = "".join(one_file.replace("{n}", str(n)) for n in range(25))
+
+    blocks, dropped = parse_diff_blocks(diff_text)
+
+    assert len(blocks) == 20
+    assert dropped == 5
+
+    big_body = "\n".join(f"+line {n}" for n in range(600))
+    big = (
+        f"diff --git a/big b/big\n--- a/big\n+++ b/big\n@@ -0,0 +1,600 @@\n{big_body}\n"
+    )
+
+    (block,), _ = parse_diff_blocks(big)
+
+    assert block.added == 600
+    assert len(block.diff_text.splitlines()) == 400
+    assert "… +202 more diff lines not shown" in block.diff_text
 
 
 def test_code_excerpt_has_line_numbers_and_changed_line_marker() -> None:
@@ -288,4 +468,4 @@ def test_runtime_snapshots_adapt_to_tool_and_telemetry_blocks() -> None:
 
     assert telemetry.suffix() == "(6.1s · ↓ 1.2k tok, 80% cached · $0.04)"
     assert "Ran 1 shell command" in output
-    assert "ctrl-o expand" not in output
+    assert "· click or ctrl-o expand" in output

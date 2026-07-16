@@ -10,6 +10,8 @@ from typing import Literal
 from rich.console import Console
 from rich.prompt import Prompt
 
+from .inline_approval import decision_for_label
+
 logger = logging.getLogger(__name__)
 
 ApprovalHandler = Callable[
@@ -109,7 +111,7 @@ class CLIApprovalSystem:
 
         if self._bypass_permissions:
             choice = next(
-                (option for option in options if option.lower().startswith("allow")),
+                (option for option in options if decision_for_label(option) != "deny"),
                 options[0],
             )
             self._record_decision(prompt, choice)
@@ -161,7 +163,7 @@ class CLIApprovalSystem:
             raise ApprovalTimeoutError(f"User approval timeout after {timeout}s")
 
     def _cache_choice(self, cache_key: str, choice: str) -> None:
-        if choice != "Allow always":
+        if decision_for_label(choice) != "allow_always":
             return
         self.cache[cache_key] = "Allow once"
         self.console.print("[green]✓ Approval cached for this session[/green]")

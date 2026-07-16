@@ -1,72 +1,141 @@
-"""Color roles for the layered terminal application."""
+"""Theme tokens and color roles for the layered terminal application.
+
+Single source for the TUI v3 palette (docs/designs/tui-v3-cohesive.md, section 1).
+``slate`` is the default theme; ``graphite`` (warm) and ``carbon`` (cool, high
+contrast) are alternates behind the same token names. There is no runtime
+theme-selection mechanism yet — switch by pointing ``TOKENS`` at another entry
+in ``THEMES``.
+"""
 
 from prompt_toolkit.styles import Style
 
 
-# Named color tokens referenced directly (outside prompt_toolkit style classes)
-# by layered_repl_status.py for inline fragment coloring -- e.g. footer hint
-# dimming and footer colorization accents. Only the keys actually consumed
-# today are defined; values mirror the hex colors already used for the same
-# roles in LAYERED_REPL_STYLE below so the two stay visually consistent.
-TOKENS: dict[str, str] = {
-    "bg_chrome": "#353c48",
+SLATE_TOKENS: dict[str, str] = {
+    "bg_term": "#232937",
+    "bg_chrome": "#191d27",
+    "bg_tab": "#2b3243",
+    "fg": "#c9d1e0",
+    "bright": "#eef2f8",
+    "dim": "#6b7487",
     "dimmer": "#4a5163",
     "green": "#7ec699",
     "orange": "#e0a458",
+    "red": "#e06c75",
+    "blue": "#7aa2f7",
+    "teal": "#6fc3c3",
+    "rule": "#333b4d",
 }
 
+GRAPHITE_TOKENS: dict[str, str] = {
+    "bg_term": "#211e1a",
+    "bg_chrome": "#181512",
+    "bg_tab": "#2c2722",
+    "fg": "#d6cfc4",
+    "bright": "#f2ede4",
+    "dim": "#8a8175",
+    "dimmer": "#575047",
+    "green": "#98c28b",
+    "orange": "#dba15c",
+    "red": "#d97371",
+    "blue": "#90a4d8",
+    "teal": "#80bcae",
+    "rule": "#3a352e",
+}
 
-LAYERED_REPL_STYLE = Style.from_dict(
-    {
-        "output": "fg:#d1d5db",
-        "output.muted": "fg:#71717a italic",
-        "selected": "bg:#475569 fg:#ffffff",
-        "stream.label": "fg:#67e8f9 bold",
-        "stream.thinking": "fg:#a1a1aa italic",
-        "stream.text": "fg:#e4e4e7",
-        "status": "fg:#8b93a3",
-        "status.risk": "fg:#e06c75 bold",
-        "plan": "fg:#c9d1e0",
-        "plan.header": "fg:#e0a458",
-        "plan.done": "fg:#7ec699",
-        "plan.active": "fg:#eef2f8 bold",
-        "plan.pending": "fg:#6b7487",
-        "steering": "fg:#e0a458",
-        "tools": "fg:#6b7487",
-        "working": "fg:#6b7487",
-        "working.glyph": "fg:#e0a458",
-        "working.title": "fg:#8b93a3",
-        "working.tree": "fg:#4a5163",
-        "working.agent": "fg:#a1a1aa",
-        "notice": "fg:#6b7487",
-        "palette": "fg:#a1a1aa",
-        "palette.selected": "bg:#303038 fg:#f4f4f5",
-        "palette.phase": "fg:#e0a458",
-        "palette.command": "fg:#79d88f bold",
-        "palette.source": "fg:#67e8f9",
-        "rewind": "fg:#e0a458",
-        "evidence": "fg:#6fc3c3",
-        "approval": "bg:#2b2930 fg:#d6d9e0",
-        "approval.focus": "bg:#2b2930 fg:#e0a458 bold",
-        "approval.option": "bg:#2b2930 fg:#858b98",
-        "approval.selected": "bg:#5a4728 fg:#ffffff bold",
-        "tasks": "fg:#d4d4d8",
-        "tasks.title": "fg:#f4f4f5 bold",
-        "tasks.section": "fg:#a1a1aa bold",
-        "tasks.running": "fg:#67e8f9",
-        "tasks.completed": "fg:#86efac",
-        "tasks.failed": "fg:#fca5a5",
-        "tasks.muted": "fg:#a1a1aa",
-        "prompt": "bg:#353c48 fg:#79d88f bold",
-        "mode.chat": "fg:#6b7487",
-        "mode.plan": "fg:#7aa2f7",
-        "mode.brainstorm": "fg:#6fc3c3",
-        "mode.build": "fg:#7ec699",
-        "mode.auto": "fg:#e0a458 bold",
-        "mode.bypass": "fg:#e06c75 bold",
-        "input": "bg:#353c48 fg:#f4f4f5",
-    }
-)
+CARBON_TOKENS: dict[str, str] = {
+    "bg_term": "#14171d",
+    "bg_chrome": "#0f1116",
+    "bg_tab": "#1f242e",
+    "fg": "#cdd6e4",
+    "bright": "#f4f7fc",
+    "dim": "#65718a",
+    "dimmer": "#3d4657",
+    "green": "#6fd39c",
+    "orange": "#e9b14f",
+    "red": "#ef6e7b",
+    "blue": "#6f9df2",
+    "teal": "#57c8c8",
+    "rule": "#2a3140",
+}
+
+THEMES: dict[str, dict[str, str]] = {
+    "slate": SLATE_TOKENS,
+    "graphite": GRAPHITE_TOKENS,
+    "carbon": CARBON_TOKENS,
+}
+
+TOKENS: dict[str, str] = THEMES["slate"]
 
 
-__all__ = ["LAYERED_REPL_STYLE"]
+def style_from_tokens(tokens: dict[str, str]) -> Style:
+    """Map the section 1 tokens onto the layered REPL's style classes."""
+    t = tokens
+    return Style.from_dict(
+        {
+            "transcript": f"bg:{t['bg_term']} fg:{t['fg']}",
+            "rule": f"fg:{t['rule']}",
+            "output": f"fg:{t['fg']}",
+            "output.muted": f"fg:{t['dim']} italic",
+            "selected": f"bg:{t['bg_tab']} fg:{t['bright']}",
+            "stream.label": f"fg:{t['teal']} bold",
+            "stream.thinking": f"fg:{t['dim']} italic",
+            "stream.text": f"fg:{t['fg']}",
+            "status": f"bg:{t['bg_chrome']} fg:{t['dim']}",
+            "status.risk": f"fg:{t['red']} bold",
+            "plan": f"fg:{t['fg']}",
+            "plan.header": f"fg:{t['orange']}",
+            "plan.done": f"fg:{t['green']}",
+            "plan.active": f"fg:{t['bright']} bold",
+            "plan.pending": f"fg:{t['dim']}",
+            "steering": f"fg:{t['teal']}",
+            "steering.hint": f"fg:{t['dimmer']}",
+            "tools": f"fg:{t['dim']}",
+            "working": f"fg:{t['dim']}",
+            "working.glyph": f"fg:{t['orange']}",
+            "working.title": f"fg:{t['dim']}",
+            "working.tree": f"fg:{t['dimmer']}",
+            "working.agent": f"fg:{t['dim']}",
+            "notice": f"fg:{t['dim']}",
+            "palette": f"fg:{t['dim']}",
+            "palette.selected": f"bg:{t['bg_tab']} fg:{t['fg']}",
+            "palette.phase": f"fg:{t['dimmer']}",
+            "palette.command": f"fg:{t['teal']} bold",
+            "palette.source": f"fg:{t['dimmer']}",
+            "rewind": f"fg:{t['orange']}",
+            "queued": f"fg:{t['orange']}",
+            "evidence": f"fg:{t['teal']}",
+            "approval": f"bg:{t['bg_chrome']} fg:{t['fg']}",
+            "approval.focus": f"bg:{t['bg_chrome']} fg:{t['orange']} bold",
+            "approval.option": f"bg:{t['bg_chrome']} fg:{t['dim']}",
+            "approval.selected": f"bg:{t['bg_tab']} fg:{t['bright']} bold",
+            "tasks": f"fg:{t['fg']}",
+            "tasks.title": f"fg:{t['bright']} bold",
+            "tasks.section": f"fg:{t['dim']} bold",
+            "tasks.running": f"fg:{t['teal']}",
+            "tasks.completed": f"fg:{t['green']}",
+            "tasks.failed": f"fg:{t['red']}",
+            "tasks.muted": f"fg:{t['dim']}",
+            "prompt": f"bg:{t['bg_chrome']} fg:{t['green']} bold",
+            "mode.chat": f"fg:{t['dim']}",
+            "mode.plan": f"fg:{t['blue']}",
+            "mode.brainstorm": f"fg:{t['teal']}",
+            "mode.build": f"fg:{t['green']}",
+            "mode.auto": f"fg:{t['orange']} bold",
+            "mode.bypass": f"fg:{t['red']} bold",
+            "input": f"bg:{t['bg_chrome']} fg:{t['bright']}",
+        }
+    )
+
+
+LAYERED_REPL_STYLE = style_from_tokens(TOKENS)
+
+
+__all__ = [
+    "CARBON_TOKENS",
+    "GRAPHITE_TOKENS",
+    "LAYERED_REPL_STYLE",
+    "SLATE_TOKENS",
+    "THEMES",
+    "TOKENS",
+    "style_from_tokens",
+]

@@ -14,7 +14,9 @@ from prompt_toolkit.layout.dimension import Dimension
 
 from amplifier_app_cli.session_store import sanitize_message
 
+from .layered_repl_style import TOKENS
 from .notices import NoticeKind
+from .task_status import TaskStatus
 from .transcript_blocks import AnswerBlock
 from .transcript_blocks import NarrationBlock
 from .transcript_blocks import UserBlock
@@ -99,12 +101,19 @@ class LayeredReplAgentMixin:
     def focus_selected_lane(self: _LayeredReplAgentOwner) -> None:
         if self._agent_lanes is None:
             return
+        lane = self._agent_lanes.snapshot().selected_lane
         session_id = self._agent_lanes.focus_selected()
         if session_id:
-            self._notices.show(f"focused {session_id[:8]} · esc parent")
+            focused = (
+                lane if lane is not None and lane.session_id == session_id else None
+            )
+            name = focused.agent if focused is not None else session_id[:8]
+            parent = focused.parent_session_id[:8] if focused is not None else "parent"
+            self._notices.show(f"focused: {name} · esc back")
             self._emit_ui_event(
                 NarrationBlock(
-                    f"Focused agent {session_id[:8]} · esc returns to parent"
+                    f"focused: {name} · subagent of {parent} · own context window"
+                    " · results report back to parent · esc back"
                 )
             )
             self._sync_focused_child_transcript(session_id)
@@ -244,10 +253,8 @@ class LayeredReplAgentMixin:
         snapshot = self._agent_lanes.snapshot()
         lines = snapshot.render_lines(max_columns=self._terminal_size()[1] - 2)
         fragments: list[tuple[str, str]] = [
-            (
-                "class:tasks.title",
-                " Agent lanes · ↑/↓ select · enter focus · esc parent\n",
-            )
+            ("class:tasks.title", " Agent lanes"),
+            (f"fg:{TOKENS['dimmer']}", " · ↑↓ select · enter focus · esc close\n"),
         ]
         if not lines:
             fragments.append(("class:tasks.muted", "  No delegated agents"))
@@ -255,13 +262,24 @@ class LayeredReplAgentMixin:
             for index, (lane, line) in enumerate(
                 zip(snapshot.lanes, lines, strict=True)
             ):
-                style = {
-                    "running": "class:tasks.running",
-                    "completed": "class:tasks.completed",
-                    "failed": "class:tasks.failed",
-                }.get(lane.status.value, "class:tasks.muted")
+                glyph, _, body = line.partition(" ")
+                glyph_style = {
+                    "◐": "class:tasks.running",
+                    "■": "class:tasks",
+                    "✔": "class:tasks.completed",
+                    "✘": "class:tasks.failed",
+                }.get(glyph, "class:tasks.muted")
+                body_style = (
+                    "class:tasks"
+                    if lane.status == TaskStatus.RUNNING
+                    else "class:tasks.muted"
+                )
+                if lane.selected:
+                    glyph_style = f"{glyph_style} bg:{TOKENS['bg_tab']}"
+                    body_style = "class:selected"
                 ending = "\n" if index < len(lines) - 1 else ""
-                fragments.append((style, f" {line}{ending}"))
+                fragments.append((glyph_style, f" {glyph} "))
+                fragments.append((body_style, f"{body}{ending}"))
         return FormattedText(fragments)
 
     def _task_state_changed(self: _LayeredReplAgentOwner) -> None:

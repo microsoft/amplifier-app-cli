@@ -37,6 +37,7 @@ def build_turn_outcome(
     starting_tool_keys: set[tuple[str, str]],
     starting_diff: GitDiffSnapshot,
     ending_diff: GitDiffSnapshot,
+    active_mode: str | None = None,
 ) -> TurnOutcome:
     """Classify one turn's bounded cost, usage, and concrete yield evidence."""
     elapsed = max(0.0, monotonic() - started_at)
@@ -96,7 +97,8 @@ def build_turn_outcome(
                 OutcomeYield(YieldKind.COMMANDS, f"{len(shell_tools)} {suffix}")
             )
         if not yields and response.strip():
-            yields.append(OutcomeYield(YieldKind.ANSWER, "answer"))
+            label = "plan ready" if active_mode == "plan" else "answer"
+            yields.append(OutcomeYield(YieldKind.ANSWER, label))
 
     turn_number = len(outcome_ledger.entries) + 1
     return TurnOutcome(

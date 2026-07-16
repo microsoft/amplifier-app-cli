@@ -302,7 +302,7 @@ class AgentLaneViewModel:
             parent_session_id=identifier(node.parent_id, self._tasks.root_session_id),
             agent=clean_line(node.agent, MAX_AGENT_CHARS) or "agent",
             status=node.status,
-            glyph=_status_glyph(node.status, selected=selected),
+            glyph=_status_glyph(node.status, active=active_tool is not None),
             summary=summary,
             elapsed_seconds=_elapsed(node, now),
             cost_usd=costs.get(node.session_id),
@@ -342,9 +342,10 @@ def _status_summary(status: TaskStatus) -> str:
     }[status]
 
 
-def _status_glyph(status: TaskStatus, *, selected: bool) -> str:
+def _status_glyph(status: TaskStatus, *, active: bool) -> str:
+    """Spec glyphs: ◐ running a tool (teal), ■ working (fg), ✔ done."""
     if status == TaskStatus.RUNNING:
-        return "◐" if selected else "■"
+        return "◐" if active else "■"
     return {
         TaskStatus.COMPLETED: "✔",
         TaskStatus.FAILED: "✘",

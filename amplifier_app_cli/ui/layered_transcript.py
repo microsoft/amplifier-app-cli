@@ -2,173 +2,25 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from io import StringIO
 from threading import RLock
 
 from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.layout.controls import BufferControl
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import FormattedText
-from prompt_toolkit.formatted_text import StyleAndTextTuples
-from prompt_toolkit.lexers import Lexer
-from prompt_toolkit.mouse_events import MouseEvent
-from prompt_toolkit.mouse_events import MouseButton
-from prompt_toolkit.mouse_events import MouseEventType
-from prompt_toolkit.selection import SelectionType
 from rich.console import Console
 
 from ..console import Markdown
+from .layered_transcript_control import TranscriptBufferControl
+from .layered_transcript_control import TranscriptLexer
 from .stream_status import StreamStatusTracker
 from .terminal_transcript import TerminalTranscript
+from .transcript_click_spans import ClickSpanRegistry
+from .transcript_click_spans import TranscriptSpan
 
 
-_SELECTION_TIMEOUT_SECONDS = 5.0
 _TRANSCRIPT_WINDOW_LINES = 512
-
-
-class _TranscriptLexer(Lexer):
-    def __init__(self, view: LayeredTranscriptView) -> None:
-        self._view = view
-
-    def lex_document(self, document: Document) -> Callable[[int], StyleAndTextTuples]:
-        def get_line(line_number: int) -> StyleAndTextTuples:
-            return list(self._view.formatted_line(line_number))
-
-        return get_line
-
-
-class _TranscriptBufferControl(BufferControl):
-    """Keep wheel navigation inside the transcript without stealing input focus."""
-
-    def __init__(self, view: LayeredTranscriptView) -> None:
-        self._view = view
-        self._selection_anchor: int | None = None
-        self._cursor_before_selection: int | None = None
-        self._follow_before_selection: bool | None = None
-        self._selection_generation = 0
-        self._selection_timeout: asyncio.TimerHandle | None = None
-        super().__init__(
-            buffer=view.buffer,
-            focusable=False,
-            lexer=view.lexer,
-        )
-
-    def mouse_handler(self, mouse_event: MouseEvent):
-        if mouse_event.event_type == MouseEventType.SCROLL_UP:
-            self.cancel_incomplete_selection()
-            self._view.scroll_page(-1, 3)
-            return None
-        if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
-            self.cancel_incomplete_selection()
-            self._view.scroll_page(1, 3)
-            return None
-        index = self._mouse_position_to_index(mouse_event)
-        if index is None:
-            return super().mouse_handler(mouse_event)
-        if (
-            mouse_event.event_type == MouseEventType.MOUSE_DOWN
-            and mouse_event.button == MouseButton.LEFT
-        ):
-            self.cancel_incomplete_selection()
-            self._cursor_before_selection = self.buffer.cursor_position
-            self._follow_before_selection = self._view.following_tail
-            self._view._follow_tail = False
-            self._selection_anchor = index
-            self.buffer.exit_selection()
-            self.buffer.cursor_position = index
-            self.buffer.start_selection(SelectionType.CHARACTERS)
-            self._arm_selection_timeout()
-            self._view._request_redraw()
-            return None
-        if (
-            mouse_event.event_type == MouseEventType.MOUSE_MOVE
-            and self._selection_anchor is not None
-        ):
-            self.buffer.cursor_position = index
-            self._arm_selection_timeout()
-            self._view._request_redraw()
-            return None
-        if (
-            mouse_event.event_type == MouseEventType.MOUSE_UP
-            and self._selection_anchor is not None
-        ):
-            self._cancel_selection_timeout()
-            self.buffer.cursor_position = index
-            selected = self.buffer.document.cut_selection()[1].text
-            if selected:
-                self._view._follow_tail = False
-                self._view.copy_selected_text(selected)
-            else:
-                self.buffer.exit_selection()
-                if self._cursor_before_selection is not None:
-                    self.buffer.cursor_position = self._cursor_before_selection
-                if self._follow_before_selection is not None:
-                    self._view._follow_tail = self._follow_before_selection
-            self._selection_anchor = None
-            self._cursor_before_selection = None
-            self._follow_before_selection = None
-            self._view._request_redraw()
-            return None
-        return super().mouse_handler(mouse_event)
-
-    def _mouse_position_to_index(self, mouse_event: MouseEvent) -> int | None:
-        get_processed_line = getattr(self, "_last_get_processed_line", None)
-        if get_processed_line is None:
-            return None
-        try:
-            processed_line = get_processed_line(mouse_event.position.y)
-            column = processed_line.display_to_source(mouse_event.position.x)
-            return self.buffer.document.translate_row_col_to_index(
-                mouse_event.position.y,
-                column,
-            )
-        except (IndexError, TypeError, ValueError):
-            return None
-
-    @property
-    def selection_in_progress(self) -> bool:
-        return self._selection_anchor is not None
-
-    def cancel_incomplete_selection(self) -> None:
-        """Recover when a terminal reports release outside the transcript."""
-        if self._selection_anchor is None:
-            return
-        self._cancel_selection_timeout()
-        self.buffer.exit_selection()
-        if self._cursor_before_selection is not None:
-            self.buffer.cursor_position = self._cursor_before_selection
-        if self._follow_before_selection is not None:
-            self._view._follow_tail = self._follow_before_selection
-        self._selection_anchor = None
-        self._cursor_before_selection = None
-        self._follow_before_selection = None
-        self._view._request_redraw()
-
-    def _arm_selection_timeout(self) -> None:
-        self._cancel_selection_timeout()
-        self._selection_generation += 1
-        generation = self._selection_generation
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        self._selection_timeout = loop.call_later(
-            _SELECTION_TIMEOUT_SECONDS,
-            self._expire_selection,
-            generation,
-        )
-
-    def _cancel_selection_timeout(self) -> None:
-        if self._selection_timeout is not None:
-            self._selection_timeout.cancel()
-            self._selection_timeout = None
-
-    def _expire_selection(self, generation: int) -> None:
-        self._selection_timeout = None
-        if generation == self._selection_generation:
-            self.cancel_incomplete_selection()
 
 
 class LayeredTranscriptView:
@@ -190,8 +42,8 @@ class LayeredTranscriptView:
             min(_TRANSCRIPT_WINDOW_LINES, int(requested_window)),
         )
         self.buffer = Buffer(multiline=True, read_only=True)
-        self.lexer = _TranscriptLexer(self)
-        self.control = _TranscriptBufferControl(self)
+        self.lexer = TranscriptLexer(self)
+        self.control = TranscriptBufferControl(self)
         self._transcript = TerminalTranscript(max_lines=None)
         self._window_start = 0
         self._window_end = 0
@@ -201,6 +53,9 @@ class LayeredTranscriptView:
         self._invalidate: Callable[[], None] | None = None
         self._follow_tail = True
         self._lock = RLock()
+        self._click_spans = ClickSpanRegistry()
+        self._on_click_action: Callable[[object], bool] | None = None
+        self._render_block: Callable[[object, int], str] | None = None
         self._preview_cache: (
             tuple[
                 str,
@@ -214,13 +69,29 @@ class LayeredTranscriptView:
     def set_invalidate(self, invalidate: Callable[[], None]) -> None:
         self._invalidate = invalidate
 
-    def append_output(self, text: str) -> None:
+    def set_click_action_handler(self, handler: Callable[[object], bool]) -> None:
+        """Route clicks on registered block spans to the owning application."""
+        self._on_click_action = handler
+
+    def set_block_renderer(self, render: Callable[[object, int], str]) -> None:
+        """Provide the source-backed ``(block, width) -> ANSI`` reflow renderer."""
+        self._render_block = render
+
+    def append_output(
+        self,
+        text: str,
+        action: object | None = None,
+        block: object | None = None,
+    ) -> None:
         """Capture output while keeping prompt-toolkit's loaded window bounded."""
         value = str(text)
         if not value:
             return
         with self._lock:
+            start_row = self._transcript.line_count
             self._transcript.write(value)
+            end_row = self._transcript.line_count - 1
+            self._click_spans.record(start_row, end_row, action, block=block, raw=value)
             # A paused viewport is immutable while new tail output arrives.
             # This preserves its global row, selection, and cursor exactly.
             if self._follow_tail:
@@ -229,6 +100,132 @@ class LayeredTranscriptView:
                     follow_tail=True,
                 )
         self._request_redraw()
+
+    def click_action_at_row(self, global_row: int) -> object | None:
+        """Return the block action registered for one global transcript row."""
+        with self._lock:
+            return self._click_spans.action_at(int(global_row))
+
+    def activate_click_at_row(self, global_row: int) -> bool:
+        """Dispatch a click on one transcript row to its registered action."""
+        handler = self._on_click_action
+        if handler is None:
+            return False
+        action = self.click_action_at_row(global_row)
+        if action is None:
+            return False
+        try:
+            return bool(handler(action))
+        except Exception:
+            return False
+
+    def reflow_to_width(self, width: int) -> bool:
+        """Rebuild history from retained sources at a new terminal width.
+
+        Retained blocks re-render through the canonical Rich pipeline at the
+        new width; untagged spans (resume replays, stray stdout) replay their
+        raw ANSI verbatim. Click spans are rebuilt against the new rows, and
+        the viewport returns to the tail when it was tailing, or stays
+        anchored to the span it was paused on.
+        """
+        render = self._render_block
+        if render is None:
+            return False
+        # No documented rationale ties reflow to a 240-column ceiling (see
+        # ADR-0006); only a sane floor is enforced so real terminal widths
+        # above 240 reflow correctly instead of silently pinning to 240.
+        width = max(20, int(width))
+        with self._lock:
+            spans = self._click_spans.spans
+            dropped = self._click_spans.dropped_count
+            old_line_count = self._transcript.line_count
+            was_tailing = self._follow_tail
+            anchor_span, anchor_row = self._anchor_locked(spans)
+            fresh = TerminalTranscript(max_lines=None)
+            registry = ClickSpanRegistry(capacity=self._click_spans.capacity)
+            registry.note_dropped(dropped)
+            if dropped:
+                fresh.write(
+                    f"\x1b[2m… {dropped} earlier transcript chunks "
+                    "dropped from reflow …\x1b[0m\n"
+                )
+            # How far into the anchor span the paused row actually sat, so
+            # the rebuild can land on the same row -- not just the first row
+            # of the span. This matters most for untagged raw writes: they
+            # merge into one long span (see `ClickSpanRegistry._continues`),
+            # so without preserving this offset a viewport paused deep
+            # inside a long run of plain output would snap back to that
+            # run's very first row on every reflow.
+            anchor_offset = (
+                max(0, anchor_row - anchor_span.start_row)
+                if anchor_span is not None
+                else 0
+            )
+            target_row = 0
+            for span in spans:
+                start_row = fresh.line_count
+                fresh.write(self._reflowed_span_text(span, width, render))
+                end_row = fresh.line_count - 1
+                registry.record(
+                    start_row, end_row, span.action, block=span.block, raw=span.raw
+                )
+                if span is anchor_span:
+                    # Raw spans replay verbatim, so the offset lands exactly
+                    # back on the paused row. A re-rendered block can change
+                    # row count at the new width, so clamp to stay inside
+                    # the span's rebuilt rows rather than overrunning it.
+                    span_rows = max(0, end_row - start_row)
+                    target_row = start_row + min(anchor_offset, span_rows)
+            self._transcript = fresh
+            self._click_spans = registry
+            self._preview_cache = None
+            line_count = fresh.line_count
+            if was_tailing or line_count == 0:
+                self._follow_tail = True
+                self._load_window_locked(max(0, line_count - 1), follow_tail=True)
+            else:
+                if anchor_span is None and old_line_count > 1:
+                    target_row = round(
+                        anchor_row * (line_count - 1) / (old_line_count - 1)
+                    )
+                self._follow_tail = False
+                self._load_window_locked(
+                    min(max(0, target_row), line_count - 1),
+                    follow_tail=False,
+                )
+        self._request_redraw()
+        return True
+
+    @staticmethod
+    def _reflowed_span_text(
+        span: TranscriptSpan,
+        width: int,
+        render: Callable[[object, int], str],
+    ) -> str:
+        if span.block is None:
+            return span.raw
+        try:
+            rendered = render(span.block, width)
+        except Exception:
+            rendered = ""
+        # An empty re-render (changed render profile, renderer error) falls
+        # back to the width-stale raw chunk rather than dropping content.
+        return rendered if rendered else span.raw
+
+    def _anchor_locked(
+        self, spans: tuple[TranscriptSpan, ...]
+    ) -> tuple[TranscriptSpan | None, int]:
+        """Return the span (and global row) the paused viewport sits on."""
+        if self._transcript.line_count == 0:
+            return None, 0
+        row = min(
+            self._transcript.line_count - 1,
+            self._window_start + self.buffer.document.cursor_position_row,
+        )
+        for span in reversed(spans):
+            if span.start_row <= row <= span.end_row:
+                return span, row
+        return None, row
 
     def refresh_stream(self) -> None:
         """Invalidate replaceable stream content without mutating history."""
@@ -368,6 +365,18 @@ class LayeredTranscriptView:
                 self._window_start + self.buffer.document.cursor_position_row,
             )
 
+    @property
+    def retained_span_count(self) -> int:
+        """Return how many rendered spans reflow retains right now."""
+        with self._lock:
+            return len(self._click_spans.spans)
+
+    @property
+    def dropped_span_count(self) -> int:
+        """Return how many retained spans the registry bound has dropped."""
+        with self._lock:
+            return self._click_spans.dropped_count
+
     def preview_formatted_text(self) -> FormattedText:
         preview = self._stream_status.preview if self._stream_status else None
         if preview is None:
@@ -428,11 +437,17 @@ class LayeredTranscriptView:
         self._preview_cache = (text, width, plain, formatted)
         return plain, formatted
 
+    def current_render_width(self) -> int:
+        """Expose the render width (floored, unclamped above) for resize observation."""
+        return self._current_render_width()
+
     def _current_render_width(self) -> int:
         if self._render_width is None:
             return 80
         try:
-            return max(20, min(240, int(self._render_width())))
+            # Only a sane floor is enforced; see the comment in
+            # `reflow_to_width` for why there is no upper ceiling.
+            return max(20, int(self._render_width()))
         except (TypeError, ValueError, OSError):
             return 80
 

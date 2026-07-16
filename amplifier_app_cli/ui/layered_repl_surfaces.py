@@ -15,6 +15,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.utils import get_cwidth
 
 from .layered_repl_status import format_tokens
+from .layered_repl_status import queued_bar_text
 from .notices import NoticeKind
 from .repl import format_elapsed
 from .repl import summarize_cell_text
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
         _session_id: str | None
         _get_active_mode: Callable[[], str | None] | None
         _get_queued_count: Callable[[], int] | None
+        _get_queued_preview: Callable[[], tuple[str, ...]] | None
         _get_task_title: Callable[[], str | None] | None
         _task_tracker: TaskStatusTracker | None
         _agent_lanes: AgentLaneViewModel | None
@@ -99,6 +101,10 @@ if TYPE_CHECKING:
         def _palette_height(self) -> Dimension: ...
 
         def _rewind_visible(self) -> bool: ...
+
+        def _queued_visible(self) -> bool: ...
+
+        def _queued_preview(self) -> tuple[str, ...]: ...
 
         def _evidence_visible(self) -> bool: ...
 
@@ -158,6 +164,8 @@ class LayeredReplSurfaceMixin:
             reserved_rows += self._palette_height().preferred or 0
         if self._rewind_visible():
             reserved_rows += 1
+        if self._queued_visible():
+            reserved_rows += 1
         if self._evidence_visible():
             reserved_rows += 1
         if self._tasks_visible:
@@ -203,11 +211,14 @@ class LayeredReplSurfaceMixin:
             "failed": "Plan failed",
             "incomplete": "Plan incomplete",
         }[normalized]
-        title = (
-            f"{task_title} · {normalized}"
-            if task_title and normalized != "completed"
-            else task_title or lifecycle_title
-        )
+        # "Plan" framing distinguishes this permanent record from the live
+        # working bar's "Working on" -- same title source, different wording.
+        if task_title:
+            title = f"Plan {task_title}"
+            if normalized != "completed":
+                title = f"{title} · {normalized}"
+        else:
+            title = lifecycle_title
         telemetry = (
             telemetry_from_usage(self._runtime_status.telemetry_snapshot().turn)
             if self._runtime_status is not None
@@ -255,9 +266,11 @@ class LayeredReplSurfaceMixin:
             return FormattedText()
         snapshot = self._task_tracker.plan_snapshot()
         title = self._get_task_title() if self._get_task_title else None
-        title = title or "Current plan"
+        # "Plan ·" framing distinguishes this pane from the working bar's
+        # "Working on" -- same title source, different wording.
+        header = f"Plan · {title}" if title else "Current plan"
         fragments: list[tuple[str, str]] = [
-            ("class:plan.header", f"· {title}"),
+            ("class:plan.header", header),
         ]
         telemetry = (
             self._runtime_status.telemetry_snapshot().turn
@@ -293,10 +306,8 @@ class LayeredReplSurfaceMixin:
         )
         return FormattedText(
             [
-                (
-                    "class:steering",
-                    f'  ↳ steer queued: "{summary}" · applies at next step boundary',
-                )
+                ("class:steering", f'  ↳ steer queued: "{summary}"'),
+                ("class:steering.hint", " · applies at next step boundary"),
             ]
         )
 
@@ -414,8 +425,8 @@ class LayeredReplSurfaceMixin:
                 mode = summarize_cell_text(active_mode, max_cells=max_prompt - 4)
                 return FormattedText(
                     [
-                        ("class:prompt", "❯ "),
                         (mode_style, f"[{mode}] "),
+                        ("class:prompt", "❯ "),
                     ]
                 )
             return FormattedText([("class:prompt", "❯ ")])
@@ -423,8 +434,8 @@ class LayeredReplSurfaceMixin:
             mode = summarize_cell_text(active_mode, max_cells=max_prompt - 4)
             return FormattedText(
                 [
-                    ("class:prompt", "❯ "),
                     (mode_style, f"[{mode}] "),
+                    ("class:prompt", "❯ "),
                 ]
             )
         return FormattedText([("class:prompt", "❯ ")])
@@ -436,6 +447,20 @@ class LayeredReplSurfaceMixin:
         if not self._get_queued_count:
             return 0
         return max(0, int(self._get_queued_count()))
+
+    def _queued_visible(self: _LayeredReplSurfaceOwner) -> bool:
+        return self._queued_count() > 0
+
+    def _queued_preview(self: _LayeredReplSurfaceOwner) -> tuple[str, ...]:
+        supplier = self._get_queued_preview
+        return tuple(str(text) for text in supplier()) if supplier else ()
+
+    def _queued_text(self: _LayeredReplSurfaceOwner) -> FormattedText:
+        return queued_bar_text(
+            count=self._queued_count(),
+            previews=self._queued_preview(),
+            columns=self._terminal_size()[1],
+        )
 
     def _prompt_width(self: _LayeredReplSurfaceOwner) -> Dimension:
         width = fragment_list_len(self._prompt_text())

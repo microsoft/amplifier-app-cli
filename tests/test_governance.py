@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
-from amplifier_core.message_models import ChatResponse, TextBlock
+from amplifier_core.message_models import ChatResponse, TextBlock, ThinkingBlock
 
 from amplifier_app_cli.ui.authorization_stage import provider_backed_classifier
 from amplifier_app_cli.ui.governance import ActionGateResult
@@ -432,6 +434,150 @@ async def test_provider_classifier_fails_closed_on_malformed_or_failed_verdict(
 
     assert result.allowed is False
     assert result.reason_code == "classifier-unavailable"
+
+
+@pytest.mark.asyncio
+async def test_provider_classifier_tolerates_thinking_block_ahead_of_verdict() -> None:
+    """Root-cause regression test.
+
+    ProviderBackedStageEvaluator sets reasoning_effort on every request it
+    makes (see _payload's caller). On a thinking-capable provider (e.g. the
+    Anthropic provider with extended thinking, which is exactly what
+    reasoning_effort triggers there), the response prepends a thinking
+    content block ahead of the verdict text. Before the fix, _parse_verdict
+    required the response to contain *exactly one* content block of type
+    "text", so this realistic response shape raised ValueError on every
+    single fast-filter call -- which TwoStageActionClassifier's fail-closed
+    except then silently swallowed as "classifier failed closed", denying
+    every real tool call in production (render, web_fetch, ...).
+    """
+    provider = RecordingProvider(
+        ChatResponse(
+            content=[
+                ThinkingBlock(thinking="weighing whether this was requested"),
+                TextBlock(
+                    text=(
+                        '{"disposition":"allow","reason_code":'
+                        '"explicit-user-authorization","reason":"matches request"}'
+                    )
+                ),
+            ]
+        )
+    )
+    classifier = provider_backed_classifier(provider)
+    transcript = ReasoningBlindTranscript(
+        (ClassifierObservation(ObservationKind.USER_MESSAGE, "Render the diagram."),)
+    )
+
+    result = await classifier.classify_async(
+        ClassifierEvidence(
+            request(capability=CapabilityClass.NETWORK, action="render diagram"),
+            transcript,
+        )
+    )
+
+    assert result.allowed is True
+    assert result.reason_code == "explicit-user-authorization"
+    assert len(provider.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_classifier_still_fails_closed_on_genuinely_extra_content() -> (
+    None
+):
+    """The thinking-block tolerance must not loosen the verdict-only contract:
+    a second, non-thinking block (e.g. a duplicated text block) is still
+    rejected and still fails closed."""
+    provider = RecordingProvider(
+        ChatResponse(
+            content=[
+                TextBlock(
+                    text='{"disposition":"allow","reason_code":"a","reason":"a"}'
+                ),
+                TextBlock(
+                    text='{"disposition":"allow","reason_code":"b","reason":"b"}'
+                ),
+            ]
+        )
+    )
+
+    result = await provider_backed_classifier(provider).classify_async(
+        ClassifierEvidence(request(action="git status"), ReasoningBlindTranscript())
+    )
+
+    assert result.allowed is False
+    assert result.reason_code == "classifier-unavailable"
+
+
+def test_classifier_logs_swallowed_exception_and_preserves_fail_closed_contract(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Non-negotiable observability requirement: the fail-closed path must
+    keep denying with the same reason strings tests already depend on, but
+    must no longer discard the underlying exception silently."""
+
+    class BrokenEvaluator:
+        def evaluate(
+            self, stage: ClassifierStage, evidence: ClassifierEvidence
+        ) -> StageEvaluation:
+            raise RuntimeError("evaluator exploded")
+
+    with caplog.at_level(
+        logging.ERROR, logger="amplifier_app_cli.ui.safety_classifier"
+    ):
+        result = TwoStageActionClassifier(BrokenEvaluator()).classify(
+            ClassifierEvidence(request(), ReasoningBlindTranscript())
+        )
+
+    assert result.allowed is False
+    assert result.reason_code == "classifier-unavailable"
+    assert result.reason == "classifier failed closed"
+    assert result.fast_evaluation.reason_code == "classifier-unavailable"
+    assert result.fast_evaluation.reason == "classifier failed closed"
+    assert "evaluator exploded" in result.fast_evaluation.detail
+
+    error_records = [
+        r
+        for r in caplog.records
+        if r.name == "amplifier_app_cli.ui.safety_classifier"
+        and r.levelno >= logging.ERROR
+    ]
+    assert len(error_records) == 1
+    assert error_records[0].exc_info is not None
+    assert "RuntimeError" in caplog.text
+    assert "evaluator exploded" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_async_classifier_logs_swallowed_exception_and_preserves_fail_closed_contract(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider = RecordingProvider(error=RuntimeError("provider offline"))
+
+    with caplog.at_level(
+        logging.ERROR, logger="amplifier_app_cli.ui.safety_classifier"
+    ):
+        result = await provider_backed_classifier(provider).classify_async(
+            ClassifierEvidence(request(action="git status"), ReasoningBlindTranscript())
+        )
+
+    assert result.allowed is False
+    assert result.reason_code == "classifier-unavailable"
+    assert result.reason == "classifier failed closed"
+    assert result.fast_evaluation.reason_code == "classifier-unavailable"
+    assert result.fast_evaluation.reason == "classifier failed closed"
+    assert "provider offline" in result.fast_evaluation.detail
+
+    error_records = [
+        r
+        for r in caplog.records
+        if r.name == "amplifier_app_cli.ui.safety_classifier"
+        and r.levelno >= logging.ERROR
+    ]
+    assert len(error_records) == 1
+    assert error_records[0].exc_info is not None
+    assert "RuntimeError" in caplog.text
+    assert "provider offline" in caplog.text
 
 
 def test_conservative_evaluator_blocks_injection_and_destructive_actions() -> None:

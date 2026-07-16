@@ -96,8 +96,8 @@ async def test_composer_and_footer_keep_their_visual_hierarchy(
     composer = _row_text(screen, composer_row, width)
     footer = _row_text(screen, footer_row, width)
 
-    assert composer.startswith("❯ [chat] draft")
-    assert "class:prompt" in screen.data_buffer[composer_row][0].style
+    assert composer.startswith("▌[chat] ❯ draft")
+    assert "class:prompt" in screen.data_buffer[composer_row][1].style
     assert any(
         "class:mode.chat" in cell.style
         for cell in _row_cells(screen, composer_row, width)
@@ -117,13 +117,15 @@ async def test_composer_and_footer_keep_their_visual_hierarchy(
     )
     assert "class:input" in screen.data_buffer[composer_row][width - 1].style
 
-    state = (
-        "chat/bypass · found · face · $0.00"
-        if width == 40
-        else "chat · bypass · foundation · face · $0.00"
-        if width == 80
-        else "chat · bypass permissions on · foundation · face · $0.00"
-    )
+    state = {
+        40: "chat/bypass · found · face · $0.00",
+        80: "chat · bypass · foundation · face · $0.00",
+        # At 120 the extra "ctrl-p perms" hint leaves less room for the
+        # state zone, so the permission dial compacts one notch further
+        # than at 168 -- "bypass" instead of "bypass permissions on".
+        120: "mode chat · bypass · foundation · face · $0.00",
+        168: "mode chat · bypass permissions on · foundation · face · $0.00",
+    }[width]
     assert footer.strip().startswith(state)
     bundle_label = "found" if width == 40 else "foundation"
     assert footer.index(bundle_label) < footer.index("face") < footer.index("$0.00")
@@ -131,9 +133,9 @@ async def test_composer_and_footer_keep_their_visual_hierarchy(
         assert footer.strip() == state
     else:
         hints = (
-            "/ · shift-tab · ctrl-t"
+            "/ · shift+tab · ctrl-t · ctrl-p"
             if width == 80
-            else "/ commands · shift-tab mode · ctrl-t tasks"
+            else "/ commands · shift+tab mode · ctrl-t tasks · ctrl-p perms"
         )
         assert footer.strip().endswith(hints)
         gap = footer[footer.index(state) + len(state) : footer.index(hints)]
@@ -143,7 +145,12 @@ async def test_composer_and_footer_keep_their_visual_hierarchy(
     assert all(
         "class:status" in cell.style for cell in _row_cells(screen, footer_row, width)
     )
-    assert all(not _row_text(screen, row, width).strip() for row in range(composer_row))
+    # Row above the composer is the always-visible rule separating the
+    # transcript from the transient/composer/footer stack (spec section 5).
+    assert _row_text(screen, composer_row - 1, width) == "─" * width
+    assert all(
+        not _row_text(screen, row, width).strip() for row in range(composer_row - 1)
+    )
 
 
 @pytest.mark.asyncio
@@ -195,8 +202,11 @@ async def test_approval_replaces_composer_without_overlap(tmp_path, width: int) 
             "class:status" in cell.style
             for cell in _row_cells(screen, footer_row, width)
         )
+        # Row above the approval bar is the always-visible rule separating
+        # the transcript from the transient/composer/footer stack.
+        assert _row_text(screen, approval_row - 1, width) == "─" * width
         assert all(
-            not _row_text(screen, row, width).strip() for row in range(approval_row)
+            not _row_text(screen, row, width).strip() for row in range(approval_row - 1)
         )
         assert app.input_buffer.text == "hidden draft"
     finally:
@@ -263,7 +273,7 @@ async def test_live_agent_tree_stays_above_stable_composer_and_footer(
     assert "amplifier-expert" in rows[-5]
     assert "zen-architect" in rows[-4]
     assert "old-engineer" in rows[-3]
-    assert rows[-2].startswith("❯ [chat] steer here")
+    assert rows[-2].startswith("▌[chat] ❯ steer here")
     assert "foundation" in rows[-1] or "found" in rows[-1]
     assert "steer here" not in "".join(rows[:-2])
     assert app._working_height().preferred == 4

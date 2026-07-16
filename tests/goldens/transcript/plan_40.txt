@@ -1,0 +1,5 @@
+· Refactor session store  (1m 08s · ↓
+83.9k tok, 91% cached · $0.17)
+  ✔ Audit persistence paths
+  ■ Migrate durable history
+  □ Add reconciliation
