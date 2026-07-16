@@ -38,6 +38,24 @@ def _clean_reason(value: str) -> str:
     return " ".join(cleaned.split())
 
 
+def _classification_detail(classification: ClassificationResult) -> str:
+    """Surface a classifier's own debugging detail for a denial, if any.
+
+    Prefers the deliberative-stage evaluation (the one that actually decided
+    a two-stage classification), falling back to the fast-filter stage for
+    denials resolved there. Both are StageEvaluation instances that may carry
+    a non-contractual `detail` (see safety_classifier.StageEvaluation) -- most
+    commonly repr(exc) from TwoStageActionClassifier's fail-closed exception
+    handling. Static trust and heuristic classifier denials never set detail,
+    so this returns "" for them; it only produces output for classifier-
+    raised failures.
+    """
+    evaluation = (
+        classification.deliberative_evaluation or classification.fast_evaluation
+    )
+    return evaluation.detail
+
+
 class TrustPath(str, Enum):
     ALLOW = "allow"
     ASK = "ask"
@@ -372,6 +390,7 @@ class ActionGovernor:
             classification.reason_code,
             classification.reason,
             classification,
+            detail=_classification_detail(classification),
         )
 
     def _deny(
@@ -380,7 +399,22 @@ class ActionGovernor:
         reason_code: str,
         reason: str,
         classification: ClassificationResult | None = None,
+        *,
+        detail: str = "",
     ) -> ActionGateResult:
+        # Fold the classifier's own non-contractual debugging detail (see
+        # StageEvaluation.detail) into the denial reason so it reaches every
+        # surface that already renders `reason` -- the blocked-block the user
+        # sees (to_blocked_block), the tool_result handed back to the agent,
+        # and the denial log -- instead of being silently discarded on the
+        # StageEvaluation this classification carries. Most denials (static
+        # trust decisions, heuristic classifier verdicts) never set detail,
+        # so this is a no-op for them; it only fires for classifier-raised
+        # fail-closed denials, which used to be visible only via
+        # logger.exception -- invisible in a full-screen TUI and absent from
+        # session events entirely.
+        if detail:
+            reason = f"{reason} \u00b7 {detail}"
         denial = self.denial_log.record_denial(request, reason)
         needs_you_request: NeedsYouRequest | None = None
         decision_id = ""

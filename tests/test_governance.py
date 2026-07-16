@@ -3,7 +3,12 @@ from __future__ import annotations
 import logging
 
 import pytest
-from amplifier_core.message_models import ChatResponse, TextBlock, ThinkingBlock
+from amplifier_core.message_models import (
+    ChatResponse,
+    ImageBlock,
+    TextBlock,
+    ThinkingBlock,
+)
 
 from amplifier_app_cli.ui.authorization_stage import provider_backed_classifier
 from amplifier_app_cli.ui.governance import ActionGateResult
@@ -482,6 +487,146 @@ async def test_provider_classifier_tolerates_thinking_block_ahead_of_verdict() -
 
 
 @pytest.mark.asyncio
+async def test_provider_classifier_maps_fable5_refusal_to_first_class_deny() -> None:
+    """Fable-5 refusal handling: a provider refusal is a DENY, not an error.
+
+    Claude Fable 5 runs its own built-in safety classifier and can refuse a
+    request with HTTP 200, ``finish_reason="refusal"``, and an *empty*
+    ``content`` list -- no thinking block, no text block, nothing. This is
+    documented ground truth from amplifier-module-provider-anthropic's own
+    test suite (tests/test_fable5_response.py) and was confirmed by live
+    probing (2026-07-16): the refusal keys on dangerous *payload content*
+    (e.g. a proposed ``rm -rf /``), not on the evaluator's prompt framing --
+    benign actions get normal verdicts from the same prompt.
+
+    A model declining to even evaluate an action is a safety signal, not an
+    infrastructure failure, so it maps to a first-class DENY verdict with an
+    actionable reason -- fail-closed by construction (a refusal can only
+    ever deny, never allow) and rendered to the user as a real reason
+    instead of "classifier failed closed".
+    """
+    provider = RecordingProvider(ChatResponse(content=[], finish_reason="refusal"))
+
+    result = await provider_backed_classifier(provider).classify_async(
+        ClassifierEvidence(request(action="git status"), ReasoningBlindTranscript())
+    )
+
+    assert result.allowed is False
+    assert result.reason_code == "provider-refused-action"
+    assert "declined to evaluate" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_provider_classifier_fails_closed_on_wrong_verdict_field_names() -> None:
+    """Live-probed root cause of the fable-5 incident (2026-07-16).
+
+    The Anthropic provider module has no response_format handling, so the
+    JSON schema this evaluator attaches to its ChatRequest never reaches the
+    model. Under the old prompt -- which said only "the JSON verdict
+    required by the response schema" without naming any field -- fable-5
+    returned well-formed JSON with improvised field names
+    (``{"verdict": "allow"}``; live probe: finish_reason=end_turn), which
+    must keep failing closed as an invalid shape. The fix is in the prompt
+    (it now spells out the exact verdict object); this guard pins the
+    parser's behavior if a model still returns the wrong shape.
+    """
+    provider = RecordingProvider(
+        ChatResponse(content=[TextBlock(text='{"verdict": "allow"}')])
+    )
+
+    result = await provider_backed_classifier(provider).classify_async(
+        ClassifierEvidence(request(action="git status"), ReasoningBlindTranscript())
+    )
+
+    assert result.allowed is False
+    assert result.reason_code == "classifier-unavailable"
+    assert "invalid shape" in result.fast_evaluation.detail
+
+
+@pytest.mark.asyncio
+async def test_authorization_prompt_spells_out_verdict_schema_inline() -> None:
+    """The provider drops response_format, so the outbound system prompt is
+    the ONLY place the model can learn the verdict shape. Pin that the real
+    request names every field and every disposition -- losing this is
+    exactly the schema-blindness that broke fable-5 in production."""
+    provider = RecordingProvider(verdict("allow", "ok"))
+
+    await provider_backed_classifier(provider).classify_async(
+        ClassifierEvidence(request(action="git status"), ReasoningBlindTranscript())
+    )
+
+    assert len(provider.requests) == 1
+    system_message = provider.requests[0].messages[0]
+    assert system_message.role == "system"
+    prompt = system_message.content
+    for token in (
+        '"disposition"',
+        '"reason_code"',
+        '"reason"',
+        '"allow"',
+        '"review"',
+        '"deny"',
+    ):
+        assert token in prompt
+
+
+@pytest.mark.asyncio
+async def test_provider_classifier_selects_text_block_ignoring_unknown_types() -> None:
+    """The verdict parser must select the "text" block, not exclude known
+    non-text types.
+
+    Before the fix, _parse_verdict excluded a fixed set of non-text types
+    ({"thinking", "redacted_thinking", "reasoning"}) and treated anything
+    else as disqualifying extra content. ImageBlock is a real kernel content
+    block type (amplifier_core.message_models) outside that set -- if a
+    provider ever prepends or appends one (e.g. echoing a vision input)
+    alongside the verdict text, the old exclusion list would have failed
+    this exact same way the fable-5 thinking block once did, for a type
+    nobody enumerated. Selecting only type=="text" handles this, and any
+    future block type, without maintenance.
+    """
+    provider = RecordingProvider(
+        ChatResponse(
+            content=[
+                ImageBlock(source={"type": "base64", "data": "..."}),
+                TextBlock(
+                    text=(
+                        '{"disposition":"allow","reason_code":'
+                        '"explicit-user-authorization","reason":"matches request"}'
+                    )
+                ),
+            ]
+        )
+    )
+
+    result = await provider_backed_classifier(provider).classify_async(
+        ClassifierEvidence(request(action="git status"), ReasoningBlindTranscript())
+    )
+
+    assert result.allowed is True
+    assert result.reason_code == "explicit-user-authorization"
+
+
+@pytest.mark.asyncio
+async def test_provider_classifier_fails_closed_generically_on_empty_non_refusal() -> (
+    None
+):
+    """Empty content without a finish_reason still fails closed, but with the
+    generic malformed-verdict message rather than a fabricated refusal claim.
+    """
+    provider = RecordingProvider(ChatResponse(content=[], finish_reason=None))
+
+    result = await provider_backed_classifier(provider).classify_async(
+        ClassifierEvidence(request(action="git status"), ReasoningBlindTranscript())
+    )
+
+    assert result.allowed is False
+    assert result.reason_code == "classifier-unavailable"
+    assert "one text block" in result.fast_evaluation.detail
+    assert "refusal" not in result.fast_evaluation.detail
+
+
+@pytest.mark.asyncio
 async def test_provider_classifier_still_fails_closed_on_genuinely_extra_content() -> (
     None
 ):
@@ -815,6 +960,45 @@ def test_governor_denies_and_continues_then_defers_at_escalation() -> None:
     block = results[2].to_blocked_block()
     assert isinstance(block, BlockedBlock)
     assert block.action == "blocked · git push origin feature"
+    assert block.reason.endswith("· finding safer path")
+    # No classifier detail on this heuristic denial: reason must be exactly
+    # what the evaluator returned, no stray separator inserted.
+    assert block.reason == "outside-user-authorization reason · finding safer path"
+
+
+def test_governor_surfaces_classifier_detail_in_blocked_reason_and_tool_result() -> (
+    None
+):
+    """Closes the fable-5 observability gap at the ActionGovernor boundary.
+
+    A classifier fail-closed denial carries diagnostic detail on its
+    StageEvaluation (see safety_classifier.StageEvaluation.detail) that used
+    to be discarded after logger.exception -- invisible in a full-screen TUI
+    and absent from every downstream surface. It must now reach: the
+    blocked-block the user sees, the tool_result handed back to the agent,
+    and the denial log -- every place that already renders `reason`.
+    """
+    evaluator = RecordingEvaluator(
+        StageEvaluation(
+            StageDisposition.DENY,
+            "classifier-unavailable",
+            "classifier failed closed",
+            detail="ValueError('authorization provider returned no verdict "
+            "(finish_reason=\\'refusal\\')')",
+        )
+    )
+    governor = ActionGovernor(classifier=TwoStageActionClassifier(evaluator))
+    auto = TrustState(initial="auto").active
+
+    result = governor.decide(auto, request())
+
+    assert result.disposition == GateDisposition.DENY
+    assert "classifier failed closed" in result.reason
+    assert "finish_reason" in result.reason
+    assert "finish_reason" in result.tool_result
+
+    block = result.to_blocked_block()
+    assert "finish_reason" in block.reason
     assert block.reason.endswith("· finding safer path")
 
 
