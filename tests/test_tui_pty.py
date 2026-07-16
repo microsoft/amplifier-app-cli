@@ -327,7 +327,12 @@ def test_interactive_chat_production_path_acceptance(tmp_path) -> None:
     }
     process = subprocess.Popen(
         [sys.executable, "-c", script],
-        cwd=os.getcwd(),
+        # Isolated cwd (alongside the isolated HOME above) so this subprocess
+        # never sees a real project-scope .amplifier/settings.yaml -- this
+        # test asserts the safe chat/chat approval-prompt flow, which a
+        # startup_permission=bypass preset in the repo's own settings would
+        # silently skip (bypass never surfaces the approval prompt).
+        cwd=str(tmp_path),
         stdin=slave,
         stdout=slave,
         stderr=slave,

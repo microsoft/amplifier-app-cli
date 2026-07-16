@@ -102,6 +102,13 @@ async def test_factory_registers_one_cohesive_safe_default_graph(
         "amplifier_app_cli.incremental_save.register_incremental_save",
         MagicMock(),
     )
+    # Isolate from whatever config.tui.* the real ambient settings.yaml (repo
+    # project scope, user global scope) might declare -- this test asserts
+    # the safe chat/chat default, which is only true with no startup config.
+    monkeypatch.setattr(
+        "amplifier_app_cli.runtime.interactive_resources.AppSettings",
+        lambda: _FakeAppSettings({}),
+    )
 
     resources = await create_interactive_session_resources(
         InteractiveResourceRequest(
@@ -182,6 +189,165 @@ async def test_resume_migrates_legacy_bypass_but_restores_explicit_v2_bypass(
     assert session.coordinator.approval_system.bypass_permissions is expected_bypass
     assert resources.active_mode() == "chat"
     assert session.coordinator.session_state["ui.show_debug"] is True
+
+
+class _FakeAppSettings:
+    """Stand-in for AppSettings that only implements get_tui_startup_config()."""
+
+    def __init__(self, tui_config: dict[str, object]) -> None:
+        self._tui_config = tui_config
+
+    def get_tui_startup_config(self) -> dict[str, object]:
+        return self._tui_config
+
+
+@pytest.mark.asyncio
+async def test_configured_startup_preset_seeds_fresh_session_and_survives_mode_cycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """config.tui.startup_mode=auto / startup_permission=bypass on a brand-new
+    (non-resumed) session applies both, latches the explicit-trust flag per
+    ADR-0005 ("choosing the bypass permissions preset" is the explicit
+    action), and a later mode-only cycle must not revert the posture."""
+    session = _Session()
+    store = MagicMock()
+    monkeypatch.setattr(
+        "amplifier_app_cli.incremental_save.register_incremental_save",
+        MagicMock(),
+    )
+    monkeypatch.setattr(
+        "amplifier_app_cli.runtime.interactive_resources.AppSettings",
+        lambda: _FakeAppSettings(
+            {"startup_mode": "auto", "startup_permission": "bypass"}
+        ),
+    )
+
+    resources = await create_interactive_session_resources(
+        InteractiveResourceRequest(
+            config={},
+            search_paths=[tmp_path],
+            verbose=False,
+            bundle_name="foundation",
+        ),
+        _dependencies(session, store),
+    )
+
+    assert resources.session_config.is_resume is False
+    assert resources.active_mode() == "auto"
+    assert resources.trust_state.active.name == "bypass"
+    assert resources.trust_state.bypass_permissions is True
+    assert session.coordinator.approval_system.bypass_permissions is True
+
+    # Mode cycling (Shift-Tab) must never silently revert the explicit posture.
+    await resources.cycle_mode()
+    assert resources.trust_state.active.name == "bypass"
+
+
+@pytest.mark.asyncio
+async def test_no_startup_config_leaves_fresh_session_chat_chat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default behavior with no config.tui section: unchanged (chat/chat)."""
+    session = _Session()
+    store = MagicMock()
+    monkeypatch.setattr(
+        "amplifier_app_cli.incremental_save.register_incremental_save",
+        MagicMock(),
+    )
+    monkeypatch.setattr(
+        "amplifier_app_cli.runtime.interactive_resources.AppSettings",
+        lambda: _FakeAppSettings({}),
+    )
+
+    resources = await create_interactive_session_resources(
+        InteractiveResourceRequest(
+            config={},
+            search_paths=[tmp_path],
+            verbose=False,
+            bundle_name="foundation",
+        ),
+        _dependencies(session, store),
+    )
+
+    assert resources.active_mode() == "chat"
+    assert resources.trust_state.active.name == "chat"
+    assert session.coordinator.approval_system.bypass_permissions is False
+
+
+@pytest.mark.asyncio
+async def test_invalid_startup_config_falls_back_to_chat_chat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invalid values are rejected safely -- fall back to the safe chat/chat
+    default rather than guessing or failing the session start."""
+    session = _Session()
+    store = MagicMock()
+    monkeypatch.setattr(
+        "amplifier_app_cli.incremental_save.register_incremental_save",
+        MagicMock(),
+    )
+    monkeypatch.setattr(
+        "amplifier_app_cli.runtime.interactive_resources.AppSettings",
+        lambda: _FakeAppSettings(
+            {"startup_mode": "godmode", "startup_permission": "nope"}
+        ),
+    )
+
+    resources = await create_interactive_session_resources(
+        InteractiveResourceRequest(
+            config={},
+            search_paths=[tmp_path],
+            verbose=False,
+            bundle_name="foundation",
+        ),
+        _dependencies(session, store),
+    )
+
+    assert resources.active_mode() == "chat"
+    assert resources.trust_state.active.name == "chat"
+    assert session.coordinator.approval_system.bypass_permissions is False
+
+
+@pytest.mark.asyncio
+async def test_startup_config_does_not_override_resumed_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resumed session's persisted state wins over the app-wide startup
+    default -- resuming is the user actively choosing to continue whatever
+    mode/posture that session already had."""
+    session = _Session()
+    store = MagicMock()
+    store.get_metadata.return_value = {
+        "permission_posture": "chat",
+        "permission_profile": {"name": "chat"},
+        "permission_policy_version": TRUST_POLICY_VERSION,
+    }
+    monkeypatch.setattr(
+        "amplifier_app_cli.incremental_save.register_incremental_save",
+        MagicMock(),
+    )
+    monkeypatch.setattr(
+        "amplifier_app_cli.runtime.interactive_resources.AppSettings",
+        lambda: _FakeAppSettings(
+            {"startup_mode": "auto", "startup_permission": "bypass"}
+        ),
+    )
+
+    resources = await create_interactive_session_resources(
+        InteractiveResourceRequest(
+            config={},
+            search_paths=[tmp_path],
+            verbose=False,
+            session_id=session.session_id,
+            bundle_name="foundation",
+            initial_transcript=[{"role": "user", "content": "resume"}],
+        ),
+        _dependencies(session, store),
+    )
+
+    assert resources.session_config.is_resume is True
+    assert resources.active_mode() == "chat"
+    assert resources.trust_state.active.name == "chat"
 
 
 def test_cleanup_collection_preserves_named_then_repl_order() -> None:

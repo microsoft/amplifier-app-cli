@@ -720,6 +720,29 @@ class AppSettings:
             settings.pop("config", None)
         self._write_scope(scope, settings)
 
+    # ----- TUI startup settings (config.tui) -----
+
+    def get_tui_startup_config(self) -> dict[str, Any]:
+        """Return merged TUI startup config from config.tui.
+
+        Expected structure:
+            config:
+              tui:
+                startup_mode: auto
+                startup_permission: bypass
+
+        This is a fresh-session-only seed: a configured ``startup_permission``
+        is treated as an explicit user choice per ADR-0005 ("choosing the
+        bypass permissions preset" is a valid explicit action). Validation
+        and application live in
+        ``runtime.interactive_resource_setup.resolve_tui_startup_preference()``
+        -- this method only surfaces the raw merged mapping, mirroring
+        ``get_notification_config()`` above.
+        """
+        settings = self.get_merged_settings()
+        tui = settings.get("config", {}).get("tui", {})
+        return tui if isinstance(tui, dict) else {}
+
     # ----- Scope availability -----
 
     def is_scope_available(self, scope: str) -> bool:

@@ -284,6 +284,14 @@ async def test_mounted_stream_commits_each_conversation_block_exactly_once(
     ) -> InitializedSession:
         return initialized
 
+    # Isolate from whatever config.tui.* the real ambient settings.yaml
+    # (repo project scope, user global scope) might declare -- this test
+    # exercises the mounted-provider transcript path, not startup presets.
+    monkeypatch.setattr(
+        "amplifier_app_cli.runtime.interactive_resources.AppSettings",
+        lambda: SimpleNamespace(get_tui_startup_config=lambda: {}),
+    )
+
     resources = await create_interactive_session_resources(
         InteractiveResourceRequest(
             config={"providers": [{"config": {"model": "mounted-model"}}]},

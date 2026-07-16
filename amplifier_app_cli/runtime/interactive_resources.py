@@ -29,12 +29,16 @@ from amplifier_app_cli.runtime.interactive_resource_setup import (
     register_base_capabilities as _register_base_capabilities,
 )
 from amplifier_app_cli.runtime.interactive_resource_setup import (
+    resolve_tui_startup_preference as _resolve_tui_startup_preference,
+)
+from amplifier_app_cli.runtime.interactive_resource_setup import (
     restore_resume_state as _restore_resume_state,
 )
 from amplifier_app_cli.runtime.interactive_resource_setup import (
     restore_trust as _restore_trust,
 )
 from amplifier_app_cli.runtime.session_state import coordinator_session_state
+from amplifier_app_cli.lib.settings import AppSettings
 from amplifier_app_cli.session_runner import InitializedSession, SessionConfig
 from amplifier_app_cli.session_store import SessionStore
 from amplifier_app_cli.ui.clipboard import ClipboardImageInjector
@@ -260,6 +264,20 @@ async def create_interactive_session_resources(
         runtime_status,
         outcome_ledger,
     )
+    # config.tui.startup_mode / startup_permission seed a brand-new session's
+    # mode + trust posture (see resolve_tui_startup_preference()). Resuming a
+    # session is the user actively choosing to continue whatever mode/posture
+    # that session already had, so this app-wide default never applies there.
+    startup_preference = (
+        _resolve_tui_startup_preference(
+            AppSettings().get_tui_startup_config(),
+            valid_modes=mode_profiles.names,
+        )
+        if not session_config.is_resume
+        else None
+    )
+    if startup_preference is not None and startup_preference.mode:
+        interaction_state.select_ui_mode(startup_preference.mode)
     refresh = UiRefreshRelay()
     ui_events = UiEventDispatcher(
         dependencies.console,
@@ -294,11 +312,18 @@ async def create_interactive_session_resources(
     # trust choice (see ADR-0005). Latch it before initialize() so a resumed
     # mode name that collides with a builtin mode (e.g. a bundle mode named
     # "brainstorm") cannot cause initialize() to apply that mode's default
-    # trust preset over the restored posture.
+    # trust preset over the restored posture. A configured
+    # config.tui.startup_permission is the same kind of explicit choice
+    # ("choosing the bypass permissions preset" per ADR-0005) for a brand-new
+    # session, so it latches the same way.
     if restored[0] or restored[1]:
+        interaction.mark_trust_explicit()
+    elif startup_preference is not None and startup_preference.permission:
         interaction.mark_trust_explicit()
     await interaction.initialize()
     _restore_trust(trust_state, restored)
+    if startup_preference is not None and startup_preference.permission:
+        trust_state.activate(startup_preference.permission)
     cleanup.approval_trust = _bind_approval_trust(approval_system, trust_state)
 
     def steer_applied(steer: Any) -> None:

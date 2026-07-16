@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -22,6 +22,7 @@ from amplifier_app_cli.ui.improve_evidence import RuntimeImproveEvidenceSource
 from amplifier_app_cli.ui.improve_workflow import ConfiguratorImprovePersistence
 from amplifier_app_cli.ui.improve_workflow import ImproveWorkflow
 from amplifier_app_cli.ui.interaction_state import (
+    DEFAULT_TRUST_PRESETS,
     NeedsYouQueue,
     SteeringQueue,
     TrustState,
@@ -284,6 +285,67 @@ def restore_trust(
         logger.debug("Ignoring invalid saved permission posture", exc_info=True)
 
 
+@dataclass(frozen=True, slots=True)
+class TuiStartupPreference:
+    """Resolved config.tui.startup_mode / startup_permission for a fresh
+    (non-resumed) interactive session.
+
+    Only ever applied to brand-new sessions -- resuming a session is the
+    user actively choosing to continue whatever mode and posture that
+    session already had, which must win over this app-wide default. Per
+    ADR-0005, a configured ``startup_permission`` (e.g. "choosing the
+    bypass permissions preset") IS the explicit user action the ADR
+    requires: the caller latches ``_trust_explicitly_set`` before
+    ``initialize()`` so a later mode-only cycle never silently reverts it.
+    """
+
+    mode: str | None = None
+    permission: str | None = None
+
+
+_DEFAULT_VALID_PERMISSIONS: tuple[str, ...] = tuple(
+    preset.name for preset in DEFAULT_TRUST_PRESETS
+)
+
+
+def resolve_tui_startup_preference(
+    raw: Mapping[str, Any],
+    *,
+    valid_modes: Iterable[str],
+    valid_permissions: Iterable[str] = _DEFAULT_VALID_PERMISSIONS,
+) -> TuiStartupPreference:
+    """Validate config.tui.startup_mode/startup_permission (AppSettings).
+
+    Unknown, malformed, or non-string values are dropped -- never guessed
+    or coerced -- and logged. The caller's fallback for a dropped value is
+    the existing safe chat/chat default, never a broadened guess.
+    """
+    modes = frozenset(valid_modes)
+    permissions = frozenset(valid_permissions)
+
+    mode = raw.get("startup_mode")
+    if mode is not None and (not isinstance(mode, str) or mode not in modes):
+        logger.warning(
+            "Ignoring invalid config.tui.startup_mode: %r (expected one of %s)",
+            mode,
+            sorted(modes),
+        )
+        mode = None
+
+    permission = raw.get("startup_permission")
+    if permission is not None and (
+        not isinstance(permission, str) or permission not in permissions
+    ):
+        logger.warning(
+            "Ignoring invalid config.tui.startup_permission: %r (expected one of %s)",
+            permission,
+            sorted(permissions),
+        )
+        permission = None
+
+    return TuiStartupPreference(mode=mode, permission=permission)
+
+
 def bind_approval_trust(
     approval_system: object,
     trust_state: TrustState,
@@ -309,11 +371,13 @@ def _cleanup_callback(value: object) -> CleanupCallback | None:
 
 __all__ = [
     "InteractiveCleanupCallbacks",
+    "TuiStartupPreference",
     "attach_trackers",
     "authorization_classifier",
     "bind_approval_trust",
     "create_improve_workflow",
     "register_base_capabilities",
+    "resolve_tui_startup_preference",
     "restore_resume_state",
     "restore_trust",
 ]
