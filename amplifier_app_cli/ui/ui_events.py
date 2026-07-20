@@ -99,6 +99,11 @@ class UiEventDispatcher:
             # real terminal widths above 240 columns re-renders correctly
             # instead of silently pinning to a stale 240-column wrap.
             width=max(20, int(width)),
+            # Rich treats TERM=dumb as a fixed 80x25 terminal unless both
+            # dimensions are explicit.  Reflow is an off-screen render, so a
+            # stable height keeps the requested width authoritative in CI and
+            # other dumb-terminal environments.
+            height=25,
             legacy_windows=False,
         )
         TranscriptRenderer(console, self._render_profile, self._show_debug).render(

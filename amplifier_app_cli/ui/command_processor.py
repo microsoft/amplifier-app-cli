@@ -308,6 +308,8 @@ class CommandProcessor(
         if first_word.lower() == "off" and not rest:
             return "off", None
 
+        if first_word.lower() == "info":
+            return f"info {rest}".strip(), None
         # "/mode <name> ..."
         mode_name = first_word
         if not rest:

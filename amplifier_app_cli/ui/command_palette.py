@@ -137,6 +137,13 @@ class CommandPalette:
             return all(term in haystack for term in terms)
 
         matching = tuple(command for command in self._commands if matches(command))
+        if terms:
+            matching = tuple(
+                sorted(
+                    matching,
+                    key=lambda command: command.name.lower() != token,
+                )
+            )
         commands = (
             self._phase_overview(matching)
             if not terms

@@ -50,6 +50,32 @@ def test_palette_filters_and_preserves_source_tags() -> None:
     assert palette.query("/github:tri").selected.source == CommandSource.MCP
 
 
+def test_palette_prioritizes_an_exact_name_without_losing_fuzzy_matches() -> None:
+    palette = CommandPalette(
+        [
+            PaletteCommand(
+                "/btw",
+                "add context while the current turn runs",
+                CommandPhase.DURING,
+                CommandSource.BUILTIN,
+            ),
+            PaletteCommand(
+                "/context",
+                "show context usage",
+                CommandPhase.REPAIR,
+                CommandSource.BUILTIN,
+            ),
+        ]
+    )
+
+    snapshot = palette.query("/context")
+
+    assert snapshot.selected is not None
+    assert snapshot.selected.name == "/context"
+    assert "/btw" in {command.name for command in snapshot.commands}
+    assert palette.query("/current").selected.name == "/btw"
+
+
 def test_palette_phase_groups_match_command_lifecycle() -> None:
     palette = _palette()
     commands = {command.name: command for command in palette.query("/").commands}

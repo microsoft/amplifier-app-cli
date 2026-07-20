@@ -294,3 +294,23 @@ class TestModeShortcutsStillWork:
         action_skill, data_skill = cp.process_input("/simplify")
         assert action_skill == "load_skill"
         assert data_skill["skill_name"] == "simplify"
+
+
+class TestModeCommandSubcommands:
+    def test_mode_info_routes_entire_name_to_mode_handler(self):
+        cp = _make_command_processor()
+
+        action, data = cp.process_input("/mode info auto")
+
+        assert action == "handle_mode"
+        assert data["args"] == "info auto"
+        assert "trailing_prompt" not in data
+
+    def test_mode_info_without_name_stays_a_control_command(self):
+        cp = _make_command_processor()
+
+        action, data = cp.process_input("/mode info")
+
+        assert action == "handle_mode"
+        assert data["args"] == "info"
+        assert "trailing_prompt" not in data

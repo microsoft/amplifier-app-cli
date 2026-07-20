@@ -81,3 +81,43 @@ async def test_persistence_skips_session_without_context() -> None:
     await persistence.save()
 
     store.save.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_persistence_keeps_explicit_live_model_and_effort_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    context = MagicMock()
+    context.get_messages = AsyncMock(return_value=[{"role": "user", "content": "hi"}])
+    coordinator = MagicMock()
+    coordinator.get.return_value = context
+    coordinator.session_state = {
+        "ui.model_override": {"provider": "openai", "model": "gpt-live"},
+        "ui.effort_override": "minimal",
+    }
+    session = MagicMock(coordinator=coordinator)
+    store = MagicMock()
+    store.get_metadata.return_value = {
+        "model": "gpt-live",
+        "provider": "openai",
+        "reasoning_effort": "minimal",
+    }
+    interaction = InteractionRuntimeState(coordinator.session_state, TrustState())
+    persistence = InteractiveSessionPersistence(
+        session=session,
+        store=store,
+        session_id="session-1",
+        bundle_name="foundation",
+        config={"providers": [{"config": {"default_model": "gpt-config"}}]},
+        interaction_state=interaction,
+        outcome_ledger=OutcomeLedger(),
+        runtime_status=None,
+    )
+
+    await persistence.save()
+
+    metadata = store.save.call_args.args[2]
+    assert metadata["model"] == "gpt-live"
+    assert metadata["provider"] == "openai"
+    assert metadata["reasoning_effort"] == "minimal"

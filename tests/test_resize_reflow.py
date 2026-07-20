@@ -55,6 +55,7 @@ class _Pipeline:
             force_terminal=True,
             color_system="truecolor",
             width=width,
+            height=25,
             legacy_windows=False,
         )
         self.dispatcher = UiEventDispatcher(console)

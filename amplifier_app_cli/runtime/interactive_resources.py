@@ -32,6 +32,9 @@ from amplifier_app_cli.runtime.interactive_resource_setup import (
     resolve_tui_startup_preference as _resolve_tui_startup_preference,
 )
 from amplifier_app_cli.runtime.interactive_resource_setup import (
+    restore_runtime_overrides as _restore_runtime_overrides,
+)
+from amplifier_app_cli.runtime.interactive_resource_setup import (
     restore_resume_state as _restore_resume_state,
 )
 from amplifier_app_cli.runtime.interactive_resource_setup import (
@@ -322,6 +325,8 @@ async def create_interactive_session_resources(
         interaction.mark_trust_explicit()
     await interaction.initialize()
     _restore_trust(trust_state, restored)
+    if session_config.is_resume:
+        _restore_runtime_overrides(session)
     if startup_preference is not None and startup_preference.permission:
         trust_state.activate(startup_preference.permission)
     cleanup.approval_trust = _bind_approval_trust(approval_system, trust_state)

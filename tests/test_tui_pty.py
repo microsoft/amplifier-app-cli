@@ -17,6 +17,9 @@ import time
 import pytest
 
 
+pytestmark = pytest.mark.integration
+
+
 @pytest.mark.skipif(not hasattr(os, "openpty"), reason="PTY support required")
 def test_interactive_chat_production_path_acceptance(tmp_path) -> None:
     """Drive the real interactive chat loop through a terminal boundary."""

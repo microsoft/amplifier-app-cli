@@ -10,6 +10,7 @@ from typing import Any, cast
 from amplifier_core import AmplifierSession
 
 from amplifier_app_cli.runtime.session_state import coordinator_session_state
+from amplifier_app_cli.runtime.session_persistence import SessionRuntimeOverrides
 from amplifier_app_cli.session_runner import InitializedSession, SessionConfig
 from amplifier_app_cli.session_store import SessionStore
 from amplifier_app_cli.ui.authorization_stage import CompletionProvider
@@ -253,6 +254,20 @@ async def restore_resume_state(
     ):
         restored_ui_mode = saved_permission
     state = coordinator_session_state(session.coordinator)
+    overrides = SessionRuntimeOverrides.from_metadata(metadata)
+    if overrides.reasoning_effort is not None:
+        state["ui.effort_override"] = overrides.reasoning_effort
+    providers = session.coordinator.get("providers") or {}
+    if (
+        overrides.provider is not None
+        and overrides.model is not None
+        and isinstance(providers, Mapping)
+        and providers.get(overrides.provider) is not None
+    ):
+        state["ui.model_override"] = {
+            "provider": overrides.provider,
+            "model": overrides.model,
+        }
     if isinstance(metadata.get("show_debug"), bool):
         state["ui.show_debug"] = metadata["show_debug"]
     if isinstance(restored_ui_mode, str) and restored_ui_mode in mode_profiles.names:
@@ -268,6 +283,38 @@ async def restore_resume_state(
         saved_permission,
         metadata.get("permission_policy_version"),
     )
+
+
+def restore_runtime_overrides(session: AmplifierSession) -> None:
+    """Replay explicit slash-command choices after mode profile initialization."""
+    coordinator = session.coordinator
+    state = coordinator_session_state(coordinator)
+    overrides = SessionRuntimeOverrides.from_session_state(state)
+
+    if overrides.reasoning_effort is not None:
+        orchestrator = coordinator.get("orchestrator")
+        orchestrator_config = getattr(orchestrator, "config", None)
+        if isinstance(orchestrator_config, dict):
+            orchestrator_config["reasoning_effort"] = overrides.reasoning_effort
+            profile = state.get("ui.mode_profile")
+            if isinstance(profile, dict):
+                profile["reasoning_effort"] = overrides.reasoning_effort
+
+    if overrides.provider is None or overrides.model is None:
+        return
+    providers = coordinator.get("providers") or {}
+    if not isinstance(providers, Mapping):
+        return
+    provider = providers.get(overrides.provider)
+    if provider is None:
+        return
+    setattr(provider, "default_model", overrides.model)
+    provider_config = getattr(provider, "config", None)
+    if isinstance(provider_config, dict):
+        provider_config["default_model"] = overrides.model
+    profile = state.get("ui.mode_profile")
+    if isinstance(profile, dict):
+        profile.update({"provider": overrides.provider, "model": overrides.model})
 
 
 def restore_trust(
@@ -378,6 +425,7 @@ __all__ = [
     "create_improve_workflow",
     "register_base_capabilities",
     "resolve_tui_startup_preference",
+    "restore_runtime_overrides",
     "restore_resume_state",
     "restore_trust",
 ]

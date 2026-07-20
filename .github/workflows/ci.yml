@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: "3.11"
           enable-cache: true
-      - run: uv sync --all-groups
+      - run: uv sync --all-groups --locked
       - run: uv run ruff check amplifier_app_cli tests
 
   types:
@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: "3.11"
           enable-cache: true
-      - run: uv sync --all-groups
+      - run: uv sync --all-groups --locked
       - run: uv run pyright
 
   tests:
@@ -37,7 +37,7 @@ jobs:
         with:
           python-version: "3.11"
           enable-cache: true
-      - run: uv sync --all-groups
+      - run: uv sync --all-groups --locked
       - run: uv run pytest -q
 
   # PTY integration tests fork a real pty child process and probe termios
@@ -51,5 +51,7 @@ jobs:
         with:
           python-version: "3.11"
           enable-cache: true
-      - run: uv sync --all-groups
+      - run: uv sync --all-groups --locked
+      - run: sudo apt-get update && sudo apt-get install --yes tmux
+      - run: tmux -V
       - run: uv run pytest -m integration -q

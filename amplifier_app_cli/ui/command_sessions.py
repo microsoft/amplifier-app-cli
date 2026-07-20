@@ -93,8 +93,9 @@ class CommandSessionMixin:
         lines.append(f"- Config: `{self.bundle_name}`")
 
         # Active mode status
-        active_mode = interaction_state_for(self.session.coordinator).bundle_mode
-        lines.append(f"- Mode: `{active_mode or 'none'}`")
+        interaction = interaction_state_for(self.session.coordinator)
+        active_mode = interaction.bundle_mode or interaction.ui_mode
+        lines.append(f"- Mode: `{active_mode}`")
 
         # Context size
         context = self.session.coordinator.get("context")

@@ -39,13 +39,18 @@ class _Coordinator:
         self.capabilities: dict[str, object] = {}
         self.context = MagicMock()
         self.context.get_messages = AsyncMock(return_value=[])
+        self.orchestrator = SimpleNamespace(config={})
+        self.provider = SimpleNamespace(
+            default_model="provider-default",
+            config={"default_model": "provider-default"},
+        )
 
     def get(self, name: str):
         return {
             "context": self.context,
             "hooks": None,
-            "orchestrator": None,
-            "providers": {},
+            "orchestrator": self.orchestrator,
+            "providers": {"openai": self.provider},
         }.get(name)
 
     def register_capability(self, name: str, value: object) -> None:
@@ -348,6 +353,91 @@ async def test_startup_config_does_not_override_resumed_session(
     assert resources.session_config.is_resume is True
     assert resources.active_mode() == "chat"
     assert resources.trust_state.active.name == "chat"
+
+
+@pytest.mark.asyncio
+async def test_resume_reapplies_explicit_model_and_effort_after_mode_initialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _Session()
+    resolver = SimpleNamespace(
+        resolve=AsyncMock(
+            return_value=[SimpleNamespace(provider="openai", model="mode-model")]
+        )
+    )
+    session.coordinator.capabilities["model_role_resolver"] = resolver
+    store = MagicMock()
+    store.get_metadata.return_value = {
+        "ui_mode": "auto",
+        "permission_posture": "chat",
+        "permission_profile": {"name": "chat"},
+        "permission_policy_version": TRUST_POLICY_VERSION,
+        "reasoning_effort": "minimal",
+        "provider": "openai",
+        "model": "gpt-resumed",
+    }
+    monkeypatch.setattr(
+        "amplifier_app_cli.incremental_save.register_incremental_save",
+        MagicMock(),
+    )
+
+    resources = await create_interactive_session_resources(
+        InteractiveResourceRequest(
+            config={},
+            search_paths=[tmp_path],
+            verbose=False,
+            session_id=session.session_id,
+            bundle_name="foundation",
+            initial_transcript=[{"role": "user", "content": "resume"}],
+        ),
+        _dependencies(session, store),
+    )
+
+    assert resources.active_mode() == "auto"
+    assert resources.trust_state.active.name == "chat"
+    assert session.coordinator.orchestrator.config["reasoning_effort"] == "minimal"
+    assert session.coordinator.provider.default_model == "gpt-resumed"
+    assert session.coordinator.provider.config["default_model"] == "gpt-resumed"
+    assert session.coordinator.session_state["ui.effort_override"] == "minimal"
+    assert session.coordinator.session_state["ui.model_override"] == {
+        "provider": "openai",
+        "model": "gpt-resumed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_resume_ignores_invalid_effort_and_model_for_unmounted_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _Session()
+    store = MagicMock()
+    store.get_metadata.return_value = {
+        "ui_mode": "auto",
+        "reasoning_effort": "maximum",
+        "provider": "missing-provider",
+        "model": "unmounted-model",
+    }
+    monkeypatch.setattr(
+        "amplifier_app_cli.incremental_save.register_incremental_save",
+        MagicMock(),
+    )
+
+    await create_interactive_session_resources(
+        InteractiveResourceRequest(
+            config={},
+            search_paths=[tmp_path],
+            verbose=False,
+            session_id=session.session_id,
+            bundle_name="foundation",
+            initial_transcript=[{"role": "user", "content": "resume"}],
+        ),
+        _dependencies(session, store),
+    )
+
+    assert session.coordinator.orchestrator.config["reasoning_effort"] == "xhigh"
+    assert session.coordinator.provider.default_model == "provider-default"
+    assert "ui.effort_override" not in session.coordinator.session_state
+    assert "ui.model_override" not in session.coordinator.session_state
 
 
 def test_cleanup_collection_preserves_named_then_repl_order() -> None:
