@@ -266,7 +266,10 @@ def _secret_field_id_for(module_id: str) -> str | None:
     return field.get("id") if field else None
 
 
-def _claimed_env_vars(settings: AppSettings) -> set[str]:
+def _claimed_env_vars(
+    settings: AppSettings,
+    key_manager: KeyManager | None = None,
+) -> set[str]:
     """Env-var names already spoken for, by ANY means, across ALL scopes
     (global, project, local, session): either referenced by a ``${VAR}``
     placeholder in some scope's provider config, OR already backed by a
@@ -325,7 +328,7 @@ def _claimed_env_vars(settings: AppSettings) -> set[str]:
     # entry's normalization/configure_provider call within the same
     # command, before this scope's write has landed). Single read, reused
     # by the caller's loop -- not re-read per provider entry.
-    claimed |= KeyManager().stored_keys()
+    claimed.update((key_manager or KeyManager()).stored_keys())
     return claimed
 
 

@@ -16,6 +16,7 @@ from ..lib.settings import Scope
 from ..paths import create_config_manager
 from ..paths import get_effective_scope
 from ..paths import ScopeNotAvailableError
+from ..paths import ScopeType
 from ..utils.error_format import escape_markup
 
 console = Console()
@@ -114,7 +115,7 @@ def add_dir(path: str, scope_flag: str | None):
     config_manager = create_config_manager()
     try:
         scope, was_fallback = get_effective_scope(
-            cast(Scope, scope_flag) if scope_flag else None,
+            cast(ScopeType, scope_flag) if scope_flag else None,
             config_manager,
             default_scope="global",  # Default to global for CLI
         )
@@ -161,7 +162,7 @@ def remove_dir(path: str, scope_flag: str | None):
     config_manager = create_config_manager()
     try:
         scope, was_fallback = get_effective_scope(
-            cast(Scope, scope_flag) if scope_flag else None,
+            cast(ScopeType, scope_flag) if scope_flag else None,
             config_manager,
             default_scope="global",  # Default to global for CLI
         )

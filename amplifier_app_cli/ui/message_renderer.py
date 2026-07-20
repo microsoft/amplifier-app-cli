@@ -7,16 +7,19 @@ Zero duplication: All message rendering goes through these functions.
 """
 
 from rich.console import Console
-
-from ..console import Markdown
+from .transcript_blocks import AnswerBlock
+from .transcript_blocks import DebugBlock
+from .transcript_blocks import UserBlock
+from .ui_events import UiEventDispatcher
 
 
 def render_message(
     message: dict,
-    console: Console,
+    console: Console | None = None,
     *,
     show_thinking: bool = False,
     show_label: bool = True,
+    dispatcher: UiEventDispatcher | None = None,
 ) -> None:
     """Render a single message (user or assistant).
 
@@ -27,55 +30,71 @@ def render_message(
 
     Args:
         message: Message dictionary with 'role' and 'content'
-        console: Rich Console instance for output
+        console: Rich Console instance when no dispatcher is supplied
         show_thinking: Whether to include thinking blocks (default: False)
         show_label: Whether to print the 'Amplifier:' label prefix (default: True).
             Pass False when the streaming overlay has already printed the label so
             it appears exactly once.
     """
+    events = dispatcher
+    if events is None:
+        if console is None:
+            raise TypeError("console or dispatcher is required")
+        events = UiEventDispatcher(console)
     role = message.get("role")
 
     if role == "user":
-        _render_user_message(message, console)
+        _render_user_message(message, events)
     elif role == "assistant":
-        _render_assistant_message(message, console, show_thinking, show_label)
+        _render_assistant_message(message, events, show_thinking, show_label)
     # Skip system/developer (implementation details, not conversation)
 
 
-def _render_user_message(message: dict, console: Console) -> None:
-    """Render user message with green prefix (matches live prompt style)."""
+def _render_user_message(message: dict, events: UiEventDispatcher) -> None:
+    """Render a user message through the canonical transcript grammar."""
     content = _extract_content(message, show_thinking=False)
-    console.print(f"\n[bold green]>[/bold green] {content}")
+    metadata = message.get("metadata")
+    mode = metadata.get("mode") if isinstance(metadata, dict) else None
+    events.emit(UserBlock(content, mode=mode))
 
 
 def _render_assistant_message(
-    message: dict, console: Console, show_thinking: bool, show_label: bool = True
+    message: dict,
+    events: UiEventDispatcher,
+    show_thinking: bool,
+    show_label: bool = True,
 ) -> None:
     """Render assistant message with green prefix and markdown."""
-    text_blocks, thinking_blocks = _extract_content_blocks(
-        message, show_thinking=show_thinking
-    )
+    content_blocks = _extract_content_blocks(message, show_thinking=show_thinking)
 
     # Skip rendering if message is empty (tool-only messages)
-    if not text_blocks and not thinking_blocks:
+    if not content_blocks:
         return
 
-    if show_label:
-        console.print("\n[bold green]Amplifier:[/bold green]")
-
-    # Render text blocks with default styling
-    if text_blocks:
-        console.print(Markdown("\n".join(text_blocks)))
-
-    # Render thinking blocks with dim styling
-    for thinking in thinking_blocks:
-        console.print(Markdown(f"\n💭 **Thinking:**\n{thinking}", style="dim"))
+    for index, (block_type, content) in enumerate(content_blocks):
+        if index:
+            events.gap()
+        if block_type == "thinking":
+            events.emit(
+                DebugBlock(
+                    tuple(content.splitlines() or [content]),
+                    label="Thinking",
+                    expanded=True,
+                )
+            )
+        else:
+            events.emit(
+                AnswerBlock(
+                    content,
+                    label="Amplifier" if show_label and index == 0 else None,
+                )
+            )
 
 
 def _extract_content_blocks(
     message: dict, *, show_thinking: bool = False
-) -> tuple[list[str], list[str]]:
-    """Extract text and thinking blocks separately from message content.
+) -> list[tuple[str, str]]:
+    """Extract displayable content blocks in their original order.
 
     Handles multiple content formats:
     - String content (simple case)
@@ -86,28 +105,30 @@ def _extract_content_blocks(
         show_thinking: Include thinking blocks in output
 
     Returns:
-        Tuple of (text_blocks, thinking_blocks)
+        Ordered ``(block_type, content)`` pairs for rendering
     """
     content = message.get("content", "")
-    text_blocks = []
-    thinking_blocks = []
 
     # String content (simple case)
     if isinstance(content, str):
-        text_blocks.append(content)
-        return text_blocks, thinking_blocks
+        return [("text", content)] if content else []
 
     # Structured content (ContentBlocks)
     if isinstance(content, list):
+        content_blocks: list[tuple[str, str]] = []
         for block in content:
             if block.get("type") == "text":
-                text_blocks.append(block.get("text", ""))
+                text = block.get("text", "")
+                if text:
+                    content_blocks.append(("text", text))
             elif block.get("type") == "thinking" and show_thinking:
-                thinking_blocks.append(block.get("thinking", ""))
-        return text_blocks, thinking_blocks
+                thinking = block.get("thinking", "")
+                if thinking:
+                    content_blocks.append(("thinking", thinking))
+        return content_blocks
 
     # Fallback for unexpected formats
-    return [str(content)], []
+    return [("text", str(content))]
 
 
 def _extract_content(message: dict, *, show_thinking: bool = False) -> str:
@@ -137,6 +158,8 @@ def _extract_content(message: dict, *, show_thinking: bool = False) -> str:
         for block in content:
             if block.get("type") == "text":
                 text_parts.append(block.get("text", ""))
+            elif block.get("type") == "image":
+                text_parts.append("[Image attachment]")
             elif block.get("type") == "thinking" and show_thinking:
                 thinking = block.get("thinking", "")
                 text_parts.append(f"\n[dim]💭 Thinking: {thinking}[/dim]\n")

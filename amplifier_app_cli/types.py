@@ -32,6 +32,8 @@ class InteractiveChatProtocol(Protocol):
         prepared_bundle: "PreparedBundle | None" = None,
         initial_prompt: str | None = None,
         initial_transcript: list[dict] | None = None,
+        initial_display_transcript: list[dict] | None = None,
+        initial_show_thinking: bool = False,
     ) -> None:
         """Run an interactive chat session.
 
@@ -44,6 +46,9 @@ class InteractiveChatProtocol(Protocol):
             prepared_bundle: PreparedBundle for bundle mode
             initial_prompt: Optional prompt to auto-execute
             initial_transcript: If provided, restore this transcript (resume mode)
+            initial_display_transcript: Optional display-only resume history. When
+                omitted, defaults to initial_transcript for compatibility.
+            initial_show_thinking: Include thinking blocks in displayed history
         """
         ...
 

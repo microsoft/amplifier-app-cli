@@ -500,10 +500,8 @@ class AppModuleResolver:
                 pass  # Fall through to error
 
         # Neither worked - raise informative error
-        available = list(getattr(self._bundle, "_paths", {}).keys())
         raise ModuleNotFoundError(
             f"Module '{module_id}' not found in bundle or user settings. "
-            f"Bundle contains: {available}. "
             f"Ensure the module is included in the bundle or configure a provider in settings."
         )
 
@@ -518,10 +516,12 @@ class AppModuleResolver:
         Returns:
             String path to module, or None if not found.
         """
-        # Check bundle first
-        paths = getattr(self._bundle, "_paths", {})
-        if module_id in paths:
-            return str(paths[module_id])
+        # Check the bundle resolver through its public compatibility method.
+        get_bundle_source = getattr(self._bundle, "get_module_source", None)
+        if callable(get_bundle_source):
+            source = get_bundle_source(module_id)
+            if source:
+                return str(source)
 
         # Check settings resolver if available
         if self._settings is not None and hasattr(self._settings, "get_module_source"):

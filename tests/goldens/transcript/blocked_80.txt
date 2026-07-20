@@ -1,0 +1,2 @@
+  ⊘ git push --force origin main · outside user authorization · finding safer
+path

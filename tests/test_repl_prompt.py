@@ -34,6 +34,9 @@ class TestPromptSession:
         session = _create_prompt_session()
         assert session is not None
         assert session.message  # Has prompt message
+        assert session.completer is not None  # Slash command completion enabled
+        assert session.auto_suggest is not None  # History suggestions enabled
+        assert session.bottom_toolbar is not None  # Live status toolbar enabled
         assert session.enable_history_search is not None  # Ctrl-R enabled
 
     def test_creates_history_directory(self, tmp_path, monkeypatch):
@@ -70,8 +73,11 @@ class TestPromptSession:
 
         # Should not raise, should fall back to InMemoryHistory
         with (
-            patch("amplifier_app_cli.main.logger") as mock_logger,
-            patch("amplifier_app_cli.main.FileHistory", side_effect=mock_file_history),
+            patch("amplifier_app_cli.ui.repl.logger") as mock_logger,
+            patch(
+                "amplifier_app_cli.ui.repl.FileHistory",
+                side_effect=mock_file_history,
+            ),
         ):
             session = _create_prompt_session()
             assert session is not None

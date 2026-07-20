@@ -298,6 +298,19 @@ class TestConfigDashboard:
     """Tests for the /config live dashboard rendering via SessionConfigurator."""
 
     @pytest.mark.asyncio
+    async def test_config_debug_toggles_live_transcript_detail(self):
+        cp = _make_command_processor(configurator=_make_mock_configurator())
+
+        enabled = await cp._get_config_display("debug on")
+        status = await cp._get_config_display("debug")
+        disabled = await cp._get_config_display("debug off")
+
+        assert enabled == "Debug transcript details: on"
+        assert status == "Debug transcript details: on"
+        assert disabled == "Debug transcript details: off"
+        assert cp.session.coordinator.session_state["ui.show_debug"] is False
+
+    @pytest.mark.asyncio
     async def test_config_no_args_renders_dashboard(self):
         """/config show calls all 6 list methods on the configurator (dashboard rendering)."""
         mock_configurator = _make_mock_configurator()

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import os
 import pty
+import select
 import signal
 import sys
 import termios
@@ -68,7 +69,7 @@ def _is_healthy(state: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _child_main(scenario: str) -> None:
+def _child_main(scenario: str, ready_fd: int) -> None:
     import asyncio
     import time as _time
 
@@ -164,6 +165,9 @@ def _child_main(scenario: str) -> None:
 
         with patch_stdout(raw=True):
             reader_task = asyncio.create_task(manager.run())
+            await asyncio.sleep(0.05)
+            os.write(ready_fd, b"ready")
+            os.close(ready_fd)
 
             if scenario == "normal":
                 await asyncio.sleep(0.3)
@@ -244,26 +248,40 @@ def _child_main(scenario: str) -> None:
 
 
 def _run_pty_scenario(scenario: str, timeout: float = 8.0) -> dict:
+    ready_read_fd, ready_write_fd = os.pipe()
     pid, master_fd = pty.fork()
     if pid == 0:
         # ----- CHILD -----
+        os.close(ready_read_fd)
         try:
-            _child_main(scenario)
+            _child_main(scenario, ready_write_fd)
         except BaseException:
             os._exit(1)
         os._exit(0)
 
     # ----- PARENT -----
-    time.sleep(0.6)  # let the child boot python/prompt_toolkit
+    os.close(ready_write_fd)
 
     def send(text: str) -> None:
         os.write(master_fd, text.encode())
 
+    if scenario != "multi_orphan":
+        readable, _, _ = select.select([ready_read_fd], [], [], 2.0)
+        ready = os.read(ready_read_fd, 5) if readable else b""
+        if ready != b"ready":
+            try:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+            except ProcessLookupError:
+                pass
+            os.close(ready_read_fd)
+            os.close(master_fd)
+            raise AssertionError(f"PTY child did not signal input readiness: {ready!r}")
+    os.close(ready_read_fd)
+
     if scenario == "ctrlc_midturn":
-        time.sleep(0.3)
         send("\x03")  # Ctrl-C byte (prompt_toolkit key path)
     elif scenario == "doublectrlc":
-        time.sleep(0.3)
         send("\x03")
         time.sleep(0.05)
         send("\x03")
@@ -272,13 +290,11 @@ def _run_pty_scenario(scenario: str, timeout: float = 8.0) -> dict:
         except ProcessLookupError:
             pass
     elif scenario == "sigint_only":
-        time.sleep(0.35)
         try:
             os.kill(pid, signal.SIGINT)
         except ProcessLookupError:
             pass
     elif scenario == "bytes_only":
-        time.sleep(0.3)
         send("\x03")
         time.sleep(0.05)
         send("\x03")

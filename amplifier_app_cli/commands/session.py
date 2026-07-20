@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from collections.abc import Callable
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
+from typing import Any
 
 import click
 from rich.panel import Panel
@@ -30,20 +31,17 @@ from ..types import (
     SearchPathProviderProtocol,
 )
 
-# Import session fork utilities from foundation
-try:
-    from amplifier_foundation.session import (
-        fork_session,
-        get_fork_preview,
-        get_session_lineage,
-        get_turn_summary,
-        count_turns,
-        ForkResult,
-    )
+if TYPE_CHECKING:
+    from amplifier_foundation.bundle import PreparedBundle
+    from rich.console import Console
 
-    HAS_SESSION_FORK = True
+# Import optional session fork utilities from foundation as one typed surface.
+try:
+    from amplifier_foundation import session as _session_fork
 except ImportError:
-    HAS_SESSION_FORK = False
+    _session_fork = None
+
+HAS_SESSION_FORK = _session_fork is not None
 
 
 def _record_bundle_override(
@@ -75,7 +73,7 @@ def _record_bundle_override(
 
 def _prepare_resume_context(
     session_id: str,
-    get_module_search_paths: Callable[[], list[str]],
+    get_module_search_paths: SearchPathProviderProtocol,
     console: "Console",
     *,
     bundle_override: str | None = None,
@@ -213,14 +211,13 @@ def _display_session_history(
     console.print(Panel.fit(banner_text, border_style="cyan"))
     console.print()
 
-    # Filter to user/assistant messages only
-    display_messages = [m for m in transcript if m.get("role") in ("user", "assistant")]
-
-    # Handle message limiting
-    skipped_count = 0
-    if max_messages > 0 and len(display_messages) > max_messages:
-        skipped_count = len(display_messages) - max_messages
-        display_messages = display_messages[-max_messages:]
+    displayable_count = len(_select_history_messages(transcript, max_messages=0))
+    display_messages = _select_history_messages(
+        transcript,
+        max_messages=max_messages,
+    )
+    skipped_count = displayable_count - len(display_messages)
+    if skipped_count:
         console.print(
             f"[dim]... {skipped_count} earlier messages. Use --full-history to see all[/dim]"
         )
@@ -231,6 +228,25 @@ def _display_session_history(
         render_message(message, console, show_thinking=show_thinking)
 
     console.print()  # Spacing before prompt
+
+
+def _select_history_messages(
+    transcript: list[dict],
+    *,
+    no_history: bool = False,
+    max_messages: int = 10,
+) -> list[dict]:
+    """Select display-only resume history without altering session context."""
+    if no_history:
+        return []
+    messages = [
+        message
+        for message in transcript
+        if isinstance(message, dict) and message.get("role") in ("user", "assistant")
+    ]
+    if max_messages > 0:
+        return messages[-max_messages:]
+    return messages
 
 
 async def _replay_session_history(
@@ -483,6 +499,11 @@ def register_session_commands(
             # Determine mode based on prompt presence
             if prompt is None and sys.stdin.isatty():
                 # No prompt, no pipe → interactive mode
+                display_transcript = _select_history_messages(
+                    transcript,
+                    no_history=no_history,
+                    max_messages=0 if full_history or replay else 10,
+                )
                 asyncio.run(
                     interactive_chat(
                         config_data,
@@ -492,6 +513,8 @@ def register_session_commands(
                         bundle_name=active_bundle,
                         prepared_bundle=prepared_bundle,
                         initial_transcript=transcript,
+                        initial_display_transcript=display_transcript,
+                        initial_show_thinking=show_thinking,
                     )
                 )
             else:
@@ -557,7 +580,7 @@ def register_session_commands(
         """
         # Handle --tree option first
         if tree_session:
-            if not HAS_SESSION_FORK:
+            if not HAS_SESSION_FORK or _session_fork is None:
                 console.print("[red]Error:[/red] Session fork utilities not available.")
                 console.print("Install amplifier-foundation with session support.")
                 sys.exit(1)
@@ -575,7 +598,7 @@ def register_session_commands(
                 sys.exit(1)
 
             session_dir = store.base_dir / session_id
-            lineage = get_session_lineage(session_dir, store.base_dir)
+            lineage = _session_fork.get_session_lineage(session_dir, store.base_dir)
 
             console.print()
             console.print("[bold cyan]Session Lineage Tree[/bold cyan]")
@@ -590,7 +613,6 @@ def register_session_commands(
 
             # Show current session
             current_indent = "  " * len(ancestors)
-            session_info = _get_session_display_info(store, session_id)
             forked_info = ""
             if lineage.get("forked_from_turn"):
                 forked_info = (
@@ -842,7 +864,7 @@ def register_session_commands(
 
             amplifier session fork abc123 --at-turn 3 --resume
         """
-        if not HAS_SESSION_FORK:
+        if not HAS_SESSION_FORK or _session_fork is None:
             console.print("[red]Error:[/red] Session fork utilities not available.")
             console.print("Install amplifier-foundation with session support.")
             sys.exit(1)
@@ -866,7 +888,7 @@ def register_session_commands(
             # Load transcript to count turns
             transcript_path = session_dir / "transcript.jsonl"
             if not transcript_path.exists():
-                console.print(f"[red]Error:[/red] No transcript found for session")
+                console.print("[red]Error:[/red] No transcript found for session")
                 sys.exit(1)
 
             messages = []
@@ -879,7 +901,7 @@ def register_session_commands(
                         except json.JSONDecodeError:
                             continue
 
-            max_turns = count_turns(messages)
+            max_turns = _session_fork.count_turns(messages)
             if max_turns == 0:
                 console.print(
                     "[red]Error:[/red] Session has no user messages to fork from"
@@ -898,7 +920,7 @@ def register_session_commands(
             turns_to_show = min(max_turns, 10)
             for t in range(max_turns, max(0, max_turns - turns_to_show), -1):
                 try:
-                    summary = get_turn_summary(messages, t)
+                    summary = _session_fork.get_turn_summary(messages, t)
                     user_preview = summary["user_content"][:55]
                     if len(summary["user_content"]) > 55:
                         user_preview += "..."
@@ -934,9 +956,9 @@ def register_session_commands(
 
         # Show preview before forking
         try:
-            preview = get_fork_preview(session_dir, turn)
+            preview = _session_fork.get_fork_preview(session_dir, turn)
             console.print()
-            console.print(f"[bold]Fork Preview:[/bold]")
+            console.print("[bold]Fork Preview:[/bold]")
             console.print(f"  Parent: {preview['parent_id'][:8]}...")
             console.print(f"  Fork at turn: {turn} of {preview['max_turns']}")
             console.print(f"  Messages to copy: {preview['message_count']}")
@@ -951,7 +973,7 @@ def register_session_commands(
 
         # Perform the fork
         try:
-            result = fork_session(
+            result = _session_fork.fork_session(
                 session_dir,
                 turn=turn,
                 new_session_id=new_name,
@@ -1124,6 +1146,12 @@ def register_session_commands(
                     bundle_name=active_bundle,
                     prepared_bundle=prepared_bundle,
                     initial_transcript=transcript,
+                    initial_display_transcript=_select_history_messages(
+                        transcript,
+                        no_history=no_history,
+                        max_messages=0 if full_history or replay else 10,
+                    ),
+                    initial_show_thinking=show_thinking,
                 )
             )
         except Exception as exc:
@@ -1312,7 +1340,7 @@ def _interactive_resume_impl(
 
     # If only one session, auto-select it
     if len(all_session_ids) == 1:
-        console.print(f"[dim]Only one session found, resuming...[/dim]")
+        console.print("[dim]Only one session found, resuming...[/dim]")
         ctx.invoke(
             sessions_resume_cmd,
             session_id=all_session_ids[0],
@@ -1527,4 +1555,23 @@ def _display_project_sessions(
     console.print(table)
 
 
-__all__ = ["register_session_commands"]
+# Public runtime seams used by the interactive host. Historical private names
+# remain in this module for downstream compatibility.
+def prepare_resume_context(*args: Any, **kwargs: Any) -> Any:
+    return _prepare_resume_context(*args, **kwargs)
+
+
+def display_session_history(*args: Any, **kwargs: Any) -> Any:
+    return _display_session_history(*args, **kwargs)
+
+
+def select_history_messages(*args: Any, **kwargs: Any) -> Any:
+    return _select_history_messages(*args, **kwargs)
+
+
+__all__ = [
+    "display_session_history",
+    "prepare_resume_context",
+    "register_session_commands",
+    "select_history_messages",
+]

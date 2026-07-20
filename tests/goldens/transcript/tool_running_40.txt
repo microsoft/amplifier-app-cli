@@ -1,0 +1,3 @@
+  ● Running test suite
+  └ $ uv run pytest
+tests/test_session_store.py --maxfail=1

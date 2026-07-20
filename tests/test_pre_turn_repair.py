@@ -5,14 +5,8 @@ functions work correctly on in-memory context messages (no ``line_num``
 keys) — the exact contract the pre-turn repair helper relies on.
 """
 
-import json
-from copy import deepcopy
-
-import pytest
-
 from amplifier_foundation.session import (
     diagnose_transcript,
-    find_orphaned_tool_calls,
     repair_transcript,
 )
 from amplifier_foundation.session.diagnosis import (

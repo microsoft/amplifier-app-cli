@@ -39,6 +39,7 @@ from amplifier_core import AmplifierSession
 from amplifier_core import ModuleValidationError
 
 from .lib.settings import AppSettings
+from .runtime.cleanup_events import ALL_CLEANUP_EVENTS
 from .session_store import SessionStore
 from .ui.error_display import display_validation_error
 from .utils.error_format import escape_markup
@@ -186,7 +187,8 @@ async def create_initialized_session(
     except OSError:
         pass  # CWD may be unavailable in sandboxed/container environments
 
-    # Step 3: Create CLI UX systems (app-layer policy)
+    # Step 3: Create CLI UX systems (app-layer policy). Fresh sessions require
+    # an explicit user-selected bypass before approvals may be auto-allowed.
     approval_system = CLIApprovalSystem()
     display_system = CLIDisplaySystem()
 
@@ -198,6 +200,9 @@ async def create_initialized_session(
         display_system=display_system,
         console=console,
     )
+    from .runtime.amplifier_compat import install_hook_serialization_compatibility
+
+    install_hook_serialization_compatibility()
 
     # Belt-and-suspenders: ensure session.config (== coordinator.config) carries the same
     # root-level metadata that was written into config.config above.  This matters because
@@ -299,7 +304,11 @@ async def create_initialized_session(
 
     register_provider = session.coordinator.get_capability("approval.register_provider")
     if register_provider:
-        approval_provider = CLIApprovalProvider(console, arbiter=arbiter)
+        approval_provider = CLIApprovalProvider(
+            console,
+            approval_system=approval_system,
+            arbiter=arbiter,
+        )
         register_provider(approval_provider)
         logger.debug("Registered CLIApprovalProvider for interactive approvals")
 
@@ -333,15 +342,8 @@ async def create_initialized_session(
     )
 
 
-_CLEANUP_EVENTS: tuple[str, ...] = (
-    # PR #183 — cleanup-window diagnostic events emitted by app-cli's main.py only
-    "cleanup:render_begin",
-    "cleanup:render_end",
-    "cleanup:store_begin",
-    "cleanup:store_end",
-    "cleanup:finally_begin",
-    "cleanup:finally_end",
-)
+# Compatibility alias for callers that imported the historical private name.
+_CLEANUP_EVENTS = ALL_CLEANUP_EVENTS
 
 
 def _inject_observability_events(prepared_bundle: "PreparedBundle") -> None:
@@ -400,10 +402,7 @@ async def _create_bundle_session(
     # config dict is populated when each hook module is mounted.
     _inject_observability_events(prepared_bundle)
 
-    # Step 4c: Create session (foundation handles init internally)
-    # Self-healing: The kernel intentionally swallows module load errors to be resilient.
-    # If providers fail to load due to stale install state (missing dependencies),
-    # the session is created but with no providers mounted. We detect this and retry.
+    # Step 4c: Create session (foundation handles init internally).
     core_logger = logging.getLogger("amplifier_core")
     original_level = core_logger.level
     if not config.verbose:
@@ -419,29 +418,12 @@ async def _create_bundle_session(
                 is_resumed=config.is_resume,  # Pass resume flag to kernel
             )
 
-            # Self-healing check: if configured modules failed to load,
-            # this likely indicates stale install state (missing dependencies).
-            # Invalidate all install state and retry once.
             if _should_attempt_self_healing(session, prepared_bundle):
                 logger.warning(
                     "Some modules failed to load despite being configured. "
-                    "Likely stale install state - invalidating and retrying..."
+                    "Check module configuration, credentials, and dependencies. "
+                    "Use `amplifier reset` to clear installation state explicitly."
                 )
-                _invalidate_all_install_state(prepared_bundle)
-                # Retry once - if it fails again, it's a real error
-                session = await prepared_bundle.create_session(
-                    session_id=session_id,
-                    approval_system=approval_system,
-                    display_system=display_system,
-                    session_cwd=Path.cwd(),  # CLI uses CWD for local @-mentions
-                    is_resumed=config.is_resume,  # Pass resume flag to kernel
-                )
-                # Warn if retry still has issues
-                if _should_attempt_self_healing(session, prepared_bundle):
-                    logger.warning(
-                        "Self-healing retry completed but some modules still failed to load. "
-                        "Check module configuration, credentials, and dependencies."
-                    )
     except (ModuleValidationError, RuntimeError) as e:
         if not display_validation_error(console, e, verbose=config.verbose):
             console.print(f"[red]Error:[/red] {escape_markup(e)}")
@@ -450,6 +432,20 @@ async def _create_bundle_session(
         sys.exit(1)
     finally:
         core_logger.setLevel(original_level)
+
+    from .runtime.bundle_context import BUNDLE_CONTEXT_CAPABILITY
+    from .runtime.bundle_context import build_bundle_context
+
+    bundle_context = build_bundle_context(
+        prepared_bundle.mount_plan,
+        prepared_bundle.resolver,
+        bundle=prepared_bundle.bundle,
+        bundle_package_paths=prepared_bundle.bundle_package_paths,
+    )
+    session.coordinator.register_capability(
+        BUNDLE_CONTEXT_CAPABILITY,
+        bundle_context,
+    )
 
     # Step 5: Register mention handling (wrap foundation's resolver)
     register_mention_handling(session)
@@ -536,6 +532,7 @@ def register_session_spawning(session: AmplifierSession) -> None:
         return await resume_sub_session(
             sub_session_id=sub_session_id,
             instruction=instruction,
+            parent_session=session,
         )
 
     session.coordinator.register_capability("session.spawn", spawn_capability)
@@ -543,7 +540,7 @@ def register_session_spawning(session: AmplifierSession) -> None:
 
 
 # =============================================================================
-# Self-healing helpers for stale install state
+# Module-load diagnostics
 # =============================================================================
 
 
@@ -687,88 +684,3 @@ def _should_attempt_self_healing(
         "self_healing_check: no complete failures detected, self-healing not needed"
     )
     return False
-
-
-def _invalidate_all_install_state(prepared_bundle: "PreparedBundle") -> None:
-    """Invalidate all install state to force reinstall of all modules.
-
-    This is a more aggressive approach than invalidating specific modules,
-    but necessary when we can't determine exactly which module failed
-    (because the kernel swallows errors).
-
-    Args:
-        prepared_bundle: The PreparedBundle containing the resolver.
-    """
-    try:
-        resolver = prepared_bundle.resolver
-        resolver_type = type(resolver).__name__
-        logger.debug(f"invalidate_install_state: resolver type is {resolver_type}")
-
-        # Access the activator - handle both direct BundleModuleResolver
-        # and AppModuleResolver (which wraps BundleModuleResolver in _bundle)
-        activator = getattr(resolver, "_activator", None)
-        if activator:
-            logger.debug(
-                f"invalidate_install_state: found activator directly on {resolver_type}"
-            )
-        else:
-            # Try unwrapping AppModuleResolver to get underlying BundleModuleResolver
-            bundle_resolver = getattr(resolver, "_bundle", None)
-            if bundle_resolver:
-                bundle_resolver_type = type(bundle_resolver).__name__
-                logger.debug(
-                    f"invalidate_install_state: unwrapping {resolver_type} -> {bundle_resolver_type}"
-                )
-                activator = getattr(bundle_resolver, "_activator", None)
-                if activator:
-                    logger.debug(
-                        f"invalidate_install_state: found activator on wrapped {bundle_resolver_type}"
-                    )
-            else:
-                logger.debug(
-                    f"invalidate_install_state: no _bundle attribute on {resolver_type}"
-                )
-
-        if not activator:
-            logger.warning(
-                f"No activator found on resolver ({resolver_type}) - cannot invalidate install state. "
-                "This may happen if the bundle was not prepared with an activator."
-            )
-            return
-
-        activator_type = type(activator).__name__
-        logger.debug(f"invalidate_install_state: activator type is {activator_type}")
-
-        # Access install state manager
-        install_state = getattr(activator, "_install_state", None)
-        if not install_state:
-            logger.warning(
-                f"No install state manager found on activator ({activator_type}) - cannot invalidate. "
-                "This may happen if ModuleActivator was created without install state tracking."
-            )
-            return
-
-        install_state_type = type(install_state).__name__
-        logger.debug(
-            f"invalidate_install_state: install_state type is {install_state_type}"
-        )
-
-        # Invalidate all modules
-        install_state.invalidate(None)
-        install_state.save()
-        logger.info(
-            "Successfully invalidated all install state for self-healing. "
-            "Modules will be reinstalled on next activation."
-        )
-
-        # Clear the activator's activated set so it will re-activate all modules
-        activated = getattr(activator, "_activated", None)
-        if activated:
-            num_activated = len(activated)
-            activated.clear()
-            logger.debug(
-                f"Cleared activator's activated set ({num_activated} modules were marked as activated)"
-            )
-
-    except Exception as e:
-        logger.warning(f"Failed to invalidate install state: {e}")

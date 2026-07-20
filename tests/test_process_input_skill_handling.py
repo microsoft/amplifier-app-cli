@@ -8,25 +8,10 @@ Tests cover:
 5. Mode shortcuts still work as before
 """
 
-import pytest
 from unittest.mock import MagicMock
 
 from amplifier_app_cli.main import CommandProcessor
 from helpers import _make_command_processor
-
-
-# ---------------------------------------------------------------------------
-# Fixture - reset class-level SKILL_SHORTCUTS between tests to prevent
-# state leaking from one test into another via the shared class dict.
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def reset_skill_shortcuts():
-    """Clear SKILL_SHORTCUTS before and after every test in this module."""
-    CommandProcessor.SKILL_SHORTCUTS.clear()
-    yield
-    CommandProcessor.SKILL_SHORTCUTS.clear()
 
 
 def _make_cp_with_skill_shortcut(shortcut_name="simplify"):
@@ -36,8 +21,8 @@ def _make_cp_with_skill_shortcut(shortcut_name="simplify"):
         shortcut_name: {"name": shortcut_name, "description": f"{shortcut_name} skill"}
     }
     cp = _make_command_processor(skills_discovery=mock_discovery)
-    # Ensure the shortcut is in SKILL_SHORTCUTS
-    assert shortcut_name in CommandProcessor.SKILL_SHORTCUTS
+    # Ensure the shortcut is in this processor's discovery snapshot.
+    assert shortcut_name in cp.SKILL_SHORTCUTS
     return cp
 
 
@@ -134,6 +119,35 @@ class TestSkillShortcutWithArguments:
         assert data["arguments"] == "extra spaces"
 
 
+class TestSkillShortcutChaining:
+    def test_multiple_shortcuts_load_in_order_with_shared_trailing_context(self):
+        cp = _make_command_processor()
+        cp.SKILL_SHORTCUTS.update(
+            {
+                "research": {"name": "deep-research"},
+                "codecheck": {"name": "code-review"},
+            }
+        )
+
+        action, data = cp.process_input(
+            "/research /codecheck inspect the provider boundary"
+        )
+
+        assert action == "load_skill_chain"
+        assert data["skill_commands"] == ("/research", "/codecheck")
+        assert data["skill_names"] == ("deep-research", "code-review")
+        assert data["arguments"] == "inspect the provider boundary"
+
+    def test_unknown_slash_token_ends_the_chain_as_context(self):
+        cp = _make_command_processor()
+        cp.SKILL_SHORTCUTS.update({"research": {"name": "deep-research"}})
+
+        action, data = cp.process_input("/research /not-a-skill keep this")
+
+        assert action == "load_skill"
+        assert data["arguments"] == "/not-a-skill keep this"
+
+
 # ---------------------------------------------------------------------------
 # 3. /skill <name> [args] command parsing
 # ---------------------------------------------------------------------------
@@ -202,9 +216,8 @@ class TestUnknownCommandStillWorks:
 
     def test_non_skill_shortcut_is_unknown(self):
         """A command that is not in SKILL_SHORTCUTS and not in COMMANDS should be unknown."""
-        # Ensure 'notaskill' is not in SKILL_SHORTCUTS (reset_skill_shortcuts clears it, but be explicit)
-        CommandProcessor.SKILL_SHORTCUTS.pop("notaskill", None)
         cp = _make_command_processor()
+        cp.SKILL_SHORTCUTS.pop("notaskill", None)
         action, _data = cp.process_input("/notaskill")
         assert action == "unknown_command"
 
@@ -281,3 +294,23 @@ class TestModeShortcutsStillWork:
         action_skill, data_skill = cp.process_input("/simplify")
         assert action_skill == "load_skill"
         assert data_skill["skill_name"] == "simplify"
+
+
+class TestModeCommandSubcommands:
+    def test_mode_info_routes_entire_name_to_mode_handler(self):
+        cp = _make_command_processor()
+
+        action, data = cp.process_input("/mode info auto")
+
+        assert action == "handle_mode"
+        assert data["args"] == "info auto"
+        assert "trailing_prompt" not in data
+
+    def test_mode_info_without_name_stays_a_control_command(self):
+        cp = _make_command_processor()
+
+        action, data = cp.process_input("/mode info")
+
+        assert action == "handle_mode"
+        assert data["args"] == "info"
+        assert "trailing_prompt" not in data
