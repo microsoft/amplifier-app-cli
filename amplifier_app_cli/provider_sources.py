@@ -182,12 +182,16 @@ def is_provider_module_installed(provider_id: str) -> bool:
     Note:
         A registered entry point is NOT sufficient evidence that a provider is
         usable. Providers are installed editable (``uv pip install -e <cache>``),
-        so clearing the module cache (``amplifier reset --remove cache``) deletes
-        the target directory while leaving the ``.dist-info`` -- and therefore the
-        entry point -- behind in site-packages. Such a provider still advertises
-        itself but fails to import. We therefore require the entry point's module
-        to actually resolve before treating the provider as installed, so that
-        dangling installs are repaired rather than skipped.
+        so anything that deletes the module cache while leaving site-packages
+        intact strands the ``.dist-info`` -- and therefore the entry point --
+        pointing at a directory that no longer exists. ``amplifier reset --remove
+        cache`` does exactly this when amplifier was not installed via ``uv
+        tool``: ``_uninstall_amplifier()`` bails out early but
+        ``_remove_amplifier_dir()`` still runs. Manual cache cleanup has the same
+        effect. Such a provider still advertises itself but fails to import, so
+        we require the entry point's module to actually resolve before treating
+        the provider as installed -- otherwise the skip-if-installed check turns
+        a repairable state into a permanent one.
     """
     module_id = (
         provider_id
