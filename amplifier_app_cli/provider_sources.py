@@ -2,6 +2,7 @@
 
 import importlib
 import importlib.metadata
+import importlib.util
 import logging
 import site
 import subprocess
@@ -177,6 +178,16 @@ def is_provider_module_installed(provider_id: str) -> bool:
 
     Returns:
         True if the module can be imported, False otherwise
+
+    Note:
+        A registered entry point is NOT sufficient evidence that a provider is
+        usable. Providers are installed editable (``uv pip install -e <cache>``),
+        so clearing the module cache (``amplifier reset --remove cache``) deletes
+        the target directory while leaving the ``.dist-info`` -- and therefore the
+        entry point -- behind in site-packages. Such a provider still advertises
+        itself but fails to import. We therefore require the entry point's module
+        to actually resolve before treating the provider as installed, so that
+        dangling installs are repaired rather than skipped.
     """
     module_id = (
         provider_id
@@ -184,16 +195,21 @@ def is_provider_module_installed(provider_id: str) -> bool:
         else f"provider-{provider_id}"
     )
 
-    # Try entry point first (most reliable for properly installed modules)
+    # Prefer the entry point for discovery (it is authoritative about which
+    # module implements the provider), but confirm that module still resolves.
     try:
         eps = importlib.metadata.entry_points(group="amplifier.modules")
         for ep in eps:
             if ep.name == module_id:
-                return True
+                try:
+                    return importlib.util.find_spec(ep.module) is not None
+                except (ImportError, AttributeError, ValueError):
+                    # Parent package missing/broken -> treat as not installed.
+                    return False
     except Exception:
         pass
 
-    # Fall back to direct import check
+    # Fall back to direct import check when no entry point is registered.
     try:
         provider_name = module_id.replace("provider-", "")
         module_name = f"amplifier_module_provider_{provider_name.replace('-', '_')}"
