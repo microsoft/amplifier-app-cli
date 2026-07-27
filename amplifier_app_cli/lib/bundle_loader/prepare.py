@@ -10,6 +10,7 @@ modules from git sources before session creation.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import TYPE_CHECKING
 from typing import Callable
@@ -22,6 +23,30 @@ if TYPE_CHECKING:
     from amplifier_app_cli.lib.bundle_loader.discovery import AppBundleDiscovery
 
 logger = logging.getLogger(__name__)
+
+# App-layer POLICY: a module that fails to download or activate aborts session
+# startup instead of being silently dropped.
+#
+# Foundation deliberately defaults to strict=False -- it is a library and cannot
+# know whether a partial bundle is acceptable to its caller. For the CLI it is
+# not: a session that starts without a tool the user's bundle declared is a
+# session that will fail later, further from the cause, in a way the user reads
+# as "the model ignored me" rather than "a download failed".
+#
+# Escape hatch, not a preference: converting a soft failure into a hard one can
+# block a user entirely (a proxy that blocks one module host, a repo that went
+# private). This env var lets them keep working while they fix the real problem.
+_ALLOW_PARTIAL_ENV = "AMPLIFIER_ALLOW_PARTIAL_BUNDLE"
+
+
+def _activation_is_strict() -> bool:
+    """Whether module activation failures should abort session startup."""
+    return os.environ.get(_ALLOW_PARTIAL_ENV, "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    )
+
 
 
 # A "namespace:path" include (e.g. "foo:behaviors/extra") is a reference
@@ -211,6 +236,7 @@ async def load_and_prepare_bundle(
         install_deps=install_deps,
         source_resolver=resolver_callback,
         progress_callback=progress_callback,
+        strict=_activation_is_strict(),
     )
     logger.info(f"Bundle '{bundle_name}' prepared successfully")
 
@@ -275,7 +301,9 @@ async def compose_and_prepare_bundles(
 
     # Prepare the composed bundle
     logger.info(f"Preparing composed bundle (install_deps={install_deps})")
-    prepared = await composed.prepare(install_deps=install_deps)
+    prepared = await composed.prepare(
+        install_deps=install_deps, strict=_activation_is_strict()
+    )
     logger.info("Composed bundle prepared successfully")
 
     return prepared
@@ -307,7 +335,9 @@ async def prepare_bundle_from_uri(
     logger.debug(f"Loaded bundle: {bundle.name} v{bundle.version}")
 
     logger.info(f"Preparing bundle (install_deps={install_deps})")
-    prepared = await bundle.prepare(install_deps=install_deps)
+    prepared = await bundle.prepare(
+        install_deps=install_deps, strict=_activation_is_strict()
+    )
     logger.info("Bundle prepared successfully")
 
     return prepared
