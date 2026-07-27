@@ -377,6 +377,7 @@ def provider_install(
             config_manager=config_manager,
             console=None if quiet else console,
             verbose=not quiet,
+            force=force,
         )
 
         if not installed and not quiet:
