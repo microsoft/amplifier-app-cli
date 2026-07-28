@@ -14,6 +14,7 @@ import click
 from rich.panel import Panel
 
 from amplifier_foundation.exceptions import BundleError, BundleValidationError
+from amplifier_foundation.modules import ModuleActivationError
 
 from ..console import console
 from ..session_store import extract_session_mode
@@ -176,6 +177,24 @@ def register_run_command(
                 Panel(
                     str(exc),
                     title="[bold white on red] Bundle Validation Error [/bold white on red]",
+                    border_style="red",
+                    padding=(1, 2),
+                )
+            )
+            sys.exit(1)
+        except ModuleActivationError as exc:
+            # One or more modules failed to download/activate. App-layer policy
+            # is to abort rather than start a session that is quietly missing
+            # capabilities. Render the failure and how to proceed.
+            console.print()
+            console.print(
+                Panel(
+                    f"{exc}\n\n"
+                    "The session was not started because it would have been missing\n"
+                    "the capabilities above.\n\n"
+                    "To start anyway with the modules that did load, re-run with:\n"
+                    "  AMPLIFIER_ALLOW_PARTIAL_BUNDLE=1",
+                    title="[bold white on red] Module Activation Failed [/bold white on red]",
                     border_style="red",
                     padding=(1, 2),
                 )
