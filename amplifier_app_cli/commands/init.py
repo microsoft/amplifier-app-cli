@@ -19,7 +19,6 @@ from ..ui.scope import (
 from ..provider_config_utils import configure_provider
 from ..provider_manager import ProviderManager
 from ..provider_env_detect import detect_provider_from_env
-from ..provider_sources import ensure_provider_installed
 from ..provider_sources import install_known_providers
 from .routing import _discover_matrix_files
 from .routing import _get_configured_provider_types
@@ -53,6 +52,48 @@ def _is_provider_module_installed(provider_id: str) -> bool:
     return is_provider_module_installed(provider_id)
 
 
+def _configured_provider_modules(
+    config: AppSettings, active_module_id: str
+) -> list[str]:
+    """Ordered unique provider module IDs configured in settings.
+
+    The active provider is always first: it is configured by definition, and
+    check_first_run()'s return value is driven by it.
+
+    Reads `config.providers` via the same accessor the rest of the install path
+    uses (`provider_sources.get_effective_provider_sources()` reads it too), so
+    install time and this check agree on what "configured" means. Malformed
+    entries are skipped rather than raised on - a hand-edited settings.yaml
+    must never prevent Amplifier from booting.
+
+    Args:
+        config: Config manager (AppSettings) to read configured providers from
+        active_module_id: Module ID of the currently active provider
+
+    Returns:
+        Ordered list of unique provider module IDs, active provider first
+    """
+    modules = [active_module_id]
+
+    try:
+        configured = config.get_provider_overrides()
+    except Exception as e:  # pragma: no cover - defensive, settings are best-effort
+        logger.debug(f"Could not read configured providers: {e}")
+        return modules
+
+    if not isinstance(configured, list):
+        return modules
+
+    for entry in configured:
+        if not isinstance(entry, dict):
+            continue
+        module_id = entry.get("module")
+        if module_id and module_id not in modules:
+            modules.append(module_id)
+
+    return modules
+
+
 def check_first_run() -> bool:
     """Check if this appears to be first run (no provider configured).
 
@@ -70,10 +111,22 @@ def check_first_run() -> bool:
     2. No surprise defaults that may not match bundle requirements
     3. Clear error path when nothing is configured
 
-    If a provider is configured but its module is missing (post-update scenario where
+    If ANY configured provider's module is missing (post-update scenario where
     `amplifier update` wiped the venv), this function will automatically reinstall
     all known provider modules without user interaction. We install ALL providers
     (not just the configured one) because bundles may include multiple providers.
+
+    The repair is gated on every configured module, not just the active one:
+    `amplifier update` and `amplifier reset` install no providers themselves, so
+    this is the single funnel for update, reset, and fresh install. Gating on the
+    active provider alone would leave a hole - if the active provider happens to
+    be installed but another configured provider is missing (a transient install
+    failure, a hand-edited settings.yaml, a single-provider `amplifier provider
+    install`), no boot would ever repair it.
+
+    Return value stays driven by the ACTIVE provider only: True means "push the
+    user into the add-a-provider prompt", which a non-active provider failing to
+    install must never trigger.
     """
     config = create_config_manager()
     provider_mgr = ProviderManager(config)
@@ -92,41 +145,74 @@ def check_first_run() -> bool:
         )
         return True
 
-    # Provider is configured - check if its module is actually installed
-    module_installed = _is_provider_module_installed(current_provider.module_id)
+    # Provider is configured - check whether EVERY configured module is installed.
+    # This is a find_spec per configured module: no subprocess, no network.
+    configured_modules = _configured_provider_modules(
+        config, current_provider.module_id
+    )
+    missing = [m for m in configured_modules if not _is_provider_module_installed(m)]
     logger.debug(
         f"check_first_run: provider={current_provider.module_id}, "
-        f"module_installed={module_installed}"
+        f"configured_modules={configured_modules}, missing={missing}"
     )
 
-    if not module_installed:
-        # Post-update scenario: settings exist but the provider module was wiped.
-        # Install only the provider that is actually missing. Installing every
-        # known provider here would overwrite working installs that the user may
-        # have pinned to a specific build.
+    if missing:
+        # Post-update scenario: settings exist but provider modules were wiped.
+        # `amplifier update`/`amplifier reset` wipe the whole tool venv, not just
+        # the active provider's module, so we must reinstall ALL known provider
+        # modules here, not just the configured one -- otherwise every other
+        # provider instance the user has configured silently fails to mount.
+        # This is safe: install_known_providers(force=False) skips any provider
+        # that is already installed, so it never overwrites a working/pinned
+        # install -- it only repairs what's genuinely missing.
         logger.info(
-            f"Provider {current_provider.module_id} is configured but module not installed. "
-            "Auto-installing it (this can happen after 'amplifier update')..."
+            f"Configured provider modules not installed: {', '.join(missing)}. "
+            "Auto-installing all known providers (this can happen after 'amplifier update')..."
         )
-        console.print("[dim]Installing provider module...[/dim]")
+        console.print("[dim]Installing provider modules...[/dim]")
 
-        installed = ensure_provider_installed(
-            current_provider.module_id, config_manager=config, console=console
-        )
-        if installed:
-            # Successfully reinstalled - no need for full init
+        installed = install_known_providers(config, console, verbose=True)
+
+        # A configured provider whose module is neither a known provider nor
+        # carries a `source:` cannot be repaired here. Say so and move on --
+        # blocking would trap the user in the init prompt on every boot.
+        still_missing = [m for m in missing if m not in installed]
+        if still_missing:
+            logger.warning(
+                "Could not install configured provider module(s): "
+                f"{', '.join(still_missing)}. Instances using them will not load."
+            )
+            console.print(
+                f"[yellow]Could not install: {', '.join(still_missing)}. "
+                "Instances using them will not load.[/yellow]"
+            )
+
+        # Ask whether the module is importable -- do not trust the repair's
+        # self-report. install_known_providers() appends a module to `installed`
+        # on subprocess rc == 0 alone, without ever importing it, so an install
+        # that exits 0 but yields an unusable module (broken dependency, entry
+        # point naming a module absent from the built package, stranded
+        # .dist-info) is still reported as installed. Same principle as
+        # is_provider_module_installed()'s docstring: a registered entry point
+        # is NOT sufficient evidence that a provider is usable. Membership in
+        # `installed` is weaker still. It is also not a superset -- a provider
+        # installed locally for development (`uv pip install -e ...`, no
+        # `source:` in settings) is never iterated by install_known_providers()
+        # and so never appears there, despite working fine.
+        if _is_provider_module_installed(current_provider.module_id):
+            # Active provider is usable - session can start.
             logger.debug("check_first_run: auto-install succeeded, no init needed")
             console.print()
             return False
         else:
-            # Auto-fix failed - fall back to provider add prompt
+            # Auto-fix failed for the ACTIVE provider - fall back to add prompt.
             logger.warning(
                 "Failed to auto-install providers after detecting missing modules. "
                 "Will prompt user to add a provider."
             )
             return True
 
-    # Provider configured and module installed - no init needed
+    # Provider configured and all configured modules installed - no init needed
     logger.debug(
         f"check_first_run: provider {current_provider.module_id} configured and installed, "
         "no init needed"
