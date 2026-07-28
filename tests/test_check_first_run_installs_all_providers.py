@@ -52,18 +52,27 @@ class TestCheckFirstRunRepairsAllKnownProviders:
         provider_mgr = MagicMock()
         provider_mgr.get_current_provider.return_value = provider
 
+        present: set[str] = set()  # wiped venv; repair makes these importable
+
         with (
             patch.object(init_cmd, "create_config_manager"),
             patch.object(init_cmd, "ProviderManager", return_value=provider_mgr),
-            patch.object(init_cmd, "_is_provider_module_installed", return_value=False),
+            patch.object(
+                init_cmd,
+                "_is_provider_module_installed",
+                side_effect=lambda m: m in present,
+            ),
             patch.object(
                 init_cmd,
                 "install_known_providers",
-                return_value=[
-                    "provider-anthropic",
-                    "provider-openai",
-                    "provider-chat-completions",
-                ],
+                side_effect=_stateful_install(
+                    present,
+                    [
+                        "provider-anthropic",
+                        "provider-openai",
+                        "provider-chat-completions",
+                    ],
+                ),
             ) as mock_install_all,
         ):
             needs_init = init_cmd.check_first_run()
@@ -91,6 +100,8 @@ class TestCheckFirstRunRepairsAllKnownProviders:
         }
 
         attempted: list[str] = []
+        present: set[str] = set()  # wiped venv; a successful install fills this
+        module_for_uri = {uri: module for module, uri in sources.items()}
 
         def fake_source_from_uri(uri: str):
             src = MagicMock()
@@ -98,20 +109,28 @@ class TestCheckFirstRunRepairsAllKnownProviders:
             return src
 
         def fake_run(cmd, *args, **kwargs):
-            attempted.append(cmd[4])  # ["uv", "pip", "install", "-e", <path>, ...]
+            uri = cmd[4]  # ["uv", "pip", "install", "-e", <path>, ...]
+            attempted.append(uri)
+            # Installing a module makes it importable -- model that, so the
+            # post-repair check sees the world the install actually produced.
+            present.add(module_for_uri[uri])
             return MagicMock(returncode=0, stderr="")
 
         with (
             patch.object(init_cmd, "create_config_manager"),
             patch.object(init_cmd, "ProviderManager", return_value=provider_mgr),
-            patch.object(init_cmd, "_is_provider_module_installed", return_value=False),
+            patch.object(
+                init_cmd,
+                "_is_provider_module_installed",
+                side_effect=lambda m: m in present,
+            ),
             patch(
                 "amplifier_app_cli.provider_sources.get_effective_provider_sources",
                 return_value=sources,
             ),
             patch(
                 "amplifier_app_cli.provider_sources.is_provider_module_installed",
-                return_value=False,
+                side_effect=lambda m: m in present,
             ),
             patch(
                 "amplifier_app_cli.provider_sources.source_from_uri",
@@ -187,6 +206,25 @@ class TestCheckFirstRunRepairsAllKnownProviders:
         assert attempted == [sources["provider-anthropic"]], (
             "already-installed provider-openai must not be reinstalled/overwritten"
         )
+
+
+def _stateful_install(present: set, installs: list) -> "object":
+    """install_known_providers() stub that makes what it installs importable.
+
+    Installing a provider changes its importability, so a repair stub must
+    update the state the installed-check reads. Pairing a constant
+    `_is_provider_module_installed -> False` mock with a repair that reports
+    success encodes a world where installation never actually works -- the
+    repair path could never be observed to succeed, and the test would only
+    pass while check_first_run() trusted the repair's self-report instead of
+    verifying importability.
+    """
+
+    def _install(*args, **kwargs):
+        present.update(installs)
+        return list(installs)
+
+    return _install
 
 
 def _config_with_providers(entries: list) -> MagicMock:
@@ -314,18 +352,24 @@ class TestCheckFirstRunGatesOnAllConfiguredModules:
             ]
         )
 
+        present: set[str] = set()  # wiped venv; repair makes these importable
+
         with (
             patch.object(init_cmd, "create_config_manager", return_value=config),
             patch.object(
                 init_cmd, "ProviderManager", return_value=_provider_mgr("provider-anthropic")
             ),
             patch.object(
-                init_cmd, "_is_provider_module_installed", return_value=False
+                init_cmd,
+                "_is_provider_module_installed",
+                side_effect=lambda m: m in present,
             ),
             patch.object(
                 init_cmd,
                 "install_known_providers",
-                return_value=["provider-anthropic", "provider-openai"],
+                side_effect=_stateful_install(
+                    present, ["provider-anthropic", "provider-openai"]
+                ),
             ) as mock_install,
         ):
             needs_init = init_cmd.check_first_run()
@@ -426,6 +470,49 @@ class TestCheckFirstRunGatesOnAllConfiguredModules:
         assert needs_init is False, (
             "a locally installed active provider is usable even though it never "
             "appears in install_known_providers()'s return list"
+        )
+
+    def test_active_reported_installed_but_not_importable_must_not_start_session(self):
+        """`installed` is a self-report, not evidence the module works.
+
+        install_known_providers() appends a module to its return list on
+        subprocess `rc == 0` alone -- it never confirms importability. An
+        install can exit 0 and still yield an unusable module: a broken
+        dependency, an entry point naming a module absent from the built
+        package, a stranded `.dist-info`. Such a module lands in `installed`
+        while is_provider_module_installed() correctly reports False.
+
+        Trusting the self-report would boot a session with a dead active
+        provider. This is the same principle is_provider_module_installed()'s
+        own docstring states: a registered entry point is NOT sufficient
+        evidence that a provider is usable.
+        """
+        from amplifier_app_cli.commands import init as init_cmd
+
+        config = _config_with_providers(
+            [{"module": "provider-anthropic"}, {"module": "provider-openai"}]
+        )
+
+        with (
+            patch.object(init_cmd, "create_config_manager", return_value=config),
+            patch.object(
+                init_cmd,
+                "ProviderManager",
+                return_value=_provider_mgr("provider-anthropic"),
+            ),
+            # Repair claims success for both, but the module is still not importable.
+            patch.object(init_cmd, "_is_provider_module_installed", return_value=False),
+            patch.object(
+                init_cmd,
+                "install_known_providers",
+                return_value=["provider-anthropic", "provider-openai"],
+            ),
+        ):
+            needs_init = init_cmd.check_first_run()
+
+        assert needs_init is True, (
+            "a provider that reports installed but cannot be imported must not "
+            "be treated as usable"
         )
 
     def test_no_provider_configured_still_needs_init(self):

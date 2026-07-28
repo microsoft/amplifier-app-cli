@@ -201,14 +201,25 @@ class TestCheckFirstRunRepairsAllKnownProviders:
         provider_mgr = MagicMock()
         provider_mgr.get_current_provider.return_value = provider
 
+        # Stateful: installing a provider makes it importable. A constant-False
+        # installed-check paired with a repair that reports success would encode
+        # a world where installation never works.
+        present: set[str] = set()
+
+        def fake_install(*args, **kwargs):
+            present.update(["provider-anthropic", "provider-openai"])
+            return ["provider-anthropic", "provider-openai"]
+
         with (
             patch.object(init_cmd, "create_config_manager"),
             patch.object(init_cmd, "ProviderManager", return_value=provider_mgr),
-            patch.object(init_cmd, "_is_provider_module_installed", return_value=False),
             patch.object(
                 init_cmd,
-                "install_known_providers",
-                return_value=["provider-anthropic", "provider-openai"],
+                "_is_provider_module_installed",
+                side_effect=lambda m: m in present,
+            ),
+            patch.object(
+                init_cmd, "install_known_providers", side_effect=fake_install
             ) as mock_install_all,
         ):
             needs_init = init_cmd.check_first_run()
