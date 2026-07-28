@@ -187,7 +187,23 @@ def check_first_run() -> bool:
                 "Instances using them will not load.[/yellow]"
             )
 
-        if current_provider.module_id in installed:
+        # Both terms are load-bearing; do not "simplify" either away.
+        # `in installed` is the cheap short-circuit for the common path.
+        # `_is_provider_module_installed()` is the semantic truth: a provider
+        # installed locally for development (`uv pip install -e ...`, no
+        # `source:` in settings) is importable and usable, but is never
+        # iterated by install_known_providers() and so never appears in
+        # `installed`. Checking only the list would tell such a user "No
+        # provider configured!" about a provider that works. Conversely,
+        # checking only importability would be fragile: install_known_providers()
+        # does a manual cache-refresh dance (invalidate_caches / addsitedir /
+        # list(distributions)) precisely because subprocess installs are not
+        # immediately visible to the running process -- if that refresh is ever
+        # imperfect, a direct-only check would produce a false init prompt on
+        # the common path.
+        if current_provider.module_id in installed or _is_provider_module_installed(
+            current_provider.module_id
+        ):
             # Active provider is usable - session can start.
             logger.debug("check_first_run: auto-install succeeded, no init needed")
             console.print()

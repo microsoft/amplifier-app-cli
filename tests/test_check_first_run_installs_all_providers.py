@@ -381,6 +381,53 @@ class TestCheckFirstRunGatesOnAllConfiguredModules:
             "the warning must name the module that could not be installed"
         )
 
+    def test_locally_developed_active_provider_is_not_forced_into_init(self):
+        """A locally editable-installed active provider must not force init.
+
+        `install_known_providers()` only ever iterates
+        `get_effective_provider_sources()` -- the known providers plus anything
+        carrying an explicit `source:`. A provider module installed locally for
+        development (`uv pip install -e ...`, no `source:` in settings) is
+        importable and perfectly usable, but never appears in the returned
+        `installed` list.
+
+        So membership in `installed` is NOT the same question as "is the active
+        provider usable". Gating solely on `in installed` means: active provider
+        is local-dev AND some other configured provider is missing -> the repair
+        block runs -> the active module is absent from `installed` -> we return
+        True and tell the user "No provider configured!" about a provider that
+        is configured and working. Non-interactively, auto_init_from_env() then
+        writes provider config they never asked for.
+        """
+        from amplifier_app_cli.commands import init as init_cmd
+
+        config = _config_with_providers(
+            [
+                {"module": "provider-localdev"},  # active, installed, NOT in sources
+                {"module": "provider-openai"},  # missing, IS in sources
+            ]
+        )
+        present = {"provider-localdev"}
+
+        with (
+            patch.object(init_cmd, "create_config_manager", return_value=config),
+            patch.object(
+                init_cmd, "ProviderManager", return_value=_provider_mgr("provider-localdev")
+            ),
+            patch.object(
+                init_cmd, "_is_provider_module_installed", side_effect=lambda m: m in present
+            ),
+            patch.object(
+                init_cmd, "install_known_providers", return_value=["provider-openai"]
+            ),
+        ):
+            needs_init = init_cmd.check_first_run()
+
+        assert needs_init is False, (
+            "a locally installed active provider is usable even though it never "
+            "appears in install_known_providers()'s return list"
+        )
+
     def test_no_provider_configured_still_needs_init(self):
         """Unchanged existing behavior -- must not regress."""
         from amplifier_app_cli.commands import init as init_cmd
