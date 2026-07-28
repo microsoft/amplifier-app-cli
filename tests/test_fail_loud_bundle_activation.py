@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import pytest
 
+from amplifier_foundation.exceptions import BundleError
+from amplifier_foundation.modules import ModuleActivationError
+
 from amplifier_app_cli.lib.bundle_loader.prepare import _ALLOW_PARTIAL_ENV
 from amplifier_app_cli.lib.bundle_loader.prepare import _activation_is_strict
 
@@ -68,4 +71,64 @@ class TestPreparePassesStrict343:
         assert wired_calls == prepare_calls, (
             f"{prepare_calls} prepare() call sites but only {wired_calls} pass "
             "strict= -- an unwired site silently reverts to issue #343 behaviour"
+        )
+
+
+class TestActivationFailureIsRenderedNotTracebacked343:
+    """Failing loud is only half the fix -- it has to fail *legibly*.
+
+    Turning on strict activation made ``ModuleActivationError`` fire for the
+    first time. It reached the user as a raw Python traceback, which is a
+    worse experience than the silent degradation it replaced: the user now
+    sees a stack dump and still has no idea what to do about it.
+    """
+
+    def test_error_is_a_bundle_error(self) -> None:
+        """Pins the foundation contract this CLI handler depends on.
+
+        If foundation ever moves ``ModuleActivationError`` back out of the
+        ``BundleError`` hierarchy, the generic handler stops covering it and
+        tracebacks return. Fail here rather than in a user's terminal.
+        """
+        assert issubclass(ModuleActivationError, BundleError)
+
+    def test_activation_handler_precedes_generic_bundle_error_handler(self) -> None:
+        """Handler *ordering* is load-bearing, not incidental.
+
+        ``ModuleActivationError`` is a ``BundleError`` subclass, so a generic
+        ``except BundleError`` placed first would swallow it and the user
+        would lose the specific remediation hint below. Python matches
+        handlers top-down, so the subclass must come first.
+        """
+        import inspect
+
+        from amplifier_app_cli.commands import run as run_mod
+
+        source = inspect.getsource(run_mod)
+        activation_at = source.find("except ModuleActivationError")
+        bundle_at = source.find("except BundleError")
+
+        assert activation_at != -1, "run command must handle ModuleActivationError"
+        assert bundle_at != -1, "sanity: expected a generic BundleError handler"
+        assert activation_at < bundle_at, (
+            "`except ModuleActivationError` must precede `except BundleError` -- "
+            "otherwise the subclass is swallowed and the user loses the "
+            "escape-hatch hint"
+        )
+
+    def test_handler_tells_the_user_how_to_proceed(self) -> None:
+        """A hard failure must never be a dead end.
+
+        Strict activation can strand a user whose proxy blocks one module
+        host. The rendered failure has to name the escape hatch, otherwise
+        the only recovery path is reading our source.
+        """
+        import inspect
+
+        from amplifier_app_cli.commands import run as run_mod
+
+        source = inspect.getsource(run_mod)
+        assert _ALLOW_PARTIAL_ENV in source, (
+            f"the failure panel must name {_ALLOW_PARTIAL_ENV} so a stranded "
+            "user has a way forward"
         )
