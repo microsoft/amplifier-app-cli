@@ -2,6 +2,7 @@
 
 import importlib
 import importlib.metadata
+import importlib.util
 import logging
 import site
 import subprocess
@@ -86,12 +87,18 @@ def get_effective_provider_sources(
 ) -> dict[str, str]:
     """Get provider sources with settings modules and overrides applied.
 
-    Merges:
-    1. DEFAULT_PROVIDER_SOURCES (known providers)
-    2. User-configured source overrides (for known providers)
-    3. User-added provider modules from settings (for additional providers)
+    Merges, in ascending order of precedence:
 
-    User overrides and additions take precedence over defaults.
+    1. ``DEFAULT_PROVIDER_SOURCES`` (known providers, pinned to @main)
+    2. ``sources.modules`` (``amplifier source add``)
+    3. ``modules.providers[].source`` (``amplifier module add provider-X --source ...``)
+    4. ``overrides.<module_id>.source`` (settings.yaml ``overrides`` block)
+    5. ``config.providers[].source`` (``amplifier provider add/use --source ...``)
+
+    Steps 2, 4 and 5 mirror the precedence that the runtime uses when it builds
+    ``combined_sources`` in ``runtime/config.py``. Install time and run time MUST
+    agree: if they disagree, Amplifier installs one build of a provider and then
+    runs a different one, and any user pin is silently overwritten with @main.
 
     Args:
         config_manager: Optional config manager for source overrides and settings
@@ -102,7 +109,7 @@ def get_effective_provider_sources(
     sources = dict(DEFAULT_PROVIDER_SOURCES)
 
     if config_manager:
-        # 1. Apply source overrides for known providers
+        # 1. Apply source overrides for known providers (sources.modules)
         overrides = config_manager.get_module_sources()
         for module_id in list(sources.keys()):
             if module_id in overrides:
@@ -128,7 +135,92 @@ def get_effective_provider_sources(
                         sources[module_id] = source
                         logger.debug(f"Using settings source for {module_id}: {source}")
 
+        # 3. Apply `overrides.<module_id>.source` from settings.yaml.
+        # Higher precedence than sources.modules, matching the runtime.
+        try:
+            for module_id, source in config_manager.get_source_overrides().items():
+                if module_id.startswith("provider-") or module_id in sources:
+                    if sources.get(module_id) != source:
+                        logger.debug(
+                            f"Using settings override source for {module_id}: {source}"
+                        )
+                    sources[module_id] = source
+        except Exception as e:  # pragma: no cover - defensive, settings are best-effort
+            logger.debug(f"Could not read module source overrides: {e}")
+
+        # 4. Apply `config.providers[].source` - written by `amplifier provider add`
+        # and `amplifier provider use --source`. This is the most specific signal a
+        # user can give about which build of a provider they want, so it wins.
+        try:
+            for provider in config_manager.get_provider_overrides():
+                if not isinstance(provider, dict):
+                    continue
+                module_id = provider.get("module")
+                source = provider.get("source")
+                if module_id and source:
+                    if sources.get(module_id) != source:
+                        logger.debug(
+                            f"Using configured provider source for {module_id}: {source}"
+                        )
+                    sources[module_id] = source
+        except Exception as e:  # pragma: no cover - defensive, settings are best-effort
+            logger.debug(f"Could not read configured provider sources: {e}")
+
     return sources
+
+
+def is_provider_module_installed(provider_id: str) -> bool:
+    """Check whether a provider module is installed and importable.
+
+    Args:
+        provider_id: Provider module ID (e.g., "provider-anthropic"). A bare
+            name such as "anthropic" is normalized to "provider-anthropic".
+
+    Returns:
+        True if the module can be imported, False otherwise
+
+    Note:
+        A registered entry point is NOT sufficient evidence that a provider is
+        usable. Providers are installed editable (``uv pip install -e <cache>``),
+        so anything that deletes the module cache while leaving site-packages
+        intact strands the ``.dist-info`` -- and therefore the entry point --
+        pointing at a directory that no longer exists. ``amplifier reset --remove
+        cache`` does exactly this when amplifier was not installed via ``uv
+        tool``: ``_uninstall_amplifier()`` bails out early but
+        ``_remove_amplifier_dir()`` still runs. Manual cache cleanup has the same
+        effect. Such a provider still advertises itself but fails to import, so
+        we require the entry point's module to actually resolve before treating
+        the provider as installed -- otherwise the skip-if-installed check turns
+        a repairable state into a permanent one.
+    """
+    module_id = (
+        provider_id
+        if provider_id.startswith("provider-")
+        else f"provider-{provider_id}"
+    )
+
+    # Prefer the entry point for discovery (it is authoritative about which
+    # module implements the provider), but confirm that module still resolves.
+    try:
+        eps = importlib.metadata.entry_points(group="amplifier.modules")
+        for ep in eps:
+            if ep.name == module_id:
+                try:
+                    return importlib.util.find_spec(ep.module) is not None
+                except (ImportError, AttributeError, ValueError):
+                    # Parent package missing/broken -> treat as not installed.
+                    return False
+    except Exception:
+        pass
+
+    # Fall back to direct import check when no entry point is registered.
+    try:
+        provider_name = module_id.replace("provider-", "")
+        module_name = f"amplifier_module_provider_{provider_name.replace('-', '_')}"
+        importlib.import_module(module_name)
+        return True
+    except ImportError:
+        return False
 
 
 def is_local_path(source_uri: str) -> bool:
@@ -256,14 +348,20 @@ def install_known_providers(
     config_manager: "AppSettings | None" = None,
     console: Console | None = None,
     verbose: bool = True,
+    force: bool = False,
 ) -> list[str]:
-    """Install all known provider modules.
+    """Install known provider modules that are not already present.
 
-    Downloads and caches all known providers so they can be discovered
+    Downloads and caches known providers so they can be discovered
     via entry points for use in init and provider use commands.
 
     Uses source overrides from config_manager if available, otherwise
     falls back to DEFAULT_PROVIDER_SOURCES.
+
+    Providers that are already installed are left untouched unless ``force``
+    is set. Reinstalling an already-working provider is not a no-op: it
+    replaces whatever build is present with the one this function resolves,
+    which silently discards a user's pinned build.
 
     Supports both git URLs (git+https://...) and local file paths
     (./path, ../path, /absolute/path, file://path).
@@ -272,9 +370,11 @@ def install_known_providers(
         config_manager: Optional config manager for source overrides
         console: Optional Rich console for progress display
         verbose: Whether to show progress messages
+        force: Reinstall providers even if they are already installed
 
     Returns:
-        List of successfully installed provider module IDs
+        List of provider module IDs that are available after this call
+        (newly installed plus already-present ones)
     """
     installed: list[str] = []
     failed: list[tuple[str, str]] = []
@@ -287,6 +387,15 @@ def install_known_providers(
     ordered_providers = _get_ordered_providers(sources)
 
     for module_id, source_uri in ordered_providers:
+        # Leave already-installed providers alone. Overwriting them would
+        # discard the build the user actually has in place.
+        if not force and is_provider_module_installed(module_id):
+            logger.debug(f"{module_id} already installed, skipping")
+            if verbose and console:
+                console.print(f"  [dim]{module_id} already installed, skipping[/dim]")
+            installed.append(module_id)
+            continue
+
         try:
             if verbose and console:
                 console.print(f"  Installing {module_id}...", end="")

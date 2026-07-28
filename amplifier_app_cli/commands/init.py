@@ -19,6 +19,7 @@ from ..ui.scope import (
 from ..provider_config_utils import configure_provider
 from ..provider_manager import ProviderManager
 from ..provider_env_detect import detect_provider_from_env
+from ..provider_sources import ensure_provider_installed
 from ..provider_sources import install_known_providers
 from .routing import _discover_matrix_files
 from .routing import _get_configured_provider_types
@@ -47,35 +48,9 @@ def _is_provider_module_installed(provider_id: str) -> bool:
     Returns:
         True if the module can be imported, False otherwise
     """
-    import importlib
-    import importlib.metadata
+    from ..provider_sources import is_provider_module_installed
 
-    # Normalize to full module ID
-    module_id = (
-        provider_id
-        if provider_id.startswith("provider-")
-        else f"provider-{provider_id}"
-    )
-
-    # Try entry point first (most reliable for properly installed modules)
-    try:
-        eps = importlib.metadata.entry_points(group="amplifier.modules")
-        for ep in eps:
-            if ep.name == module_id:
-                # Entry point exists - module is installed
-                return True
-    except Exception:
-        pass
-
-    # Fall back to direct import check
-    try:
-        # Convert provider ID to Python module name
-        provider_name = module_id.replace("provider-", "")
-        module_name = f"amplifier_module_provider_{provider_name.replace('-', '_')}"
-        importlib.import_module(module_name)
-        return True
-    except ImportError:
-        return False
+    return is_provider_module_installed(provider_id)
 
 
 def check_first_run() -> bool:
@@ -125,15 +100,19 @@ def check_first_run() -> bool:
     )
 
     if not module_installed:
-        # Post-update scenario: settings exist but provider modules were wiped
-        # Auto-fix by reinstalling ALL known providers (bundles may need multiple)
+        # Post-update scenario: settings exist but the provider module was wiped.
+        # Install only the provider that is actually missing. Installing every
+        # known provider here would overwrite working installs that the user may
+        # have pinned to a specific build.
         logger.info(
             f"Provider {current_provider.module_id} is configured but module not installed. "
-            "Auto-installing providers (this can happen after 'amplifier update')..."
+            "Auto-installing it (this can happen after 'amplifier update')..."
         )
-        console.print("[dim]Installing provider modules...[/dim]")
+        console.print("[dim]Installing provider module...[/dim]")
 
-        installed = install_known_providers(config, console, verbose=True)
+        installed = ensure_provider_installed(
+            current_provider.module_id, config_manager=config, console=console
+        )
         if installed:
             # Successfully reinstalled - no need for full init
             logger.debug("check_first_run: auto-install succeeded, no init needed")
