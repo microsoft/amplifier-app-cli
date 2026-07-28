@@ -180,9 +180,20 @@ class TestInstallKnownProvidersIdempotency:
         assert result == ["provider-openai"]
 
 
-class TestCheckFirstRunRepairsOnlyMissingProvider:
-    def test_only_the_configured_provider_is_installed(self):
-        """A missing provider must not trigger a reinstall of every provider."""
+class TestCheckFirstRunRepairsAllKnownProviders:
+    """A missing provider module must trigger a repair of ALL known providers.
+
+    `amplifier update`/`amplifier reset` wipe the whole tool venv, not just the
+    currently active provider's module. A user with multiple provider instances
+    configured (e.g. anthropic + openai + chat-completions) needs every one of
+    them reinstalled, not just the active one -- see
+    tests/test_check_first_run_installs_all_providers.py for the full regression
+    coverage. This is safe because install_known_providers(force=False) skips
+    any provider that is already installed (TestInstallKnownProvidersIdempotency
+    above), so it never overwrites a working/pinned install.
+    """
+
+    def test_install_known_providers_is_used_for_repair(self):
         from amplifier_app_cli.commands import init as init_cmd
 
         provider = MagicMock()
@@ -193,19 +204,17 @@ class TestCheckFirstRunRepairsOnlyMissingProvider:
         with (
             patch.object(init_cmd, "create_config_manager"),
             patch.object(init_cmd, "ProviderManager", return_value=provider_mgr),
+            patch.object(init_cmd, "_is_provider_module_installed", return_value=False),
             patch.object(
-                init_cmd, "_is_provider_module_installed", return_value=False
-            ),
-            patch.object(
-                init_cmd, "ensure_provider_installed", return_value=True
-            ) as mock_ensure,
-            patch.object(init_cmd, "install_known_providers") as mock_install_all,
+                init_cmd,
+                "install_known_providers",
+                return_value=["provider-anthropic", "provider-openai"],
+            ) as mock_install_all,
         ):
             needs_init = init_cmd.check_first_run()
 
         assert needs_init is False
-        mock_install_all.assert_not_called()
-        assert mock_ensure.call_args.args[0] == "provider-openai"
+        mock_install_all.assert_called_once()
 
 
 class TestDanglingEditableInstallIsNotSkipped:
