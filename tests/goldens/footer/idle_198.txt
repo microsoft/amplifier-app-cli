@@ -1,0 +1,1 @@
+mode chat · auto read,test · ask write,net,spend,+2 · foundation · 3259 · $0.80 ▲                                                            / commands · shift+tab mode · ctrl-t tasks · ctrl-p perms

@@ -6,6 +6,7 @@ Tests provider add, list, remove, edit, test commands and first-run detection.
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import click
 from click.testing import CliRunner
 
 from amplifier_app_cli.lib.settings import AppSettings, SettingsPaths
@@ -1413,7 +1414,6 @@ def _make_run_cli_p_flag(captured: list) -> "click.Group":
     ``execute_single`` receives, i.e. after the provider selection logic has
     run and the selected provider has been promoted to priority 0.
     """
-    import click
     from amplifier_app_cli.commands.run import register_run_command
     from unittest.mock import AsyncMock
 
@@ -1558,14 +1558,14 @@ class TestRunPFlag:
         )
 
     def test_run_p_flag_end_to_end_via_resolve_bundle_config(self):
-        """Pass 1 works on providers processed by _map_id_to_instance_id (real data flow).
+        """Pass 1 works on providers processed by the public ID mapper.
 
-        ``_map_id_to_instance_id`` copies ``id`` → ``instance_id`` without stripping
+        The mapper copies ``id`` → ``instance_id`` without stripping
         ``id``, so both fields co-exist on resolved entries.  This test uses the
         actual mapping function to produce realistic provider dicts and verifies that
         Pass 1 matches correctly on the resolved data, not just on synthetic dicts.
         """
-        from amplifier_app_cli.runtime.config import _map_id_to_instance_id
+        from amplifier_app_cli.runtime.config import map_provider_ids_to_instance_ids
 
         raw_providers = [
             {
@@ -1579,7 +1579,7 @@ class TestRunPFlag:
                 "config": {"base_url": "http://spark2:8000/v1", "priority": 2},
             },
         ]
-        resolved = _map_id_to_instance_id(raw_providers)
+        resolved = map_provider_ids_to_instance_ids(raw_providers)
 
         # Confirm the mapping preserves id AND adds instance_id
         assert resolved[0].get("id") == "r11-gemma"

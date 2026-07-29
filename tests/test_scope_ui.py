@@ -41,7 +41,13 @@ class TestPrintScopeIndicator:
     def test_global_scope_renders_dim(self):
         """Global scope should render with 'Saving to' text and dim treatment."""
         buf = StringIO()
-        console = Console(file=buf, force_terminal=True, width=120)
+        console = Console(
+            file=buf,
+            force_terminal=True,
+            color_system="standard",
+            no_color=False,
+            width=120,
+        )
         settings = _make_settings()
         print_scope_indicator(console, settings, "global")
         output = buf.getvalue()
@@ -53,7 +59,13 @@ class TestPrintScopeIndicator:
     def test_project_scope_renders_yellow(self):
         """Project scope should render with yellow treatment and 'team-shared'."""
         buf = StringIO()
-        console = Console(file=buf, force_terminal=True, width=120)
+        console = Console(
+            file=buf,
+            force_terminal=True,
+            color_system="standard",
+            no_color=False,
+            width=120,
+        )
         settings = _make_settings()
         print_scope_indicator(console, settings, "project")
         output = buf.getvalue()
@@ -65,7 +77,13 @@ class TestPrintScopeIndicator:
     def test_local_scope_renders_yellow(self):
         """Local scope should render with yellow treatment and 'gitignored'."""
         buf = StringIO()
-        console = Console(file=buf, force_terminal=True, width=120)
+        console = Console(
+            file=buf,
+            force_terminal=True,
+            color_system="standard",
+            no_color=False,
+            width=120,
+        )
         settings = _make_settings()
         print_scope_indicator(console, settings, "local")
         output = buf.getvalue()

@@ -11,7 +11,7 @@ dependencies = [
     "rich>=13.0.0",
     "pygments>=2.13.0",
     "pydantic>=2.0.0",
-    "amplifier-core>=1.0.10",
+    "amplifier-core>=1.6.0",
     "amplifier-foundation",
     "pyyaml>=6.0.3",
     "prompt-toolkit>=3.0.52",
@@ -26,6 +26,9 @@ amplifier = "amplifier_app_cli.main:main"
 [tool.uv]
 package = true
 
+[tool.hatch.build]
+exclude = ["/AGENTS.md"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_app_cli"]
 
@@ -37,10 +40,15 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
-dev = ["pytest>=9.0.3", "pytest-asyncio>=0.24.0"]
+dev = [
+    "pyright>=1.1.411",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.12.0",
+]
 
 [tool.uv.sources]
-amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", branch = "main" }
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "dc010423d010da9a52e1b49808a1865666008c25" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -50,3 +58,7 @@ markers = [
     "integration: marks tests that fork a real pty child process and probe real termios state (deselected by default; run with '-m integration')",
 ]
 
+[tool.pyright]
+include = ["amplifier_app_cli"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"

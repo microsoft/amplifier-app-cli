@@ -1,0 +1,9 @@
+· amplifier_app_cli/session_store.py →
+amplifier_app_cli/durable_session_store.py (+2 −1)
+       @@ -41,4 +41,5 @@
+    41  def save_session(value):
+    42 −    return store.write(value)
+    42 +    payload = sanitize(value)
+    43 +    return durable_store.write(payload)
+    44
+       \ No newline at end of file

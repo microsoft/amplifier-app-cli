@@ -126,6 +126,33 @@ class TestInitializedSession:
         await initialized.cleanup()
         mock_session.cleanup.assert_called_once()
 
+    @pytest.mark.anyio
+    async def test_fresh_session_constructs_non_bypass_approval_system(self):
+        mock_session = _make_mock_session()
+        config = _make_session_config()
+        console = MagicMock()
+
+        with (
+            patch(
+                f"{_MODULE}._create_bundle_session",
+                new_callable=AsyncMock,
+                return_value=mock_session,
+            ),
+            patch(
+                "amplifier_app_cli.commands.init.check_first_run",
+                return_value=False,
+            ),
+            patch(
+                "amplifier_app_cli.project_utils.get_project_slug",
+                return_value="test-slug",
+            ),
+            patch("amplifier_app_cli.ui.CLIApprovalSystem") as approval_type,
+            patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+        ):
+            await create_initialized_session(config, console)
+
+        approval_type.assert_called_once_with()
+
 
 # ---------------------------------------------------------------------------
 # Post-session metadata stamping tests
@@ -539,6 +566,29 @@ class TestSpawnCapabilityForwardsUseSubprocess:
                 "use_subprocess should default to False"
             )
 
+    @pytest.mark.anyio
+    async def test_resume_capability_preserves_parent_runtime_state(self):
+        """Resumed children stay attached to root task and cancellation state."""
+        mock_session = _make_mock_session()
+
+        with patch(
+            "amplifier_app_cli.session_spawner.resume_sub_session",
+            new_callable=AsyncMock,
+            return_value={"output": "continued", "session_id": "sub-123"},
+        ) as mock_resume:
+            register_session_spawning(mock_session)
+            register_calls = mock_session.coordinator.register_capability.call_args_list
+            resume_call = [c for c in register_calls if c[0][0] == "session.resume"]
+            resume_fn = resume_call[0][0][1]
+
+            await resume_fn("sub-123", "continue")
+
+        mock_resume.assert_awaited_once_with(
+            sub_session_id="sub-123",
+            instruction="continue",
+            parent_session=mock_session,
+        )
+
     def test_self_healing_backward_compat_single_instance(self, caplog):
         """Single-instance provider with no instance_id still works correctly.
 
@@ -575,9 +625,7 @@ def _configurator_patches(mock_sess):
             new_callable=AsyncMock,
             return_value=mock_sess,
         ),
-        patch(
-            "amplifier_app_cli.commands.init.check_first_run", return_value=False
-        ),
+        patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
         patch(
             "amplifier_app_cli.project_utils.get_project_slug",
             return_value="test-slug",

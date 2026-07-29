@@ -2,7 +2,7 @@
 
 Tests cover:
 1. /skills and /skill entries in COMMANDS dict
-2. SKILL_SHORTCUTS class variable
+2. SKILL_SHORTCUTS instance state
 3. _populate_skill_shortcuts() method reads from skills_discovery
 4. __init__() calls _populate_skill_shortcuts()
 """
@@ -84,32 +84,37 @@ class TestSkillCommandsExist:
 
 
 # ---------------------------------------------------------------------------
-# 2. SKILL_SHORTCUTS class variable exists
+# 2. SKILL_SHORTCUTS is instance-owned
 # ---------------------------------------------------------------------------
 
 
-class TestSkillShortcutsClassVariable:
-    """Tests that SKILL_SHORTCUTS class variable exists."""
+class TestSkillShortcutsInstanceState:
+    """Tests that SKILL_SHORTCUTS belongs to one command processor."""
 
-    def test_skill_shortcuts_class_variable_exists(self):
-        """SKILL_SHORTCUTS class variable should exist on CommandProcessor."""
-        from amplifier_app_cli.main import CommandProcessor
+    def test_skill_shortcuts_instance_variable_exists(self):
+        """SKILL_SHORTCUTS should exist on each CommandProcessor instance."""
+        cp = _make_command_processor()
 
-        assert hasattr(CommandProcessor, "SKILL_SHORTCUTS")
+        assert hasattr(cp, "SKILL_SHORTCUTS")
 
     def test_skill_shortcuts_is_dict(self):
         """SKILL_SHORTCUTS should be a dict."""
-        from amplifier_app_cli.main import CommandProcessor
+        cp = _make_command_processor()
 
-        assert isinstance(CommandProcessor.SKILL_SHORTCUTS, dict)
+        assert isinstance(cp.SKILL_SHORTCUTS, dict)
 
     def test_skill_shortcuts_initially_empty(self):
         """SKILL_SHORTCUTS should start as empty dict."""
-        from amplifier_app_cli.main import CommandProcessor
+        assert _make_command_processor().SKILL_SHORTCUTS == {}
 
-        # Reset it in case previous tests have populated it
-        CommandProcessor.SKILL_SHORTCUTS = {}
-        assert CommandProcessor.SKILL_SHORTCUTS == {}
+    def test_skill_shortcuts_are_not_shared_between_instances(self):
+        """Mutating one processor must not alter a later processor."""
+        first = _make_command_processor()
+        second = _make_command_processor()
+
+        first.SKILL_SHORTCUTS["simplify"] = {"name": "simplify"}
+
+        assert "simplify" not in second.SKILL_SHORTCUTS
 
 
 # ---------------------------------------------------------------------------
@@ -142,20 +147,15 @@ class TestPopulateSkillShortcuts:
         # SKILL_SHORTCUTS should have been populated during __init__
         mock_discovery.get_shortcuts.assert_called()
 
-    def test_populate_skill_shortcuts_updates_class_shortcuts(self):
+    def test_populate_skill_shortcuts_updates_instance_shortcuts(self):
         """Should update SKILL_SHORTCUTS with shortcuts from discovery."""
-        from amplifier_app_cli.main import CommandProcessor
-
-        # Reset SKILL_SHORTCUTS
-        CommandProcessor.SKILL_SHORTCUTS = {}
-
         mock_discovery = MagicMock()
         shortcuts = {"simplify": {"name": "simplify", "description": "Simplify code"}}
         mock_discovery.get_shortcuts.return_value = shortcuts
 
-        _make_command_processor(skills_discovery=mock_discovery)
+        cp = _make_command_processor(skills_discovery=mock_discovery)
 
-        assert "simplify" in CommandProcessor.SKILL_SHORTCUTS
+        assert "simplify" in cp.SKILL_SHORTCUTS
 
     def test_populate_skill_shortcuts_no_get_shortcuts_attribute(self):
         """If discovery has no get_shortcuts(), should not raise."""

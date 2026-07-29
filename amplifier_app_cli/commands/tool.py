@@ -470,12 +470,13 @@ def tool_invoke(tool_name: str, args: tuple[str, ...], bundle: str | None, outpu
         bundle_name = bundle
     else:
         _, bundle_name, _ = _should_use_bundle()
+    bundle_name = bundle_name or "anchors"
 
     # Run the invocation
     try:
         result = asyncio.run(
             _invoke_tool_from_bundle_async(bundle_name, tool_name, tool_args)
-        )  # type: ignore[arg-type]
+        )
     except Exception as e:
         if output == "json":
             error_output = {"status": "error", "error": str(e), "tool": tool_name}

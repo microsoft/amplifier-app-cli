@@ -1,0 +1,1 @@
+✳ Goal: durable chat history. Next: resume migration from the active checkpoint.

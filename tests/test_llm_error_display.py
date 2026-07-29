@@ -14,6 +14,7 @@ from amplifier_core.llm_errors import (
 )
 
 from amplifier_app_cli.ui.error_display import display_llm_error
+from amplifier_app_cli.ui.error_display import concise_llm_error
 
 
 def _capture_output(error: Exception, verbose: bool = False) -> tuple[bool, str]:
@@ -61,6 +62,25 @@ class TestDisplayLlmErrorReturnValue:
         error = RuntimeError("not an LLM error")
         result, _ = _capture_output(error)
         assert result is False
+
+    def test_concise_interactive_summary_hides_raw_json_fields(self) -> None:
+        error = LLMError(
+            json.dumps(
+                {
+                    "error": {
+                        "message": "Invalid effort",
+                        "request_id": "secret-request-id",
+                    }
+                }
+            ),
+            provider="openai",
+        )
+
+        title, message = concise_llm_error(error)
+
+        assert title == "Provider request failed"
+        assert message == "Invalid effort"
+        assert "request_id" not in message
 
     def test_returns_false_for_value_error(self) -> None:
         error = ValueError("bad value")
@@ -115,7 +135,7 @@ class TestExtractedMessage:
         error = LLMError(raw, provider="anthropic", model="claude-opus-4-6")
         _, output = _capture_output(error)
         assert "Overloaded" in output
-        assert "req_011CYWrZR1v1VKRA5jpGruM9" in output
+        assert "req_011CYWrZR1v1VKRA5jpGruM9" not in output
 
     def test_extracts_openai_style_json_message(self) -> None:
         raw = json.dumps(
@@ -157,7 +177,7 @@ class TestExtractedMessage:
 
 
 class TestRawDetails:
-    """Raw Details section shows full error string below a separator."""
+    """Raw provider payloads are available only in explicit verbose mode."""
 
     def test_shows_raw_details_separator(self) -> None:
         raw = json.dumps(
@@ -169,7 +189,7 @@ class TestRawDetails:
         )
         error = LLMError(raw, provider="anthropic")
         _, output = _capture_output(error)
-        assert "Raw Details" in output
+        assert "Raw Details" not in output
 
     def test_shows_full_error_string(self) -> None:
         raw = json.dumps(
@@ -180,7 +200,8 @@ class TestRawDetails:
             }
         )
         error = LLMError(raw, provider="anthropic")
-        _, output = _capture_output(error)
+        _, output = _capture_output(error, verbose=True)
+        assert "Raw Details" in output
         assert "req_011CYUvo1pVm9nBQDESemmf5" in output
 
 

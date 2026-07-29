@@ -1,0 +1,15 @@
+  ● Ran 1 shell command
+      session store check 01 ok
+      session store check 02 ok
+      session store check 03 ok
+      session store check 04 ok
+      session store check 05 ok
+      session store check 06 ok
+      session store check 07 ok
+      session store check 08 ok
+      … +8 lines · full via ctrl-o again
+or transcript export
+      session store check 17 ok
+      session store check 18 ok
+      session store check 19 ok
+      session store check 20 ok

@@ -5,10 +5,15 @@ Full end-to-end integration testing done manually (see test report).
 """
 
 import re
+from types import SimpleNamespace
 
 import pytest
+from amplifier_app_cli.session_spawner import _session_bypass_permissions
 from amplifier_app_cli.session_spawner import resume_sub_session
 from amplifier_app_cli.session_store import SessionStore
+from amplifier_app_cli.ui.approval import CLIApprovalSystem
+from amplifier_app_cli.ui.interaction_state import TRUST_POLICY_VERSION
+from amplifier_app_cli.ui.interaction_state import TrustState
 from amplifier_foundation import generate_sub_session_id
 
 # W3C Trace Context constants (these are private in amplifier_foundation.tracing)
@@ -40,6 +45,31 @@ def _mock_uuid(monkeypatch, hex_value: str = "f" * 32) -> None:
     import uuid
 
     monkeypatch.setattr(uuid, "uuid4", lambda: _FakeUUID(hex_value))
+
+
+def test_subprocess_bypass_inheritance_requires_explicit_parent_posture() -> None:
+    approval_system = CLIApprovalSystem(bypass_permissions=True)
+    trust_state = TrustState()
+    coordinator = SimpleNamespace(
+        approval_system=approval_system,
+        get_capability=lambda name: trust_state if name == "ui.trust_state" else None,
+    )
+    parent = SimpleNamespace(coordinator=coordinator)
+
+    assert _session_bypass_permissions(parent) is False
+
+    trust_state.activate("bypass")
+    assert _session_bypass_permissions(parent) is True
+
+
+def test_subprocess_bypass_does_not_trust_unversioned_approval_flag() -> None:
+    coordinator = SimpleNamespace(
+        approval_system=CLIApprovalSystem(bypass_permissions=True),
+        get_capability=lambda _name: None,
+    )
+    parent = SimpleNamespace(coordinator=coordinator)
+
+    assert _session_bypass_permissions(parent) is False
 
 
 @pytest.fixture(scope="module")
@@ -258,6 +288,90 @@ class TestResumeErrorHandling:
         # Try to resume - SessionStore recovers but we detect missing config
         with pytest.raises(RuntimeError, match="Corrupted session metadata"):
             await resume_sub_session(session_id, "Follow-up")
+
+    async def test_resume_with_live_parent_inherits_its_ux_systems(
+        self, tmp_path, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        import amplifier_app_cli.session_spawner as spawner
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        session_id = "test-parent-ux-inheritance"
+        SessionStore().save(
+            session_id,
+            [],
+            {
+                "session_id": session_id,
+                "parent_id": "parent-123",
+                "config": {"session": {}},
+            },
+        )
+        approval = object()
+        display = object()
+        parent = SimpleNamespace(
+            coordinator=SimpleNamespace(
+                approval_system=approval,
+                display_system=display,
+            )
+        )
+        captured = {}
+
+        class ConstructorReached(Exception):
+            pass
+
+        def capture_session(**kwargs):
+            captured.update(kwargs)
+            raise ConstructorReached
+
+        monkeypatch.setattr(spawner, "AmplifierSession", capture_session)
+
+        with pytest.raises(ConstructorReached):
+            await resume_sub_session(session_id, "continue", parent_session=parent)
+
+        assert captured["approval_system"] is approval
+        assert captured["display_system"] is display
+
+    @pytest.mark.parametrize(
+        ("policy_version", "expected_bypass"),
+        ((None, False), (TRUST_POLICY_VERSION, True)),
+    )
+    async def test_standalone_child_resume_migrates_legacy_bypass_safely(
+        self,
+        tmp_path,
+        monkeypatch,
+        policy_version,
+        expected_bypass,
+    ):
+        import amplifier_app_cli.session_spawner as spawner
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        session_id = f"test-standalone-policy-{policy_version}"
+        metadata = {
+            "session_id": session_id,
+            "parent_id": "parent-123",
+            "config": {"session": {}},
+            "permission_posture": "bypass",
+            "permission_profile": TrustState(initial="bypass").snapshot(),
+        }
+        if policy_version is not None:
+            metadata["permission_policy_version"] = policy_version
+        SessionStore().save(session_id, [], metadata)
+        captured = {}
+
+        class ConstructorReached(Exception):
+            pass
+
+        def capture_session(**kwargs):
+            captured.update(kwargs)
+            raise ConstructorReached
+
+        monkeypatch.setattr(spawner, "AmplifierSession", capture_session)
+
+        with pytest.raises(ConstructorReached):
+            await resume_sub_session(session_id, "continue")
+
+        assert captured["approval_system"].bypass_permissions is expected_bypass
 
 
 class TestSessionStoreIntegration:
@@ -935,7 +1049,9 @@ class TestSessionMetadataFlow:
     This blocked ALL delegate tool calls for users.
     """
 
-    async def test_spawn_capability_accepts_session_metadata(self, tmp_path, monkeypatch):
+    async def test_spawn_capability_accepts_session_metadata(
+        self, tmp_path, monkeypatch
+    ):
         """spawn_capability must accept session_metadata without raising TypeError.
 
         This is the exact failure path: foundation's delegate tool passes
@@ -1210,6 +1326,7 @@ class TestRoutingFallbackFromAgentConfig:
             def register(self, event, handler, priority=0, name=None):
                 def _unregister():
                     pass
+
                 return _unregister
 
             async def emit(self, event, data):
@@ -1329,6 +1446,7 @@ class TestRoutingFallbackFromAgentConfig:
             def register(self, event, handler, priority=0, name=None):
                 def _unregister():
                     pass
+
                 return _unregister
 
             async def emit(self, event, data):
@@ -1440,6 +1558,7 @@ class TestRoutingFallbackFromAgentConfig:
             def register(self, event, handler, priority=0, name=None):
                 def _unregister():
                     pass
+
                 return _unregister
 
             async def emit(self, event, data):
@@ -1555,6 +1674,7 @@ class TestRoutingCapabilityPropagation:
             def register(self, event, handler, priority=0, name=None):
                 def _unregister():
                     pass
+
                 return _unregister
 
             async def emit(self, event, data):
@@ -1652,6 +1772,7 @@ class TestRoutingCapabilityPropagation:
             def register(self, event, handler, priority=0, name=None):
                 def _unregister():
                     pass
+
                 return _unregister
 
             async def emit(self, event, data):
@@ -1764,6 +1885,7 @@ class TestSpawnMentionExpansion:
             def register(self, event, handler, priority=0, name=None):
                 def _unregister():
                     pass
+
                 return _unregister
 
             async def emit(self, event, data):
@@ -1801,11 +1923,15 @@ class TestSpawnMentionExpansion:
 
         return parent_session, child_session, added_messages
 
-    async def test_system_instruction_mentions_are_expanded(self, tmp_path, monkeypatch):
+    async def test_system_instruction_mentions_are_expanded(
+        self, tmp_path, monkeypatch
+    ):
         """@-mentions in agent body (system_instruction) must be inlined as XML blocks."""
         from unittest.mock import patch
 
-        from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
+        from amplifier_app_cli.lib.mention_loading.app_resolver import (
+            AppMentionResolver,
+        )
         from amplifier_app_cli.session_spawner import spawn_sub_session
 
         monkeypatch.setenv("HOME", str(tmp_path))
@@ -1815,7 +1941,9 @@ class TestSpawnMentionExpansion:
         fixture_file.write_text(FIXTURE_CONTENT)
 
         resolver = AppMentionResolver(bundle_mappings={"testbundle": tmp_path})
-        parent_session, child_session, added_messages = self._make_sessions(tmp_path, resolver)
+        parent_session, child_session, added_messages = self._make_sessions(
+            tmp_path, resolver
+        )
 
         agent_configs = {
             "test-agent": {
@@ -1863,11 +1991,15 @@ class TestSpawnMentionExpansion:
             f"got: {system_content[:300]!r}"
         )
 
-    async def test_delegation_instruction_mentions_are_expanded(self, tmp_path, monkeypatch):
+    async def test_delegation_instruction_mentions_are_expanded(
+        self, tmp_path, monkeypatch
+    ):
         """@-mentions in the runtime delegation instruction must be inlined as XML blocks."""
         from unittest.mock import patch
 
-        from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
+        from amplifier_app_cli.lib.mention_loading.app_resolver import (
+            AppMentionResolver,
+        )
         from amplifier_app_cli.session_spawner import spawn_sub_session
 
         monkeypatch.setenv("HOME", str(tmp_path))
@@ -1877,7 +2009,9 @@ class TestSpawnMentionExpansion:
         fixture_file.write_text(FIXTURE_CONTENT)
 
         resolver = AppMentionResolver(bundle_mappings={"testbundle": tmp_path})
-        parent_session, child_session, added_messages = self._make_sessions(tmp_path, resolver)
+        parent_session, child_session, added_messages = self._make_sessions(
+            tmp_path, resolver
+        )
 
         agent_configs = {
             "test-agent": {
@@ -1986,7 +2120,9 @@ class TestResumeMentionExpansion:
 
         return child_session
 
-    async def test_resume_instruction_mentions_are_expanded(self, tmp_path, monkeypatch):
+    async def test_resume_instruction_mentions_are_expanded(
+        self, tmp_path, monkeypatch
+    ):
         """@-mentions in resume instruction must be inlined as XML blocks before execute()."""
         from unittest.mock import patch
 
@@ -2018,9 +2154,7 @@ class TestResumeMentionExpansion:
             "amplifier_app_cli.session_spawner.AmplifierSession",
             return_value=child_session,
         ):
-            with patch(
-                "amplifier_app_cli.session_store.SessionStore"
-            ) as MockStore:
+            with patch("amplifier_app_cli.session_store.SessionStore") as MockStore:
                 store_instance = MockStore.return_value
                 store_instance.exists.return_value = True
                 store_instance.load.return_value = ([], metadata)

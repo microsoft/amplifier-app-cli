@@ -1,0 +1,2 @@
+  ● Test suite failed · click or ctrl-o
+expand

@@ -16,6 +16,7 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock
 
 from helpers import _make_command_processor
+from amplifier_app_cli.ui.session_commands import SessionCommandResult
 
 
 def _make_mock_discovery(skills=None, shortcuts=None):
@@ -87,8 +88,8 @@ class TestHandleCommandLoadSkillDispatch:
         result = await cp.handle_command(
             "load_skill", {"skill_name": "simplify", "arguments": ""}
         )
-        # Should not be "Unhandled action"
-        assert not result.startswith("Unhandled action:")
+        assert isinstance(result, SessionCommandResult)
+        assert not result.text.startswith("Unhandled action:")
 
     @pytest.mark.asyncio
     async def test_handle_command_load_skill_calls_load_skill_method(self):
@@ -99,7 +100,8 @@ class TestHandleCommandLoadSkillDispatch:
             "load_skill", {"skill_name": "simplify", "arguments": "focus on memory"}
         )
         cp._load_skill.assert_called_once_with("simplify", "focus on memory")
-        assert result == "Skill prompt"
+        assert isinstance(result, SessionCommandResult)
+        assert result.prompt == "Skill prompt"
 
     @pytest.mark.asyncio
     async def test_handle_command_load_skill_passes_skill_name_and_arguments(self):
@@ -120,8 +122,9 @@ class TestHandleCommandLoadSkillDispatch:
         result = await cp.handle_command(
             "load_skill", {"skill_name": "", "arguments": ""}
         )
-        assert "Unhandled action" not in result
-        assert "Unknown command" not in result
+        assert isinstance(result, SessionCommandResult)
+        assert "Unhandled action" not in result.text
+        assert "Unknown command" not in result.text
 
 
 # ---------------------------------------------------------------------------
@@ -201,11 +204,11 @@ class TestListSkillsFormatting:
 
     @pytest.mark.asyncio
     async def test_list_skills_includes_footer(self):
-        """_list_skills() should include 'Use /skill <name> to load a skill.' footer."""
+        """_list_skills() should preserve the Markdown command placeholder."""
         mock_discovery = _make_mock_discovery()
         cp = _make_command_processor(skills_discovery=mock_discovery)
         result = await cp._list_skills()
-        assert "Use /skill" in result
+        assert "Use `/skill <name>`" in result
         assert "to load a skill" in result
 
     @pytest.mark.asyncio
@@ -395,8 +398,12 @@ class TestLoadSkillPromptWithArgs:
         cp = _make_command_processor(skills_discovery=mock_discovery)
         is_prompt, text = await cp._load_skill("simplify", "focus on memory usage")
         assert is_prompt is True
-        # Exact format: 'Use the load_skill tool to load the skill "<name>". Additional context from the user: <args>'
-        expected = 'Use the load_skill tool to load the skill "simplify". Additional context from the user: focus on memory usage'
+        expected = (
+            'Use the load_skill tool to load the skill "simplify", passing the '
+            "user's input as the `arguments` parameter "
+            '(load_skill(skill_name="simplify", arguments=...)) so the skill '
+            "receives it. The user's input is: focus on memory usage"
+        )
         assert text == expected
 
     @pytest.mark.asyncio
@@ -411,7 +418,12 @@ class TestLoadSkillPromptWithArgs:
         cp = _make_command_processor(skills_discovery=mock_discovery)
         is_prompt, text = await cp._load_skill("refactor", "please clean this up")
         assert is_prompt is True
-        expected = 'Use the load_skill tool to load the skill "refactor". Additional context from the user: please clean this up'
+        expected = (
+            'Use the load_skill tool to load the skill "refactor", passing the '
+            "user's input as the `arguments` parameter "
+            '(load_skill(skill_name="refactor", arguments=...)) so the skill '
+            "receives it. The user's input is: please clean this up"
+        )
         assert text == expected
 
     @pytest.mark.asyncio

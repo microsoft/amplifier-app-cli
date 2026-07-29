@@ -71,3 +71,6 @@ next-steps.md
 # Working folders
 ai_working/tmp
 tests/recipes/DECISIONS.md
+
+# Project-scope settings — personal preferences for TUI startup mode/posture
+.amplifier/

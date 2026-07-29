@@ -238,7 +238,7 @@ def _resolve_env_var_overrides(
     suggestion (design §5.4.2) -- caller decides how to react (re-prompt vs.
     exit).
     """
-    claimed = _claimed_env_vars(settings)
+    claimed = _claimed_env_vars(settings, key_manager)
     default_name = _secret_env_var_for(module_id)
     if not default_name or default_name not in claimed:
         return {}

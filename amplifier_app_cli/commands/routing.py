@@ -402,7 +402,14 @@ def _show_matrix_resolution(matrix_data: dict[str, Any], settings: AppSettings) 
     for role_name, role_config in roles.items():
         model, provider_type = _resolve_role(role_config, provider_types)
         if model and provider_type:
-            table.add_row(role_name, model, provider_type)
+            provider_config = _get_provider_config(provider_type, settings) or {}
+            default_model = (
+                provider_config.get("default_model")
+                if isinstance(provider_config, dict)
+                else None
+            )
+            display_model = str(default_model) if default_model else model
+            table.add_row(role_name, display_model, provider_type)
         else:
             table.add_row(role_name, "[yellow]⚠ (no provider)[/yellow]", "[dim]-[/dim]")
 

@@ -26,7 +26,10 @@ class TestEnsureRawDefaults:
     def test_respects_explicit_raw_false(self):
         """Explicit raw: False is NOT overridden."""
         providers = [
-            {"module": "provider-anthropic", "config": {"api_key": "sk-test", "raw": False}},
+            {
+                "module": "provider-anthropic",
+                "config": {"api_key": "sk-test", "raw": False},
+            },
         ]
         result = _ensure_raw_defaults(providers)
         assert result[0]["config"]["raw"] is False
@@ -34,7 +37,10 @@ class TestEnsureRawDefaults:
     def test_respects_explicit_raw_true(self):
         """Explicit raw: True is preserved unchanged."""
         providers = [
-            {"module": "provider-anthropic", "config": {"api_key": "sk-test", "raw": True}},
+            {
+                "module": "provider-anthropic",
+                "config": {"api_key": "sk-test", "raw": True},
+            },
         ]
         result = _ensure_raw_defaults(providers)
         assert result[0]["config"]["raw"] is True
@@ -89,13 +95,75 @@ class TestEnsureRawDefaults:
     def test_removes_debug_false_and_injects_raw(self):
         """debug: False is also stripped (the key itself is stale, value irrelevant)."""
         providers = [
-            {"module": "provider-openai", "config": {"debug": False, "raw_debug": False}},
+            {
+                "module": "provider-openai",
+                "config": {"debug": False, "raw_debug": False},
+            },
         ]
         result = _ensure_raw_defaults(providers)
         cfg = result[0]["config"]
         assert "debug" not in cfg
         assert "raw_debug" not in cfg
         assert cfg["raw"] is True
+
+    def test_openai_defaults_to_non_streaming_transport(self):
+        """OpenAI uses the stable create() transport unless explicitly configured."""
+        providers = [
+            {"module": "provider-openai", "config": {"api_key": "sk-test"}},
+        ]
+        result = _ensure_raw_defaults(providers)
+        assert result[0]["config"]["use_streaming"] is False
+
+    def test_azure_openai_defaults_to_non_streaming_transport(self):
+        """Azure OpenAI shares the OpenAI transport default."""
+        providers = [
+            {"module": "provider-azure-openai", "config": {"api_key": "sk-test"}},
+        ]
+        result = _ensure_raw_defaults(providers)
+        assert result[0]["config"]["use_streaming"] is False
+
+    def test_respects_explicit_openai_streaming_setting(self):
+        """Users can explicitly opt back into OpenAI provider streaming."""
+        providers = [
+            {
+                "module": "provider-openai",
+                "config": {"api_key": "sk-test", "use_streaming": True},
+            },
+        ]
+        result = _ensure_raw_defaults(providers)
+        assert result[0]["config"]["use_streaming"] is True
+
+    def test_openai_gpt_5_5_in_memory_retention_normalized_to_24h(self):
+        """gpt-5.5 rejects in_memory retention, so normalize before provider logs."""
+        providers = [
+            {
+                "module": "provider-openai",
+                "config": {
+                    "default_model": "gpt-5.5",
+                    "prompt_cache_retention": "in_memory",
+                },
+            },
+        ]
+
+        result = _ensure_raw_defaults(providers)
+
+        assert result[0]["config"]["prompt_cache_retention"] == "24h"
+
+    def test_openai_gpt_5_4_in_memory_retention_preserved(self):
+        """Valid in_memory retention for older GPT-5 models should not be changed."""
+        providers = [
+            {
+                "module": "provider-openai",
+                "config": {
+                    "default_model": "gpt-5.4",
+                    "prompt_cache_retention": "in_memory",
+                },
+            },
+        ]
+
+        result = _ensure_raw_defaults(providers)
+
+        assert result[0]["config"]["prompt_cache_retention"] == "in_memory"
 
     # ------------------------------------------------------------------
     # Multiple providers
@@ -104,7 +172,10 @@ class TestEnsureRawDefaults:
     def test_processes_multiple_providers(self):
         """All providers in the list are processed, not just the first."""
         providers = [
-            {"module": "provider-anthropic", "config": {"debug": True, "raw_debug": True}},
+            {
+                "module": "provider-anthropic",
+                "config": {"debug": True, "raw_debug": True},
+            },
             {"module": "provider-openai", "config": {"debug": True}},
             {"module": "provider-gemini", "config": {}},
         ]

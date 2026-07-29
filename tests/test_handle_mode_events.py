@@ -299,3 +299,113 @@ async def test_handle_mode_emits_cleared_on_toggle_already_active() -> None:
     assert state_snapshots == ["context-intelligence"], (
         f"Expected active_mode='context-intelligence' at emit time, got {state_snapshots}"
     )
+
+
+def _make_builtin_cp(ui_mode: str | None = None) -> Any:
+    from amplifier_app_cli.main import CommandProcessor
+
+    session = MagicMock()
+    session.coordinator = MagicMock()
+    session.coordinator.session_state = {
+        "active_mode": None,
+        "ui.active_mode": ui_mode,
+    }
+    session.coordinator.get_capability.return_value = None
+    session.coordinator.hooks.emit = AsyncMock()
+    return CommandProcessor(session, "test-bundle")
+
+
+@pytest.mark.asyncio
+async def test_builtin_mode_query_reports_tui_mode_without_discovery() -> None:
+    cp = _make_builtin_cp("plan")
+    state_before = dict(cp.session.coordinator.session_state)
+
+    result = await cp._handle_mode("")
+
+    assert result == "Active mode: plan"
+    assert cp.session.coordinator.session_state == state_before
+    cp.session.coordinator.hooks.emit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_builtin_mode_switch_does_not_require_bundle_discovery() -> None:
+    cp = _make_builtin_cp("chat")
+
+    result = await cp._handle_mode("auto")
+
+    assert result.startswith("Mode: auto")
+    assert cp.session.coordinator.session_state["ui.active_mode"] == "auto"
+    assert cp.session.coordinator.session_state["active_mode"] is None
+    cp.session.coordinator.hooks.emit.assert_not_awaited()
+
+
+def test_builtin_mode_shortcuts_and_completions_are_always_available() -> None:
+    cp = _make_builtin_cp()
+
+    for name in ("chat", "plan", "brainstorm", "build", "auto"):
+        action, data = cp.process_input(f"/{name}")
+        assert action == "handle_mode"
+        assert data["args"] == name
+        assert name in cp._get_mode_completion_names()
+
+
+@pytest.mark.asyncio
+async def test_mode_query_does_not_reapply_trust_profile() -> None:
+    from amplifier_app_cli.main import _apply_ui_mode_transition
+    from amplifier_app_cli.ui.interaction_state import TrustState
+    from amplifier_app_cli.ui.mode_profiles import ModeProfileRegistry
+    from amplifier_app_cli.ui.mode_profiles import ModeRuntimeBinding
+
+    state = {"ui.active_mode": "chat"}
+    coordinator = MagicMock()
+    coordinator.session_state = state
+    coordinator.get.return_value = None
+    coordinator.get_capability.return_value = None
+    trust = TrustState(initial="bypass")
+    profiles = ModeProfileRegistry()
+    binding = ModeRuntimeBinding(coordinator, profiles)
+
+    selected = await _apply_ui_mode_transition(
+        state,
+        "chat",
+        profiles,
+        binding,
+        {"last": "chat"},
+    )
+
+    assert selected == "chat"
+    assert trust.active.name == "bypass"
+    assert binding.snapshot is None
+
+
+@pytest.mark.asyncio
+async def test_changed_builtin_mode_applies_runtime_profile() -> None:
+    from amplifier_app_cli.main import _apply_ui_mode_transition
+    from amplifier_app_cli.ui.interaction_state import TrustState
+    from amplifier_app_cli.ui.mode_profiles import ModeProfileRegistry
+    from amplifier_app_cli.ui.mode_profiles import ModeRuntimeBinding
+
+    state = {"ui.active_mode": "plan"}
+    coordinator = MagicMock()
+    coordinator.session_state = state
+    coordinator.get.return_value = None
+    coordinator.get_capability.return_value = None
+    trust = TrustState(initial="bypass")
+    profiles = ModeProfileRegistry()
+    binding = ModeRuntimeBinding(coordinator, profiles)
+    active = {"last": "chat"}
+
+    selected = await _apply_ui_mode_transition(
+        state,
+        "chat",
+        profiles,
+        binding,
+        active,
+        trust,
+    )
+
+    assert selected == "plan"
+    assert trust.active.name == "plan"
+    assert binding.snapshot is not None
+    assert binding.snapshot.mode.value == "plan"
+    assert active["last"] == "plan"

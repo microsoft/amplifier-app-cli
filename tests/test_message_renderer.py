@@ -11,16 +11,15 @@ their behaviour is unchanged.
 
 import io
 
-import pytest
 from rich.console import Console
 
 
-def _make_console() -> tuple[Console, io.StringIO]:
+def _make_console(*, width: int = 80) -> tuple[Console, io.StringIO]:
     """Return a (console, buffer) pair for output capture."""
     buf = io.StringIO()
     # force_terminal=False + no_color=True ensures Rich doesn't try to do
     # ANSI detection on the StringIO; the text still flows through.
-    con = Console(file=buf, highlight=False, no_color=True)
+    con = Console(file=buf, highlight=False, no_color=True, width=width)
     return con, buf
 
 
@@ -120,6 +119,41 @@ def test_render_message_user_role_unaffected_by_show_label():
     assert "What is 2+2?" in output
 
 
+def test_render_user_message_preserves_literal_rich_markup_like_text():
+    from amplifier_app_cli.ui.message_renderer import render_message
+
+    con, buf = _make_console()
+    content = "[brackets] [docs](https://example.com) [/Users/project]"
+    render_message({"role": "user", "content": content}, con)
+
+    assert content in buf.getvalue()
+    assert "[bold green]" not in buf.getvalue()
+
+
+def test_render_user_message_shows_image_placeholder_without_base64():
+    from amplifier_app_cli.ui.message_renderer import render_message
+
+    con, buf = _make_console()
+    render_message(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Review this"},
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "data": "secret-image-data"},
+                },
+            ],
+        },
+        con,
+    )
+
+    output = buf.getvalue()
+    assert "Review this" in output
+    assert "[Image attachment]" in output
+    assert "secret-image-data" not in output
+
+
 def test_render_message_tool_only_assistant_skips_label():
     """Tool-only assistant messages (empty text) skip rendering entirely."""
     from amplifier_app_cli.ui.message_renderer import render_message
@@ -139,3 +173,74 @@ def test_render_message_tool_only_assistant_skips_label():
     assert "Amplifier:" not in output, (
         f"Tool-only message should not print label; got: {output!r}"
     )
+
+
+def test_structured_blocks_preserve_markdown_boundaries():
+    """Separate text blocks must remain separate Markdown documents."""
+    from amplifier_app_cli.ui.message_renderer import render_message
+
+    con, buf = _make_console(width=32)
+    render_message(
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "- list item"},
+                {"type": "text", "text": "Paragraph after list."},
+            ],
+        },
+        con,
+    )
+
+    lines = [line.rstrip() for line in buf.getvalue().splitlines()]
+    list_line = next(line for line in lines if "list item" in line)
+    paragraph_line = next(line for line in lines if "Paragraph after list." in line)
+    assert "Paragraph after list." not in list_line
+    assert lines.index(paragraph_line) >= lines.index(list_line) + 2
+
+
+def test_structured_blocks_preserve_thinking_order():
+    """Thinking should render where it appeared, not after all text blocks."""
+    from amplifier_app_cli.ui.message_renderer import render_message
+
+    con, buf = _make_console(width=40)
+    render_message(
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Before thinking."},
+                {"type": "thinking", "thinking": "Check the facts."},
+                {"type": "text", "text": "After thinking."},
+            ],
+        },
+        con,
+        show_thinking=True,
+    )
+
+    output = buf.getvalue()
+    assert output.index("Before thinking.") < output.index("Thinking:")
+    assert output.index("Thinking:") < output.index("Check the facts.")
+    assert output.index("Check the facts.") < output.index("After thinking.")
+
+
+def test_narrow_markdown_keeps_compact_headings_lists_and_code():
+    """Narrow output should retain structure without synthetic heading gaps."""
+    from amplifier_app_cli.console import Markdown
+
+    con, buf = _make_console(width=30)
+    con.print(
+        Markdown(
+            "# Results\n\n"
+            "A short summary.\n\n"
+            "- first item\n"
+            "- second item\n\n"
+            "```python\n"
+            "result = calculate()\n"
+            "```"
+        )
+    )
+
+    lines = [line.rstrip() for line in buf.getvalue().splitlines()]
+    assert lines[:3] == ["Results", "", "A short summary."]
+    assert any(line.lstrip().startswith("• first item") for line in lines)
+    assert any(line.strip() == "result = calculate()" for line in lines)
+    assert all(len(line) <= 30 for line in lines)

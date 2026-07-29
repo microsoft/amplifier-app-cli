@@ -335,6 +335,75 @@ class TestRoutingShow:
         assert "coding" in result.output.lower()
         assert "fast" in result.output.lower()
 
+    def test_routing_show_uses_provider_default_model_instead_of_matrix_selector(
+        self, tmp_path
+    ):
+        """routing show displays configured provider default_model, not matrix selector."""
+        cache_dir = _make_matrix_dir(tmp_path)
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-anthropic",
+                    "config": {"default_model": "claude-sonnet-4-5"},
+                },
+            ],
+        )
+
+        from amplifier_app_cli.commands.routing import routing_group
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.routing._get_settings",
+                return_value=settings,
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+        ):
+            result = runner.invoke(routing_group, ["show", "--compact"])
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+        assert "claude-sonnet-4-5" in result.output
+        assert "claude-sonnet-*" not in result.output
+
+    def test_routing_show_falls_back_to_matrix_selector_without_default_model(
+        self, tmp_path
+    ):
+        """routing show displays raw selector when provider default_model is absent."""
+        cache_dir = _make_matrix_dir(tmp_path)
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [
+                {
+                    "module": "provider-anthropic",
+                    "config": {"priority": 1},
+                },
+            ],
+        )
+
+        from amplifier_app_cli.commands.routing import routing_group
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.routing._get_settings",
+                return_value=settings,
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._discover_matrix_files",
+                return_value=list(cache_dir.rglob("*.yaml")),
+            ),
+        ):
+            result = runner.invoke(routing_group, ["show", "--compact"])
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+        assert "claude-sonnet-*" in result.output
+
     def test_routing_show_unresolvable_role(self, tmp_path):
         """Role with no matching provider shows warning."""
         cache_dir = _make_matrix_dir(tmp_path)
