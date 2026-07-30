@@ -2830,6 +2830,14 @@ async def interactive_chat(
 
     register_incremental_save(session, store, actual_session_id, bundle_name, config)
 
+    # Register /goal auto-continue progress renderer (docs/designs/goal-command.md).
+    # The orchestrator emits orchestrator:goal_progress instead of printing
+    # directly (bare print() from an orchestrator corrupts other hosts'
+    # protocol channels); this hook is the CLI's renderer for it.
+    from .goal_progress_hook import register_goal_progress_hook
+
+    register_goal_progress_hook(session)
+
     # Show banner only for NEW sessions (resume shows banner via history display in commands/session.py)
     if not session_config.is_resume:
         config_summary = get_effective_config_summary(config, bundle_name)
@@ -3591,6 +3599,16 @@ async def execute_single(
                     priority=1000,
                     name="trace_collector_post",
                 )
+
+        # Register /goal auto-continue progress renderer (docs/designs/goal-command.md).
+        # Headless mode has no rich console driving stdout from inside the
+        # orchestrator, so the orchestrator emits orchestrator:goal_progress
+        # instead of printing directly; this hook renders it here. Registered
+        # unconditionally (not gated on trace_collector/output_format) since
+        # goal output must work regardless of output format.
+        from .goal_progress_hook import register_goal_progress_hook
+
+        register_goal_progress_hook(session)
 
         # Process runtime @mentions in user input
         prompt = await process_runtime_mentions(session, prompt)

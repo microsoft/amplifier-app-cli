@@ -126,6 +126,23 @@ An invalid value fails immediately and sets no goal:
 **Writing "or stop after 20 turns" into the condition text is not a bound** — that is a
 sentence for a model to interpret. Use the flag.
 
+### What the cap does NOT bound
+
+`--max-turns` bounds **goal continuations** — the number of times the goal loop starts a new
+turn. It does **not** bound work happening *inside* a single turn.
+
+An agent can make an unlimited number of tool calls within one turn; the turn ends only when
+the model stops requesting tools. If an agent gets stuck polling something that never
+completes, it never ends its turn, the goal evaluator never runs, and **the cap never fires.**
+
+This was verified: an agent given a job-status script that always exited 0 and never reached
+100% polled it 59+ times inside a single turn with `--max-turns 8` set. The cap was never
+reached because no turn ever ended.
+
+`/goal` is a **completion gate**, not a runaway guard. It catches an agent that stops too
+early. It cannot catch one that never stops. For unattended runs, bound the process
+externally (a wall-clock `timeout`, a CI job limit) in addition to `--max-turns`.
+
 ---
 
 ## What the evaluator can and cannot see
