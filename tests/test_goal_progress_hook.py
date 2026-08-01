@@ -1,20 +1,25 @@
 """Tests for GoalProgressHook's rendering of orchestrator:goal_progress events.
 
-The hook prints real Rich renderables (Rule, Table, Padding) rather than
-hand-assembled strings, so capturing ``str(arg)`` on each ``console.print``
-call isn't enough -- a Table's ``__str__`` doesn't include its cell text.
-Instead, this fixture points the module's shared ``console`` at a real
-``rich.console.Console`` writing to an in-memory buffer, so every renderable
-is actually rendered (with word-wrap etc.) exactly as it would be in the
-terminal. Tests then assert on the *information* that must be present in
-that rendered text (state labels, counts, reasons) -- not on decorative
-characters (dividers, colors, exact spacing) -- so they survive future
-cosmetic changes.
+Rendering is plain text (no Rule/Table/Padding) printed with
+``soft_wrap=True``, so what's captured in the buffer is exactly the string
+this module built -- Rich never reflows it based on console width. This
+fixture points the module's shared ``console`` at a real ``rich.console.
+Console`` writing to an in-memory buffer at a *parametrized* width, so the
+regression this module exists to prevent -- width-dependent output -- is
+directly testable: render the same event at several widths and diff the
+result.
+
+Tests assert on the *information* that must be present (status phrase,
+glyph, counts, cause, prose) -- not on decorative characters -- so they
+survive future cosmetic changes. The width-agnostic tests additionally
+assert byte-for-byte equality of the rendered output across widths, which
+is the actual guard against reintroducing width-dependent rendering.
 """
 
 import io
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from rich.console import Console
@@ -23,14 +28,20 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from amplifier_app_cli.goal_progress_hook import GoalProgressHook
 
+WIDTHS = (40, 80, 200)
+
+
+def _make_hook(monkeypatch, width: int) -> tuple[GoalProgressHook, io.StringIO]:
+    buffer = io.StringIO()
+    test_console = Console(file=buffer, width=width, force_terminal=False)
+    monkeypatch.setattr("amplifier_app_cli.goal_progress_hook.console", test_console)
+    return GoalProgressHook(), buffer
+
 
 @pytest.fixture
 def hook(monkeypatch):
     """A GoalProgressHook rendering to a real (buffered) Rich console."""
-    buffer = io.StringIO()
-    test_console = Console(file=buffer, width=100, force_terminal=False)
-    monkeypatch.setattr("amplifier_app_cli.goal_progress_hook.console", test_console)
-    h = GoalProgressHook()
+    h, buffer = _make_hook(monkeypatch, width=80)
     h._buffer = buffer  # type: ignore[attr-defined]
     return h
 
@@ -60,290 +71,336 @@ class TestContinuingState:
         assert "turn 5" in out
         assert "/" not in out.split("turn 5")[1].split("\u2014")[0]
 
-
-class TestAchievedNoContinuations:
-    """continuations == 0: the run succeeded on the first pass. The user
-    watched it happen -- the interesting content is approximately zero, so
-    this gets a single line and nothing else (no reason, no summary, no
-    reason history), regardless of whether reason/summary were provided."""
-
     @pytest.mark.asyncio
-    async def test_renders_single_line(self, hook):
+    async def test_continuing_with_no_reason(self, hook):
         await hook.on_goal_progress(
             "orchestrator:goal_progress",
-            {
-                "state": "achieved",
-                "turn": 1,
-                "cap": None,
-                "continuations": 0,
-                "reason": "done",
-                "reasons": ["done"],
-                "summary": None,
-            },
+            {"state": "continuing", "turn": 1, "cap": None, "reason": None},
         )
         out = _joined(hook)
-        # Exactly one non-empty line: the entire trivial-success message.
-        assert len([line for line in out.splitlines() if line.strip()]) == 1
-        assert "GOAL ACHIEVED" in out
-        assert "no continuations" in out
+        assert "turn 1" in out
+        assert "\u2014" not in out
+
+
+class TestAchievedState:
+    """achieved never gets prose (no reason/summary shown), regardless of
+    whether they're present in the payload. The only variation is the
+    optional continuation-count suffix on the single header line."""
 
     @pytest.mark.asyncio
-    async def test_does_not_render_reason_or_summary_even_when_present(self, hook):
+    async def test_bare_success_no_continuations(self, hook):
         await hook.on_goal_progress(
             "orchestrator:goal_progress",
-            {
-                "state": "achieved",
-                "turn": 1,
-                "cap": None,
-                "continuations": 0,
-                "reason": "a long explanation the user already watched happen",
-                "reasons": ["a long explanation the user already watched happen"],
-                "summary": "an equally long restatement of the same thing",
-            },
+            {"state": "achieved", "turn": 1, "cap": None, "continuations": 0},
         )
         out = _joined(hook)
-        assert "a long explanation" not in out
-        assert "equally long restatement" not in out
+        lines = [line for line in out.splitlines() if line.strip()]
+        assert len(lines) == 1
+        assert "Goal met" in out
+        assert "\u2713" in out
+        assert "sent back" not in out
 
-
-class TestAchievedWithContinuations:
     @pytest.mark.asyncio
-    async def test_renders_block_with_continuations_and_prefers_summary(self, hook):
+    async def test_zero_continuations_omits_count_house_convention(self, hook):
+        """Never print a count of zero."""
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {"state": "achieved", "continuations": 0},
+        )
+        out = _joined(hook)
+        assert "0" not in out
+
+    @pytest.mark.asyncio
+    async def test_one_continuation_says_once(self, hook):
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {"state": "achieved", "continuations": 1},
+        )
+        out = _joined(hook)
+        assert "sent back once" in out
+
+    @pytest.mark.asyncio
+    async def test_two_continuations_says_twice(self, hook):
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {"state": "achieved", "continuations": 2},
+        )
+        out = _joined(hook)
+        assert "sent back twice" in out
+
+    @pytest.mark.asyncio
+    async def test_many_continuations_says_n_times(self, hook):
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {"state": "achieved", "continuations": 4},
+        )
+        out = _joined(hook)
+        assert "sent back 4 times" in out
+
+    @pytest.mark.asyncio
+    async def test_never_renders_reason_or_summary(self, hook):
         await hook.on_goal_progress(
             "orchestrator:goal_progress",
             {
                 "state": "achieved",
-                "turn": 4,
-                "cap": 20,
                 "continuations": 3,
                 "reason": "all tests pass",
                 "reasons": ["r1", "r2", "all tests pass"],
                 "summary": "Implemented the feature and verified tests.",
-                "stall_detail": None,
-                "metadata": None,
             },
         )
         out = _joined(hook)
-        assert "GOAL ACHIEVED" in out
-        assert "3 continuation" in out
-        assert "Implemented the feature and verified tests." in out
-        # reason and summary overlap heavily -- only one is shown.
+        assert "Goal met" in out
+        assert "sent back" in out
         assert "all tests pass" not in out
-        # succeeded outright: no reason-history noise.
-        assert "reason history" not in out.lower()
+        assert "Implemented the feature" not in out
+        # single line: no blank-line-before-block, no body lines
+        assert len([line for line in out.splitlines() if line.strip()]) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_blank_line_before_success(self, hook):
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress", {"state": "achieved", "continuations": 0}
+        )
+        out = _joined(hook)
+        assert not out.startswith("\n")
+
+
+class TestStalledState:
+    @pytest.mark.asyncio
+    async def test_verdict_is_not_met_never_achieved(self, hook):
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {
+                "state": "stalled",
+                "continuations": 4,
+                "reasons": ["blocked A", "blocked A", "blocked A", "blocked A"],
+            },
+        )
+        out = _joined(hook)
+        assert "Goal not met" in out
+        assert "\u2717" in out
+        assert "stalled" in out.lower()
+        assert "Goal met" not in out
+
+    @pytest.mark.asyncio
+    async def test_same_blocker_every_turn(self, hook):
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {
+                "state": "stalled",
+                "continuations": 4,
+                "reasons": [
+                    "no 16-digit code can be derived from anything given",
+                    "no 16-digit code can be derived from anything given",
+                    "no 16-digit code can be derived from anything given",
+                    "no 16-digit code can be derived from anything given",
+                ],
+            },
+        )
+        out = _joined(hook)
+        assert "same blocker 4 turns running" in out
+        assert "no 16-digit code can be derived from anything given" in out
+        # never the raw list -- exactly one occurrence of the blocker text
+        assert out.count("no 16-digit code can be derived") == 1
+
+    @pytest.mark.asyncio
+    async def test_reads_preexisting_repeat_count_annotation(self, hook):
+        """The orchestrator's own dedupe may pre-collapse with a "(\u00d7N)"
+        suffix; this hook must read that defensively rather than treating
+        it as yet another distinct blocker."""
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {
+                "state": "stalled",
+                "reasons": ["blocked on X (\u00d73)"],
+            },
+        )
+        out = _joined(hook)
+        assert "same blocker 3 turns running: blocked on X" in out
+        assert "(\u00d73)" not in out  # annotation consumed, not re-printed raw
+
+    @pytest.mark.asyncio
+    async def test_different_blockers_reads_as_flailing(self, hook):
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {
+                "state": "stalled",
+                "continuations": 4,
+                "reasons": ["blocked A", "blocked B", "blocked C", "blocked D"],
+            },
+        )
+        out = _joined(hook)
+        assert "4 turns, 4 different blockers, none resolved" in out
+        # never dumps the actual list of distinct blockers
+        assert "blocked A" not in out
+        assert "blocked B" not in out
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_stall_detail_when_no_reasons(self, hook):
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {
+                "state": "stalled",
+                "reasons": [],
+                "stall_detail": "no tool calls across the last 3 turns",
+            },
+        )
+        out = _joined(hook)
+        assert "no tool calls across the last 3 turns" in out
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_bare_reason_for_older_orchestrator(self, hook):
+        """Older payload shape: only `reason`, no `reasons`/`stall_detail`."""
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {"state": "stalled", "reason": "still blocked"},
+        )
+        out = _joined(hook)
+        assert "still blocked" in out
+
+    @pytest.mark.asyncio
+    async def test_no_data_at_all_renders_header_only(self, hook):
+        await hook.on_goal_progress("orchestrator:goal_progress", {"state": "stalled"})
+        out = _joined(hook)
+        assert "Goal not met" in out
+
+    @pytest.mark.asyncio
+    async def test_long_blocker_is_truncated(self, hook):
+        long_blocker = "x" * 400
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {"state": "stalled", "reasons": [long_blocker]},
+        )
+        out = _joined(hook)
+        assert "\u2026" in out
+        assert long_blocker not in out
+
+
+class TestCapHitState:
+    @pytest.mark.asyncio
+    async def test_verdict_is_unconfirmed_never_failed(self, hook):
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {"state": "cap_hit", "cap": 8, "continuations": 8},
+        )
+        out = _joined(hook)
+        assert "Goal unconfirmed" in out
+        assert "\u26a0" in out
+        assert "Goal not met" not in out
+        assert "Goal met" not in out
+
+    @pytest.mark.asyncio
+    async def test_cap_number_folded_into_header(self, hook):
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {"state": "cap_hit", "cap": 8, "continuations": 8},
+        )
+        out = _joined(hook)
+        assert "hit the 8-turn cap" in out
+
+    @pytest.mark.asyncio
+    async def test_summary_shown_with_still_open_prefix(self, hook):
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {
+                "state": "cap_hit",
+                "cap": 8,
+                "continuations": 8,
+                "reason": "still working",
+                "summary": ("changelog entry not written; tests and build passed"),
+            },
+        )
+        out = _joined(hook)
+        assert "still open: changelog entry not written; tests and build passed" in out
+        # reason/summary overlap -- only the preferred one (summary) shows
+        assert "still working" not in out
 
     @pytest.mark.asyncio
     async def test_falls_back_to_reason_when_no_summary(self, hook):
         await hook.on_goal_progress(
             "orchestrator:goal_progress",
             {
-                "state": "achieved",
-                "turn": 2,
-                "cap": None,
-                "continuations": 1,
-                "reason": "the file now exists with the required content",
-                "reasons": ["the file now exists with the required content"],
-                "summary": None,
-            },
-        )
-        out = _joined(hook)
-        assert "GOAL ACHIEVED" in out
-        assert "the file now exists with the required content" in out
-
-    @pytest.mark.asyncio
-    async def test_unknown_continuations_still_renders_facts(self, hook):
-        """continuations is None (older orchestrator / genuinely unknown) is
-        NOT treated as the zero-continuations trivial case -- render what we
-        have rather than guessing."""
-        await hook.on_goal_progress(
-            "orchestrator:goal_progress",
-            {
-                "state": "achieved",
-                "turn": 3,
-                "cap": 10,
-                "continuations": None,
-                "reason": "done",
-                "reasons": ["done"],
-                "summary": None,
-            },
-        )
-        out = _joined(hook)
-        assert "GOAL ACHIEVED" in out
-        assert "unknown number of continuations" in out
-        assert "done" in out
-
-
-class TestCapHitState:
-    @pytest.mark.asyncio
-    async def test_cap_hit_reads_as_not_successful(self, hook):
-        await hook.on_goal_progress(
-            "orchestrator:goal_progress",
-            {
                 "state": "cap_hit",
-                "turn": 20,
-                "cap": 20,
-                "continuations": 20,
+                "cap": 8,
                 "reason": "still working",
-                "reasons": ["still working"],
-                "summary": "Ran out of turns before finishing.",
-            },
-        )
-        out = _joined(hook)
-        assert "GOAL STOPPED" in out
-        assert "NOT confirmed complete" in out
-        assert "achieved" not in out.lower()
-        assert "20 continuation" in out
-        # failure states prefer the concrete last reason over the narrative
-        # summary -- only one is shown.
-        assert "still working" in out
-        assert "Ran out of turns before finishing." not in out
-
-    @pytest.mark.asyncio
-    async def test_cap_hit_falls_back_to_summary_when_no_reason(self, hook):
-        await hook.on_goal_progress(
-            "orchestrator:goal_progress",
-            {
-                "state": "cap_hit",
-                "turn": 20,
-                "cap": 20,
-                "continuations": 20,
-                "reason": None,
-                "reasons": [],
-                "summary": "Ran out of turns before finishing.",
-            },
-        )
-        out = _joined(hook)
-        assert "Ran out of turns before finishing." in out
-
-    @pytest.mark.asyncio
-    async def test_cap_hit_shows_collapsed_reason_history_when_it_struggled(self, hook):
-        await hook.on_goal_progress(
-            "orchestrator:goal_progress",
-            {
-                "state": "cap_hit",
-                "turn": 5,
-                "cap": 5,
-                "continuations": 5,
-                "reason": "still not done",
-                "reasons": [
-                    "blocked on X",
-                    "blocked on X",
-                    "blocked on X",
-                    "still not done",
-                ],
                 "summary": None,
             },
         )
         out = _joined(hook)
-        assert "reason history" in out.lower()
-        assert "blocked on X" in out
-        # collapsed: the duplicate is annotated with a count, not repeated
-        # three separate times.
-        assert out.count("blocked on X") == 1
-        assert "\u00d73" in out
-        # the last (current) reason isn't duplicated into the history too.
-        assert out.count("still not done") == 1
-
-
-class TestStalledState:
-    @pytest.mark.asyncio
-    async def test_stalled_reads_as_failure_with_detail_and_history(self, hook):
-        await hook.on_goal_progress(
-            "orchestrator:goal_progress",
-            {
-                "state": "stalled",
-                "turn": 5,
-                "cap": 20,
-                "continuations": 4,
-                "reason": "still blocked",
-                "reasons": ["blocked A", "blocked A", "still blocked"],
-                "stall_detail": "repeated the same blocked claim with no tool calls",
-                "summary": None,
-            },
-        )
-        out = _joined(hook)
-        assert "GOAL FAILED" in out
-        assert "stalled" in out.lower()
-        assert "repeated the same blocked claim with no tool calls" in out
-        assert "reason history" in out.lower()
-        assert "blocked A" in out
-        assert "GOAL ACHIEVED" not in out
+        assert "still open: still working" in out
 
     @pytest.mark.asyncio
-    async def test_stalled_with_no_reason_history_is_not_rendered(self, hook):
-        """Only one reason total (or none preceding the current one) means
-        there's no history worth showing."""
+    async def test_always_includes_rerun_hint(self, hook):
         await hook.on_goal_progress(
-            "orchestrator:goal_progress",
-            {
-                "state": "stalled",
-                "turn": 1,
-                "cap": None,
-                "continuations": 1,
-                "reason": "blocked immediately",
-                "reasons": ["blocked immediately"],
-                "stall_detail": "no tool calls on the only turn taken",
-                "summary": None,
-            },
+            "orchestrator:goal_progress", {"state": "cap_hit", "cap": 8}
         )
         out = _joined(hook)
-        assert "reason history" not in out.lower()
+        assert "rerun with a higher cap to finish" in out
 
     @pytest.mark.asyncio
-    async def test_stalled_caps_very_long_reason_history(self, hook):
-        reasons = [f"blocked variant {i}" for i in range(10)] + ["still blocked"]
+    async def test_no_cap_hit_reasoning_leaks_hint_to_other_states(self, hook):
+        """The rerun hint is correct in exactly cap_hit -- never on stalled."""
         await hook.on_goal_progress(
             "orchestrator:goal_progress",
-            {
-                "state": "stalled",
-                "turn": 10,
-                "cap": None,
-                "continuations": 10,
-                "reason": "still blocked",
-                "reasons": reasons,
-                "stall_detail": "no progress across many turns",
-                "summary": None,
-            },
+            {"state": "stalled", "reasons": ["blocked"]},
         )
         out = _joined(hook)
-        assert "reason history" in out.lower()
-        assert "earlier" in out.lower()  # truncation is surfaced, not silent
-
-
-class TestCancelledAndErrorStates:
-    @pytest.mark.asyncio
-    async def test_cancelled_renders_block(self, hook):
-        await hook.on_goal_progress(
-            "orchestrator:goal_progress",
-            {
-                "state": "cancelled",
-                "turn": 2,
-                "cap": 20,
-                "continuations": 1,
-                "reason": None,
-                "reasons": [],
-                "summary": None,
-            },
-        )
-        out = _joined(hook)
-        assert "GOAL CANCELLED" in out
+        assert "rerun with a higher cap" not in out
 
     @pytest.mark.asyncio
-    async def test_error_renders_block(self, hook):
+    async def test_no_cap_number_never_shown_on_other_states(self, hook):
+        """(cap: N) appears in no state except cap_hit."""
         await hook.on_goal_progress(
             "orchestrator:goal_progress",
-            {
-                "state": "error",
-                "turn": 2,
-                "cap": 20,
-                "continuations": 1,
-                "reason": "evaluator crashed",
-                "reasons": ["evaluator crashed"],
-                "summary": None,
-            },
+            {"state": "stalled", "cap": 20, "reasons": ["blocked"]},
         )
         out = _joined(hook)
-        assert "GOAL FAILED" in out
+        assert "cap" not in out.lower()
+
+
+class TestCancelledState:
+    @pytest.mark.asyncio
+    async def test_bare_cancelled_no_reason(self, hook):
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {"state": "cancelled", "reason": None, "summary": None},
+        )
+        out = _joined(hook)
+        assert "Goal unconfirmed" in out
+        assert "cancelled" in out.lower()
+        lines = [line for line in out.splitlines() if line.strip()]
+        assert len(lines) == 1  # header only, no empty prose line
+
+    @pytest.mark.asyncio
+    async def test_cancelled_with_reason(self, hook):
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {"state": "cancelled", "reason": "user pressed ctrl-c"},
+        )
+        out = _joined(hook)
+        assert "user pressed ctrl-c" in out
+
+
+class TestErrorState:
+    @pytest.mark.asyncio
+    async def test_error_reads_as_unconfirmed(self, hook):
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {"state": "error", "reason": "rate limit from provider after 3 retries"},
+        )
+        out = _joined(hook)
+        assert "Goal unconfirmed" in out
+        assert "evaluator failed" in out
+        assert "rate limit from provider after 3 retries" in out
+
+    @pytest.mark.asyncio
+    async def test_error_falls_back_to_summary(self, hook):
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {"state": "error", "reason": None, "summary": "evaluator crashed"},
+        )
+        out = _joined(hook)
         assert "evaluator crashed" in out
 
 
@@ -357,8 +414,12 @@ class TestDefensiveDefaults:
             {"state": "achieved", "turn": 3, "cap": 10, "reason": "done"},
         )
         out = _joined(hook)
-        assert "GOAL ACHIEVED" in out
-        assert "unknown number of continuations" in out
+        assert "Goal met" in out
+
+    @pytest.mark.asyncio
+    async def test_completely_empty_payload_does_not_raise(self, hook):
+        for state in ("achieved", "cap_hit", "cancelled", "error", "stalled"):
+            await hook.on_goal_progress("orchestrator:goal_progress", {"state": state})
 
     @pytest.mark.asyncio
     async def test_unrecognized_state_falls_back_to_raw_payload(self, hook):
@@ -368,3 +429,125 @@ class TestDefensiveDefaults:
         out = _joined(hook)
         assert "goal progress" in out
         assert "mystery" in out
+
+
+class TestNoRichLayoutPrimitives:
+    """Structural guard: none of the banned width-dependent primitives may
+    appear anywhere in the rendered output, for any terminal state."""
+
+    PAYLOADS: ClassVar[dict[str, dict[str, object]]] = {
+        "achieved": {"state": "achieved", "continuations": 2},
+        "cap_hit": {
+            "state": "cap_hit",
+            "cap": 8,
+            "continuations": 8,
+            "summary": "changelog entry not written; tests and build passed",
+        },
+        "cancelled": {"state": "cancelled"},
+        "error": {
+            "state": "error",
+            "reason": "rate limit from provider after 3 retries",
+        },
+        "stalled": {
+            "state": "stalled",
+            "continuations": 4,
+            "reasons": ["same blocker"] * 4,
+        },
+    }
+
+    @pytest.mark.asyncio
+    async def test_no_divider_characters(self, hook):
+        for payload in self.PAYLOADS.values():
+            await hook.on_goal_progress("orchestrator:goal_progress", dict(payload))
+        out = _joined(hook)
+        assert "\u2500" * 3 not in out  # no rule/divider run of dashes
+        assert "\u258c" not in out  # no rail gutter glyph
+
+
+class TestWidthAgnosticRendering:
+    """The actual regression guard for this whole change: every terminal
+    state's structural lines (header + prose) must render byte-identically
+    at 40, 80, and 200 columns. Rendering is done with ``soft_wrap=True``
+    specifically so Rich never reflows based on console width -- this test
+    proves that holds for every terminal state.
+    """
+
+    PAYLOADS: ClassVar[dict[str, dict[str, object]]] = {
+        "achieved_bare": {"state": "achieved", "continuations": 0},
+        "achieved_with_count": {"state": "achieved", "continuations": 2},
+        "stalled_same_blocker": {
+            "state": "stalled",
+            "continuations": 4,
+            "reasons": [
+                "no 16-digit code can be derived from anything given",
+            ]
+            * 4,
+        },
+        "stalled_different_blockers": {
+            "state": "stalled",
+            "continuations": 4,
+            "reasons": ["blocked A", "blocked B", "blocked C", "blocked D"],
+        },
+        "cap_hit": {
+            "state": "cap_hit",
+            "cap": 8,
+            "continuations": 8,
+            "summary": "changelog entry not written; tests and build passed",
+        },
+        "cancelled_bare": {"state": "cancelled"},
+        "error": {
+            "state": "error",
+            "reason": "rate limit from provider after 3 retries",
+        },
+        "continuing": {
+            "state": "continuing",
+            "turn": 2,
+            "cap": 20,
+            "reason": "not done yet",
+        },
+    }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name,payload", list(PAYLOADS.items()))
+    async def test_identical_across_widths(self, monkeypatch, name, payload):
+        rendered = {}
+        for width in WIDTHS:
+            h, buffer = _make_hook(monkeypatch, width)
+            await h.on_goal_progress("orchestrator:goal_progress", dict(payload))
+            rendered[width] = buffer.getvalue()
+
+        baseline = rendered[WIDTHS[0]]
+        for width in WIDTHS[1:]:
+            assert rendered[width] == baseline, (
+                f"{name!r} rendered differently at width={width} vs "
+                f"width={WIDTHS[0]}:\n"
+                f"--- width={WIDTHS[0]} ---\n{baseline!r}\n"
+                f"--- width={width} ---\n{rendered[width]!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_long_prose_line_is_not_wrapped_by_rich_at_narrow_width(
+        self, monkeypatch
+    ):
+        """A prose line longer than the console width must still come back
+        as a single unbroken line (no embedded newline) -- proof that Rich
+        isn't hard-wrapping it into the buffer. The terminal, not this
+        hook, is responsible for any visual reflow."""
+        long_summary = (
+            "this is a deliberately long summary sentence that comfortably "
+            "exceeds forty columns and must not be hard-wrapped by rich"
+        )
+        h, buffer = _make_hook(monkeypatch, width=40)
+        await h.on_goal_progress(
+            "orchestrator:goal_progress",
+            {
+                "state": "cap_hit",
+                "cap": 8,
+                "continuations": 8,
+                "summary": long_summary,
+            },
+        )
+        out = buffer.getvalue()
+        matching_lines = [line for line in out.splitlines() if "still open" in line]
+        assert len(matching_lines) == 1
+        assert long_summary in matching_lines[0]
