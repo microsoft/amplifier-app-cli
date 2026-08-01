@@ -266,15 +266,18 @@ class TestStalledState:
         assert "Goal not met" in out
 
     @pytest.mark.asyncio
-    async def test_long_blocker_is_truncated(self, hook):
+    async def test_long_blocker_passes_through_untruncated(self, hook):
+        """No character budget: a long blocker survives verbatim, with no
+        ellipsis and nothing lost -- the terminal wraps it, this hook
+        doesn't cut it."""
         long_blocker = "x" * 400
         await hook.on_goal_progress(
             "orchestrator:goal_progress",
             {"state": "stalled", "reasons": [long_blocker]},
         )
         out = _joined(hook)
-        assert "\u2026" in out
-        assert long_blocker not in out
+        assert "\u2026" not in out
+        assert long_blocker in out
 
 
 class TestCapHitState:
@@ -551,3 +554,25 @@ class TestWidthAgnosticRendering:
         matching_lines = [line for line in out.splitlines() if "still open" in line]
         assert len(matching_lines) == 1
         assert long_summary in matching_lines[0]
+
+    @pytest.mark.asyncio
+    async def test_very_long_prose_survives_verbatim_no_truncation(self, monkeypatch):
+        """There is no character budget: a 300+ char prose string comes back
+        completely intact, with no ellipsis and nothing cut -- the terminal
+        wraps it, this hook never truncates it."""
+        very_long_reason = (
+            "the evaluator determined the goal was not fully satisfied because "
+            "several acceptance criteria remained unaddressed, including the "
+            "requirement to update the changelog, the requirement to add "
+            "regression tests covering the new edge cases, and the requirement "
+            "to update the public documentation describing the changed behavior"
+        )
+        assert len(very_long_reason) > 300
+        h, buffer = _make_hook(monkeypatch, width=80)
+        await h.on_goal_progress(
+            "orchestrator:goal_progress",
+            {"state": "cancelled", "reason": very_long_reason},
+        )
+        out = buffer.getvalue()
+        assert very_long_reason in out
+        assert "\u2026" not in out
