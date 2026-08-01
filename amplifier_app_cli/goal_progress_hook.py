@@ -11,11 +11,21 @@ formatted progress lines to the CLI's rich ``console``.
 
 Registered once per session (both interactive_chat and execute_single),
 mirroring the incremental_save.py pattern.
+
+Rendering uses real Rich renderables (Rule / Table.grid / Padding) rather
+than hand-assembled strings with manual dividers and indentation -- Rich
+knows the terminal width and wraps long lines while preserving hanging
+indents; a plain f-string with a leading "  " loses that indent the moment
+a line wraps back to column 0.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+from rich.padding import Padding
+from rich.rule import Rule
+from rich.table import Table
 
 from .console import console
 
@@ -45,7 +55,27 @@ _TERMINAL_STYLES: dict[str, str] = {
     "stalled": "bold red",
 }
 
-_BLOCK_RULE = "\u2500" * 3
+# States where the run actually struggled -- collapsed reason history earns
+# its space here because it shows *whether the evaluator kept repeating
+# itself*. "achieved" doesn't need it (it succeeded); "cancelled" doesn't
+# need it (the user stopped it, not the loop).
+_STRUGGLE_STATES = frozenset({"stalled", "cap_hit"})
+
+# Which field wins when both `reason` (the final turn's evaluator verdict)
+# and `summary` (a fast-model narrative of the whole run) are present. They
+# overlap heavily -- never show both. For a successful run, the narrative of
+# *what got done* is more useful than the terse final "yes it's done."
+# For every other terminal state the run did NOT succeed, so the concrete,
+# current blocker (reason) is more actionable than a broad narrative.
+_PREFER_SUMMARY_STATES = frozenset({"achieved"})
+
+# Cap on rendered reason-history entries (after collapsing consecutive
+# duplicates) so a long-stalled run doesn't dump a wall of near-identical
+# lines.
+_MAX_HISTORY_ENTRIES = 5
+
+_INDENT_1 = (0, 0, 0, 2)
+_INDENT_2 = (0, 0, 0, 4)
 
 
 class GoalProgressHook:
@@ -53,7 +83,8 @@ class GoalProgressHook:
 
     Contract:
     - Listens for: orchestrator:goal_progress events
-    - Side effects: writes formatted progress lines to the CLI's rich console
+    - Side effects: writes formatted progress lines/renderables to the CLI's
+      rich console
     - Never raises: an unrecognized/malformed payload is rendered as-is
       rather than crashing the session (hook failures must not block
       execution)
@@ -93,10 +124,11 @@ class GoalProgressHook:
     def _render_terminal(self, state: str, data: dict[str, Any]) -> None:
         """Render the end-of-run block for a terminal goal state.
 
-        Always includes: the outcome, how many times the turn was sent back
-        to the assistant (continuations), and the fast-model summary when
-        present. Never suppressed when summary is None -- the structured
-        facts (count, outcome, last reason) still render.
+        The amount of detail scales with how interesting the outcome is:
+        an immediate, uncontested success gets one line; a run that
+        struggled (stalled, hit its cap) gets the full picture, including
+        collapsed reason history. `reason` and `summary` are never both
+        shown -- see ``_PREFER_SUMMARY_STATES``.
         """
         label = _TERMINAL_LABELS[state]
         style = _TERMINAL_STYLES[state]
@@ -107,32 +139,107 @@ class GoalProgressHook:
         stall_detail = data.get("stall_detail")
         continuations = data.get("continuations")
 
-        if continuations is None:
-            continuations_label = "unknown number of continuations"
-        else:
-            plural = "" if continuations == 1 else "s"
-            continuations_label = f"{continuations} continuation{plural}"
-        if cap:
-            continuations_label += f" (cap: {cap})"
+        # Trivial success: the user watched it happen in one pass. There is
+        # nothing else worth saying -- one line, done.
+        if state == "achieved" and continuations == 0:
+            console.print(
+                f"[{style}]\u2713 {label}[/{style}] \u2014 no continuations needed"
+            )
+            return
 
-        console.print(f"[{style}]{_BLOCK_RULE} {label} {_BLOCK_RULE}[/{style}]")
-        console.print(f"  sent back to assistant: {continuations_label}")
+        console.print(
+            Rule(title=f"[{style}]{label}[/{style}]", style=style, align="left")
+        )
 
-        if reason:
-            console.print(f"  last reason: {reason}")
+        facts = Table.grid(padding=(0, 1))
+        facts.add_column(no_wrap=True, style="dim")
+        facts.add_column(overflow="fold")
+        facts.add_row(
+            "sent back to assistant:", _continuations_label(continuations, cap)
+        )
+        console.print(facts)
 
         if state == "stalled" and stall_detail:
-            console.print(f"[bold red]  stalled on:[/bold red] {stall_detail}")
+            console.print(
+                Padding(f"[bold red]stalled on:[/bold red] {stall_detail}", _INDENT_1)
+            )
 
-        if len(reasons) > 1:
-            console.print("  reason history:")
-            for r in reasons:
-                console.print(f"    - {r}")
+        narrative_label, narrative_text = _pick_narrative(
+            reason, summary, prefer_summary=state in _PREFER_SUMMARY_STATES
+        )
+        if narrative_text:
+            console.print(
+                Padding(f"[dim]{narrative_label}:[/dim] {narrative_text}", _INDENT_1)
+            )
 
-        if summary:
-            console.print(f"  summary: {summary}")
+        if state in _STRUGGLE_STATES:
+            # The most recent reason is already shown above (as `reason` or
+            # `summary`) -- history covers everything before it, so nothing
+            # is repeated.
+            history = _collapse_consecutive(reasons[:-1])
+            if history:
+                console.print(Padding("[dim]reason history:[/dim]", _INDENT_1))
+                shown = history[-_MAX_HISTORY_ENTRIES:]
+                omitted = len(history) - len(shown)
+                if omitted > 0:
+                    console.print(
+                        Padding(
+                            f"[dim]\u2026 ({omitted} earlier, omitted)[/dim]", _INDENT_2
+                        )
+                    )
+                for text, count in shown:
+                    suffix = f" (\u00d7{count})" if count > 1 else ""
+                    console.print(Padding(f"- {text}{suffix}", _INDENT_2))
+
+
+def _continuations_label(continuations: int | None, cap: int | None) -> str:
+    """Format the 'sent back to assistant' fact line's value."""
+    if continuations is None:
+        label = "unknown number of continuations"
+    else:
+        plural = "" if continuations == 1 else "s"
+        label = f"{continuations} continuation{plural}"
+    if cap:
+        label += f" (cap: {cap})"
+    return label
+
+
+def _pick_narrative(
+    reason: str | None, summary: str | None, *, prefer_summary: bool
+) -> tuple[str, str]:
+    """Choose exactly one of `reason` / `summary` to render, never both.
+
+    They overlap heavily in practice (the same outcome described twice, at
+    length); showing one is the fix. Returns (label, text), or ("", "") if
+    neither is present.
+    """
+    order = (
+        (("summary", summary), ("reason", reason))
+        if prefer_summary
+        else (("reason", reason), ("summary", summary))
+    )
+    for label, text in order:
+        if text:
+            return label, text
+    return "", ""
+
+
+def _collapse_consecutive(reasons: list[str]) -> list[tuple[str, int]]:
+    """Collapse consecutive duplicate reasons into (text, count) pairs.
+
+    The orchestrator is being updated to collapse consecutive duplicates
+    itself before emitting `reasons`, but this hook collapses defensively
+    too -- an older orchestrator (or any future one) may still send a run of
+    5-8 near-identical entries, and that's noise, not signal.
+    """
+    collapsed: list[tuple[str, int]] = []
+    for text in reasons:
+        if collapsed and collapsed[-1][0] == text:
+            prev_text, prev_count = collapsed[-1]
+            collapsed[-1] = (prev_text, prev_count + 1)
         else:
-            console.print("  [dim](no summary available)[/dim]")
+            collapsed.append((text, 1))
+    return collapsed
 
 
 def register_goal_progress_hook(session: Any) -> GoalProgressHook | None:

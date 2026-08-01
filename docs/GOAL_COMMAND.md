@@ -122,9 +122,9 @@ fenced — set one explicitly:
 This is enforced in Python, not judged by a model. When it trips:
 
 ```
-──── GOAL STOPPED — turn cap hit (NOT confirmed complete) ────
-  sent back to assistant: 5 continuations (cap: 5)
-  last reason: ...
+GOAL STOPPED — turn cap hit (NOT confirmed complete) ──────────────
+sent back to assistant: 5 continuations (cap: 5)
+  reason: ...
 ```
 
 A cap hit means the run stopped **without the evaluator confirming the goal was met** — it
@@ -158,10 +158,10 @@ detected the agent making zero progress — repeated turns with no tool calls an
 unchanging blocker — and gave up rather than burning turns against nothing:
 
 ```
-──── GOAL FAILED — stalled (no progress detected) ────
-  sent back to assistant: 3 continuations
-  last reason: ...
+GOAL FAILED — stalled (no progress detected) ──────────────
+sent back to assistant: 3 continuations
   stalled on: agent repeated the same blocked claim 3 turns in a row without making a tool call
+  reason: ...
   reason history:
     - ...
 ```
