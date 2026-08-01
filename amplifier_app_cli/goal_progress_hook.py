@@ -80,13 +80,6 @@ _STYLE: dict[str, str] = {
     "error": "yellow",
 }
 
-# Sane character budget for any single rendered prose line. The orchestrator
-# is being changed in parallel to constrain generated reason/summary text to
-# one sentence, but this hook doesn't trust that -- it truncates defensively
-# at render, on a word boundary, so a misbehaving upstream can't dump a
-# paragraph into the terminal.
-_MAX_PROSE_CHARS = 180
-
 # Matches a trailing "(\u00d7N)" repeat-count annotation the orchestrator's
 # own dedupe may already have attached to a reason string (e.g.
 # "blocked on X (\u00d73)"). Parsed defensively so this hook's own collapsing
@@ -141,7 +134,7 @@ class GoalProgressHook:
         turn_label = f"{turn}/{cap}" if cap else f"{turn}"
         line = f"\u27f3 goal: turn {turn_label}"
         if reason:
-            line += f" \u2014 {_truncate(reason)}"
+            line += f" \u2014 {reason.strip()}"
         _print(line)
 
     def _render_terminal(self, state: str, data: dict[str, Any]) -> None:
@@ -221,13 +214,13 @@ def _body_lines(state: str, data: dict[str, Any]) -> list[str]:
         lines: list[str] = []
         narrative = data.get("summary") or data.get("reason")
         if narrative:
-            lines.append(_truncate(f"still open: {narrative}"))
+            lines.append(f"still open: {narrative.strip()}")
         lines.append("rerun with a higher cap to finish")
         return lines
 
     if state in ("cancelled", "error"):
         narrative = data.get("reason") or data.get("summary")
-        return [_truncate(narrative)] if narrative else []
+        return [narrative.strip()] if narrative else []
 
     return []
 
@@ -255,18 +248,18 @@ def _stalled_line(data: dict[str, Any]) -> str | None:
         )
         if len(collapsed) == 1:
             blocker, _count = collapsed[0]
-            return _truncate(f"same blocker {total_turns} turns running: {blocker}")
-        return _truncate(
+            return f"same blocker {total_turns} turns running: {blocker}"
+        return (
             f"{total_turns} turns, {len(collapsed)} different blockers, none resolved"
         )
 
     stall_detail = data.get("stall_detail")
     if stall_detail:
-        return _truncate(stall_detail)
+        return stall_detail.strip()
 
     reason = data.get("reason")
     if reason:
-        return _truncate(reason)
+        return reason.strip()
 
     return None
 
@@ -314,17 +307,6 @@ def _count_word(n: int) -> str:
     if n == 2:
         return "twice"
     return f"{n} times"
-
-
-def _truncate(text: str, limit: int = _MAX_PROSE_CHARS) -> str:
-    """Truncate prose to ``limit`` chars on a word boundary, with an ellipsis."""
-    text = text.strip()
-    if len(text) <= limit:
-        return text
-    head = text[:limit]
-    if " " in head:
-        head = head.rsplit(" ", 1)[0]
-    return f"{head.rstrip()}\u2026"
 
 
 def _print(text: str) -> None:
