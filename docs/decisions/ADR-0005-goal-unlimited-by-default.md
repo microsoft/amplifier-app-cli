@@ -75,8 +75,8 @@ supports that fully; it is simply not forced onto every invocation by default.
   agentic auto-continue tools that also default to no bound.
 - Because the default is now the common case, the CLI does **not** print a loud warning on
   every unlimited run -- that would be noise on the normal path and would train users to
-  ignore warnings. The confirmation line (`Goal set: <condition> (unlimited turns)`) states
-  the fact plainly without alarm.
+  ignore warnings. The confirmation line (`Goal set (unlimited turns).`) states the fact
+  plainly without alarm, and without echoing the condition text the user just typed.
 - Anyone wanting a mechanical fence must opt in with `--max-turns N`. This is documented in
   `docs/GOAL_COMMAND.md`.
 

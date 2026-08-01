@@ -67,12 +67,23 @@ class TestHandleGoalSet:
         assert "unlimited turns" in result
 
     @pytest.mark.asyncio
+    async def test_set_confirmation_does_not_echo_condition(self):
+        """The user just typed the condition -- printing it back is pure
+        duplication. The confirmation should surface only what they
+        couldn't already see: whether a turn cap is in effect."""
+        cp = _make_command_processor()
+        result = await cp._handle_goal("a very long condition the user already typed")
+        assert "a very long condition the user already typed" not in result
+        assert "Goal set" in result
+
+    @pytest.mark.asyncio
     async def test_custom_cap_applied(self):
         cp = _make_command_processor()
         result = await cp._handle_goal(f"{_GOAL_MAX_TURNS_FLAG} 3 do the thing")
         goal = cp.session.coordinator.session_state["goal"]
         assert goal["cap"] == 3
         assert "max 3 turns" in result
+        assert "do the thing" not in result
 
     @pytest.mark.asyncio
     async def test_explicit_zero_is_equivalent_to_default_unlimited(self):

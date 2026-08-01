@@ -7,11 +7,9 @@ import os
 import signal
 import sys
 from collections.abc import Callable
-from datetime import UTC
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 
@@ -19,53 +17,48 @@ from amplifier_app_cli.utils.help_formatter import AmplifierGroup
 
 if TYPE_CHECKING:
     from amplifier_foundation.bundle import PreparedBundle
-from amplifier_core import AmplifierSession
-from amplifier_core import ModuleValidationError  # pyright: ignore[reportAttributeAccessIssue]
+from amplifier_core import (
+    AmplifierSession,
+    ModuleValidationError,  # pyright: ignore[reportAttributeAccessIssue]
+)
 from amplifier_core.llm_errors import LLMError
 from amplifier_foundation import sanitize_message
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.history import FileHistory, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from rich.panel import Panel
 
 from .commands.agents import agents as agents_group
 from .commands.allowed_dirs import allowed_dirs as allowed_dirs_group
-from .commands.denied_dirs import denied_dirs as denied_dirs_group
 from .commands.bundle import bundle as bundle_group
-from .commands.init import check_first_run
-from .commands.init import init_cmd
-from .commands.init import prompt_first_run_init
+from .commands.denied_dirs import denied_dirs as denied_dirs_group
+from .commands.init import check_first_run, init_cmd, prompt_first_run_init
 from .commands.module import module as module_group
 from .commands.notify import notify as notify_group
 from .commands.provider import provider as provider_group
-from .commands.routing import routing_group
 from .commands.reset import reset as reset_cmd
+from .commands.routing import routing_group
 from .commands.run import register_run_command
 from .commands.session import register_session_commands
 from .commands.source import source as source_group
-from .session_runner import create_initialized_session
-from .session_runner import SessionConfig
 from .commands.tool import tool as tool_group
 from .commands.update import update as update_cmd
 from .commands.version import version as version_cmd
-from .console import Markdown
-from .console import console
+from .console import Markdown, console
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
+from .session_runner import SessionConfig, create_initialized_session
 from .session_store import SessionStore
 from .stdout_offload import patch_stdout_offloaded as patch_stdout
 from .ui.dashboard_renderer import DashboardRenderer
 from .ui.dashboard_renderer import _redact_value as _dr_redact_value
+from .ui.error_display import display_llm_error, display_validation_error
 from .ui.item_renderer import ItemRenderer
-from .ui.view_policy import resolve_view
-from .ui.error_display import display_llm_error
-from .ui.error_display import display_validation_error
 from .ui.log_filter import LLMErrorLogFilter
+from .ui.view_policy import resolve_view
 from .utils.error_format import escape_markup
-from .utils.version import get_core_version
-from .utils.version import get_version
+from .utils.version import get_core_version, get_version
 
 logger = logging.getLogger(__name__)
 
@@ -970,8 +963,7 @@ class CommandProcessor:
 
             # Description gets the remaining space: total - indent(4) - name - gap(3)
             desc_max = terminal_cols - 4 - name_col - 3
-            if desc_max < 10:
-                desc_max = 10  # minimum visible width
+            desc_max = max(desc_max, 10)  # minimum visible width
 
             for name, description, advertised in source_modes:
                 hidden_sfx = " (hidden)" if not advertised else ""
@@ -1236,8 +1228,11 @@ class CommandProcessor:
             "no_tool_turns": 0,
             "escalated": False,
         }
+        # Don't echo the condition back -- the user just typed it and can
+        # already see it. Surface only what they couldn't already see:
+        # whether a turn cap is in effect.
         cap_suffix = f" (max {cap} turns)" if cap else " (unlimited turns)"
-        return f"Goal set: {condition}{cap_suffix}"
+        return f"Goal set{cap_suffix}."
 
     async def _rename_session(self, new_name: str) -> str:
         """Rename the current session."""
@@ -1248,7 +1243,8 @@ class CommandProcessor:
         session_id = self.session.coordinator.session_id
 
         try:
-            from datetime import datetime, UTC
+            from datetime import UTC, datetime
+
             from .session_store import SessionStore
 
             store = SessionStore()
@@ -1282,8 +1278,8 @@ class CommandProcessor:
         # Check if session fork utilities are available
         try:
             from amplifier_foundation.session import (
-                fork_session,
                 count_turns,
+                fork_session,
                 get_turn_summary,
             )
         except ImportError:
@@ -3503,7 +3499,11 @@ async def execute_single(
                 cap_suffix = (
                     f" (max {goal_cap} turns)" if goal_cap else " (unlimited turns)"
                 )
-                console.print(f"Goal set: {goal_condition}{cap_suffix}")
+                # Don't echo the condition back -- the user just typed it and
+                # can already see it (mirrors the interactive _handle_goal
+                # confirmation, so both paths stay consistent -- see
+                # docs/GOAL_COMMAND.md).
+                console.print(f"Goal set{cap_suffix}.")
                 prompt = goal_condition
 
         if verbose:
