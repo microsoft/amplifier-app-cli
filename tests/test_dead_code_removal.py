@@ -135,3 +135,67 @@ class TestTask6ConfigManagerRemoval:
         assert "config_compat" not in source, (
             "paths.py should not import from config_compat"
         )
+
+
+# === Task 7: Remove the unused /goal app-layer duplicate loop ===
+#
+# `_evaluate_goal` / `_execute_with_interrupt_and_goal` were a spike-era,
+# never-called duplicate of the goal auto-continue loop that now lives in
+# the orchestrator (loop-streaming's execute()). Left in place they are
+# context poison: dead code that silently drifts from the real
+# implementation and can mislead future readers/AI into thinking it's live.
+
+
+class TestTask7GoalDuplicateLoopRemoval:
+    def test_evaluate_goal_removed(self):
+        """_evaluate_goal (the app-layer evaluator duplicate) should be gone."""
+        from pathlib import Path
+
+        source = (
+            Path(__file__).parent.parent / "amplifier_app_cli" / "main.py"
+        ).read_text(encoding="utf-8")
+        assert "_evaluate_goal" not in source, (
+            "_evaluate_goal is dead code -- the goal loop lives in the "
+            "orchestrator (loop-streaming's execute()), not the app layer"
+        )
+
+    def test_execute_with_interrupt_and_goal_removed(self):
+        """_execute_with_interrupt_and_goal (the app-layer loop duplicate) should be gone."""
+        from pathlib import Path
+
+        source = (
+            Path(__file__).parent.parent / "amplifier_app_cli" / "main.py"
+        ).read_text(encoding="utf-8")
+        assert "_execute_with_interrupt_and_goal" not in source, (
+            "_execute_with_interrupt_and_goal is dead code -- never called; "
+            "the REPL and initial-prompt paths call _execute_with_interrupt directly"
+        )
+
+    def test_flatten_message_for_evaluator_removed(self):
+        """The evaluator-only transcript helper should be gone with its caller."""
+        from pathlib import Path
+
+        source = (
+            Path(__file__).parent.parent / "amplifier_app_cli" / "main.py"
+        ).read_text(encoding="utf-8")
+        assert "_flatten_message_for_evaluator" not in source
+
+    def test_no_stale_design_doc_reference(self):
+        """docs/designs/goal-command.md does not exist; references must point
+        at the real doc, docs/GOAL_COMMAND.md."""
+        from pathlib import Path
+
+        repo_root = Path(__file__).parent.parent
+        assert not (repo_root / "docs" / "designs" / "goal-command.md").exists()
+
+        main_source = (repo_root / "amplifier_app_cli" / "main.py").read_text(
+            encoding="utf-8"
+        )
+        assert "docs/designs/goal-command.md" not in main_source
+
+        hook_source = (
+            repo_root / "amplifier_app_cli" / "goal_progress_hook.py"
+        ).read_text(encoding="utf-8")
+        assert "docs/designs/goal-command.md" not in hook_source
+
+        assert (repo_root / "docs" / "GOAL_COMMAND.md").exists()

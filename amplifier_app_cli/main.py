@@ -22,8 +22,6 @@ if TYPE_CHECKING:
 from amplifier_core import AmplifierSession
 from amplifier_core import ModuleValidationError  # pyright: ignore[reportAttributeAccessIssue]
 from amplifier_core.llm_errors import LLMError
-from amplifier_core.message_models import ChatRequest
-from amplifier_core.message_models import Message
 from amplifier_foundation import sanitize_message
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
@@ -365,7 +363,6 @@ def _parse_config_flags(
     return remaining, compact, detailed, trees, fmt
 
 
-# SPIKE (docs/designs/goal-command.md, TASK 1 -- --max-turns plumbing):
 # shared parser used by BOTH /goal entry points (interactive CommandProcessor
 # and headless execute_single) so the flag syntax and failure behavior can't
 # drift between the two. Fails loud -- raises ValueError -- rather than ever
@@ -376,13 +373,16 @@ _GOAL_MAX_TURNS_FLAG = "--max-turns"
 def _parse_goal_max_turns(args: str) -> tuple[int | None, str]:
     """Parse an optional leading ``--max-turns N`` flag off /goal args.
 
-    Returns (cap, remainder): cap is None when no flag is present
-    (unlimited -- current default); remainder is the goal condition text
-    with the flag and its value stripped off the front.
+    Returns (cap, remainder): cap is None when no flag is present --
+    /goal is unlimited by default, deliberately (see docs/GOAL_COMMAND.md
+    and docs/decisions/ADR-0005-goal-unlimited-by-default.md for why).
+    ``--max-turns 0`` is an explicit, equivalent way to ask for unlimited.
+    remainder is the goal condition text with the flag and its value
+    stripped off the front.
 
     Raises ValueError -- never silently treats a bad value as unlimited --
-    when the flag is present but its value is missing, non-integer, or not
-    a positive integer.
+    when the flag is present but its value is missing, non-integer, or
+    negative.
     """
     stripped = args.strip()
     if not stripped.startswith(_GOAL_MAX_TURNS_FLAG):
@@ -392,8 +392,9 @@ def _parse_goal_max_turns(args: str) -> tuple[int | None, str]:
     parts = rest.split(maxsplit=1)
     if not parts:
         raise ValueError(
-            f"{_GOAL_MAX_TURNS_FLAG} requires a positive integer value, e.g. "
-            f"'/goal {_GOAL_MAX_TURNS_FLAG} 5 <condition>'"
+            f"{_GOAL_MAX_TURNS_FLAG} requires a non-negative integer value, "
+            f"e.g. '/goal {_GOAL_MAX_TURNS_FLAG} 5 <condition>' "
+            f"(0 means unlimited)."
         )
 
     value_str = parts[0]
@@ -403,14 +404,15 @@ def _parse_goal_max_turns(args: str) -> tuple[int | None, str]:
     except ValueError:
         raise ValueError(
             f"Invalid {_GOAL_MAX_TURNS_FLAG} value: {value_str!r} -- "
-            "must be a positive integer."
+            "must be a non-negative integer (0 means unlimited)."
         ) from None
-    if value <= 0:
+    if value < 0:
         raise ValueError(
             f"Invalid {_GOAL_MAX_TURNS_FLAG} value: {value} -- "
-            "must be a positive integer."
+            "must be a non-negative integer (0 means unlimited)."
         )
-    return value, remainder.strip()
+    cap = None if value == 0 else value
+    return cap, remainder.strip()
 
 
 class CommandProcessor:
@@ -461,7 +463,11 @@ class CommandProcessor:
         },
         "/goal": {
             "action": "handle_goal",
-            "description": "Set a goal condition and auto-continue until satisfied: /goal <condition> (or /goal clear)",
+            "description": (
+                "Set a goal condition and auto-continue until satisfied "
+                "(unlimited by default): /goal <condition> (--max-turns N "
+                "for a hard cap; or /goal clear)"
+            ),
         },
     }
 
@@ -473,15 +479,13 @@ class CommandProcessor:
     # Kept for backward compatibility; the canonical copy lives in dashboard_renderer.
     _SENSITIVE_KEY_PATTERNS = ("key", "token", "secret", "password", "api_key")
 
-    # /goal: aliases that clear an active goal, and the hard (Python-enforced,
-    # not model-judged) turn cap. Spike default per docs/designs/goal-command.md.
+    # /goal: aliases that clear an active goal. The turn cap is optional and
+    # None (unlimited) by default -- deliberately, see
+    # docs/decisions/ADR-0005-goal-unlimited-by-default.md. A positive int
+    # from --max-turns N is a hard, Python-enforced (not model-judged)
+    # mechanical cap, honored by the orchestrator's goal loop. --max-turns 0
+    # opts into unlimited explicitly (same effect as the default).
     _GOAL_CLEAR_ALIASES = ("clear", "stop", "off", "reset", "none", "cancel")
-    # SPIKE (docs/designs/goal-command.md, parity decision): cap is now
-    # optional. None means unlimited -- matching Claude Code's default (no
-    # enforced bound; "stop after N turns" goes in the condition text). A
-    # positive int is still a hard, Python-enforced mechanical cap, honored by
-    # the orchestrator's goal loop.
-    _GOAL_TURN_CAP = None
 
     def _render_config_tree(
         self, console: Any, cfg: dict, indent: str, *, dim: bool = False
@@ -1171,11 +1175,11 @@ class CommandProcessor:
     async def _handle_goal(self, args: str) -> str:
         """Handle /goal command: set, clear, or show status of an active goal.
 
-        Spike scope (docs/designs/goal-command.md): a goal is a plain string
-        condition. Setting one stores it in session_state; the REPL loop (see
-        interactive_chat's `_execute_with_interrupt_and_goal`) is responsible
-        for running the actual auto-continue evaluation loop -- this method
-        only owns the state transition and status text.
+        A goal is a plain string condition plus loop-tracking state (see
+        docs/GOAL_COMMAND.md). Setting one stores it in session_state; the
+        orchestrator (loop-streaming's execute()) is responsible for running
+        the actual auto-continue evaluation loop -- this method only owns
+        the state transition and status text.
         """
         args = args.strip()
         session_state = self.session.coordinator.session_state
@@ -1185,16 +1189,19 @@ class CommandProcessor:
             if not goal:
                 return "No goal active. Usage: /goal <condition>"
             cap = goal.get("cap")
-            turns_label = (
-                f"{goal['turns_used']}/{cap}"
-                if cap
-                else f"{goal['turns_used']} (unlimited)"
-            )
+            turns_used = goal.get("turns_used", 0)
+            turns_label = f"{turns_used}/{cap}" if cap else f"{turns_used} (unlimited)"
+            continuations = goal.get("continuations", 0)
+            reasons = goal.get("reasons") or []
             lines = [
                 f"Goal: {goal['condition']}",
-                f"Turns used: {turns_label}",
+                f"Turns evaluated: {turns_label}",
+                f"Continuations (sent back to assistant): {continuations}",
                 f"Last evaluator reason: {goal.get('last_reason') or '(none yet)'}",
             ]
+            if len(reasons) > 1:
+                lines.append("Recent reasons:")
+                lines.extend(f"  - {r}" for r in reasons[-3:])
             return "\n".join(lines)
 
         if args.lower() in self._GOAL_CLEAR_ALIASES:
@@ -1203,9 +1210,10 @@ class CommandProcessor:
                 return f"Goal cleared: {goal['condition']}"
             return "No goal active."
 
-        # TASK 1 (--max-turns): parse an optional leading cap flag off the
-        # front of args. Fail loud on malformed input -- do not set a goal,
-        # do not silently fall back to unlimited.
+        # Parse an optional leading cap flag off the front of args. Fail
+        # loud on malformed input -- do not set a goal, do not silently
+        # fall back to unlimited. No flag means unlimited -- that's the
+        # deliberate default (docs/decisions/ADR-0005-goal-unlimited-by-default.md).
         try:
             cap, condition = _parse_goal_max_turns(args)
         except ValueError as e:
@@ -1223,8 +1231,12 @@ class CommandProcessor:
             "turns_used": 0,
             "last_reason": None,
             "cap": cap,
+            "reasons": [],
+            "continuations": 0,
+            "no_tool_turns": 0,
+            "escalated": False,
         }
-        cap_suffix = f" (max {cap} turns)" if cap else ""
+        cap_suffix = f" (max {cap} turns)" if cap else " (unlimited turns)"
         return f"Goal set: {condition}{cap_suffix}"
 
     async def _rename_session(self, new_name: str) -> str:
@@ -2830,7 +2842,7 @@ async def interactive_chat(
 
     register_incremental_save(session, store, actual_session_id, bundle_name, config)
 
-    # Register /goal auto-continue progress renderer (docs/designs/goal-command.md).
+    # Register /goal auto-continue progress renderer (docs/GOAL_COMMAND.md).
     # The orchestrator emits orchestrator:goal_progress instead of printing
     # directly (bare print() from an orchestrator corrupts other hosts'
     # protocol channels); this hook is the CLI's renderer for it.
@@ -3181,194 +3193,6 @@ async def interactive_chat(
             ):
                 _streaming_hooks_instance.set_composing_source(None)
 
-    # === /goal support (spike, docs/designs/goal-command.md) ===
-    #
-    # Turn-boundary evaluator + auto-continue loop. `_execute_with_interrupt`
-    # is NOT modified -- this wraps it. When no goal is active this wrapper is
-    # a single pass-through call, so it's safe to use at every REPL call site.
-
-    _GOAL_EVALUATOR_SYSTEM_PROMPT = (
-        "You are a strict, tool-less evaluator. You will be shown a GOAL "
-        "CONDITION and a transcript of an assistant's work so far in a "
-        "coding/agent session. Decide whether the GOAL CONDITION has been "
-        "satisfied by that work.\n\n"
-        "Respond with EXACTLY two lines and nothing else:\n"
-        "Line 1: the single word YES or NO (verbatim, nothing else)\n"
-        "Line 2: one sentence explaining why\n"
-    )
-
-    # Best-effort cheap-model hints per provider-name substring. Spike-level
-    # heuristic only: if the mounted provider's registered name doesn't match
-    # a known family, the evaluator falls back to that provider's own default
-    # model (not necessarily cheap -- see report caveats).
-    _GOAL_CHEAP_MODEL_HINTS = {
-        "anthropic": "claude-haiku-4-5",
-        "openai": "gpt-5-mini",
-        "azure-openai": "gpt-5-mini",
-        "azure_openai": "gpt-5-mini",
-    }
-
-    _GOAL_MAX_TRANSCRIPT_MESSAGES = 40
-
-    def _flatten_message_for_evaluator(msg: dict) -> str:
-        """Render one stored (dict) message as plain text for the evaluator."""
-        role = msg.get("role", "unknown")
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            parts = []
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get("type")
-                if btype == "text":
-                    parts.append(block.get("text", ""))
-                elif btype == "tool_call":
-                    parts.append(f"[called tool: {block.get('name', '?')}]")
-                elif btype == "tool_result":
-                    parts.append("[tool result omitted]")
-                # thinking/redacted_thinking/reasoning blocks are intentionally
-                # skipped -- the evaluator only judges what was surfaced.
-            text = "\n".join(p for p in parts if p)
-        else:
-            text = str(content)
-        return f"{role}: {text}" if text else ""
-
-    async def _evaluate_goal(condition: str) -> tuple[bool, str]:
-        """Ask a cheap, tool-less model whether `condition` is satisfied.
-
-        Returns (satisfied, reason). Raises on any failure -- no fallbacks;
-        the caller stops the goal loop loudly on any exception here.
-        """
-        context = session.coordinator.get("context")
-        if not context or not hasattr(context, "get_messages"):
-            raise RuntimeError("no context manager available to read the conversation")
-        all_messages = await context.get_messages()
-
-        truncated = False
-        messages = all_messages
-        if len(messages) > _GOAL_MAX_TRANSCRIPT_MESSAGES:
-            messages = messages[-_GOAL_MAX_TRANSCRIPT_MESSAGES:]
-            truncated = True
-            console.print(
-                f"[dim]\u27f3 goal: truncating evaluator context to the last "
-                f"{_GOAL_MAX_TRANSCRIPT_MESSAGES} of {len(all_messages)} messages[/dim]"
-            )
-
-        transcript_text = "\n\n".join(
-            t for t in (_flatten_message_for_evaluator(m) for m in messages) if t
-        )
-
-        providers = session.coordinator.get("providers") or {}
-        if not providers:
-            raise RuntimeError("no provider mounted for evaluation")
-        provider_name, provider = next(iter(providers.items()))
-
-        model_override = None
-        for hint_key, hint_model in _GOAL_CHEAP_MODEL_HINTS.items():
-            if hint_key in provider_name.lower():
-                model_override = hint_model
-                break
-
-        user_prompt = (
-            f"GOAL CONDITION:\n{condition}\n\n"
-            f"CONVERSATION SO FAR"
-            f"{' (truncated, most recent messages shown)' if truncated else ''}:\n"
-            f"{transcript_text}\n\n"
-            "Has the GOAL CONDITION been satisfied? Respond in the required "
-            "two-line format."
-        )
-
-        eval_messages = [
-            Message(role="system", content=_GOAL_EVALUATOR_SYSTEM_PROMPT),
-            Message(role="user", content=user_prompt),
-        ]
-        chat_request = ChatRequest(
-            messages=eval_messages, tools=None, model=model_override
-        )
-
-        response = await provider.complete(chat_request)
-
-        response_text = ""
-        for block in response.content:
-            if getattr(block, "type", None) == "text":
-                response_text += getattr(block, "text", "")
-
-        lines = [
-            line.strip() for line in response_text.strip().splitlines() if line.strip()
-        ]
-        if not lines:
-            raise ValueError("evaluator returned an empty response")
-
-        verdict = lines[0].strip().upper()
-        if verdict not in ("YES", "NO"):
-            raise ValueError(f"unparseable evaluator verdict: {lines[0]!r}")
-
-        reason = lines[1] if len(lines) > 1 else "(evaluator gave no reason)"
-        return verdict == "YES", reason
-
-    async def _execute_with_interrupt_and_goal(prompt_text: str) -> bool:
-        """Run a turn, then -- if a goal is active -- pursue it: evaluate,
-        and if not satisfied, automatically run another turn using the
-        evaluator's reason as the next prompt. No human keystroke involved.
-
-        Bounded by a hard, Python-enforced turn cap (session_state["goal"]["cap"]).
-        A cancelled turn (Ctrl-C) stops goal pursuit immediately. An evaluator
-        failure stops goal pursuit immediately and reports the error -- it
-        never silently continues or silently declares success.
-        """
-        completed = await _execute_with_interrupt(prompt_text)
-
-        while True:
-            goal = session.coordinator.session_state.get("goal")
-            if not goal:
-                return completed
-
-            if not completed:
-                session.coordinator.session_state["goal"] = None
-                console.print(
-                    f"[yellow]\u2717 goal: cancelled \u2014 condition was:[/yellow] "
-                    f"{goal['condition']}"
-                )
-                return completed
-
-            goal["turns_used"] += 1
-
-            if goal["turns_used"] >= goal["cap"]:
-                session.coordinator.session_state["goal"] = None
-                console.print(
-                    f"[bold yellow]\u26a0 goal: hit turn cap "
-                    f"({goal['cap']}) \u2014 stopping.[/bold yellow]"
-                )
-                return completed
-
-            try:
-                satisfied, reason = await _evaluate_goal(goal["condition"])
-            except Exception as e:
-                session.coordinator.session_state["goal"] = None
-                console.print(
-                    f"[bold red]\u2717 goal: evaluator failed \u2014 {e}[/bold red]"
-                )
-                return completed
-
-            goal["last_reason"] = reason
-
-            if satisfied:
-                session.coordinator.session_state["goal"] = None
-                console.print(
-                    f"[bold green]\u2713 goal achieved:[/bold green] {reason}"
-                )
-                return completed
-
-            console.print(
-                f"[cyan]\u27f3 goal:[/cyan] turn {goal['turns_used']}/{goal['cap']} "
-                f"\u2014 {reason}"
-            )
-            console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
-            next_prompt = await process_runtime_mentions(session, reason)
-            completed = await _execute_with_interrupt(next_prompt)
-
     # Execute initial prompt if provided
     if initial_prompt:
         console.print(
@@ -3378,12 +3202,11 @@ async def interactive_chat(
 
         # Process runtime @mentions in initial prompt
         initial_prompt = await process_runtime_mentions(session, initial_prompt)
-        # SPIKE (docs/designs/goal-command.md): the goal auto-continue loop now
-        # lives in the orchestrator (loop-streaming's execute()), so the REPL
-        # calls the plain wrapper -- not `_execute_with_interrupt_and_goal`,
-        # which would double the loop (app-layer AND orchestrator both
-        # auto-continuing). `_execute_with_interrupt_and_goal` is left in place,
-        # unused, for side-by-side comparison of the two implementations.
+        # NOTE: the /goal auto-continue loop lives in the orchestrator
+        # (loop-streaming's execute()), so the REPL calls the plain
+        # `_execute_with_interrupt` here -- the orchestrator drives
+        # auto-continuation internally via session_state["goal"]. See
+        # docs/GOAL_COMMAND.md.
         await _execute_with_interrupt(initial_prompt)
 
     # === REPL LOOP ===
@@ -3600,7 +3423,7 @@ async def execute_single(
                     name="trace_collector_post",
                 )
 
-        # Register /goal auto-continue progress renderer (docs/designs/goal-command.md).
+        # Register /goal auto-continue progress renderer (docs/GOAL_COMMAND.md).
         # Headless mode has no rich console driving stdout from inside the
         # orchestrator, so the orchestrator emits orchestrator:goal_progress
         # instead of printing directly; this hook renders it here. Registered
@@ -3613,7 +3436,7 @@ async def execute_single(
         # Process runtime @mentions in user input
         prompt = await process_runtime_mentions(session, prompt)
 
-        # === /goal support in headless mode (spike, docs/designs/goal-command.md) ===
+        # === /goal support in headless mode (see docs/GOAL_COMMAND.md) ===
         # The auto-continue loop itself now lives in the orchestrator (see
         # loop-streaming's execute()), so headless mode only needs to set
         # session_state["goal"] before the single session.execute() call --
@@ -3623,10 +3446,11 @@ async def execute_single(
         if prompt.strip().lower().startswith("/goal "):
             goal_args = prompt.strip()[len("/goal ") :].strip()
             if goal_args:
-                # TASK 1 (--max-turns): same shared parser as the interactive
-                # /goal handler -- identical flag syntax, identical fail-loud
-                # behavior on a bad value. Never silently falls back to
-                # unlimited.
+                # Same shared parser as the interactive /goal handler --
+                # identical flag syntax, identical fail-loud behavior on a
+                # bad value, identical (unlimited) default. Never silently
+                # falls back to unlimited on a bad value -- it fails loud
+                # instead, since that path is a real error.
                 try:
                     goal_cap, goal_condition = _parse_goal_max_turns(goal_args)
                 except ValueError as e:
@@ -3671,17 +3495,22 @@ async def execute_single(
                     "turns_used": 0,
                     "last_reason": None,
                     "cap": goal_cap,
+                    "reasons": [],
+                    "continuations": 0,
+                    "no_tool_turns": 0,
+                    "escalated": False,
                 }
-                cap_suffix = f" (max {goal_cap} turns)" if goal_cap else ""
+                cap_suffix = (
+                    f" (max {goal_cap} turns)" if goal_cap else " (unlimited turns)"
+                )
                 console.print(f"Goal set: {goal_condition}{cap_suffix}")
                 prompt = goal_condition
 
         if verbose:
             console.print(f"[dim]Executing: {prompt}[/dim]")
 
-        # TASK 2 (SIGINT cancellation, docs/designs/goal-command.md 0b "Not
-        # proven at orchestrator level" -- Ctrl-C mid-goal): headless had NO
-        # SIGINT handler on this path at all, so Ctrl-C just killed the
+        # SIGINT cancellation (docs/GOAL_COMMAND.md -- Ctrl-C mid-goal):
+        # headless had NO SIGINT handler on this path at all, so Ctrl-C just killed the
         # process instead of setting coordinator.cancellation, which the
         # orchestrator's goal loop already checks every turn (see
         # loop-goal's execute(), `coordinator.cancellation.is_cancelled`).
