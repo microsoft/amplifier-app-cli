@@ -7,9 +7,10 @@ automatically with the evaluator's reason as guidance. If yes, the goal clears.
 Auto mode removes per-*tool* prompts. `/goal` removes per-*turn* prompts.
 
 ```
-/goal <condition>                    # set a goal and start working
-/goal --max-turns 20 <condition>     # same, with a hard turn cap
-/goal                                # show current condition, turns used, last reason
+/goal <condition>                    # set a goal (unlimited turns by default) and start working
+/goal --max-turns 5 <condition>      # same, with a hard turn cap
+/goal --max-turns 0 <condition>      # unlimited -- explicit, same effect as the default
+/goal                                # show current condition, turns, continuations, last reason
 /goal clear                          # clear it (aliases: stop, off, reset, none, cancel)
 ```
 
@@ -103,28 +104,71 @@ Split compound objectives into sequential goals.
 
 ## Bounding the run
 
-By default there is **no turn cap** — the loop runs until the evaluator is satisfied. For
-unattended or CI runs, set a mechanical bound:
+`/goal` is **unlimited by default** — no turn cap unless you ask for one. This is a
+deliberate design decision, not an oversight: see
+[`docs/decisions/ADR-0005-goal-unlimited-by-default.md`](decisions/ADR-0005-goal-unlimited-by-default.md)
+for the full rationale. In short: `/goal` exists so an agent can work autonomously toward a
+condition without a human babysitting every turn, and the most valuable runs are the long
+unattended ones — a default cap directly undercuts that. The actual safety net is the stall
+detector (below), which stops on **evidence of zero progress**, not an arbitrary turn count.
+
+If you want a hard bound anyway — cost control, CI, an overnight run you want mechanically
+fenced — set one explicitly:
 
 ```
-/goal --max-turns 20 <condition>
+/goal --max-turns 5 <condition>
 ```
 
 This is enforced in Python, not judged by a model. When it trips:
 
 ```
-⚠ goal: hit turn cap (20) — stopping.
+──── GOAL STOPPED — turn cap hit (NOT confirmed complete) ────
+  sent back to assistant: 5 continuations (cap: 5)
+  last reason: ...
+```
+
+A cap hit means the run stopped **without the evaluator confirming the goal was met** — it
+is not a success signal.
+
+### Unlimited runs (`--max-turns 0`)
+
+`--max-turns 0` explicitly requests an unlimited run — the same behavior you already get from
+omitting `--max-turns` entirely. It exists for cases where being explicit in the command
+(e.g. a scripted or documented invocation) is preferable to relying on the implicit default.
+
+```
+/goal --max-turns 0 <condition>
+→ Goal set: <condition> (unlimited turns)
 ```
 
 An invalid value fails immediately and sets no goal:
 
 ```
 /goal --max-turns abc do something
-→ Goal not set: Invalid --max-turns value: 'abc' -- must be a positive integer.
+→ Goal not set: Invalid --max-turns value: 'abc' -- must be a non-negative integer (0 means unlimited).
 ```
 
 **Writing "or stop after 20 turns" into the condition text is not a bound** — that is a
 sentence for a model to interpret. Use the flag.
+
+### Stalled runs
+
+Independent of the turn cap, the orchestrator can end a goal with a **`stalled`** outcome: it
+detected the agent making zero progress — repeated turns with no tool calls and an
+unchanging blocker — and gave up rather than burning turns against nothing:
+
+```
+──── GOAL FAILED — stalled (no progress detected) ────
+  sent back to assistant: 3 continuations
+  last reason: ...
+  stalled on: agent repeated the same blocked claim 3 turns in a row without making a tool call
+  reason history:
+    - ...
+```
+
+`stalled` is a **failure outcome**, same as hitting an unhandled error — the goal was not
+achieved. It is not gated by `--max-turns`; it can trip well before the cap if the run is
+genuinely stuck.
 
 ### What the cap does NOT bound
 
@@ -163,12 +207,30 @@ a substitute for verifying important work yourself.
 
 ## Status and progress
 
-`/goal` with no arguments shows the condition, turns used (against the cap if set), and the
-evaluator's most recent reason.
+`/goal` with no arguments shows the condition, turns evaluated (against the cap if set), how
+many times the goal has been sent back to the assistant for another turn (continuations),
+and the evaluator's most recent reason. If there's more than one reason recorded, the last
+few are shown too, so you can see whether the evaluator is repeating itself:
 
-That reason is the entire progress signal. There is deliberately no percentage, no milestone
-list, and no burn-down — a synthesized progress number would be a guess presented as a
-measurement.
+```
+Goal: <condition>
+Turns evaluated: 4/20
+Continuations (sent back to assistant): 3
+Last evaluator reason: ...
+Recent reasons:
+  - ...
+  - ...
+  - ...
+```
+
+The reason (and reason history) is the entire progress signal. There is deliberately no
+percentage, no milestone list, and no burn-down — a synthesized progress number would be a
+guess presented as a measurement.
+
+At the end of a run (achieved, cap hit, cancelled, error, or stalled), the CLI prints a
+distinct end-of-run block with the outcome, the continuation count, and — when available — a
+fast-model summary of the run. `cap_hit` and `stalled` are both rendered as **not
+successful** (the goal was not confirmed complete); only `achieved` is a success outcome.
 
 ---
 
@@ -178,4 +240,6 @@ Each turn adds one evaluator call on the small/fast model, which is minor next t
 turn. The real cost driver is the number of turns, which is driven by how well the condition
 is written. A well-specified condition converges; a vague one does not.
 
-Use `--max-turns` for anything unattended.
+`/goal` is unlimited by default (see
+[ADR-0005](decisions/ADR-0005-goal-unlimited-by-default.md)); use `--max-turns N` if you want a
+mechanical bound for CI, cost control, or an unattended overnight run.
