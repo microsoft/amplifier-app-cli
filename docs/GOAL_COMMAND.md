@@ -122,13 +122,15 @@ fenced — set one explicitly:
 This is enforced in Python, not judged by a model. When it trips:
 
 ```
-GOAL STOPPED — turn cap hit (NOT confirmed complete) ──────────────
-sent back to assistant: 5 continuations (cap: 5)
-  reason: ...
+⚠ Goal unconfirmed — hit the 5-turn cap
+  still open: ...
+  rerun with a higher cap to finish
 ```
 
 A cap hit means the run stopped **without the evaluator confirming the goal was met** — it
-is not a success signal.
+is not a success signal. It is not a failure signal either: the work may well have been
+finished on the last turn and simply never confirmed. That is what "unconfirmed" means, and
+it is why the line names what is *still open* rather than what went wrong.
 
 ### Unlimited runs (`--max-turns 0`)
 
@@ -148,8 +150,57 @@ An invalid value fails immediately and sets no goal:
 → Goal not set: Invalid --max-turns value: 'abc' -- must be a non-negative integer (0 means unlimited).
 ```
 
-**Writing "or stop after 20 turns" into the condition text is not a bound** — that is a
-sentence for a model to interpret. Use the flag.
+### Write the exit into the condition
+
+`--max-turns` is an *external* budget cap: Python counts turns and stops the loop. The agent
+cannot see it, reason about it, or report progress against it. A bound written into the
+condition itself is a different thing, and usually the better one.
+
+A condition with no reachable exit has no fixed point:
+
+```
+/goal output the exact code I am thinking of
+```
+
+The evaluator can only ever say "not yet." The run's only endings are a cap or the stall
+detector — both *external* rescues. Add a disjunctive clause and the shape changes entirely:
+
+```
+/goal output the exact code I am thinking of, or stop after 3 attempts
+```
+
+That terminates **by construction**, on the goal's own terms: it reaches a clean, honest
+"didn't get it" without any machinery having to infer the agent was stuck.
+
+**A goal that states its own exit is stronger than a detector that has to infer one.** The
+stall detector is a safety net for goals that lack an exit, not a substitute for writing one.
+
+In practice:
+
+- **Prefer conditions the agent's own output can demonstrate.** The evaluator reads the
+  transcript; it does not run commands or read files (see below).
+- **When a goal might not be achievable, say what should happen instead** — `...or explain
+  specifically why it cannot be done`.
+- **A bound clause can count attempts, turns, or elapsed time** — whatever the agent can
+  actually observe and report against.
+
+**Unbounded:**
+```
+/goal find the root cause of the flaky test in tests/test_sync.py
+```
+If the cause is genuinely elusive there is no state the agent can reach that satisfies this.
+It runs until something external stops it.
+
+**Bounded:**
+```
+/goal find the root cause of the flaky test in tests/test_sync.py, or after 5 attempts
+report the suspects you narrowed it to and what you ruled out.
+```
+Both branches are reachable, and both are demonstrable in the transcript.
+
+A clause like this is **not a mechanical bound** — it is a sentence a model interprets, and a
+model can talk itself past it. When you need the guarantee, use `--max-turns`. The two are
+complementary: the flag fences the run from outside, the clause gives it somewhere to land.
 
 ### Stalled runs
 
@@ -158,16 +209,19 @@ detected the agent making zero progress — repeated turns with no tool calls an
 unchanging blocker — and gave up rather than burning turns against nothing:
 
 ```
-GOAL FAILED — stalled (no progress detected) ──────────────
-sent back to assistant: 3 continuations
-  stalled on: agent repeated the same blocked claim 3 turns in a row without making a tool call
-  reason: ...
-  reason history:
-    - ...
+✗ Goal not met — stalled
+  same blocker 3 turns running: ...
 ```
 
-`stalled` is a **failure outcome**, same as hitting an unhandled error — the goal was not
-achieved. It is not gated by `--max-turns`; it can trip well before the cap if the run is
+The first stall detection does not end the run. It spends one escalation turn telling the
+agent to try a genuinely different approach or say plainly why the goal cannot be met as
+defined. Only a second stall — or a first one with no cap budget left for the escalation —
+ends the run.
+
+`stalled` is the only **failure** outcome: it is the one case where the agent visibly failed
+to make progress. (`cancelled` and `error` render as *unconfirmed*, not failed — you stopping
+the run, or the evaluator itself breaking, says nothing about whether the goal was
+achievable.) It is not gated by `--max-turns`; it can trip well before the cap if the run is
 genuinely stuck.
 
 ### What the cap does NOT bound
@@ -228,9 +282,20 @@ percentage, no milestone list, and no burn-down — a synthesized progress numbe
 guess presented as a measurement.
 
 At the end of a run (achieved, cap hit, cancelled, error, or stalled), the CLI prints a
-distinct end-of-run block with the outcome, the continuation count, and — when available — a
-fast-model summary of the run. `cap_hit` and `stalled` are both rendered as **not
-successful** (the goal was not confirmed complete); only `achieved` is a success outcome.
+single-line outcome header. It is always one of exactly three verdicts — `✓ Goal met`,
+`✗ Goal not met`, or `⚠ Goal unconfirmed` — so the first three words carry the answer and
+nothing after them can invert it:
+
+```
+✓ Goal met · sent back twice
+```
+
+`achieved` is the only success outcome, and the only one that prints the continuation count.
+It prints no explanatory prose at all — you just watched it succeed. Every other outcome adds
+a short cause to the header (`— hit the 5-turn cap`, `— stalled`, `— cancelled`,
+`— evaluator failed`) and at most a line or two of prose beneath it. For `cap_hit`, `stalled`,
+and `error`, that prose is a fast-model line naming the one thing you could not see live:
+what is still open, what blocked the run, or what broke.
 
 ---
 
