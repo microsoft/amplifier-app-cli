@@ -3327,6 +3327,12 @@ async def interactive_chat(
         # session:end is emitted by session.cleanup() (the canonical kernel path).
         # Do NOT emit it here — that would duplicate the event.
         await initialized.cleanup()
+        # Close the dedicated terminal-input fd (see dedicated_tty_input.py) --
+        # this is the REPL path that actually opens it (via
+        # _create_prompt_session() and each turn's SteeringInputManager
+        # prompt), so it must be the path that closes it too. Idempotent and
+        # safe even if the fd was never opened.
+        close_dedicated_tty_input()
         # --- cleanup:finally_end (after cleanup so its duration is visible) ---
         if hooks:
             await hooks.emit(CLEANUP_FINALLY_END, {"session_id": actual_session_id})
