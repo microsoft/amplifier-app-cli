@@ -85,6 +85,11 @@ async def resolve_bundle_config(
         # Always available - users choose to use /mode commands or not
         compose_behaviors.extend(_build_modes_behaviors())
 
+        # Context Intelligence: record session events to local JSONL files, and
+        # provide an agent that can answer questions about them by reading those
+        # files. Local-only - no server, database, or container runtime needed.
+        compose_behaviors.extend(_build_context_intelligence_behaviors())
+
         # Notification behaviors (desktop and push notifications). The flags
         # object is the single source of truth for "is this enabled?" — the
         # hook-override emitter in AppSettings.get_notification_hook_overrides()
@@ -881,6 +886,34 @@ def _build_modes_behaviors() -> list[str]:
     return [
         # Only load the behavior, NOT the root bundle (which includes foundation)
         "git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=behaviors/modes.yaml",
+    ]
+
+
+def _build_context_intelligence_behaviors() -> list[str]:
+    """Return context-intelligence behavior URIs for composition.
+
+    Two orthogonal behaviors, both local-only:
+
+    - ``logging`` mounts a hook that records session events to local JSONL
+      files under the session directory. No agents, no server required.
+    - ``navigation`` mounts ``session-navigator``, an agent that answers
+      questions about those recorded sessions by reading the files directly.
+      It carries no server tooling.
+
+    Neither behavior includes the graph analysis layer, so no graph server,
+    database, or container runtime is required or contacted. Server fan-out
+    stays off unless the user explicitly configures a destination.
+
+    Returns:
+        List of context-intelligence behavior URIs.
+    """
+    base = "git+https://github.com/microsoft/amplifier-bundle-context-intelligence@main#subdirectory=behaviors"
+    return [
+        # Load only these two behaviors - NOT the analysis/design layers (which
+        # add graph-server tooling) and NOT the root bundle (which includes
+        # foundation).
+        f"{base}/context-intelligence-logging.yaml",
+        f"{base}/context-intelligence-navigation.yaml",
     ]
 
 
