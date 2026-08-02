@@ -399,13 +399,26 @@ class SteeringInputManager:
         if self._input_provider is None:
             from prompt_toolkit import PromptSession
 
+            from .dedicated_tty_input import get_dedicated_tty_input
+
             # interrupt_exception=_CtrlCInterrupt: replace the default
             # KeyboardInterrupt with a plain Exception subclass so that asyncio's
             # Task.__step_run_and_handle_result() does NOT re-raise after storing
             # the exception.  The re-raise only applies to KeyboardInterrupt /
             # SystemExit (CPython 3.11+) and would otherwise propagate through
             # Handle._run() → _run_once() → asyncio.run(), crashing the process.
-            self._pt_session = PromptSession(interrupt_exception=_CtrlCInterrupt)
+            #
+            # input=get_dedicated_tty_input(): this steering prompt is the
+            # ACTIVE reader during agent turns -- exactly when a bash tool
+            # can spawn a competing TTY reader (ssh, digital-twin exec, a
+            # nested amplifier invocation). A dedicated, non-blocking fd
+            # stops that competing read from freezing this event loop
+            # (see dedicated_tty_input.py). Returns None (prompt_toolkit's
+            # own default) whenever a dedicated fd isn't available.
+            self._pt_session = PromptSession(
+                interrupt_exception=_CtrlCInterrupt,
+                input=get_dedicated_tty_input(),
+            )
             # Pass a callable so prompt_toolkit re-evaluates the message on each
             # app.invalidate() call, keeping the queued count live in the prompt.
             _message: Any = self._prompt_message
