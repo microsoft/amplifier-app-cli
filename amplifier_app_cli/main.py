@@ -46,6 +46,7 @@ from .commands.tool import tool as tool_group
 from .commands.update import update as update_cmd
 from .commands.version import version as version_cmd
 from .console import Markdown, console
+from .dedicated_tty_input import close_dedicated_tty_input, get_dedicated_tty_input
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
 from .session_runner import SessionConfig, create_initialized_session
@@ -2775,6 +2776,12 @@ def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSes
         # including mid-word wraps -- requiring manual cleanup after paste.
         prompt_continuation="",
         enable_history_search=True,  # Enables Ctrl-R
+        # Dedicated, non-blocking fd instead of sharing fd 0 -- stops a
+        # competing TTY reader (ssh, digital-twin exec, a nested amplifier
+        # invocation) from freezing this event loop mid-read. Returns None
+        # (prompt_toolkit's own default) whenever a dedicated fd isn't
+        # available; see dedicated_tty_input.py for the full mechanism.
+        input=get_dedicated_tty_input(),
     )
 
 
@@ -3320,6 +3327,12 @@ async def interactive_chat(
         # session:end is emitted by session.cleanup() (the canonical kernel path).
         # Do NOT emit it here — that would duplicate the event.
         await initialized.cleanup()
+        # Close the dedicated terminal-input fd (see dedicated_tty_input.py) --
+        # this is the REPL path that actually opens it (via
+        # _create_prompt_session() and each turn's SteeringInputManager
+        # prompt), so it must be the path that closes it too. Idempotent and
+        # safe even if the fd was never opened.
+        close_dedicated_tty_input()
         # --- cleanup:finally_end (after cleanup so its duration is visible) ---
         if hooks:
             await hooks.emit(CLEANUP_FINALLY_END, {"session_id": actual_session_id})
@@ -3696,6 +3709,10 @@ async def execute_single(
         # session:end is emitted by session.cleanup() (the canonical kernel path).
         # Do NOT emit it explicitly here — that would duplicate the event.
         await initialized.cleanup()
+        # Close the dedicated terminal-input fd (see dedicated_tty_input.py)
+        # opened for this session's PromptSessions -- no fd leak past this
+        # session's teardown.
+        close_dedicated_tty_input()
         # --- cleanup:finally_end (after cleanup so its duration is visible) ---
         if hooks:
             await hooks.emit(CLEANUP_FINALLY_END, {"session_id": actual_session_id})
