@@ -117,7 +117,7 @@ class TestAlwaysRenderFinalResponse:
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(f"{_MODULE}.console"),
             patch(
-                f"{_MODULE}._process_runtime_mentions",
+                f"{_MODULE}.process_runtime_mentions",
                 new=AsyncMock(side_effect=lambda s, t: t),
             ),
             patch(f"{_MODULE}.get_effective_config_summary"),
@@ -168,7 +168,7 @@ class TestAlwaysRenderFinalResponse:
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(f"{_MODULE}.console"),
             patch(
-                f"{_MODULE}._process_runtime_mentions",
+                f"{_MODULE}.process_runtime_mentions",
                 new=AsyncMock(side_effect=lambda s, t: t),
             ),
             patch(f"{_MODULE}.get_effective_config_summary"),

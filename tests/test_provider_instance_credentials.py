@@ -994,6 +994,192 @@ class TestStaleCredentialWarnAndReuse:
         assert "stored credential" in printed.lower()
         assert "reused" in printed.lower()
 
+    def test_real_key_manager_leftover_is_reused_not_rejected(
+        self, tmp_path, monkeypatch
+    ):
+        """The §5.4.4 warn-and-reuse path must be reachable with a REAL
+        KeyManager, not only with a mocked one.
+
+        Regression: collision detection used the write-side
+        ``_claimed_env_vars``, which counts every name sitting in keys.env.
+        A keys.env leftover was therefore rejected before the user could
+        accept it -- ``_suggest_instance_env_var`` raised "already in use by
+        another instance" for the very name §5.4.4 says to reuse, making
+        this branch dead in production (it only passed above because the
+        mocked key manager and the empty real keys.env disagreed).
+        """
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from amplifier_app_cli.commands.provider import _resolve_env_var_overrides
+        from amplifier_app_cli.key_manager import KeyManager
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"api_key": "${ANTHROPIC_API_KEY}"},
+            provider_id="anthropic-opus",
+            scope="global",
+        )
+        # keys.env-only leftover from a previously-removed 'anthropic-fable'
+        # (remove deliberately does not delete the key -- §8 risk 6).
+        # setenv first so pytest restores the process env at teardown;
+        # save_key() writes os.environ itself.
+        monkeypatch.setenv("ANTHROPIC_FABLE_API_KEY", "sk-stale-fable")
+        KeyManager().save_key("ANTHROPIC_FABLE_API_KEY", "sk-stale-fable")
+        key_manager = KeyManager()
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._secret_env_var_for",
+                return_value="ANTHROPIC_API_KEY",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.Prompt.ask",
+                return_value="ANTHROPIC_FABLE_API_KEY",
+            ),
+            patch("amplifier_app_cli.commands.provider.console") as mock_console,
+        ):
+            overrides = _resolve_env_var_overrides(
+                settings, key_manager, "provider-anthropic", "anthropic-fable"
+            )
+
+        assert overrides == {"ANTHROPIC_API_KEY": "ANTHROPIC_FABLE_API_KEY"}
+        printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+        assert "stored credential" in printed.lower()
+        assert "already in use by another" not in printed.lower()
+
+
+# ============================================================
+# A keys.env-only leftover is NOT a collision (§5.2 step 3)
+# ============================================================
+
+
+class TestStaleKeysEnvIsNotACollision:
+    """The type default being present in keys.env, with no provider entry
+    referencing it, must not push the FIRST instance of that type onto the
+    collision path -- nobody owns that name."""
+
+    def test_first_instance_gets_no_collision_prompt(self, tmp_path, monkeypatch):
+        """No configured instance references ANTHROPIC_API_KEY, so adding the
+        first anthropic instance keeps today's UX: default name, no prompt."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from amplifier_app_cli.commands.provider import _resolve_env_var_overrides
+        from amplifier_app_cli.key_manager import KeyManager
+
+        settings = _make_settings(tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-left-over")
+        KeyManager().save_key("ANTHROPIC_API_KEY", "sk-left-over")
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._secret_env_var_for",
+                return_value="ANTHROPIC_API_KEY",
+            ),
+            patch("amplifier_app_cli.commands.provider.Prompt.ask") as mock_ask,
+        ):
+            overrides = _resolve_env_var_overrides(
+                settings, MagicMock(), "provider-anthropic", None
+            )
+
+        assert overrides == {}, (
+            "A keys.env-only leftover is owned by no instance -- the first "
+            "instance of the type must use the type default (§5.2 step 3)."
+        )
+        mock_ask.assert_not_called()
+
+    def test_second_instance_still_collides(self, tmp_path, monkeypatch):
+        """Guard the other direction: a name a configured instance actually
+        references still triggers the collision path."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from amplifier_app_cli.commands.provider import _resolve_env_var_overrides
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"api_key": "${ANTHROPIC_API_KEY}"},
+            provider_id="anthropic-opus",
+            scope="global",
+        )
+        mock_key_manager = MagicMock()
+        mock_key_manager.has_key.return_value = False
+        mock_key_manager.has_stored_key.return_value = False
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._secret_env_var_for",
+                return_value="ANTHROPIC_API_KEY",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.Prompt.ask",
+                return_value="ANTHROPIC_FABLE_API_KEY",
+            ) as mock_ask,
+        ):
+            overrides = _resolve_env_var_overrides(
+                settings, mock_key_manager, "provider-anthropic", "anthropic-fable"
+            )
+
+        assert overrides == {"ANTHROPIC_API_KEY": "ANTHROPIC_FABLE_API_KEY"}
+        mock_ask.assert_called_once()
+
+    def test_provider_add_cli_writes_entry_despite_stale_key(
+        self, tmp_path, monkeypatch
+    ):
+        """`provider add <type>` must still add the provider when keys.env
+        already holds the type's default credential name.
+
+        User-visible regression this pins: with a leftover key (which
+        ``provider add`` itself wrote, and ``provider remove`` deliberately
+        keeps), the add path announced a collision against "an existing
+        instance" that does not exist, prompted for a per-instance env var,
+        and -- with nothing on stdin -- printed "Cancelled." and exited 0
+        having written no provider at all.
+        """
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from amplifier_app_cli.commands.provider import provider
+        from amplifier_app_cli.key_manager import KeyManager
+
+        settings = _make_settings(tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-left-over")
+        KeyManager().save_key("ANTHROPIC_API_KEY", "sk-left-over")
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                return_value={
+                    "default_model": "claude-sonnet-4-6",
+                    "api_key": "${ANTHROPIC_API_KEY}",
+                },
+            ),
+            patch("amplifier_app_cli.commands.provider.KeyManager"),
+            patch("amplifier_app_cli.commands.provider.ProviderManager") as MockPM,
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=_mock_provider_info(),
+            ),
+        ):
+            mock_pm = MagicMock()
+            mock_pm.list_providers.return_value = [
+                ("provider-anthropic", "Anthropic", "Anthropic provider"),
+            ]
+            MockPM.return_value = mock_pm
+
+            result = runner.invoke(provider, ["add", "anthropic"])
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+        assert "Cancelled" not in result.output, (
+            f"add path cancelled instead of adding the provider: {result.output}"
+        )
+        providers = settings.get_scope_provider_overrides("global")
+        assert [p["module"] for p in providers] == ["provider-anthropic"]
+        assert providers[0]["config"]["api_key"] == "${ANTHROPIC_API_KEY}"
+
 
 # ============================================================
 # Non-interactive fail-loud (§5.4.5)

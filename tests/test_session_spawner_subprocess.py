@@ -24,7 +24,9 @@ def anyio_backend():
     return "asyncio"
 
 
-def _make_parent_session(config=None, session_id="parent-session-id"):
+def _make_parent_session(
+    config=None, session_id="parent-session-id", coordinator_config=None
+):
     """Create a minimal mock parent session for testing.
 
     Creates a mock with session_id, config, and coordinator attributes,
@@ -38,6 +40,14 @@ def _make_parent_session(config=None, session_id="parent-session-id"):
 
     # Mock coordinator
     coordinator = MagicMock()
+    # A real coordinator's `config` is a plain dict (RustCoordinator.config ->
+    # dict[str, Any]); spawn_sub_session reads coordinator.config["agents"] as
+    # the LIVE agent registry (issue #233). Leaving it as an auto-created
+    # MagicMock attribute would make that lookup return a truthy Mock and
+    # fabricate an agents entry no real session would produce.
+    coordinator.config = (
+        dict(parent.config) if coordinator_config is None else coordinator_config
+    )
     coordinator.get_capability.return_value = None  # Default: no capabilities
     coordinator.get.return_value = None  # No mounted modules by default
     coordinator.approval_system = MagicMock()
@@ -105,6 +115,49 @@ class TestSubprocessRouting:
         assert result["status"] == "success"
         assert result["turn_count"] == 1
         assert result["metadata"] == {}
+
+    async def test_live_registry_agents_propagate_to_subprocess_config(
+        self, monkeypatch
+    ):
+        """Live coordinator.config['agents'] reaches the subprocess child.
+
+        The issue #233 propagation applies to the subprocess path too: the
+        runtime agent registry lives in coordinator.config, not in the static
+        session.config snapshot, so it must be merged into the config handed
+        to run_session_in_subprocess. Pins that the `agents` key appears only
+        when there is something to propagate (see
+        test_subprocess_param_routes_to_subprocess, which asserts the exact
+        config for a parent with an empty live registry).
+        """
+        parent = _make_parent_session(
+            coordinator_config={"agents": {"mode_sibling": {"description": "B"}}}
+        )
+
+        fake_module = _make_subprocess_runner_module()
+        monkeypatch.setitem(
+            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
+        )
+
+        with (
+            patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge,
+        ):
+            mock_merge.return_value = {"session": {}}
+
+            from amplifier_app_cli.session_spawner import spawn_sub_session
+
+            await spawn_sub_session(
+                agent_name="some-agent",
+                instruction="Do something",
+                parent_session=parent,
+                agent_configs={"some-agent": {}},
+                sub_session_id="fixed-test-id",
+                use_subprocess=True,
+            )
+
+        passed_config = fake_module.run_session_in_subprocess.call_args.kwargs["config"]
+        assert passed_config["agents"] == {"mode_sibling": {"description": "B"}}
+        # The child must get its own copy -- never the parent's live registry.
+        assert passed_config["agents"] is not parent.coordinator.config["agents"]
 
     async def test_spawn_mode_config_routes_to_subprocess(self, monkeypatch):
         """spawn_mode: subprocess in merged config routes to subprocess runner.

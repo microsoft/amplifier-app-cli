@@ -266,11 +266,18 @@ def _secret_field_id_for(module_id: str) -> str | None:
     return field.get("id") if field else None
 
 
-def _claimed_env_vars(settings: AppSettings) -> set[str]:
-    """Env-var names already spoken for, by ANY means, across ALL scopes
-    (global, project, local, session): either referenced by a ``${VAR}``
-    placeholder in some scope's provider config, OR already backed by a
-    real, saved secret in ``~/.amplifier/keys.env``.
+def _config_claimed_env_vars(settings: AppSettings) -> set[str]:
+    """Env-var names claimed by an existing *configured instance*: names
+    referenced by a ``${VAR}`` placeholder in some scope's provider config
+    (global, project, local, session).
+
+    This is the design's notion of "claimed" for the add paths'
+    collision detection (§5.2 steps 3-4): a name is spoken for when a
+    provider entry actually points at it. A name that exists only as a
+    leftover secret in ``keys.env`` -- with no entry referencing it -- is
+    NOT claimed here: no instance owns it, so a first instance of that
+    type may legitimately (re)use it. That case is the stale-credential
+    warn-and-reuse path (§5.4.4), not a collision.
 
     Mirrors ``AppSettings.get_provider_overrides()``'s scope iteration
     order, but deliberately does NOT mirror its silent
@@ -279,15 +286,7 @@ def _claimed_env_vars(settings: AppSettings) -> set[str]:
     would let a new instance claim an already-used env var and reintroduce
     Bug 3 through a different door.
 
-    A literal (non-placeholder) config value claims nothing BY ITSELF --
-    it's the presence of an actual saved key in keys.env (checked below,
-    once per call) that claims a name, not the shape of the config value
-    referencing it. This matters for the race where one instance's literal
-    secret has just been normalized and saved to keys.env, but another
-    entry's still-unprocessed literal in the same write batch hasn't been
-    touched yet: without this, the second entry's default name would look
-    unclaimed and clobber the first instance's freshly-saved secret in
-    keys.env. See docs/designs/provider-instance-credentials.md §5.4.1.
+    A literal (non-placeholder) config value claims nothing.
     """
     claimed: set[str] = set()
     for scope in ("global", "project", "local", "session"):
@@ -319,14 +318,29 @@ def _claimed_env_vars(settings: AppSettings) -> set[str]:
                 if isinstance(v, str) and v.startswith("${") and v.endswith("}"):
                     claimed.add(v[2:-1])
 
-    # Also claim any name already backed by a real, saved secret in
-    # keys.env, even if no scope's config currently references it via a
-    # placeholder yet (e.g. it was just saved moments ago by another
-    # entry's normalization/configure_provider call within the same
-    # command, before this scope's write has landed). Single read, reused
-    # by the caller's loop -- not re-read per provider entry.
-    claimed |= KeyManager().stored_keys()
     return claimed
+
+
+def _claimed_env_vars(settings: AppSettings) -> set[str]:
+    """Config claims (see ``_config_claimed_env_vars``) PLUS every name
+    already backed by a real, saved secret in ``~/.amplifier/keys.env``.
+
+    This is the WRITE-side notion, used where reusing a name would
+    *overwrite an actual stored secret*: a name already backed by a saved
+    key is spoken for even when no scope's config references it via a
+    placeholder yet (e.g. it was saved moments ago by another entry's
+    normalization/configure_provider call within the same command, before
+    this scope's write has landed). Without it, the second entry's default
+    name would look unclaimed and clobber the first instance's
+    freshly-saved secret in keys.env. Single read, reused by the caller's
+    loop -- not re-read per provider entry.
+    See docs/designs/provider-instance-credentials.md §5.4.1.
+
+    Do NOT use this for the add paths' collision detection: a keys.env-only
+    leftover means no instance owns the name (§5.4.4 warn-and-reuse), not
+    that a collision exists -- use ``_config_claimed_env_vars`` there.
+    """
+    return _config_claimed_env_vars(settings) | KeyManager().stored_keys()
 
 
 def _suggest_instance_env_var(
