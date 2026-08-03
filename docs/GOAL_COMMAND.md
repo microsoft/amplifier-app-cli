@@ -257,6 +257,19 @@ that only describe the end state.
 It also means the evaluator can be satisfied by a *claim* rather than a fact. `/goal` is not
 a substitute for verifying important work yourself.
 
+### @mentions in a condition (snapshot semantics)
+
+A condition can reference a file with an `@mention` (e.g. `/goal fix every issue listed in
+@TODO.md`). The `@mention` is expanded **once, at the moment you set the goal** -- the file's
+content is substituted in and stored as part of the condition. This is what the evaluator sees
+on *every* turn for the life of the goal, not just the first one.
+
+Because expansion happens at set time, the condition is a **snapshot**: if the file changes
+mid-run, the evaluator keeps judging against the content as it was when the goal was set, not
+the file's current content. This is deliberate -- the condition is a fixed spec for the run, not
+a moving target that drifts as files change underneath it. If the file's content matters and it
+changes, clear the goal and set it again to take a fresh snapshot.
+
 ---
 
 ## Status and progress
