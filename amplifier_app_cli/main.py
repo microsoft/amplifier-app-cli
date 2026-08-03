@@ -1219,6 +1219,13 @@ class CommandProcessor:
                 f"[{_GOAL_MAX_TURNS_FLAG} N] <condition>"
             )
 
+        # Expand @mentions in the condition once, here, at set time --
+        # snapshot semantics (see docs/GOAL_COMMAND.md). The condition is
+        # re-sent to the evaluator model every turn; without this it would
+        # see the literal "@file" token forever instead of the file's
+        # content.
+        condition = await process_runtime_mentions(self.session, condition)
+
         session_state["goal"] = {
             "condition": condition,
             "turns_used": 0,
@@ -3442,9 +3449,6 @@ async def execute_single(
 
         register_goal_progress_hook(session)
 
-        # Process runtime @mentions in user input
-        prompt = await process_runtime_mentions(session, prompt)
-
         # === /goal support in headless mode (see docs/GOAL_COMMAND.md) ===
         # The auto-continue loop itself now lives in the orchestrator (see
         # loop-streaming's execute()), so headless mode only needs to set
@@ -3452,6 +3456,14 @@ async def execute_single(
         # the orchestrator does the rest, including printing progress via
         # plain print() (this process has no rich console driving stdout
         # from inside the orchestrator).
+        #
+        # This detection MUST run on the RAW prompt, BEFORE the general
+        # @mention expansion below -- expansion prepends a <context_file
+        # ...> block ahead of the text, which would make the
+        # startswith("/goal ") check always fail for a /goal prompt that
+        # also contains an @mention (the prompt would no longer start with
+        # "/goal " once expanded).
+        goal_prompt_handled = False
         if prompt.strip().lower().startswith("/goal "):
             goal_args = prompt.strip()[len("/goal ") :].strip()
             if goal_args:
@@ -3499,6 +3511,15 @@ async def execute_single(
                         console.print(f"[red]{msg}[/red]")
                     sys.exit(1)
 
+                # Expand @mentions in the condition once, here, at set time
+                # -- snapshot semantics (see docs/GOAL_COMMAND.md). The
+                # condition is re-sent to the evaluator model every turn;
+                # without this it would see the literal "@file" token
+                # forever instead of the file's content.
+                goal_condition = await process_runtime_mentions(
+                    session, goal_condition
+                )
+
                 session.coordinator.session_state["goal"] = {
                     "condition": goal_condition,
                     "turns_used": 0,
@@ -3518,6 +3539,11 @@ async def execute_single(
                 # docs/GOAL_COMMAND.md).
                 console.print(f"Goal set{cap_suffix}.")
                 prompt = goal_condition
+                goal_prompt_handled = True
+
+        if not goal_prompt_handled:
+            # Process runtime @mentions in user input
+            prompt = await process_runtime_mentions(session, prompt)
 
         if verbose:
             console.print(f"[dim]Executing: {prompt}[/dim]")
