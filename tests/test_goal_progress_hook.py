@@ -26,7 +26,11 @@ from rich.console import Console
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from amplifier_app_cli.goal_progress_hook import GoalProgressHook
+from amplifier_app_cli.goal_progress_hook import (
+    _SUMMARY_DISPLAY_MAX_CHARS,
+    GoalProgressHook,
+    _clip_for_display,
+)
 
 WIDTHS = (40, 80, 200)
 
@@ -576,3 +580,109 @@ class TestWidthAgnosticRendering:
         out = buffer.getvalue()
         assert very_long_reason in out
         assert "\u2026" not in out
+
+
+class TestClipForDisplay:
+    """Unit-level coverage of `_clip_for_display` in isolation -- exact,
+    hardcoded expected output, independent of any event rendering."""
+
+    def test_text_under_cap_is_unchanged(self):
+        text = "short and under the cap"
+        assert _clip_for_display(text) == text
+
+    def test_text_over_cap_clips_at_word_boundary(self):
+        # 130 chars, well over the default 120-char cap, with clean word
+        # boundaries throughout so the expected clip point is exact.
+        text = (
+            "the evaluator keeps reporting the exact same blocker every "
+            "single turn and no new progress has been made toward the "
+            "condition at all whatsoever"
+        )
+        assert len(text) > _SUMMARY_DISPLAY_MAX_CHARS
+        result = _clip_for_display(text)
+        assert len(result) <= _SUMMARY_DISPLAY_MAX_CHARS
+        # Clipped at the last whole word within the cap -- never a partial
+        # word, and never the raw text[:120] slice verbatim.
+        assert text.startswith(result)
+        assert not result.endswith(" ")
+        cutoff = text[:_SUMMARY_DISPLAY_MAX_CHARS]
+        assert result == cutoff[: cutoff.rfind(" ")]
+
+    def test_custom_max_chars_honored(self):
+        text = "one two three four five six seven eight nine ten"
+        result = _clip_for_display(text, max_chars=10)
+        assert len(result) <= 10
+        assert result == "one two"
+
+
+class TestSummaryClippedForDisplayOnly:
+    """Display-time clipping of the `summary` field -- storage/emission is
+    the orchestrator's concern (amplifier-module-loop-streaming stores and
+    emits the model's full summary text unclipped); this hook clips only
+    what it prints, so a one-line render is guaranteed regardless of how
+    long the upstream stored/graph-recorded text is. `reason` is never
+    clipped -- see TestWidthAgnosticRendering.
+    test_very_long_prose_survives_verbatim_no_truncation for that guarantee.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cap_hit_overlong_summary_is_clipped_in_still_open_line(self, hook):
+        overlong_summary = (
+            "the evaluator determined the goal was not fully satisfied "
+            "because several acceptance criteria remained unaddressed "
+            "including the changelog entry and the regression tests"
+        )
+        assert len(overlong_summary) > _SUMMARY_DISPLAY_MAX_CHARS
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {
+                "state": "cap_hit",
+                "cap": 8,
+                "continuations": 8,
+                "summary": overlong_summary,
+            },
+        )
+        out = _joined(hook)
+        assert overlong_summary not in out
+        assert _clip_for_display(overlong_summary) in out
+
+    @pytest.mark.asyncio
+    async def test_cap_hit_overlong_reason_fallback_is_not_clipped(self, hook):
+        """When there's no summary, cap_hit falls back to `reason` --
+        which, unlike `summary`, is never clipped even if it happens to be
+        long."""
+        overlong_reason = (
+            "the evaluator determined the goal was not fully satisfied "
+            "because several acceptance criteria remained unaddressed "
+            "including the changelog entry and the regression tests"
+        )
+        assert len(overlong_reason) > _SUMMARY_DISPLAY_MAX_CHARS
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {
+                "state": "cap_hit",
+                "cap": 8,
+                "reason": overlong_reason,
+                "summary": None,
+            },
+        )
+        out = _joined(hook)
+        assert overlong_reason in out
+
+    @pytest.mark.asyncio
+    async def test_error_overlong_summary_fallback_is_clipped(self, hook):
+        """cancelled/error prefer `reason`; when absent, the `summary`
+        fallback is clipped just like cap_hit's."""
+        overlong_summary = (
+            "the evaluator determined the goal was not fully satisfied "
+            "because several acceptance criteria remained unaddressed "
+            "including the changelog entry and the regression tests"
+        )
+        assert len(overlong_summary) > _SUMMARY_DISPLAY_MAX_CHARS
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {"state": "error", "reason": None, "summary": overlong_summary},
+        )
+        out = _joined(hook)
+        assert overlong_summary not in out
+        assert _clip_for_display(overlong_summary) in out

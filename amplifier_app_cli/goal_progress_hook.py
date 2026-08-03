@@ -46,6 +46,18 @@ from .console import console
 # header below.
 _TERMINAL_STATES = frozenset({"achieved", "cap_hit", "cancelled", "error", "stalled"})
 
+# Display-only bound on the model-generated `summary` field, so one goal
+# summary never spans more than one terminal line. The orchestrator
+# (amplifier-module-loop-streaming) stores and emits the model's full
+# summary text unclipped -- storage and display are different concerns,
+# and only this renderer needs a one-line guarantee. Matches the
+# character target the orchestrator's per-state summary prompts already
+# ask the model for (see _GOAL_SUMMARY_SYSTEM_PROMPTS), so truncation is
+# the rare case, not the common one. Never applied to `reason`: that field
+# is short by construction at the source and upstream tests pin it as
+# surviving verbatim regardless of length.
+_SUMMARY_DISPLAY_MAX_CHARS = 120
+
 # Grammar for every terminal header: "<glyph> <status> -- <cause>". Status is
 # always one of exactly these three phrases, and the glyph always matches --
 # a skimmer reading only the first three words gets the answer, and nothing
@@ -198,13 +210,21 @@ def _body_lines(state: str, data: dict[str, Any]) -> list[str]:
     """The (at most two) prose lines under a terminal header, by state.
 
     - stalled: the collapsed blocker phrase (never the raw blocker list).
-    - cap_hit: the summary (preferred) or reason, prefixed "still open:",
-      plus a static hint -- correct in exactly this state, because this is
-      the one state where more turns might actually finish the job.
-    - cancelled / error: an optional single line from reason (preferred) or
-      summary, verbatim -- no label, since the header already carries the
-      cause.
+    - cap_hit: the summary (preferred, clipped to
+      ``_SUMMARY_DISPLAY_MAX_CHARS`` for display) or reason (verbatim,
+      never clipped), prefixed "still open:", plus a static hint -- correct
+      in exactly this state, because this is the one state where more turns
+      might actually finish the job.
+    - cancelled / error: an optional single line from reason (preferred,
+      verbatim) or summary (clipped for display) -- no label, since the
+      header already carries the cause.
     - achieved: never called; see ``_render_terminal``.
+
+    Only the `summary` field is ever clipped for display -- `reason` is
+    always rendered verbatim, since it's already short by construction at
+    the source (unlike `summary`, which is unbounded free-form model text --
+    the orchestrator stores/emits it in full; see amplifier-module-loop-
+    streaming's ``_summarize_goal_run``).
     """
     if state == "stalled":
         line = _stalled_line(data)
@@ -212,17 +232,41 @@ def _body_lines(state: str, data: dict[str, Any]) -> list[str]:
 
     if state == "cap_hit":
         lines: list[str] = []
-        narrative = data.get("summary") or data.get("reason")
+        summary = data.get("summary")
+        narrative = _clip_for_display(summary) if summary else data.get("reason")
         if narrative:
             lines.append(f"still open: {narrative.strip()}")
         lines.append("rerun with a higher cap to finish")
         return lines
 
     if state in ("cancelled", "error"):
-        narrative = data.get("reason") or data.get("summary")
-        return [narrative.strip()] if narrative else []
+        reason = data.get("reason")
+        if reason:
+            return [reason.strip()]
+        summary = data.get("summary")
+        return [_clip_for_display(summary).strip()] if summary else []
 
     return []
+
+
+def _clip_for_display(text: str, max_chars: int = _SUMMARY_DISPLAY_MAX_CHARS) -> str:
+    """Hard-clip ``text`` to at most ``max_chars`` for one-line console
+    display, breaking at the last whole word rather than mid-word.
+
+    Display-only: the orchestrator stores/emits the model's full summary
+    text unclipped (see amplifier-module-loop-streaming's
+    ``_summarize_goal_run``). This is the sole place that bounds it, and
+    only for what gets printed here -- callers must never persist or
+    re-emit this clipped result as if it were the stored value.
+    """
+    text = text.strip()
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    last_space = truncated.rfind(" ")
+    if last_space > 0:
+        truncated = truncated[:last_space]
+    return truncated.rstrip()
 
 
 def _stalled_line(data: dict[str, Any]) -> str | None:
