@@ -208,13 +208,226 @@ def test_open_dedicated_tty_input_returns_none_on_windows(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Pollability probe (_fd_is_pollable) -- runs on ANY posix platform, no
+# darwin gating: the probe is what decides candidate acceptance now, not a
+# platform string.
+# ---------------------------------------------------------------------------
+
+
+def test_fd_is_pollable_true_for_real_pty_slave():
+    """A real pty slave fd is exactly the kind of fd add_reader() must be
+    able to register -- the probe must confirm it, not reject it."""
+    master_fd, slave_fd = pty.openpty()
+    try:
+        assert dti._fd_is_pollable(slave_fd) is True
+    finally:
+        os.close(slave_fd)
+        os.close(master_fd)
+
+
+def test_fd_is_pollable_false_when_selector_registration_raises(monkeypatch):
+    """If the platform's selector refuses registration (the real failure
+    mode on macOS/BSD kqueue for the /dev/tty alias), the probe must
+    report False -- and the selector it created must still be closed,
+    even though registration failed.
+    """
+    closed = []
+
+    class _FakeSelector:
+        def register(self, fd, events):
+            raise OSError(22, "Invalid argument")
+
+        def unregister(self, fd):
+            pass
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(dti.selectors, "DefaultSelector", lambda: _FakeSelector())
+
+    assert dti._fd_is_pollable(0) is False
+    assert closed == [True], "the selector must be closed even when register() raises"
+
+
+# ---------------------------------------------------------------------------
+# Candidate resolution + probe gate -- replaces the old platform-string
+# check entirely. /dev/tty is tried first (the controlling-terminal alias,
+# validated in production on Linux); os.ttyname(0) is the fallback every
+# kqueue platform (macOS, the wider *BSD family) lands on. No platform
+# string is consulted anywhere in the decision -- only _fd_is_pollable().
+# See "OPENABLE IS NOT THE SAME AS POLLABLE" in the module docstring.
+# ---------------------------------------------------------------------------
+
+
+def test_candidate_fallthrough_to_ttyname_when_devtty_unpollable(monkeypatch):
+    """Simulates the macOS scenario deterministically on ANY platform:
+    the ``/dev/tty`` candidate opens cleanly but fails the pollability
+    probe -- the function must reject it (closing the fd, no leak) and
+    fall through to ``os.ttyname(0)``.
+
+    A real controlling terminal isn't available inside a pytest worker,
+    so ``os.open`` is patched to redirect a ``"/dev/tty"`` request to a
+    second real pty instead -- giving the test a real, closeable fd to
+    verify the reject-and-fall-through path against, without depending
+    on the host's terminal state.
+    """
+    master_a, slave_a = pty.openpty()  # stands in for fd 0's own terminal
+    master_b, slave_b = pty.openpty()  # stands in for whatever "/dev/tty" opens to
+    slave_a_path = os.ttyname(slave_a)
+    slave_b_path = os.ttyname(slave_b)
+
+    saved_stdin_fd = os.dup(0)
+    os.dup2(slave_a, 0)
+
+    real_open = os.open
+    real_close = os.close
+    devtty_stand_in_fds: list[int] = []
+    closed_fds: list[int] = []
+
+    def _fake_open(path, flags, *args, **kwargs):
+        if path == "/dev/tty":
+            fd = real_open(slave_b_path, flags, *args, **kwargs)
+            devtty_stand_in_fds.append(fd)
+            return fd
+        return real_open(path, flags, *args, **kwargs)
+
+    def _spy_close(fd, *args, **kwargs):
+        closed_fds.append(fd)
+        return real_close(fd, *args, **kwargs)
+
+    real_is_pollable = dti._fd_is_pollable
+
+    def _fake_is_pollable(fd):
+        # Identify the /dev/tty stand-in by DEVICE IDENTITY (os.ttyname),
+        # not by raw fd number -- the rejected candidate's fd is closed
+        # before the next candidate opens, and the OS is free to reuse
+        # that exact fd number for the very next open() call, which would
+        # make a raw-number comparison misidentify the real ttyname(0)
+        # candidate as the rejected one.
+        if os.ttyname(fd) == slave_b_path:
+            return False  # simulate macOS kqueue rejecting the /dev/tty alias
+        return real_is_pollable(fd)
+
+    monkeypatch.setattr(dti.os, "open", _fake_open)
+    monkeypatch.setattr(dti.os, "close", _spy_close)
+    monkeypatch.setattr(dti, "_fd_is_pollable", _fake_is_pollable)
+
+    try:
+        handle = dti.open_dedicated_tty_input()
+        assert handle is not None, (
+            "the ttyname(0) fallback candidate must still succeed"
+        )
+        try:
+            assert os.ttyname(handle.input.fileno()) == slave_a_path, (
+                "must fall through to os.ttyname(0), not the rejected /dev/tty candidate"
+            )
+            assert devtty_stand_in_fds, (
+                "the /dev/tty candidate must have been opened at all"
+            )
+            # No fd leak: the rejected candidate must have been explicitly
+            # closed by production code (checked via a close() spy rather
+            # than fstat -- the OS is free to reuse a just-closed fd number
+            # for the very next open(), which would make an fstat-based
+            # check pass even if the fd had never been closed at all).
+            assert devtty_stand_in_fds[0] in closed_fds, (
+                "the rejected /dev/tty candidate's fd must be closed, not leaked"
+            )
+        finally:
+            handle.close()
+    finally:
+        os.dup2(saved_stdin_fd, 0)
+        os.close(saved_stdin_fd)
+        os.close(slave_a)
+        os.close(master_a)
+        os.close(slave_b)
+        os.close(master_b)
+
+
+def test_all_candidates_unpollable_returns_none_and_logs_warning(monkeypatch, caplog):
+    """Every candidate opening but failing the pollability probe must
+    fall back to ``None`` -- AND must log a warning naming the
+    candidates tried, so a degraded fallback announces itself instead
+    of failing silently.
+    """
+    master_fd, slave_fd = pty.openpty()
+    saved_stdin_fd = os.dup(0)
+    os.dup2(slave_fd, 0)
+    try:
+        monkeypatch.setattr(dti, "_fd_is_pollable", lambda fd: False)
+
+        with caplog.at_level("WARNING"):
+            handle = dti.open_dedicated_tty_input()
+
+        assert handle is None
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert warnings, "must log a warning when every candidate is exhausted"
+        assert any("candidate" in r.message.lower() for r in warnings), (
+            "warning must name the candidates tried, not fail silently"
+        )
+    finally:
+        os.dup2(saved_stdin_fd, 0)
+        os.close(saved_stdin_fd)
+        os.close(slave_fd)
+        os.close(master_fd)
+
+
+def test_repointed_seam_stays_authoritative_and_skips_ttyname_fallback(monkeypatch):
+    """When ``_TTY_DEVICE_PATH`` is repointed away from its production
+    default (the documented test seam), the function must open exactly
+    the seam path and must NOT append ``os.ttyname(0)`` as a second
+    candidate -- otherwise every seam-based test in this file would
+    silently test the wrong device.
+    """
+    master_a, slave_a = pty.openpty()
+    master_b, slave_b = pty.openpty()
+    seam_path = os.ttyname(slave_b)
+
+    saved_stdin_fd = os.dup(0)
+    os.dup2(slave_a, 0)  # fd 0 is pty A; the seam points at pty B
+    try:
+        monkeypatch.setattr(dti, "_TTY_DEVICE_PATH", seam_path)
+
+        opened: list[str] = []
+        real_open = os.open
+
+        def _spy_open(path, flags, *args, **kwargs):
+            opened.append(path)
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(dti.os, "open", _spy_open)
+
+        handle = dti.open_dedicated_tty_input()
+        assert handle is not None
+        try:
+            assert opened == [seam_path], (
+                "the repointed seam must be the ONLY candidate opened -- "
+                f"os.ttyname(0) must never be appended when repointed, got {opened!r}"
+            )
+            assert os.ttyname(handle.input.fileno()) == seam_path, (
+                "the repointed seam must stay authoritative"
+            )
+        finally:
+            handle.close()
+    finally:
+        os.dup2(saved_stdin_fd, 0)
+        os.close(saved_stdin_fd)
+        os.close(slave_a)
+        os.close(master_a)
+        os.close(slave_b)
+        os.close(master_b)
+
+
+# ---------------------------------------------------------------------------
 # macOS: kqueue cannot poll the /dev/tty alias device -- the fd must be
 # opened on the underlying slave device (os.ttyname(0)) instead, or
 # loop.add_reader() raises OSError(EINVAL) at attach time and interactive
 # input is completely broken (silent instant exit on prompt_toolkit
 # >=3.0.53, which converts the OSError to EOFError; an error loop on
-# <=3.0.52, which lets it propagate). See "macOS DETAIL" in the module
-# docstring.
+# <=3.0.52, which lets it propagate). See "OPENABLE IS NOT THE SAME AS
+# POLLABLE" in the module docstring. This end-to-end test still gates on
+# real darwin/kqueue since it exercises the real event loop; the
+# platform-agnostic candidate+probe unit tests above cover the same
+# mechanism deterministically on any posix platform.
 # ---------------------------------------------------------------------------
 
 
@@ -268,104 +481,6 @@ async def test_darwin_dedicated_input_attaches_to_real_kqueue_loop():
         os.close(saved_stdin_fd)
         os.close(slave_fd)
         os.close(master_fd)
-
-
-def test_darwin_opens_stdin_slave_device_not_devtty_alias(monkeypatch):
-    """On darwin with the production seam ("/dev/tty"), the dedicated fd
-    must be opened on ``os.ttyname(0)`` -- the kqueue-pollable slave
-    device -- never on the ``/dev/tty`` alias itself.
-
-    Runs on any POSIX platform: darwin is forced via the same
-    ``dti.sys.platform`` monkeypatch the Windows fallback test uses.
-    """
-    master_fd, slave_fd = pty.openpty()
-    slave_path = os.ttyname(slave_fd)
-
-    saved_stdin_fd = os.dup(0)
-    os.dup2(slave_fd, 0)
-    try:
-        monkeypatch.setattr(dti.sys, "platform", "darwin")
-        monkeypatch.setattr(dti, "_TTY_DEVICE_PATH", "/dev/tty")
-
-        opened: list[tuple[str, int]] = []
-        real_open = os.open
-
-        def _spy_open(path, flags, *args, **kwargs):
-            opened.append((path, flags))
-            return real_open(path, flags, *args, **kwargs)
-
-        monkeypatch.setattr(dti.os, "open", _spy_open)
-
-        handle = dti.open_dedicated_tty_input()
-        assert handle is not None
-        try:
-            assert [path for path, _ in opened] == [slave_path], (
-                "darwin must open the stdin slave device (os.ttyname(0)), "
-                "not the /dev/tty alias kqueue cannot poll"
-            )
-            assert opened[0][1] & os.O_NOCTTY, (
-                "the device must be opened with O_NOCTTY so a session "
-                "leader can never accidentally acquire it as its "
-                "controlling terminal"
-            )
-            assert _is_nonblocking(handle.input.fileno()) is True
-        finally:
-            handle.close()
-    finally:
-        os.dup2(saved_stdin_fd, 0)
-        os.close(saved_stdin_fd)
-        os.close(slave_fd)
-        os.close(master_fd)
-
-
-def test_darwin_falls_back_to_none_when_ttyname_unresolvable(monkeypatch):
-    """darwin + stdin is a tty, but ``os.ttyname(0)`` fails: must fall
-    back to ``None`` rather than open the unpollable ``/dev/tty`` alias
-    (which would reintroduce the broken event-loop attach).
-    """
-    monkeypatch.setattr(dti.sys, "platform", "darwin")
-    monkeypatch.setattr(dti, "_TTY_DEVICE_PATH", "/dev/tty")
-    monkeypatch.setattr(dti.os, "isatty", lambda fd: True)
-
-    def _raise_ttyname(fd):
-        raise OSError("simulated: ttyname unresolvable")
-
-    monkeypatch.setattr(dti.os, "ttyname", _raise_ttyname)
-    assert dti.open_dedicated_tty_input() is None
-
-
-def test_darwin_respects_repointed_test_seam(monkeypatch):
-    """When ``_TTY_DEVICE_PATH`` is repointed away from its production
-    default (the documented test seam), darwin must open exactly the seam
-    path and must NOT override it with ``os.ttyname(0)`` -- otherwise
-    every seam-based test in this file would silently test the wrong
-    device.
-    """
-    master_a, slave_a = pty.openpty()
-    master_b, slave_b = pty.openpty()
-    seam_path = os.ttyname(slave_b)
-
-    saved_stdin_fd = os.dup(0)
-    os.dup2(slave_a, 0)  # fd 0 is pty A; the seam points at pty B
-    try:
-        monkeypatch.setattr(dti.sys, "platform", "darwin")
-        monkeypatch.setattr(dti, "_TTY_DEVICE_PATH", seam_path)
-
-        handle = dti.open_dedicated_tty_input()
-        assert handle is not None
-        try:
-            assert os.ttyname(handle.input.fileno()) == seam_path, (
-                "the repointed seam must stay authoritative on darwin"
-            )
-        finally:
-            handle.close()
-    finally:
-        os.dup2(saved_stdin_fd, 0)
-        os.close(saved_stdin_fd)
-        os.close(slave_a)
-        os.close(master_a)
-        os.close(slave_b)
-        os.close(master_b)
 
 
 # ---------------------------------------------------------------------------
