@@ -319,6 +319,45 @@ async def spawn_sub_session(
             live_agents = (parent_coord.config or {}).get("agents") or {}
         except AttributeError:
             live_agents = {}
+
+        # Reconcile this propagation with the overlay's OWN access-control
+        # declaration (agent_config["agents"] -- a Smart Single Value:
+        # "none" | list-of-names | "all"/absent). merge_configs() already
+        # applied this same declaration once, but only against the STATIC
+        # parent snapshot it can see -- a mode-contributed live agent named
+        # in an explicit allowlist isn't in that snapshot, so merge_configs
+        # resolves it to an empty dict there (this was PR #178/#233's own
+        # documented under-delivery: "even an explicit agents: [sibling_b]
+        # declaration wouldn't reach sibling_b -- the source dict is the
+        # wrong one"). Left unhandled, the block below would then blindly
+        # union in the FULL live registry regardless of that declaration,
+        # silently re-opening delegation for an agent that said "none" or
+        # handing it agents outside its stated allowlist -- defeating the
+        # sub-agent access-control contract merge_configs() exists to
+        # enforce (commit d609bb2; documented in AGENT_AUTHORING.md).
+        #
+        # So: apply the declaration a second time here, against the live
+        # registry, before it gets merged in. This reconciles both intents
+        # in one place -- #233's "mode siblings must be reachable" and the
+        # original "agents: declares exactly who I can delegate to."
+        #
+        # Gate on the OVERLAY (agent_config), NOT on merged_config["agents"].
+        # An unrestricted agent (no `agents:` key) whose parent simply has
+        # no STATIC agents also produces an empty merged_config["agents"] --
+        # gating on emptiness there would wrongly suppress propagation for
+        # that agent too. The overlay's own declared value is the only
+        # signal that distinguishes "restricted to nothing/some" from
+        # "unrestricted, parent just has nothing (yet) in the snapshot."
+        agent_filter = agent_config.get("agents")
+        if agent_filter == "none":
+            live_agents = {}
+        elif isinstance(agent_filter, list):
+            live_agents = {
+                name: cfg for name, cfg in live_agents.items() if name in agent_filter
+            }
+        # else: "all", None, or absent -- inherit the live registry unchanged
+        # (current/original #233 behavior).
+
         if live_agents:
             # Build a FRESH dict and rebind it; never mutate the dict
             # merged_config already holds. merge_configs() deep-copies the
