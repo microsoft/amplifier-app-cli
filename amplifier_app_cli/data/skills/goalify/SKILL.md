@@ -8,7 +8,7 @@ description: >
   goal condition", "make this a /goal", "turn this into a goal", or asks for
   help wording a condition for /goal.
 user-invocable: true
-version: 1.1.0
+version: 1.2.0
 license: MIT
 ---
 
@@ -163,9 +163,23 @@ Do not present a condition that still fails a BLOCKER.
 
 ## Output format
 
-Always output the condition inside a fenced code block — terminal reflow
-will otherwise destroy its multi-line structure. Follow it with the lint
-report as a table, then offer (do not auto-run) `/goal`.
+Produce output in this exact order:
+
+1. **Write the file.** Write the condition text to
+   `.amplifier/goals/<slug>.md` (create the directory if it does not exist),
+   where `<slug>` is a kebab-case slug (≤ 40 chars) of the one-sentence
+   outcome. Overwrite if the file already exists. State the path on its own
+   line, e.g. `Wrote: .amplifier/goals/usable-checkout-flow.md`.
+2. **Render inline.** Immediately after, show the same condition inside a
+   fenced code block — terminal reflow will otherwise destroy its
+   multi-line structure.
+3. **Lint table.** Follow with the lint report as a table.
+4. **Next step, last.** End the entire response with the recommended next
+   step and nothing after it: offer (do not auto-run) `/goal @<path>` using
+   the path from step 1, framed as what to run once any edits to the file
+   are made and saved.
+
+Wrote: `.amplifier/goals/<slug>.md`
 
 ```
 <the condition text>
@@ -184,5 +198,7 @@ report as a table, then offer (do not auto-run) `/goal`.
 A clean table means no *known* failure pattern was detected — not that the
 condition is validated. Say so if the user reads it as a guarantee.
 
-Then: "Pass this to `/goal` to start the loop — want me to run it now, or
+Edit `.amplifier/goals/<slug>.md` directly for any changes. Then, as the
+last line of the response: "Once you're happy with the file, run `/goal
+@.amplifier/goals/<slug>.md` to start the loop — want me to run it now, or
 would you like to adjust anything first?"
