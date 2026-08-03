@@ -241,6 +241,68 @@ class TestStalledState:
         assert "blocked B" not in out
 
     @pytest.mark.asyncio
+    async def test_locked_verdict_reads_as_wall_despite_rephrased_reasons(self, hook):
+        """The bug this fixes (GOAL-HARDENING-DESIGN.md sec 1.5): an
+        evaluator that REPHRASES the same blocker every turn -- the normal
+        case -- previously yielded a distinct signature per turn and read
+        as "flailing" even though a judge confirmed it's really a wall. A
+        locked `stall_verdict` must override the collapsed-reason count.
+        """
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {
+                "state": "stalled",
+                "continuations": 3,
+                "reasons": [
+                    "blocked: missing the activation code",
+                    "still can't proceed without the activation code",
+                    "the activation code remains the blocker here",
+                ],
+                "stall_verdict": "history-locked",
+            },
+        )
+        out = _joined(hook)
+        assert "same blocker 3 turns running" in out
+        assert "history-locked" in out
+        assert "flailing" not in out
+        assert "different blockers" not in out
+
+    @pytest.mark.asyncio
+    async def test_resolvable_verdict_does_not_force_wall_wording(self, hook):
+        """A `stall_verdict` of "resolvable" must never itself force wall
+        wording -- only the three LOCKED verdicts do (see _LOCKED_VERDICTS).
+        In practice a "stalled" event with a "resolvable" verdict shouldn't
+        occur (is_stalled implies a locked verdict), but the renderer must
+        not crash or mis-render defensively if it ever does.
+        """
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {
+                "state": "stalled",
+                "continuations": 4,
+                "reasons": ["blocked A", "blocked B", "blocked C", "blocked D"],
+                "stall_verdict": "resolvable",
+            },
+        )
+        out = _joined(hook)
+        assert "4 turns, 4 different blockers, none resolved" in out
+
+    @pytest.mark.asyncio
+    async def test_missing_verdict_falls_back_to_collapsed_count_heuristic(self, hook):
+        """An older orchestrator that predates the taxonomy (no
+        `stall_verdict` key at all) must render exactly as before."""
+        await hook.on_goal_progress(
+            "orchestrator:goal_progress",
+            {
+                "state": "stalled",
+                "continuations": 4,
+                "reasons": ["blocked A", "blocked B", "blocked C", "blocked D"],
+            },
+        )
+        out = _joined(hook)
+        assert "4 turns, 4 different blockers, none resolved" in out
+
+    @pytest.mark.asyncio
     async def test_falls_back_to_stall_detail_when_no_reasons(self, hook):
         await hook.on_goal_progress(
             "orchestrator:goal_progress",

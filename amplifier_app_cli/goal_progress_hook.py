@@ -98,6 +98,17 @@ _STYLE: dict[str, str] = {
 # doesn't double-count or fail to collapse entries that arrive pre-annotated.
 _REPEAT_SUFFIX = re.compile(r"\s*\(\u00d7(\d+)\)\s*$")
 
+# `stall_verdict` values (see amplifier-module-loop-streaming's
+# `_judge_stall`) that mean the judge confirmed a durable dead end, as
+# opposed to "resolvable" (more work could plausibly close it) or `None`
+# (an older orchestrator that predates the taxonomy, or -- in principle --
+# a stalled event whose judge call was never actually confirmed). Used by
+# `_stalled_line` to decide wall-vs-flailing wording; see that function's
+# docstring and GOAL-HARDENING-DESIGN.md sec 1.5 for why `distinct_blockers`
+# alone gets this wrong for the normal case (an evaluator that rephrases
+# the same blocker every turn).
+_LOCKED_VERDICTS = frozenset({"time-locked", "structure-locked", "history-locked"})
+
 
 class GoalProgressHook:
     """Renders ``orchestrator:goal_progress`` events to the CLI console.
@@ -272,16 +283,30 @@ def _clip_for_display(text: str, max_chars: int = _SUMMARY_DISPLAY_MAX_CHARS) ->
 def _stalled_line(data: dict[str, Any]) -> str | None:
     """Build the single stalled-state prose line.
 
-    Never prints the blocker list. Instead: if every (collapsed) blocker is
-    the same, says so with a turn count ("same blocker 4 turns running:
-    <blocker>") -- a wall. If the blockers genuinely differ, says that
-    instead ("4 turns, 4 different blockers, none resolved") -- flailing is
-    a different diagnosis from a wall, and the phrase should say which.
+    Never prints the blocker list. Instead: if this is a wall -- either
+    every (collapsed) blocker is textually the same, OR the judge's
+    `stall_verdict` (see amplifier-module-loop-streaming's `_judge_stall`)
+    says so -- says so with a turn count ("same blocker 4 turns running
+    (history-locked): <blocker>"). If the blockers genuinely differ AND no
+    locked verdict is present, says that instead ("4 turns, 4 different
+    blockers, none resolved") -- flailing is a different diagnosis from a
+    wall, and the phrase should say which.
+
+    `stall_verdict` is preferred over re-deriving wall-vs-flailing from the
+    collapsed-reason count: an evaluator that REPHRASES the same blocker
+    every turn (the normal case) yields a distinct signature per turn,
+    which read as "flailing" here even when it was really a wall (see
+    GOAL-HARDENING-DESIGN.md sec 1.5). The verdict is a semantic signal by
+    construction -- a judge confirmed it, not a string comparison -- so a
+    locked verdict always wins over the collapsed-reason heuristic below.
+    Falls back to that heuristic alone when `stall_verdict` is absent (an
+    older orchestrator that predates the taxonomy).
 
     Falls back to `stall_detail`, then bare `reason`, for an older
     orchestrator that doesn't emit `reasons` at all.
     """
     reasons = data.get("reasons") or []
+    verdict = data.get("stall_verdict")
     if reasons:
         collapsed = _collapse_consecutive(reasons)
         continuations = data.get("continuations")
@@ -290,9 +315,13 @@ def _stalled_line(data: dict[str, Any]) -> str | None:
             if isinstance(continuations, int)
             else sum(count for _, count in collapsed)
         )
-        if len(collapsed) == 1:
-            blocker, _count = collapsed[0]
-            return f"same blocker {total_turns} turns running: {blocker}"
+        if len(collapsed) == 1 or verdict in _LOCKED_VERDICTS:
+            # A wall -- textually (one collapsed entry) or semantically (a
+            # locked verdict, regardless of how many distinct reason
+            # strings accumulated). Show the most recent phrasing.
+            blocker = collapsed[-1][0]
+            suffix = f" ({verdict})" if verdict in _LOCKED_VERDICTS else ""
+            return f"same blocker {total_turns} turns running{suffix}: {blocker}"
         return (
             f"{total_turns} turns, {len(collapsed)} different blockers, none resolved"
         )
