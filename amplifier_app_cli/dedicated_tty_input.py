@@ -70,9 +70,23 @@ fails loud (naming the installed prompt_toolkit version) if that
 assumption ever stops holding, rather than silently reintroducing the
 freeze.
 
-macOS DETAIL -- why the fd is opened on ``os.ttyname(0)`` there instead of
-``/dev/tty``: on macOS, kqueue -- the backend behind asyncio's default
-``KqueueSelector`` -- cannot poll the ``/dev/tty`` alias device.
+OPENABLE IS NOT THE SAME AS POLLABLE -- why the fd's device path is
+chosen by a runtime probe, not a platform check: opening a tty device
+only proves the OS will hand back a valid fd. It does NOT prove
+asyncio's selector-based event loop can ever be notified when that fd
+is readable. ``loop.add_reader(fd)`` bottoms out in the platform's
+selector implementation registering the fd with the kernel's polling
+primitive (epoll, kqueue, ...); some fds that open cleanly are refused
+at that later registration step. The two questions -- "can I open
+this?" and "can the event loop poll this?" -- are independent, and
+only a real registration attempt answers the second one. That is what
+``_fd_is_pollable()`` below does: it performs the exact
+``selector.register()`` call ``add_reader()`` will make later, using a
+throwaway ``selectors.DefaultSelector()`` so no running loop is needed.
+
+MOTIVATING EXAMPLE (macOS): on macOS, kqueue -- the backend behind
+asyncio's default ``KqueueSelector`` -- cannot poll the ``/dev/tty``
+alias device, even though ``os.open("/dev/tty")`` itself succeeds.
 ``loop.add_reader()`` on such an fd raises ``OSError(EINVAL)`` at kevent
 registration. What the user then sees depends on the installed
 prompt_toolkit: 3.0.53+ catches that ``OSError`` in ``_attached_input()``
@@ -82,35 +96,46 @@ silently right after the banner; on <=3.0.52 (the current lock), only
 ``PermissionError`` is caught, so the raw ``OSError`` propagates out of
 ``prompt_async()`` into the REPL's generic error handler, which prints
 the error and retries -- failing identically every iteration. Either
-way, interactive input is completely broken on macOS. The fallback below
-cannot catch this: ``os.open("/dev/tty")`` itself succeeds; the failure
-only surfaces later, at event-loop attach time, inside prompt_toolkit.
-The underlying pty slave device (``os.ttyname(0)``, e.g.
-``/dev/ttys003``) IS kqueue-pollable, so on darwin the fd is opened on
-that path instead -- the same tty workaround libuv carries for macOS.
-Note the darwin fd is therefore opened on *fd 0's terminal* (exactly the
-device a competing reader races against) rather than the
-controlling-terminal alias; for prompt input these coincide in practice,
-and fd 0's terminal is the correct one to dedicate. Everything else
-about the mechanism (fresh OFD, private ``O_NONBLOCK``, non-inheritable
-fd, ``O_NOCTTY`` so a session leader can never accidentally acquire the
-device as its controlling terminal) is identical for that path.
+way, interactive input is completely broken. A platform string check
+(e.g. ``sys.platform == "darwin"``) is not a sufficient guard here: the
+*BSD family (FreeBSD, OpenBSD, NetBSD) also runs on kqueue and would
+silently miss a hardcoded "darwin" check while suffering the identical
+failure. The underlying pty slave device (``os.ttyname(0)``, e.g.
+``/dev/ttys003``) IS kqueue-pollable, so this module tries a small
+ordered list of device-path CANDIDATES -- ``/dev/tty`` first (the
+controlling-terminal alias, validated in production on Linux), then
+``os.ttyname(0)`` (the fallback every kqueue platform lands on) -- and
+opens the first candidate that BOTH opens successfully AND passes the
+pollability probe. No platform string is consulted anywhere in that
+decision; the probe is the only gate. Note that when the winning
+candidate is ``os.ttyname(0)`` rather than ``/dev/tty``, the fd is
+opened on *fd 0's terminal* (exactly the device a competing reader
+races against) rather than the controlling-terminal alias; for prompt
+input these coincide in practice, and fd 0's terminal is the correct
+one to dedicate. Everything else about the mechanism (fresh OFD,
+private ``O_NONBLOCK``, non-inheritable fd, ``O_NOCTTY`` so a session
+leader can never accidentally acquire the device as its controlling
+terminal) is identical regardless of which candidate wins.
 
 GRACEFUL FALLBACK: ``open_dedicated_tty_input()`` returns ``None`` --
 never raises -- whenever the dedicated fd isn't available or applicable:
-stdin is not a tty (piped input, CI, non-interactive use), the tty
-device cannot be opened or resolved (containers; on non-darwin also a
-missing controlling terminal -- on darwin fd 0's own terminal is opened,
-which needs no controlling terminal), or Windows (no ``/dev/tty`` /
-POSIX ``Vt100Input`` concept there). Callers pass the
-result straight through as ``PromptSession(input=...)``; ``None`` is
-exactly prompt_toolkit's own default, so this is a transparent, safe
+stdin is not a tty (piped input, CI, non-interactive use), no candidate
+device can be both opened and shown pollable by ``_fd_is_pollable()``
+(containers; a missing controlling terminal with an unresolvable
+``os.ttyname(0)`` fallback), or Windows (no ``/dev/tty`` / POSIX
+``Vt100Input`` concept there). A warning is logged naming the
+candidates tried whenever every candidate is exhausted, so a degraded
+fallback announces itself rather than failing silently. Callers pass
+the result straight through as ``PromptSession(input=...)``; ``None``
+is exactly prompt_toolkit's own default, so this is a transparent, safe
 drop-in with zero UX change when the dedicated fd isn't available.
 """
 
 from __future__ import annotations
 
+import logging
 import os
+import selectors
 import sys
 import threading
 from collections.abc import Callable
@@ -120,12 +145,15 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from prompt_toolkit.input.base import Input
 
-# Seam for tests: in production this stays at "/dev/tty" (on darwin the
-# open path is then resolved to fd 0's terminal via os.ttyname(0) -- see
-# "macOS DETAIL" in the module docstring). Tests point this at a real pty
-# slave's own path instead, since constructing a genuine
-# controlling-terminal setup (setsid + TIOCSCTTY) isn't available inside
-# a pytest worker; a repointed seam is always honored as-is.
+logger = logging.getLogger(__name__)
+
+# Seam for tests: in production this stays at "/dev/tty", and the open
+# path additionally tries os.ttyname(0) as a fallback candidate -- see
+# "OPENABLE IS NOT THE SAME AS POLLABLE" in the module docstring. Tests
+# point this at a real pty slave's own path instead, since constructing a
+# genuine controlling-terminal setup (setsid + TIOCSCTTY) isn't available
+# inside a pytest worker; a repointed seam is always honored as-is and
+# stays the ONLY candidate (os.ttyname(0) is never appended to it).
 _TTY_DEVICE_PATH = "/dev/tty"
 
 __all__ = [
@@ -223,6 +251,25 @@ def _assert_posix_stdin_reader_degrades_nonblocking_reads() -> None:
         os.close(read_fd)
 
 
+def _fd_is_pollable(fd: int) -> bool:
+    """Can the platform's selector backend actually register this fd?
+
+    asyncio's SelectorEventLoop builds ``selectors.DefaultSelector()`` and
+    ``add_reader()`` bottoms out in ``selector.register(fd, EVENT_READ)`` --
+    so registering here is the same syscall the event loop will make later,
+    and is a faithful proxy that needs no running loop.
+    """
+    selector = selectors.DefaultSelector()
+    try:
+        selector.register(fd, selectors.EVENT_READ)
+        selector.unregister(fd)
+        return True
+    except (OSError, ValueError):
+        return False
+    finally:
+        selector.close()
+
+
 def open_dedicated_tty_input() -> DedicatedTtyInput | None:
     """Build a prompt_toolkit ``Input`` on a fresh, non-blocking fd opened
     against the controlling terminal, instead of sharing fd 0.
@@ -254,32 +301,68 @@ def open_dedicated_tty_input() -> DedicatedTtyInput | None:
         # Fall back rather than risk constructing something broken.
         return None
 
-    tty_path = _TTY_DEVICE_PATH
-    if sys.platform == "darwin" and tty_path == "/dev/tty":
-        # macOS kqueue (asyncio's default selector there) cannot poll the
-        # /dev/tty alias device: loop.add_reader() raises OSError(EINVAL)
-        # at attach time, which breaks the REPL's first prompt (silent
-        # instant exit or an error loop, depending on the installed
-        # prompt_toolkit -- see "macOS DETAIL" in the module docstring).
-        # The underlying slave device (os.ttyname(0)) IS kqueue-pollable,
-        # so open that instead. The == "/dev/tty" guard keeps the
-        # _TTY_DEVICE_PATH test seam authoritative when repointed.
+    # Build the ordered candidate list. /dev/tty is tried first -- it's
+    # the controlling-terminal alias and the device the Linux path has
+    # been validated on in production. os.ttyname(0) is appended as the
+    # fallback that kqueue platforms (macOS and the wider *BSD family)
+    # land on, since /dev/tty opens fine there but can't be polled (see
+    # "OPENABLE IS NOT THE SAME AS POLLABLE" in the module docstring).
+    # When the test seam has been repointed away from its production
+    # default, it stays the ONLY candidate -- os.ttyname(0) is never
+    # appended -- so seam-based tests always exercise the exact device
+    # they asked for.
+    if _TTY_DEVICE_PATH != "/dev/tty":
+        candidates = [_TTY_DEVICE_PATH]
+    else:
+        candidates = ["/dev/tty"]
         try:
-            tty_path = os.ttyname(0)
+            ttyname = os.ttyname(0)
         except OSError:
             # fd 0 is a tty (checked above) but its name can't be
-            # resolved -- fall back to the default rather than open an
-            # alias device the event loop cannot poll.
-            return None
+            # resolved -- no fallback candidate to add; /dev/tty (if
+            # pollable) remains the only option.
+            ttyname = None
+        if ttyname is not None and ttyname not in candidates:
+            candidates.append(ttyname)
 
-    try:
-        # O_NOCTTY: opening a named terminal device from a session leader
-        # without a controlling terminal would otherwise ACQUIRE it as the
-        # controlling terminal (libuv opens tty fds the same way).
-        fd = os.open(tty_path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY)
-    except OSError:
-        # No controlling terminal (containers, detached processes) or
-        # tty device otherwise unopenable -- fall back to the default.
+    fd: int | None = None
+    for candidate in candidates:
+        try:
+            # O_NOCTTY: opening a named terminal device from a session
+            # leader without a controlling terminal would otherwise
+            # ACQUIRE it as the controlling terminal (libuv opens tty
+            # fds the same way).
+            candidate_fd = os.open(candidate, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY)
+        except OSError:
+            # No controlling terminal (containers, detached processes)
+            # or this particular candidate otherwise unopenable -- try
+            # the next candidate rather than giving up immediately.
+            continue
+
+        # Opening cleanly is necessary but not sufficient: the fd must
+        # also be pollable by the platform's selector, or a later
+        # loop.add_reader() will raise once prompt_toolkit attaches
+        # (too late to fall back cleanly at that point). Probe now,
+        # while falling back is still cheap and safe.
+        if not _fd_is_pollable(candidate_fd):
+            os.close(candidate_fd)  # reject: no fd leak for a losing candidate
+            continue
+
+        fd = candidate_fd
+        break
+
+    if fd is None:
+        # Every candidate was either unopenable or unpollable -- fall
+        # back to the default rather than construct something broken.
+        # Logged at warning level (not silent) because a degraded
+        # fallback here means the REPL loses its dedicated, non-blocking
+        # input path and reverts to prompt_toolkit's default fd-0 share.
+        logger.warning(
+            "amplifier_app_cli.dedicated_tty_input: no candidate tty "
+            "device could be opened and confirmed pollable (tried: %s); "
+            "falling back to prompt_toolkit's default input.",
+            candidates,
+        )
         return None
 
     try:
