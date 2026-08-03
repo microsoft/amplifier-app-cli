@@ -23,6 +23,16 @@ SCENARIOS:
        caller passing extra context.
   S5 — skill capability propagation: parent's coordinator has
        runtime_skill_overlay capability; child coordinator inherits it.
+  S6 — parent isolation: propagation writes into the child's config only,
+       never mutates the parent's.
+  S7 — access-control declaration honored (fix/honor-agents-declaration):
+       the spawned agent's OWN `agents:` Smart Single Value declaration
+       ("none" | list-of-names | "all"/absent) must be respected when the
+       live registry is unioned in, not silently overridden by the #233
+       propagation. Covers all five rows of the target-behavior table:
+       "none" -> {}, ["sibling_b"] -> {sibling_b} (fixes PR #178's
+       under-delivery), ["explorer"] -> {explorer}, "all" -> full union,
+       absent -> full union (both unchanged from #233 behavior).
 """
 
 from __future__ import annotations
@@ -478,4 +488,171 @@ class TestS6ParentIsolation:
         )
         assert captured["agents"] is not parent.coordinator.config["agents"], (
             "child's agents dict is the parent's LIVE registry object"
+        )
+
+
+# ---------------------------------------------------------------------------
+# S7 — Access-control declaration honored (fix/honor-agents-declaration)
+# ---------------------------------------------------------------------------
+
+
+class TestS7AccessControlDeclaration:
+    """The spawned agent's OWN `agents:` declaration gates propagation.
+
+    Fixture shared across all five rows (matches the issue's target-behavior
+    table exactly):
+
+        Parent STATIC agents  (session.config):     {explorer, builder}
+        Parent LIVE registry  (coordinator.config):  {explorer, builder, sibling_b}
+                                                      (sibling_b is mode-contributed
+                                                       only -- absent from the static
+                                                       snapshot)
+
+    The agent "explorer" is spawned with a varying `agents:` overlay value.
+    Each assertion checks the EXACT resulting child agent name set, not mere
+    membership -- both over-delivery (declared "none"/allowlist but child
+    gets more) and under-delivery (declared allowlist but child gets less,
+    PR #178's original bug) are real failure modes here.
+    """
+
+    def _make_fixture_parent(self) -> MagicMock:
+        return _make_parent_session(
+            session_config_agents={
+                "explorer": {"description": "Explorer agent"},
+                "builder": {"description": "Builder agent"},
+            },
+            coordinator_config_agents={
+                "explorer": {"description": "Explorer agent"},
+                "builder": {"description": "Builder agent"},
+                "sibling_b": {"description": "Mode-contributed sibling B"},
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_agents_none_disables_all_delegation(self) -> None:
+        """`agents: "none"` must yield an EMPTY child agents dict.
+
+        Before the fix: the #233 propagation block unconditionally unioned
+        in the full live registry, reopening delegation the overlay
+        explicitly disabled.
+        """
+        parent = self._make_fixture_parent()
+        child = _make_child_session_mock()
+        captured: dict = {}
+
+        await _run_spawn(
+            parent,
+            {"explorer": {"description": "Explorer agent", "agents": "none"}},
+            child,
+            "explorer",
+            captured,
+        )
+
+        assert captured.get("agents", {}) == {}, (
+            "agents: 'none' must disable ALL sub-agent delegation. "
+            f"Got: {sorted(captured.get('agents', {}).keys())}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_agents_list_of_live_only_name_is_honored_from_live_registry(
+        self,
+    ) -> None:
+        """`agents: ["sibling_b"]` must yield EXACTLY {sibling_b}.
+
+        sibling_b is mode-contributed-only (absent from the static parent
+        snapshot). merge_configs() filters the STATIC dict and resolves this
+        to {} (PR #178's documented under-delivery). The spawner must apply
+        the same allowlist against the LIVE registry so sibling_b still
+        reaches the child -- and nothing else does.
+        """
+        parent = self._make_fixture_parent()
+        child = _make_child_session_mock()
+        captured: dict = {}
+
+        await _run_spawn(
+            parent,
+            {"explorer": {"description": "Explorer agent", "agents": ["sibling_b"]}},
+            child,
+            "explorer",
+            captured,
+        )
+
+        assert captured.get("agents", {}).keys() == {"sibling_b"}, (
+            "agents: ['sibling_b'] must yield EXACTLY {sibling_b} -- honored "
+            "from the live registry even though sibling_b is absent from "
+            f"the static snapshot. Got: {sorted(captured.get('agents', {}).keys())}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_agents_list_of_static_name_is_honored_as_allowlist(self) -> None:
+        """`agents: ["explorer"]` must yield EXACTLY {explorer}.
+
+        Before the fix: the #233 propagation block would blow the allowlist
+        open by unioning in the full live registry (builder, sibling_b too).
+        """
+        parent = self._make_fixture_parent()
+        child = _make_child_session_mock()
+        captured: dict = {}
+
+        await _run_spawn(
+            parent,
+            {"explorer": {"description": "Explorer agent", "agents": ["explorer"]}},
+            child,
+            "explorer",
+            captured,
+        )
+
+        assert captured.get("agents", {}).keys() == {"explorer"}, (
+            "agents: ['explorer'] must yield EXACTLY {explorer} -- the "
+            "allowlist must not be blown open by live-registry propagation. "
+            f"Got: {sorted(captured.get('agents', {}).keys())}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_agents_all_yields_full_union(self) -> None:
+        """`agents: "all"` must yield the FULL union: {explorer, builder, sibling_b}.
+
+        Unchanged from #233 behavior -- explicit "all" inherits everything,
+        static and live-registry alike.
+        """
+        parent = self._make_fixture_parent()
+        child = _make_child_session_mock()
+        captured: dict = {}
+
+        await _run_spawn(
+            parent,
+            {"explorer": {"description": "Explorer agent", "agents": "all"}},
+            child,
+            "explorer",
+            captured,
+        )
+
+        assert captured.get("agents", {}).keys() == {"explorer", "builder", "sibling_b"}, (
+            "agents: 'all' must yield the full union of static + live agents. "
+            f"Got: {sorted(captured.get('agents', {}).keys())}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_agents_absent_yields_full_union(self) -> None:
+        """No `agents:` key at all must yield the FULL union (unrestricted).
+
+        Unchanged from #233 behavior -- absence of the declaration means
+        "unrestricted," identical to explicit "all".
+        """
+        parent = self._make_fixture_parent()
+        child = _make_child_session_mock()
+        captured: dict = {}
+
+        await _run_spawn(
+            parent,
+            {"explorer": {"description": "Explorer agent"}},  # no "agents" key
+            child,
+            "explorer",
+            captured,
+        )
+
+        assert captured.get("agents", {}).keys() == {"explorer", "builder", "sibling_b"}, (
+            "Absent agents: declaration must be unrestricted (full union), "
+            "identical to explicit 'all'. "
+            f"Got: {sorted(captured.get('agents', {}).keys())}"
         )
