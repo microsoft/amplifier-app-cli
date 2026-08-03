@@ -208,6 +208,167 @@ def test_open_dedicated_tty_input_returns_none_on_windows(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# macOS: kqueue cannot poll the /dev/tty alias device -- the fd must be
+# opened on the underlying slave device (os.ttyname(0)) instead, or
+# loop.add_reader() raises OSError(EINVAL) at attach time and interactive
+# input is completely broken (silent instant exit on prompt_toolkit
+# >=3.0.53, which converts the OSError to EOFError; an error loop on
+# <=3.0.52, which lets it propagate). See "macOS DETAIL" in the module
+# docstring.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="exercises real macOS kqueue")
+@pytest.mark.asyncio
+async def test_darwin_dedicated_input_attaches_to_real_kqueue_loop():
+    """End-to-end regression test on real darwin, real event loop, seam at
+    its production default: the dedicated input must register with the
+    actual KqueueSelector loop and deliver bytes.
+
+    On the unfixed code this bites in both environments: with a
+    controlling terminal (developer machine) ``/dev/tty`` opens but
+    ``attach()`` raises ``OSError(EINVAL)`` from kevent registration;
+    without one (CI) ``/dev/tty`` cannot be opened at all so the handle
+    is ``None`` and the assertion below fails. The fixed code resolves
+    fd 0's slave device, which kqueue polls fine in both.
+    """
+    import asyncio
+
+    master_fd, slave_fd = pty.openpty()
+    saved_stdin_fd = os.dup(0)
+    os.dup2(slave_fd, 0)
+    try:
+        handle = dti.open_dedicated_tty_input()
+        assert handle is not None, (
+            "with a pty on fd 0, darwin must produce a dedicated input "
+            "even without a controlling terminal"
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            got_keys: asyncio.Future = loop.create_future()
+
+            def _on_ready() -> None:
+                keys = handle.input.read_keys()
+                if keys and not got_keys.done():
+                    got_keys.set_result(keys)
+
+            # attach() is where the unfixed code explodes on macOS:
+            # loop.add_reader() -> kqueue kevent registration -> EINVAL.
+            # raw_mode() mirrors production (a fresh pty is canonical, so
+            # a lone byte would otherwise sit unreadable until newline).
+            with handle.input.raw_mode(), handle.input.attach(_on_ready):
+                os.write(master_fd, b"x")
+                keys = await asyncio.wait_for(got_keys, timeout=5)
+
+            assert keys[0].data == "x"
+        finally:
+            handle.close()
+    finally:
+        os.dup2(saved_stdin_fd, 0)
+        os.close(saved_stdin_fd)
+        os.close(slave_fd)
+        os.close(master_fd)
+
+
+def test_darwin_opens_stdin_slave_device_not_devtty_alias(monkeypatch):
+    """On darwin with the production seam ("/dev/tty"), the dedicated fd
+    must be opened on ``os.ttyname(0)`` -- the kqueue-pollable slave
+    device -- never on the ``/dev/tty`` alias itself.
+
+    Runs on any POSIX platform: darwin is forced via the same
+    ``dti.sys.platform`` monkeypatch the Windows fallback test uses.
+    """
+    master_fd, slave_fd = pty.openpty()
+    slave_path = os.ttyname(slave_fd)
+
+    saved_stdin_fd = os.dup(0)
+    os.dup2(slave_fd, 0)
+    try:
+        monkeypatch.setattr(dti.sys, "platform", "darwin")
+        monkeypatch.setattr(dti, "_TTY_DEVICE_PATH", "/dev/tty")
+
+        opened: list[tuple[str, int]] = []
+        real_open = os.open
+
+        def _spy_open(path, flags, *args, **kwargs):
+            opened.append((path, flags))
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(dti.os, "open", _spy_open)
+
+        handle = dti.open_dedicated_tty_input()
+        assert handle is not None
+        try:
+            assert [path for path, _ in opened] == [slave_path], (
+                "darwin must open the stdin slave device (os.ttyname(0)), "
+                "not the /dev/tty alias kqueue cannot poll"
+            )
+            assert opened[0][1] & os.O_NOCTTY, (
+                "the device must be opened with O_NOCTTY so a session "
+                "leader can never accidentally acquire it as its "
+                "controlling terminal"
+            )
+            assert _is_nonblocking(handle.input.fileno()) is True
+        finally:
+            handle.close()
+    finally:
+        os.dup2(saved_stdin_fd, 0)
+        os.close(saved_stdin_fd)
+        os.close(slave_fd)
+        os.close(master_fd)
+
+
+def test_darwin_falls_back_to_none_when_ttyname_unresolvable(monkeypatch):
+    """darwin + stdin is a tty, but ``os.ttyname(0)`` fails: must fall
+    back to ``None`` rather than open the unpollable ``/dev/tty`` alias
+    (which would reintroduce the broken event-loop attach).
+    """
+    monkeypatch.setattr(dti.sys, "platform", "darwin")
+    monkeypatch.setattr(dti, "_TTY_DEVICE_PATH", "/dev/tty")
+    monkeypatch.setattr(dti.os, "isatty", lambda fd: True)
+
+    def _raise_ttyname(fd):
+        raise OSError("simulated: ttyname unresolvable")
+
+    monkeypatch.setattr(dti.os, "ttyname", _raise_ttyname)
+    assert dti.open_dedicated_tty_input() is None
+
+
+def test_darwin_respects_repointed_test_seam(monkeypatch):
+    """When ``_TTY_DEVICE_PATH`` is repointed away from its production
+    default (the documented test seam), darwin must open exactly the seam
+    path and must NOT override it with ``os.ttyname(0)`` -- otherwise
+    every seam-based test in this file would silently test the wrong
+    device.
+    """
+    master_a, slave_a = pty.openpty()
+    master_b, slave_b = pty.openpty()
+    seam_path = os.ttyname(slave_b)
+
+    saved_stdin_fd = os.dup(0)
+    os.dup2(slave_a, 0)  # fd 0 is pty A; the seam points at pty B
+    try:
+        monkeypatch.setattr(dti.sys, "platform", "darwin")
+        monkeypatch.setattr(dti, "_TTY_DEVICE_PATH", seam_path)
+
+        handle = dti.open_dedicated_tty_input()
+        assert handle is not None
+        try:
+            assert os.ttyname(handle.input.fileno()) == seam_path, (
+                "the repointed seam must stay authoritative on darwin"
+            )
+        finally:
+            handle.close()
+    finally:
+        os.dup2(saved_stdin_fd, 0)
+        os.close(saved_stdin_fd)
+        os.close(slave_a)
+        os.close(master_a)
+        os.close(slave_b)
+        os.close(master_b)
+
+
+# ---------------------------------------------------------------------------
 # Fail-loud guard -- prompt_toolkit internals this fix depends on.
 # ---------------------------------------------------------------------------
 
