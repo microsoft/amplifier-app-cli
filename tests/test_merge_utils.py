@@ -4,8 +4,11 @@ from pathlib import Path
 
 from amplifier_app_cli.lib.merge_utils import _provider_key, merge_module_lists
 from amplifier_app_cli.lib.settings import AppSettings, SettingsPaths
-from amplifier_app_cli.runtime.config import _ensure_cwd_in_write_paths
-from amplifier_app_cli.runtime.config import _ensure_default_skills_dirs
+from amplifier_app_cli.runtime import config
+from amplifier_app_cli.runtime.config import (
+    _ensure_cwd_in_write_paths,
+    _ensure_default_skills_dirs,
+)
 
 
 def _make_settings(tmp_path: Path) -> AppSettings:
@@ -368,7 +371,27 @@ class TestEnsureDefaultSkillsDirs:
         ]
         result = _ensure_default_skills_dirs(tools)
         skills = result[0]["config"]["skills"]
-        assert skills == ["url1", "url2", ".amplifier/skills", "~/.amplifier/skills"]
+        packaged_skills_dir = str(
+            Path(config.__file__).parent.parent / "data" / "skills"
+        )
+        assert skills == [
+            "url1",
+            "url2",
+            ".amplifier/skills",
+            "~/.amplifier/skills",
+            packaged_skills_dir,
+        ]
+
+    def test_packaged_skills_dir_is_package_relative(self):
+        """Packaged skills dir must resolve from the installed package location,
+        never a git URI -- this is what keeps packaged skills version-locked to
+        the installed CLI wheel rather than drifting to a branch tip."""
+        tools = [{"module": "tool-skills"}]
+        result = _ensure_default_skills_dirs(tools)
+        skills = result[0]["config"]["skills"]
+        expected = str(Path(config.__file__).parent.parent / "data" / "skills")
+        assert expected in skills
+        assert (Path(expected) / "goalify" / "SKILL.md").exists()
 
 
 class TestProviderScopeMerge:
