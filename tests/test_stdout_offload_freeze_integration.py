@@ -195,8 +195,20 @@ def _run_scenario(fixed: bool, timeout: float = 6.0) -> tuple[bool, list[float] 
     if not exited:
         try:
             os.kill(pid, signal.SIGKILL)
-            os.waitpid(pid, 0)
-        except ProcessLookupError:
+            # Bounded WNOHANG poll, never a blocking waitpid(pid, 0). This test
+            # deliberately constructs the un-drained-pty condition, and on macOS
+            # a pty child whose output queue is never drained wedges in state
+            # ``?Es`` -- controlling terminal already revoked, exiting, and NOT
+            # reapable even after SIGKILL. A blocking waitpid there hangs the
+            # run forever (this is exactly how the macOS CI job burned 25
+            # minutes before being cancelled). A test may fail; a test must
+            # never hang.
+            kill_deadline = time.time() + 5.0
+            while time.time() < kill_deadline:
+                if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                    break
+                time.sleep(0.05)
+        except (ProcessLookupError, ChildProcessError):
             pass
 
     ticks: list[float] | None = None

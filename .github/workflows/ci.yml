@@ -9,6 +9,11 @@ jobs:
   test:
     name: pytest (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    # Typical runtime is ~20-30s. A hang must fail LOUDLY and fast, not sit
+    # burning runner time until the 6h default limit -- macOS minutes bill at
+    # 10x, and a job stuck at "in_progress" reads as "not done yet" rather
+    # than "broken", which is how a false green gets merged.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -37,6 +42,10 @@ jobs:
   integration:
     name: pytest -m integration (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # These fork real pty children. A pty child whose output is never drained
+    # can wedge unreapably on macOS (state ``?Es``), so this job is the most
+    # likely place in the repo for a hang to appear. Bound it.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:

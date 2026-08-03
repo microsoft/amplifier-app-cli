@@ -48,13 +48,13 @@ from __future__ import annotations
 
 import json
 import os
-import pty
 import signal
 import sys
 import time
 from pathlib import Path
 
 import pytest
+from pty_harness import fork_pty_child, wait_for_marker
 
 pytestmark = pytest.mark.integration
 
@@ -232,95 +232,64 @@ def _run_pty_scenario(scenario: str, timeout: float = 8.0) -> dict:
         if os.path.exists(p):
             os.remove(p)
 
-    pid, master_fd = pty.fork()
-    if pid == 0:
+    def _child() -> None:
         sys.path.insert(0, str(REPO_ROOT))
-        try:
-            _child_main(scenario, result_path, ready_path)
-        except BaseException:
-            os._exit(1)
-        os._exit(0)
+        _child_main(scenario, result_path, ready_path)
 
-    # Wait for the deterministic readiness signal (raw_mode actually
-    # entered) instead of a fixed sleep -- see _child_main's docstring for
-    # why sending keystrokes before raw_mode clears ISIG would silently
-    # test the wrong code path (a real kernel SIGINT instead of the raw
-    # byte).
-    ready_deadline = time.time() + 5.0
-    while not os.path.exists(ready_path):
-        if time.time() > ready_deadline:
-            raise TimeoutError(
-                f"child never signaled raw_mode readiness for scenario={scenario!r}"
-            )
-        time.sleep(0.01)
-    # Tiny settle margin: raw_mode.__enter__ has returned, but give
-    # prompt_toolkit's own input-reader registration a moment to actually
-    # start polling the fd before we write to it.
-    time.sleep(0.05)
-
-    def send(text: str) -> None:
-        os.write(master_fd, text.encode())
-
-    if scenario == "single_ctrlc":
-        # One physical \x03 keypress, NO real OS signal at all -- the exact
-        # keystroke a user's terminal sends while raw_mode() has ISIG off.
-        send("\x03")
-    elif scenario == "double_ctrlc":
-        # Two keypresses, NO real signal -- proves the keystroke-only path
-        # escalates graceful -> immediate on its own.
-        send("\x03")
-        time.sleep(0.1)
-        send("\x03")
-    elif scenario == "typing_then_ctrlc":
-        # Ctrl-C arrives mid-compose of a steer message.
-        send("hello wor")
-        time.sleep(0.1)
-        send("\x03")
-    elif scenario == "sigint_only":
-        # Regression: the pre-existing real-OS-signal path must still work.
-        try:
-            os.kill(pid, signal.SIGINT)
-        except ProcessLookupError:
-            pass
-
-    deadline = time.time() + timeout
-    exited = False
-    while time.time() < deadline:
-        try:
-            wpid, _status = os.waitpid(pid, os.WNOHANG)
-        except ChildProcessError:
-            exited = True
-            break
-        if wpid == pid:
-            exited = True
-            break
+    # ``fork_pty_child`` starts draining the pty master immediately, for the
+    # whole life of the child. That is load-bearing on macOS: a child that
+    # reaches exit with an un-drained pty output queue wedges inside the
+    # kernel's exit path and can no longer be reaped -- SIGKILL included --
+    # which turned the reap below into an unbounded hang. See
+    # tests/pty_harness.py for the measurements.
+    child = fork_pty_child(_child)
+    try:
+        # Wait for the deterministic readiness signal (raw_mode actually
+        # entered) instead of a fixed sleep -- see _child_main's docstring for
+        # why sending keystrokes before raw_mode clears ISIG would silently
+        # test the wrong code path (a real kernel SIGINT instead of the raw
+        # byte).
+        wait_for_marker(ready_path, child, timeout=10.0, what="raw_mode readiness")
+        # Tiny settle margin: raw_mode.__enter__ has returned, but give
+        # prompt_toolkit's own input-reader registration a moment to actually
+        # start polling the fd before we write to it.
         time.sleep(0.05)
 
-    if not exited:
-        try:
-            os.kill(pid, signal.SIGKILL)
-            os.waitpid(pid, 0)
-        except ProcessLookupError:
-            pass
+        if scenario == "single_ctrlc":
+            # One physical \x03 keypress, NO real OS signal at all -- the exact
+            # keystroke a user's terminal sends while raw_mode() has ISIG off.
+            child.send("\x03")
+        elif scenario == "double_ctrlc":
+            # Two keypresses, NO real signal -- proves the keystroke-only path
+            # escalates graceful -> immediate on its own.
+            child.send("\x03")
+            time.sleep(0.1)
+            child.send("\x03")
+        elif scenario == "typing_then_ctrlc":
+            # Ctrl-C arrives mid-compose of a steer message.
+            child.send("hello wor")
+            time.sleep(0.1)
+            child.send("\x03")
+        elif scenario == "sigint_only":
+            # Regression: the pre-existing real-OS-signal path must still work.
+            child.signal(signal.SIGINT)
 
-    os.set_blocking(master_fd, False)
-    try:
-        for _ in range(20):
-            try:
-                chunk = os.read(master_fd, 65536)
-            except (BlockingIOError, OSError):
-                break
-            if not chunk:
-                break
-    except OSError:
-        pass
-    os.close(master_fd)
+        exited = child.wait(timeout)
+        if not exited:
+            child.kill()
+    finally:
+        if not child.poll():
+            child.kill()
+        child.close()
+        if os.path.exists(ready_path):
+            os.remove(ready_path)
 
     if not os.path.exists(result_path):
         return {
             "scenario": scenario,
             "exited_cleanly": False,
             "error": "no result file written",
+            "child_output": child.output.decode(errors="replace"),
         }
 
     result = json.loads(Path(result_path).read_text())
