@@ -46,6 +46,18 @@ from .console import console
 # header below.
 _TERMINAL_STATES = frozenset({"achieved", "cap_hit", "cancelled", "error", "stalled"})
 
+# Display-only bound on the model-generated `summary` field, so one goal
+# summary never spans more than one terminal line. The orchestrator
+# (amplifier-module-loop-streaming) stores and emits the model's full
+# summary text unclipped -- storage and display are different concerns,
+# and only this renderer needs a one-line guarantee. Matches the
+# character target the orchestrator's per-state summary prompts already
+# ask the model for (see _GOAL_SUMMARY_SYSTEM_PROMPTS), so truncation is
+# the rare case, not the common one. Never applied to `reason`: that field
+# is short by construction at the source and upstream tests pin it as
+# surviving verbatim regardless of length.
+_SUMMARY_DISPLAY_MAX_CHARS = 120
+
 # Grammar for every terminal header: "<glyph> <status> -- <cause>". Status is
 # always one of exactly these three phrases, and the glyph always matches --
 # a skimmer reading only the first three words gets the answer, and nothing
@@ -85,6 +97,17 @@ _STYLE: dict[str, str] = {
 # "blocked on X (\u00d73)"). Parsed defensively so this hook's own collapsing
 # doesn't double-count or fail to collapse entries that arrive pre-annotated.
 _REPEAT_SUFFIX = re.compile(r"\s*\(\u00d7(\d+)\)\s*$")
+
+# `stall_verdict` values (see amplifier-module-loop-streaming's
+# `_judge_stall`) that mean the judge confirmed a durable dead end, as
+# opposed to "resolvable" (more work could plausibly close it) or `None`
+# (an older orchestrator that predates the taxonomy, or -- in principle --
+# a stalled event whose judge call was never actually confirmed). Used by
+# `_stalled_line` to decide wall-vs-flailing wording; see that function's
+# docstring and GOAL-HARDENING-DESIGN.md sec 1.5 for why `distinct_blockers`
+# alone gets this wrong for the normal case (an evaluator that rephrases
+# the same blocker every turn).
+_LOCKED_VERDICTS = frozenset({"time-locked", "structure-locked", "history-locked"})
 
 
 class GoalProgressHook:
@@ -198,13 +221,21 @@ def _body_lines(state: str, data: dict[str, Any]) -> list[str]:
     """The (at most two) prose lines under a terminal header, by state.
 
     - stalled: the collapsed blocker phrase (never the raw blocker list).
-    - cap_hit: the summary (preferred) or reason, prefixed "still open:",
-      plus a static hint -- correct in exactly this state, because this is
-      the one state where more turns might actually finish the job.
-    - cancelled / error: an optional single line from reason (preferred) or
-      summary, verbatim -- no label, since the header already carries the
-      cause.
+    - cap_hit: the summary (preferred, clipped to
+      ``_SUMMARY_DISPLAY_MAX_CHARS`` for display) or reason (verbatim,
+      never clipped), prefixed "still open:", plus a static hint -- correct
+      in exactly this state, because this is the one state where more turns
+      might actually finish the job.
+    - cancelled / error: an optional single line from reason (preferred,
+      verbatim) or summary (clipped for display) -- no label, since the
+      header already carries the cause.
     - achieved: never called; see ``_render_terminal``.
+
+    Only the `summary` field is ever clipped for display -- `reason` is
+    always rendered verbatim, since it's already short by construction at
+    the source (unlike `summary`, which is unbounded free-form model text --
+    the orchestrator stores/emits it in full; see amplifier-module-loop-
+    streaming's ``_summarize_goal_run``).
     """
     if state == "stalled":
         line = _stalled_line(data)
@@ -212,32 +243,70 @@ def _body_lines(state: str, data: dict[str, Any]) -> list[str]:
 
     if state == "cap_hit":
         lines: list[str] = []
-        narrative = data.get("summary") or data.get("reason")
+        summary = data.get("summary")
+        narrative = _clip_for_display(summary) if summary else data.get("reason")
         if narrative:
             lines.append(f"still open: {narrative.strip()}")
         lines.append("rerun with a higher cap to finish")
         return lines
 
     if state in ("cancelled", "error"):
-        narrative = data.get("reason") or data.get("summary")
-        return [narrative.strip()] if narrative else []
+        reason = data.get("reason")
+        if reason:
+            return [reason.strip()]
+        summary = data.get("summary")
+        return [_clip_for_display(summary).strip()] if summary else []
 
     return []
+
+
+def _clip_for_display(text: str, max_chars: int = _SUMMARY_DISPLAY_MAX_CHARS) -> str:
+    """Hard-clip ``text`` to at most ``max_chars`` for one-line console
+    display, breaking at the last whole word rather than mid-word.
+
+    Display-only: the orchestrator stores/emits the model's full summary
+    text unclipped (see amplifier-module-loop-streaming's
+    ``_summarize_goal_run``). This is the sole place that bounds it, and
+    only for what gets printed here -- callers must never persist or
+    re-emit this clipped result as if it were the stored value.
+    """
+    text = text.strip()
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    last_space = truncated.rfind(" ")
+    if last_space > 0:
+        truncated = truncated[:last_space]
+    return truncated.rstrip()
 
 
 def _stalled_line(data: dict[str, Any]) -> str | None:
     """Build the single stalled-state prose line.
 
-    Never prints the blocker list. Instead: if every (collapsed) blocker is
-    the same, says so with a turn count ("same blocker 4 turns running:
-    <blocker>") -- a wall. If the blockers genuinely differ, says that
-    instead ("4 turns, 4 different blockers, none resolved") -- flailing is
-    a different diagnosis from a wall, and the phrase should say which.
+    Never prints the blocker list. Instead: if this is a wall -- either
+    every (collapsed) blocker is textually the same, OR the judge's
+    `stall_verdict` (see amplifier-module-loop-streaming's `_judge_stall`)
+    says so -- says so with a turn count ("same blocker 4 turns running
+    (history-locked): <blocker>"). If the blockers genuinely differ AND no
+    locked verdict is present, says that instead ("4 turns, 4 different
+    blockers, none resolved") -- flailing is a different diagnosis from a
+    wall, and the phrase should say which.
+
+    `stall_verdict` is preferred over re-deriving wall-vs-flailing from the
+    collapsed-reason count: an evaluator that REPHRASES the same blocker
+    every turn (the normal case) yields a distinct signature per turn,
+    which read as "flailing" here even when it was really a wall (see
+    GOAL-HARDENING-DESIGN.md sec 1.5). The verdict is a semantic signal by
+    construction -- a judge confirmed it, not a string comparison -- so a
+    locked verdict always wins over the collapsed-reason heuristic below.
+    Falls back to that heuristic alone when `stall_verdict` is absent (an
+    older orchestrator that predates the taxonomy).
 
     Falls back to `stall_detail`, then bare `reason`, for an older
     orchestrator that doesn't emit `reasons` at all.
     """
     reasons = data.get("reasons") or []
+    verdict = data.get("stall_verdict")
     if reasons:
         collapsed = _collapse_consecutive(reasons)
         continuations = data.get("continuations")
@@ -246,9 +315,13 @@ def _stalled_line(data: dict[str, Any]) -> str | None:
             if isinstance(continuations, int)
             else sum(count for _, count in collapsed)
         )
-        if len(collapsed) == 1:
-            blocker, _count = collapsed[0]
-            return f"same blocker {total_turns} turns running: {blocker}"
+        if len(collapsed) == 1 or verdict in _LOCKED_VERDICTS:
+            # A wall -- textually (one collapsed entry) or semantically (a
+            # locked verdict, regardless of how many distinct reason
+            # strings accumulated). Show the most recent phrasing.
+            blocker = collapsed[-1][0]
+            suffix = f" ({verdict})" if verdict in _LOCKED_VERDICTS else ""
+            return f"same blocker {total_turns} turns running{suffix}: {blocker}"
         return (
             f"{total_turns} turns, {len(collapsed)} different blockers, none resolved"
         )

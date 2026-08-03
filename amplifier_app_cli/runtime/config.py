@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
 
@@ -698,7 +699,7 @@ def _ensure_cwd_in_write_paths(tools: list[dict[str, Any]]) -> list[dict[str, An
 
 
 def _ensure_default_skills_dirs(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Ensure workspace and user skill directories are in tool-skills config.
+    """Ensure workspace, user, and packaged skill directories are in tool-skills config.
 
     This is a CLI policy decision: .amplifier/skills/ (workspace) and
     ~/.amplifier/skills/ (user) follow the same project-first, user-second
@@ -706,13 +707,25 @@ def _ensure_default_skills_dirs(tools: list[dict[str, Any]]) -> list[dict[str, A
     configure explicit remote skill sources, the module's get_default_skills_dirs()
     fallback is bypassed and workspace skills become invisible.
 
+    Also appends the CLI's own packaged skills directory
+    (amplifier_app_cli/data/skills/), resolved from the installed package's
+    location on disk -- never a git URI. This keeps packaged skills
+    version-locked to the installed CLI wheel: a user pinned to CLI v0.1.1
+    gets the skill assets that shipped in v0.1.1, not whatever is on a
+    branch tip.
+
     Args:
         tools: List of tool configurations
 
     Returns:
-        Tools with workspace and user skill dirs in tool-skills's config.skills
+        Tools with workspace, user, and packaged skill dirs in tool-skills's config.skills
     """
-    default_paths = [".amplifier/skills", "~/.amplifier/skills"]
+    packaged_skills_dir = Path(__file__).parent.parent / "data" / "skills"
+    default_paths = [
+        ".amplifier/skills",
+        "~/.amplifier/skills",
+        str(packaged_skills_dir),
+    ]
 
     result = []
     for tool in tools:
