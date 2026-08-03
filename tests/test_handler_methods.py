@@ -395,8 +395,20 @@ class TestLoadSkillPromptWithArgs:
         cp = _make_command_processor(skills_discovery=mock_discovery)
         is_prompt, text = await cp._load_skill("simplify", "focus on memory usage")
         assert is_prompt is True
-        # Exact format: 'Use the load_skill tool to load the skill "<name>". Additional context from the user: <args>'
-        expected = 'Use the load_skill tool to load the skill "simplify". Additional context from the user: focus on memory usage'
+        # Exact format (per commit 1e6bed1 "forward /command arguments into
+        # load_skill so fork skills receive them"): the synthetic prompt must
+        # explicitly instruct the model to forward the user's text as the
+        # `arguments` parameter of the load_skill tool call -- a plain
+        # "Additional context" mention is not enough because a forked
+        # sub-session cannot see this parent conversation and can only
+        # receive $ARGUMENTS via that parameter.
+        expected = (
+            'Use the load_skill tool to load the skill "simplify", '
+            "passing the user's input as the `arguments` parameter "
+            '(load_skill(skill_name="simplify", arguments=...)) so the skill '
+            "receives it — this is required for fork skills, which cannot otherwise "
+            "see it. The user's input is: focus on memory usage"
+        )
         assert text == expected
 
     @pytest.mark.asyncio
@@ -411,7 +423,13 @@ class TestLoadSkillPromptWithArgs:
         cp = _make_command_processor(skills_discovery=mock_discovery)
         is_prompt, text = await cp._load_skill("refactor", "please clean this up")
         assert is_prompt is True
-        expected = 'Use the load_skill tool to load the skill "refactor". Additional context from the user: please clean this up'
+        expected = (
+            'Use the load_skill tool to load the skill "refactor", '
+            "passing the user's input as the `arguments` parameter "
+            '(load_skill(skill_name="refactor", arguments=...)) so the skill '
+            "receives it — this is required for fork skills, which cannot otherwise "
+            "see it. The user's input is: please clean this up"
+        )
         assert text == expected
 
     @pytest.mark.asyncio

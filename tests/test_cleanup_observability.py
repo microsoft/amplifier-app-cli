@@ -210,7 +210,7 @@ class TestExecuteSingleCleanupEvents:
             ),
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(f"{_MODULE}.console"),  # suppress Rich output
-            patch(f"{_MODULE}._process_runtime_mentions", new=AsyncMock()),
+            patch(f"{_MODULE}.process_runtime_mentions", new=AsyncMock()),
         ):
             # Minimal SessionStore mock
             store_instance = MockStore.return_value
@@ -273,7 +273,7 @@ class TestExecuteSingleCleanupEvents:
             ),
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(f"{_MODULE}.console"),
-            patch(f"{_MODULE}._process_runtime_mentions", new=AsyncMock()),
+            patch(f"{_MODULE}.process_runtime_mentions", new=AsyncMock()),
         ):
             store_instance = MockStore.return_value
             store_instance.get_metadata.return_value = {}
@@ -315,7 +315,7 @@ class TestExecuteSingleCleanupEvents:
             ),
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(f"{_MODULE}.console"),
-            patch(f"{_MODULE}._process_runtime_mentions", new=AsyncMock()),
+            patch(f"{_MODULE}.process_runtime_mentions", new=AsyncMock()),
         ):
             store_instance = MockStore.return_value
             store_instance.get_metadata.return_value = {}
@@ -354,7 +354,7 @@ class TestExecuteSingleCleanupEvents:
             ),
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(f"{_MODULE}.console"),
-            patch(f"{_MODULE}._process_runtime_mentions", new=AsyncMock()),
+            patch(f"{_MODULE}.process_runtime_mentions", new=AsyncMock()),
         ):
             store_instance = MockStore.return_value
             store_instance.get_metadata.return_value = {}
@@ -398,7 +398,7 @@ class TestExecuteSingleCleanupEvents:
             ),
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(f"{_MODULE}.console"),
-            patch(f"{_MODULE}._process_runtime_mentions", new=AsyncMock()),
+            patch(f"{_MODULE}.process_runtime_mentions", new=AsyncMock()),
         ):
             store_instance = MockStore.return_value
             store_instance.get_metadata.return_value = {}
@@ -475,7 +475,7 @@ class TestExecuteSingleNoHooks:
             ),
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(f"{_MODULE}.console"),
-            patch(f"{_MODULE}._process_runtime_mentions", new=AsyncMock()),
+            patch(f"{_MODULE}.process_runtime_mentions", new=AsyncMock()),
         ):
             store_instance = MockStore.return_value
             store_instance.get_metadata.return_value = {}

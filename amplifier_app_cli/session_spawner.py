@@ -320,10 +320,19 @@ async def spawn_sub_session(
         except AttributeError:
             live_agents = {}
         if live_agents:
-            child_agents = merged_config.setdefault("agents", {})
+            # Build a FRESH dict and rebind it; never mutate the dict
+            # merged_config already holds. merge_configs() deep-copies the
+            # agents dict only when it is non-empty, and merge_agent_dicts()
+            # starts from a shallow parent.copy() -- so an EMPTY parent
+            # "agents" dict arrives here as the parent session's own object.
+            # setdefault()-then-mutate would then write the live registry
+            # straight into the parent's live config and hand the child the
+            # very same dict (cross-session state leak).
+            child_agents = dict(merged_config.get("agents") or {})
             for name, cfg in live_agents.items():
                 if name not in child_agents:
                     child_agents[name] = copy.deepcopy(cfg)
+            merged_config["agents"] = child_agents
     # === end issue #233 fix (agents) ===
 
     # Apply tool inheritance filtering if specified

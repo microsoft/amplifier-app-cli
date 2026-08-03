@@ -109,8 +109,14 @@ class TestProviderAdd:
         assert added["module"] == "provider-anthropic"
         assert added["config"]["default_model"] == "claude-sonnet-4-6"
 
-    def test_provider_add_assigns_priority(self, tmp_path):
+    def test_provider_add_assigns_priority(self, tmp_path, monkeypatch):
         """First provider gets priority 1, subsequent get max+1."""
+        # Isolate HOME like the sibling tests do: the add path consults
+        # ~/.amplifier/keys.env (KeyManager) while resolving this instance's
+        # credential env var, so without this the test reads the developer's
+        # real key store and its result depends on which keys they happen to
+        # have saved.
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         settings = _make_settings(tmp_path)
 
         # Seed an existing provider with priority 1

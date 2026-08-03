@@ -16,7 +16,7 @@ from ..lib.merge_utils import _provider_key
 from ..lib.settings import AppSettings, Scope
 from ..paths import create_config_manager
 from ..provider_config_utils import (
-    _claimed_env_vars,
+    _config_claimed_env_vars,
     _normalize_id,
     _secret_env_var_for,
     _secret_field_id_for,
@@ -237,8 +237,19 @@ def _resolve_env_var_overrides(
     ValueError if the instance id cannot produce a usable, non-colliding
     suggestion (design §5.4.2) -- caller decides how to react (re-prompt vs.
     exit).
+
+    Collision detection asks "does another *configured instance* already own
+    this name?", so it uses ``_config_claimed_env_vars`` (${VAR} references
+    in some scope's provider config) and NOT the write-side
+    ``_claimed_env_vars``, which also counts every name sitting in
+    ``keys.env``. A keys.env-only leftover -- e.g. the key a previously
+    removed instance left behind, since remove deliberately doesn't delete
+    it (§8 risk 6) -- is owned by nobody: the first instance of that type
+    must keep today's no-extra-prompt UX (§5.2 step 3) and land on the
+    stale-credential warn-and-reuse path (§5.4.4), not be pushed into a
+    collision rename against an instance that doesn't exist.
     """
-    claimed = _claimed_env_vars(settings)
+    claimed = _config_claimed_env_vars(settings)
     default_name = _secret_env_var_for(module_id)
     if not default_name or default_name not in claimed:
         return {}

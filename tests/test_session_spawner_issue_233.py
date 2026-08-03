@@ -423,3 +423,59 @@ class TestS5SkillCapabilityPropagation:
             f"must contain the same skills as the parent. "
             f"Expected {skills_list!r}, got {registered!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# S6 — Isolation: propagation must not reach back into the parent
+# ---------------------------------------------------------------------------
+
+
+class TestS6ParentIsolation:
+    """The propagation writes into the CHILD's config only, never the parent's."""
+
+    @pytest.mark.asyncio
+    async def test_propagation_does_not_mutate_parent_config(self) -> None:
+        """An empty `agents` dict in session.config must not become the
+        parent's copy of the live registry.
+
+        merge_configs() deep-copies the merged `agents` dict only when it is
+        non-empty, and merge_agent_dicts() starts from a shallow parent.copy()
+        — so when the parent's session.config carries an EMPTY agents dict
+        (e.g. it was itself spawned with `agents: none`), the merged config's
+        "agents" value IS the parent's own dict object. Filling that dict in
+        place would silently rewrite the running parent session's config and
+        hand the child the same object, so a later mutation on either side is
+        visible to the other.
+        """
+        parent = _make_parent_session(
+            session_config_agents={},  # present but empty — the aliasing trigger
+            coordinator_config_agents={"mode_agent_A": {"description": "Agent A"}},
+        )
+        parent_agents_before = parent.config["agents"]
+        child = _make_child_session_mock()
+        captured: dict = {}
+
+        await _run_spawn(
+            parent,
+            {"mode_agent_A": {"description": "Agent A"}},
+            child,
+            "mode_agent_A",
+            captured,
+        )
+
+        # Child sees the live registry (issue #233 behavior, unchanged).
+        assert "mode_agent_A" in captured.get("agents", {})
+
+        # ...and the parent's own config is untouched.
+        assert parent.config["agents"] == {}, (
+            "spawn_sub_session mutated the PARENT session's config['agents'] "
+            f"in place: {parent.config['agents']!r}"
+        )
+        assert parent_agents_before == {}
+        assert captured["agents"] is not parent.config["agents"], (
+            "child and parent share the same agents dict object — a later "
+            "mutation on either side would leak across the session boundary"
+        )
+        assert captured["agents"] is not parent.coordinator.config["agents"], (
+            "child's agents dict is the parent's LIVE registry object"
+        )
