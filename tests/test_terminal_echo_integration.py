@@ -33,7 +33,6 @@ raw_mode contexts. After the fix, it comes out healthy every time.
 from __future__ import annotations
 
 import os
-import pty
 import signal
 import sys
 import termios
@@ -41,6 +40,7 @@ import time
 from pathlib import Path
 
 import pytest
+from pty_harness import fork_pty_child, wait_for_marker
 
 pytestmark = pytest.mark.integration
 
@@ -68,7 +68,7 @@ def _is_healthy(state: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _child_main(scenario: str) -> None:
+def _child_main(scenario: str, ready_path: str) -> None:
     import asyncio
     import time as _time
 
@@ -213,7 +213,15 @@ def _child_main(scenario: str) -> None:
 
     def _traced_enter(self):
         log(f"raw_mode.__enter__ (fd={self.fileno}, id={id(self)})")
-        return _orig_enter(self)
+        result = _orig_enter(self)
+        # Readiness handshake for the parent (see _run_pty_scenario): raw_mode
+        # is now actually in force, so the child is inside the window the
+        # scenario intends to interrupt. Written AFTER __enter__ returns so a
+        # \x03 byte that arrives immediately cannot land while ISIG is still
+        # set (which would deliver a real kernel SIGINT instead of the raw
+        # byte, silently exercising a different code path).
+        Path(ready_path).write_text("ready", encoding="utf-8")
+        return result
 
     def _traced_exit(self, *a):
         log(f"raw_mode.__exit__  (fd={self.fileno}, id={id(self)})")
@@ -244,99 +252,72 @@ def _child_main(scenario: str) -> None:
 
 
 def _run_pty_scenario(scenario: str, timeout: float = 8.0) -> dict:
-    pid, master_fd = pty.fork()
-    if pid == 0:
-        # ----- CHILD -----
-        try:
-            _child_main(scenario)
-        except BaseException:
-            os._exit(1)
-        os._exit(0)
+    ready_path = f"/tmp/test_terminal_echo_ready_{scenario}_{os.getpid()}.marker"
+    if os.path.exists(ready_path):
+        os.remove(ready_path)
 
-    # ----- PARENT -----
-    time.sleep(0.6)  # let the child boot python/prompt_toolkit
-
-    def send(text: str) -> None:
-        os.write(master_fd, text.encode())
-
-    if scenario == "ctrlc_midturn":
-        time.sleep(0.3)
-        send("\x03")  # Ctrl-C byte (prompt_toolkit key path)
-    elif scenario == "doublectrlc":
-        time.sleep(0.3)
-        send("\x03")
-        time.sleep(0.05)
-        send("\x03")
-        try:
-            os.kill(pid, signal.SIGINT)  # real OS signal racing the byte
-        except ProcessLookupError:
-            pass
-    elif scenario == "sigint_only":
-        time.sleep(0.35)
-        try:
-            os.kill(pid, signal.SIGINT)
-        except ProcessLookupError:
-            pass
-    elif scenario == "bytes_only":
-        time.sleep(0.3)
-        send("\x03")
-        time.sleep(0.05)
-        send("\x03")
-    # "normal", "approval_cycle", "multi_orphan": driven entirely by the
-    # child's own internal timers -- no parent-side input needed.
-
-    deadline = time.time() + timeout
-    exited = False
-    status = None
-    while time.time() < deadline:
-        try:
-            wpid, status = os.waitpid(pid, os.WNOHANG)
-        except ChildProcessError:
-            exited = True
-            break
-        if wpid == pid:
-            exited = True
-            break
-        time.sleep(0.05)
-
-    if not exited:
-        try:
-            os.kill(pid, signal.SIGKILL)
-            os.waitpid(pid, 0)
-        except ProcessLookupError:
-            pass
-
-    # Drain any remaining child output (avoids leaving data in the pty buffer).
-    output = b""
+    # ``fork_pty_child`` starts draining the pty master immediately. That is
+    # not an optimisation: on macOS a child that exits with an un-drained pty
+    # output queue wedges in the kernel's exit path, its controlling terminal
+    # already revoked -- which makes the parent's writes below fail with EIO
+    # and makes the child unreapable even by SIGKILL. See tests/pty_harness.py.
+    child = fork_pty_child(lambda: _child_main(scenario, ready_path))
     try:
-        os.set_blocking(master_fd, False)
-        for _ in range(20):
-            try:
-                chunk = os.read(master_fd, 65536)
-            except (BlockingIOError, OSError):
-                break
-            if not chunk:
-                break
-            output += chunk
-    except OSError:
-        pass
+        # Readiness handshake, not a fixed sleep: block until the child has
+        # actually entered prompt_toolkit's raw_mode(), so the keystrokes below
+        # land inside the window the scenario intends to interrupt rather than
+        # at whatever point a hardcoded parent-side delay happens to reach on
+        # this platform. (The previous fixed 0.6s + 0.3s sleeps raced the
+        # child's own timeline: on macOS the child was already gone by the time
+        # the parent wrote, so the Ctrl-C under test was never delivered.)
+        wait_for_marker(ready_path, child, timeout=10.0, what="raw_mode entry")
+        # Tiny settle margin: raw_mode.__enter__ has returned, but give
+        # prompt_toolkit's input-reader registration a moment to start polling
+        # the fd before we write to it.
+        time.sleep(0.05)
 
-    try:
-        attrs = termios.tcgetattr(master_fd)
-        state = _describe_termios(attrs)
-    except OSError as e:
-        state = {"error": str(e)}
+        if scenario == "ctrlc_midturn":
+            child.send("\x03")  # Ctrl-C byte (prompt_toolkit key path)
+        elif scenario == "doublectrlc":
+            child.send("\x03")
+            time.sleep(0.05)
+            child.send("\x03")
+            child.signal(signal.SIGINT)  # real OS signal racing the byte
+        elif scenario == "sigint_only":
+            child.signal(signal.SIGINT)
+        elif scenario == "bytes_only":
+            child.send("\x03")
+            time.sleep(0.05)
+            child.send("\x03")
+        # "normal", "approval_cycle", "multi_orphan": driven entirely by the
+        # child's own internal timers -- no parent-side input needed.
 
-    os.close(master_fd)
+        exited = child.wait(timeout)
+        if not exited:
+            child.kill()
 
-    return {
-        "scenario": scenario,
-        "exit_status": status,
-        "exited_cleanly": exited,
-        "termios": state,
-        "healthy": _is_healthy(state),
-        "output": output.decode(errors="replace"),
-    }
+        # Read the terminal state back through the master fd while it is still
+        # open -- this is the actual subject of the test.
+        try:
+            attrs = termios.tcgetattr(child.master_fd)
+            state = _describe_termios(attrs)
+        except OSError as e:
+            state = {"error": str(e)}
+
+        return {
+            "scenario": scenario,
+            "exit_status": child.status,
+            "exited_cleanly": exited,
+            "termios": state,
+            "healthy": _is_healthy(state),
+            "output": child.output.decode(errors="replace"),
+        }
+    finally:
+        if not child.poll():
+            child.kill()
+        child.close()
+        if os.path.exists(ready_path):
+            os.remove(ready_path)
 
 
 # ---------------------------------------------------------------------------
