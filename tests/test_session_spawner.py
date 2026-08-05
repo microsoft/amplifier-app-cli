@@ -1769,13 +1769,19 @@ class TestSpawnMentionExpansion:
             async def emit(self, event, data):
                 pass
 
+        captured_factory: dict = {}
+
         fake_ctx = AsyncMock()
         fake_ctx.get_messages = AsyncMock(return_value=[])
 
         async def capture_add_message(msg):
             added_messages.append(msg)
 
+        async def capture_set_system_prompt_factory(factory):
+            captured_factory["factory"] = factory
+
         fake_ctx.add_message = capture_add_message
+        fake_ctx.set_system_prompt_factory = capture_set_system_prompt_factory
 
         child_coordinator = MagicMock()
         child_coordinator.register_capability.side_effect = child_reg_cap
@@ -1799,7 +1805,7 @@ class TestSpawnMentionExpansion:
         child_session.cleanup = AsyncMock()
         child_session.session_id = "child-mention-001"
 
-        return parent_session, child_session, added_messages
+        return parent_session, child_session, added_messages, captured_factory
 
     async def test_system_instruction_mentions_are_expanded(self, tmp_path, monkeypatch):
         """@-mentions in agent body (system_instruction) must be inlined as XML blocks."""
@@ -1815,7 +1821,9 @@ class TestSpawnMentionExpansion:
         fixture_file.write_text(FIXTURE_CONTENT)
 
         resolver = AppMentionResolver(bundle_mappings={"testbundle": tmp_path})
-        parent_session, child_session, added_messages = self._make_sessions(tmp_path, resolver)
+        parent_session, child_session, added_messages, captured_factory = self._make_sessions(
+            tmp_path, resolver
+        )
 
         agent_configs = {
             "test-agent": {
@@ -1842,24 +1850,33 @@ class TestSpawnMentionExpansion:
                             agent_configs=agent_configs,
                         )
 
-        # After the change: content is inlined as <context_file> XML in the system message.
+        # After the change: content is inlined as <context_file> XML in the system prompt.
         # No developer messages should be produced for mention expansion.
         developer_messages = [m for m in added_messages if m.get("role") == "developer"]
         assert not developer_messages, (
             f"No developer messages expected for system_instruction expansion, "
             f"but got: {developer_messages}"
         )
+        # The context supports set_system_prompt_factory (as context-simple does), so the
+        # resolved system_instruction is delivered via a registered factory rather than a
+        # static system message -- this gives hooks that compose onto the system prompt
+        # (e.g. the skills-visibility hook's "prefix" placement) a surface to wrap.
         system_messages = [m for m in added_messages if m.get("role") == "system"]
-        assert len(system_messages) == 1, (
-            f"Expected one system message, got: {system_messages}"
+        assert not system_messages, (
+            f"Expected no static system message (factory path should be used instead), "
+            f"got: {system_messages}"
         )
-        system_content = system_messages[0].get("content", "")
+        assert "factory" in captured_factory, (
+            "Expected set_system_prompt_factory to be registered with the expanded "
+            "system_instruction"
+        )
+        system_content = await captured_factory["factory"]()
         assert FIXTURE_CONTENT in system_content, (
-            f"Expected {FIXTURE_CONTENT!r} in system message content from system_instruction "
-            f"expansion, but got: {system_content[:300]!r}"
+            f"Expected {FIXTURE_CONTENT!r} in system prompt factory content from "
+            f"system_instruction expansion, but got: {system_content[:300]!r}"
         )
         assert "<context_file" in system_content, (
-            f"Expected <context_file> XML block prepended to system message, "
+            f"Expected <context_file> XML block prepended to system prompt factory content, "
             f"got: {system_content[:300]!r}"
         )
 
@@ -1877,7 +1894,9 @@ class TestSpawnMentionExpansion:
         fixture_file.write_text(FIXTURE_CONTENT)
 
         resolver = AppMentionResolver(bundle_mappings={"testbundle": tmp_path})
-        parent_session, child_session, added_messages = self._make_sessions(tmp_path, resolver)
+        parent_session, child_session, added_messages, _captured_factory = self._make_sessions(
+            tmp_path, resolver
+        )
 
         agent_configs = {
             "test-agent": {
@@ -1919,6 +1938,257 @@ class TestSpawnMentionExpansion:
         )
         assert "<context_file" in execute_call_arg, (
             f"Expected <context_file> XML block in instruction, got: {execute_call_arg[:300]!r}"
+        )
+
+
+class _FactoryContext:
+    """Fake context exposing set_system_prompt_factory, like context-simple does."""
+
+    def __init__(self):
+        self.registered_factory = None
+        self.added_messages: list = []
+
+    async def set_system_prompt_factory(self, factory):
+        self.registered_factory = factory
+
+    async def add_message(self, message):
+        self.added_messages.append(message)
+
+    async def get_messages(self):
+        return []
+
+
+class _StaticOnlyContext:
+    """Fake context exposing ONLY add_message -- no set_system_prompt_factory attribute
+    at all, modeling a context module that predates the factory mechanism."""
+
+    def __init__(self):
+        self.added_messages: list = []
+
+    async def add_message(self, message):
+        self.added_messages.append(message)
+
+    async def get_messages(self):
+        return []
+
+
+class TestSpawnSystemPromptFactory:
+    """spawn_sub_session must register a system-prompt FACTORY (not just inject a
+    static system message) for the delegated agent's system_instruction, whenever
+    the context module supports one.
+
+    Bug: session_spawner injected system_instruction via context.add_message() only,
+    never registering a system-prompt factory. Hooks that compose onto the system
+    prompt (e.g. tool-skills' "prefix" placement) look for a registered factory and
+    refuse to wrap when none exists -- falling back to re-injecting their own content
+    on every provider:request instead of once, in the cached prefix. Registering a
+    factory here (mirroring amplifier-foundation's _prepared.py spawn path) gives
+    those hooks a stable surface to wrap.
+    """
+
+    def _make_sessions(self, context, mention_resolver=None):
+        """Return (parent_session, child_session) wired to the given fake context."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        def parent_get_cap(name):
+            if name == "mention_resolver":
+                return mention_resolver
+            return None
+
+        parent_coordinator = MagicMock()
+        parent_coordinator.get.return_value = None
+        parent_coordinator.get_capability.side_effect = parent_get_cap
+        parent_coordinator.display_system = MagicMock()
+        parent_coordinator.cancellation = MagicMock()
+        parent_coordinator.cancellation.register_child = MagicMock()
+        parent_coordinator.cancellation.unregister_child = MagicMock()
+
+        parent_session = MagicMock()
+        parent_session.coordinator = parent_coordinator
+        parent_session.config = {
+            "session": {"orchestrator": "loop-basic", "context": "context-simple"},
+        }
+        parent_session.session_id = "parent-factory-test"
+        parent_session.trace_id = "trace-factory-test"
+        parent_session.loader = None
+
+        registered_capabilities: dict = {}
+
+        def child_reg_cap(name, value):
+            registered_capabilities[name] = value
+
+        def child_get_cap(name):
+            return registered_capabilities.get(name)
+
+        class FakeHooks:
+            def register(self, event, handler, priority=0, name=None):
+                def _unregister():
+                    pass
+
+                return _unregister
+
+            async def emit(self, event, data):
+                pass
+
+        child_coordinator = MagicMock()
+        child_coordinator.register_capability.side_effect = child_reg_cap
+        child_coordinator.get_capability.side_effect = child_get_cap
+        child_coordinator.display_system = MagicMock()
+
+        def child_get(name):
+            if name == "hooks":
+                return FakeHooks()
+            if name == "context":
+                return context
+            return None
+
+        child_coordinator.get = child_get
+        child_coordinator.mount = AsyncMock()
+
+        child_session = MagicMock()
+        child_session.coordinator = child_coordinator
+        child_session.initialize = AsyncMock()
+        child_session.execute = AsyncMock(return_value="response")
+        child_session.cleanup = AsyncMock()
+        child_session.session_id = "child-factory-001"
+
+        return parent_session, child_session
+
+    async def _spawn(self, parent_session, child_session, agent_configs, sub_session_id):
+        from unittest.mock import patch
+
+        from amplifier_app_cli.session_spawner import spawn_sub_session
+
+        with patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            return_value=child_session,
+        ):
+            with patch(
+                "amplifier_app_cli.session_spawner.generate_sub_session_id",
+                return_value=sub_session_id,
+            ):
+                with patch("amplifier_app_cli.paths.create_foundation_resolver"):
+                    with patch("amplifier_app_cli.session_store.SessionStore.save"):
+                        await spawn_sub_session(
+                            agent_name="test-agent",
+                            instruction="Do the task",
+                            parent_session=parent_session,
+                            agent_configs=agent_configs,
+                        )
+
+    async def test_factory_registered_when_context_supports_it(self, tmp_path, monkeypatch):
+        """Context exposing set_system_prompt_factory: the factory is registered with
+        the exact system_instruction; no static system message is added."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        context = _FactoryContext()
+        parent_session, child_session = self._make_sessions(context)
+        agent_configs = {
+            "test-agent": {"instruction": "You are a careful test agent."},
+        }
+
+        await self._spawn(parent_session, child_session, agent_configs, "child-factory-001")
+
+        assert context.registered_factory is not None, (
+            "Expected set_system_prompt_factory to be registered"
+        )
+        resolved = await context.registered_factory()
+        assert resolved == "You are a careful test agent.", (
+            f"Expected factory to resolve to the exact system_instruction, got: {resolved!r}"
+        )
+        system_messages = [m for m in context.added_messages if m.get("role") == "system"]
+        assert not system_messages, (
+            f"add_message must not be called with a system message when a factory is "
+            f"registered, got: {system_messages}"
+        )
+
+    async def test_falls_back_to_add_message_without_factory_support(
+        self, tmp_path, monkeypatch
+    ):
+        """Context exposing ONLY add_message (no set_system_prompt_factory attribute)
+        falls back to the static system message -- regression guard for pre-fix
+        behavior."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        context = _StaticOnlyContext()
+        assert not hasattr(context, "set_system_prompt_factory")
+        parent_session, child_session = self._make_sessions(context)
+        agent_configs = {
+            "test-agent": {"instruction": "You are a careful test agent."},
+        }
+
+        await self._spawn(parent_session, child_session, agent_configs, "child-factory-001")
+
+        system_messages = [m for m in context.added_messages if m.get("role") == "system"]
+        assert len(system_messages) == 1, (
+            f"Expected exactly one static system message (fallback path), got: "
+            f"{system_messages}"
+        )
+        assert system_messages[0]["content"] == "You are a careful test agent.", (
+            f"Expected fallback system message content to match system_instruction, "
+            f"got: {system_messages[0]['content']!r}"
+        )
+
+    async def test_no_instruction_registers_nothing(self, tmp_path, monkeypatch):
+        """No system_instruction on the agent config: neither the factory nor
+        add_message should be invoked for a system message."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        context = _FactoryContext()
+        parent_session, child_session = self._make_sessions(context)
+        agent_configs = {
+            "test-agent": {"description": "A test agent with no instruction body"},
+        }
+
+        await self._spawn(parent_session, child_session, agent_configs, "child-factory-001")
+
+        assert context.registered_factory is None, (
+            "Expected no system-prompt factory registered when there is no "
+            "system_instruction"
+        )
+        system_messages = [m for m in context.added_messages if m.get("role") == "system"]
+        assert not system_messages, (
+            f"Expected no system message added when there is no system_instruction, "
+            f"got: {system_messages}"
+        )
+
+    async def test_factory_content_is_mention_expanded(self, tmp_path, monkeypatch):
+        """The registered factory must resolve to the @-mention-EXPANDED text, not the
+        raw pre-expansion instruction string."""
+        from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        FIXTURE_CONTENT = "SENTINEL_FACTORY_EXPANSION_54321"
+        fixture_file = tmp_path / "fixture.md"
+        fixture_file.write_text(FIXTURE_CONTENT)
+
+        resolver = AppMentionResolver(bundle_mappings={"testbundle": tmp_path})
+        context = _FactoryContext()
+        parent_session, child_session = self._make_sessions(
+            context, mention_resolver=resolver
+        )
+
+        raw_instruction = "Body text.\n\n@testbundle:fixture.md\n\nEnd."
+        agent_configs = {
+            "test-agent": {"instruction": raw_instruction},
+        }
+
+        await self._spawn(parent_session, child_session, agent_configs, "child-factory-001")
+
+        assert context.registered_factory is not None, (
+            "Expected set_system_prompt_factory to be registered"
+        )
+        resolved = await context.registered_factory()
+        assert resolved != raw_instruction, (
+            "Factory content must be the expanded text, not the raw pre-expansion "
+            "instruction"
+        )
+        assert FIXTURE_CONTENT in resolved, (
+            f"Expected expanded fixture content in factory output, got: {resolved[:300]!r}"
+        )
+        assert "<context_file" in resolved, (
+            f"Expected <context_file> XML block in factory output, got: {resolved[:300]!r}"
         )
 
 
