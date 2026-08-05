@@ -785,7 +785,20 @@ async def spawn_sub_session(
                 deduplicator=_deduplicator,
                 relative_to=_rel_to,
             )
-        if context and hasattr(context, "add_message"):
+        if context and hasattr(context, "set_system_prompt_factory"):
+            # Register a factory rather than a static system message so
+            # hooks that compose onto the system prompt (e.g. the skills
+            # visibility hook's "prefix" placement) have a surface to wrap.
+            # Without this, those hooks fall back to re-injecting their
+            # content on every provider:request, outside the cached prefix.
+            # Mirrors amplifier-foundation _prepared.py spawn path.
+            _resolved_system_instruction = system_instruction
+
+            async def _system_prompt_factory() -> str:
+                return _resolved_system_instruction
+
+            await context.set_system_prompt_factory(_system_prompt_factory)
+        elif context and hasattr(context, "add_message"):
             await context.add_message({"role": "system", "content": system_instruction})
 
     # Register temporary hook to capture orchestrator:complete data
