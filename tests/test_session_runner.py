@@ -858,7 +858,7 @@ class TestSessionConfiguratorWiring:
 
 import click as _click  # noqa: E402  (grouped here to stay close to its tests)
 
-from amplifier_app_cli.effective_config import EffectiveConfigSummary  # noqa: E402
+from amplifier_app_cli.effective_config import EffectiveProviderModel  # noqa: E402
 from amplifier_app_cli.session_runner import (  # noqa: E402
     _normalize_provider_identity,
     _warn_on_resume_provider_mismatch,
@@ -867,17 +867,9 @@ from amplifier_app_cli.session_runner import (  # noqa: E402
 
 def _make_summary(
     provider_module: str = "provider-anthropic", model: str = "claude-x"
-) -> EffectiveConfigSummary:
-    """Return a minimal EffectiveConfigSummary for mismatch-check tests."""
-    return EffectiveConfigSummary(
-        config_source="bundle:test",
-        provider_name=provider_module.replace("provider-", "").title(),
-        provider_module=provider_module,
-        model=model,
-        orchestrator="loop-basic",
-        tool_count=0,
-        hook_count=0,
-    )
+) -> EffectiveProviderModel:
+    """Return canonical provenance for mismatch-check tests."""
+    return EffectiveProviderModel(provider=provider_module, model=model)
 
 
 class TestNormalizeProviderIdentity:
@@ -918,7 +910,7 @@ class TestWarnOnResumeProviderMismatch:
         with (
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(
-                f"{_MODULE}.get_effective_config_summary",
+                f"{_MODULE}.get_effective_provider_model",
                 return_value=_make_summary(
                     provider_module="provider-openai", model="gpt-x"
                 ),
@@ -950,7 +942,7 @@ class TestWarnOnResumeProviderMismatch:
         with (
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(
-                f"{_MODULE}.get_effective_config_summary",
+                f"{_MODULE}.get_effective_provider_model",
                 return_value=_make_summary(
                     provider_module="provider-openai", model="gpt-x"
                 ),
@@ -978,7 +970,7 @@ class TestWarnOnResumeProviderMismatch:
         with (
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(
-                f"{_MODULE}.get_effective_config_summary",
+                f"{_MODULE}.get_effective_provider_model",
                 return_value=_make_summary(
                     provider_module="provider-openai", model="gpt-x"
                 ),
@@ -1006,7 +998,7 @@ class TestWarnOnResumeProviderMismatch:
         with (
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(
-                f"{_MODULE}.get_effective_config_summary",
+                f"{_MODULE}.get_effective_provider_model",
                 return_value=_make_summary(
                     provider_module="provider-anthropic", model="claude-x"
                 ),
@@ -1033,7 +1025,7 @@ class TestWarnOnResumeProviderMismatch:
         with (
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(
-                f"{_MODULE}.get_effective_config_summary",
+                f"{_MODULE}.get_effective_provider_model",
                 return_value=_make_summary(
                     provider_module="provider-openai", model="gpt-x"
                 ),
@@ -1058,7 +1050,7 @@ class TestWarnOnResumeProviderMismatch:
         with (
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(
-                f"{_MODULE}.get_effective_config_summary",
+                f"{_MODULE}.get_effective_provider_model",
                 return_value=_make_summary(
                     provider_module="provider-anthropic", model="claude-x"
                 ),
@@ -1082,7 +1074,7 @@ class TestWarnOnResumeProviderMismatch:
         with (
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(
-                f"{_MODULE}.get_effective_config_summary",
+                f"{_MODULE}.get_effective_provider_model",
                 return_value=_make_summary(
                     provider_module="anthropic", model="claude-x"
                 ),
@@ -1109,7 +1101,7 @@ class TestWarnOnResumeProviderMismatch:
         with (
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(
-                f"{_MODULE}.get_effective_config_summary", return_value=_make_summary()
+                f"{_MODULE}.get_effective_provider_model", return_value=_make_summary()
             ),
             patch(f"{_MODULE}.click.confirm") as mock_confirm,
         ):
@@ -1129,13 +1121,46 @@ class TestWarnOnResumeProviderMismatch:
         with (
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(
-                f"{_MODULE}.get_effective_config_summary", return_value=_make_summary()
+                f"{_MODULE}.get_effective_provider_model", return_value=_make_summary()
             ),
         ):
             MockStore.return_value.get_metadata.side_effect = FileNotFoundError("nope")
             await _warn_on_resume_provider_mismatch(cfg, "sess-1", console, session)
 
         console.print.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            None,
+            [],
+            "metadata",
+            {"model": None, "provider": "provider-anthropic"},
+            {"model": [], "provider": "provider-anthropic"},
+            {"model": 42, "provider": "provider-anthropic"},
+            {"model": "claude-x", "provider": None},
+            {"model": "claude-x", "provider": []},
+            {"model": "claude-x", "provider": 42},
+        ],
+    )
+    async def test_parseable_malformed_metadata_is_silently_ignored(self, metadata):
+        """Malformed JSON values never make the best-effort guard fail or warn."""
+        cfg = self._resume_config()
+        console = MagicMock()
+        session = MagicMock()
+
+        with (
+            patch(f"{_MODULE}.SessionStore") as MockStore,
+            patch(f"{_MODULE}.get_effective_provider_model") as mock_provenance,
+            patch(f"{_MODULE}.click.confirm") as mock_confirm,
+        ):
+            MockStore.return_value.get_metadata.return_value = metadata
+            await _warn_on_resume_provider_mismatch(cfg, "sess-1", console, session)
+
+        console.print.assert_not_called()
+        mock_confirm.assert_not_called()
+        mock_provenance.assert_not_called()
 
 
 class TestProviderMismatchCheckWiredIntoChokepoint:

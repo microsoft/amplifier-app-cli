@@ -14,6 +14,7 @@ from amplifier_foundation import bridge_child_cost
 from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
 
 from .agent_config import merge_configs
+from .effective_config import get_effective_provider_model
 
 logger = logging.getLogger(__name__)
 
@@ -867,6 +868,7 @@ async def spawn_sub_session(
             base = sub_session_id.rsplit("_", 1)[0]  # Remove agent name
             child_span = base.rsplit("-", 1)[-1]  # Get child_span (16 hex chars)
 
+        provenance = get_effective_provider_model(merged_config)
         metadata = {
             "session_id": sub_session_id,
             "parent_id": parent_session.session_id,
@@ -874,6 +876,7 @@ async def spawn_sub_session(
             "agent_name": agent_name,
             "child_span": child_span,  # For short_id resolution (first 8 chars = short_id)
             "created": datetime.now(UTC).isoformat(),
+            **provenance.as_metadata(),
             "config": merged_config,
             "agent_overlay": agent_config,
             "turn_count": 1,
@@ -1366,6 +1369,7 @@ async def resume_sub_session(
         updated_transcript = await context.get_messages() if context else []
         metadata["turn_count"] = len(updated_transcript)
         metadata["last_updated"] = datetime.now(UTC).isoformat()
+        metadata.update(get_effective_provider_model(merged_config).as_metadata())
 
         store.save(sub_session_id, updated_transcript, metadata)
         logger.debug(

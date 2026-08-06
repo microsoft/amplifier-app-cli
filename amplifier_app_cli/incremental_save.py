@@ -18,6 +18,7 @@ from typing import Any
 if TYPE_CHECKING:
     from amplifier_core import AmplifierSession
 
+from .effective_config import get_effective_provider_model
 from .session_store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -95,8 +96,7 @@ class IncrementalSaveHook:
             # Update debounce counter
             self._last_message_count = current_count
 
-            # Extract model name from config
-            model_name = self._extract_model_name()
+            provenance = get_effective_provider_model(self.config)
 
             # Load existing metadata to preserve fields like name, description
             # that may have been set by other hooks (e.g., session-naming)
@@ -110,7 +110,7 @@ class IncrementalSaveHook:
                     "created", datetime.now(UTC).isoformat()
                 ),
                 "bundle": self.bundle_name,
-                "model": model_name,
+                **provenance.as_metadata(),
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
                 "incremental": True,  # Distinguish from final saves
                 # Store working_dir for session sync between CLI and web
@@ -130,22 +130,6 @@ class IncrementalSaveHook:
             logger.warning(f"Incremental save failed: {e}")
 
         return HookResult(action="continue")
-
-    def _extract_model_name(self) -> str:
-        """Extract model name from session config.
-
-        Returns:
-            Model name string or "unknown" if not found
-        """
-        providers = self.config.get("providers", [])
-        if isinstance(providers, list) and providers:
-            first_provider = providers[0]
-            if isinstance(first_provider, dict) and "config" in first_provider:
-                provider_config = first_provider["config"]
-                return provider_config.get("model") or provider_config.get(
-                    "default_model", "unknown"
-                )
-        return "unknown"
 
 
 def register_incremental_save(

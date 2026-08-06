@@ -92,7 +92,11 @@ class TestExecuteSingleWritesProvider:
             "providers": [
                 {
                     "module": "provider-anthropic",
-                    "config": {"default_model": "claude-x", "priority": 0},
+                    "config": {
+                        "model": "claude-x",
+                        "default_model": "stale-default",
+                        "priority": 0,
+                    },
                 }
             ]
         }
@@ -243,10 +247,6 @@ class TestInteractiveChatWritesProviderPair:
                 },
             ]
         }
-        effective_summary = MagicMock()
-        effective_summary.provider_module = "provider-anthropic"
-        effective_summary.model = "claude-effective"
-
         with (
             patch(
                 f"{_MODULE}.create_initialized_session",
@@ -254,10 +254,6 @@ class TestInteractiveChatWritesProviderPair:
             ),
             patch(f"{_MODULE}.SessionStore") as MockStore,
             patch(f"{_MODULE}.console"),
-            patch(
-                f"{_MODULE}.get_effective_config_summary",
-                return_value=effective_summary,
-            ) as mock_summary,
             patch(f"{_MODULE}._create_prompt_session", return_value=prompt_session),
             patch(
                 f"{_MODULE}.patch_stdout",
@@ -298,4 +294,93 @@ class TestInteractiveChatWritesProviderPair:
         assert saved_metadata["provider"] == "provider-anthropic"
         assert saved_metadata["model"] == "claude-effective"
         assert saved_metadata["name"] == "keep-me"
-        mock_summary.assert_called_once_with(config, "bundle:test")
+
+
+class TestCanonicalProvenanceAndIncrementalSave:
+    """All metadata writers share priority and model-resolution semantics."""
+
+    def test_explicit_model_precedes_default_model_in_summary_and_provenance(self):
+        from amplifier_app_cli.effective_config import get_effective_config_summary
+        from amplifier_app_cli.effective_config import get_effective_provider_model
+
+        config = {
+            "providers": [
+                {
+                    "module": "provider-anthropic",
+                    "config": {
+                        "model": "explicit-model",
+                        "default_model": "fallback-model",
+                    },
+                }
+            ]
+        }
+
+        provenance = get_effective_provider_model(config)
+        summary = get_effective_config_summary(config, "bundle:test")
+
+        assert provenance.as_metadata() == {
+            "provider": "provider-anthropic",
+            "model": "explicit-model",
+        }
+        assert summary.provider_module == provenance.provider
+        assert summary.model == provenance.model
+
+    @pytest.mark.asyncio
+    async def test_incremental_save_persists_priority_pair_and_preserves_metadata(
+        self, tmp_path: Path
+    ):
+        from amplifier_app_cli.incremental_save import IncrementalSaveHook
+        from amplifier_app_cli.session_store import SessionStore
+
+        messages = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello"},
+        ]
+        context = MagicMock()
+        context.get_messages = AsyncMock(return_value=messages)
+        session = MagicMock()
+        session.coordinator.get.return_value = context
+        store = SessionStore(base_dir=tmp_path)
+        store.save(
+            "incremental-session",
+            [],
+            {
+                "name": "preserved-name",
+                "description": "preserved-description",
+                "created": "2025-01-01T00:00:00+00:00",
+            },
+        )
+        config = {
+            "providers": [
+                {
+                    "module": "provider-openai",
+                    "config": {"model": "wrong-first", "priority": 10},
+                },
+                {
+                    "module": "provider-anthropic",
+                    "config": {
+                        "model": "priority-model",
+                        "default_model": "stale-default",
+                        "priority": 0,
+                    },
+                },
+            ]
+        }
+        hook = IncrementalSaveHook(
+            session,
+            store,
+            "incremental-session",
+            "bundle:test",
+            config,
+        )
+
+        result = await hook.on_tool_post("tool:post", {"tool_name": "read_file"})
+        _transcript, metadata = store.load("incremental-session")
+
+        assert result.action == "continue"
+        assert metadata["provider"] == "provider-anthropic"
+        assert metadata["model"] == "priority-model"
+        assert metadata["name"] == "preserved-name"
+        assert metadata["description"] == "preserved-description"
+        assert metadata["created"] == "2025-01-01T00:00:00+00:00"
+        assert metadata["incremental"] is True

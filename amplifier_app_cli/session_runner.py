@@ -43,7 +43,7 @@ import click
 from amplifier_core import AmplifierSession
 from amplifier_core import ModuleValidationError
 
-from .effective_config import get_effective_config_summary
+from .effective_config import get_effective_provider_model
 from .lib.settings import AppSettings
 from .session_store import SessionStore
 from .ui.error_display import display_validation_error
@@ -363,7 +363,7 @@ async def create_initialized_session(
 # its metadata.
 
 
-def _normalize_provider_identity(value: str | None) -> str:
+def _normalize_provider_identity(value: object) -> str:
     """Normalize a provider identity for mismatch comparison.
 
     Provider identity may be recorded as a module id ("provider-anthropic")
@@ -384,12 +384,9 @@ def _normalize_provider_identity(value: str | None) -> str:
         Lowercased bare provider name (e.g. "anthropic"), or "" if value is
         falsy.
     """
-    if not value:
+    if not isinstance(value, str) or not value:
         return ""
-    normalized = value.strip().lower()
-    if normalized.startswith("provider-"):
-        normalized = normalized[len("provider-") :]
-    return normalized
+    return value.strip().lower().removeprefix("provider-")
 
 
 async def _warn_on_resume_provider_mismatch(
@@ -458,6 +455,19 @@ async def _warn_on_resume_provider_mismatch(
         )
         return
 
+    if not isinstance(prior_metadata, dict):
+        return
+
+    # Treat present-but-invalid provenance as unusable rather than guessing.
+    # A missing provider is valid for legacy metadata and retains model-only
+    # comparison, but null/list/numeric fields indicate malformed metadata.
+    for metadata_field in ("model", "provider"):
+        if metadata_field in prior_metadata and (
+            not isinstance(prior_metadata[metadata_field], str)
+            or not prior_metadata[metadata_field]
+        ):
+            return
+
     prior_model = prior_metadata.get("model")
     prior_provider = prior_metadata.get("provider")
 
@@ -467,9 +477,9 @@ async def _warn_on_resume_provider_mismatch(
     if not prior_model and not prior_provider:
         return
 
-    summary = get_effective_config_summary(config.config, config.bundle_name)
-    active_provider = summary.provider_module
-    active_model = summary.model
+    provenance = get_effective_provider_model(config.config)
+    active_provider = provenance.provider
+    active_model = provenance.model
 
     if prior_provider:
         # Full comparison: normalized provider identity AND model.

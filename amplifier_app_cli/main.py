@@ -47,7 +47,10 @@ from .commands.update import update as update_cmd
 from .commands.version import version as version_cmd
 from .console import Markdown, console
 from .dedicated_tty_input import close_dedicated_tty_input, get_dedicated_tty_input
-from .effective_config import get_effective_config_summary
+from .effective_config import (
+    get_effective_config_summary,
+    get_effective_provider_model,
+)
 from .key_manager import KeyManager
 from .session_runner import SessionConfig, create_initialized_session
 from .session_store import SessionStore
@@ -2889,10 +2892,7 @@ async def interactive_chat(
             # Load existing metadata to preserve fields like name, description
             # that may have been set by other hooks (e.g., session-naming)
             existing_metadata = store.get_metadata(actual_session_id) or {}
-            # Resolve provider and model together so metadata always records a
-            # coherent pair. The resume check uses this same summary and expects
-            # its bare model value rather than a provider-qualified display label.
-            config_summary = get_effective_config_summary(config, bundle_name)
+            provenance = get_effective_provider_model(config)
             metadata = {
                 **existing_metadata,  # Preserve name, description, etc.
                 "session_id": actual_session_id,
@@ -2900,8 +2900,7 @@ async def interactive_chat(
                     "created", datetime.now(UTC).isoformat()
                 ),
                 "bundle": bundle_name,
-                "model": config_summary.model,
-                "provider": config_summary.provider_module,
+                **provenance.as_metadata(),
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
                 # Store working_dir for session sync between CLI and web
                 "working_dir": str(Path.cwd().resolve()),
@@ -3641,10 +3640,7 @@ async def execute_single(
             # Load existing metadata to preserve fields like name, description
             # that may have been set by other hooks (e.g., session-naming)
             existing_metadata = store.get_metadata(actual_session_id) or {}
-            # Resolve provider and model together so metadata always records a
-            # coherent pair. Keep model_name above as the provider-qualified
-            # output label, but persist the bare model expected by resume.
-            config_summary = get_effective_config_summary(config, bundle_name)
+            provenance = get_effective_provider_model(config)
             metadata = {
                 **existing_metadata,  # Preserve name, description, etc.
                 "session_id": actual_session_id,
@@ -3652,8 +3648,7 @@ async def execute_single(
                     "created", datetime.now(UTC).isoformat()
                 ),
                 "bundle": bundle_name,
-                "model": config_summary.model,
-                "provider": config_summary.provider_module,
+                **provenance.as_metadata(),
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
                 # Store working_dir for session sync between CLI and web
                 "working_dir": str(Path.cwd().resolve()),
