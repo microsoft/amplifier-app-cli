@@ -2881,28 +2881,6 @@ async def interactive_chat(
         )
     )
 
-    # Helper to extract model name from config
-    def _extract_model_name() -> str:
-        if isinstance(config.get("providers"), list) and config["providers"]:
-            first_provider = config["providers"][0]
-            if isinstance(first_provider, dict) and "config" in first_provider:
-                provider_config = first_provider["config"]
-                return provider_config.get("model") or provider_config.get(
-                    "default_model", "unknown"
-                )
-        return "unknown"
-
-    # Helper to extract the active provider identity from config.
-    #
-    # Uses get_effective_config_summary() -- the same function the resume-time
-    # mismatch check in session_runner.py uses to compute the ACTIVE provider --
-    # so the value written here and the value compared at resume are always
-    # derived the same way. Returns the provider module id (e.g.
-    # "provider-anthropic"); session_runner._normalize_provider_identity()
-    # handles comparing this against older/bare-name forms.
-    def _extract_provider_identity() -> str:
-        return get_effective_config_summary(config, bundle_name).provider_module
-
     # Helper to save session after each turn
     async def _save_session():
         context = session.coordinator.get("context")
@@ -2911,6 +2889,10 @@ async def interactive_chat(
             # Load existing metadata to preserve fields like name, description
             # that may have been set by other hooks (e.g., session-naming)
             existing_metadata = store.get_metadata(actual_session_id) or {}
+            # Resolve provider and model together so metadata always records a
+            # coherent pair. The resume check uses this same summary and expects
+            # its bare model value rather than a provider-qualified display label.
+            config_summary = get_effective_config_summary(config, bundle_name)
             metadata = {
                 **existing_metadata,  # Preserve name, description, etc.
                 "session_id": actual_session_id,
@@ -2918,8 +2900,8 @@ async def interactive_chat(
                     "created", datetime.now(UTC).isoformat()
                 ),
                 "bundle": bundle_name,
-                "model": _extract_model_name(),
-                "provider": _extract_provider_identity(),
+                "model": config_summary.model,
+                "provider": config_summary.provider_module,
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
                 # Store working_dir for session sync between CLI and web
                 "working_dir": str(Path.cwd().resolve()),
@@ -3659,6 +3641,10 @@ async def execute_single(
             # Load existing metadata to preserve fields like name, description
             # that may have been set by other hooks (e.g., session-naming)
             existing_metadata = store.get_metadata(actual_session_id) or {}
+            # Resolve provider and model together so metadata always records a
+            # coherent pair. Keep model_name above as the provider-qualified
+            # output label, but persist the bare model expected by resume.
+            config_summary = get_effective_config_summary(config, bundle_name)
             metadata = {
                 **existing_metadata,  # Preserve name, description, etc.
                 "session_id": actual_session_id,
@@ -3666,13 +3652,8 @@ async def execute_single(
                     "created", datetime.now(UTC).isoformat()
                 ),
                 "bundle": bundle_name,
-                "model": model_name,
-                # Same source (get_effective_config_summary) as the resume-time
-                # mismatch check in session_runner.py -- see _extract_provider_identity()
-                # in interactive_chat() above for the parallel single-shot-vs-chat note.
-                "provider": get_effective_config_summary(
-                    config, bundle_name
-                ).provider_module,
+                "model": config_summary.model,
+                "provider": config_summary.provider_module,
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
                 # Store working_dir for session sync between CLI and web
                 "working_dir": str(Path.cwd().resolve()),
