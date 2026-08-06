@@ -2192,6 +2192,192 @@ class TestSpawnSystemPromptFactory:
         )
 
 
+class TestDelegatedProviderModelMetadata:
+    """Delegated spawn/resume writers persist canonical provenance."""
+
+    @staticmethod
+    def _coordinator():
+        from unittest.mock import AsyncMock, MagicMock
+
+        capabilities: dict = {}
+
+        class FakeHooks:
+            def register(self, _event, _handler, priority=0, name=None):
+                return lambda: None
+
+            async def emit(self, _event, _data):
+                return None
+
+        context = AsyncMock()
+        context.get_messages = AsyncMock(
+            return_value=[{"role": "user", "content": "delegated"}]
+        )
+        context.add_message = AsyncMock()
+
+        coordinator = MagicMock()
+        coordinator.config = {}
+        coordinator.display_system = MagicMock()
+        coordinator.approval_system = MagicMock()
+        coordinator.cancellation = MagicMock()
+        coordinator.cancellation.register_child = MagicMock()
+        coordinator.cancellation.unregister_child = MagicMock()
+        coordinator.mount = AsyncMock()
+        coordinator.collect_contributions = AsyncMock(return_value=[])
+        coordinator.register_capability.side_effect = capabilities.__setitem__
+        coordinator.get_capability.side_effect = capabilities.get
+        coordinator.get.side_effect = lambda name: {
+            "hooks": FakeHooks(),
+            "context": context,
+        }.get(name)
+        return coordinator
+
+    @staticmethod
+    def _session(coordinator, session_id):
+        from unittest.mock import AsyncMock, MagicMock
+
+        session = MagicMock()
+        session.coordinator = coordinator
+        session.session_id = session_id
+        session.initialize = AsyncMock()
+        session.execute = AsyncMock(return_value="response")
+        session.cleanup = AsyncMock()
+        return session
+
+    async def test_spawn_writer_uses_priority_pair_and_top_level_model(
+        self, tmp_path, monkeypatch
+    ):
+        from unittest.mock import MagicMock, patch
+
+        from amplifier_app_cli.session_runner import (
+            SessionConfig,
+            _warn_on_resume_provider_mismatch,
+        )
+        from amplifier_app_cli.session_spawner import spawn_sub_session
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        parent = MagicMock()
+        parent.coordinator = self._coordinator()
+        parent.session_id = "parent"
+        parent.trace_id = "trace"
+        parent.loader = None
+        parent.config = {
+            "session": {"orchestrator": "loop-basic", "context": "context-simple"},
+            "providers": [
+                {
+                    "module": "provider-first",
+                    "config": {"priority": 50, "default_model": "wrong"},
+                },
+                {
+                    "module": "provider-priority",
+                    "config": {
+                        "priority": 1,
+                        "model": "runtime-model",
+                        "default_model": "stale-default",
+                    },
+                },
+            ],
+        }
+        child = self._session(self._coordinator(), "delegated-spawn")
+
+        with (
+            patch(
+                "amplifier_app_cli.session_spawner.AmplifierSession",
+                return_value=child,
+            ),
+            patch("amplifier_app_cli.paths.create_foundation_resolver"),
+        ):
+            await spawn_sub_session(
+                agent_name="worker",
+                instruction="work",
+                parent_session=parent,
+                agent_configs={"worker": {"description": "worker"}},
+                sub_session_id="delegated-spawn",
+                session_metadata={"correlation_id": "keep-me"},
+            )
+
+        _transcript, metadata = SessionStore().load("delegated-spawn")
+        assert metadata["provider"] == "provider-priority"
+        assert metadata["model"] == "runtime-model"
+        assert metadata["config"]["session"]["metadata"] == {
+            "correlation_id": "keep-me"
+        }
+
+        resume_config = SessionConfig(
+            config=metadata["config"],
+            search_paths=[],
+            verbose=False,
+            session_id="delegated-spawn",
+            initial_transcript=[{"role": "user", "content": "delegated"}],
+        )
+        console = MagicMock()
+        with patch("amplifier_app_cli.session_runner.click.confirm") as confirm:
+            await _warn_on_resume_provider_mismatch(
+                resume_config, "delegated-spawn", console, child
+            )
+        console.print.assert_not_called()
+        confirm.assert_not_called()
+
+    async def test_resumed_delegate_writer_updates_pair_and_preserves_metadata(
+        self, tmp_path, monkeypatch
+    ):
+        from unittest.mock import patch
+
+        from amplifier_app_cli.session_spawner import resume_sub_session
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        store = SessionStore()
+        config = {
+            "session": {"orchestrator": "loop-basic", "context": "context-simple"},
+            "providers": [
+                {
+                    "module": "provider-lower",
+                    "config": {"priority": 9, "default_model": "wrong"},
+                },
+                {
+                    "module": "provider-effective",
+                    "config": {
+                        "priority": 0,
+                        "model": "top-level-model",
+                        "default_model": "stale-default",
+                    },
+                },
+            ],
+        }
+        store.save(
+            "delegated-resume",
+            [{"role": "user", "content": "before"}],
+            {
+                "config": config,
+                "provider": "provider-old",
+                "model": "old-model",
+                "custom": {"preserve": True},
+                "parent_id": "parent",
+                "agent_name": "worker",
+                "trace_id": "trace",
+            },
+        )
+        child = self._session(self._coordinator(), "delegated-resume")
+
+        with (
+            patch(
+                "amplifier_app_cli.session_spawner.AmplifierSession",
+                return_value=child,
+            ),
+            patch("amplifier_app_cli.paths.create_foundation_resolver"),
+            patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+            patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+        ):
+            await resume_sub_session("delegated-resume", "continue")
+
+        transcript, metadata = store.load("delegated-resume")
+        assert transcript
+        assert metadata["provider"] == "provider-effective"
+        assert metadata["model"] == "top-level-model"
+        assert metadata["custom"] == {"preserve": True}
+        assert metadata["parent_id"] == "parent"
+        assert metadata["agent_name"] == "worker"
+
+
 class TestResumeMentionExpansion:
     """@-mentions in resume instructions must be expanded before reaching the LLM.
 

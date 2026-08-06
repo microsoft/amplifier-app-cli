@@ -108,7 +108,8 @@ def _prepare_resume_context(
     store = SessionStore()
     transcript, metadata = store.load(session_id)
 
-    # Extract bundle from saved session metadata
+    # SessionStore normalizes malformed parseable metadata at the shared read
+    # boundary; extract_session_mode also defensively ignores unusable bundles.
     saved_bundle, _ = extract_session_mode(metadata)
 
     bundle_name = None

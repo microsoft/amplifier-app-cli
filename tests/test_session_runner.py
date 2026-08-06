@@ -1163,6 +1163,70 @@ class TestWarnOnResumeProviderMismatch:
         mock_provenance.assert_not_called()
 
 
+class TestSessionResumeCommandMalformedMetadata:
+    """Exercise the real command -> shared metadata reader resume path."""
+
+    @pytest.mark.parametrize(
+        "raw_metadata",
+        [[], "metadata", None, {"bundle": ["anchors"]}],
+    )
+    def test_session_resume_silently_falls_back_for_malformed_metadata(
+        self, tmp_path, monkeypatch, raw_metadata
+    ):
+        import json
+
+        import click
+        from click.testing import CliRunner
+
+        from amplifier_app_cli.commands.session import register_session_commands
+        from amplifier_app_cli.session_store import SessionStore
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        store = SessionStore()
+        session_id = "resume-malformed-metadata"
+        session_dir = store.base_dir / session_id
+        session_dir.mkdir(parents=True)
+        (session_dir / "metadata.json").write_text(
+            json.dumps(raw_metadata), encoding="utf-8"
+        )
+        (session_dir / "transcript.jsonl").write_text("", encoding="utf-8")
+
+        cli = click.Group()
+        interactive_chat = AsyncMock(return_value=None)
+        execute_single = AsyncMock(return_value=None)
+        resolved_bundles: list[str | None] = []
+
+        def fake_resolve_config(*, bundle_name, **_kwargs):
+            resolved_bundles.append(bundle_name)
+            return ({}, None)
+
+        register_session_commands(
+            cli,
+            interactive_chat=interactive_chat,
+            execute_single=execute_single,
+            get_module_search_paths=lambda: [],
+        )
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.session.resolve_config",
+                side_effect=fake_resolve_config,
+            ),
+            patch("amplifier_app_cli.commands.session.AppSettings"),
+            patch("amplifier_app_cli.commands.session.get_project_slug", return_value="p"),
+            patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
+        ):
+            result = CliRunner().invoke(
+                cli, ["session", "resume", session_id, "--no-history"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Error resuming session" not in result.output
+        assert resolved_bundles == [None]
+        interactive_chat.assert_awaited_once()
+        assert interactive_chat.await_args.kwargs["initial_transcript"] == []
+
+
 class TestProviderMismatchCheckWiredIntoChokepoint:
     """Integration: create_initialized_session gates the check on config.is_resume.
 

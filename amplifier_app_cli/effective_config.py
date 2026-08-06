@@ -74,7 +74,9 @@ def get_effective_provider_model(config: dict[str, Any]) -> EffectiveProviderMod
     if not isinstance(provider_config, dict):
         provider_config = {}
 
-    model = provider_config.get("model") or provider_config.get("default_model")
+    model = provider_config.get("model")
+    if not isinstance(model, str) or not model:
+        model = provider_config.get("default_model")
     if not isinstance(model, str) or not model:
         model = "default"
 
