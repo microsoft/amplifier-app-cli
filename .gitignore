@@ -69,5 +69,6 @@ next-steps.md
 /amplifier-app-cli/
 
 # Working folders
+.next/
 ai_working/tmp
 tests/recipes/DECISIONS.md

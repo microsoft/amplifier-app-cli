@@ -93,8 +93,15 @@ async def resolve_bundle_config(
             _build_notification_behaviors(app_settings.get_notification_flags())
         )
 
+        # Routing matrix behavior. Resolve routing once so the same active
+        # configuration drives both pre-prepare composition and the
+        # post-prepare hooks-routing config merge below.
+        routing_config = app_settings.get_routing_config()
+        routing_behaviors = _build_routing_behaviors(routing_config)
+        compose_behaviors.extend(routing_behaviors)
+
         # Add app bundles (user-configured bundles that are always composed)
-        # App bundles are explicit user configuration, composed AFTER notification behaviors
+        # App bundles are explicit user configuration, composed AFTER app policy behaviors
         app_bundles = app_settings.get_app_bundles()
         if app_bundles:
             compose_behaviors = compose_behaviors + app_bundles
@@ -133,6 +140,7 @@ async def resolve_bundle_config(
             bundle_name,
             discovery,
             compose_behaviors=compose_behaviors if compose_behaviors else None,
+            required_behaviors=set(routing_behaviors) if routing_behaviors else None,
             source_overrides=combined_sources if combined_sources else None,
             bundle_source_overrides=bundle_sources if bundle_sources else None,
             progress_callback=_on_progress if status else None,
@@ -231,7 +239,6 @@ async def resolve_bundle_config(
     hook_overrides = app_settings.get_notification_hook_overrides()
 
     # Routing matrix config injection
-    routing_config = app_settings.get_routing_config()
     if routing_config:
         routing_hook_override: dict[str, Any] = {
             "module": "hooks-routing",
@@ -314,9 +321,9 @@ async def resolve_bundle_config(
         prepared, bundle_config, sync_tools=bool(bundle_config.get("tools"))
     )
 
-    # Note: Notification hooks are now composed via compose_behaviors parameter
-    # to load_and_prepare_bundle(), so they get properly installed during prepare().
-    # The behavior bundles handle root-session-only logic internally via parent_id check.
+    # Note: Notification and routing hooks are composed via compose_behaviors
+    # before load_and_prepare_bundle() prepares their modules.
+    # Notification behaviors handle root-session-only logic internally via parent_id.
 
     return bundle_config, prepared
 
@@ -881,6 +888,22 @@ def _build_modes_behaviors() -> list[str]:
     return [
         # Only load the behavior, NOT the root bundle (which includes foundation)
         "git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=behaviors/modes.yaml",
+    ]
+
+
+def _build_routing_behaviors(routing_config: dict[str, Any]) -> list[str]:
+    """Return the routing behavior URI when routing configuration is active.
+
+    Routing is an app-level policy. Its behavior must be composed before
+    preparation so ``hooks-routing`` and its module source are available to
+    the prepared bundle. The resolved config is also reused after preparation
+    to apply matrix selection and routing overrides.
+    """
+    if not routing_config:
+        return []
+
+    return [
+        "git+https://github.com/microsoft/amplifier-bundle-routing-matrix@main#subdirectory=behaviors/routing.yaml",
     ]
 
 
