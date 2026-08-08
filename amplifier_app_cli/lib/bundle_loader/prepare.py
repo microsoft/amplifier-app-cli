@@ -76,6 +76,7 @@ async def load_and_prepare_bundle(
     source_overrides: dict[str, str] | None = None,
     progress_callback: Callable[[str, str], None] | None = None,
     bundle_source_overrides: dict[str, str] | None = None,
+    required_behaviors: set[str] | None = None,
 ) -> PreparedBundle:
     """Load bundle by name or URI and prepare it for execution.
 
@@ -108,6 +109,9 @@ async def load_and_prepare_bundle(
             Keys are matched as substrings of include URIs. If matched, the override
             URI is used instead.
             Example: {"amplifier-bundle-superpowers": "/local/path"}
+        required_behaviors: Optional subset of ``compose_behaviors`` whose load
+            or composition failures must propagate. Other behavior failures
+            remain warnings for optional policies such as notifications.
 
     Returns:
         PreparedBundle ready for create_session().
@@ -193,8 +197,10 @@ async def load_and_prepare_bundle(
                     f"Composed behavior '{behavior_bundle.name}' onto '{bundle.name}'"
                 )
             except Exception as e:
+                if required_behaviors and behavior_uri in required_behaviors:
+                    raise
                 logger.warning(f"Failed to compose behavior '{behavior_uri}': {e}")
-                # Continue without this behavior - notifications are optional
+                # Continue without optional behaviors such as notifications.
 
     # 3b. Load agent metadata BEFORE prepare so the agent's declared modules
     # (tools/providers/hooks with `source:` URIs in their .md frontmatter) are
