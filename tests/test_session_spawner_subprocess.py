@@ -101,7 +101,13 @@ class TestSubprocessRouting:
         # Verify subprocess runner was called
         fake_module.run_session_in_subprocess.assert_called_once()
         call_kwargs = fake_module.run_session_in_subprocess.call_args
-        assert call_kwargs.kwargs["config"] == {"session": {}}
+        # The child config carries whatever the parent composed, which now
+        # includes an "agents" key. Assert on the contract this test exists
+        # to guard -- that the session config is forwarded -- rather than
+        # on an exact dict that drifts every time composition gains a key.
+        forwarded = call_kwargs.kwargs["config"]
+        assert forwarded["session"] == {}
+        assert "spawn_mode" not in forwarded
         assert call_kwargs.kwargs["prompt"] == "Do something"
         assert call_kwargs.kwargs["parent_id"] == "parent-session-id"
         assert call_kwargs.kwargs["session_id"] == "fixed-test-id"

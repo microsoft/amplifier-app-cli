@@ -152,7 +152,14 @@ class TestProviderAdd:
             ]
             MockPM.return_value = mock_pm
 
-            result = runner.invoke(provider, ["add", "openai"])
+            # `provider add` now detects that the env var this instance would
+            # use is already claimed by another instance and prompts for a
+            # distinct one. Left unanswered it reads EOF and cancels, so the
+            # provider is never written and the priority assertion below has
+            # nothing to inspect. Supply the per-instance var name.
+            result = runner.invoke(
+                provider, ["add", "openai"], input="OPENAI_PROVIDER_OPENAI_API_KEY\n"
+            )
 
         assert result.exit_code == 0, f"Output: {result.output}"
         providers = settings.get_provider_overrides()
