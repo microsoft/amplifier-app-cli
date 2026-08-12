@@ -582,6 +582,17 @@ def _render_bundle_show_text(
     active = bundle_obj.name == active_bundle
     console.print(f"{indent}active: {'yes' if active else 'no'}")
 
+    # Bundle-declared routing default (a top-level ``routing:`` section in
+    # bundle frontmatter). Read defensively via getattr() -- forward-compat
+    # with installs of amplifier-foundation that don't declare a ``routing``
+    # field on Bundle yet.
+    bundle_routing = getattr(bundle_obj, "routing", None) or {}
+    if isinstance(bundle_routing, dict) and bundle_routing.get("matrix"):
+        console.print(
+            f"{indent}Routing matrix: {escape_markup(str(bundle_routing['matrix']))} "
+            "(bundle default)"
+        )
+
     if view == "detailed":
         # Full mount plan details
         providers = mount_plan.get("providers", [])

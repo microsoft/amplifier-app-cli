@@ -5,9 +5,10 @@ Exercises the code path directly and also through the full async function.
 """
 
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+
 from amplifier_app_cli.lib.merge_utils import deep_merge
 from amplifier_app_cli.lib.settings import NotificationFlags
 from amplifier_app_cli.runtime.config import (
@@ -16,7 +17,6 @@ from amplifier_app_cli.runtime.config import (
     _apply_tool_overrides,
     resolve_bundle_config,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PART 1: Direct logic tests — exercise the exact code path added in the fix
@@ -318,7 +318,12 @@ def _make_app_settings(config_overrides=None, **kwargs):
     settings.get_notification_hook_overrides.return_value = kwargs.get(
         "hook_overrides", []
     )
-    settings.get_routing_config.return_value = kwargs.get("routing_config", None)
+    routing_config = kwargs.get("routing_config", None)
+    settings.get_routing_config.return_value = routing_config
+    settings.get_routing_config_with_source.return_value = (
+        routing_config or {},
+        kwargs.get("routing_source", None),
+    )
     settings.get_notification_flags.return_value = NotificationFlags(
         desktop_enabled=False,
         push_enabled=False,
@@ -374,7 +379,7 @@ class TestFullPipelineIntegration:
         assert required_behaviors <= set(compose_behaviors)
         assert result["hooks"][0]["config"]["default_matrix"] == "balanced"
         assert result["hooks"][0]["config"]["overrides"] == {"coding": "quality"}
-        settings.get_routing_config.assert_called_once_with()
+        settings.get_routing_config_with_source.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_inactive_routing_not_composed_before_prepare(self):
@@ -403,7 +408,7 @@ class TestFullPipelineIntegration:
         )
         assert prepare.await_args.kwargs["required_behaviors"] is None
         assert result["hooks"] == []
-        settings.get_routing_config.assert_called_once_with()
+        settings.get_routing_config_with_source.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_routing_preparation_error_propagates(self):

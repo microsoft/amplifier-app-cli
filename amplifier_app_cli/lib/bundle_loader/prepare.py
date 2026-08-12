@@ -77,6 +77,7 @@ async def load_and_prepare_bundle(
     progress_callback: Callable[[str, str], None] | None = None,
     bundle_source_overrides: dict[str, str] | None = None,
     required_behaviors: set[str] | None = None,
+    on_bundle_loaded: Callable[[Bundle], list[str]] | None = None,
 ) -> PreparedBundle:
     """Load bundle by name or URI and prepare it for execution.
 
@@ -112,6 +113,19 @@ async def load_and_prepare_bundle(
         required_behaviors: Optional subset of ``compose_behaviors`` whose load
             or composition failures must propagate. Other behavior failures
             remain warnings for optional policies such as notifications.
+        on_bundle_loaded: Optional callback invoked with the freshly loaded
+            ``Bundle`` immediately after step 2 (load) -- BEFORE any
+            ``compose_behaviors`` (app-policy behaviors like modes,
+            notifications, routing) are composed onto it. This is the one
+            point where a caller can inspect bundle-declared defaults (e.g.
+            a bundle's own ``routing:`` section) and decide whether to
+            compose an additional behavior in response, without triggering
+            a second bundle load. The callback returns a list of additional
+            behavior URIs to compose (may be empty); these are appended to
+            ``compose_behaviors`` (de-duplicated) and to ``required_behaviors``
+            for this call. Ordering matters: running this before app-policy
+            composition means an app-injected behavior can never masquerade
+            as a bundle default.
 
     Returns:
         PreparedBundle ready for create_session().
@@ -164,6 +178,13 @@ async def load_and_prepare_bundle(
 
     logger.info(f"Loading bundle '{bundle_name}' from {uri}")
 
+    # Normalize to mutable local collections so on_bundle_loaded() below can
+    # append additional behaviors/requirements without the caller needing to
+    # pre-size compose_behaviors/required_behaviors for a callback result it
+    # can't know in advance.
+    compose_behaviors = list(compose_behaviors) if compose_behaviors else []
+    required_behaviors = set(required_behaviors) if required_behaviors else set()
+
     if progress_callback:
         progress_callback("loading", bundle_name)
 
@@ -180,6 +201,20 @@ async def load_and_prepare_bundle(
     # load_bundle() creates an empty registry that doesn't know about well-known bundles.
     bundle = await load_bundle(uri, registry=discovery.registry)
     logger.debug(f"Loaded bundle: {bundle.name} v{bundle.version}")
+
+    # 2b. Let the caller react to the freshly loaded bundle's OWN declared
+    # defaults (e.g. a bundle-declared routing matrix) before any app-policy
+    # behavior is composed onto it. Firing this here -- after includes are
+    # composed by load_bundle() but BEFORE compose_behaviors below -- means
+    # an app-injected behavior can never masquerade as a bundle default: the
+    # callback only ever sees what the bundle itself (plus its includes)
+    # declared.
+    if on_bundle_loaded:
+        extra_behaviors = on_bundle_loaded(bundle) or []
+        for extra_uri in extra_behaviors:
+            if extra_uri not in compose_behaviors:
+                compose_behaviors.append(extra_uri)
+            required_behaviors.add(extra_uri)
 
     # 3. Compose additional behavior bundles (app-level policies like notifications)
     if compose_behaviors:

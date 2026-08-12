@@ -560,10 +560,57 @@ class AppSettings:
               matrix: balanced
               overrides:
                 coding: special-config
+
+        Thin wrapper around get_routing_config_with_source() -- kept so
+        existing callers (which only care about the merged config, not
+        which scope set it) don't need to change.
+        """
+        routing, _source = self.get_routing_config_with_source()
+        return routing
+
+    def get_routing_config_with_source(self) -> tuple[dict[str, Any], str | None]:
+        """Return (merged routing config, source) for the routing: section.
+
+        ``source`` is the path of the highest-precedence scope file that
+        sets ``routing.matrix`` specifically, or ``None`` if no scope sets
+        it (e.g. only a bundle-declared default applies, or routing.matrix
+        is unset everywhere).
+
+        Reuses the same scope list and order as get_merged_settings()
+        (global -> project -> local -> session, most specific wins). The
+        merged config is exactly what get_routing_config() has always
+        returned. Separately, this walks the same scopes to find the LAST
+        (i.e. highest-precedence) scope file whose YAML actually contains
+        a ``routing.matrix`` key -- callers use this to attribute "who set
+        the active matrix" in user-facing messages (see
+        runtime/config.py's bundle-declared routing matrix precedence).
         """
         merged = self.get_merged_settings()
         routing = merged.get("routing", {})
-        return routing if isinstance(routing, dict) else {}
+        routing = routing if isinstance(routing, dict) else {}
+
+        source: str | None = None
+        paths_to_check = [
+            self.paths.global_settings,
+            self.paths.project_settings,
+            self.paths.local_settings,
+        ]
+        if self.paths.session_settings:
+            paths_to_check.append(self.paths.session_settings)
+
+        for path in paths_to_check:
+            if not path.exists():
+                continue
+            try:
+                with open(path, encoding="utf-8") as f:
+                    content = yaml.safe_load(f) or {}
+            except Exception:
+                continue  # Skip malformed files, same as get_merged_settings()
+            scope_routing = content.get("routing")
+            if isinstance(scope_routing, dict) and "matrix" in scope_routing:
+                source = str(path)
+
+        return routing, source
 
     def set_routing_matrix(self, matrix_name: str, scope: Scope = "global") -> None:
         """Write routing: {matrix: <name>} to settings at specified scope.
