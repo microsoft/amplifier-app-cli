@@ -368,6 +368,7 @@ class TestFullPipelineIntegration:
                 bundle_name="test", app_settings=settings
             )
 
+        assert prepare.await_args is not None
         compose_behaviors = prepare.await_args.kwargs["compose_behaviors"]
         required_behaviors = prepare.await_args.kwargs["required_behaviors"]
         routing_uri = (
@@ -402,6 +403,7 @@ class TestFullPipelineIntegration:
                 bundle_name="test", app_settings=settings
             )
 
+        assert prepare.await_args is not None
         compose_behaviors = prepare.await_args.kwargs["compose_behaviors"]
         assert all(
             "amplifier-bundle-routing-matrix" not in uri for uri in compose_behaviors
@@ -427,6 +429,7 @@ class TestFullPipelineIntegration:
         ):
             await resolve_bundle_config(bundle_name="test", app_settings=settings)
 
+        assert prepare.await_args is not None
         assert any(
             "amplifier-bundle-routing-matrix" in uri
             for uri in prepare.await_args.kwargs["compose_behaviors"]
