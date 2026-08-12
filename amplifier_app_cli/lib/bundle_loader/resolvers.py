@@ -192,7 +192,7 @@ class SettingsProviderProtocol(Protocol):
 class FoundationSettingsResolver:
     """Settings-based resolver using foundation's source handling.
 
-    Uses the same 6-layer resolution strategy as StandardModuleSourceResolver,
+    Uses the same resolution strategy as StandardModuleSourceResolver,
     but returns Source objects that use foundation's GitSourceHandler for
     git operations. This ensures the NEW cache format is used:
     {repo-name}-{hash}/ instead of legacy {hash}/{ref}/ format.
@@ -201,8 +201,8 @@ class FoundationSettingsResolver:
     1. Environment variable (AMPLIFIER_MODULE_<ID>)
     2. Workspace convention (workspace_dir/<id>/)
     3. Settings provider (merges project + user settings)
-    4. Legacy module pattern (removed)
-    6. Installed package
+    4. Source hint (from bundle config)
+    5. Installed package (fallback)
     """
 
     def __init__(
