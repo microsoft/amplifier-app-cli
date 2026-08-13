@@ -241,3 +241,100 @@ class TestLoadAndPrepareBundleSourceOverrides:
 
         # set_include_source_resolver was NOT called
         mock_registry.set_include_source_resolver.assert_not_called()
+
+
+class TestLoadAndPrepareBundleRequiredBehaviors:
+    """Required behavior failures must not be hidden by the loader."""
+
+    @pytest.mark.asyncio
+    async def test_required_behavior_load_failure_propagates(self):
+        """A routing behavior load error aborts before bundle preparation."""
+        from amplifier_app_cli.lib.bundle_loader.prepare import load_and_prepare_bundle
+
+        routing_uri = (
+            "git+https://github.com/microsoft/amplifier-bundle-routing-matrix@main"
+            "#subdirectory=behaviors/routing.yaml"
+        )
+        mock_discovery = MagicMock()
+        mock_discovery.find.return_value = "file:///path/to/bundle.yaml"
+        mock_bundle = MagicMock()
+        mock_bundle.prepare = AsyncMock()
+
+        with (
+            patch(
+                "amplifier_app_cli.lib.bundle_loader.prepare.load_bundle",
+                new_callable=AsyncMock,
+                side_effect=[
+                    mock_bundle,
+                    RuntimeError("hooks-routing module unavailable"),
+                ],
+            ),
+            pytest.raises(RuntimeError, match="hooks-routing module unavailable"),
+        ):
+            await load_and_prepare_bundle(
+                "my-bundle",
+                mock_discovery,
+                compose_behaviors=[routing_uri],
+                required_behaviors={routing_uri},
+            )
+
+        mock_bundle.prepare.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_required_behavior_compose_failure_propagates(self):
+        """A routing behavior composition error aborts before preparation."""
+        from amplifier_app_cli.lib.bundle_loader.prepare import load_and_prepare_bundle
+
+        routing_uri = "file:///routing.yaml"
+        mock_discovery = MagicMock()
+        mock_discovery.find.return_value = "file:///path/to/bundle.yaml"
+        mock_bundle = MagicMock()
+        mock_bundle.compose.side_effect = RuntimeError("routing compose failed")
+        mock_bundle.prepare = AsyncMock()
+        behavior_bundle = MagicMock()
+
+        with (
+            patch(
+                "amplifier_app_cli.lib.bundle_loader.prepare.load_bundle",
+                new_callable=AsyncMock,
+                side_effect=[mock_bundle, behavior_bundle],
+            ),
+            pytest.raises(RuntimeError, match="routing compose failed"),
+        ):
+            await load_and_prepare_bundle(
+                "my-bundle",
+                mock_discovery,
+                compose_behaviors=[routing_uri],
+                required_behaviors={routing_uri},
+            )
+
+        mock_bundle.prepare.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_optional_behavior_load_failure_is_still_ignored(self):
+        """Optional notification behavior failures remain warning-and-continue."""
+        from amplifier_app_cli.lib.bundle_loader.prepare import load_and_prepare_bundle
+
+        optional_uri = "file:///optional-notifications.yaml"
+        mock_discovery = MagicMock()
+        mock_discovery.find.return_value = "file:///path/to/bundle.yaml"
+        mock_bundle = MagicMock()
+        mock_prepared = MagicMock()
+        mock_bundle.prepare = AsyncMock(return_value=mock_prepared)
+
+        with patch(
+            "amplifier_app_cli.lib.bundle_loader.prepare.load_bundle",
+            new_callable=AsyncMock,
+            side_effect=[
+                mock_bundle,
+                RuntimeError("optional behavior unavailable"),
+            ],
+        ):
+            result = await load_and_prepare_bundle(
+                "my-bundle",
+                mock_discovery,
+                compose_behaviors=[optional_uri],
+            )
+
+        assert result is mock_prepared
+        mock_bundle.prepare.assert_awaited_once()

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from amplifier_app_cli.lib.merge_utils import deep_merge
+from amplifier_app_cli.lib.settings import NotificationFlags
 from amplifier_app_cli.runtime.config import (
     _apply_hook_overrides,
     _apply_provider_overrides,
@@ -318,6 +319,11 @@ def _make_app_settings(config_overrides=None, **kwargs):
         "hook_overrides", []
     )
     settings.get_routing_config.return_value = kwargs.get("routing_config", None)
+    settings.get_notification_flags.return_value = NotificationFlags(
+        desktop_enabled=False,
+        push_enabled=False,
+    )
+    settings.get_app_bundles.return_value = []
     settings.get_source_overrides.return_value = {}
     settings.get_module_sources.return_value = {}
     settings.get_bundle_sources.return_value = {}
@@ -330,6 +336,96 @@ class TestFullPipelineIntegration:
     All three lazy imports inside resolve_bundle_config() must be patched
     at their SOURCE modules since they're imported inside the function body.
     """
+
+    @pytest.mark.asyncio
+    async def test_active_routing_composed_before_prepare(self):
+        """Active routing is composed and required before preparation."""
+        mock_prepared = MagicMock()
+        mock_prepared.mount_plan = {"hooks": []}
+        mock_prepared.bundle.load_agent_metadata = MagicMock()
+        settings = _make_app_settings(
+            routing_config={
+                "matrix": "balanced",
+                "overrides": {"coding": "quality"},
+            }
+        )
+        prepare = AsyncMock(return_value=mock_prepared)
+
+        with (
+            patch(
+                "amplifier_app_cli.lib.bundle_loader.prepare.load_and_prepare_bundle",
+                prepare,
+            ),
+            patch("amplifier_app_cli.paths.get_bundle_search_paths", return_value=[]),
+            patch("amplifier_app_cli.lib.bundle_loader.AppBundleDiscovery"),
+        ):
+            result, _ = await resolve_bundle_config(
+                bundle_name="test", app_settings=settings
+            )
+
+        compose_behaviors = prepare.await_args.kwargs["compose_behaviors"]
+        required_behaviors = prepare.await_args.kwargs["required_behaviors"]
+        routing_uri = (
+            "git+https://github.com/microsoft/amplifier-bundle-routing-matrix@main"
+            "#subdirectory=behaviors/routing.yaml"
+        )
+        assert routing_uri in compose_behaviors
+        assert required_behaviors == {routing_uri}
+        assert required_behaviors <= set(compose_behaviors)
+        assert result["hooks"][0]["config"]["default_matrix"] == "balanced"
+        assert result["hooks"][0]["config"]["overrides"] == {"coding": "quality"}
+        settings.get_routing_config.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_inactive_routing_not_composed_before_prepare(self):
+        """Inactive routing is neither composed nor marked required."""
+        mock_prepared = MagicMock()
+        mock_prepared.mount_plan = {"hooks": []}
+        mock_prepared.bundle.load_agent_metadata = MagicMock()
+        settings = _make_app_settings(routing_config={})
+        prepare = AsyncMock(return_value=mock_prepared)
+
+        with (
+            patch(
+                "amplifier_app_cli.lib.bundle_loader.prepare.load_and_prepare_bundle",
+                prepare,
+            ),
+            patch("amplifier_app_cli.paths.get_bundle_search_paths", return_value=[]),
+            patch("amplifier_app_cli.lib.bundle_loader.AppBundleDiscovery"),
+        ):
+            result, _ = await resolve_bundle_config(
+                bundle_name="test", app_settings=settings
+            )
+
+        compose_behaviors = prepare.await_args.kwargs["compose_behaviors"]
+        assert all(
+            "amplifier-bundle-routing-matrix" not in uri for uri in compose_behaviors
+        )
+        assert prepare.await_args.kwargs["required_behaviors"] is None
+        assert result["hooks"] == []
+        settings.get_routing_config.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_routing_preparation_error_propagates(self):
+        """Preparation errors remain fatal when routing is active."""
+        settings = _make_app_settings(routing_config={"matrix": "balanced"})
+        prepare = AsyncMock(side_effect=RuntimeError("hooks-routing unavailable"))
+
+        with (
+            patch(
+                "amplifier_app_cli.lib.bundle_loader.prepare.load_and_prepare_bundle",
+                prepare,
+            ),
+            patch("amplifier_app_cli.paths.get_bundle_search_paths", return_value=[]),
+            patch("amplifier_app_cli.lib.bundle_loader.AppBundleDiscovery"),
+            pytest.raises(RuntimeError, match="hooks-routing unavailable"),
+        ):
+            await resolve_bundle_config(bundle_name="test", app_settings=settings)
+
+        assert any(
+            "amplifier-bundle-routing-matrix" in uri
+            for uri in prepare.await_args.kwargs["compose_behaviors"]
+        )
 
     @pytest.mark.asyncio
     async def test_hook_override_flows_through_full_pipeline(self):
