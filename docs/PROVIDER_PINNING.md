@@ -193,3 +193,37 @@ amplifier provider list   show configured providers
 amplifier provider test   check every key works
 amplifier run -p <name>   start a session on <name>
 ```
+
+## Deep planning
+
+`/deep-plan <task>` creates a short-lived planning session, pins only that child
+session to a configured provider, and returns its advisory plan to your normal
+session for execution. Your parent session's provider selection, tools,
+permissions, and approvals do not change.
+
+Configure the child planner with `deep_plan.provider`. If the setting is absent,
+it defaults to the provider ID `fable`:
+
+```yaml
+deep_plan:
+  provider: fable
+```
+
+The provider must be mounted and pin-able. Pinning intentionally preserves the
+same-vendor guard used by `/provider`: an Anthropic `fable` provider cannot plan
+for a child whose automatic/default provider is OpenAI (and vice versa). This
+prevents `/deep-plan` from silently mixing providers. Select a same-vendor
+session/matrix first if you want to use that planner.
+
+`/deep-plan` fails before normal execution starts when the provider is
+unavailable, crosses that vendor boundary, cannot be pinned exactly, or the
+planner does not return a valid plan. The CLI reports the provider/model that
+the child actually resolved when available; a configured provider ID alone is
+not presented as proof of a particular model. The advisory plan is not
+authority to bypass normal execution safeguards.
+
+For a task with `@mentions`, the CLI expands those files once before planning.
+The planner and the normal execution turn receive the same expanded task
+snapshot. One Ctrl+C scope covers the planner and the handoff to normal
+execution, so a cancellation observed at that handoff prevents the parent turn
+from starting.

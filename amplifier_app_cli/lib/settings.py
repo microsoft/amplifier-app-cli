@@ -9,12 +9,10 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
-from filelock import BaseFileLock
-from filelock import FileLock
+from filelock import BaseFileLock, FileLock
 
 Scope = Literal["local", "project", "global", "session"]
 
@@ -135,6 +133,13 @@ class AppSettings:
                 except Exception:
                     pass  # Skip malformed files
         return result
+
+    def get_deep_plan_provider(self) -> str:
+        """Return the configured deep-plan provider, validating explicit values."""
+
+        from amplifier_app_cli.deep_plan import resolve_planner_provider
+
+        return resolve_planner_provider(self.get_merged_settings())
 
     # ----- Bundle settings -----
 
