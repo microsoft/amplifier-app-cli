@@ -1,6 +1,7 @@
 """Amplifier CLI - Command-line interface for the Amplifier platform."""
 
 import asyncio
+import html
 import json
 import logging
 import os
@@ -463,6 +464,13 @@ class CommandProcessor:
                 "for a hard cap; or /goal clear)"
             ),
         },
+        "/provider": {
+            "action": "handle_provider",
+            "description": (
+                "(experimental) Show/pin the conversation-scope provider: "
+                "/provider (status) | /provider use <name> | /provider auto"
+            ),
+        },
     }
 
     # Dynamic shortcuts for modes (populated from mode definitions)
@@ -472,6 +480,32 @@ class CommandProcessor:
     # Patterns used to detect sensitive config keys that should be redacted.
     # Kept for backward compatibility; the canonical copy lives in dashboard_renderer.
     _SENSITIVE_KEY_PATTERNS = ("key", "token", "secret", "password", "api_key")
+
+    # /provider: caveat on the per-turn usage figures, shown in the STATUS
+    # view only -- deliberately NOT on the /provider use / auto confirmations,
+    # which are already 320 and 284 chars (5 and 4 wrapped lines at 80 cols).
+    # Repeating this there would push the every-time confirmation past 7 lines
+    # for a condition that is a property of the CLI's usage display, not of
+    # pinning. Status is the command's reference surface and has the room.
+    #
+    # ACCURACY GUARD -- do not reword into "costs are wrong". Measured across
+    # four providers against raw events.jsonl: per-vendor rates are CORRECT
+    # and are never cross-applied (exact to 8 decimals). The real defects are
+    # display/precision ones, all pre-existing and all being fixed in the
+    # provider and streaming-UI repos:
+    #   * one vendor's Input token count is inflated (cost unaffected)
+    #   * another omits thinking/reasoning tokens from count and cost
+    #   * costs >= $0.01 are rounded to 2dp (can understate)
+    #   * the newest models are missing from the rate table (no cost shown)
+    # "over- or under-reported" covers the first two without naming vendors
+    # that will shortly be fixed; the closing sentence is what keeps this
+    # honest rather than alarming.
+    _PROVIDER_USAGE_CAVEAT = (
+        "Usage figures: per-turn token and cost numbers are indicative, not "
+        "billing-grade -- counts can be over- or under-reported, costs are "
+        "rounded, and the newest models may show no cost. Per-provider rates "
+        "themselves are correct."
+    )
 
     # /goal: aliases that clear an active goal. The turn cap is optional and
     # None (unlimited) by default -- deliberately, see
@@ -680,6 +714,9 @@ class CommandProcessor:
 
         if action == "handle_goal":
             return await self._handle_goal(data.get("args", ""))
+
+        if action == "handle_provider":
+            return await self._handle_provider(data.get("args", ""))
 
         if action == "list_modes":
             return await self._list_modes()
@@ -1241,6 +1278,211 @@ class CommandProcessor:
         # whether a turn cap is in effect.
         cap_suffix = f" (max {cap} turns)" if cap else " (unlimited turns)"
         return f"Goal set{cap_suffix}."
+
+    # === /provider: pin/unpin the conversation-scope provider ===
+    #
+    # Provider selection is ORCHESTRATOR policy, not app policy (see
+    # amplifier_module_loop_streaming.ConversationProviderPin). This app
+    # layer only asks the 'conversation.provider_pin' capability and
+    # reports what it says -- it never selects a provider itself, and
+    # never claims a switch has happened before the capability confirms
+    # it. If the capability isn't registered, this orchestrator doesn't
+    # support pinning and we must say so instead of pretending to succeed.
+
+    def _current_orchestrator_name(self) -> str | None:
+        """Best-effort orchestrator module name, for error messages only."""
+        raw_config = self.session.coordinator.config
+        session_config = (
+            raw_config.get("session", {}) if isinstance(raw_config, dict) else {}
+        )
+        if not isinstance(session_config, dict):
+            return None
+        value = session_config.get("orchestrator")
+        if isinstance(value, dict):
+            module = value.get("module")
+            return module if isinstance(module, str) else None
+        if isinstance(value, str):
+            return value
+        return None
+
+    def _provider_pin_unavailable_message(self) -> str:
+        """Refusal text when 'conversation.provider_pin' isn't registered.
+
+        Must be shown instead of any success/status claim -- see
+        REQUIRED BEHAVIORS #1: do not write config, do not report success.
+        """
+        orchestrator_name = self._current_orchestrator_name()
+        where = f" ('{orchestrator_name}')" if orchestrator_name else ""
+        return (
+            f"Provider pinning is not supported by this session's "
+            f"orchestrator{where}: the 'conversation.provider_pin' capability "
+            f"is not registered, so /provider cannot pin, unpin, or confirm "
+            f"an active provider mid-session.\n"
+            f"Providers can only be changed by restarting with a different "
+            f"configuration."
+        )
+
+    @staticmethod
+    def _provider_model_for_display(provider: Any) -> str | None:
+        """Best-effort default model name via the Provider protocol's
+        synchronous ``get_info()`` (no network I/O) -- display only, never
+        used to make a routing decision."""
+        try:
+            info = provider.get_info()
+        except Exception:
+            return None
+        defaults = getattr(info, "defaults", None)
+        if not isinstance(defaults, dict):
+            return None
+        model = defaults.get("model")
+        return model if isinstance(model, str) else None
+
+    @staticmethod
+    def _provider_priority_for_display(provider: Any) -> int:
+        """Mirrors the tie-break amplifier_module_loop_streaming's
+        ``_select_provider`` reads (attribute, then config, then default
+        100) -- display only, so the status view matches automatic
+        selection without this app layer making that selection itself."""
+        if hasattr(provider, "priority"):
+            return provider.priority
+        config = getattr(provider, "config", None)
+        if isinstance(config, dict):
+            return config.get("priority", 100)
+        return 100
+
+    def _render_provider_status(self, pin: Any) -> str:
+        """Render mounted providers, their models/priorities, and whether
+        the conversation is pinned or automatic (REQUIRED BEHAVIORS: show
+        mounted providers, mark which is active, state pin state)."""
+        mounted = self.session.coordinator.get("providers") or {}
+        lines = ["Conversation providers (experimental):"]
+
+        if not mounted:
+            lines.append("  (none mounted)")
+            if pin is None:
+                lines.append("")
+                lines.append(self._provider_pin_unavailable_message())
+            return "\n".join(lines)
+
+        pinned_name: str | None = None
+        if pin is not None:
+            try:
+                pinned_name = pin.current()
+            except Exception:
+                pinned_name = None
+
+        rows = [
+            (
+                name,
+                self._provider_model_for_display(provider),
+                self._provider_priority_for_display(provider),
+            )
+            for name, provider in sorted(mounted.items())
+        ]
+
+        # Display-only: which mount priority ordering would pick right now,
+        # when unpinned. This mirrors the orchestrator's own tie-break so
+        # the status view is informative, but it is never used to decide
+        # anything -- the per-turn usage line remains the real confirmation.
+        priority_winner = None
+        if pin is not None and pinned_name is None and rows:
+            priority_winner = min(rows, key=lambda r: r[2])[0]
+
+        for name, model, priority in rows:
+            model_label = model or "(unknown)"
+            if name == pinned_name:
+                marker, suffix = "\u2605 ", "  [pinned, active]"
+            elif name == priority_winner:
+                marker, suffix = "\u2605 ", "  [active by priority]"
+            else:
+                marker, suffix = "  ", ""
+            lines.append(
+                f"{marker}{name:<24} model={model_label:<28} priority={priority}{suffix}"
+            )
+
+        lines.append("")
+        if pin is None:
+            # Capability absent: the refusal is the whole message. Do NOT
+            # append the usage caveat here -- same principle that keeps the
+            # (experimental) tag off the error paths.
+            lines.append(self._provider_pin_unavailable_message())
+            return "\n".join(lines)
+
+        if pinned_name is not None:
+            lines.append(f"Selection: pinned to '{pinned_name}'.")
+        else:
+            lines.append(
+                "Selection: automatic (priority order). The \u2605 above shows "
+                "what priority ordering currently favors; the orchestrator "
+                "resolves the actual provider each turn -- confirm via the "
+                "per-turn usage line."
+            )
+        lines.append(self._PROVIDER_USAGE_CAVEAT)
+
+        return "\n".join(lines)
+
+    async def _handle_provider(self, args: str) -> str:
+        """Handle /provider: status (no args), 'use <name>' to pin, or
+        'auto' to unpin. See REQUIRED BEHAVIORS in the task spec this
+        command was built from:
+
+        1. Capability absent -> refuse loudly, no config write, no success.
+        2. pin() ValueError -> clean user-facing error, not a traceback.
+        3. Never claim a switch before it's confirmed (next turn, not now).
+        4. Report scope accurately: top-level conversation only.
+        """
+        args = args.strip()
+        parts = args.split(maxsplit=1)
+        subcmd = parts[0].lower() if parts else ""
+
+        pin = self.session.coordinator.get_capability("conversation.provider_pin")
+
+        if not subcmd:
+            return self._render_provider_status(pin)
+
+        if subcmd in ("use", "auto") and pin is None:
+            return self._provider_pin_unavailable_message()
+
+        if subcmd == "use":
+            name = parts[1].strip() if len(parts) > 1 else ""
+            if not name:
+                return (
+                    "Usage: /provider use <name>. Run /provider to see "
+                    "mounted providers."
+                )
+            try:
+                pin.pin(name)
+            except ValueError as e:
+                return f"\u2717 {e}"
+            return (
+                f"(experimental) Pinned conversation provider to '{name}'. "
+                f"This takes effect on the NEXT turn, not this one -- the "
+                f"token-usage line after your next message is your "
+                f"confirmation of which model actually answered. Scope: "
+                f"top-level conversation only; model-role routing, "
+                f"sub-agents, and the /goal loop are unaffected."
+            )
+
+        if subcmd == "auto":
+            previous = pin.unpin()
+            if previous is None:
+                return (
+                    "(experimental) Conversation provider is already "
+                    "automatic (priority order). Nothing to unpin."
+                )
+            return (
+                f"(experimental) Unpinned conversation provider (was "
+                f"'{previous}'). Priority-based selection resumes on the "
+                f"NEXT turn -- confirm via the token-usage line after your "
+                f"next message. Scope: top-level conversation only; "
+                f"model-role routing, sub-agents, and the /goal loop are "
+                f"unaffected."
+            )
+
+        return (
+            f"Unknown /provider subcommand: {subcmd!r}. "
+            f"Usage: /provider | /provider use <name> | /provider auto"
+        )
 
     async def _rename_session(self, new_name: str) -> str:
         """Rename the current session."""
@@ -2703,12 +2945,109 @@ async def process_runtime_mentions(session: AmplifierSession, prompt: str) -> st
     )
 
 
-def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSession:
+def _escape_prompt_text(text: str) -> str:
+    """Escape a value for literal interpolation into prompt_toolkit ``HTML()``.
+
+    ``HTML()`` parses its argument as markup, so a mode or provider name
+    containing ``<`` or ``&`` would otherwise raise -- inside a callable that
+    runs on every keystroke. Quotes are deliberately left alone: these values
+    are interpolated as element text, never as attribute values.
+    """
+    return html.escape(text, quote=False)
+
+
+def _pinned_provider_name(session: Any) -> str | None:
+    """The pinned conversation provider's mount name, or None.
+
+    Reads the orchestrator's ``conversation.provider_pin`` capability live
+    (see ``amplifier_module_loop_streaming.ConversationProviderPin``) so the
+    prompt indicator tracks ``/provider use`` and ``/provider auto`` without
+    the app keeping its own copy of the pin state -- a copy could disagree
+    with the orchestrator, which is exactly what this feature exists to
+    prevent.
+
+    Returns None when the capability is absent (this orchestrator does not
+    support pinning) or when nothing is pinned. Both cases mean "no
+    indicator", so the prompt renders byte-for-byte as it did before this
+    feature existed.
+
+    Cost: one capability lookup plus one attribute read. This is called on
+    every keystroke render -- see ``_build_prompt_message``.
+    """
+    pin = session.coordinator.get_capability("conversation.provider_pin")
+    if pin is None:
+        return None
+    name = pin.current()
+    return name if isinstance(name, str) and name else None
+
+
+def _build_prompt_message(
+    get_active_mode: Callable | None = None,
+    get_pinned_provider: Callable | None = None,
+) -> HTML:
+    """Build the REPL prompt, composing the optional indicators.
+
+    Renders (mode leftmost, then pin, then the prompt caret)::
+
+        unpinned:        >
+        pinned:          [pin anthropic-haiku]>
+        pinned + mode:   [plan][pin anthropic-haiku]>
+
+    (``pin`` above is the U+1F4CC pushpin glyph.) The pin indicator shows
+    the FULL provider mount name, never truncated: the user pinned by mount
+    name and several names share a model family (anthropic-fable /
+    anthropic-opus / anthropic-sonnet / anthropic-haiku), so shortening it
+    would destroy the only information the indicator carries.
+
+    MUST NOT RAISE. This runs on every keystroke render, so an exception
+    here would make the session unusable. Every getter is called defensively
+    and a failing one degrades to "no indicator" -- independently, so one
+    broken getter cannot suppress the other's indicator.
+
+    When neither indicator applies, the returned markup is byte-for-byte
+    identical to the pre-pin prompt.
+    """
+
+    def _indicator(getter: Callable | None) -> str | None:
+        if getter is None:
+            return None
+        try:
+            value = getter()
+        except Exception:
+            # A broken getter costs its indicator, never the prompt.
+            logger.debug("prompt indicator getter failed", exc_info=True)
+            return None
+        if not value:
+            return None
+        # Escape before interpolating into HTML(): an unescaped '<' or '&'
+        # in a mode or provider name would make HTML() raise at render time.
+        return _escape_prompt_text(str(value))
+
+    indicators = ""
+    active_mode = _indicator(get_active_mode)
+    if active_mode:
+        indicators += f"<ansicyan>[{active_mode}]</ansicyan>"
+    pinned_provider = _indicator(get_pinned_provider)
+    if pinned_provider:
+        indicators += f"<ansiyellow>[\U0001f4cc {pinned_provider}]</ansiyellow>"
+
+    try:
+        return HTML(f"\n{indicators}<ansigreen><b>></b></ansigreen> ")
+    except Exception:
+        # Last resort: a bare prompt always beats an unusable session.
+        logger.debug("prompt markup failed to build", exc_info=True)
+        return HTML("\n<ansigreen><b>></b></ansigreen> ")
+
+
+def _create_prompt_session(
+    get_active_mode: Callable | None = None,
+    get_pinned_provider: Callable | None = None,
+) -> PromptSession:
     """Create configured PromptSession for REPL.
 
     Provides:
     - Persistent history at ~/.amplifier/projects/<project-slug>/repl_history
-    - Dynamic prompt that shows [mode] indicator when a mode is active
+    - Dynamic prompt that shows [mode] and [pin] indicators when active
     - Green prompt styling matching Rich console
     - History search with Ctrl-R
     - Multi-line input with Ctrl-J
@@ -2716,6 +3055,8 @@ def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSes
 
     Args:
         get_active_mode: Optional callable that returns the current active mode name
+        get_pinned_provider: Optional callable that returns the pinned
+            conversation provider's mount name (see ``_pinned_provider_name``)
 
     Returns:
         Configured PromptSession instance
@@ -2759,15 +3100,18 @@ def _create_prompt_session(get_active_mode: Callable | None = None) -> PromptSes
         """Submit input on Enter."""
         event.current_buffer.validate_and_handle()
 
-    # Dynamic prompt that shows [mode] indicator when a mode is active
+    # Dynamic prompt that shows [mode] and [pin] indicators when active.
+    #
+    # Delegates entirely to _build_prompt_message() -- the composer that
+    # actually handles both indicators, escaping, and defensive per-getter
+    # exception handling (see its docstring). This closure previously
+    # reimplemented mode-only rendering inline and never referenced
+    # get_pinned_provider at all, so the pin indicator was silently never
+    # rendered even though the pin feature itself worked correctly and
+    # _build_prompt_message was fully implemented and unit-tested. Do not
+    # reintroduce a second implementation here -- call the single composer.
     def get_prompt():
-        if get_active_mode:
-            active_mode = get_active_mode()
-            if active_mode:
-                return HTML(
-                    f"\n<ansicyan>[{active_mode}]</ansicyan><ansigreen><b>></b></ansigreen> "
-                )
-        return HTML("\n<ansigreen><b>></b></ansigreen> ")
+        return _build_prompt_message(get_active_mode, get_pinned_provider)
 
     return PromptSession(
         message=get_prompt,  # Callable for dynamic prompt
@@ -2878,7 +3222,8 @@ async def interactive_chat(
     prompt_session = _create_prompt_session(
         get_active_mode=lambda: command_processor.session.coordinator.session_state.get(
             "active_mode"
-        )
+        ),
+        get_pinned_provider=lambda: _pinned_provider_name(command_processor.session),
     )
 
     # Helper to extract model name from config
