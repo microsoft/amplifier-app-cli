@@ -18,7 +18,10 @@ from ..ui.scope import (
 )
 from ..provider_config_utils import configure_provider
 from ..provider_manager import ProviderManager
-from ..provider_env_detect import detect_provider_from_env
+from ..provider_env_detect import (
+    CredentialedProviderModuleMissingError,
+    detect_provider_from_env,
+)
 from ..provider_sources import install_known_providers
 from .routing import _discover_matrix_files
 from .routing import _get_configured_provider_types
@@ -317,6 +320,18 @@ def auto_init_from_env(console_arg: Console | None = None) -> bool:
                 f"[green]\u2713 Auto-configured {display_name} from environment[/green]"
             )
         return True
+
+    except CredentialedProviderModuleMissingError as e:
+        # GAP-003: environment credentials were found for a real provider,
+        # but its module isn't usable. This must be loud and specific --
+        # NOT collapsed into the generic warning below, and NOT allowed to
+        # silently fall through to Ollama (detect_provider_from_env() never
+        # returns "provider-ollama" once this exception is raised, so there
+        # is nothing to silently configure here; we just report and stop).
+        logger.error(f"Auto-init: {e}")
+        if console_arg:
+            console_arg.print(f"[bold red]\u2717 {e}[/bold red]")
+        return False
 
     except Exception as e:
         logger.warning(f"Auto-init failed: {e}")
