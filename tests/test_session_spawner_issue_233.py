@@ -38,6 +38,7 @@ SCENARIOS:
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -797,7 +798,10 @@ class TestPostInitializeLifecycle:
     async def test_cross_vendor_callback_fails_before_child_or_parent_request(
         self,
     ) -> None:
-        from amplifier_app_cli.deep_plan import _prepare_child_provider
+        from amplifier_app_cli.deep_plan import (
+            DeepPlanTarget,
+            _prepare_child_provider,
+        )
 
         parent = _make_parent_session()
         parent.execute = AsyncMock()
@@ -806,8 +810,23 @@ class TestPostInitializeLifecycle:
         pin.pin.side_effect = ValueError(
             "Cannot pin Anthropic provider 'fable' while current provider is OpenAI."
         )
+        provider = MagicMock()
+        provider.get_info.return_value = SimpleNamespace(
+            id="anthropic",
+            defaults={"model": "claude-fable-5"},
+        )
+        child.coordinator.get.side_effect = lambda name: (
+            {"fable": provider} if name == "providers" else None
+        )
         child.coordinator.get_capability.side_effect = lambda name: (
             pin if name == "conversation.provider_pin" else None
+        )
+        target = DeepPlanTarget(
+            provider="fable",
+            model="claude-fable-5",
+            vendor="anthropic",
+            effort="max",
+            provider_preferences=(),
         )
 
         with pytest.raises(ValueError, match="current provider is OpenAI"):
@@ -816,7 +835,7 @@ class TestPostInitializeLifecycle:
                 {"mode_agent_A": {}},
                 child,
                 post_initialize_callback=lambda session: _prepare_child_provider(
-                    session, "fable", {}
+                    session, target, []
                 ),
             )
 

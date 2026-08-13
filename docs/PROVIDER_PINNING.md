@@ -201,26 +201,68 @@ session to a configured provider, and returns its advisory plan to your normal
 session for execution. Your parent session's provider selection, tools,
 permissions, and approvals do not change.
 
-Configure the child planner with `deep_plan.provider`. If the setting is absent,
-it defaults to the provider ID `fable`:
+Three provider terms matter here:
+
+- **Declared provider:** an entry in saved `config.providers`.
+- **Mounted provider:** a live provider instance in the current session. Its
+  mounted `id` is what `deep_plan.provider` must name.
+- **Pinned provider:** the mounted child instance selected for the one planning
+  conversation.
+
+A provider can be declared in settings without being mounted by the active
+bundle. `/deep-plan` never turns an unmounted declaration into a new live
+provider and never dynamically adds another vendor. An unmounted ID fails with
+the mounted IDs you can use.
+
+### Recommended: specialize an existing mounted provider
+
+When there is one mounted Anthropic provider called `anthropic`, select an exact
+planning model privately in the child:
+
+```yaml
+deep_plan:
+  provider: anthropic
+  model: claude-fable-5
+  effort: max
+```
+
+The `model` must be exact; globs are rejected. `effort` is optional and must be
+one of `low`, `medium`, `high`, `xhigh`, or `max`. Fable defaults to `max` when
+effort is omitted. If the entire `deep_plan` block is absent, the configuration
+above is the implicit default.
+
+The child inherits the mounted provider, then privately specializes that copy
+to the exact model before initialization. The parent provider's Opus/Sonnet
+default is unchanged. For Anthropic Fable, the child disables the provider's
+refusal and overload fallback settings, so an unavailable Fable request fails
+rather than silently selecting another model.
+
+### Optional: use a dedicated mounted provider instance
+
+If the active session deliberately mounts a provider named `fable` whose
+default model is already Fable 5, provider-only configuration remains valid:
 
 ```yaml
 deep_plan:
   provider: fable
 ```
 
-The provider must be mounted and pin-able. Pinning intentionally preserves the
-same-vendor guard used by `/provider`: an Anthropic `fable` provider cannot plan
-for a child whose automatic/default provider is OpenAI (and vice versa). This
-prevents `/deep-plan` from silently mixing providers. Select a same-vendor
-session/matrix first if you want to use that planner.
+`/deep-plan` derives and verifies that mounted instance's exact default model.
+Merely declaring `id: fable` under `config.providers` is not sufficient; the
+active session must actually mount it.
+
+In both modes, pinning preserves the same-vendor guard used by `/provider`: an
+Anthropic planner cannot plan for an OpenAI parent conversation (and vice
+versa). This prevents `/deep-plan` from silently mixing providers. Select a
+same-vendor session/matrix first if you want to use that planner.
 
 `/deep-plan` fails before normal execution starts when the provider is
 unavailable, crosses that vendor boundary, cannot be pinned exactly, or the
-planner does not return a valid plan. The CLI reports the provider/model that
-the child actually resolved when available; a configured provider ID alone is
-not presented as proof of a particular model. The advisory plan is not
-authority to bypass normal execution safeguards.
+planner does not return a valid plan. Before accepting a plan, the CLI requires
+the child's observed `provider:resolve` event to prove the exact provider,
+exact model, and pinned basis. The CLI reports that validated provider/model;
+configured assumptions are not presented as actual routing. The advisory plan
+is not authority to bypass normal execution safeguards.
 
 For a task with `@mentions`, the CLI expands those files once before planning.
 The planner and the normal execution turn receive the same expanded task

@@ -141,6 +141,13 @@ class AppSettings:
 
         return resolve_planner_provider(self.get_merged_settings())
 
+    def get_deep_plan_config(self) -> Any:
+        """Return validated provider, exact model, and effort for deep planning."""
+
+        from amplifier_app_cli.deep_plan import resolve_planner_config
+
+        return resolve_planner_config(self.get_merged_settings())
+
     # ----- Bundle settings -----
 
     def get_active_bundle(self) -> str | None:

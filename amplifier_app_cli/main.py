@@ -474,7 +474,9 @@ class CommandProcessor:
         },
         "/deep-plan": {
             "action": "deep_plan",
-            "description": "Plan with the configured premium provider, then execute the task",
+            "description": (
+                "Plan with the configured premium provider, then execute the task"
+            ),
         },
     }
 
@@ -3690,17 +3692,19 @@ async def interactive_chat(
                                 settings = AppSettings().with_session(
                                     session.session_id, get_project_slug()
                                 )
-                                provider = settings.get_deep_plan_provider()
+                                deep_plan_config = settings.get_deep_plan_config()
                                 expanded_task = await process_runtime_mentions(
                                     session, task_snapshot
                                 )
                                 console.print(
-                                    f"\n[dim]Planning with configured provider '{provider}'...[/dim]"
+                                    "\n[dim]Planning with "
+                                    f"{escape_markup(deep_plan_config.description)}...[/dim]"
                                 )
 
                                 async def _execute_planned_parent(prompt: str) -> bool:
                                     console.print(
-                                        "\n[dim]Executing with normal session routing...[/dim]"
+                                        "\n[dim]Executing with normal session "
+                                        "routing...[/dim]"
                                     )
                                     return await _execute_with_interrupt(
                                         prompt, manage_interrupt=False
@@ -3709,7 +3713,7 @@ async def interactive_chat(
                                 await execute_deep_plan_turn(
                                     session,
                                     expanded_task,
-                                    provider,
+                                    deep_plan_config,
                                     planner_runner=lambda awaitable: awaitable,
                                     parent_executor=_execute_planned_parent,
                                     on_plan=_display_deep_plan,
