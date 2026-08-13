@@ -32,6 +32,27 @@ raw_mode contexts. After the fix, it comes out healthy every time.
 
 from __future__ import annotations
 
+import sys
+
+import pytest
+
+# These tests drive a real POSIX pseudo-terminal. `pty`, `termios` and `fcntl`
+# are POSIX-only stdlib modules with no Windows equivalent, and they are
+# imported at module scope -- so on Windows this file fails at COLLECTION,
+# surfacing as a hard error rather than a skip. An `ImportError` during
+# collection is indistinguishable in CI output from a genuine breakage, which
+# is exactly the noise that trains people to ignore a red run.
+#
+# `allow_module_level=True` is required: a plain `pytestmark` is evaluated
+# AFTER the module body executes, which is far too late to prevent the import
+# itself from raising.
+if sys.platform == "win32":
+    pytest.skip(
+        "POSIX-only: requires pty, termios, which have no Windows equivalent",
+        allow_module_level=True,
+    )
+
+
 import os
 import signal
 import sys
