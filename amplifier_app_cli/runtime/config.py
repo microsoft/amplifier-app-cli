@@ -16,6 +16,7 @@ from ..lib.settings import AppSettings, NotificationFlags, get_custom_routing_di
 from ..lib.merge_utils import merge_module_items
 from ..lib.merge_utils import merge_tool_configs
 from ..lib.merge_utils import _normalize_module_entry
+from ..lib.routing_matrices import known_matrix_names
 
 
 if TYPE_CHECKING:
@@ -94,8 +95,29 @@ async def resolve_bundle_config(
             _build_notification_behaviors(app_settings.get_notification_flags())
         )
 
+        # Routing precedence, weakest -> strongest: built-in default <
+        # bundle-declared routing.matrix < global settings < project settings
+        # < project-local settings. ``user_routing`` is already the merge of
+        # every settings scope (global -> project -> local -> session), so it
+        # sits above any bundle default by construction -- the bundle only
+        # contributes when user_routing is empty (see on_bundle_loaded()
+        # below). ``user_source`` is the highest-precedence settings file
+        # that set routing.matrix specifically, used for the "user setting
+        # overrides bundle default" warning below.
+        user_routing, user_source = app_settings.get_routing_config_with_source()
+
+        # Routing is required when active: compose its canonical behavior before
+        # prepare() so hooks-routing and its source are available to all sessions.
+        # This decision is made from user_routing alone, so existing users (who
+        # already set routing.matrix themselves) see byte-identical behavior.
+        # The bundle-declared-default path is handled separately by
+        # on_bundle_loaded() below, which composes the SAME behavior only when
+        # the bundle turns out to be the sole source of routing.
+        routing_behaviors = _build_routing_behaviors(user_routing)
+        compose_behaviors.extend(routing_behaviors)
+
         # Add app bundles (user-configured bundles that are always composed)
-        # App bundles are explicit user configuration, composed AFTER notification behaviors
+        # App bundles are explicit user configuration, composed after app policies.
         app_bundles = app_settings.get_app_bundles()
         if app_bundles:
             compose_behaviors = compose_behaviors + app_bundles
@@ -126,6 +148,57 @@ async def resolve_bundle_config(
         # Get bundle source overrides from settings (sources.bundles in settings.yaml)
         bundle_sources = app_settings.get_bundle_sources()
 
+        # Bundle-declared routing default (a top-level ``routing:`` section in
+        # bundle frontmatter, deep-merged onto ``Bundle.routing`` by
+        # foundation on compose). Captured by _on_bundle_loaded() below, which
+        # fires right after the primary bundle (and its includes) load but
+        # BEFORE any app-policy behavior (modes/notify/routing) is composed
+        # onto it -- so an app-injected behavior can never masquerade as a
+        # bundle default. ``bundle_routing_state`` is populated as a side
+        # effect for the observability messages printed after the spinner
+        # stops, further down.
+        bundle_routing_state: dict[str, Any] = {
+            "routing": {},
+            "bundle_name": None,
+            "unknown_matrix": None,
+        }
+
+        def _on_bundle_loaded(loaded_bundle: Any) -> list[str]:
+            """Read the bundle's own routing default and decide composition.
+
+            Forward-compat: reads ``routing`` via getattr() with a ``{}``
+            default so this works whether or not the installed
+            amplifier-foundation declares a ``routing`` field on ``Bundle``
+            yet. Returns additional behavior URIs for the caller to compose
+            (empty when there's nothing new to add).
+            """
+            raw_routing = getattr(loaded_bundle, "routing", None) or {}
+            declared_routing = (
+                dict(raw_routing) if isinstance(raw_routing, dict) else {}
+            )
+            bundle_routing_state["bundle_name"] = getattr(loaded_bundle, "name", None)
+
+            # Unknown-matrix handling applies ONLY when the bundle's matrix is
+            # about to win (no user-set matrix anywhere in settings). A
+            # user-set matrix is validated by the existing hooks-routing
+            # "matrix file not found" path at runtime, unchanged.
+            matrix_name = declared_routing.get("matrix")
+            if matrix_name and not user_routing.get("matrix"):
+                known = known_matrix_names()
+                if known and matrix_name not in known:
+                    declared_routing = {
+                        k: v for k, v in declared_routing.items() if k != "matrix"
+                    }
+                    bundle_routing_state["unknown_matrix"] = matrix_name
+
+            bundle_routing_state["routing"] = declared_routing
+
+            if user_routing or not declared_routing:
+                # User settings already trigger composition above (routing_behaviors),
+                # or the bundle has nothing left to contribute after validation.
+                return []
+            return _build_routing_behaviors(declared_routing)
+
         # Load and prepare bundle (downloads modules from git sources)
         # If compose_behaviors is provided, those behaviors are composed onto the bundle
         # BEFORE prepare() runs, so their modules get installed correctly
@@ -134,9 +207,11 @@ async def resolve_bundle_config(
             bundle_name,
             discovery,
             compose_behaviors=compose_behaviors if compose_behaviors else None,
+            required_behaviors=set(routing_behaviors) if routing_behaviors else None,
             source_overrides=combined_sources if combined_sources else None,
             bundle_source_overrides=bundle_sources if bundle_sources else None,
             progress_callback=_on_progress if status else None,
+            on_bundle_loaded=_on_bundle_loaded,
         )
 
         # Load full agent metadata from .md files (for descriptions)
@@ -148,6 +223,22 @@ async def resolve_bundle_config(
     finally:
         if status:
             status.stop()
+
+    # Effective routing config: bundle default merged UNDER user settings.
+    # user_routing is already the settings-scope merge result, so a plain
+    # shallow merge here is correct -- user keys win key-by-key over the
+    # bundle's declared defaults (see _on_bundle_loaded() above).
+    effective_routing: dict[str, Any] = {
+        **bundle_routing_state["routing"],
+        **user_routing,
+    }
+
+    # Bundle-declared routing observability -- printed only after the
+    # spinner stops (matches the "prepared successfully" message below),
+    # and only when there's something worth telling the user about.
+    _report_bundle_routing_observability(
+        console, bundle_routing_state, user_routing, user_source
+    )
 
     # ── General config overrides ──────────────────────────────────────────
     # The overrides.<id>.config section in settings.yaml provides a single
@@ -231,17 +322,21 @@ async def resolve_bundle_config(
     # This maps config.notifications.ntfy.* to hooks-notify-push config etc.
     hook_overrides = app_settings.get_notification_hook_overrides()
 
-    # Routing matrix config injection
-    routing_config = app_settings.get_routing_config()
-    if routing_config:
+    # Routing matrix config injection (effective_routing = bundle default
+    # merged under user settings -- see precedence comment above).
+    if effective_routing:
         routing_hook_override: dict[str, Any] = {
             "module": "hooks-routing",
             "config": {},
         }
-        if "matrix" in routing_config:
-            routing_hook_override["config"]["default_matrix"] = routing_config["matrix"]
-        if "overrides" in routing_config:
-            routing_hook_override["config"]["overrides"] = routing_config["overrides"]
+        if "matrix" in effective_routing:
+            routing_hook_override["config"]["default_matrix"] = effective_routing[
+                "matrix"
+            ]
+        if "overrides" in effective_routing:
+            routing_hook_override["config"]["overrides"] = effective_routing[
+                "overrides"
+            ]
         # Always advertise the user's custom routing dir so a matrix named by
         # routing.matrix that ONLY exists at get_custom_routing_dir() (e.g.
         # written by `amplifier init`/`amplifier routing save`) is resolvable
@@ -315,11 +410,62 @@ async def resolve_bundle_config(
         prepared, bundle_config, sync_tools=bool(bundle_config.get("tools"))
     )
 
-    # Note: Notification hooks are now composed via compose_behaviors parameter
-    # to load_and_prepare_bundle(), so they get properly installed during prepare().
+    # Note: Notification and routing hooks are composed via compose_behaviors
+    # before prepare(), so they get properly installed during preparation.
     # The behavior bundles handle root-session-only logic internally via parent_id check.
 
     return bundle_config, prepared
+
+
+def _report_bundle_routing_observability(
+    console: Console | None,
+    bundle_routing_state: dict[str, Any],
+    user_routing: dict[str, Any],
+    user_source: str | None,
+) -> None:
+    """Print bundle-declared routing precedence outcomes, if any.
+
+    Silent when there's nothing to report (no bundle default declared, no
+    unknown-matrix situation, and no conflict between a bundle default and a
+    user setting). Uses the same ``console`` the caller uses for its other
+    status messages -- a ``None`` console (non-interactive / programmatic
+    callers) means these are simply skipped.
+    """
+    if console is None:
+        return
+
+    bundle_name = bundle_routing_state.get("bundle_name") or "unknown"
+    bundle_routing = bundle_routing_state.get("routing") or {}
+    unknown_matrix = bundle_routing_state.get("unknown_matrix")
+    bundle_matrix = bundle_routing.get("matrix")
+    user_matrix = user_routing.get("matrix")
+
+    if unknown_matrix:
+        fallback = user_matrix or "no routing"
+        console.print(
+            f"[yellow]Bundle '{bundle_name}' requests routing matrix "
+            f"'{unknown_matrix}', which is not installed.[/yellow]\n"
+            "  [dim]Searched: ~/.amplifier/routing, "
+            "~/.amplifier/cache/amplifier-bundle-routing-matrix-*/routing[/dim]\n"
+            f"  [dim]Falling back to: {fallback}[/dim]"
+        )
+        return
+
+    if bundle_matrix and user_matrix and user_source and user_matrix != bundle_matrix:
+        console.print(
+            f"[yellow]Routing matrix: '{user_matrix}' from {user_source}[/yellow]\n"
+            f"  [yellow]overrides bundle '{bundle_name}' default "
+            f"'{bundle_matrix}'.[/yellow]\n"
+            f"  [dim]Change it there, or run: amplifier routing use "
+            f"{bundle_matrix}[/dim]"
+        )
+        return
+
+    if bundle_matrix and not user_matrix:
+        console.print(
+            f"[dim]Routing matrix: '{bundle_matrix}' "
+            f"(default from bundle '{bundle_name}')[/dim]"
+        )
 
 
 def _sync_overrides_to_bundle(
@@ -894,6 +1040,24 @@ def _build_modes_behaviors() -> list[str]:
     return [
         # Only load the behavior, NOT the root bundle (which includes foundation)
         "git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=behaviors/modes.yaml",
+    ]
+
+
+def _build_routing_behaviors(routing_config: dict[str, Any]) -> list[str]:
+    """Return the canonical routing behavior URI when routing is active.
+
+    Composing this app-level policy before preparation makes ``hooks-routing``
+    and its module source available in the prepared resolver for root and
+    delegated sessions.
+    """
+    if not routing_config:
+        return []
+
+    return [
+        (
+            "git+https://github.com/microsoft/amplifier-bundle-routing-matrix@main"
+            "#subdirectory=behaviors/routing.yaml"
+        )
     ]
 
 

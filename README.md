@@ -72,7 +72,39 @@ amplifier routing list                                       # List available ma
 amplifier routing use <name> [--local|--project|--global]    # Select active matrix
 amplifier routing show [<name>]                              # Show resolved roles for a matrix
 amplifier routing manage                                     # Interactive routing dashboard
+```
 
+### Routing matrix precedence
+
+A bundle may declare a default routing matrix (a top-level `routing:` section
+in its frontmatter). This is a DEFAULT ONLY -- it is the weakest source in
+the precedence chain, so any settings-scope selection always wins over it.
+Precedence, weakest to strongest:
+
+```
+built-in default
+< bundle-declared routing.matrix
+< ~/.amplifier/settings.yaml           (global)
+< .amplifier/settings.yaml             (project)
+< .amplifier/settings.local.yaml       (project-local, gitignored)
+```
+
+If a bundle declares no routing matrix, behavior is exactly as before this
+feature existed -- the bundle default only ever applies when nothing else in
+settings has set `routing.matrix`.
+
+`amplifier routing show` (with no explicit matrix name) prints a `Source:`
+line above the resolved role table, naming the settings scope file that set
+the active matrix (or `built-in default` when none did). `amplifier bundle
+show` prints a `Routing matrix: <name> (bundle default)` line when the
+active bundle declares one.
+
+When a bundle's declared matrix isn't installed (not found under
+`~/.amplifier/routing` or the cached routing-matrix bundle), the CLI drops
+it, warns loudly, and falls back to the next-weakest configured matrix (or
+no routing) -- a bad bundle default can never brick a session.
+
+```bash
 # Module management
 amplifier module add <name> [--local|--project|--global]
 amplifier module remove <name> [--scope]
