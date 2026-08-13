@@ -16,7 +16,12 @@ class TestTask3TrivialDeadCode:
         from pathlib import Path
 
         source = Path(__file__).parent.parent / "amplifier_app_cli" / "main.py"
-        content = source.read_text()
+        # encoding="utf-8" is REQUIRED: Python on Windows defaults to the
+        # locale codec (cp1252 here), and main.py contains non-cp1252 bytes,
+        # so a bare read_text() dies with UnicodeDecodeError before the
+        # assertion is ever reached. Every other read_text() in this file
+        # already passes it -- these two were simply missed.
+        content = source.read_text(encoding="utf-8")
         assert "_cancel_requested" not in content, (
             "_cancel_requested is dead code (CancellationToken is used instead)"
         )
@@ -29,7 +34,12 @@ class TestTask3TrivialDeadCode:
         from pathlib import Path
 
         source = Path(__file__).parent.parent / "amplifier_app_cli" / "main.py"
-        content = source.read_text()
+        # encoding="utf-8" is REQUIRED: Python on Windows defaults to the
+        # locale codec (cp1252 here), and main.py contains non-cp1252 bytes,
+        # so a bare read_text() dies with UnicodeDecodeError before the
+        # assertion is ever reached. Every other read_text() in this file
+        # already passes it -- these two were simply missed.
+        content = source.read_text(encoding="utf-8")
         assert "_key_manager" not in content, (
             "_key_manager is never referenced; only the constructor side-effect matters"
         )

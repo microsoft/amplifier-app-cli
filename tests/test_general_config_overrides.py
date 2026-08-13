@@ -622,9 +622,15 @@ class TestFullPipelineIntegration:
         assert len(routing_entries) == 1
         cfg = routing_entries[0]["config"]
         assert cfg.get("default_matrix") == "ornith"
-        assert cfg.get("custom_routing_dirs") == ["/fake/home/.amplifier/routing"], (
-            f"Expected custom_routing_dirs to be injected, got: {cfg}"
-        )
+        # Compare against str(Path(...)), not a hardcoded POSIX string. The
+        # source does `str(custom_routing_dir)`, which correctly yields native
+        # separators -- the value is handed to a hook that opens the directory,
+        # so native is what it must be. On Windows that is
+        # "\\fake\\home\\.amplifier\\routing", and the literal comparison failed
+        # for a reason that had nothing to do with the injection being tested.
+        assert cfg.get("custom_routing_dirs") == [
+            str(Path("/fake/home/.amplifier/routing"))
+        ], f"Expected custom_routing_dirs to be injected, got: {cfg}"
 
     @pytest.mark.asyncio
     async def test_custom_routing_dir_not_injected_when_absent(self):

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,17 @@ from amplifier_foundation.paths.resolution import get_amplifier_home
 from amplifier_foundation.sources import SimpleSourceResolver
 
 logger = logging.getLogger(__name__)
+
+# The two absolute path forms Windows actually has: a drive letter
+# (``C:\...`` or ``C:/...``) and a UNC share (``\\server\share``). Used to tell
+# a local path from a package name in ``_parse_source`` -- see the comment at
+# that call site for why a Windows path otherwise gets misread as a PyPI
+# distribution name.
+#
+# Evaluated on every platform, which is safe: no legitimate package name
+# contains a backslash or an ``X:`` drive prefix, and on POSIX the ``/`` and
+# ``.`` prefixes short-circuit before this is ever reached.
+_WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
 
 
 class ModuleResolutionError(Exception):
@@ -321,6 +333,23 @@ class FoundationSettingsResolver:
             source.startswith("file://")
             or source.startswith("/")
             or source.startswith(".")
+            # A Windows absolute path matches none of the prefixes above -- not
+            # "file://", not "/", not "." -- so it used to fall through to the
+            # package-name branch below. A user putting a local path override in
+            # settings.yaml on Windows (`C:\src\my-module`) had it silently
+            # treated as a PyPI distribution name, and the resulting failure
+            # named a package that was never mentioned anywhere.
+            #
+            # Matches the two absolute forms Windows actually has: a drive
+            # letter (`C:\...` or `C:/...`) and a UNC share (`\\server\share`).
+            # A bare leading backslash (`\foo`, drive-relative) is deliberately
+            # NOT matched -- it is not absolute, and treating it as a path would
+            # be a guess.
+            #
+            # POSIX is unaffected: `/` and `.` already short-circuit before
+            # this, and no legitimate package name contains a backslash or a
+            # `X:` drive prefix.
+            or _WINDOWS_ABSOLUTE_PATH_RE.match(source) is not None
         ):
             return FoundationFileSource(source)
         # Assume package name
