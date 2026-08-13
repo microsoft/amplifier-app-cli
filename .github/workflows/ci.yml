@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         # requires-python = ">=3.11" in pyproject.toml -- cover the floor
         # and the latest supported minor.
         python-version: ["3.11", "3.12"]
@@ -49,6 +49,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # No windows-latest here, deliberately. Every test this job selects
+        # (`-m integration`) forks a real child process and, in most of the
+        # files, allocates a real pty pair via the POSIX-only `pty`/`termios`
+        # stdlib modules -- there is no Windows equivalent of either
+        # mechanism. `test_ctrlc_functional_integration.py` and
+        # `test_terminal_echo_integration.py` already `pytest.skip(...,
+        # allow_module_level=True)` on win32 (they import `pty`/`termios` at
+        # module scope, so skipping is the only way to avoid a collection
+        # error). `test_stdout_offload_freeze_integration.py` calls
+        # `os.fork()` directly with no platform guard at all, and `os.fork`
+        # simply does not exist on Windows -- it fails with
+        # `AttributeError: module 'os' has no attribute 'fork'`
+        # (confirmed on a real windows-latest run, job id 94301234220).
+        # A Windows leg of this job would therefore either run zero tests
+        # (all skipped) or hard-fail on the one file missing a guard -- pure
+        # CI theatre, burning runner minutes to report a "green" (or "red")
+        # that says nothing about Windows support. If a genuinely
+        # cross-platform integration test is ever added to this job, add
+        # windows-latest back for it specifically.
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
@@ -66,5 +85,6 @@ jobs:
         # -- the ones that fork a real pty child and probe real termios state
         # -- are skipped by default and, before this job existed, ran nowhere.
         # They are exactly the tests that guard the dedicated-tty-input
-        # mechanism, so they get their own job on both platforms.
+        # mechanism, so they get their own job (POSIX only -- see the
+        # `matrix.os` comment above for why Windows is excluded).
         run: uv run pytest -m integration -q
