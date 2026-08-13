@@ -3,33 +3,229 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import signal
 import sys
+import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import click
-
-from rich.panel import Panel
-
 from amplifier_foundation.exceptions import BundleError, BundleValidationError
 from amplifier_foundation.modules import ModuleActivationError
+from rich.panel import Panel
 
 from ..console import console
-from ..session_store import extract_session_mode
-from ..utils.error_format import escape_markup
 from ..effective_config import get_effective_config_summary
 from ..lib.settings import AppSettings
 from ..paths import create_config_manager
 from ..runtime.config import resolve_config
+from ..session_store import extract_session_mode
 from ..types import (
     ExecuteSingleProtocol,
     InteractiveChatProtocol,
     SearchPathProviderProtocol,
 )
+from ..utils.error_format import escape_markup
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _scoped_sigint_handler(handler: Any) -> Iterator[bool]:
+    """Install a SIGINT handler for the duration of the block, where possible.
+
+    ``signal.signal()`` is only callable from the main thread of the main
+    interpreter; anywhere else CPython raises
+    ``ValueError: signal only works in main thread of the main interpreter``.
+
+    Before GAP-023 and GAP-027, the two interruptible phases in this module
+    (the startup update check and bundle preparation) installed no handler at
+    all, so both were safe to call from any thread. Adding an unguarded
+    ``signal.signal()`` call narrowed that contract: it makes those phases
+    raise for any caller that does not own the main thread.
+
+    No caller that actually reaches these phases off the main thread has been
+    identified. Two candidate embedders were checked and neither reaches them:
+    ``amplifierd`` does not depend on this package at all, and
+    ``amplifier-app-actions`` imports only ``console`` and ``session_runner``,
+    not this module. So this guard is preventive, not a fix for an observed
+    field failure -- it restores the "safe to call from any thread" contract
+    that GAP-023/GAP-027 silently removed, at no cost.
+
+    Declining to install leaves the caller without the Ctrl+C acknowledgment
+    it never had before those fixes, and changes nothing else. That is a
+    deliberate restoration of shipped behavior for a context where signal
+    handling is structurally unavailable, not an error being swallowed -- so
+    it is reported at debug level and the block runs either way.
+
+    Yields True if the handler was installed, False if it was declined.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        logger.debug(
+            "SIGINT handler not installed: not on the main thread (%s). "
+            "Interrupt acknowledgment is unavailable in this context.",
+            threading.current_thread().name,
+        )
+        yield False
+        return
+
+    try:
+        original = signal.signal(signal.SIGINT, handler)
+    except ValueError as exc:
+        # Reachable on the main thread of a *subinterpreter*, where
+        # threading.main_thread() reports that subinterpreter's own main
+        # thread but signal.signal() still refuses.
+        logger.debug("SIGINT handler not installed: %s", exc)
+        yield False
+        return
+
+    try:
+        yield True
+    finally:
+        signal.signal(signal.SIGINT, original)
+
+
+def _run_startup_update_check() -> None:
+    """Run the startup update check, but let Ctrl+C skip it immediately and
+    fall through to the user's actual command instead of the whole
+    invocation dying (GAP-023).
+
+    Before this fix, the pre-REPL "Checking for updates..." phase (this
+    function's caller, ``asyncio.run(check_and_notify())``) ran with no
+    SIGINT handling of its own -- ``_execute_with_interrupt``'s handler
+    (main.py, installed inside the per-turn wrapper) and the headless goal
+    path's ``_goal_sigint_handler`` (main.py) both install a handler
+    *around the operation they guard*; this phase runs earlier than either,
+    so it had no equivalent. A Ctrl+C here fell through to Click's default
+    top-level (EOFError, KeyboardInterrupt) handler, which prints
+    "Aborted!" and kills the ENTIRE ``amplifier run`` invocation -- not
+    just the optional, best-effort update check. Measured on native
+    Windows: the interrupt was not merely delayed, it destroyed the user's
+    whole command over an update check they never asked to wait on.
+
+    Fix: run the check on its own event loop with its own SIGINT handler
+    (same pattern as the two handlers above), so a Ctrl+C here cancels only
+    this task -- printing a clear message -- and the caller proceeds to run
+    the user's actual prompt/command normally.
+    """
+    from ..utils.startup_checker import check_and_notify
+
+    interrupted = False
+
+    def _update_check_sigint_handler(signum, frame):
+        nonlocal interrupted
+        interrupted = True
+        for task in asyncio.all_tasks(loop):
+            task.cancel()
+
+    loop = asyncio.new_event_loop()
+    with _scoped_sigint_handler(_update_check_sigint_handler):
+        try:
+            asyncio.set_event_loop(loop)
+            task = loop.create_task(check_and_notify())
+            try:
+                loop.run_until_complete(task)
+            except asyncio.CancelledError:
+                pass
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
+
+    if interrupted:
+        console.print("[dim]Update check skipped (Ctrl+C) -- continuing...[/dim]")
+
+
+def _resolve_config_interruptibly(
+    *,
+    bundle_name: str | None,
+    app_settings: AppSettings,
+    console: Any,
+) -> tuple[dict[str, Any], Any]:
+    """Wrap resolve_config() with a scoped SIGINT handler and a clean
+    cancellation message (GAP-027).
+
+    resolve_config() -- bundle discovery, git clone/fetch, compose,
+    activate -- runs EARLIER than every other SIGINT-aware phase in this
+    file: earlier than _run_startup_update_check() (GAP-023's own scoped
+    handler, above) and earlier than main.py's per-turn
+    _execute_with_interrupt() handler. Before this fix it had none of its
+    own, so a Ctrl+C here fell all the way through to Python's raw
+    default SIGINT handler with:
+
+      1. No acknowledgment at all -- every OTHER interruptible phase in
+         the app prints something ("Update check skipped...", "Stopping
+         after current operation completes...", etc.) the instant Ctrl+C
+         is pressed. This phase printed nothing, for however long the
+         unwind took.
+
+      2. A non-deterministic landing spot. resolve_config() calls through
+         many layers of third-party library code (git subprocess calls,
+         pydantic schema validation, importlib.metadata lookups, etc.)
+         with no exception handling of its own around the interrupt.
+         Confirmed on native Windows: the IDENTICAL repro (a bundle
+         source pointed at a black-holed IP so the git clone blocks
+         deterministically, Ctrl+C sent ~6s after spawn), run twice back
+         to back, produced two different failure modes from the same
+         keystroke: once the process ran on completely unaffected for
+         60+ seconds (the interrupt seemingly lost), and once it died in
+         ~2s but with a BARE, unhandled Python traceback dumped straight
+         to the user's terminal -- ending in a lone "KeyboardInterrupt"
+         with zero context, landing inside pydantic's
+         complete_model_class -> create_schema_validator ->
+         importlib.metadata.entry_points() chain, nothing to do with git
+         at all. Neither outcome is acceptable, and which one a user gets
+         is pure timing luck.
+
+    This is a genuinely different location and cause from GAP-014
+    (git.py's unbounded wait), GAP-023 (the update-check phase, which
+    runs AFTER this one), GAP-025 (git.py's BaseException cleanup), and
+    GAP-026 (subprocess_runner.py's delegation cancellation) -- none of
+    those touch this call site, and none of them install any
+    acknowledgment or containment for an interrupt landing here.
+
+    Fix: same established pattern as _run_startup_update_check() -- a
+    scoped SIGINT handler installed only for the duration of this call,
+    printing the same "Cancelling..." convention used everywhere else in
+    the app the moment Ctrl+C is pressed (fixing the missing-feedback
+    symptom), while still delivering the real interrupt via
+    signal.default_int_handler so the existing unwind-and-cleanup
+    machinery (GAP-014/025's process-tree kill, etc.) runs exactly as it
+    did before this fix. The KeyboardInterrupt is then caught at THIS
+    single, deliberate point -- regardless of which arbitrary library
+    frame it actually surfaces in -- and converted into one clean,
+    actionable message and a normal process exit, instead of a raw
+    traceback landing wherever the timing happened to put it.
+    """
+    interrupted = False
+
+    def _bundle_prep_sigint_handler(signum: int, frame: Any) -> None:
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            console.print(
+                "\n[yellow]Cancelling bundle preparation... "
+                "(this may take a moment to unwind cleanly)[/yellow]"
+            )
+        # Still deliver the real interrupt so every existing unwind path
+        # (git.py's process-tree kill, etc.) behaves exactly as before --
+        # this handler only ADDS an acknowledgment and a clean landing
+        # spot, it does not change what happens once the exception is
+        # actually raised.
+        signal.default_int_handler(signum, frame)
+
+    with _scoped_sigint_handler(_bundle_prep_sigint_handler):
+        try:
+            return resolve_config(
+                bundle_name=bundle_name,
+                app_settings=app_settings,
+                console=console,
+            )
+        except KeyboardInterrupt:
+            console.print("[red]Bundle preparation cancelled.[/red]")
+            sys.exit(130)
 
 
 def register_run_command(
@@ -159,9 +355,12 @@ def register_run_command(
         # Track configuration source for display (always bundle mode now)
         config_source_name = f"bundle:{bundle}"
 
-        # Resolve configuration using unified function (single source of truth)
+        # Resolve configuration using unified function (single source of truth).
+        # GAP-027: wrapped for scoped SIGINT handling + a clean cancellation
+        # message instead of a raw traceback landing wherever an interrupt
+        # happens to surface (see _resolve_config_interruptibly docstring).
         try:
-            config_data, prepared_bundle = resolve_config(
+            config_data, prepared_bundle = _resolve_config_interruptibly(
                 bundle_name=bundle,
                 app_settings=app_settings,
                 console=console,
@@ -238,8 +437,7 @@ def register_run_command(
             target_idx = None
             for i, entry in enumerate(providers_list):
                 if isinstance(entry, dict) and (
-                    entry.get("id") == provider
-                    or entry.get("instance_id") == provider
+                    entry.get("id") == provider or entry.get("instance_id") == provider
                 ):
                     target_idx = i
                     break
@@ -248,7 +446,10 @@ def register_run_command(
                 # Pass 2: fallback — module-type match (original behavior).
                 # Preserves single-instance usage: -p anthropic → provider-anthropic.
                 for i, entry in enumerate(providers_list):
-                    if isinstance(entry, dict) and entry.get("module") == provider_module:
+                    if (
+                        isinstance(entry, dict)
+                        and entry.get("module") == provider_module
+                    ):
                         target_idx = i
                         break
 
@@ -345,9 +546,7 @@ def register_run_command(
                     prepared_bundle.mount_plan["providers"] = updated_providers
 
         # Run update check (uses unified startup_checker with settings.yaml)
-        from ..utils.startup_checker import check_and_notify
-
-        asyncio.run(check_and_notify())
+        _run_startup_update_check()
 
         if mode == "chat":
             # Interactive mode - supports optional initial_prompt for auto-execution
