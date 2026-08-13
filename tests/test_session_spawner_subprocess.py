@@ -101,13 +101,14 @@ class TestSubprocessRouting:
         # Verify subprocess runner was called
         fake_module.run_session_in_subprocess.assert_called_once()
         call_kwargs = fake_module.run_session_in_subprocess.call_args
-        # The child config carries whatever the parent composed, which now
-        # includes an "agents" key. Assert on the contract this test exists
-        # to guard -- that the session config is forwarded -- rather than
-        # on an exact dict that drifts every time composition gains a key.
-        forwarded = call_kwargs.kwargs["config"]
-        assert forwarded["session"] == {}
-        assert "spawn_mode" not in forwarded
+        # Exact-equality is intentional here: this parent's coordinator.config
+        # carries no "agents" key (see _make_parent_session), so the issue
+        # #233 live-registry propagation in spawn_sub_session has nothing to
+        # add and the forwarded config is exactly the merge_configs() stub's
+        # return value, unchanged. See
+        # test_live_registry_agents_propagate_to_subprocess_config below for
+        # the case where an "agents" key legitimately appears.
+        assert call_kwargs.kwargs["config"] == {"session": {}}
         assert call_kwargs.kwargs["prompt"] == "Do something"
         assert call_kwargs.kwargs["parent_id"] == "parent-session-id"
         assert call_kwargs.kwargs["session_id"] == "fixed-test-id"
