@@ -57,6 +57,18 @@ def _make_pin(available=None, current=None, pin_side_effect=None):
     return pin
 
 
+def _visible(text: str) -> str:
+    """The text a user actually sees, with Rich markup stripped.
+
+    The transition messages are the only /provider strings carrying markup
+    (they render dim -- see CommandProcessor._dim), so assertions about
+    wording and line width must measure the visible text, not the tags.
+    """
+    from rich.markup import render
+
+    return render(text).plain
+
+
 def _cp_with(pin=None, providers=None, orchestrator=None):
     """CommandProcessor whose coordinator returns `pin` for
     get_capability('conversation.provider_pin') and `providers` for
@@ -230,26 +242,28 @@ class TestStatusDisplay:
 
 class TestProviderUse:
     @pytest.mark.asyncio
-    async def test_success_calls_pin_and_reports_next_turn_not_now(self):
+    async def test_success_calls_pin_and_acknowledges_in_past_tense(self):
         pin = _make_pin(available=["anthropic-fable"])
         cp = _cp_with(pin=pin, providers={"anthropic-fable": _make_provider()})
         result = await cp._handle_provider("use anthropic-fable")
         pin.pin.assert_called_once_with("anthropic-fable")
-        assert "Pinned conversation provider to 'anthropic-fable'" in result
-        assert "NEXT turn" in result
-        # Must not claim the switch already happened, and must not compete
-        # with the per-turn usage line's "now using X" confirmation.
+        assert "pinned: anthropic-fable" in result
+        # State-descriptive only. The pin is recorded synchronously and no
+        # LLM call has happened, so any forward-looking phrasing here would
+        # be a prediction about a call that hasn't occurred.
         assert "now using" not in result.lower()
+        assert "takes effect" not in result.lower()
 
     @pytest.mark.asyncio
-    async def test_states_scope_is_top_level_conversation_only(self):
+    async def test_first_use_teaches_scope_once(self):
+        """Progressive disclosure: the scope/experimental context appears on
+        the FIRST /provider use of a session (see TestTransitionMicrocopy for
+        the full first-vs-subsequent contract)."""
         pin = _make_pin(available=["anthropic-fable"])
         cp = _cp_with(pin=pin, providers={"anthropic-fable": _make_provider()})
         result = await cp._handle_provider("use anthropic-fable")
-        assert "top-level conversation only" in result
-        assert "model-role routing" in result
-        assert "sub-agents" in result
-        assert "/goal loop" in result
+        assert "scope: this conversation only" in result
+        assert "/provider for details" in result
 
     @pytest.mark.asyncio
     async def test_invalid_name_renders_clean_error_not_traceback(self):
@@ -286,26 +300,262 @@ class TestProviderAuto:
         cp = _cp_with(pin=pin, providers={"anthropic-fable": _make_provider()})
         result = await cp._handle_provider("auto")
         pin.unpin.assert_called_once()
-        assert "Unpinned conversation provider (was 'anthropic-fable')" in result
-        assert "NEXT turn" in result
+        assert "unpinned (was anthropic-fable)" in result
 
     @pytest.mark.asyncio
-    async def test_already_unpinned_is_idempotent_and_says_so(self):
+    async def test_nothing_pinned_says_not_pinned_not_unpinned(self):
+        """THE no-op fix: reporting 'unpinned' when nothing was pinned is the
+        untrue-but-plausible confirmation this feature exists to prevent."""
         pin = _make_pin(available=["anthropic-fable"])
         pin.unpin.return_value = None
         cp = _cp_with(pin=pin, providers={"anthropic-fable": _make_provider()})
         result = await cp._handle_provider("auto")
-        assert "already automatic" in result
-        assert "Nothing to unpin" in result
+        assert "not pinned" in result
+        assert "unpinned" not in result
+        assert "(was" not in result
+
+
+# === Transition microcopy (approved redesign) ===
+#
+# Progressive disclosure: teach once per session, acknowledge thereafter.
+# These are terse because three PERSISTENT surfaces already do the
+# confirming -- the prompt indicator, the per-turn footer badge, and
+# /provider status. The transition line is the least important of the four.
+#
+# The use/auto asymmetry is DELIBERATE and asserted here so it cannot be
+# "tidied" into symmetry: `use` is confirmed by an indicator APPEARING one
+# line down; `auto` is confirmed by one DISAPPEARING (weaker evidence) and
+# destroys the only record of what was pinned, so "(was X)" earns its place.
+
+
+def _stateful_pin(mounted, start=None):
+    """A pin capability backed by real state, so first-vs-subsequent and the
+    no-op paths can be exercised as a user would actually hit them."""
+    state = {"pinned": start}
+    pin = _make_pin(available=sorted(mounted))
+    pin.current.side_effect = lambda: state["pinned"]
+
+    def _pin(name):
+        if name not in mounted:
+            raise ValueError(
+                f"cannot pin conversation provider {name!r}: it is not "
+                f"mounted in this session. Mounted providers: "
+                f"{', '.join(sorted(mounted))}"
+            )
+        state["pinned"] = name
+        return name
+
+    def _unpin():
+        previous = state["pinned"]
+        state["pinned"] = None
+        return previous
+
+    pin.pin.side_effect = _pin
+    pin.unpin.side_effect = _unpin
+    return pin, state
+
+
+_TWO_PROVIDERS = ("anthropic-fable", "openai-fast")
+
+
+def _cp_stateful(start=None):
+    providers = {name: _make_provider() for name in _TWO_PROVIDERS}
+    pin, state = _stateful_pin(set(_TWO_PROVIDERS), start=start)
+    return _cp_with(pin=pin, providers=providers), pin, state
+
+
+class TestTransitionMicrocopy:
+    # --- first vs subsequent -------------------------------------------
 
     @pytest.mark.asyncio
-    async def test_states_scope_is_top_level_conversation_only(self):
-        pin = _make_pin(available=["anthropic-fable"])
-        pin.unpin.return_value = "anthropic-fable"
-        cp = _cp_with(pin=pin, providers={"anthropic-fable": _make_provider()})
-        result = await cp._handle_provider("auto")
-        assert "top-level conversation only" in result
-        assert "/goal loop" in result
+    async def test_first_pin_renders_exactly_the_approved_two_lines(self):
+        cp, _, _ = _cp_stateful()
+        result = _visible(await cp._handle_provider("use anthropic-fable"))
+        expected_teach = (
+            "   experimental \u00b7 scope: this conversation only \u00b7 "
+            "/provider for details"
+        )
+        assert result.splitlines() == [
+            "\U0001f4cc pinned: anthropic-fable",
+            expected_teach,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_subsequent_pin_renders_exactly_one_bare_line(self):
+        cp, _, _ = _cp_stateful()
+        await cp._handle_provider("use anthropic-fable")
+        result = _visible(await cp._handle_provider("use openai-fast"))
+        assert result.splitlines() == ["\U0001f4cc pinned: openai-fast"]
+
+    @pytest.mark.asyncio
+    async def test_teach_line_appears_only_once_across_many_pins(self):
+        cp, _, _ = _cp_stateful()
+        seen = []
+        for name in ("anthropic-fable", "openai-fast", "anthropic-fable"):
+            seen.append(_visible(await cp._handle_provider(f"use {name}")))
+        assert sum("experimental" in msg for msg in seen) == 1
+        assert "experimental" in seen[0]
+
+    @pytest.mark.asyncio
+    async def test_teach_line_is_not_repeated_after_an_unpin_cycle(self):
+        """Unpinning does not re-arm the lesson -- it is once per SESSION."""
+        cp, _, _ = _cp_stateful()
+        await cp._handle_provider("use anthropic-fable")
+        await cp._handle_provider("auto")
+        again = _visible(await cp._handle_provider("use anthropic-fable"))
+        assert "experimental" not in again
+
+    # --- unpin ----------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_unpin_renders_exactly_the_approved_line(self):
+        cp, _, _ = _cp_stateful(start="openai-fast")
+        result = _visible(await cp._handle_provider("auto"))
+        assert result == "unpinned (was openai-fast)"
+
+    @pytest.mark.asyncio
+    async def test_unpin_names_what_was_pinned_because_nothing_else_can(self):
+        """The '(was X)' asymmetry is load-bearing: unpinning destroys the
+        prompt indicator, which was the only other record of X."""
+        cp, _, _ = _cp_stateful(start="anthropic-fable")
+        result = _visible(await cp._handle_provider("auto"))
+        assert "anthropic-fable" in result
+
+    # --- no-op cases (the fixes that stop them lying) -------------------
+
+    @pytest.mark.asyncio
+    async def test_auto_with_nothing_pinned_renders_not_pinned(self):
+        cp, pin, _ = _cp_stateful(start=None)
+        result = _visible(await cp._handle_provider("auto"))
+        assert result == "not pinned"
+        pin.unpin.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_repin_same_provider_renders_already_pinned(self):
+        cp, _, _ = _cp_stateful()
+        await cp._handle_provider("use anthropic-fable")
+        result = _visible(await cp._handle_provider("use anthropic-fable"))
+        assert result == "\U0001f4cc already pinned: anthropic-fable"
+
+    @pytest.mark.asyncio
+    async def test_repin_same_provider_still_revalidates_it_is_mounted(self):
+        """'already pinned' must never be reported for a provider that has
+        since been unmounted -- that would be a confident lie. pin() is
+        still called, so the normal loud ValueError wins."""
+        cp, _, state = _cp_stateful(start="anthropic-fable")
+        state["pinned"] = "ghost-provider"  # pinned, but no longer mounted
+        result = await cp._handle_provider("use ghost-provider")
+        assert "already pinned" not in result
+        assert result.startswith("\u2717 ")
+        assert "not mounted" in result
+
+    # --- styling and tense ----------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_every_transition_line_is_dim(self):
+        """Colour carries weight that would otherwise be paid for in words:
+        a dim fragment reads as a receipt, not as content to parse."""
+        cp, _, _ = _cp_stateful()
+        messages = [
+            await cp._handle_provider("use anthropic-fable"),  # first (2 lines)
+            await cp._handle_provider("use openai-fast"),  # subsequent
+            await cp._handle_provider("use openai-fast"),  # already pinned
+            await cp._handle_provider("auto"),  # unpin
+            await cp._handle_provider("auto"),  # not pinned
+        ]
+        for message in messages:
+            for line in message.splitlines():
+                assert line.startswith("[dim]"), f"not dim: {line!r}"
+                assert line.endswith("[/dim]"), f"not dim: {line!r}"
+
+    @pytest.mark.asyncio
+    async def test_no_transition_uses_forward_looking_tense(self):
+        """Every string must be past-tense or state-descriptive -- true at
+        the instant it prints. The pin is recorded synchronously and no LLM
+        call has happened, so a forward-looking claim would be a prediction
+        about a call that has not occurred."""
+        cp, _, _ = _cp_stateful()
+        messages = [
+            await cp._handle_provider("use anthropic-fable"),
+            await cp._handle_provider("use openai-fast"),
+            await cp._handle_provider("use openai-fast"),
+            await cp._handle_provider("auto"),
+            await cp._handle_provider("auto"),
+        ]
+        forbidden = (
+            "takes effect",
+            "will use",
+            "will be",
+            "now using",
+            "switched to",
+            "next turn",
+            "from now on",
+            "going forward",
+        )
+        for message in messages:
+            lowered = _visible(message).lower()
+            for phrase in forbidden:
+                assert phrase not in lowered, (
+                    f"forward-looking tense {phrase!r} in {lowered!r}"
+                )
+
+    @pytest.mark.asyncio
+    async def test_provider_name_with_markup_cannot_break_rendering(self):
+        """These are the only /provider strings carrying markup, so a mount
+        name containing '[' must not be able to open a style tag."""
+        mounted = {"weird[bold]name"}
+        pin, _ = _stateful_pin(mounted)
+        cp = _cp_with(pin=pin, providers={name: _make_provider() for name in mounted})
+        result = await cp._handle_provider("use weird[bold]name")
+        assert "weird[bold]name" in _visible(result)
+
+    # --- flag degradation ------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_lost_flag_degrades_to_an_extra_line_never_a_wrong_message(
+        self,
+    ):
+        """The flag gates ONLY whether the teaching line is appended -- never
+        which message is chosen, never whether the pin happened. So broken
+        session state costs at most one redundant line."""
+
+        class _BrokenState:
+            def get(self, *args, **kwargs):
+                raise RuntimeError("session state unavailable")
+
+            def __setitem__(self, *args):
+                raise RuntimeError("session state unavailable")
+
+        cp, pin, _ = _cp_stateful()
+        cp.session.coordinator.session_state = _BrokenState()
+
+        first = _visible(await cp._handle_provider("use anthropic-fable"))
+        second = _visible(await cp._handle_provider("use openai-fast"))
+
+        # Degrades to teaching every time -- an extra line, never a wrong one.
+        for message, expected_pin in (
+            (first, "anthropic-fable"),
+            (second, "openai-fast"),
+        ):
+            lines = message.splitlines()
+            assert lines[0] == f"\U0001f4cc pinned: {expected_pin}"
+            assert len(lines) == 2
+            assert "scope: this conversation only" in lines[1]
+
+        # And the pin itself still happened, both times.
+        assert pin.pin.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_flag_is_session_scoped_not_process_scoped(self):
+        """A second session teaches again -- the lesson lives in that
+        session's state, not in a module-level global."""
+        cp_a, _, _ = _cp_stateful()
+        first_a = _visible(await cp_a._handle_provider("use anthropic-fable"))
+        assert "experimental" in first_a
+
+        cp_b, _, _ = _cp_stateful()
+        first_b = _visible(await cp_b._handle_provider("use anthropic-fable"))
+        assert "experimental" in first_b
 
 
 # === Unknown subcommand ===
@@ -343,7 +593,7 @@ class TestCommandRegistration:
         pin = _make_pin(available=["anthropic-fable"])
         cp = _cp_with(pin=pin, providers={})
         result = await cp.handle_command("handle_provider", {"args": "auto"})
-        assert "already automatic" in result
+        assert "not pinned" in _visible(result)
 
 
 # === (experimental) tagging ===
@@ -383,30 +633,32 @@ class TestExperimentalTag:
         assert result.splitlines()[0] == "Conversation providers (experimental):"
 
     @pytest.mark.asyncio
-    async def test_use_confirmation_is_tagged(self):
+    async def test_first_use_carries_experimental_in_the_teach_line(self):
+        """The (experimental) PREFIX is gone from the confirmations by
+        design -- the microcopy redesign moved that context into the
+        one-time teaching line, which is where it now lives."""
         pin = _make_pin(available=["anthropic-fable"])
         cp = _cp_with(pin=pin, providers={"anthropic-fable": _make_provider()})
         result = await cp._handle_provider("use anthropic-fable")
-        assert result.startswith("(experimental) ")
+        assert "experimental" in result
+        assert not result.startswith("(experimental) ")
 
     @pytest.mark.asyncio
-    async def test_auto_confirmation_is_tagged(self):
-        pin = _make_pin(available=["anthropic-fable"])
-        pin.unpin.return_value = "anthropic-fable"
-        cp = _cp_with(pin=pin, providers={"anthropic-fable": _make_provider()})
-        result = await cp._handle_provider("auto")
-        assert result.startswith("(experimental) ")
-
-    @pytest.mark.asyncio
-    async def test_auto_already_unpinned_confirmation_is_tagged(self):
-        """Both /provider auto outcomes carry the tag -- otherwise the same
-        command would appear tagged or untagged depending on prior state,
-        which reads like a bug."""
-        pin = _make_pin(available=["anthropic-fable"])
-        pin.unpin.return_value = None
-        cp = _cp_with(pin=pin, providers={"anthropic-fable": _make_provider()})
-        result = await cp._handle_provider("auto")
-        assert result.startswith("(experimental) ")
+    async def test_subsequent_transitions_are_not_tagged(self):
+        """Once taught, the acknowledgements are bare -- repeating the tag
+        on every pin is exactly the glossed-over noise this redesign
+        removed."""
+        pin = _make_pin(available=["anthropic-fable", "openai-fast"])
+        cp = _cp_with(
+            pin=pin,
+            providers={
+                "anthropic-fable": _make_provider(),
+                "openai-fast": _make_provider(),
+            },
+        )
+        await cp._handle_provider("use anthropic-fable")  # spends the hint
+        result = await cp._handle_provider("use openai-fast")
+        assert "experimental" not in result
 
     @pytest.mark.asyncio
     async def test_capability_absent_error_is_NOT_tagged(self):
@@ -504,27 +756,42 @@ class TestUsageCaveat:
             assert "billing-grade" not in result
 
     @pytest.mark.asyncio
-    async def test_confirmations_do_not_grow_past_their_current_wrapping(self):
-        """The confirmations already wrap to 5 (use) and 4 (auto) lines at
-        80 cols. This is a proxy guard (textwrap, not a real terminal) but
-        it fails loudly if someone appends the caveat -- or any other
-        paragraph -- to the strings the user sees on EVERY pin."""
+    async def test_transitions_stay_within_their_tightened_line_budget(self):
+        """Bound TIGHTENED by the microcopy redesign: these used to wrap to
+        5 (use) and 4 (auto) lines at 80 cols. The new strings are one line
+        each -- two on the first pin only, for the teaching line -- and the
+        budget now says so, so any regression toward paragraphs fails here.
+
+        Proxy guard: textwrap on markup-stripped text, not a real terminal.
+        """
         import textwrap
 
-        pin = _make_pin(available=["anthropic-fable"])
-        cp = _cp_with(pin=pin, providers={"anthropic-fable": _make_provider()})
-        use_msg = await cp._handle_provider("use anthropic-fable")
+        providers = {
+            "anthropic-fable": _make_provider(),
+            "openai-fast": _make_provider(),
+        }
+        pin = _make_pin(available=list(providers))
+        cp = _cp_with(pin=pin, providers=providers)
 
-        pin2 = _make_pin(available=["anthropic-fable"])
-        pin2.unpin.return_value = "anthropic-fable"
-        cp2 = _cp_with(pin=pin2, providers={"anthropic-fable": _make_provider()})
-        auto_msg = await cp2._handle_provider("auto")
+        first = _visible(await cp._handle_provider("use anthropic-fable"))
+        assert len(first.splitlines()) == 2, "first pin is exactly two lines"
+        for line in first.splitlines():
+            assert len(textwrap.wrap(line, 80)) <= 1, (
+                f"first-pin line exceeds 80 cols: {line!r}"
+            )
 
-        assert len(textwrap.wrap(use_msg, 80)) <= 5, (
-            "/provider use confirmation grew past 5 wrapped lines at 80 cols"
+        pin.current.return_value = "anthropic-fable"
+        later = _visible(await cp._handle_provider("use openai-fast"))
+        assert len(textwrap.wrap(later, 80)) <= 1, (
+            "/provider use acknowledgement grew past one line at 80 cols"
         )
-        assert len(textwrap.wrap(auto_msg, 80)) <= 4, (
-            "/provider auto confirmation grew past 4 wrapped lines at 80 cols"
+
+        pin2 = _make_pin(available=list(providers))
+        pin2.unpin.return_value = "anthropic-fable"
+        cp2 = _cp_with(pin=pin2, providers=providers)
+        auto_msg = _visible(await cp2._handle_provider("auto"))
+        assert len(textwrap.wrap(auto_msg, 80)) <= 1, (
+            "/provider auto acknowledgement grew past one line at 80 cols"
         )
 
     def test_caveat_does_not_claim_rates_are_wrong_or_cross_applied(self):

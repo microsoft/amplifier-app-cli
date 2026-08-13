@@ -507,6 +507,42 @@ class CommandProcessor:
         "themselves are correct."
     )
 
+    # === /provider transition microcopy (approved redesign) ===
+    #
+    # PROGRESSIVE DISCLOSURE: teach once per session, acknowledge thereafter.
+    # These are deliberately terse because THREE PERSISTENT surfaces already
+    # do the confirming -- the prompt indicator ([pin name]>, one line below
+    # and it stays there), the per-turn footer badge, and `/provider` status
+    # (scope + usage caveat). The transition line is the least important of
+    # the four and used to be by far the longest.
+    #
+    # NO FORWARD-LOOKING TENSE. Every string here is past-tense or
+    # state-descriptive -- "pinned", "unpinned", "already pinned", "not
+    # pinned" -- each one true at the instant it prints, because it describes
+    # what the system was TOLD, not what a model DID. Do not reintroduce
+    # "takes effect", "now using", "will use", or "switched to": the pin is
+    # recorded synchronously and no LLM call has happened yet, so any such
+    # phrasing is a prediction about a call that has not occurred. That is
+    # precisely the unverifiable claim this whole feature exists to avoid.
+    #
+    # THE use/auto ASYMMETRY IS DELIBERATE -- do not "fix" it into symmetry.
+    # `use` is confirmed by an indicator APPEARING one line down, so the
+    # message needs nothing else. `auto` is confirmed by one DISAPPEARING,
+    # which is weaker evidence, and unpinning destroys the only record of
+    # what had been pinned -- so "(was X)" is the single genuinely
+    # non-redundant fact in either message.
+    #
+    # Rendered dim (see _dim): the REPL prints command results as
+    # `[cyan]{result}[/cyan]`, so [dim] nests to dim-cyan -- a receipt the
+    # eye skips rather than content demanding parsing. Color carries weight
+    # that would otherwise have to be paid for in words.
+    _PROVIDER_PIN_HINT_KEY = "provider_pin_hint_shown"
+
+    _PROVIDER_PIN_HINT_LINE = (
+        "   experimental \u00b7 scope: this conversation only \u00b7 "
+        "/provider for details"
+    )
+
     # /goal: aliases that clear an active goal. The turn cap is optional and
     # None (unlimited) by default -- deliberately, see
     # docs/decisions/ADR-0005-goal-unlimited-by-default.md. A positive int
@@ -1323,6 +1359,51 @@ class CommandProcessor:
         )
 
     @staticmethod
+    def _dim(text: str) -> str:
+        """Wrap text in Rich's dim markup -- this file's existing convention
+        for de-emphasized/receipt output (see the ~26 other ``[dim]`` sites).
+
+        The REPL prints command results as ``[cyan]{result}[/cyan]``, so this
+        nests to dim-cyan rather than replacing the colour.
+        """
+        return f"[dim]{text}[/dim]"
+
+    @staticmethod
+    def _markup_safe(text: str) -> str:
+        """Escape a provider name for interpolation into Rich markup.
+
+        These transition strings are the only /provider messages that carry
+        markup, so a mount name containing ``[`` must not be able to open a
+        style tag (or swallow the rest of the line).
+        """
+        from rich.markup import escape
+
+        return escape(text)
+
+    def _provider_pin_teach_line(self) -> str | None:
+        """The one-time teaching line, or None once it has been shown.
+
+        Progressive disclosure: the scope/experimental context is taught on
+        the first ``/provider use`` of a session and never repeated.
+
+        DEGRADATION IS ONE-DIRECTIONAL BY CONSTRUCTION. The flag gates ONLY
+        whether this extra line is appended -- never which message is chosen,
+        never whether the pin happened. So a lost, missing, or unwritable
+        session_state costs at most one redundant line; it can never produce
+        a wrong or misleading message. Any failure therefore defaults to
+        SHOWING the line, not suppressing it.
+        """
+        try:
+            session_state = self.session.coordinator.session_state
+            if session_state.get(self._PROVIDER_PIN_HINT_KEY):
+                return None
+            session_state[self._PROVIDER_PIN_HINT_KEY] = True
+        except Exception:
+            # No usable session state -- fall through and teach again.
+            logger.debug("provider pin hint flag unavailable", exc_info=True)
+        return self._PROVIDER_PIN_HINT_LINE
+
+    @staticmethod
     def _provider_model_for_display(provider: Any) -> str | None:
         """Best-effort default model name via the Provider protocol's
         synchronous ``get_info()`` (no network I/O) -- display only, never
@@ -1428,8 +1509,13 @@ class CommandProcessor:
 
         1. Capability absent -> refuse loudly, no config write, no success.
         2. pin() ValueError -> clean user-facing error, not a traceback.
-        3. Never claim a switch before it's confirmed (next turn, not now).
-        4. Report scope accurately: top-level conversation only.
+        3. Never claim anything that isn't already true when it prints. The
+           transition messages are past-tense/state-descriptive only -- see
+           _PROVIDER_PIN_HINT_LINE's block comment for why the older "takes
+           effect on the NEXT turn" phrasing was removed rather than
+           reworded.
+        4. Report scope accurately: top-level conversation only. Taught once
+           per session via the hint line, not repeated on every pin.
         """
         args = args.strip()
         parts = args.split(maxsplit=1)
@@ -1450,34 +1536,39 @@ class CommandProcessor:
                     "Usage: /provider use <name>. Run /provider to see "
                     "mounted providers."
                 )
+            # Read the prior pin BEFORE pinning so the no-op case can be
+            # told apart from a real change. Still call pin() either way --
+            # it re-validates that the name is mounted, so "already pinned"
+            # can never be reported for a provider that has since been
+            # unmounted (that raises the normal, loud ValueError instead).
+            try:
+                previous = pin.current()
+            except Exception:
+                previous = None
             try:
                 pin.pin(name)
             except ValueError as e:
                 return f"\u2717 {e}"
-            return (
-                f"(experimental) Pinned conversation provider to '{name}'. "
-                f"This takes effect on the NEXT turn, not this one -- the "
-                f"token-usage line after your next message is your "
-                f"confirmation of which model actually answered. Scope: "
-                f"top-level conversation only; model-role routing, "
-                f"sub-agents, and the /goal loop are unaffected."
-            )
+
+            safe_name = self._markup_safe(name)
+            if previous == name:
+                # No-op: say so rather than implying something changed.
+                return self._dim(f"\U0001f4cc already pinned: {safe_name}")
+
+            lines = [self._dim(f"\U0001f4cc pinned: {safe_name}")]
+            teach = self._provider_pin_teach_line()
+            if teach:
+                lines.append(self._dim(teach))
+            return "\n".join(lines)
 
         if subcmd == "auto":
             previous = pin.unpin()
             if previous is None:
-                return (
-                    "(experimental) Conversation provider is already "
-                    "automatic (priority order). Nothing to unpin."
-                )
-            return (
-                f"(experimental) Unpinned conversation provider (was "
-                f"'{previous}'). Priority-based selection resumes on the "
-                f"NEXT turn -- confirm via the token-usage line after your "
-                f"next message. Scope: top-level conversation only; "
-                f"model-role routing, sub-agents, and the /goal loop are "
-                f"unaffected."
-            )
+                # Nothing was pinned. Reporting "unpinned" here would be the
+                # untrue-but-plausible confirmation this feature exists to
+                # prevent.
+                return self._dim("not pinned")
+            return self._dim(f"unpinned (was {self._markup_safe(previous)})")
 
         return (
             f"Unknown /provider subcommand: {subcmd!r}. "
