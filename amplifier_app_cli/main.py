@@ -30,6 +30,24 @@ from prompt_toolkit.history import FileHistory, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from rich.panel import Panel
 
+# Errors that mean the terminal can never satisfy the REPL, so retrying is
+# pointless. See the REPL loop's handler for the full story: on Windows without
+# a real console, prompt_toolkit's Win32Output raises before the loop reaches
+# any await, so the "keep going" catch-all turns into an unkillable busy spin.
+#
+# `prompt_toolkit.output.win32` asserts `sys.platform == "win32"` at import, so
+# this must stay guarded. On POSIX the tuple is empty and `except ()` catches
+# nothing -- the POSIX path is byte-identical in effect to what shipped.
+if sys.platform == "win32":  # pragma: no cover - platform-specific
+    from prompt_toolkit.output.win32 import NoConsoleScreenBufferError
+
+    _TERMINAL_UNUSABLE_ERRORS: tuple[type[BaseException], ...] = (
+        NoConsoleScreenBufferError,
+    )
+else:
+    _TERMINAL_UNUSABLE_ERRORS = ()
+
+
 from .commands.agents import agents as agents_group
 from .commands.allowed_dirs import allowed_dirs as allowed_dirs_group
 from .commands.bundle import bundle as bundle_group
@@ -65,6 +83,36 @@ from .ui.log_filter import LLMErrorLogFilter
 from .ui.view_policy import resolve_view
 from .utils.error_format import escape_markup
 from .utils.version import get_core_version, get_version
+
+
+def _report_terminal_unusable(exc: BaseException, *, verbose: bool = False) -> None:
+    """Explain an unusable terminal in terms the user can act on.
+
+    Shared by every site that can hit ``_TERMINAL_UNUSABLE_ERRORS`` so the
+    message stays identical no matter where the failure surfaces. Without this,
+    a user piping or redirecting ``amplifier`` on Windows got a raw
+    prompt_toolkit traceback naming ``Win32Output`` -- accurate, but it points
+    at a library internal rather than at what they did or what to do instead.
+    """
+    # Local imports: this helper is defined above main.py's own import block so
+    # it can sit next to the _TERMINAL_UNUSABLE_ERRORS tuple it belongs to.
+    from .console import console as _console
+    from .utils.error_format import escape_markup as _escape
+
+    _console.print(f"[red]Cannot run an interactive session:[/red] {_escape(exc)}")
+    _console.print(
+        "[yellow]The terminal has no console screen buffer. This happens when "
+        "output is piped or redirected, or when running without a real "
+        "console.[/yellow]"
+    )
+    _console.print(
+        "Run interactively in a real terminal (Windows Terminal, conhost, or "
+        "cmd.exe), or use a non-interactive command such as "
+        "[cyan]amplifier run[/cyan]."
+    )
+    if verbose:
+        _console.print_exception()
+
 
 logger = logging.getLogger(__name__)
 
@@ -3476,13 +3524,30 @@ async def interactive_chat(
             )
         )
 
-    # Create prompt session for history and advanced editing
-    prompt_session = _create_prompt_session(
-        get_active_mode=lambda: command_processor.session.coordinator.session_state.get(
-            "active_mode"
-        ),
-        get_pinned_provider=lambda: _pinned_provider_name(command_processor.session),
-    )
+    # Create prompt session for history and advanced editing.
+    #
+    # This is the FIRST place an interactive session touches the terminal, and
+    # on Windows it is where an unusable terminal actually surfaces: building
+    # the prompt_toolkit Application resolves `get_app().output`, which
+    # constructs Win32Output, which raises NoConsoleScreenBufferError whenever
+    # stdout is not a real console (piped, redirected, CI, non-console parent).
+    #
+    # Guarding here rather than only at the REPL loop matters: measured on
+    # Windows, an unguarded `amplifier` with piped stdout died with a raw
+    # prompt_toolkit traceback out of this call, never reaching the loop. Unit
+    # tests miss it because they mock _create_prompt_session.
+    try:
+        prompt_session = _create_prompt_session(
+            get_active_mode=lambda: command_processor.session.coordinator.session_state.get(
+                "active_mode"
+            ),
+            get_pinned_provider=lambda: _pinned_provider_name(command_processor.session),
+        )
+    except _TERMINAL_UNUSABLE_ERRORS as e:
+        _report_terminal_unusable(e, verbose=verbose)
+        await initialized.cleanup()
+        close_dedicated_tty_input()
+        return
 
     # Helper to extract model name from config
     def _extract_model_name() -> str:
@@ -3806,24 +3871,50 @@ async def interactive_chat(
             ):
                 _streaming_hooks_instance.set_composing_source(None)
 
-    # Execute initial prompt if provided
-    if initial_prompt:
-        console.print(
-            f"\n[bold cyan]>[/bold cyan] {initial_prompt[:100]}{'...' if len(initial_prompt) > 100 else ''}"
-        )
-        console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
-
-        # Process runtime @mentions in initial prompt
-        initial_prompt = await process_runtime_mentions(session, initial_prompt)
-        # NOTE: the /goal auto-continue loop lives in the orchestrator
-        # (loop-streaming's execute()), so the REPL calls the plain
-        # `_execute_with_interrupt` here -- the orchestrator drives
-        # auto-continuation internally via session_state["goal"]. See
-        # docs/GOAL_COMMAND.md.
-        await _execute_with_interrupt(initial_prompt)
-
-    # === REPL LOOP ===
+    # === REPL LOOP (and everything that must run under its cleanup) ===
+    #
+    # The try/finally starts HERE rather than at the loop, so the terminal
+    # check and the initial-prompt turn are both covered by the finally's
+    # teardown. An early `return` from inside a try still runs the finally,
+    # so bailing on an unusable terminal still awaits initialized.cleanup()
+    # and closes the dedicated tty fd -- leaking those was a real bug caught
+    # by test_interactive_chat_teardown_does_not_raise_when_fd_never_opened.
     try:
+        # An interactive session needs a terminal prompt_toolkit can actually
+        # drive. Check ONCE, here, before any turn runs -- both the initial-prompt
+        # path below and the REPL loop wrap their work in `patch_stdout()`, and on
+        # Windows without a real console that raises NoConsoleScreenBufferError
+        # from Win32Output. Checking up front means one clear message instead of
+        # the same failure surfacing differently from two call sites.
+        if _TERMINAL_UNUSABLE_ERRORS:
+            try:
+                with patch_stdout():
+                    pass
+            except _TERMINAL_UNUSABLE_ERRORS as e:
+                _report_terminal_unusable(e, verbose=verbose)
+                # No explicit teardown here: this `return` is inside the try,
+                # so the finally below runs and does the whole teardown --
+                # cleanup(), close_dedicated_tty_input(), the hook emits.
+                # Calling close_dedicated_tty_input() here as well double-fired
+                # it, which the teardown tests correctly caught.
+                return
+
+        # Execute initial prompt if provided
+        if initial_prompt:
+            console.print(
+                f"\n[bold cyan]>[/bold cyan] {initial_prompt[:100]}{'...' if len(initial_prompt) > 100 else ''}"
+            )
+            console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
+
+            # Process runtime @mentions in initial prompt
+            initial_prompt = await process_runtime_mentions(session, initial_prompt)
+            # NOTE: the /goal auto-continue loop lives in the orchestrator
+            # (loop-streaming's execute()), so the REPL calls the plain
+            # `_execute_with_interrupt` here -- the orchestrator drives
+            # auto-continuation internally via session_state["goal"]. See
+            # docs/GOAL_COMMAND.md.
+            await _execute_with_interrupt(initial_prompt)
+
         while True:
             try:
                 # Get user input with history, editing, and paste support.
@@ -3922,6 +4013,44 @@ async def interactive_chat(
 
             except LLMError as e:
                 display_llm_error(console, e, verbose=verbose)
+
+            except _TERMINAL_UNUSABLE_ERRORS as e:
+                # MUST precede the catch-all below, and MUST break.
+                #
+                # On Windows with stdout not attached to a real console (piped,
+                # redirected, CI, a non-console parent), prompt_toolkit's
+                # Win32Output raises NoConsoleScreenBufferError. Critically it
+                # raises on ENTRY to `with patch_stdout():` -- before
+                # `await prompt_session.prompt_async()` -- so this loop
+                # iteration contains NO await point at all.
+                #
+                # Falling into the generic handler below therefore produced an
+                # infinite BUSY loop: raise, print, loop, raise... measured at
+                # 88% CPU on ALIENWARE-R13. And because the coroutine never
+                # yields, asyncio cannot interrupt it -- an
+                # `asyncio.wait_for(..., timeout=10)` around the whole call
+                # never fired. Not cancellable, not timeout-able; only SIGKILL
+                # ends it.
+                #
+                # A terminal that is not a console will not become one by
+                # trying again, so this is fatal to the REPL by definition.
+                # Fail loud and leave, rather than spin in a lesser state.
+                console.print(
+                    f"[red]Cannot run an interactive session:[/red] {escape_markup(e)}"
+                )
+                console.print(
+                    "[yellow]The terminal has no console screen buffer. This "
+                    "happens when output is piped or redirected, or when "
+                    "running without a real console.[/yellow]"
+                )
+                console.print(
+                    "Run interactively in a real terminal (Windows Terminal, "
+                    "conhost, or cmd.exe), or use a non-interactive command "
+                    "such as [cyan]amplifier run[/cyan]."
+                )
+                if verbose:
+                    console.print_exception()
+                break
 
             except Exception as e:
                 console.print(f"[red]Error:[/red] {escape_markup(e)}")
@@ -4119,9 +4248,7 @@ async def execute_single(
                 # condition is re-sent to the evaluator model every turn;
                 # without this it would see the literal "@file" token
                 # forever instead of the file's content.
-                goal_condition = await process_runtime_mentions(
-                    session, goal_condition
-                )
+                goal_condition = await process_runtime_mentions(session, goal_condition)
 
                 session.coordinator.session_state["goal"] = {
                     "condition": goal_condition,
