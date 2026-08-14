@@ -12,6 +12,8 @@ import os
 from typing import TYPE_CHECKING
 from typing import Any
 
+from .provider_diagnostics import invoke_list_models
+
 if TYPE_CHECKING:
     from amplifier_core import ModelInfo  # pyright: ignore[reportAttributeAccessIssue]
 
@@ -168,7 +170,14 @@ def get_provider_models(
         logger.debug(f"Provider '{provider_id}' does not have list_models()")
         return []
 
-    # Call list_models (may be sync or async)
+    # Call list_models (may be sync or async) via the shared invocation
+    # primitive in provider_diagnostics -- this is the same "call
+    # list_models, async-aware" mechanic the in-session /provider
+    # test|models slash commands use against already-mounted providers, so
+    # the two surfaces can't quietly diverge on how a provider is asked for
+    # its models. This function still owns instantiation (above) and
+    # cleanup (below) itself, since only it knows this provider instance is
+    # disposable -- a mounted session provider must never be closed.
     # Let exceptions propagate - auth errors, API errors, connection errors
     # should be shown to the user, not silently swallowed
     list_models_fn = provider.list_models
@@ -176,7 +185,7 @@ def get_provider_models(
 
         async def _list_and_cleanup():
             try:
-                return await list_models_fn()
+                return await invoke_list_models(provider)
             finally:
                 if hasattr(provider, "close") and callable(provider.close):
                     try:
