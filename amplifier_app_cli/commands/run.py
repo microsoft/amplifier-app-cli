@@ -221,7 +221,7 @@ def register_run_command(
             console.print(
                 "[red]Error:[/red] --model requires --provider\n"
                 "Specify which provider to use: --provider anthropic --model claude-opus-4-6\n"
-                "Run 'amplifier provider use --help' for configuration options"
+                "Run 'amplifier provider list' to see your configured providers"
             )
             sys.exit(1)
 
@@ -256,7 +256,7 @@ def register_run_command(
                 console.print(
                     f"[red]Error:[/red] Provider '{provider}' not configured\n"
                     f"Available providers: {', '.join(p.get('id') or p.get('instance_id') or p.get('module', '?').replace('provider-', '') for p in providers_list if isinstance(p, dict))}\n"
-                    f"Run 'amplifier provider use --help' for configuration options"
+                    "Add one with 'amplifier provider add', or see all options with 'amplifier provider --help'"
                 )
                 sys.exit(1)
 
