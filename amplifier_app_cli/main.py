@@ -50,6 +50,10 @@ from .console import Markdown, console
 from .dedicated_tty_input import close_dedicated_tty_input, get_dedicated_tty_input
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
+from .provider_diagnostics import DEFAULT_TIMEOUT_S as _PROVIDER_DIAGNOSTIC_TIMEOUT_S
+from .provider_diagnostics import format_model_line
+from .provider_diagnostics import invoke_list_models
+from .provider_diagnostics import test_provider_connectivity
 from .session_runner import SessionConfig, create_initialized_session
 from .session_store import SessionStore
 from .stdout_offload import patch_stdout_offloaded as patch_stdout
@@ -468,7 +472,8 @@ class CommandProcessor:
             "action": "handle_provider",
             "description": (
                 "(experimental) Show/pin the conversation-scope provider: "
-                "/provider (status) | /provider use <name> | /provider auto"
+                "/provider (status) | /provider use <name> | /provider auto | "
+                "/provider test <name> | /provider models <name>"
             ),
         },
     }
@@ -1502,6 +1507,153 @@ class CommandProcessor:
 
         return "\n".join(lines)
 
+    # === /provider test | /provider models: read-only diagnostics ===
+    #
+    # Unlike 'use'/'auto', these two are NEVER gated on the
+    # 'conversation.provider_pin' capability -- they answer "why can't I
+    # pin/why is nothing answering", which is exactly the question that
+    # matters most when the pin capability is absent or refusing. Gating
+    # them on that same capability would remove the diagnostic exactly
+    # when it's needed.
+    #
+    # They also intentionally query THIS SESSION'S MOUNTED providers
+    # (coordinator.get("providers")), never settings.yaml -- that's the
+    # entire reason to run them mid-conversation instead of dropping to a
+    # shell for `amplifier provider test`/`amplifier provider models`. If
+    # the mounted set and settings.yaml disagree, the session's live
+    # reality is what the user needs to see.
+
+    def _unknown_provider_message(self, name: str, mounted: dict[str, Any]) -> str:
+        """Refusal text for a name that isn't currently mounted.
+
+        Names what IS mounted rather than a bare failure -- matches the
+        wording ConversationProviderPin.pin() already uses for the same
+        situation (see the module docstring's WHY: this is the message a
+        failed pin sends the user here to investigate).
+
+        Deliberately NOT tagged (experimental) or dim -- matches the
+        capability-absent and unmounted-provider refusals from 'use': the
+        refusal is the whole message, tagging or dimming would dilute it.
+        """
+        available = ", ".join(sorted(mounted)) if mounted else "(none)"
+        return (
+            f"\u2717 provider {name!r} is not mounted in this session. "
+            f"Mounted providers: {available}"
+        )
+
+    def _resolve_diagnostic_targets(
+        self, name: str
+    ) -> tuple[dict[str, Any], str | None]:
+        """Resolve which mounted provider(s) a diagnostic subcommand
+        should target: all of them (no name given), or exactly one.
+
+        Returns ``(targets, error)``. ``error`` is set (and ``targets``
+        empty) only when a name was given but isn't mounted.
+        """
+        mounted: dict[str, Any] = self.session.coordinator.get("providers") or {}
+        if not name:
+            return mounted, None
+        if name not in mounted:
+            return {}, self._unknown_provider_message(name, mounted)
+        return {name: mounted[name]}, None
+
+    async def _handle_provider_test(self, name: str) -> str:
+        """`/provider test [name]` -- connectivity check against this
+        session's mounted providers. No name tests all of them,
+        concurrently (see class docstring above for why this is never
+        gated on the pin capability, and always live-session-scoped).
+
+        Reuses provider_diagnostics.test_provider_connectivity so "ok"
+        means exactly what `amplifier provider test` means (list_models()
+        succeeds) -- the two surfaces cannot silently disagree.
+        """
+        targets, error = self._resolve_diagnostic_targets(name)
+        if error:
+            return error
+        if not targets:
+            return "Provider test (experimental):\n  (no providers mounted in this session)"
+
+        # Network I/O in an interactive REPL: tell the user before the
+        # (possibly multi-second, possibly multi-provider) wait rather
+        # than freezing silently. Run all targets concurrently -- and each
+        # is individually timeout-bounded (see test_provider_connectivity)
+        # -- so one slow/hung provider can't stall the others or the
+        # session.
+        plural = "" if len(targets) == 1 else "s"
+        console.print(self._dim(f"Testing {len(targets)} provider{plural}..."))
+
+        results = await asyncio.gather(
+            *(test_provider_connectivity(n, p) for n, p in sorted(targets.items()))
+        )
+
+        lines = ["Provider test (experimental):"]
+        for r in results:
+            mark = "\u2713" if r.ok else "\u2717"
+            lines.append(f"  {mark} {r.name:<24} {r.elapsed_s:>5.1f}s  {r.detail}")
+        return "\n".join(lines)
+
+    async def _handle_provider_models(self, name: str) -> str:
+        """`/provider models [name]` -- list the models a mounted, LIVE
+        provider actually offers right now. No name given means "the
+        provider actually answering this conversation" (pinned if
+        pinned, else the priority winner) -- mirroring the CLI's own
+        "uses current provider" default, translated to session terms.
+
+        Never gated on the pin capability -- see class docstring above.
+        """
+        # Shares _resolve_diagnostic_targets with /provider test: a named,
+        # unmounted provider is refused (naming what IS mounted) the same
+        # way in both -- including when nothing at all is mounted, where
+        # the unknown-name refusal still fires rather than being masked by
+        # a generic "nothing mounted" message.
+        targets, error = self._resolve_diagnostic_targets(name)
+        if error:
+            return error
+        if not targets:
+            return "Provider models (experimental):\n  (no providers mounted in this session)"
+
+        if name:
+            target_name = name
+        else:
+            # No name: use whichever provider is actually answering right
+            # now -- pinned if pinned, else the priority winner -- so
+            # "/provider models" with no argument means "the provider
+            # currently in play", mirroring the CLI's own "uses current
+            # provider" default in session terms.
+            pin = self.session.coordinator.get_capability("conversation.provider_pin")
+            pinned_name: str | None = None
+            if pin is not None:
+                try:
+                    pinned_name = pin.current()
+                except Exception:
+                    pinned_name = None
+            if pinned_name and pinned_name in targets:
+                target_name = pinned_name
+            else:
+                target_name = min(
+                    targets,
+                    key=lambda n: self._provider_priority_for_display(targets[n]),
+                )
+        target_provider = targets[target_name]
+
+        console.print(self._dim(f"Fetching models for '{target_name}'..."))
+
+        try:
+            models = await asyncio.wait_for(
+                invoke_list_models(target_provider), _PROVIDER_DIAGNOSTIC_TIMEOUT_S
+            )
+        except TimeoutError:
+            return f"\u2717 {target_name}: timed out after {_PROVIDER_DIAGNOSTIC_TIMEOUT_S:.0f}s"
+        except Exception as e:
+            return f"\u2717 {target_name}: {type(e).__name__}: {e}"
+
+        if not models:
+            return f"Provider models (experimental):\n  {target_name}: (no models reported)"
+
+        lines = [f"Models for '{target_name}' (experimental):"]
+        lines.extend(f"  {format_model_line(model)}" for model in models)
+        return "\n".join(lines)
+
     async def _handle_provider(self, args: str) -> str:
         """Handle /provider: status (no args), 'use <name>' to pin, or
         'auto' to unpin. See REQUIRED BEHAVIORS in the task spec this
@@ -1525,6 +1677,20 @@ class CommandProcessor:
 
         if not subcmd:
             return self._render_provider_status(pin)
+
+        # 'test' and 'models' are read-only diagnostics over THIS SESSION'S
+        # mounted providers -- deliberately never gated on `pin` (see the
+        # block comment above _handle_provider_test/_handle_provider_models):
+        # they're the answer to "why isn't pinning working", so gating them
+        # on the same capability that might be missing/refusing would
+        # remove the diagnostic exactly when it's needed.
+        if subcmd == "test":
+            name = parts[1].strip() if len(parts) > 1 else ""
+            return await self._handle_provider_test(name)
+
+        if subcmd == "models":
+            name = parts[1].strip() if len(parts) > 1 else ""
+            return await self._handle_provider_models(name)
 
         if subcmd in ("use", "auto") and pin is None:
             return self._provider_pin_unavailable_message()
@@ -1572,7 +1738,8 @@ class CommandProcessor:
 
         return (
             f"Unknown /provider subcommand: {subcmd!r}. "
-            f"Usage: /provider | /provider use <name> | /provider auto"
+            f"Usage: /provider | /provider use <name> | /provider auto | "
+            f"/provider test <name> | /provider models <name>"
         )
 
     async def _rename_session(self, new_name: str) -> str:
