@@ -1,13 +1,15 @@
 """Deterministic cancellation coverage for in-process sub-sessions."""
 
 import asyncio
+from typing import TypeVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from amplifier_app_cli.session_spawner import resume_sub_session, spawn_sub_session
 
 pytestmark = pytest.mark.anyio
+SYNC_TIMEOUT_SECONDS = 5
+T = TypeVar("T")
 
 
 @pytest.fixture(scope="module")
@@ -66,6 +68,36 @@ def make_parent(display=None):
     parent.trace_id = "trace-abc"
     parent.loader = None
     return parent
+
+
+async def wait_for_event(event: asyncio.Event) -> None:
+    await asyncio.wait_for(event.wait(), timeout=SYNC_TIMEOUT_SECONDS)
+
+
+async def await_task(
+    task: asyncio.Task[T], *, timeout: float = SYNC_TIMEOUT_SECONDS
+) -> T:
+    return await asyncio.wait_for(task, timeout=timeout)
+
+
+async def test_await_task_timeout_cancels_and_reaps_task():
+    blocker = asyncio.Event()
+    cancellation_observed = asyncio.Event()
+
+    async def wait_forever():
+        try:
+            await blocker.wait()
+        finally:
+            cancellation_observed.set()
+
+    task = asyncio.create_task(wait_forever())
+
+    with pytest.raises(TimeoutError):
+        await await_task(task, timeout=0.01)
+
+    assert task.done()
+    assert task.cancelled()
+    assert cancellation_observed.is_set()
 
 
 async def test_spawn_cancellation_persists_partial_transcript_and_unwinds_once():
@@ -205,11 +237,11 @@ async def test_spawn_cancel_during_post_execute_get_messages_persists_interrupte
                 sub_session_id="post-execute-cancel-spawn",
             )
         )
-        await transcript_started.wait()
+        await wait_for_event(transcript_started)
         task.cancel("cancel spawn transcript read")
 
         with pytest.raises(asyncio.CancelledError) as raised:
-            await task
+            await await_task(task)
 
     assert raised.value is transcript_cancellations[0]
     assert context.get_messages.await_count == 2
@@ -273,11 +305,11 @@ async def test_resume_cancel_during_post_execute_get_messages_persists_interrupt
         task = asyncio.create_task(
             resume_sub_session("post-execute-cancel-resume", "continue", parent)
         )
-        await transcript_started.wait()
+        await wait_for_event(transcript_started)
         task.cancel("cancel resume transcript read")
 
         with pytest.raises(asyncio.CancelledError) as raised:
-            await task
+            await await_task(task)
 
     assert raised.value is transcript_cancellations[0]
     assert context.get_messages.await_count == 2
@@ -511,17 +543,17 @@ async def test_spawn_repeated_cancellation_cannot_interrupt_save_or_cleanup():
                 sub_session_id="repeated-cancel-spawn",
             )
         )
-        await execute_started.wait()
+        await wait_for_event(execute_started)
         task.cancel("original spawn cancellation")
-        await transcript_started.wait()
+        await wait_for_event(transcript_started)
         task.cancel("cancel while reading transcript")
         release_transcript.set()
-        await cleanup_started.wait()
+        await wait_for_event(cleanup_started)
         task.cancel("cancel while cleaning up")
         release_cleanup.set()
 
         with pytest.raises(asyncio.CancelledError) as raised:
-            await task
+            await await_task(task)
 
     assert raised.value is execution_cancellations[0]
     store.save.assert_called_once()
@@ -598,17 +630,17 @@ async def test_resume_repeated_cancellation_cannot_interrupt_save_or_cleanup():
         task = asyncio.create_task(
             resume_sub_session("repeated-cancel-resume", "continue", parent)
         )
-        await execute_started.wait()
+        await wait_for_event(execute_started)
         task.cancel("original resume cancellation")
-        await transcript_started.wait()
+        await wait_for_event(transcript_started)
         task.cancel("cancel while reading resumed transcript")
         release_transcript.set()
-        await cleanup_started.wait()
+        await wait_for_event(cleanup_started)
         task.cancel("cancel while cleaning up resumed child")
         release_cleanup.set()
 
         with pytest.raises(asyncio.CancelledError) as raised:
-            await task
+            await await_task(task)
 
     assert raised.value is execution_cancellations[0]
     store.save.assert_called_once()
@@ -697,10 +729,10 @@ async def test_spawn_cancellation_after_normal_save_does_not_save_twice():
                 sub_session_id="cancel-after-save",
             )
         )
-        await bridge_started.wait()
+        await wait_for_event(bridge_started)
         task.cancel("cancel after normal save")
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await await_task(task)
 
     context.get_messages.assert_awaited_once_with()
     store.save.assert_called_once()
