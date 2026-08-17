@@ -6,7 +6,6 @@ Uses existing StandardModuleSourceResolver infrastructure.
 
 import json
 import logging
-import re
 import subprocess
 from dataclasses import dataclass
 from dataclasses import field
@@ -543,18 +542,24 @@ def _cache_age_days_from_string(cached_at: str) -> int:
 async def _get_github_commit_sha(
     client: httpx.AsyncClient, repo_url: str, ref: str
 ) -> str:
-    """Get SHA for ref using GitHub Atom feed.
+    """Get SHA for ref using the GitHub REST API.
 
-    Uses public Atom feed: https://github.com/{owner}/{repo}/commits/{ref}.atom
+    Uses: https://api.github.com/repos/{owner}/{repo}/commits/{ref}
 
-    Uses auth headers when available (GITHUB_TOKEN or gh auth login) to
-    avoid GitHub's unauthenticated rate limit of 60 requests/hour.
-    Authenticated requests get 5,000 requests/hour.
+    The web atom feed at github.com/.../commits/{ref}.atom does not accept
+    Bearer auth. For SAML-protected private repos, GitHub silently returns
+    HTTP 200 with an empty body, causing SHA extraction to fail with an
+    opaque ValueError that bypasses the HTTPStatusError handler in
+    _check_all_cached_modules. The REST API honors PAT auth and returns
+    proper 401/403/404 status codes, letting the existing handler surface
+    the right "private repo or rate limited" hint.
+
+    Authenticated requests get 5,000 requests/hour
+    (vs. 60/hr unauthenticated).
 
     Args:
         client: Shared httpx client for all HTTP requests
     """
-    # Remove .git suffix properly (not with rstrip - it removes any char in '.git'!)
     url_clean = repo_url[:-4] if repo_url.endswith(".git") else repo_url
     parts = url_clean.split("github.com/")[-1].split("/")
     if len(parts) < 2:
@@ -562,24 +567,17 @@ async def _get_github_commit_sha(
 
     owner, repo = parts[0], parts[1]
 
-    atom_url = f"https://github.com/{owner}/{repo}/commits/{ref}.atom"
-
-    # Use auth headers proactively to avoid GitHub's unauthenticated rate limit
-    # (60 req/hr). Authenticated requests get 5,000 req/hr. Falls back gracefully
-    # to no-auth when GITHUB_TOKEN is unset and gh auth login hasn't been run.
-    auth_headers = _get_github_auth_headers()
-    response = await client.get(atom_url, headers=auth_headers)
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/commits/{ref}"
+    response = await client.get(
+        api_url,
+        headers={
+            "Accept": "application/vnd.github.v3+json",
+            **_get_github_auth_headers(),
+        },
+    )
     response.raise_for_status()
 
-    # Parse XML for first commit SHA
-    # Format: <id>tag:github.com,2008:Grit::Commit/{SHA}</id>
-    match = re.search(
-        r"<id>tag:github\.com,2008:Grit::Commit/([a-f0-9]{40})</id>", response.text
-    )
-    if not match:
-        raise ValueError(f"Could not extract commit SHA from Atom feed: {atom_url}")
-
-    return match.group(1)
+    return response.json()["sha"]
 
 
 async def _get_commit_details(
