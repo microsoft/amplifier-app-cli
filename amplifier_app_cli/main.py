@@ -48,7 +48,10 @@ from .commands.update import update as update_cmd
 from .commands.version import version as version_cmd
 from .console import Markdown, console
 from .dedicated_tty_input import close_dedicated_tty_input, get_dedicated_tty_input
-from .effective_config import get_effective_config_summary
+from .effective_config import (
+    get_effective_config_summary,
+    get_effective_provider_model,
+)
 from .key_manager import KeyManager
 from .provider_diagnostics import DEFAULT_TIMEOUT_S as _PROVIDER_DIAGNOSTIC_TIMEOUT_S
 from .provider_diagnostics import format_model_line
@@ -3484,17 +3487,6 @@ async def interactive_chat(
         get_pinned_provider=lambda: _pinned_provider_name(command_processor.session),
     )
 
-    # Helper to extract model name from config
-    def _extract_model_name() -> str:
-        if isinstance(config.get("providers"), list) and config["providers"]:
-            first_provider = config["providers"][0]
-            if isinstance(first_provider, dict) and "config" in first_provider:
-                provider_config = first_provider["config"]
-                return provider_config.get("model") or provider_config.get(
-                    "default_model", "unknown"
-                )
-        return "unknown"
-
     # Helper to save session after each turn
     async def _save_session():
         context = session.coordinator.get("context")
@@ -3503,6 +3495,7 @@ async def interactive_chat(
             # Load existing metadata to preserve fields like name, description
             # that may have been set by other hooks (e.g., session-naming)
             existing_metadata = store.get_metadata(actual_session_id) or {}
+            provenance = get_effective_provider_model(config)
             metadata = {
                 **existing_metadata,  # Preserve name, description, etc.
                 "session_id": actual_session_id,
@@ -3510,7 +3503,7 @@ async def interactive_chat(
                     "created", datetime.now(UTC).isoformat()
                 ),
                 "bundle": bundle_name,
-                "model": _extract_model_name(),
+                **provenance.as_metadata(),
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
                 # Store working_dir for session sync between CLI and web
                 "working_dir": str(Path.cwd().resolve()),
@@ -4250,6 +4243,7 @@ async def execute_single(
             # Load existing metadata to preserve fields like name, description
             # that may have been set by other hooks (e.g., session-naming)
             existing_metadata = store.get_metadata(actual_session_id) or {}
+            provenance = get_effective_provider_model(config)
             metadata = {
                 **existing_metadata,  # Preserve name, description, etc.
                 "session_id": actual_session_id,
@@ -4257,7 +4251,7 @@ async def execute_single(
                     "created", datetime.now(UTC).isoformat()
                 ),
                 "bundle": bundle_name,
-                "model": model_name,
+                **provenance.as_metadata(),
                 "turn_count": len([m for m in messages if m.get("role") == "user"]),
                 # Store working_dir for session sync between CLI and web
                 "working_dir": str(Path.cwd().resolve()),

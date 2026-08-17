@@ -1,9 +1,33 @@
 """Test session store message sanitization for extended thinking."""
 
+import json
 import tempfile
 from pathlib import Path
 
-from amplifier_app_cli.session_store import SessionStore
+from amplifier_app_cli.session_store import SessionStore, extract_session_mode
+
+
+def test_malformed_parseable_metadata_is_normalized_at_resume_read_boundary(tmp_path):
+    """All resume readers receive a mapping and unusable bundle values are ignored."""
+    store = SessionStore(tmp_path)
+
+    for index, raw_metadata in enumerate(([], "metadata", None)):
+        session_id = f"malformed-{index}"
+        session_dir = tmp_path / session_id
+        session_dir.mkdir()
+        (session_dir / "metadata.json").write_text(
+            json.dumps(raw_metadata), encoding="utf-8"
+        )
+
+        transcript, metadata = store.load(session_id)
+
+        assert transcript == []
+        assert metadata == {}
+        assert extract_session_mode(metadata) == (None, None)
+
+
+def test_extract_session_mode_ignores_non_string_bundle():
+    assert extract_session_mode({"bundle": ["anchors"]}) == (None, None)
 
 
 def message_matches_ignoring_timestamp(loaded: dict, original: dict) -> bool:

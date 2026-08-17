@@ -43,18 +43,20 @@ def is_top_level_session(session_id: str) -> bool:
     return "_" not in session_id
 
 
-def extract_session_mode(metadata: dict) -> tuple[str | None, None]:
+def extract_session_mode(metadata: object) -> tuple[str | None, None]:
     """Extract bundle name from session metadata.
 
     Sessions are created with a bundle (e.g., "foundation").
     This function extracts the bundle name for session resumption.
 
     Args:
-        metadata: Session metadata dict containing "bundle" key
+        metadata: Parsed session metadata, normally a dict containing "bundle".
+            Malformed parseable values are ignored so resume can fall back to
+            the configured default bundle.
 
     Returns:
-        (bundle_name, None) tuple. Returns (None, None) if no bundle found,
-        allowing caller to fall back to configured default bundle.
+        (bundle_name, None) tuple. Returns (None, None) if no usable bundle is
+        found, allowing caller to fall back to the configured default bundle.
 
     Example:
         >>> extract_session_mode({"bundle": "bundle:foundation"})
@@ -64,8 +66,11 @@ def extract_session_mode(metadata: dict) -> tuple[str | None, None]:
         >>> extract_session_mode({})
         (None, None)
     """
+    if not isinstance(metadata, dict):
+        return (None, None)
+
     bundle_value = metadata.get("bundle")
-    if bundle_value and bundle_value != "unknown":
+    if isinstance(bundle_value, str) and bundle_value and bundle_value != "unknown":
         if bundle_value.startswith(BUNDLE_PREFIX):
             return (bundle_value[len(BUNDLE_PREFIX) :], None)
         return (bundle_value, None)
@@ -254,11 +259,15 @@ class SessionStore:
     def _load_metadata(self, session_dir: Path) -> dict:
         """Load metadata with corruption recovery.
 
+        Parseable JSON scalars and arrays are malformed metadata, not usable
+        session state. Treat them as an empty mapping at this shared boundary so
+        all resume surfaces remain best-effort and silent.
+
         Args:
             session_dir: Directory for this session
 
         Returns:
-            Metadata dictionary (empty dict if no metadata exists yet)
+            Metadata dictionary (empty dict if no usable metadata exists yet)
         """
         metadata_file = session_dir / "metadata.json"
         backup_file = session_dir / "metadata.json.backup"
@@ -271,7 +280,8 @@ class SessionStore:
         if metadata_file.exists():
             try:
                 with open(metadata_file, encoding="utf-8") as f:
-                    return json.load(f)
+                    metadata = json.load(f)
+                return metadata if isinstance(metadata, dict) else {}
             except (OSError, json.JSONDecodeError) as e:
                 logger.warning(f"Failed to load metadata, trying backup: {e}")
 
@@ -281,7 +291,7 @@ class SessionStore:
                 with open(backup_file, encoding="utf-8") as f:
                     metadata = json.load(f)
                 logger.info("Loaded metadata from backup")
-                return metadata
+                return metadata if isinstance(metadata, dict) else {}
             except (OSError, json.JSONDecodeError) as e:
                 logger.error(f"Backup also corrupted: {e}")
 
