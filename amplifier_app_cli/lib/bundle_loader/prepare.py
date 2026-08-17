@@ -12,11 +12,10 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING
-from typing import Callable
 
-from amplifier_foundation import Bundle
-from amplifier_foundation import load_bundle
+from amplifier_foundation import Bundle, load_bundle
 from amplifier_foundation.bundle import PreparedBundle
 
 if TYPE_CHECKING:
@@ -46,7 +45,6 @@ def _activation_is_strict() -> bool:
         "true",
         "yes",
     )
-
 
 
 # A "namespace:path" include (e.g. "foo:behaviors/extra") is a reference
@@ -438,7 +436,7 @@ def _extract_behavior_name(uri: str) -> str:
 
 
 __all__ = [
-    "load_and_prepare_bundle",
     "compose_and_prepare_bundles",
+    "load_and_prepare_bundle",
     "prepare_bundle_from_uri",
 ]

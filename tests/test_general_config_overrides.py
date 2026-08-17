@@ -5,9 +5,10 @@ Exercises the code path directly and also through the full async function.
 """
 
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+
 from amplifier_app_cli.lib.merge_utils import deep_merge
 from amplifier_app_cli.lib.settings import NotificationFlags
 from amplifier_app_cli.runtime.config import (
@@ -16,7 +17,6 @@ from amplifier_app_cli.runtime.config import (
     _apply_tool_overrides,
     resolve_bundle_config,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PART 1: Direct logic tests — exercise the exact code path added in the fix

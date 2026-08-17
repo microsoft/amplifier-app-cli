@@ -4,8 +4,9 @@ Tests for the _build_include_source_resolver function which builds a
 callback used to redirect include sources during bundle loading.
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from amplifier_app_cli.lib.bundle_loader.prepare import _build_include_source_resolver
 

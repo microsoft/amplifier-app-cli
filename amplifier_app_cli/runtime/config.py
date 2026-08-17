@@ -7,16 +7,16 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
 
+from ..lib.merge_utils import (
+    _normalize_module_entry,
+    merge_module_items,
+    merge_tool_configs,
+)
 from ..lib.settings import AppSettings, NotificationFlags, get_custom_routing_dir
-from ..lib.merge_utils import merge_module_items
-from ..lib.merge_utils import merge_tool_configs
-from ..lib.merge_utils import _normalize_module_entry
-
 
 if TYPE_CHECKING:
     from amplifier_foundation.bundle import PreparedBundle
@@ -329,7 +329,7 @@ async def resolve_bundle_config(
 
 
 def _sync_overrides_to_bundle(
-    prepared: "PreparedBundle",
+    prepared: PreparedBundle,
     bundle_config: dict[str, Any],
     *,
     sync_tools: bool = False,
@@ -845,7 +845,7 @@ def expand_env_vars(config: dict[str, Any]) -> dict[str, Any]:
     return replace_value(config)
 
 
-def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> None:
+def inject_user_providers(config: dict, prepared_bundle: PreparedBundle) -> None:
     """Inject user-configured providers into bundle's mount plan.
 
     For provider-agnostic bundles (like foundation), the bundle provides mechanism
@@ -972,7 +972,7 @@ async def resolve_config_async(
     console: Console | None = None,
     session_id: str | None = None,
     project_slug: str | None = None,
-) -> tuple[dict[str, Any], "PreparedBundle | None"]:
+) -> tuple[dict[str, Any], PreparedBundle | None]:
     """Unified config resolution (async) - THE golden path for all config loading.
 
     This is the SINGLE source of truth for resolving configuration.
@@ -1027,7 +1027,7 @@ def resolve_config(
     console: Console | None = None,
     session_id: str | None = None,
     project_slug: str | None = None,
-) -> tuple[dict[str, Any], "PreparedBundle | None"]:
+) -> tuple[dict[str, Any], PreparedBundle | None]:
     """Unified config resolution (sync wrapper) - THE golden path for all config loading.
 
     Synchronous wrapper around resolve_config_async() for use in click commands.
@@ -1071,13 +1071,13 @@ def resolve_config(
 
 
 __all__ = [
-    "resolve_config",
-    "resolve_config_async",
-    "resolve_bundle_config",
-    "deep_merge",
-    "expand_env_vars",
-    "inject_user_providers",
     "_apply_provider_overrides",
     "_ensure_raw_defaults",
     "_map_id_to_instance_id",
+    "deep_merge",
+    "expand_env_vars",
+    "inject_user_providers",
+    "resolve_bundle_config",
+    "resolve_config",
+    "resolve_config_async",
 ]
