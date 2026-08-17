@@ -294,6 +294,33 @@ Existing installations inherit these canonical URIs at runtime as well, so
 fresh environments download the provider code via **uv** automatically. No
 manual source overrides are required for the built-in providers.
 
+### Configuring multiple instances of the same provider
+
+You can configure more than one instance of the same provider type — for
+example, two Anthropic accounts/tiers, each with its own API key.
+
+1. Run the wizard: `amplifier init` (or `amplifier provider manage` in an
+   existing project).
+2. Pick your scope first (`[w]`): `global` (your defaults everywhere),
+   `project` (team-shared, committed to git), or `local` (this machine only,
+   gitignored).
+3. Add your first instance (`[a]` → provider type, e.g. Anthropic), give it
+   an id (e.g. `anthropic-standard`), and let the wizard pick up its key from
+   the environment (e.g. `ANTHROPIC_API_KEY`) if it's already set.
+4. Add a second instance of the same type (`[a]` again) with a **different**
+   id (e.g. `anthropic-fable`). The wizard detects that the default
+   credential is already claimed and asks which env var this instance should
+   use instead — it will offer an already-set, unclaimed env var (e.g.
+   `ANTHROPIC_FABLE_API_KEY`) as the default, or suggest a name you can
+   accept or edit.
+5. Use `[p]` (Reorder priorities) to control which instance is used by
+   default.
+
+Each instance keeps its own real, named credential — never a shared or
+overwritten key, and never a plaintext secret in `settings.yaml` (real values
+live only in `~/.amplifier/keys.env`). Editing an instance later and keeping
+its existing key won't reset it back to a shared default.
+
 ## Development
 
 ### Prerequisites
