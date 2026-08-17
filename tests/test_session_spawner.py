@@ -1,15 +1,16 @@
-"""Tests for session_spawner module (spawn and resume).
+"""Tests for session spawning, resumption, persistence, and bundle routing."""
 
-Focus on testing error handling and persistence logic.
-Full end-to-end integration testing done manually (see test report).
-"""
-
+import importlib
+import logging
 import re
+import sys
+from unittest.mock import patch
 
 import pytest
+from amplifier_foundation import generate_sub_session_id
+
 from amplifier_app_cli.session_spawner import resume_sub_session
 from amplifier_app_cli.session_store import SessionStore
-from amplifier_foundation import generate_sub_session_id
 
 # W3C Trace Context constants (these are private in amplifier_foundation.tracing)
 SPAN_HEX_LEN = 16
@@ -40,6 +41,392 @@ def _mock_uuid(monkeypatch, hex_value: str = "f" * 32) -> None:
     import uuid
 
     monkeypatch.setattr(uuid, "uuid4", lambda: _FakeUUID(hex_value))
+
+
+@pytest.mark.parametrize("operation", ["spawn", "resume"])
+@pytest.mark.integration
+async def test_routing_mount_selects_scripted_provider_for_spawn_and_resume(
+    operation, tmp_path, monkeypatch, caplog
+):
+    """The runtime config path prepares and restores routed child modules."""
+    from amplifier_foundation import Bundle
+
+    from amplifier_app_cli.lib.settings import AppSettings
+    from amplifier_app_cli.runtime.config import resolve_bundle_config
+    from amplifier_app_cli.session_spawner import spawn_sub_session
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+
+    def write_module(module: str, package: str, module_type: str, body: str) -> str:
+        root = tmp_path / module
+        package_dir = root / package
+        package_dir.mkdir(parents=True)
+        (root / "pyproject.toml").write_text(
+            "\n".join(
+                [
+                    "[build-system]",
+                    'requires = ["hatchling"]',
+                    'build-backend = "hatchling.build"',
+                    "",
+                    "[project]",
+                    f'name = "{module}"',
+                    'version = "0.0.0"',
+                    "",
+                    '[project.entry-points."amplifier.modules"]',
+                    f'"{module}" = "{package}:mount"',
+                    "",
+                    "[tool.hatch.build.targets.wheel]",
+                    f'packages = ["{package}"]',
+                ]
+            )
+        )
+        (package_dir / "__init__.py").write_text(
+            f'__amplifier_module_type__ = "{module_type}"\n\n{body}'
+        )
+        return root.as_uri()
+
+    scripted_source = write_module(
+        "provider-scripted-routed",
+        "amplifier_module_provider_scripted_routed",
+        "provider",
+        """
+from amplifier_core import ChatResponse, ProviderInfo, TextBlock
+
+SELECTED = []
+
+class ScriptedProvider:
+    name = "scripted-routed"
+
+    def __init__(self, config=None):
+        self.priority = (config or {}).get("priority", 100)
+
+    def get_info(self):
+        return ProviderInfo(id=self.name, display_name="Scripted Routed Provider")
+
+    async def list_models(self):
+        return []
+
+    async def complete(self, request, **kwargs):
+        SELECTED.append(request)
+        return ChatResponse(
+            content=[TextBlock(text="scripted response")],
+            model="scripted-model",
+            finish_reason="stop",
+        )
+
+    def parse_tool_calls(self, response):
+        return []
+
+async def mount(coordinator, config=None):
+    provider = ScriptedProvider(config)
+    await coordinator.mount("providers", provider, name=provider.name)
+""",
+    )
+    sentinel_source = write_module(
+        "provider-sentinel-default",
+        "amplifier_module_provider_sentinel_default",
+        "provider",
+        """
+from amplifier_core import ProviderInfo
+
+CALLS = 0
+
+class SentinelProvider:
+    name = "sentinel-default"
+
+    def __init__(self, config=None):
+        self.priority = (config or {}).get("priority", 10)
+
+    def get_info(self):
+        return ProviderInfo(id=self.name, display_name="Sentinel Default Provider")
+
+    async def list_models(self):
+        return []
+
+    async def complete(self, request, **kwargs):
+        global CALLS
+        CALLS += 1
+        raise AssertionError("sentinel default provider was selected")
+
+    def parse_tool_calls(self, response):
+        return []
+
+async def mount(coordinator, config=None):
+    provider = SentinelProvider(config)
+    await coordinator.mount("providers", provider, name=provider.name)
+""",
+    )
+    routing_source = write_module(
+        "hooks-routing",
+        "amplifier_module_hooks_routing",
+        "hook",
+        """
+from amplifier_foundation.spawn_utils import ProviderPreference
+
+MOUNTED = []
+ROLES = []
+CONFIGS = []
+
+class Resolver:
+    async def resolve(self, role):
+        ROLES.append(role)
+        if role != "test":
+            raise AssertionError(f"unexpected model role: {role}")
+        return [ProviderPreference(provider="scripted-routed", model="scripted-model")]
+
+async def mount(coordinator, config=None):
+    if (config or {}).get("injected_marker") != "runtime-config":
+        raise AssertionError(f"routing override missing from prepared config: {config}")
+    if (config or {}).get("default_matrix") != "test-matrix":
+        raise AssertionError(f"routing matrix missing from prepared config: {config}")
+    MOUNTED.append("hooks-routing")
+    CONFIGS.append(dict(config or {}))
+    coordinator.register_capability("model_role_resolver", Resolver())
+""",
+    )
+    context_source = write_module(
+        "context-deterministic",
+        "amplifier_module_context_deterministic",
+        "context",
+        """
+class Context:
+    def __init__(self):
+        self.messages = []
+
+    async def add_message(self, message):
+        self.messages.append(message)
+
+    async def get_messages(self):
+        return self.messages
+
+    async def get_messages_for_request(self, **kwargs):
+        return self.messages
+
+    async def set_messages(self, messages):
+        self.messages = list(messages)
+
+    async def clear(self):
+        self.messages.clear()
+
+async def mount(coordinator, config=None):
+    await coordinator.mount("context", Context())
+""",
+    )
+    orchestrator_source = write_module(
+        "orchestrator-deterministic",
+        "amplifier_module_orchestrator_deterministic",
+        "orchestrator",
+        """
+from amplifier_core.message_models import ChatRequest
+
+class Orchestrator:
+    async def execute(self, prompt, context, providers, tools, hooks, **kwargs):
+        await context.add_message({"role": "user", "content": prompt})
+        provider = min(providers.values(), key=lambda item: item.priority)
+        response = await provider.complete(
+            ChatRequest(messages=await context.get_messages_for_request()),
+            model="scripted-model",
+        )
+        text = response.content[0].text
+        await context.add_message({"role": "assistant", "content": text})
+        await hooks.emit(
+            "orchestrator:complete",
+            {"status": "success", "turn_count": 1},
+        )
+        return text
+
+async def mount(coordinator, config=None):
+    await coordinator.mount("orchestrator", Orchestrator())
+""",
+    )
+
+    bundle_path = tmp_path / "bundle.yaml"
+    bundle_path.write_text(
+        f"""bundle:
+  name: routing-test
+session:
+  orchestrator:
+    module: orchestrator-deterministic
+    source: {orchestrator_source}
+  context:
+    module: context-deterministic
+    source: {context_source}
+providers:
+  - module: provider-sentinel-default
+    source: {sentinel_source}
+    config:
+      priority: 10
+  - module: provider-scripted-routed
+    source: {scripted_source}
+    config:
+      priority: 100
+agents:
+  routed:
+    model_role: test
+"""
+    )
+    assert "hooks-routing" not in bundle_path.read_text()
+
+    settings_path = tmp_path / "home" / ".amplifier" / "settings.yaml"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        f"""sources:
+  modules:
+    hooks-routing: "{routing_source}"
+routing:
+  matrix: test-matrix
+overrides:
+  hooks-routing:
+    config:
+      injected_marker: runtime-config
+"""
+    )
+
+    caplog.set_level(logging.DEBUG)
+    with patch.object(
+        Bundle, "prepare", autospec=True, wraps=Bundle.prepare
+    ) as prepare_spy:
+        config, prepared = await resolve_bundle_config(
+            bundle_name=bundle_path.as_uri(),
+            app_settings=AppSettings(),
+        )
+        mounted_hook_ids = [hook["module"] for hook in config["hooks"]]
+        assert "hooks-routing" in mounted_hook_ids
+        routing_config = next(
+            hook["config"]
+            for hook in prepared.mount_plan["hooks"]
+            if hook["module"] == "hooks-routing"
+        )
+        assert routing_config["injected_marker"] == "runtime-config"
+        assert routing_config["default_matrix"] == "test-matrix"
+        prepared_routing_hook = next(
+            hook for hook in prepared.bundle.hooks if hook["module"] == "hooks-routing"
+        )
+        assert prepared_routing_hook["config"]["injected_marker"] == "runtime-config"
+        assert prepared_routing_hook["config"]["default_matrix"] == "test-matrix"
+
+        module_names = [
+            "amplifier_module_context_deterministic",
+            "amplifier_module_hooks_routing",
+            "amplifier_module_orchestrator_deterministic",
+            "amplifier_module_provider_scripted_routed",
+            "amplifier_module_provider_sentinel_default",
+        ]
+        for module_name in module_names:
+            sys.modules.pop(module_name, None)
+
+        parent = await prepared.create_session(
+            session_id="parent-routing",
+            session_cwd=tmp_path,
+        )
+
+        scripted_provider = importlib.import_module(
+            "amplifier_module_provider_scripted_routed"
+        )
+        sentinel_provider = importlib.import_module(
+            "amplifier_module_provider_sentinel_default"
+        )
+        routing_hook = importlib.import_module("amplifier_module_hooks_routing")
+        scripted_provider.SELECTED.clear()
+        sentinel_provider.__dict__["CALLS"] = 0
+        routing_hook.MOUNTED.clear()
+        routing_hook.ROLES.clear()
+        routing_hook.CONFIGS.clear()
+        agent_configs = prepared.mount_plan["agents"]
+        resolver = parent.coordinator.get_capability("model_role_resolver")
+        provider_preferences = await resolver.resolve(
+            agent_configs["routed"]["model_role"]
+        )
+        with pytest.raises(AssertionError, match="unexpected model role: not-test"):
+            await resolver.resolve("not-test")
+        assert routing_hook.ROLES == ["test", "not-test"]
+
+        spawn_result = await spawn_sub_session(
+            agent_name="routed",
+            instruction="first routed instruction",
+            parent_session=parent,
+            agent_configs=agent_configs,
+            sub_session_id="child-routing",
+            provider_preferences=provider_preferences,
+        )
+        assert spawn_result["session_id"] == "child-routing"
+        assert spawn_result["status"] == "success"
+        assert scripted_provider.SELECTED
+        assert sentinel_provider.CALLS == 0
+        assert routing_hook.MOUNTED == ["hooks-routing"]
+        assert routing_hook.CONFIGS[0]["injected_marker"] == "runtime-config"
+
+        result = spawn_result
+        expected_instruction = "first routed instruction"
+        if operation == "resume":
+            transcript, metadata = SessionStore().load(spawn_result["session_id"])
+            bundle_context = metadata["bundle_context"]
+            module_paths = bundle_context["module_paths"]
+            assert {
+                "context-deterministic",
+                "hooks-routing",
+                "orchestrator-deterministic",
+                "provider-scripted-routed",
+                "provider-sentinel-default",
+            }.issubset(module_paths)
+
+            # Remove source directives from the saved child configuration. Resume
+            # must therefore load these modules from its saved BundleModuleResolver,
+            # rather than reloading from the original sources.
+            for section_name in ("providers", "hooks"):
+                for module_config in metadata["config"].get(section_name, []):
+                    module_config.pop("source", None)
+            for module_config in metadata["config"]["session"].values():
+                if isinstance(module_config, dict):
+                    module_config.pop("source", None)
+            SessionStore().save(spawn_result["session_id"], transcript, metadata)
+
+            for module_name in module_names:
+                sys.modules.pop(module_name, None)
+            for module_path in module_paths.values():
+                while module_path in sys.path:
+                    sys.path.remove(module_path)
+            assert all(module_name not in sys.modules for module_name in module_names)
+            assert all(
+                module_path not in sys.path for module_path in module_paths.values()
+            )
+
+            result = await resume_sub_session(
+                sub_session_id=spawn_result["session_id"],
+                instruction="resumed routed instruction",
+                parent_session=parent,
+            )
+            expected_instruction = "resumed routed instruction"
+            scripted_provider = importlib.import_module(
+                "amplifier_module_provider_scripted_routed"
+            )
+            sentinel_provider = importlib.import_module(
+                "amplifier_module_provider_sentinel_default"
+            )
+            routing_hook = importlib.import_module("amplifier_module_hooks_routing")
+            assert "restored bundlemoduleresolver" in caplog.text.lower()
+            assert "[module:mount] hooks-routing from" in caplog.text.lower()
+            assert routing_hook.__file__
+            assert routing_hook.__file__.startswith(module_paths["hooks-routing"])
+            assert routing_hook.MOUNTED == ["hooks-routing"]
+
+        assert result["session_id"] == spawn_result["session_id"]
+        assert result["status"] == "success"
+        assert scripted_provider.SELECTED
+        assert any(
+            expected_instruction in str(message.content)
+            for message in scripted_provider.SELECTED[-1].messages
+        )
+        assert sentinel_provider.CALLS == 0
+        assert prepare_spy.call_count == 1
+        await parent.cleanup()
+
+    log_text = caplog.text.lower()
+    assert "missing module" not in log_text
+    assert "modulenotfounderror" not in log_text
+    assert "no model_role_resolver capability registered" not in log_text
+    assert "routing disabled" not in log_text
 
 
 @pytest.fixture(scope="module")
