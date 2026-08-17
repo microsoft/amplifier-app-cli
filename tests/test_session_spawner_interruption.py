@@ -5,6 +5,7 @@ from typing import TypeVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 from amplifier_app_cli.session_spawner import resume_sub_session, spawn_sub_session
 
 pytestmark = pytest.mark.anyio
@@ -102,8 +103,10 @@ async def test_await_task_timeout_cancels_and_reaps_task():
 
 async def test_spawn_cancellation_persists_partial_transcript_and_unwinds_once():
     partial = [
-        {"role": "user", "content": "work"},
-        {"role": "assistant", "content": "partial"},
+        {"role": "user", "content": "first request"},
+        {"role": "assistant", "content": "partial answer"},
+        {"role": "tool", "content": "partial tool result"},
+        {"role": "user", "content": "second request"},
     ]
     child, hooks, context = make_child(partial)
     cancellation = asyncio.CancelledError("cancel spawn")
@@ -137,6 +140,11 @@ async def test_spawn_cancellation_persists_partial_transcript_and_unwinds_once()
     assert saved_metadata["agent_name"] == "test-agent"
     assert saved_metadata["config"]["session"] == parent.config["session"]
     assert saved_metadata["agent_overlay"] == {"description": "test"}
+    assert saved_metadata["turn_count"] == 2
+    assert saved_metadata["turn_count_source"] == "transcript"
+    assert saved_metadata["turn_count"] == sum(
+        message.get("role") == "user" for message in saved_transcript
+    )
     context.get_messages.assert_awaited_once()
     hooks.unregister.assert_called_once_with()
     parent.coordinator.cancellation.unregister_child.assert_called_once_with(
@@ -148,7 +156,11 @@ async def test_spawn_cancellation_persists_partial_transcript_and_unwinds_once()
 
 async def test_resume_cancellation_preserves_metadata_and_unwinds_once():
     original = [{"role": "user", "content": "first"}]
-    partial = original + [{"role": "assistant", "content": "partial follow-up"}]
+    partial = original + [
+        {"role": "assistant", "content": "partial follow-up"},
+        {"role": "tool", "content": "partial tool result"},
+        {"role": "user", "content": "second request"},
+    ]
     child, hooks, context = make_child(partial)
     cancellation = asyncio.CancelledError("cancel resume")
     child.execute = AsyncMock(side_effect=cancellation)
@@ -187,7 +199,11 @@ async def test_resume_cancellation_preserves_metadata_and_unwinds_once():
     assert saved_metadata["status"] == "interrupted"
     assert saved_metadata["resume_marker"] == "keep-me"
     assert saved_metadata["config"] == metadata["config"]
-    assert saved_metadata["turn_count"] == len(partial)
+    assert saved_metadata["turn_count"] == 2
+    assert saved_metadata["turn_count_source"] == "transcript"
+    assert saved_metadata["turn_count"] == sum(
+        message.get("role") == "user" for message in saved_transcript
+    )
     assert "last_updated" in saved_metadata
     context.get_messages.assert_awaited_once()
     hooks.unregister.assert_called_once_with()
@@ -319,7 +335,11 @@ async def test_resume_cancel_during_post_execute_get_messages_persists_interrupt
     assert saved_transcript == partial
     assert saved_metadata["status"] == "interrupted"
     assert saved_metadata["resume_marker"] == "preserved"
-    assert saved_metadata["turn_count"] == len(partial)
+    assert saved_metadata["turn_count"] == 1
+    assert saved_metadata["turn_count_source"] == "transcript"
+    assert saved_metadata["turn_count"] == sum(
+        message.get("role") == "user" for message in saved_transcript
+    )
     assert "last_updated" in saved_metadata
     hooks.unregister.assert_called_once_with()
     parent.coordinator.cancellation.unregister_child.assert_called_once_with(

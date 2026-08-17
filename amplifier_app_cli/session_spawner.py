@@ -18,6 +18,7 @@ from amplifier_foundation import (
     bridge_child_cost,
     generate_sub_session_id,
 )
+from amplifier_foundation.session import count_turns
 
 from .agent_config import merge_configs
 
@@ -1042,12 +1043,14 @@ async def _spawn_sub_session(
                         "saving fallback transcript",
                         sub_session_id,
                     )
+            interrupted_metadata = {
+                **metadata,
+                "status": "interrupted",
+                "turn_count": count_turns(transcript),
+                "turn_count_source": "transcript",
+            }
             try:
-                store.save(
-                    sub_session_id,
-                    transcript,
-                    {**metadata, "status": "interrupted"},
-                )
+                store.save(sub_session_id, transcript, interrupted_metadata)
                 logger.debug(
                     "Interrupted sub-session %s state persisted", sub_session_id
                 )
@@ -1542,11 +1545,15 @@ async def _resume_sub_session(
                         "saving loaded transcript as fallback",
                         sub_session_id,
                     )
-            metadata["turn_count"] = len(updated_transcript)
-            metadata["last_updated"] = datetime.now(UTC).isoformat()
-            metadata["status"] = "interrupted"
+            interrupted_metadata = {
+                **metadata,
+                "status": "interrupted",
+                "turn_count": count_turns(updated_transcript),
+                "turn_count_source": "transcript",
+            }
+            interrupted_metadata["last_updated"] = datetime.now(UTC).isoformat()
             try:
-                store.save(sub_session_id, updated_transcript, metadata)
+                store.save(sub_session_id, updated_transcript, interrupted_metadata)
                 logger.debug(
                     "Interrupted sub-session %s state persisted", sub_session_id
                 )
