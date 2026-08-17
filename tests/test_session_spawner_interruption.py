@@ -678,8 +678,47 @@ async def test_resume_repeated_cancellation_cannot_interrupt_save_or_cleanup():
     child.cleanup.assert_awaited_once_with()
 
 
+async def test_spawn_get_messages_failure_saves_submitted_instruction_once():
+    child, _, context = make_child([])
+    cancellation = asyncio.CancelledError("cancel spawn")
+    child.execute = AsyncMock(side_effect=cancellation)
+    context.get_messages = AsyncMock(side_effect=RuntimeError("context unavailable"))
+    parent = make_parent()
+    store = MagicMock()
+
+    with (
+        patch("amplifier_app_cli.session_spawner.AmplifierSession", return_value=child),
+        patch("amplifier_app_cli.paths.create_foundation_resolver"),
+        patch("amplifier_app_cli.session_store.SessionStore", return_value=store),
+        pytest.raises(asyncio.CancelledError) as raised,
+    ):
+        await spawn_sub_session(
+            agent_name="test-agent",
+            instruction="do work",
+            parent_session=parent,
+            agent_configs={"test-agent": {"description": "test"}},
+            sub_session_id="fallback-spawn",
+        )
+
+    assert raised.value is cancellation
+    context.get_messages.assert_awaited_once_with()
+    store.save.assert_called_once()
+    _, saved_transcript, saved_metadata = store.save.call_args.args
+    assert saved_transcript == [{"role": "user", "content": "do work"}]
+    assert saved_metadata["turn_count"] == 1
+    assert saved_metadata["turn_count_source"] == "reconstructed-submitted-instruction"
+    assert saved_metadata["turn_count"] == sum(
+        message.get("role") == "user" for message in saved_transcript
+    )
+    child.cleanup.assert_awaited_once_with()
+
+
 async def test_resume_get_messages_failure_saves_loaded_transcript_once():
-    original = [{"role": "user", "content": "recover me"}]
+    original = [
+        {"role": "user", "content": "recover me"},
+        {"role": "assistant", "content": "partial answer"},
+        {"role": "tool", "content": "partial tool result"},
+    ]
     child, _, context = make_child([])
     cancellation = asyncio.CancelledError("cancel resume")
     child.execute = AsyncMock(side_effect=cancellation)
@@ -715,8 +754,14 @@ async def test_resume_get_messages_failure_saves_loaded_transcript_once():
     assert raised.value is cancellation
     context.get_messages.assert_awaited_once_with()
     store.save.assert_called_once()
-    assert store.save.call_args.args[1] == original
-    assert store.save.call_args.args[2]["status"] == "interrupted"
+    _, saved_transcript, saved_metadata = store.save.call_args.args
+    assert saved_transcript == original + [{"role": "user", "content": "continue"}]
+    assert saved_metadata["status"] == "interrupted"
+    assert saved_metadata["turn_count"] == 2
+    assert saved_metadata["turn_count_source"] == "reconstructed-submitted-instruction"
+    assert saved_metadata["turn_count"] == sum(
+        message.get("role") == "user" for message in saved_transcript
+    )
     child.cleanup.assert_awaited_once_with()
 
 

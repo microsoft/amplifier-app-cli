@@ -174,6 +174,14 @@ async def _run_with_finalizer(
 _DEFAULT_SYS_PATHS: frozenset[str] = frozenset(sys.path)
 
 
+def _submitted_user_message(instruction: str) -> dict[str, str | None]:
+    if not instruction:
+        raise RuntimeError(
+            "Cannot reconstruct interrupted sub-session without submitted instruction"
+        )
+    return {"role": "user", "content": instruction}
+
+
 def _extract_bundle_context(session: "AmplifierSession") -> dict | None:
     """Extract serializable bundle context from session.
 
@@ -1034,20 +1042,23 @@ async def _spawn_sub_session(
 
         async def _persist_interrupted_spawn() -> None:
             transcript = []
+            turn_count_source = "transcript"
             if context:
                 try:
                     transcript = await context.get_messages()
                 except BaseException:
                     logger.exception(
                         "Failed to read interrupted sub-session %s transcript; "
-                        "saving fallback transcript",
+                        "reconstructing submitted instruction",
                         sub_session_id,
                     )
+                    transcript = [_submitted_user_message(instruction)]
+                    turn_count_source = "reconstructed-submitted-instruction"
             interrupted_metadata = {
                 **metadata,
                 "status": "interrupted",
                 "turn_count": count_turns(transcript),
-                "turn_count_source": "transcript",
+                "turn_count_source": turn_count_source,
             }
             try:
                 store.save(sub_session_id, transcript, interrupted_metadata)
@@ -1536,20 +1547,26 @@ async def _resume_sub_session(
 
         async def _persist_interrupted_resume() -> None:
             updated_transcript = transcript
+            turn_count_source = "transcript"
             if context:
                 try:
                     updated_transcript = await context.get_messages()
                 except BaseException:
                     logger.exception(
                         "Failed to read interrupted sub-session %s transcript; "
-                        "saving loaded transcript as fallback",
+                        "reconstructing submitted instruction",
                         sub_session_id,
                     )
+                    updated_transcript = [
+                        *transcript,
+                        _submitted_user_message(instruction),
+                    ]
+                    turn_count_source = "reconstructed-submitted-instruction"
             interrupted_metadata = {
                 **metadata,
                 "status": "interrupted",
                 "turn_count": count_turns(updated_transcript),
-                "turn_count_source": "transcript",
+                "turn_count_source": turn_count_source,
             }
             interrupted_metadata["last_updated"] = datetime.now(UTC).isoformat()
             try:
