@@ -237,6 +237,14 @@ default is unchanged. For Anthropic Fable, the child disables the provider's
 refusal and overload fallback settings, so an unavailable Fable request fails
 rather than silently selecting another model.
 
+The planner child intentionally does not inherit `hooks-routing` or
+`hooks-matrix-guard`. It has no tools or agents and makes one direct call using
+the exact provider preference and conversation pin described above, independent
+of the parent's model-role routing matrix. The parent keeps its routing hooks
+and matrix unchanged. Later delegation during normal parent execution still
+uses that matrix, so the parent must use a matrix compatible with its mounted
+execution provider.
+
 ### Optional: use a dedicated mounted provider instance
 
 If the active session deliberately mounts a provider named `fable` whose

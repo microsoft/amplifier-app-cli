@@ -145,6 +145,7 @@ async def _run_spawn(
     bridge_mock: AsyncMock | None = None,
     instruction: str = "Do something",
     expand_instruction_mentions: bool = True,
+    hook_inheritance: dict[str, list[str]] | None = None,
 ) -> MagicMock:
     """Run spawn_sub_session with all heavy dependencies mocked.
 
@@ -195,6 +196,7 @@ async def _run_spawn(
             parent_session=parent_session,
             agent_configs=agent_configs,
             expand_instruction_mentions=expand_instruction_mentions,
+            hook_inheritance=hook_inheritance,
             post_initialize_callback=post_initialize_callback,
         )
 
@@ -674,6 +676,46 @@ class TestS7AccessControlDeclaration:
             "identical to explicit 'all'. "
             f"Got: {sorted(captured.get('agents', {}).keys())}"
         )
+
+
+class TestHookInheritance:
+    """Child hook filters must be applied without mutating the parent."""
+
+    @pytest.mark.asyncio
+    async def test_routing_hooks_removed_before_initialize_parent_unchanged(
+        self,
+    ) -> None:
+        parent = _make_parent_session()
+        parent_hooks = [
+            {"module": "hooks-routing", "config": {"default_matrix": "parent"}},
+            {"module": "hooks-matrix-guard", "config": {"strict": True}},
+            {"module": "hooks-logging", "config": {"level": "info"}},
+        ]
+        parent.config["hooks"] = parent_hooks
+        child = _make_child_session_mock()
+        captured: dict = {}
+
+        def assert_filtered_before_initialize() -> None:
+            assert [hook["module"] for hook in captured["hooks"]] == ["hooks-logging"]
+
+        child.initialize.side_effect = assert_filtered_before_initialize
+
+        await _run_spawn(
+            parent,
+            {"mode_agent_A": {"agents": "none"}},
+            child,
+            captured_config=captured,
+            hook_inheritance={"exclude_hooks": ["hooks-routing", "hooks-matrix-guard"]},
+        )
+
+        child.initialize.assert_awaited_once()
+        assert [hook["module"] for hook in captured["hooks"]] == ["hooks-logging"]
+        assert parent.config["hooks"] is parent_hooks
+        assert parent.config["hooks"] == [
+            {"module": "hooks-routing", "config": {"default_matrix": "parent"}},
+            {"module": "hooks-matrix-guard", "config": {"strict": True}},
+            {"module": "hooks-logging", "config": {"level": "info"}},
+        ]
 
 
 class TestPostInitializeLifecycle:

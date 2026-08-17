@@ -570,6 +570,7 @@ async def run_deep_plan(
         parent_session=parent_session,
         agent_configs={"deep-plan": {"agents": "none"}},
         tool_inheritance={"inherit_tools": []},
+        hook_inheritance={"exclude_hooks": ["hooks-routing", "hooks-matrix-guard"]},
         # The CLI resolves the task once before this function so the planner
         # and parent execute against the identical @mention snapshot.
         expand_instruction_mentions=False,

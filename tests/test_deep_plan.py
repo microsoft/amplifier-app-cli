@@ -371,6 +371,9 @@ async def test_default_deep_plan_specializes_child_and_preserves_parent(
     parent_executor.assert_awaited_once()
     displayed.assert_called_once_with(result)
     assert spawn_mock.call_args.kwargs["tool_inheritance"] == {"inherit_tools": []}
+    assert spawn_mock.call_args.kwargs["hook_inheritance"] == {
+        "exclude_hooks": ["hooks-routing", "hooks-matrix-guard"]
+    }
     assert spawn_mock.call_args.kwargs["agent_configs"] == {
         "deep-plan": {"agents": "none"}
     }
