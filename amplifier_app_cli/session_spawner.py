@@ -1,26 +1,185 @@
+# pyright: reportMissingImports=false
 """Session spawning for agent delegation.
 
 Implements sub-session creation with configuration inheritance and overlays.
 """
 
+import asyncio
 import copy
 import logging
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any, TypeVar, cast
 
 from amplifier_core import AmplifierSession
-from amplifier_foundation import generate_sub_session_id
-from amplifier_foundation import bridge_child_cost
-from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
+from amplifier_foundation import (
+    RUNTIME_SKILL_OVERLAY_CAPABILITY,
+    bridge_child_cost,
+    generate_sub_session_id,
+)
+from amplifier_foundation.session import count_turns
 
 from .agent_config import merge_configs
 
 logger = logging.getLogger(__name__)
 
+_T = TypeVar("_T")
+
+
+class _SubSessionLifecycle:
+    """Track and reliably release resources acquired by an in-process child."""
+
+    def __init__(self) -> None:
+        self.child_session: Any | None = None
+        self.display_system: Any | None = None
+        self.nesting_pushed = False
+        self.unregister_hook: Callable[[], Any] | None = None
+        self.parent_cancellation: Any | None = None
+        self.child_cancellation: Any | None = None
+        self._persist_interruption: Callable[[], Awaitable[None]] | None = None
+        self._finalization_started = False
+        self._teardown_started = False
+
+    def push_nesting(self, display_system: Any) -> None:
+        self.display_system = display_system
+        if hasattr(display_system, "push_nesting"):
+            # Mark first so even a partially successful push is balanced.
+            self.nesting_pushed = True
+            display_system.push_nesting()
+
+    def register_cancellation(
+        self, parent_cancellation: Any, child_cancellation: Any
+    ) -> None:
+        parent_cancellation.register_child(child_cancellation)
+        self.parent_cancellation = parent_cancellation
+        self.child_cancellation = child_cancellation
+
+    def persist_on_interruption(self, callback: Callable[[], Awaitable[None]]) -> None:
+        """Register persistence to run only when child execution was cancelled."""
+        self._persist_interruption = callback
+
+    async def finalize(self, *, preserve_error: bool) -> None:
+        """Persist an interrupted execution, then release every resource once."""
+        if self._finalization_started:
+            return
+        self._finalization_started = True
+
+        if self._persist_interruption is not None:
+            persist_interruption = self._persist_interruption
+            self._persist_interruption = None
+            try:
+                await persist_interruption()
+            except BaseException:
+                # Persistence is best effort and must never replace the original
+                # execution cancellation.
+                logger.exception("Failed to persist interrupted sub-session")
+
+        await self.teardown(preserve_error=preserve_error)
+
+    async def teardown(self, *, preserve_error: bool) -> None:
+        """Attempt every acquired teardown action exactly once."""
+        if self._teardown_started:
+            return
+        self._teardown_started = True
+        errors: list[BaseException] = []
+
+        if self.unregister_hook is not None:
+            unregister_hook = self.unregister_hook
+            self.unregister_hook = None
+            try:
+                unregister_hook()
+            except BaseException as error:
+                errors.append(error)
+                logger.exception("Failed to unregister sub-session completion hook")
+
+        if self.parent_cancellation is not None and self.child_cancellation is not None:
+            parent_cancellation = self.parent_cancellation
+            child_cancellation = self.child_cancellation
+            self.parent_cancellation = None
+            self.child_cancellation = None
+            try:
+                parent_cancellation.unregister_child(child_cancellation)
+            except BaseException as error:
+                errors.append(error)
+                logger.exception("Failed to unregister child cancellation token")
+
+        if self.nesting_pushed and self.display_system is not None:
+            display_system = self.display_system
+            self.nesting_pushed = False
+            try:
+                if hasattr(display_system, "pop_nesting"):
+                    display_system.pop_nesting()
+            except BaseException as error:
+                errors.append(error)
+                logger.exception("Failed to pop sub-session display nesting")
+
+        if self.child_session is not None:
+            child_session = self.child_session
+            self.child_session = None
+            try:
+                await child_session.cleanup()
+            except BaseException as error:
+                errors.append(error)
+                logger.exception("Failed to clean up sub-session")
+
+        if errors and not preserve_error:
+            raise errors[0]
+
+
+async def _run_with_finalizer(
+    operation: Awaitable[_T], lifecycle: _SubSessionLifecycle
+) -> _T:
+    """Run an operation, then shield one separately scheduled finalizer task."""
+    result = cast(_T, None)
+    primary_error: BaseException | None = None
+
+    try:
+        result = await operation
+    except BaseException as error:  # noqa: BLE001 - teardown must follow any exit
+        primary_error = error
+
+    finalizer = asyncio.create_task(
+        lifecycle.finalize(preserve_error=primary_error is not None)
+    )
+    while True:
+        try:
+            await asyncio.shield(finalizer)
+            break
+        except asyncio.CancelledError as error:
+            if primary_error is None:
+                primary_error = error
+            # Re-await the same shielded task. A new task would duplicate work,
+            # while awaiting this task directly would let cancellation reach it.
+            if not finalizer.done():
+                continue
+            if finalizer.cancelled():
+                break
+        except BaseException as finalization_error:
+            if primary_error is None:
+                raise
+            logger.error(
+                "Sub-session finalization failed after primary error",
+                exc_info=finalization_error,
+            )
+            break
+
+    if primary_error is not None:
+        raise primary_error
+    return result
+
 
 # Capture default sys.path entries at import time.
 # Used to filter out bundle-added paths when forwarding sys_paths to subprocess children.
 _DEFAULT_SYS_PATHS: frozenset[str] = frozenset(sys.path)
+
+
+def _submitted_user_message(instruction: str) -> dict[str, str | None]:
+    if not instruction:
+        raise RuntimeError(
+            "Cannot reconstruct interrupted sub-session without submitted instruction"
+        )
+    return {"role": "user", "content": instruction}
 
 
 def _extract_bundle_context(session: "AmplifierSession") -> dict | None:
@@ -228,7 +387,7 @@ def _find_redacted_values(value: object, path: str = "") -> list[str]:
     return found
 
 
-async def spawn_sub_session(
+async def _spawn_sub_session(
     agent_name: str,
     instruction: str,
     parent_session: AmplifierSession,
@@ -242,6 +401,8 @@ async def spawn_sub_session(
     self_delegation_depth: int = 0,
     session_metadata: dict | None = None,
     use_subprocess: bool = False,
+    *,
+    lifecycle: _SubSessionLifecycle,
 ) -> dict:
     """
     Spawn sub-session with agent configuration overlay.
@@ -539,10 +700,10 @@ async def spawn_sub_session(
         approval_system=parent_session.coordinator.approval_system,  # Inherit from parent
         display_system=display_system,  # Inherit from parent
     )
+    lifecycle.child_session = child_session
 
     # Notify display system we're entering a nested session (for indentation)
-    if hasattr(display_system, "push_nesting"):
-        display_system.push_nesting()
+    lifecycle.push_nesting(display_system)
 
     # NOTE: Parent message injection moved to AFTER initialize() because
     # the context module is only mounted during initialize().
@@ -574,8 +735,9 @@ async def spawn_sub_session(
     paths_to_share: list[str] = []
 
     # Source 1: Module paths from parent loader
-    if hasattr(parent_session, "loader") and parent_session.loader is not None:
-        parent_added_paths = getattr(parent_session.loader, "_added_paths", [])
+    parent_loader = getattr(parent_session, "loader", None)
+    if parent_loader is not None:
+        parent_added_paths = getattr(parent_loader, "_added_paths", [])
         paths_to_share.extend(parent_added_paths)
 
     # Source 2: Bundle package paths (src/ directories from bundles like python-dev)
@@ -651,7 +813,7 @@ async def spawn_sub_session(
     # This enables graceful Ctrl+C handling for nested agent sessions
     parent_cancellation = parent_session.coordinator.cancellation
     child_cancellation = child_session.coordinator.cancellation
-    parent_cancellation.register_child(child_cancellation)
+    lifecycle.register_cancellation(parent_cancellation, child_cancellation)
     logger.debug(
         f"Registered child cancellation token for sub-session {sub_session_id}"
     )
@@ -819,6 +981,7 @@ async def spawn_sub_session(
             priority=999,
             name="_spawn_capture",
         )
+        lifecycle.unregister_hook = unregister_hook
 
     # Expand @-mentions in delegation instruction before executing.
     # Content lands inline as <context_file> XML blocks prepended to the instruction.
@@ -839,75 +1002,87 @@ async def spawn_sub_session(
                 relative_to=_instr_rel,
             )
 
-    # Execute instruction in child session; cleanup MUST run even on CancelledError
+    # Prepare canonical reconstruction state before execution so a cancelled
+    # child can be resumed from whatever transcript it produced.
+    from datetime import UTC, datetime
+
+    from .session_store import SessionStore
+
+    context = child_session.coordinator.get("context")
+    parent_trace_id = getattr(parent_session, "trace_id", parent_session.session_id)
+
+    child_span: str | None = None
+    if sub_session_id and "_" in sub_session_id and "-" in sub_session_id:
+        base = sub_session_id.rsplit("_", 1)[0]
+        child_span = base.rsplit("-", 1)[-1]
+
+    metadata = {
+        "session_id": sub_session_id,
+        "parent_id": parent_session.session_id,
+        "trace_id": parent_trace_id,
+        "agent_name": agent_name,
+        "child_span": child_span,
+        "created": datetime.now(UTC).isoformat(),
+        "config": merged_config,
+        "agent_overlay": agent_config,
+        "turn_count": 1,
+        "bundle_context": _extract_bundle_context(parent_session),
+        "self_delegation_depth": self_delegation_depth,
+        "working_dir": str(Path.cwd().resolve()),
+    }
+    store = SessionStore()
+
+    # Execute and collect the transcript for normal persistence. If either await
+    # is cancelled, the wrapper persists interruption state and tears down in
+    # its shielded finalizer.
     try:
-        try:
-            response = await child_session.execute(instruction)
-        finally:
-            if unregister_hook:
-                unregister_hook()
-
-        # Persist state for multi-turn resumption
-        from datetime import UTC
-        from datetime import datetime
-
-        from .session_store import SessionStore
-
-        context = child_session.coordinator.get("context")
+        response = await child_session.execute(instruction)
         transcript = await context.get_messages() if context else []
+    except asyncio.CancelledError:
 
-        # Extract or generate trace_id for W3C Trace Context pattern
-        # Root session ID is the trace_id, propagate it to all children
-        parent_trace_id = getattr(parent_session, "trace_id", parent_session.session_id)
+        async def _persist_interrupted_spawn() -> None:
+            transcript = []
+            turn_count_source = "transcript"
+            if context:
+                try:
+                    transcript = await context.get_messages()
+                except BaseException:
+                    logger.exception(
+                        "Failed to read interrupted sub-session %s transcript; "
+                        "reconstructing submitted instruction",
+                        sub_session_id,
+                    )
+                    transcript = [_submitted_user_message(instruction)]
+                    turn_count_source = "reconstructed-submitted-instruction"
+            interrupted_metadata = {
+                **metadata,
+                "status": "interrupted",
+                "turn_count": count_turns(transcript),
+                "turn_count_source": turn_count_source,
+            }
+            try:
+                store.save(sub_session_id, transcript, interrupted_metadata)
+                logger.debug(
+                    "Interrupted sub-session %s state persisted", sub_session_id
+                )
+            except BaseException:
+                logger.exception(
+                    "Failed to persist interrupted sub-session %s", sub_session_id
+                )
 
-        # Extract child_span from sub_session_id for short_id resolution
-        # Format: {parent_id}-{child_span}_{agent_name}
-        child_span: str | None = None
-        if sub_session_id and "_" in sub_session_id and "-" in sub_session_id:
-            base = sub_session_id.rsplit("_", 1)[0]  # Remove agent name
-            child_span = base.rsplit("-", 1)[-1]  # Get child_span (16 hex chars)
+        lifecycle.persist_on_interruption(_persist_interrupted_spawn)
+        raise
 
-        metadata = {
-            "session_id": sub_session_id,
-            "parent_id": parent_session.session_id,
-            "trace_id": parent_trace_id,  # W3C Trace Context: trace entire conversation
-            "agent_name": agent_name,
-            "child_span": child_span,  # For short_id resolution (first 8 chars = short_id)
-            "created": datetime.now(UTC).isoformat(),
-            "config": merged_config,
-            "agent_overlay": agent_config,
-            "turn_count": 1,
-            "bundle_context": _extract_bundle_context(parent_session),
-            "self_delegation_depth": self_delegation_depth,  # For recursion limit tracking
-            # Store working_dir for session sync between CLI and web
-            "working_dir": str(Path.cwd().resolve()),
-        }
+    # Persist state for multi-turn resumption
+    store.save(sub_session_id, transcript, metadata)
+    logger.debug(f"Sub-session {sub_session_id} state persisted")
 
-        store = SessionStore()
-        store.save(sub_session_id, transcript, metadata)
-        logger.debug(f"Sub-session {sub_session_id} state persisted")
-
-        # Bridge child session costs to parent coordinator (bridge_child_cost never raises)
-        await bridge_child_cost(
-            child_coordinator=child_session.coordinator,
-            parent_coordinator=parent_session.coordinator,
-            child_session_id=sub_session_id,
-        )
-
-    finally:
-        # Unregister child cancellation token before cleanup
-        # MUST run even if execution was cancelled (CancelledError) or failed
-        parent_cancellation.unregister_child(child_cancellation)
-        logger.debug(
-            f"Unregistered child cancellation token for sub-session {sub_session_id}"
-        )
-
-        # Notify display system we're exiting the nested session (for indentation)
-        if hasattr(display_system, "pop_nesting"):
-            display_system.pop_nesting()
-
-        # Cleanup child session
-        await child_session.cleanup()
+    # Bridge child session costs to parent coordinator (bridge_child_cost never raises)
+    await bridge_child_cost(
+        child_coordinator=child_session.coordinator,
+        parent_coordinator=parent_session.coordinator,
+        child_session_id=sub_session_id,
+    )
 
     # Return response and session ID for potential multi-turn
     # Include enriched fields from orchestrator:complete hook
@@ -920,10 +1095,49 @@ async def spawn_sub_session(
     }
 
 
-async def resume_sub_session(
+async def spawn_sub_session(
+    agent_name: str,
+    instruction: str,
+    parent_session: AmplifierSession,
+    agent_configs: dict[str, dict],
+    sub_session_id: str | None = None,
+    tool_inheritance: dict[str, list[str]] | None = None,
+    hook_inheritance: dict[str, list[str]] | None = None,
+    orchestrator_config: dict | None = None,
+    parent_messages: list[dict] | None = None,
+    provider_preferences: list | None = None,
+    self_delegation_depth: int = 0,
+    session_metadata: dict | None = None,
+    use_subprocess: bool = False,
+) -> dict:
+    """Run a spawned child under lifecycle management from construction onward."""
+    lifecycle = _SubSessionLifecycle()
+    operation = _spawn_sub_session(
+        agent_name=agent_name,
+        instruction=instruction,
+        parent_session=parent_session,
+        agent_configs=agent_configs,
+        sub_session_id=sub_session_id,
+        tool_inheritance=tool_inheritance,
+        hook_inheritance=hook_inheritance,
+        orchestrator_config=orchestrator_config,
+        parent_messages=parent_messages,
+        provider_preferences=provider_preferences,
+        self_delegation_depth=self_delegation_depth,
+        session_metadata=session_metadata,
+        use_subprocess=use_subprocess,
+        lifecycle=lifecycle,
+    )
+    return await _run_with_finalizer(operation, lifecycle)
+
+
+async def _resume_sub_session(
     sub_session_id: str,
     instruction: str,
     parent_session: AmplifierSession | None = None,
+    *,
+    lifecycle: _SubSessionLifecycle,
+    child_spawn_capability,
 ) -> dict:
     """Resume existing sub-session for multi-turn engagement.
 
@@ -942,8 +1156,7 @@ async def resume_sub_session(
         RuntimeError: If session metadata corrupted or incomplete
         ValueError: If session_id is invalid
     """
-    from datetime import UTC
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from .session_store import SessionStore
 
@@ -959,7 +1172,7 @@ async def resume_sub_session(
         transcript, metadata = store.load(sub_session_id)
     except Exception as e:
         raise RuntimeError(
-            f"Failed to load sub-session '{sub_session_id}': {str(e)}"
+            f"Failed to load sub-session '{sub_session_id}': {e!s}"
         ) from e
 
     # Extract reconstruction data
@@ -1098,8 +1311,7 @@ async def resume_sub_session(
     # 2. Serializing full UX state would add significant complexity
     # 3. The parent session may no longer be running when sub-session resumes
     # 4. Approval decisions are contextual to the current execution state
-    from amplifier_app_cli.ui import CLIApprovalSystem
-    from amplifier_app_cli.ui import CLIDisplaySystem
+    from amplifier_app_cli.ui import CLIApprovalSystem, CLIDisplaySystem
 
     logger.debug(
         "Resuming sub-session %s (agent=%s, parent=%s, trace=%s). "
@@ -1121,6 +1333,8 @@ async def resume_sub_session(
         approval_system=approval_system,
         display_system=display_system,
     )
+    lifecycle.child_session = child_session
+    lifecycle.push_nesting(display_system)
 
     # Register app-layer capabilities for resumed child session BEFORE initialization
     # Must be mounted before initialize() so modules with source: directives can be resolved
@@ -1216,40 +1430,9 @@ async def resume_sub_session(
         "self_delegation_depth", self_delegation_depth
     )
 
-    # Register session spawning capabilities on resumed child session
-    # This enables nested agent delegation (child can spawn grandchildren)
-    # The capabilities are closures that reference the spawn/resume functions
-    async def child_spawn_capability(
-        agent_name: str,
-        instruction: str,
-        parent_session: "AmplifierSession",
-        agent_configs: dict[str, dict],
-        sub_session_id: str | None = None,
-        tool_inheritance: dict[str, list[str]] | None = None,
-        hook_inheritance: dict[str, list[str]] | None = None,
-        orchestrator_config: dict | None = None,
-        parent_messages: list[dict] | None = None,
-        provider_preferences: list | None = None,
-        self_delegation_depth: int = 0,
-        session_metadata: dict | None = None,
-        use_subprocess: bool = False,
-    ) -> dict:
-        return await spawn_sub_session(
-            agent_name=agent_name,
-            instruction=instruction,
-            parent_session=parent_session,
-            agent_configs=agent_configs,
-            sub_session_id=sub_session_id,
-            tool_inheritance=tool_inheritance,
-            hook_inheritance=hook_inheritance,
-            orchestrator_config=orchestrator_config,
-            parent_messages=parent_messages,
-            provider_preferences=provider_preferences,
-            self_delegation_depth=self_delegation_depth,
-            session_metadata=session_metadata,
-            use_subprocess=use_subprocess,
-        )
-
+    # Register session spawning capabilities on resumed child session.
+    # child_spawn_capability is defined by the public resume function so the
+    # established source layout and public introspection behavior remain intact.
     async def child_resume_capability(sub_session_id: str, instruction: str) -> dict:
         return await resume_sub_session(
             sub_session_id=sub_session_id,
@@ -1321,19 +1504,19 @@ async def resume_sub_session(
             priority=999,
             name="_spawn_capture",
         )
+        lifecycle.unregister_hook = unregister_hook
 
     # Wire up cancellation propagation if parent session provided
     # Enables graceful Ctrl+C to stop the child after its current tool call
     if parent_session is not None:
         resume_parent_cancellation = parent_session.coordinator.cancellation
         resume_child_cancellation = child_session.coordinator.cancellation
-        resume_parent_cancellation.register_child(resume_child_cancellation)
+        lifecycle.register_cancellation(
+            resume_parent_cancellation, resume_child_cancellation
+        )
         logger.debug(
             f"Registered child cancellation token for resumed sub-session {sub_session_id}"
         )
-    else:
-        resume_parent_cancellation = None
-        resume_child_cancellation = None
 
     # Expand @-mentions in the resumed instruction (consistent with spawn path).
     # Content lands inline as <context_file> XML blocks prepended to the instruction.
@@ -1354,46 +1537,68 @@ async def resume_sub_session(
                 relative_to=_resume_rel,
             )
 
-    # Execute new instruction with full context; cleanup MUST run even on CancelledError
+    # Execute and collect the transcript for normal persistence. If either await
+    # is cancelled, the wrapper persists interruption state and tears down in
+    # its shielded finalizer.
     try:
-        try:
-            response = await child_session.execute(instruction)
-        finally:
-            if unregister_hook:
-                unregister_hook()
-
-        # Update state for next resumption
+        response = await child_session.execute(instruction)
         updated_transcript = await context.get_messages() if context else []
-        metadata["turn_count"] = len(updated_transcript)
-        metadata["last_updated"] = datetime.now(UTC).isoformat()
+    except asyncio.CancelledError:
 
-        store.save(sub_session_id, updated_transcript, metadata)
-        logger.debug(
-            f"Sub-session {sub_session_id} state updated (turn {metadata['turn_count']})"
+        async def _persist_interrupted_resume() -> None:
+            updated_transcript = transcript
+            turn_count_source = "transcript"
+            if context:
+                try:
+                    updated_transcript = await context.get_messages()
+                except BaseException:
+                    logger.exception(
+                        "Failed to read interrupted sub-session %s transcript; "
+                        "reconstructing submitted instruction",
+                        sub_session_id,
+                    )
+                    updated_transcript = [
+                        *transcript,
+                        _submitted_user_message(instruction),
+                    ]
+                    turn_count_source = "reconstructed-submitted-instruction"
+            interrupted_metadata = {
+                **metadata,
+                "status": "interrupted",
+                "turn_count": count_turns(updated_transcript),
+                "turn_count_source": turn_count_source,
+            }
+            interrupted_metadata["last_updated"] = datetime.now(UTC).isoformat()
+            try:
+                store.save(sub_session_id, updated_transcript, interrupted_metadata)
+                logger.debug(
+                    "Interrupted sub-session %s state persisted", sub_session_id
+                )
+            except BaseException:
+                logger.exception(
+                    "Failed to persist interrupted sub-session %s", sub_session_id
+                )
+
+        lifecycle.persist_on_interruption(_persist_interrupted_resume)
+        raise
+
+    # Update state for next resumption and clear any prior interruption marker.
+    metadata["turn_count"] = len(updated_transcript)
+    metadata["last_updated"] = datetime.now(UTC).isoformat()
+    metadata.pop("status", None)
+
+    store.save(sub_session_id, updated_transcript, metadata)
+    logger.debug(
+        f"Sub-session {sub_session_id} state updated (turn {metadata['turn_count']})"
+    )
+
+    # Bridge child session costs to parent coordinator (bridge_child_cost never raises)
+    if parent_session is not None:
+        await bridge_child_cost(
+            child_coordinator=child_session.coordinator,
+            parent_coordinator=parent_session.coordinator,
+            child_session_id=sub_session_id,
         )
-
-        # Bridge child session costs to parent coordinator (bridge_child_cost never raises)
-        if parent_session is not None:
-            await bridge_child_cost(
-                child_coordinator=child_session.coordinator,
-                parent_coordinator=parent_session.coordinator,
-                child_session_id=sub_session_id,
-            )
-
-    finally:
-        # Unregister child cancellation token before cleanup
-        # MUST run even if execution was cancelled (CancelledError) or failed
-        if (
-            resume_parent_cancellation is not None
-            and resume_child_cancellation is not None
-        ):
-            resume_parent_cancellation.unregister_child(resume_child_cancellation)
-            logger.debug(
-                f"Unregistered child cancellation token for resumed sub-session {sub_session_id}"
-            )
-
-        # Cleanup child session
-        await child_session.cleanup()
 
     # Return response and same session ID
     # Include enriched fields from orchestrator:complete hook
@@ -1404,3 +1609,55 @@ async def resume_sub_session(
         "turn_count": completion_data.get("turn_count", 1),
         "metadata": completion_data.get("metadata", {}),
     }
+
+
+async def resume_sub_session(
+    sub_session_id: str,
+    instruction: str,
+    parent_session: AmplifierSession | None = None,
+) -> dict:
+    """Run a resumed child under lifecycle management from construction onward."""
+
+    # Keep this capability closure in the public resume implementation. Besides
+    # preserving source-level compatibility, it is the callable mounted on the
+    # resumed child and enables subprocess grandchildren.
+    async def child_spawn_capability(
+        agent_name: str,
+        instruction: str,
+        parent_session: "AmplifierSession",
+        agent_configs: dict[str, dict],
+        sub_session_id: str | None = None,
+        tool_inheritance: dict[str, list[str]] | None = None,
+        hook_inheritance: dict[str, list[str]] | None = None,
+        orchestrator_config: dict | None = None,
+        parent_messages: list[dict] | None = None,
+        provider_preferences: list | None = None,
+        self_delegation_depth: int = 0,
+        session_metadata: dict | None = None,
+        use_subprocess: bool = False,
+    ) -> dict:
+        return await spawn_sub_session(
+            agent_name=agent_name,
+            instruction=instruction,
+            parent_session=parent_session,
+            agent_configs=agent_configs,
+            sub_session_id=sub_session_id,
+            tool_inheritance=tool_inheritance,
+            hook_inheritance=hook_inheritance,
+            orchestrator_config=orchestrator_config,
+            parent_messages=parent_messages,
+            provider_preferences=provider_preferences,
+            self_delegation_depth=self_delegation_depth,
+            session_metadata=session_metadata,
+            use_subprocess=use_subprocess,
+        )
+
+    lifecycle = _SubSessionLifecycle()
+    operation = _resume_sub_session(
+        sub_session_id=sub_session_id,
+        instruction=instruction,
+        parent_session=parent_session,
+        lifecycle=lifecycle,
+        child_spawn_capability=child_spawn_capability,
+    )
+    return await _run_with_finalizer(operation, lifecycle)
