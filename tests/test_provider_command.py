@@ -1090,11 +1090,10 @@ def _prompt_session(mode=None, pinned=None):
     """Build the REAL PromptSession through the REAL factory."""
     from amplifier_app_cli.main import _create_prompt_session
 
-    with _headless_app_session():
-        return _create_prompt_session(
-            get_active_mode=lambda: mode,
-            get_pinned_provider=lambda: pinned,
-        )
+    return _create_prompt_session(
+        get_active_mode=lambda: mode,
+        get_pinned_provider=lambda: pinned,
+    )
 
 
 def _render_via_prompt_session(session) -> str:
@@ -1110,6 +1109,18 @@ def _render_via_prompt_session(session) -> str:
 
 @pytest.mark.usefixtures("isolated_home")
 class TestPromptSessionWiring:
+    @pytest.fixture(autouse=True)
+    def _console_free_output(self):
+        """Every test in this class builds a real PromptSession.
+
+        Applied at class scope rather than inside the _prompt_session helper
+        because four of these tests call _create_prompt_session directly, and
+        a class-scoped fixture cannot be bypassed by a future test that does
+        the same.
+        """
+        with _headless_app_session():
+            yield
+
     def test_message_is_a_callable_not_a_prebuilt_value(self):
         """A static value would freeze the indicator at construction time --
         the pin must be re-read on every render."""
