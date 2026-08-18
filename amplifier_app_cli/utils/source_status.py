@@ -4,6 +4,7 @@ Checks each library/module source independently (file, git cache, package).
 Uses existing StandardModuleSourceResolver infrastructure.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -205,11 +206,14 @@ async def _check_file_source(
 
     local_path = source.path
 
-    # Get local git info
-    local_sha = _get_local_sha(local_path)
-    remote_url = _get_remote_url(local_path)
-    uncommitted = _has_uncommitted_changes(local_path)
-    unpushed = _has_unpushed_commits(local_path)
+    # Get local git info. These helpers shell out to git synchronously; running
+    # them off-thread keeps the event loop free so a Ctrl+C during the startup
+    # update check is honoured at the next await instead of waiting for every
+    # git invocation to finish first.
+    local_sha = await asyncio.to_thread(_get_local_sha, local_path)
+    remote_url = await asyncio.to_thread(_get_remote_url, local_path)
+    uncommitted = await asyncio.to_thread(_has_uncommitted_changes, local_path)
+    unpushed = await asyncio.to_thread(_has_unpushed_commits, local_path)
 
     status = LocalFileStatus(
         name=name,
@@ -226,7 +230,7 @@ async def _check_file_source(
     if remote_url and local_sha:
         try:
             # Get current branch
-            current_branch = _get_current_branch(local_path)
+            current_branch = await asyncio.to_thread(_get_current_branch, local_path)
             if current_branch:
                 remote_sha = await _get_github_commit_sha(
                     client, remote_url, current_branch
@@ -234,7 +238,9 @@ async def _check_file_source(
 
                 if remote_sha != local_sha:
                     status.remote_sha = remote_sha[:7]
-                    status.commits_behind = _count_commits_behind(local_path)
+                    status.commits_behind = await asyncio.to_thread(
+                        _count_commits_behind, local_path
+                    )
         except Exception as e:
             logger.debug(f"Could not check remote for {name}: {e}")
 
