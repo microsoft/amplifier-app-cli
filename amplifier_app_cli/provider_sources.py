@@ -349,6 +349,7 @@ def install_known_providers(
     console: Console | None = None,
     verbose: bool = True,
     force: bool = False,
+    failures_out: list[tuple[str, str]] | None = None,
 ) -> list[str]:
     """Install known provider modules that are not already present.
 
@@ -371,6 +372,17 @@ def install_known_providers(
         console: Optional Rich console for progress display
         verbose: Whether to show progress messages
         force: Reinstall providers even if they are already installed
+        failures_out: Optional list to receive ``(module_id, reason)`` pairs for
+            providers that failed to install. Purely additive -- the return
+            value is unchanged, so existing callers need no update.
+
+            Without this, the reason a provider failed to install is written to
+            the log and then discarded. That matters downstream: when auto-init
+            later reports "the module is not installed", the actual cause (a
+            network failure, a bad source override, a broken build) is already
+            gone, leaving the user to guess. Callers that intend to explain a
+            missing provider can pass a list here and surface the real reason
+            alongside the symptom.
 
     Returns:
         List of provider module IDs that are available after this call
@@ -446,6 +458,12 @@ def install_known_providers(
         console.print(
             f"\n[yellow]Warning: {len(failed)} provider(s) failed to install[/yellow]"
         )
+
+    # Hand the failure reasons to a caller that asked for them. Everything
+    # else about this function's contract is unchanged -- callers that don't
+    # pass `failures_out` see identical behavior.
+    if failures_out is not None:
+        failures_out.extend(failed)
 
     # Refresh Python's view of installed packages so they're immediately importable.
     # Without this, the current Python process won't see packages installed via subprocess.

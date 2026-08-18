@@ -35,6 +35,28 @@ def _mock_entry_points(names: list[str]):
     return eps
 
 
+@pytest.fixture(autouse=True)
+def _entry_points_resolve_by_default():
+    """Treat every mocked entry point as a module that actually resolves.
+
+    `detect_provider_from_env()` no longer trusts a bare entry-point name --
+    it confirms the entry point's module still imports, because a stranded
+    `.dist-info` can advertise a provider whose files are gone. That check
+    consults the real interpreter, which would otherwise make every mocked
+    provider in this file look uninstalled regardless of the entry-point list
+    each test sets up.
+
+    Patching it True by default preserves each test's intent: the mocked
+    entry-point list IS the set of installed providers. Tests that care about
+    the stranded case patch this again locally, and the inner patch wins.
+    """
+    with patch(
+        "amplifier_app_cli.provider_env_detect.is_provider_module_installed",
+        return_value=True,
+    ):
+        yield
+
+
 def _clear_all_provider_env_vars(monkeypatch):
     """Strip every credential env var this module knows about, so tests are
     isolated from whatever happens to be set in the ambient environment
@@ -129,6 +151,37 @@ class TestDetectProviderFromEnvCredentialedButModuleMissing:
         ):
             assert detect_provider_from_env() == "provider-openai"
 
+    def test_stranded_entry_point_is_treated_as_missing(self, monkeypatch):
+        """An entry point that exists but whose module no longer imports must
+        count as missing, not installed.
+
+        Providers are installed editable, so removing the module cache while
+        leaving site-packages intact strands the `.dist-info` -- the provider
+        still advertises an entry point pointing at a directory that is gone.
+        Reading entry-point names alone would select this provider and fail
+        later at import time with an error that never mentions credentials.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-not-a-real-key")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with (
+            patch(
+                "amplifier_app_cli.provider_env_detect.entry_points",
+                # The entry point IS registered -- this is the stranded case.
+                return_value=_mock_entry_points(
+                    ["provider-anthropic", "provider-ollama"]
+                ),
+            ),
+            patch(
+                "amplifier_app_cli.provider_env_detect.is_provider_module_installed",
+                # ...but its module does not resolve.
+                side_effect=lambda name: name != "provider-anthropic",
+            ),
+            pytest.raises(CredentialedProviderModuleMissingError) as excinfo,
+        ):
+            detect_provider_from_env()
+
+        assert excinfo.value.provider_id == "provider-anthropic"
+
     def test_does_not_reach_ollama_when_credentialed_provider_missing(
         self, monkeypatch
     ):
@@ -149,3 +202,79 @@ class TestDetectProviderFromEnvCredentialedButModuleMissing:
             # Should never get here, but if the exception handling
             # regresses, fail loudly on the actual returned value too.
             assert result != "provider-ollama"
+
+
+class TestAmbientCredentialsDoNotBlockFallback:
+    """GITHUB_TOKEN is injected by the platform, not chosen by the user, so
+    it must not escalate a missing module into a hard failure.
+
+    GitHub Actions sets GITHUB_TOKEN in every job automatically. Combined
+    with the non-TTY environment that triggers auto-init, that satisfies
+    every GAP-003 raise condition by default in any workflow that doesn't
+    happen to have provider-github-copilot installed -- which is most of
+    them. Without the carve-out, a fix aimed at protecting a user's
+    deliberately-set API key instead breaks CI runs nobody touched, and
+    tells them to install a provider they never asked for.
+
+    Note these tests deliberately set GITHUB_TOKEN *after* clearing the
+    environment. The shared `_clear_all_provider_env_vars()` helper strips
+    every var in PROVIDER_CREDENTIAL_VARS -- GITHUB_TOKEN included -- so a
+    test relying on it alone can never observe this behavior, which is
+    exactly why the regression went unnoticed.
+    """
+
+    def test_github_token_alone_still_falls_back_to_ollama(self, monkeypatch):
+        """The CI shape: ambient GITHUB_TOKEN, Copilot module absent,
+        Ollama installed. Must select Ollama quietly rather than raise."""
+        _clear_all_provider_env_vars(monkeypatch)
+        monkeypatch.setenv("GITHUB_TOKEN", "ghs-ambient-ci-token")
+        with patch(
+            "amplifier_app_cli.provider_env_detect.entry_points",
+            # provider-github-copilot deliberately absent.
+            return_value=_mock_entry_points(["provider-ollama"]),
+        ):
+            assert detect_provider_from_env() == "provider-ollama"
+
+    def test_github_token_alone_returns_none_without_ollama(self, monkeypatch):
+        """Same ambient token, nothing installed at all. Must return None --
+        the pre-existing 'nothing configured' path -- not raise."""
+        _clear_all_provider_env_vars(monkeypatch)
+        monkeypatch.setenv("GITHUB_TOKEN", "ghs-ambient-ci-token")
+        with patch(
+            "amplifier_app_cli.provider_env_detect.entry_points",
+            return_value=_mock_entry_points([]),
+        ):
+            assert detect_provider_from_env() is None
+
+    def test_github_copilot_still_selected_when_module_installed(self, monkeypatch):
+        """The carve-out must not disable the provider. When the module IS
+        installed, a GITHUB_TOKEN-credentialed Copilot is still selectable."""
+        _clear_all_provider_env_vars(monkeypatch)
+        monkeypatch.setenv("GITHUB_TOKEN", "ghs-ambient-ci-token")
+        with patch(
+            "amplifier_app_cli.provider_env_detect.entry_points",
+            return_value=_mock_entry_points(
+                ["provider-github-copilot", "provider-ollama"]
+            ),
+        ):
+            assert detect_provider_from_env() == "provider-github-copilot"
+
+    def test_user_set_credential_still_raises_alongside_ambient_token(
+        self, monkeypatch
+    ):
+        """The carve-out is scoped to the ambient var only. A deliberately-set
+        ANTHROPIC_API_KEY must still raise even when GITHUB_TOKEN is also
+        present -- otherwise the CI fix would silently undo GAP-003."""
+        _clear_all_provider_env_vars(monkeypatch)
+        monkeypatch.setenv("GITHUB_TOKEN", "ghs-ambient-ci-token")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-not-a-real-key")
+        with (
+            patch(
+                "amplifier_app_cli.provider_env_detect.entry_points",
+                return_value=_mock_entry_points(["provider-ollama"]),
+            ),
+            pytest.raises(CredentialedProviderModuleMissingError) as excinfo,
+        ):
+            detect_provider_from_env()
+
+        assert excinfo.value.provider_id == "provider-anthropic"
