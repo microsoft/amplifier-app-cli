@@ -101,6 +101,13 @@ class TestSubprocessRouting:
         # Verify subprocess runner was called
         fake_module.run_session_in_subprocess.assert_called_once()
         call_kwargs = fake_module.run_session_in_subprocess.call_args
+        # Exact-equality is intentional here: this parent's coordinator.config
+        # carries no "agents" key (see _make_parent_session), so the issue
+        # #233 live-registry propagation in spawn_sub_session has nothing to
+        # add and the forwarded config is exactly the merge_configs() stub's
+        # return value, unchanged. See
+        # test_live_registry_agents_propagate_to_subprocess_config below for
+        # the case where an "agents" key legitimately appears.
         assert call_kwargs.kwargs["config"] == {"session": {}}
         assert call_kwargs.kwargs["prompt"] == "Do something"
         assert call_kwargs.kwargs["parent_id"] == "parent-session-id"
