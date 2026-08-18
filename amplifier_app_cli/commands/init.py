@@ -5,6 +5,7 @@ import logging
 import click
 from rich.console import Console
 from rich.prompt import Confirm
+from rich.prompt import InvalidResponse
 from rich.prompt import Prompt
 from rich.table import Table
 
@@ -220,6 +221,59 @@ def check_first_run() -> bool:
     return False
 
 
+def _bounded_confirm(
+    console_arg: Console,
+    prompt: str,
+    default: bool = True,
+    max_attempts: int = 3,
+) -> bool:
+    """Attempt-bounded replacement for ``rich.prompt.Confirm.ask()``.
+
+    GAP-020: ``Confirm.ask()`` re-prompts on invalid (non-y/n) input with
+    **no bound** -- forever, if the user never types a recognized response.
+    Reproduced live: two non-y/n inputs in a row just re-prompt a third
+    time, with nothing indicating there's any limit at all. That's a real
+    gap at a first-run gate a brand-new user hits before anything else
+    works: anyone who doesn't type exactly "y" or "n" (a stray keypress, a
+    pasted line, an automation sending the wrong thing) is stuck with no
+    signal that it will ever end.
+
+    EOF and Ctrl-C were investigated too and are deliberately left alone:
+    Click's own ``BaseCommand.main()`` already catches ``(EOFError,
+    KeyboardInterrupt)`` globally and converts them to a clean "Aborted!"
+    exit (verified from Click's source and confirmed live on native
+    Windows for both Ctrl-C and Ctrl-Z -- Windows' real console EOF key;
+    Ctrl-D, POSIX's EOF key, has no special meaning to the Windows console
+    subsystem at all and is simply inert there, not a bug). Catching EOF
+    here too would just relitigate something Click already gets right, and
+    would silently change "the user asked to stop" into "skip setup and
+    keep going" -- exactly the kind of quiet fallback the far more
+    predictable existing "Aborted!" exit avoids.
+
+    This bounds only the retry count, falling through to the same "setup
+    skipped" messaging an explicit "n" answer already produces once
+    ``max_attempts`` is exhausted, so a run that can't get a valid answer
+    still terminates the prompt loudly and predictably instead of hanging.
+    """
+    prompt_obj = Confirm(prompt, console=console_arg)
+    for _ in range(max_attempts):
+        value = prompt_obj.get_input(
+            console_arg, prompt_obj.make_prompt(default), False
+        )
+        if value == "":
+            return default
+        try:
+            return prompt_obj.process_response(value)
+        except InvalidResponse as error:
+            prompt_obj.on_validate_error(value, error)
+
+    console_arg.print(
+        f"[yellow]No valid y/n response after {max_attempts} attempts. "
+        "Skipping setup.[/yellow]"
+    )
+    return False
+
+
 def prompt_first_run_init(console_arg: Console) -> bool:
     """Prompt user to run init on first run. Returns True if provider was added.
 
@@ -238,7 +292,7 @@ def prompt_first_run_init(console_arg: Console) -> bool:
     )
     console_arg.print()
 
-    if Confirm.ask("Run setup now?", default=True):
+    if _bounded_confirm(console_arg, "Run setup now?", default=True):
         from .provider import provider_manage_loop
 
         settings = _get_settings()
