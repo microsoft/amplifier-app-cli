@@ -6,6 +6,7 @@ contract this command is built against. This app layer only asks and reports
 -- it never selects a provider itself (REQUIRED BEHAVIORS in the task spec).
 """
 
+import contextlib
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -1065,14 +1066,35 @@ def isolated_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+@contextlib.contextmanager
+def _headless_app_session():
+    """Run prompt_toolkit with a console-free output backend.
+
+    On Windows, pytest captures stdout as a pipe rather than a real console,
+    so prompt_toolkit selects Win32Output, whose GetConsoleScreenBufferInfo
+    call raises NoConsoleScreenBufferError. Binding a DummyOutput to the
+    ambient AppSession makes PromptSession resolve output via the session
+    (Application.__init__: ``self.output = output or session.output``)
+    instead of probing the console. POSIX behaviour is unchanged.
+    """
+    from prompt_toolkit.application.current import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    with create_pipe_input() as pipe_input:
+        with create_app_session(input=pipe_input, output=DummyOutput()):
+            yield
+
+
 def _prompt_session(mode=None, pinned=None):
     """Build the REAL PromptSession through the REAL factory."""
     from amplifier_app_cli.main import _create_prompt_session
 
-    return _create_prompt_session(
-        get_active_mode=lambda: mode,
-        get_pinned_provider=lambda: pinned,
-    )
+    with _headless_app_session():
+        return _create_prompt_session(
+            get_active_mode=lambda: mode,
+            get_pinned_provider=lambda: pinned,
+        )
 
 
 def _render_via_prompt_session(session) -> str:
