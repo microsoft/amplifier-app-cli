@@ -35,9 +35,16 @@ def test_deduplicator_duplicate_content():
     ctx_file = files[0]
     assert ctx_file.content == content
     assert len(ctx_file.paths) == 3
-    assert Path("/path1/file.md") in ctx_file.paths
-    assert Path("/path2/file.md") in ctx_file.paths
-    assert Path("/path3/file.md") in ctx_file.paths
+    # Compare against RESOLVED paths. add_file() deliberately calls
+    # path.resolve() so a relative and an absolute reference to the same file
+    # deduplicate. On POSIX "/path1/file.md" is already canonical so the
+    # unresolved form happened to match; on Windows resolve() prepends the
+    # current drive, giving WindowsPath("C:/path1/file.md") and the bare
+    # comparison failed. Resolving both sides tests the actual contract --
+    # "the path I added is tracked" -- instead of an accident of POSIX.
+    assert Path("/path1/file.md").resolve() in ctx_file.paths
+    assert Path("/path2/file.md").resolve() in ctx_file.paths
+    assert Path("/path3/file.md").resolve() in ctx_file.paths
 
 
 def test_deduplicator_same_path_twice():
