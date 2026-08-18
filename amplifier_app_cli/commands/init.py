@@ -19,8 +19,12 @@ from ..ui.scope import (
 )
 from ..provider_config_utils import configure_provider
 from ..provider_manager import ProviderManager
-from ..provider_env_detect import detect_provider_from_env
+from ..provider_env_detect import (
+    CredentialedProviderModuleMissingError,
+    detect_provider_from_env,
+)
 from ..provider_sources import install_known_providers
+from ..utils.error_format import escape_markup
 from .routing import _discover_matrix_files
 from .routing import _get_configured_provider_types
 from .routing import _load_all_matrices
@@ -320,6 +324,10 @@ def auto_init_from_env(console_arg: Console | None = None) -> bool:
     Returns True if a provider was configured, False otherwise.
     This is best-effort — failures are logged but never raised.
     """
+    # Declared before the try block so the except handlers can always read it,
+    # including when the failure happens before the install step runs.
+    install_failures: list[tuple[str, str]] = []
+
     try:
         logger.info(
             "Non-interactive environment detected, "
@@ -328,8 +336,21 @@ def auto_init_from_env(console_arg: Console | None = None) -> bool:
 
         config = create_config_manager()
 
-        # Install providers quietly
-        install_known_providers(config_manager=config, console=None, verbose=False)
+        # Install providers quietly.
+        #
+        # Capture why any install failed. This runs with verbose=False and
+        # console=None, so nothing is printed and the reason would otherwise
+        # only reach the log -- yet an install failure here is the most likely
+        # cause of the "module is not installed" condition detected on the very
+        # next line. Holding onto the reason lets that report name the actual
+        # cause instead of just the symptom.
+        install_failures: list[tuple[str, str]] = []
+        install_known_providers(
+            config_manager=config,
+            console=None,
+            verbose=False,
+            failures_out=install_failures,
+        )
 
         # Detect provider from environment
         module_id = detect_provider_from_env()
@@ -371,6 +392,39 @@ def auto_init_from_env(console_arg: Console | None = None) -> bool:
                 f"[green]\u2713 Auto-configured {display_name} from environment[/green]"
             )
         return True
+
+    except CredentialedProviderModuleMissingError as e:
+        # GAP-003: environment credentials were found for a real provider,
+        # but its module isn't usable. This must be loud and specific --
+        # NOT collapsed into the generic warning below, and NOT allowed to
+        # silently fall through to Ollama (detect_provider_from_env() never
+        # returns "provider-ollama" once this exception is raised, so there
+        # is nothing to silently configure here; we just report and stop).
+        # If the install attempt for this exact provider failed earlier in
+        # this same call, that failure IS the explanation. Report it next to
+        # the symptom rather than making the user re-run and go log-diving to
+        # discover it -- the message otherwise says "not installed" while the
+        # process that just tried to install it knew precisely why it didn't.
+        message = str(e)
+        install_reason = next(
+            (
+                reason
+                for module_id, reason in install_failures
+                if module_id == e.provider_id
+            ),
+            None,
+        )
+        if install_reason:
+            message = (
+                f"{message}\n"
+                f"  The install attempt for {e.provider_id} failed with: "
+                f"{install_reason}"
+            )
+
+        logger.error(f"Auto-init: {message}")
+        if console_arg:
+            console_arg.print(f"[bold red]\u2717 {escape_markup(message)}[/bold red]")
+        return False
 
     except Exception as e:
         logger.warning(f"Auto-init failed: {e}")
