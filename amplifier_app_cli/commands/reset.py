@@ -20,6 +20,7 @@ Example:
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -407,6 +408,136 @@ def _install_amplifier(dry_run: bool = False) -> bool:
         return False
 
 
+def _windows_defer_tool_swap(no_install: bool) -> None:
+    """Defer ``uv tool uninstall``/``install`` to a script that runs AFTER we exit.
+
+    On Windows the OS locks a running program's own files: while ``amplifier.exe``
+    (this process) is alive, its loaded ``python3xx.dll`` / ``.pyd`` under
+    ``%APPDATA%\\uv\\tools\\amplifier\\Lib\\`` cannot be deleted, so an in-process
+    ``uv tool uninstall``/``install`` fails with "Access is denied (os error 5)".
+    POSIX lets you unlink open files, which is why the normal path works there.
+
+    The fix: generate a throw-away ``.cmd`` that waits for THIS process id to
+    exit (releasing the lock), then performs the uninstall (and reinstall unless
+    ``--no-install``), and launch it in a new console window. The script path and
+    the equivalent manual commands are always printed, so nothing fails silently
+    even if the auto-launch is refused.
+    """
+    import tempfile
+
+    pid = os.getpid()
+    header = [
+        "@echo off",
+        "setlocal enabledelayedexpansion",
+        "echo(",
+        "echo Amplifier reset: finishing the uninstall/reinstall now that the app",
+        "echo has exited (Windows locks a running program's own files).",
+        "echo(",
+        f"echo Waiting for Amplifier (PID {pid}) to exit...",
+        ":waitloop",
+        f'tasklist /FI "PID eq {pid}" 2>NUL | find "{pid}" >NUL',
+        "if not errorlevel 1 (",
+        "    ping -n 2 127.0.0.1 >NUL",
+        "    goto waitloop",
+        ")",
+    ]
+    # A just-exited process releases its handles lazily, and another open
+    # Amplifier/terminal window, an antivirus scan, or the file indexer can all
+    # keep the tool env locked briefly (or longer). Retry with backoff, then fail
+    # loud with a re-runnable path rather than silently leaving a half-swapped
+    # install. The retried command is `uv tool install` (the actual goal); the
+    # uninstall is best-effort cleanup ahead of it.
+    if no_install:
+        goal = [
+            "echo Uninstalling amplifier...",
+            "for /L %%i in (1,1,10) do (",
+            "    uv tool uninstall amplifier",
+            "    if !errorlevel! EQU 0 goto done",
+            "    echo   files still locked, attempt %%i of 10; retrying in 3s...",
+            "    ping -n 4 127.0.0.1 >NUL",
+            ")",
+            "goto locked",
+        ]
+        done_msg = "echo Amplifier removed. You can close this window."
+    else:
+        goal = [
+            "echo Uninstalling amplifier (best effort)...",
+            "for /L %%i in (1,1,5) do (",
+            "    uv tool uninstall amplifier >NUL 2>&1",
+            "    if !errorlevel! EQU 0 goto reinstall",
+            "    ping -n 3 127.0.0.1 >NUL",
+            ")",
+            ":reinstall",
+            "echo Reinstalling amplifier...",
+            "for /L %%i in (1,1,10) do (",
+            f"    uv tool install {DEFAULT_INSTALL_SOURCE}",
+            "    if !errorlevel! EQU 0 goto done",
+            "    echo   files still locked, attempt %%i of 10; retrying in 3s...",
+            "    ping -n 4 127.0.0.1 >NUL",
+            ")",
+            "goto locked",
+        ]
+        done_msg = "echo Amplifier reset complete. You can close this window."
+    footer = [
+        ":locked",
+        "echo(",
+        "echo Could not finish: Amplifier's files are still locked by another",
+        "echo program such as another Amplifier or terminal window, an antivirus",
+        "echo scan, or a file indexer. Close other Amplifier windows and run this",
+        "echo script again:",
+        'echo     "%~f0"',
+        "echo If it keeps failing, reboot and run it once more.",
+        "pause",
+        "exit /b 1",
+        ":done",
+        "echo(",
+        done_msg,
+        "pause",
+    ]
+    lines = header + goal + footer
+    # Batch files are read by cmd.exe as ANSI/OEM; keep to ASCII + CRLF.
+    script = "\r\n".join(lines) + "\r\n"
+
+    fd, script_path = tempfile.mkstemp(prefix="amplifier-reset-", suffix=".cmd")
+    with os.fdopen(fd, "w", encoding="ascii", newline="") as f:
+        f.write(script)
+
+    console.print(
+        "\n[bold]>>>[/bold] Windows can't replace Amplifier while it's running."
+    )
+    console.print(
+        "    The uninstall/reinstall will finish in a new window after this exits."
+    )
+    console.print(f"    Script: [cyan]{script_path}[/cyan]")
+
+    launched = False
+    try:
+        subprocess.Popen(
+            ["cmd", "/c", script_path],
+            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            close_fds=True,
+        )
+        launched = True
+    except OSError as e:
+        console.print(
+            f"[yellow]Warning:[/yellow] Could not auto-launch the finisher: {escape_markup(str(e))}"
+        )
+
+    if launched:
+        console.print("    [green]Launched.[/green] Watch the new window for progress.")
+    else:
+        console.print(
+            "    Run that script yourself to finish, or run these after Amplifier exits:"
+        )
+        console.print("      uv tool uninstall amplifier")
+        if not no_install:
+            console.print(f"      uv tool install {DEFAULT_INSTALL_SOURCE}")
+
+    console.print(
+        "\n[green]>>>[/green] Reset staged - it will finish after this exits."
+    )
+
+
 @click.command()
 @click.option(
     "--preserve",
@@ -518,8 +649,21 @@ def reset(
             console.print("[yellow]Cancelled.[/yellow]")
             return
 
-    # Execute reset steps
+    # Execute reset steps. Cache clean and ~/.amplifier cleanup are safe to run
+    # in-process on every OS (neither touches the running uv tool environment).
     _clean_uv_cache(dry_run)
+
+    # Windows self-modification guard: on Windows the live amplifier.exe and its
+    # loaded .dll/.pyd under the uv tool env are OS-locked, so an in-process
+    # `uv tool uninstall`/`install` fails with "Access is denied (os error 5)".
+    # Do the safe cleanup now, then defer the tool-env swap to a script that
+    # runs after this process exits. POSIX unlinks open files, so the path below
+    # is unchanged there.
+    if os.name == "nt" and not dry_run:
+        _remove_amplifier_dir(preserve, dry_run)
+        _windows_defer_tool_swap(no_install)
+        return
+
     _uninstall_amplifier(dry_run)
     _remove_amplifier_dir(preserve, dry_run)
 
