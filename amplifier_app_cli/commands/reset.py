@@ -20,7 +20,7 @@ Example:
 
 from __future__ import annotations
 
-import shutil
+import os
 import subprocess
 from pathlib import Path
 
@@ -28,9 +28,10 @@ import click
 
 from ..console import console
 from ..utils.error_format import escape_markup
+from ..utils.fs_utils import rmtree_robust
+from ..utils.uv_utils import UvStep, defer_uv_tool_swap
 from ..utils.uv_utils import remove_stale_uv_lock as _remove_stale_uv_lock
 from .reset_interactive import ChecklistItem, run_checklist
-
 
 # Category definitions: category name -> list of files/dirs in ~/.amplifier
 # Note: "other" is a special dynamic category - see _get_other_files()
@@ -278,10 +279,9 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
     clear_download_cache = None
     clear_registry = None
     try:
-        from ..utils.cache_management import clear_download_cache
-        from ..utils.cache_management import clear_registry
+        from ..utils.cache_management import clear_download_cache, clear_registry
     except ImportError:
-        pass  # Will use inline shutil.rmtree fallback
+        pass  # Will use inline rmtree_robust fallback
 
     amplifier_dir = _get_amplifier_dir()
     console.print(f"[bold]>>>[/bold] Removing {amplifier_dir}...")
@@ -302,7 +302,7 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
             return True
 
         try:
-            shutil.rmtree(amplifier_dir)
+            rmtree_robust(amplifier_dir)
             console.print("    [green]Removed entire directory[/green]")
             return True
         except OSError as e:
@@ -339,7 +339,7 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
                     else:
                         # Standard removal (fallback or other items)
                         if item.is_dir():
-                            shutil.rmtree(item)
+                            rmtree_robust(item)
                         else:
                             item.unlink()
                         removed_count += 1
@@ -405,6 +405,64 @@ def _install_amplifier(dry_run: bool = False) -> bool:
     except FileNotFoundError:
         console.print("[red]Error:[/red] uv not found")
         return False
+
+
+def _windows_defer_tool_swap(no_install: bool) -> None:
+    """Hand the uv tool uninstall/reinstall to a script that runs after we exit.
+
+    See ``defer_uv_tool_swap`` for why Windows needs this at all. Reset's shape
+    is an uninstall, followed (unless ``--no-install``) by a fresh install.
+    """
+    if no_install:
+        steps = [
+            UvStep(
+                command="uv tool uninstall amplifier",
+                label="Uninstalling amplifier...",
+            )
+        ]
+        recovery = ["uv tool uninstall amplifier"]
+        success = "Amplifier removed."
+    else:
+        steps = [
+            # Best effort: `uv tool install` overwrites an existing install, so
+            # a failed uninstall must not abort the reinstall that is the goal.
+            # Aborting here is what would leave the user with no amplifier.
+            UvStep(
+                command="uv tool uninstall amplifier",
+                label="Uninstalling amplifier (best effort)...",
+                attempts=5,
+                required=False,
+            ),
+            UvStep(
+                command=f"uv tool install {DEFAULT_INSTALL_SOURCE}",
+                label="Reinstalling amplifier...",
+            ),
+        ]
+        recovery = [
+            "uv tool uninstall amplifier",
+            f"uv tool install {DEFAULT_INSTALL_SOURCE}",
+        ]
+        success = "Amplifier reset complete."
+
+    launched = defer_uv_tool_swap(
+        steps,
+        operation="reset",
+        intro_lines=[
+            "Amplifier reset: finishing the uninstall/reinstall now that the app",
+            "has exited. Windows locks a running program's own files.",
+        ],
+        success_message=success,
+        recovery_commands=recovery,
+    )
+
+    if not launched:
+        console.print("    Run these yourself once Amplifier has exited:")
+        for command in recovery:
+            console.print(f"      {command}")
+
+    console.print(
+        "\n[green]>>>[/green] Reset staged - it will finish after this exits."
+    )
 
 
 @click.command()
@@ -518,8 +576,21 @@ def reset(
             console.print("[yellow]Cancelled.[/yellow]")
             return
 
-    # Execute reset steps
+    # Execute reset steps. Cache clean and ~/.amplifier cleanup are safe to run
+    # in-process on every OS (neither touches the running uv tool environment).
     _clean_uv_cache(dry_run)
+
+    # Windows self-modification guard: on Windows the live amplifier.exe and its
+    # loaded .dll/.pyd under the uv tool env are OS-locked, so an in-process
+    # `uv tool uninstall`/`install` fails with "Access is denied (os error 5)".
+    # Do the safe cleanup now, then defer the tool-env swap to a script that
+    # runs after this process exits. POSIX unlinks open files, so the path below
+    # is unchanged there.
+    if os.name == "nt" and not dry_run:
+        _remove_amplifier_dir(preserve, dry_run)
+        _windows_defer_tool_swap(no_install)
+        return
+
     _uninstall_amplifier(dry_run)
     _remove_amplifier_dir(preserve, dry_run)
 

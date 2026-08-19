@@ -5,6 +5,7 @@ Selective updates: Only update modules that actually have updates, then re-downl
 """
 
 import logging
+import os
 import re
 import subprocess
 import threading
@@ -16,6 +17,8 @@ from pathlib import Path
 from .source_status import CachedGitStatus
 from .source_status import UpdateReport
 from .umbrella_discovery import UmbrellaInfo
+from .uv_utils import UvStep
+from .uv_utils import defer_uv_tool_swap
 from .uv_utils import remove_stale_uv_lock
 
 logger = logging.getLogger(__name__)
@@ -532,6 +535,70 @@ def _invalidate_modules_with_missing_deps() -> tuple[int, int]:
     return (modules_checked, len(modules_to_invalidate))
 
 
+def _defer_self_update(url: str) -> ExecutionResult:
+    """Hand the self-update to a script that runs after this process exits.
+
+    Windows-only. ``uv tool install --reinstall`` rewrites the very tool
+    environment this process is executing from, and Windows will not let a
+    running program's loaded DLLs be replaced -- see ``defer_uv_tool_swap``.
+
+    The deferred install runs unattended, so the post-install dependency check
+    (``_invalidate_modules_with_missing_deps``) cannot run afterwards. Clear
+    install-state.json outright instead: ``--reinstall`` rebuilds the Python
+    environment and may drop module dependencies, and stale state claiming
+    "installed" while the packages are gone produces import errors on the next
+    run. This mirrors what reset does when it clears the cache.
+    """
+    from amplifier_app_cli.paths import get_install_state_path
+
+    install_state_file = get_install_state_path()
+    try:
+        if install_state_file.exists():
+            install_state_file.unlink()
+    except OSError as e:
+        # Non-fatal: a stale entry costs a re-resolve, not a broken install.
+        logger.warning(f"Could not clear install state before deferred update: {e}")
+
+    command = f"uv tool install --upgrade --reinstall {url}"
+    launched = defer_uv_tool_swap(
+        [
+            UvStep(
+                command=command,
+                label="Updating amplifier...",
+                attempts=10,
+            )
+        ],
+        operation="update",
+        intro_lines=[
+            "Amplifier update",
+            "Windows cannot replace Amplifier's files while it is running,",
+            "so the update finishes here after the main window closes.",
+        ],
+        success_message="Amplifier updated. Start it again with: amplifier",
+        recovery_commands=[command],
+    )
+
+    if not launched:
+        return ExecutionResult(
+            success=False,
+            failed=["amplifier"],
+            errors={"amplifier": "Could not launch the deferred update"},
+            messages=[
+                (
+                    "Windows cannot update Amplifier while it is running, and "
+                    "the finisher script could not be started. Close Amplifier "
+                    f"and run this yourself: {command}"
+                )
+            ],
+        )
+
+    return ExecutionResult(
+        success=True,
+        updated=["amplifier"],
+        messages=["Amplifier update will finish in the new window after this exits"],
+    )
+
+
 async def execute_self_update(
     umbrella_info: UmbrellaInfo,
     progress_callback: Callable[[str, str], None] | None = None,
@@ -616,6 +683,13 @@ async def execute_self_update(
         # a killed uv process) causes uv tool install to hang indefinitely
         # waiting to acquire it — same guard applied in reset._clean_uv_cache().
         remove_stale_uv_lock()
+
+        # Windows cannot replace amplifier.exe's own loaded DLLs while this
+        # process is alive, so `uv tool install --reinstall` against our own
+        # tool environment fails with "Access is denied (os error 5)". Hand the
+        # install to a script that starts after we exit. See defer_uv_tool_swap.
+        if os.name == "nt":
+            return _defer_self_update(url)
 
         # Use Popen to stream uv output for progress visibility.
         # Previously used subprocess.run(capture_output=True) which silenced
