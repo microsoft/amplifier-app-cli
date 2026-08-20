@@ -82,7 +82,12 @@ def _get_key() -> str:
     else:
         # Windows
         ch = msvcrt.getch()
-        if ch == b"\\xe0":  # Arrow key prefix
+        # msvcrt.getch() returns raw bytes: arrow keys arrive as a two-byte
+        # sequence prefixed by 0x00 or 0xe0. These MUST be single-escaped byte
+        # literals (b"\xe0", b"\r", b"\x03") -- a double-escaped b"\\r" is the
+        # two CHARACTERS backslash+r and never matches a real keypress, so Enter
+        # would fall through and the menu would just re-render ("flash").
+        if ch in (b"\x00", b"\xe0"):  # Arrow key / function key prefix
             ch2 = msvcrt.getch()
             if ch2 == b"H":
                 return "UP"
@@ -92,12 +97,13 @@ def _get_key() -> str:
                 return "RIGHT"
             elif ch2 == b"K":
                 return "LEFT"
+            return "ESC"
 
-        if ch in (b"\\r", b"\\n"):
+        if ch in (b"\r", b"\n"):
             return "ENTER"
         if ch == b" ":
             return " "
-        if ch == b"\\x03":
+        if ch == b"\x03":
             raise KeyboardInterrupt
 
         return ch.decode("utf-8", errors="ignore")

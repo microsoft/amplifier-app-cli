@@ -13,8 +13,9 @@ User data (projects, settings, keys) is NEVER touched by these utilities.
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
+
+from .fs_utils import rmtree_robust
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +59,10 @@ def clear_download_cache(dry_run: bool = False) -> tuple[int, bool]:
             logger.debug(f"[dry-run] Would clear {count} items from cache")
             return (count, True)
 
-        # Remove entire cache directory
-        shutil.rmtree(cache_dir)
+        # Remove entire cache directory. Bundles are cached as git clones,
+        # and git marks pack files read-only -- which Windows refuses to
+        # delete, so this needs the read-only-tolerant variant.
+        rmtree_robust(cache_dir)
         logger.debug(f"Cleared {count} items from cache")
 
         # Recreate empty cache directory

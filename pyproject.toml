@@ -29,6 +29,30 @@ package = true
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_app_cli"]
 
+# Ship the repo-root bundle overlay (bundle.md + behaviors/ + agents/ +
+# context/ + docs/) inside the wheel.
+#
+# Sibling repos (amplifier, amplifier-core, amplifier-foundation) put these
+# dirs at their repo root too, but they are CLONED into ~/.amplifier/cache,
+# so their whole tree is on disk at runtime. This repo is installed with
+# `uv tool install` -- only the wheel ships -- so without this block the
+# overlay would reach a dev checkout and nobody else.
+#
+# docs/ is included because agents/cli-expert.md @-mentions it; the repo root
+# stays the single source of truth and the wheel carries a copy.
+#
+# Targets are under `_bundle/` INSIDE the package deliberately. Targeting
+# `amplifier_app_cli/agents` would create a directory with no __init__.py
+# that shadows the real package namespace and breaks `import amplifier_app_cli`
+# in built wheels (see foundation BUNDLE_GUIDE.md, "force-include Shadowing
+# Python Namespace"). Resolution lives in runtime/config.py.
+[tool.hatch.build.targets.wheel.force-include]
+"bundle.md" = "amplifier_app_cli/_bundle/bundle.md"
+"behaviors" = "amplifier_app_cli/_bundle/behaviors"
+"agents" = "amplifier_app_cli/_bundle/agents"
+"context" = "amplifier_app_cli/_bundle/context"
+"docs" = "amplifier_app_cli/_bundle/docs"
+
 [tool.hatch.metadata]
 allow-direct-references = true
 

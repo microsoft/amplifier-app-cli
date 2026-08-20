@@ -23,6 +23,31 @@ import pytest
 
 from amplifier_app_cli.stdout_offload import _run_in_terminal_forcing_executor
 from amplifier_app_cli.stdout_offload import patch_stdout_offloaded
+from prompt_toolkit.application import create_app_session
+from prompt_toolkit.output import DummyOutput
+
+
+@pytest.fixture(autouse=True)
+def _dummy_app_session():
+    """Give prompt_toolkit an output it can use without a real console.
+
+    These tests exercise ``patch_stdout_offloaded()``'s own install/restore
+    machinery, but entering it also enters prompt_toolkit's ``patch_stdout``,
+    which reaches ``get_app().output``. With no app session that builds a
+    platform Output -- and on Windows ``Win32Output.__init__`` calls
+    ``GetConsoleScreenBufferInfo`` and raises ``NoConsoleScreenBufferError``
+    whenever stdout is not a real console (piped, redirected, CI). The context
+    manager then dies on ENTRY and the body never runs, so all three tests
+    failed on Windows for a reason that has nothing to do with what they test.
+
+    A ``DummyOutput`` app session removes that incidental dependency on the
+    host terminal without weakening the assertions: the monkeypatch
+    install/restore logic under test is untouched, and the tests now run
+    identically on every platform rather than only where a console happens to
+    be attached.
+    """
+    with create_app_session(output=DummyOutput()):
+        yield
 
 
 def _current_run_in_terminal() -> Callable[..., Any]:

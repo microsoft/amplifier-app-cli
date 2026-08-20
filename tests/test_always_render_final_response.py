@@ -12,6 +12,7 @@ the call and assert_called_once() raises.
 GREEN phase: Once the gate is removed and _streaming_overlay_active is deleted
 the calls go through and both assertions pass.
 """
+
 from __future__ import annotations
 
 import sys
@@ -19,8 +20,31 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from prompt_toolkit.application import create_app_session
+from prompt_toolkit.output import DummyOutput
 
 _MODULE = "amplifier_app_cli.main"
+
+
+@pytest.fixture(autouse=True)
+def _dummy_app_session():
+    """Give prompt_toolkit an output it can use without a real console.
+
+    These tests drive the REAL ``interactive_chat``, whose REPL wraps each turn
+    in ``patch_stdout()``. That reaches ``get_app().output``; with no app
+    session it builds a platform Output, and on Windows
+    ``Win32Output.__init__`` raises ``NoConsoleScreenBufferError`` whenever
+    stdout is not a real console (piped, redirected, CI). ``interactive_chat``
+    then correctly declines to start an interactive session, so no turn runs
+    and ``render_message`` is never called -- the tests failed for a reason
+    that has nothing to do with the always-render contract they exist to guard.
+
+    A ``DummyOutput`` app session removes that incidental dependency on the
+    host terminal. The assertions are unchanged and now hold on every platform
+    rather than only where a console happens to be attached.
+    """
+    with create_app_session(output=DummyOutput()):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -143,9 +167,7 @@ class TestAlwaysRenderFinalResponse:
         mock_render.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_render_message_called_when_no_streaming_config(
-        self, tmp_path: Path
-    ):
+    async def test_render_message_called_when_no_streaming_config(self, tmp_path: Path):
         """render_message IS called when no streaming-ui hook is configured.
 
         Sanity-check: the non-streaming path must also always render.

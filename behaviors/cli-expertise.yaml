@@ -1,0 +1,29 @@
+bundle:
+  name: behavior-cli-expertise
+  version: 0.1.0
+  description: |
+    Adds an expert consultant on the Amplifier CLI application itself —
+    provider pinning, slash commands, sessions, context loading, output
+    formats, and spawn precedence.
+
+agents:
+  include:
+    - app-cli:cli-expert
+
+# Thin awareness pointer ONLY.
+#
+# The heavy reference docs (docs/PROVIDER_PINNING.md, docs/CONTEXT_LOADING.md,
+# docs/INTERACTIVE_MODE.md, docs/GOAL_COMMAND.md, docs/OUTPUT_FORMATS.md,
+# docs/SPAWN_PRECEDENCE.md) are @-mentioned in the cli-expert AGENT BODY, so
+# they load only when that agent is spawned (context-sink pattern).
+#
+# The file below is a routing pointer, not documentation: it tells the root
+# session that this domain exists and to delegate. It must stay well under
+# the 1,000-token behavior context.include ceiling that foundation's
+# validate-bundle-repo context-sink-compliance check enforces.
+#
+# This behavior is composed onto EVERY CLI session, so every token here is
+# paid on every turn of every session. Do not grow it.
+context:
+  include:
+    - app-cli:context/cli-awareness.md

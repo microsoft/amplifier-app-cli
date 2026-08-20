@@ -86,6 +86,29 @@ async def resolve_bundle_config(
         # Always available - users choose to use /mode commands or not
         compose_behaviors.extend(_build_modes_behaviors())
 
+        # CLI self-expertise (app-cli:cli-expert + a thin awareness pointer).
+        # Always composed: every session should be able to answer "how does
+        # this CLI work?" by delegating rather than guessing. Sourced from the
+        # installed package on disk, never a git URI, so the expert's docs
+        # always match the running CLI version.
+        compose_behaviors.extend(_build_app_cli_behaviors())
+
+        # Skills system (tool-skills module + curated Microsoft skills
+        # collection + visibility config + context instructions). Always
+        # composed, regardless of base bundle, so a tool-skills entry always
+        # exists for _ensure_default_skills_dirs() to append the CLI's own
+        # packaged skills dir onto.
+        compose_behaviors.extend(_build_skills_behaviors())
+
+        # Wayfinder (in-session guidance channel). Always composed so every
+        # user gets the public wayfinder channel by default -- not just those
+        # who add an internal app bundle (e.g. made-support) that also brings
+        # it. Only the PUBLIC behavior is composed here; internal content packs
+        # ride separately via made-support's own hooks-wayfinder content_sources
+        # config, which layers on AFTER this (app bundles compose last), so no
+        # internal content leaks into the public default.
+        compose_behaviors.extend(_build_wayfinder_behaviors())
+
         # Notification behaviors (desktop and push notifications). The flags
         # object is the single source of truth for "is this enabled?" — the
         # hook-override emitter in AppSettings.get_notification_hook_overrides()
@@ -895,6 +918,152 @@ def _build_modes_behaviors() -> list[str]:
         # Only load the behavior, NOT the root bundle (which includes foundation)
         "git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=behaviors/modes.yaml",
     ]
+
+
+def _build_skills_behaviors() -> list[str]:
+    """Return the skills behavior URI for composition.
+
+    Always composes amplifier-bundle-skills' tool-skills module + curated
+    Microsoft skills collection + visibility config + context instructions,
+    regardless of which base bundle the user selected. This guarantees a
+    tool-skills entry always exists in the final merged tools list, so
+    _ensure_default_skills_dirs() always has an entry to append the CLI's own
+    packaged skills dir onto -- previously that depended on incidentally
+    getting tool-skills from whatever other bundle (e.g. foundation) the user
+    happened to compose.
+    """
+    return [
+        # Only the behavior, NOT the root bundle.md (which would pull foundation
+        # and could clobber the user's system prompt -- same reasoning as
+        # _build_modes_behaviors / _build_app_cli_behaviors).
+        "git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=behaviors/skills.yaml",
+    ]
+
+
+def _build_wayfinder_behaviors() -> list[str]:
+    """Return the wayfinder behavior URI for composition.
+
+    Wayfinder is an in-session guidance channel: it surfaces one authored,
+    curated tip per session and offers capabilities the user already has,
+    always behind an explicit propose -> show -> ack -> act gate. Composed on
+    every session so the PUBLIC channel reaches every user by default --
+    previously it only reached users who had added an internal app bundle
+    (made-support) that happened to bring it.
+
+    Only the PUBLIC behavior is composed here. Internal/team content packs
+    (e.g. amplifier-online) are NOT included: they ride separately through
+    made-support's own hooks-wayfinder ``content_sources`` config, which
+    composes AFTER app bundles and deep-merges its extra content source onto
+    this hook -- so nothing internal leaks into the public default.
+    """
+    return [
+        # Only the behavior, NOT the root bundle.md (which would pull foundation
+        # and could clobber the user's system prompt -- same reasoning as
+        # _build_modes_behaviors / _build_skills_behaviors).
+        "git+https://github.com/microsoft/amplifier-bundle-wayfinder@main#subdirectory=behaviors/wayfinder.yaml",
+    ]
+
+
+# The app-cli bundle overlay lives at the REPO ROOT (bundle.md, behaviors/,
+# agents/, context/, docs/), matching how amplifier, amplifier-core, and
+# amplifier-foundation lay out their overlays.
+#
+# Those repos are cloned into ~/.amplifier/cache, so their repo-root dirs are
+# on disk at runtime. This repo is not -- it installs from a wheel -- so
+# pyproject.toml force-includes the same tree into the wheel under
+# `amplifier_app_cli/_bundle/`. Both layouts are therefore possible at
+# runtime, and _find_app_cli_bundle_root() resolves whichever is present.
+_APP_CLI_PACKAGE_DIR = Path(__file__).parent.parent
+_APP_CLI_BEHAVIOR_RELPATH = "behaviors/cli-expertise.yaml"
+
+
+def _find_app_cli_bundle_root() -> Path | None:
+    """Locate the app-cli bundle root for this install.
+
+    Two supported layouts, checked in order:
+
+    1. ``<package>/_bundle/`` -- installed wheel (force-included by
+       pyproject.toml). Checked first: when present it is authoritative.
+    2. ``<package>/..`` -- the repo root in a dev checkout / editable install,
+       where ``behaviors/`` sits beside ``amplifier_app_cli/``.
+
+    Probing for the behavior file itself (not just the directory) means a
+    half-populated tree is treated as missing rather than silently yielding
+    an unloadable URI.
+
+    Returns:
+        Bundle root directory, or None if neither layout is present.
+    """
+    for candidate in (_APP_CLI_PACKAGE_DIR / "_bundle", _APP_CLI_PACKAGE_DIR.parent):
+        if (candidate / _APP_CLI_BEHAVIOR_RELPATH).is_file():
+            return candidate
+    return None
+
+
+def _build_app_cli_behaviors() -> list[str]:
+    """Return the CLI self-expertise behavior URI for composition.
+
+    This wires up ``app-cli:cli-expert`` -- the expert consultant on the CLI
+    application itself (provider pinning, slash commands, sessions, context
+    loading, output formats, spawn precedence) -- plus a thin always-on
+    awareness pointer telling the root session to delegate CLI questions
+    rather than answer them from memory.
+
+    Two deliberate choices, both load-bearing:
+
+    1. **Sourced from disk, never a git URI.** The path is computed from this
+       package's own location, exactly as ``_ensure_default_skills_dirs()``
+       does for packaged skills. A CLI expert pinned at ``@main`` could
+       document flags the installed CLI does not have; resolving in-package
+       makes that version skew structurally impossible.
+
+    2. **Only the behavior, never the root ``bundle.md``.** ``Bundle.compose()``
+       replaces the instruction whenever the composed bundle has a non-empty
+       markdown body (foundation ``_dataclass.py``: ``if other.instruction:
+       result.instruction = other.instruction``). ``bundle.md`` has a body;
+       the behavior YAML does not. Composing the root bundle here would
+       silently clobber the user's system prompt.
+
+    The ``file://`` scheme is required -- ``parse_uri()`` only extracts the
+    ``#subdirectory=`` fragment for ``file://`` URIs. A bare absolute path
+    with a fragment is parsed as a single literal path and fails to resolve.
+
+    Returns:
+        Single-element list with the behavior URI.
+
+    Raises:
+        RuntimeError: If the bundle overlay is missing from this install.
+            This is deliberately fatal rather than a warning-and-skip. The
+            behavior composition loop in
+            ``lib/bundle_loader/prepare.py`` catches per-behavior load
+            failures and continues, so a bad URI returned from here would be
+            swallowed and the expert would silently vanish -- exactly the
+            failure mode that is hardest to notice and worst to ship. A
+            missing overlay means the wheel was built without the
+            ``force-include`` block in pyproject.toml, which is a packaging
+            regression that should surface on the first run, not in a bug
+            report six weeks later.
+    """
+    bundle_root = _find_app_cli_bundle_root()
+    if bundle_root is None:
+        searched = " and ".join(
+            str(candidate / _APP_CLI_BEHAVIOR_RELPATH)
+            for candidate in (
+                _APP_CLI_PACKAGE_DIR / "_bundle",
+                _APP_CLI_PACKAGE_DIR.parent,
+            )
+        )
+        raise RuntimeError(
+            "amplifier-app-cli is missing its bundle overlay "
+            f"({_APP_CLI_BEHAVIOR_RELPATH}). Searched: {searched}. "
+            "This install cannot provide the app-cli:cli-expert agent. "
+            "If this is a built wheel, the [tool.hatch.build.targets.wheel."
+            "force-include] block in pyproject.toml is missing or wrong; "
+            "if this is a source checkout, the repo-root behaviors/ "
+            "directory is absent."
+        )
+
+    return [f"file://{bundle_root}#subdirectory={_APP_CLI_BEHAVIOR_RELPATH}"]
 
 
 def _build_notification_behaviors(flags: NotificationFlags) -> list[str]:
