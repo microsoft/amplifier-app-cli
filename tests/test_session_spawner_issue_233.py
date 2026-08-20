@@ -37,12 +37,12 @@ SCENARIOS:
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
-
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -81,7 +81,9 @@ def _make_parent_session(
     # Capability store on coordinator
     cap_store: dict = {}
     if coordinator_skills_capability is not None:
-        cap_store[RUNTIME_SKILL_OVERLAY_CAPABILITY] = list(coordinator_skills_capability)
+        cap_store[RUNTIME_SKILL_OVERLAY_CAPABILITY] = list(
+            coordinator_skills_capability
+        )
 
     def _get_capability(name: str):
         return cap_store.get(name)
@@ -139,6 +141,11 @@ async def _run_spawn(
     child_session_mock: MagicMock,
     agent_name: str = "mode_agent_A",
     captured_config: dict | None = None,
+    post_initialize_callback=None,
+    bridge_mock: AsyncMock | None = None,
+    instruction: str = "Do something",
+    expand_instruction_mentions: bool = True,
+    hook_inheritance: dict[str, list[str]] | None = None,
 ) -> MagicMock:
     """Run spawn_sub_session with all heavy dependencies mocked.
 
@@ -157,24 +164,26 @@ async def _run_spawn(
     # Key: we capture 'config' in _make_session to inspect agents propagation.
     # AmplifierSession is imported at module level in session_spawner.py, so
     # we patch it in the session_spawner module namespace.
+    cost_bridge = bridge_mock or AsyncMock()
     with (
-        patch("amplifier_app_cli.session_spawner.AmplifierSession", side_effect=_make_session),
+        patch(
+            "amplifier_app_cli.session_spawner.AmplifierSession",
+            side_effect=_make_session,
+        ),
         patch(
             "amplifier_app_cli.session_spawner.generate_sub_session_id",
             return_value="child-session-id",
         ),
         patch(
             "amplifier_app_cli.session_spawner.bridge_child_cost",
-            new_callable=AsyncMock,
+            new=cost_bridge,
         ),
         patch(
             "amplifier_app_cli.session_spawner._extract_bundle_context",
             return_value=None,
         ),
         patch("amplifier_app_cli.session_store.SessionStore"),
-        patch(
-            "amplifier_app_cli.lib.mention_loading.app_resolver.AppMentionResolver"
-        ),
+        patch("amplifier_app_cli.lib.mention_loading.app_resolver.AppMentionResolver"),
         patch(
             "amplifier_app_cli.paths.create_foundation_resolver",
             return_value=MagicMock(),
@@ -183,9 +192,12 @@ async def _run_spawn(
     ):
         await spawn_sub_session(
             agent_name=agent_name,
-            instruction="Do something",
+            instruction=instruction,
             parent_session=parent_session,
             agent_configs=agent_configs,
+            expand_instruction_mentions=expand_instruction_mentions,
+            hook_inheritance=hook_inheritance,
+            post_initialize_callback=post_initialize_callback,
         )
 
     return child_session_mock
@@ -627,7 +639,11 @@ class TestS7AccessControlDeclaration:
             captured,
         )
 
-        assert captured.get("agents", {}).keys() == {"explorer", "builder", "sibling_b"}, (
+        assert captured.get("agents", {}).keys() == {
+            "explorer",
+            "builder",
+            "sibling_b",
+        }, (
             "agents: 'all' must yield the full union of static + live agents. "
             f"Got: {sorted(captured.get('agents', {}).keys())}"
         )
@@ -651,8 +667,220 @@ class TestS7AccessControlDeclaration:
             captured,
         )
 
-        assert captured.get("agents", {}).keys() == {"explorer", "builder", "sibling_b"}, (
+        assert captured.get("agents", {}).keys() == {
+            "explorer",
+            "builder",
+            "sibling_b",
+        }, (
             "Absent agents: declaration must be unrestricted (full union), "
             "identical to explicit 'all'. "
             f"Got: {sorted(captured.get('agents', {}).keys())}"
         )
+
+
+class TestHookInheritance:
+    """Child hook filters must be applied without mutating the parent."""
+
+    @pytest.mark.asyncio
+    async def test_routing_hooks_removed_before_initialize_parent_unchanged(
+        self,
+    ) -> None:
+        parent = _make_parent_session()
+        parent_hooks = [
+            {"module": "hooks-routing", "config": {"default_matrix": "parent"}},
+            {"module": "hooks-matrix-guard", "config": {"strict": True}},
+            {"module": "hooks-logging", "config": {"level": "info"}},
+        ]
+        parent.config["hooks"] = parent_hooks
+        child = _make_child_session_mock()
+        captured: dict = {}
+
+        def assert_filtered_before_initialize() -> None:
+            assert [hook["module"] for hook in captured["hooks"]] == ["hooks-logging"]
+
+        child.initialize.side_effect = assert_filtered_before_initialize
+
+        await _run_spawn(
+            parent,
+            {"mode_agent_A": {"agents": "none"}},
+            child,
+            captured_config=captured,
+            hook_inheritance={"exclude_hooks": ["hooks-routing", "hooks-matrix-guard"]},
+        )
+
+        child.initialize.assert_awaited_once()
+        assert [hook["module"] for hook in captured["hooks"]] == ["hooks-logging"]
+        assert parent.config["hooks"] is parent_hooks
+        assert parent.config["hooks"] == [
+            {"module": "hooks-routing", "config": {"default_matrix": "parent"}},
+            {"module": "hooks-matrix-guard", "config": {"strict": True}},
+            {"module": "hooks-logging", "config": {"level": "info"}},
+        ]
+
+
+class TestPostInitializeLifecycle:
+    """The callback seam must preserve ordering, cleanup, and cost accounting."""
+
+    @pytest.mark.asyncio
+    async def test_preexpanded_instruction_skips_child_mention_resolution(self) -> None:
+        parent = _make_parent_session()
+        child = _make_child_session_mock()
+        mention_resolver = MagicMock()
+        child.coordinator.get_capability.side_effect = lambda name: (
+            mention_resolver if name == "mention_resolver" else None
+        )
+        instruction = (
+            '<context_file paths="@testbundle:task.md">'
+            "ONE_TIME_MENTION_SNAPSHOT"
+            "</context_file>\n\n"
+            "Review @testbundle:task.md."
+        )
+
+        await _run_spawn(
+            parent,
+            {"mode_agent_A": {}},
+            child,
+            instruction=instruction,
+            expand_instruction_mentions=False,
+        )
+
+        mention_resolver.resolve.assert_not_called()
+        child.execute.assert_awaited_once_with(instruction)
+
+    @pytest.mark.asyncio
+    async def test_callback_runs_after_initialize_and_before_execute(self) -> None:
+        parent = _make_parent_session()
+        child = _make_child_session_mock()
+        events: list[str] = []
+        child.initialize.side_effect = lambda: events.append("initialize")
+        child.execute.side_effect = lambda _instruction: (
+            events.append("execute") or "output"
+        )
+
+        def callback(_child) -> None:
+            events.append("callback")
+
+        bridge = AsyncMock(side_effect=lambda **_kwargs: events.append("bridge"))
+        child.cleanup.side_effect = lambda: events.append("cleanup")
+
+        await _run_spawn(
+            parent,
+            {"mode_agent_A": {}},
+            child,
+            post_initialize_callback=callback,
+            bridge_mock=bridge,
+        )
+
+        assert events == ["initialize", "callback", "execute", "bridge", "cleanup"]
+        bridge.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("failure", "expected_exception"),
+        [
+            (RuntimeError("provider failed"), RuntimeError),
+            (asyncio.CancelledError(), asyncio.CancelledError),
+        ],
+    )
+    async def test_execute_failure_or_cancellation_bridges_once_and_cleans_up(
+        self,
+        failure,
+        expected_exception,
+    ) -> None:
+        parent = _make_parent_session()
+        child = _make_child_session_mock()
+        child.execute.side_effect = failure
+        bridge = AsyncMock()
+
+        with pytest.raises(expected_exception):
+            await _run_spawn(
+                parent,
+                {"mode_agent_A": {}},
+                child,
+                bridge_mock=bridge,
+            )
+
+        bridge.assert_awaited_once()
+        child.cleanup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("failure", "expected_exception"),
+        [
+            (RuntimeError("pin rejected"), RuntimeError),
+            (asyncio.CancelledError(), asyncio.CancelledError),
+        ],
+    )
+    async def test_callback_failure_or_cancellation_never_executes_and_cleans_up(
+        self,
+        failure,
+        expected_exception,
+    ) -> None:
+        parent = _make_parent_session()
+        child = _make_child_session_mock()
+        bridge = AsyncMock()
+
+        def callback(_child) -> None:
+            raise failure
+
+        with pytest.raises(expected_exception):
+            await _run_spawn(
+                parent,
+                {"mode_agent_A": {}},
+                child,
+                post_initialize_callback=callback,
+                bridge_mock=bridge,
+            )
+
+        child.execute.assert_not_awaited()
+        bridge.assert_awaited_once()
+        child.cleanup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cross_vendor_callback_fails_before_child_or_parent_request(
+        self,
+    ) -> None:
+        from amplifier_app_cli.deep_plan import (
+            DeepPlanTarget,
+            _prepare_child_provider,
+        )
+
+        parent = _make_parent_session()
+        parent.execute = AsyncMock()
+        child = _make_child_session_mock()
+        pin = MagicMock()
+        pin.pin.side_effect = ValueError(
+            "Cannot pin Anthropic provider 'fable' while current provider is OpenAI."
+        )
+        provider = MagicMock()
+        provider.get_info.return_value = SimpleNamespace(
+            id="anthropic",
+            defaults={"model": "claude-fable-5"},
+        )
+        child.coordinator.get.side_effect = lambda name: (
+            {"fable": provider} if name == "providers" else None
+        )
+        child.coordinator.get_capability.side_effect = lambda name: (
+            pin if name == "conversation.provider_pin" else None
+        )
+        target = DeepPlanTarget(
+            provider="fable",
+            model="claude-fable-5",
+            vendor="anthropic",
+            effort="max",
+            provider_preferences=(),
+        )
+
+        with pytest.raises(ValueError, match="current provider is OpenAI"):
+            await _run_spawn(
+                parent,
+                {"mode_agent_A": {}},
+                child,
+                post_initialize_callback=lambda session: _prepare_child_provider(
+                    session, target, []
+                ),
+            )
+
+        child.execute.assert_not_awaited()
+        parent.execute.assert_not_awaited()
+        child.cleanup.assert_awaited_once()

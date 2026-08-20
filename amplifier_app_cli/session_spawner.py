@@ -6,12 +6,15 @@ Implements sub-session creation with configuration inheritance and overlays.
 import copy
 import logging
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from amplifier_core import AmplifierSession
-from amplifier_foundation import generate_sub_session_id
-from amplifier_foundation import bridge_child_cost
-from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
+from amplifier_foundation import (
+    RUNTIME_SKILL_OVERLAY_CAPABILITY,
+    bridge_child_cost,
+    generate_sub_session_id,
+)
 
 from .agent_config import merge_configs
 
@@ -242,6 +245,9 @@ async def spawn_sub_session(
     self_delegation_depth: int = 0,
     session_metadata: dict | None = None,
     use_subprocess: bool = False,
+    expand_instruction_mentions: bool = True,
+    post_initialize_callback: Callable[[AmplifierSession], Awaitable[None] | None]
+    | None = None,
 ) -> dict:
     """
     Spawn sub-session with agent configuration overlay.
@@ -277,6 +283,12 @@ async def spawn_sub_session(
             run_session_in_subprocess instead of in-process. Also
             triggered when spawn_mode: "subprocess" is set in
             merged config. Returns early with output dict.
+        expand_instruction_mentions: Whether to expand @mentions in the
+            runtime instruction before the child executes it. Set to False
+            only when the caller already supplied the expanded snapshot.
+        post_initialize_callback: Optional callback invoked after the in-process
+            child has initialized and before it executes its instruction. This
+            callback is not supported for subprocess children.
 
     Returns:
         Dict with "output" (response) and "session_id" (for multi-turn)
@@ -461,6 +473,10 @@ async def spawn_sub_session(
     # Route to subprocess runner if requested via parameter or config
     spawn_mode = merged_config.get("spawn_mode")
     if use_subprocess or spawn_mode == "subprocess":
+        if post_initialize_callback is not None:
+            raise ValueError(
+                "post_initialize_callback is not supported for subprocess children"
+            )
         from amplifier_foundation.subprocess_runner import run_session_in_subprocess
 
         project_path = str(
@@ -822,7 +838,7 @@ async def spawn_sub_session(
 
     # Expand @-mentions in delegation instruction before executing.
     # Content lands inline as <context_file> XML blocks prepended to the instruction.
-    if instruction:
+    if instruction and expand_instruction_mentions:
         _instr_resolver = child_session.coordinator.get_capability("mention_resolver")
         if _instr_resolver is not None:
             from amplifier_foundation.mentions import expand_mentions_in_instruction
@@ -841,15 +857,15 @@ async def spawn_sub_session(
 
     # Execute instruction in child session; cleanup MUST run even on CancelledError
     try:
-        try:
-            response = await child_session.execute(instruction)
-        finally:
-            if unregister_hook:
-                unregister_hook()
+        if post_initialize_callback is not None:
+            callback_result = post_initialize_callback(child_session)
+            if callback_result is not None:
+                await callback_result
+
+        response = await child_session.execute(instruction)
 
         # Persist state for multi-turn resumption
-        from datetime import UTC
-        from datetime import datetime
+        from datetime import UTC, datetime
 
         from .session_store import SessionStore
 
@@ -887,14 +903,10 @@ async def spawn_sub_session(
         store.save(sub_session_id, transcript, metadata)
         logger.debug(f"Sub-session {sub_session_id} state persisted")
 
-        # Bridge child session costs to parent coordinator (bridge_child_cost never raises)
-        await bridge_child_cost(
-            child_coordinator=child_session.coordinator,
-            parent_coordinator=parent_session.coordinator,
-            child_session_id=sub_session_id,
-        )
-
     finally:
+        if unregister_hook:
+            unregister_hook()
+
         # Unregister child cancellation token before cleanup
         # MUST run even if execution was cancelled (CancelledError) or failed
         parent_cancellation.unregister_child(child_cancellation)
@@ -906,8 +918,18 @@ async def spawn_sub_session(
         if hasattr(display_system, "pop_nesting"):
             display_system.pop_nesting()
 
-        # Cleanup child session
-        await child_session.cleanup()
+        # Bridge initialized child costs exactly once, including when provider
+        # execution or the post-initialize callback fails or is cancelled.
+        # This must happen before cleanup releases provider usage state.
+        try:
+            await bridge_child_cost(
+                child_coordinator=child_session.coordinator,
+                parent_coordinator=parent_session.coordinator,
+                child_session_id=sub_session_id,
+            )
+        finally:
+            # Cleanup child session even if cost accounting is interrupted.
+            await child_session.cleanup()
 
     # Return response and session ID for potential multi-turn
     # Include enriched fields from orchestrator:complete hook
@@ -942,8 +964,7 @@ async def resume_sub_session(
         RuntimeError: If session metadata corrupted or incomplete
         ValueError: If session_id is invalid
     """
-    from datetime import UTC
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from .session_store import SessionStore
 
@@ -1098,8 +1119,7 @@ async def resume_sub_session(
     # 2. Serializing full UX state would add significant complexity
     # 3. The parent session may no longer be running when sub-session resumes
     # 4. Approval decisions are contextual to the current execution state
-    from amplifier_app_cli.ui import CLIApprovalSystem
-    from amplifier_app_cli.ui import CLIDisplaySystem
+    from amplifier_app_cli.ui import CLIApprovalSystem, CLIDisplaySystem
 
     logger.debug(
         "Resuming sub-session %s (agent=%s, parent=%s, trace=%s). "
@@ -1356,11 +1376,7 @@ async def resume_sub_session(
 
     # Execute new instruction with full context; cleanup MUST run even on CancelledError
     try:
-        try:
-            response = await child_session.execute(instruction)
-        finally:
-            if unregister_hook:
-                unregister_hook()
+        response = await child_session.execute(instruction)
 
         # Update state for next resumption
         updated_transcript = await context.get_messages() if context else []
@@ -1372,15 +1388,10 @@ async def resume_sub_session(
             f"Sub-session {sub_session_id} state updated (turn {metadata['turn_count']})"
         )
 
-        # Bridge child session costs to parent coordinator (bridge_child_cost never raises)
-        if parent_session is not None:
-            await bridge_child_cost(
-                child_coordinator=child_session.coordinator,
-                parent_coordinator=parent_session.coordinator,
-                child_session_id=sub_session_id,
-            )
-
     finally:
+        if unregister_hook:
+            unregister_hook()
+
         # Unregister child cancellation token before cleanup
         # MUST run even if execution was cancelled (CancelledError) or failed
         if (
@@ -1392,8 +1403,16 @@ async def resume_sub_session(
                 f"Unregistered child cancellation token for resumed sub-session {sub_session_id}"
             )
 
-        # Cleanup child session
-        await child_session.cleanup()
+        try:
+            if parent_session is not None:
+                await bridge_child_cost(
+                    child_coordinator=child_session.coordinator,
+                    parent_coordinator=parent_session.coordinator,
+                    child_session_id=sub_session_id,
+                )
+        finally:
+            # Cleanup child session even if cost accounting is interrupted.
+            await child_session.cleanup()
 
     # Return response and same session ID
     # Include enriched fields from orchestrator:complete hook

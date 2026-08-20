@@ -67,6 +67,7 @@ from .commands.version import version as version_cmd
 from .console import Markdown, console
 from .dedicated_tty_input import close_dedicated_tty_input, get_dedicated_tty_input
 from .effective_config import get_effective_config_summary
+from .interrupt import run_with_interrupt
 from .key_manager import KeyManager
 from .provider_diagnostics import DEFAULT_TIMEOUT_S as _PROVIDER_DIAGNOSTIC_TIMEOUT_S
 from .provider_diagnostics import format_model_line
@@ -524,6 +525,12 @@ class CommandProcessor:
                 "/provider test <name> | /provider models <name>"
             ),
         },
+        "/deep-plan": {
+            "action": "deep_plan",
+            "description": (
+                "Plan with the configured premium provider, then execute the task"
+            ),
+        },
     }
 
     # Dynamic shortcuts for modes (populated from mode definitions)
@@ -806,6 +813,9 @@ class CommandProcessor:
 
         if action == "handle_provider":
             return await self._handle_provider(data.get("args", ""))
+
+        if action == "deep_plan":
+            return "Use /deep-plan <task>."
 
         if action == "list_modes":
             return await self._list_modes()
@@ -3637,50 +3647,18 @@ async def interactive_chat(
             logger.debug("Pre-turn transcript repair failed: %s", e)
 
     # Helper to execute a prompt with Ctrl+C handling
-    async def _execute_with_interrupt(prompt_text: str) -> bool:
-        """Execute prompt with interrupt handling. Returns True if completed, False if cancelled."""
+    async def _execute_with_interrupt(
+        prompt_text: str, *, manage_interrupt: bool = True
+    ) -> bool:
+        """Execute one prompt, optionally installing this turn's SIGINT handler.
+
+        ``/deep-plan`` wraps both its planner and parent turn in one outer
+        interrupt scope, so its parent execution must not reset cancellation
+        or replace that handler at the planning-to-execution handoff.
+        """
         # Pre-turn transcript repair: detect and fix any orphaned tool calls,
         # ordering violations, or incomplete turns before the next LLM call.
         await _repair_transcript_if_needed()
-
-        # Reset cancellation state for new execution
-        session.coordinator.cancellation.reset()
-
-        def sigint_handler(signum, frame):
-            """Handle Ctrl+C with graceful/immediate cancellation.
-
-            CRITICAL: State updates must be SYNCHRONOUS to avoid race conditions.
-            If we used async scheduling (call_soon_threadsafe + create_task), rapid
-            double Ctrl+C could be mishandled because the first state update might
-            not complete before the second signal arrives.
-
-            The CancellationToken's request_graceful() and request_immediate() methods
-            are synchronous, so we call them directly here.
-            """
-            cancellation = session.coordinator.cancellation
-
-            if cancellation.is_cancelled:
-                # Second Ctrl+C - request immediate cancellation
-                # SYNC state update to avoid race condition with rapid double Ctrl+C
-                cancellation.request_immediate()
-                console.print("\n[bold red]Cancelling immediately...[/bold red]")
-            else:
-                # First Ctrl+C - request graceful cancellation
-                # SYNC state update to ensure state is set before any second signal
-                cancellation.request_graceful()
-                # Show what's running
-                running_tools = cancellation.running_tool_names
-                if running_tools:
-                    tools_str = ", ".join(running_tools)
-                    console.print(
-                        f"\n[yellow]Stopping after current operation in [bold]{tools_str}[/bold]... (Ctrl+C again to force)[/yellow]"
-                    )
-                else:
-                    console.print(
-                        "\n[yellow]Stopping after current operation completes... (Ctrl+C again to force)[/yellow]"
-                    )
-
-        original_handler = signal.signal(signal.SIGINT, sigint_handler)
 
         # Mid-turn steering: create the anchored-input manager.
         # patch_stdout() (below) ensures all Rich console.print calls that
@@ -3765,18 +3743,17 @@ async def interactive_chat(
                 _reader_task = asyncio.create_task(_manager.run())
 
                 try:
-                    execute_task = asyncio.create_task(session.execute(prompt_text))
-
-                    # Poll task while checking for cancellation
-                    while not execute_task.done():
-                        # Check for immediate cancellation - cancel the task
-                        if session.coordinator.cancellation.is_immediate:
-                            execute_task.cancel()
-                            break
-                        await asyncio.sleep(0.05)
-
                     try:
-                        response = await execute_task
+                        if manage_interrupt:
+                            response = await run_with_interrupt(
+                                session.execute(prompt_text),
+                                cancellation=session.coordinator.cancellation,
+                                console=console,
+                            )
+                        else:
+                            if session.coordinator.cancellation.is_cancelled:
+                                raise asyncio.CancelledError
+                            response = await session.execute(prompt_text)
 
                         # Get hooks early for observability around render + prompt:complete + store
                         hooks = session.coordinator.get("hooks")
@@ -3856,7 +3833,6 @@ async def interactive_chat(
                         pass
 
         finally:
-            signal.signal(signal.SIGINT, original_handler)
             # Don't reset cancellation here - session.py handles status
             # Unregister this turn's badge hook so callbacks bound to this
             # finished per-turn manager don't accumulate on the shared hooks
@@ -3923,7 +3899,9 @@ async def interactive_chat(
                 # freeze risk applies to any background Rich writes that
                 # land while the user is composing input.
                 with patch_stdout():
-                    user_input = await prompt_session.prompt_async()
+                    user_input = await prompt_session.prompt_async(
+                        set_exception_handler=False
+                    )
 
                 if user_input.lower() in ["exit", "quit"]:
                     break
@@ -3942,6 +3920,85 @@ async def interactive_chat(
                         # SPIKE: goal auto-continue now lives in the orchestrator;
                         # see the note at the initial_prompt call site above.
                         await _execute_with_interrupt(_expanded_text)
+
+                    elif action == "deep_plan":
+                        task = data.get("args", "").strip()
+                        if not task:
+                            console.print("[cyan]Usage: /deep-plan <task>[/cyan]")
+                            continue
+
+                        from .deep_plan import (
+                            DeepPlanError,
+                            execute_deep_plan_turn,
+                        )
+                        from .lib.settings import AppSettings
+                        from .project_utils import get_project_slug
+                        from .ui import render_message
+
+                        def _display_deep_plan(deep_plan) -> None:
+                            console.print(
+                                f"\n[bold cyan]Deep plan[/bold cyan] "
+                                f"[dim]({escape_markup(deep_plan.attribution)})[/dim]"
+                            )
+                            render_message(
+                                {"role": "assistant", "content": deep_plan.plan},
+                                console,
+                                show_label=False,
+                            )
+
+                        try:
+
+                            async def _run_deep_plan_turn(task_snapshot: str) -> None:
+                                settings = AppSettings().with_session(
+                                    session.session_id, get_project_slug()
+                                )
+                                deep_plan_config = settings.get_deep_plan_config()
+                                expanded_task = await process_runtime_mentions(
+                                    session, task_snapshot
+                                )
+                                console.print(
+                                    "\n[dim]Planning with "
+                                    f"{escape_markup(deep_plan_config.description)}...[/dim]"
+                                )
+
+                                async def _execute_planned_parent(prompt: str) -> bool:
+                                    console.print(
+                                        "\n[dim]Executing with normal session "
+                                        "routing...[/dim]"
+                                    )
+                                    return await _execute_with_interrupt(
+                                        prompt, manage_interrupt=False
+                                    )
+
+                                await execute_deep_plan_turn(
+                                    session,
+                                    expanded_task,
+                                    deep_plan_config,
+                                    planner_runner=lambda awaitable: awaitable,
+                                    parent_executor=_execute_planned_parent,
+                                    on_plan=_display_deep_plan,
+                                )
+
+                            await run_with_interrupt(
+                                _run_deep_plan_turn(task),
+                                cancellation=session.coordinator.cancellation,
+                                console=console,
+                            )
+                        except asyncio.CancelledError:
+                            console.print(
+                                "[yellow]Deep planning cancelled; normal execution was stopped.[/yellow]"
+                            )
+                            continue
+                        except DeepPlanError as error:
+                            console.print(f"[red]{escape_markup(str(error))}[/red]")
+                            continue
+                        except Exception as error:
+                            logger.exception("Deep planning failed")
+                            console.print(
+                                f"[red]Deep-plan command failed: "
+                                f"{escape_markup(str(error))}[/red]"
+                            )
+                            continue
 
                     else:
                         if action == "load_skill":
