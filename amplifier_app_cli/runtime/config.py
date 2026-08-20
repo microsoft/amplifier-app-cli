@@ -100,6 +100,15 @@ async def resolve_bundle_config(
         # packaged skills dir onto.
         compose_behaviors.extend(_build_skills_behaviors())
 
+        # Wayfinder (in-session guidance channel). Always composed so every
+        # user gets the public wayfinder channel by default -- not just those
+        # who add an internal app bundle (e.g. made-support) that also brings
+        # it. Only the PUBLIC behavior is composed here; internal content packs
+        # ride separately via made-support's own hooks-wayfinder content_sources
+        # config, which layers on AFTER this (app bundles compose last), so no
+        # internal content leaks into the public default.
+        compose_behaviors.extend(_build_wayfinder_behaviors())
+
         # Notification behaviors (desktop and push notifications). The flags
         # object is the single source of truth for "is this enabled?" — the
         # hook-override emitter in AppSettings.get_notification_hook_overrides()
@@ -928,6 +937,30 @@ def _build_skills_behaviors() -> list[str]:
         # and could clobber the user's system prompt -- same reasoning as
         # _build_modes_behaviors / _build_app_cli_behaviors).
         "git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=behaviors/skills.yaml",
+    ]
+
+
+def _build_wayfinder_behaviors() -> list[str]:
+    """Return the wayfinder behavior URI for composition.
+
+    Wayfinder is an in-session guidance channel: it surfaces one authored,
+    curated tip per session and offers capabilities the user already has,
+    always behind an explicit propose -> show -> ack -> act gate. Composed on
+    every session so the PUBLIC channel reaches every user by default --
+    previously it only reached users who had added an internal app bundle
+    (made-support) that happened to bring it.
+
+    Only the PUBLIC behavior is composed here. Internal/team content packs
+    (e.g. amplifier-online) are NOT included: they ride separately through
+    made-support's own hooks-wayfinder ``content_sources`` config, which
+    composes AFTER app bundles and deep-merges its extra content source onto
+    this hook -- so nothing internal leaks into the public default.
+    """
+    return [
+        # Only the behavior, NOT the root bundle.md (which would pull foundation
+        # and could clobber the user's system prompt -- same reasoning as
+        # _build_modes_behaviors / _build_skills_behaviors).
+        "git+https://github.com/microsoft/amplifier-bundle-wayfinder@main#subdirectory=behaviors/wayfinder.yaml",
     ]
 
 
