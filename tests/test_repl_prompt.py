@@ -1,10 +1,13 @@
 """Tests for REPL prompt session functionality."""
 
+import ast
+import inspect
+import textwrap
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from amplifier_app_cli.main import _create_prompt_session
+from amplifier_app_cli.main import _create_prompt_session, interactive_chat
 from prompt_toolkit import PromptSession
 from prompt_toolkit.output import DummyOutput
 
@@ -126,6 +129,28 @@ class TestREPLBehavior:
         session2 = _create_prompt_session()
         # Both sessions should reference the same history file location
         assert session1.history.__class__ == session2.history.__class__
+
+    def test_repl_prompt_disables_background_exception_handler(self):
+        """The REPL opts out of Prompt Toolkit's Press ENTER fallback."""
+        source = textwrap.dedent(inspect.getsource(interactive_chat))
+        tree = ast.parse(source)
+        prompt_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "prompt_async"
+        ]
+        assert len(prompt_calls) == 1
+
+        kwargs = {
+            keyword.arg: keyword.value
+            for keyword in prompt_calls[0].keywords
+            if keyword.arg is not None
+        }
+        assert isinstance(kwargs.get("set_exception_handler"), ast.Constant)
+        assert kwargs["set_exception_handler"].value is False
+        assert "Press ENTER" not in source
 
 
 # Integration notes for manual testing:

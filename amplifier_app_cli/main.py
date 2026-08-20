@@ -3641,7 +3641,9 @@ async def interactive_chat(
                 # freeze risk applies to any background Rich writes that
                 # land while the user is composing input.
                 with patch_stdout():
-                    user_input = await prompt_session.prompt_async()
+                    user_input = await prompt_session.prompt_async(
+                        set_exception_handler=False
+                    )
 
                 if user_input.lower() in ["exit", "quit"]:
                     break
