@@ -93,6 +93,13 @@ async def resolve_bundle_config(
         # always match the running CLI version.
         compose_behaviors.extend(_build_app_cli_behaviors())
 
+        # Skills system (tool-skills module + curated Microsoft skills
+        # collection + visibility config + context instructions). Always
+        # composed, regardless of base bundle, so a tool-skills entry always
+        # exists for _ensure_default_skills_dirs() to append the CLI's own
+        # packaged skills dir onto.
+        compose_behaviors.extend(_build_skills_behaviors())
+
         # Notification behaviors (desktop and push notifications). The flags
         # object is the single source of truth for "is this enabled?" — the
         # hook-override emitter in AppSettings.get_notification_hook_overrides()
@@ -901,6 +908,26 @@ def _build_modes_behaviors() -> list[str]:
     return [
         # Only load the behavior, NOT the root bundle (which includes foundation)
         "git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=behaviors/modes.yaml",
+    ]
+
+
+def _build_skills_behaviors() -> list[str]:
+    """Return the skills behavior URI for composition.
+
+    Always composes amplifier-bundle-skills' tool-skills module + curated
+    Microsoft skills collection + visibility config + context instructions,
+    regardless of which base bundle the user selected. This guarantees a
+    tool-skills entry always exists in the final merged tools list, so
+    _ensure_default_skills_dirs() always has an entry to append the CLI's own
+    packaged skills dir onto -- previously that depended on incidentally
+    getting tool-skills from whatever other bundle (e.g. foundation) the user
+    happened to compose.
+    """
+    return [
+        # Only the behavior, NOT the root bundle.md (which would pull foundation
+        # and could clobber the user's system prompt -- same reasoning as
+        # _build_modes_behaviors / _build_app_cli_behaviors).
+        "git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=behaviors/skills.yaml",
     ]
 
 
