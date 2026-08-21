@@ -530,6 +530,20 @@ def register_session_commands(
             click.echo("\n" + ctx.get_help())
             ctx.exit()
 
+    @session.command(name="new")
+    def sessions_new():
+        """Pre-allocate a new session ID and print it.
+
+        The printed UUID can be passed to a later launch to give the session a
+        known id in advance, e.g.:
+
+            ID=$(amplifier session new)
+            amplifier run --session-id "$ID" "your prompt"
+        """
+        import uuid
+
+        click.echo(str(uuid.uuid4()))
+
     @session.command(name="list")
     @click.option("--limit", "-n", default=20, help="Number of sessions to show")
     @click.option(
