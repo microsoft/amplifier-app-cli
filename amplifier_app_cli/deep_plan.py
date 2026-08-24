@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -36,7 +37,7 @@ class DeepPlanError(ValueError):
 class DeepPlanConfig:
     """Validated deep-plan settings before live provider preflight."""
 
-    provider: str
+    provider: str | None
     model: str | None = None
     effort: str | None = None
 
@@ -44,6 +45,8 @@ class DeepPlanConfig:
     def description(self) -> str:
         """Return a user-facing configured target description."""
 
+        if self.provider is None:
+            return "active provider's curated reasoning route"
         if self.model is None:
             return f"mounted provider '{self.provider}' (its exact default model)"
         return f"{self.provider}/{self.model}"
@@ -108,11 +111,7 @@ def resolve_planner_config(settings: Mapping[str, Any]) -> DeepPlanConfig:
     """Resolve deep-plan settings without accepting malformed explicit values."""
 
     if "deep_plan" not in settings:
-        return DeepPlanConfig(
-            provider=DEFAULT_PLANNER_PROVIDER,
-            model=DEFAULT_PLANNER_MODEL,
-            effort=DEFAULT_PLANNER_EFFORT,
-        )
+        return DeepPlanConfig(provider=None)
 
     deep_plan = settings["deep_plan"]
     if not isinstance(deep_plan, Mapping):
@@ -152,7 +151,7 @@ def resolve_planner_config(settings: Mapping[str, Any]) -> DeepPlanConfig:
     return DeepPlanConfig(provider=provider, model=model, effort=effort)
 
 
-def resolve_planner_provider(settings: Mapping[str, Any]) -> str:
+def resolve_planner_provider(settings: Mapping[str, Any]) -> str | None:
     """Compatibility helper returning the validated provider setting."""
 
     return resolve_planner_config(settings).provider
@@ -286,7 +285,7 @@ def _current_parent_provider_name(
     return automatic_candidates[0]
 
 
-def preflight_planner_target(
+async def preflight_planner_target(
     parent_session: AmplifierSession,
     config: DeepPlanConfig,
 ) -> DeepPlanTarget:
@@ -305,6 +304,117 @@ def preflight_planner_target(
             "contains an invalid provider ID."
         )
 
+    if config.provider is None:
+        pin = coordinator.get_capability("conversation.provider_pin")
+        if pin is None:
+            raise DeepPlanError(
+                "Deep planning is unavailable: the parent orchestrator does not support "
+                "conversation.provider_pin."
+            )
+        try:
+            pin_available = pin.available()
+        except Exception as error:
+            raise DeepPlanError(
+                "Deep planning is unavailable: mounted providers could not be verified "
+                f"through conversation.provider_pin ({type(error).__name__}: {error})."
+            ) from error
+        if not isinstance(pin_available, list) or not all(
+            isinstance(name, str) for name in pin_available
+        ):
+            raise DeepPlanError(
+                "Deep planning is unavailable: conversation.provider_pin did not expose "
+                "a valid list of live mounted provider IDs."
+            )
+
+        current_name = _current_parent_provider_name(pin, mounted)
+        if current_name not in pin_available:
+            raise DeepPlanError(
+                f"Deep planning is unavailable: parent provider '{current_name}' is not "
+                "exposed as a live mounted provider by conversation.provider_pin."
+            )
+        current_vendor = _provider_vendor(current_name, mounted[current_name])
+        try:
+            resolver = coordinator.get_capability("model_role_resolver")
+        except Exception as error:
+            raise DeepPlanError(
+                "Deep planning is unavailable: automatic planning could not read the "
+                f"parent session's model_role_resolver capability "
+                f"({type(error).__name__}: {error})."
+            ) from error
+        if resolver is None or not callable(getattr(resolver, "resolve", None)):
+            raise DeepPlanError(
+                "Deep planning is unavailable: automatic planning requires the "
+                "parent session's model_role_resolver capability. Configure "
+                "deep_plan.provider explicitly or enable a routing resolver."
+            )
+        try:
+            candidates = await resolver.resolve("reasoning")
+        except Exception as error:
+            raise DeepPlanError(
+                "Deep planning is unavailable: the active provider's curated "
+                f"reasoning route could not be resolved ({type(error).__name__}: {error})."
+            ) from error
+        if not isinstance(candidates, Sequence) or isinstance(
+            candidates, str | bytes | bytearray
+        ):
+            raise DeepPlanError(
+                "Deep planning is unavailable: the active provider's curated "
+                "reasoning route returned an invalid candidate list."
+            )
+
+        selected: ProviderPreference | None = None
+        for candidate in candidates:
+            candidate_provider = getattr(candidate, "provider", None)
+            if not isinstance(candidate_provider, str) or not candidate_provider:
+                raise DeepPlanError(
+                    "Deep planning is unavailable: the active provider's curated "
+                    "reasoning route returned a candidate without a valid provider ID."
+                )
+            if candidate_provider == current_name:
+                selected = candidate
+                break
+        if selected is None:
+            raise DeepPlanError(
+                "Deep planning is unavailable: the active provider's curated "
+                f"reasoning route has no exact candidate for parent provider "
+                f"'{current_name}'. Refusing to select another provider or a "
+                "mounted default model."
+            )
+
+        model = _validate_exact_model(
+            getattr(selected, "model", None),
+            setting_name="active provider's curated reasoning route model",
+        )
+        selected_config = getattr(selected, "config", None)
+        if not isinstance(selected_config, Mapping):
+            raise DeepPlanError(
+                "Deep planning is unavailable: the active provider's curated "
+                "reasoning route returned a non-mapping provider configuration."
+            )
+        try:
+            preference_config = copy.deepcopy(dict(selected_config))
+        except Exception as error:
+            raise DeepPlanError(
+                "Deep planning is unavailable: the active provider's curated "
+                f"reasoning route configuration could not be copied safely "
+                f"({type(error).__name__}: {error})."
+            ) from error
+        return DeepPlanTarget(
+            provider=current_name,
+            model=model,
+            vendor=current_vendor,
+            effort=None,
+            provider_preferences=(
+                ProviderPreference(
+                    provider=current_name,
+                    model=model,
+                    config=copy.deepcopy(preference_config),
+                ),
+            ),
+            expected_provider_config=copy.deepcopy(preference_config),
+        )
+
+    # Explicit settings retain their original validation and selection semantics.
     mounted_names = sorted(mounted)
     if config.provider not in mounted:
         available = ", ".join(mounted_names) if mounted_names else "(none)"
@@ -360,7 +470,7 @@ def preflight_planner_target(
     preference_config: dict[str, Any] = {}
     if effort is not None:
         # provider-anthropic documents ``reasoning_effort`` as its canonical
-        # config key.  Its legacy ``effort`` key loses to an inherited parent
+        # config key. Its legacy ``effort`` key loses to an inherited parent
         # reasoning_effort, so using the canonical key is essential here.
         preference_config[ANTHROPIC_REASONING_EFFORT_SETTING] = effort
     if target_vendor.lower() == "anthropic" and model == DEFAULT_PLANNER_MODEL:
@@ -559,7 +669,7 @@ async def run_deep_plan(
 ) -> DeepPlanResult:
     """Run one isolated, exact-provider planning call and validate its result."""
 
-    target = preflight_planner_target(parent_session, config)
+    target = await preflight_planner_target(parent_session, config)
     recent_context = await get_recent_parent_context(parent_session)
     instruction = build_planning_prompt(task, recent_context)
     resolutions: list[dict[str, Any]] = []

@@ -27,6 +27,14 @@ from amplifier_app_cli.deep_plan import (
 from amplifier_app_cli.interrupt import run_with_interrupt
 from amplifier_app_cli.main import CommandProcessor, process_runtime_mentions
 
+_DEFAULT_RESOLVER = object()
+
+
+def _resolver(candidates: list[Any]) -> MagicMock:
+    resolver = MagicMock()
+    resolver.resolve = AsyncMock(return_value=candidates)
+    return resolver
+
 
 def _provider(
     vendor: str,
@@ -56,6 +64,7 @@ def _parent_session(
     mounted: dict[str, MagicMock],
     *,
     current: str | None = None,
+    resolver: Any = _DEFAULT_RESOLVER,
 ) -> tuple[MagicMock, MagicMock]:
     context = MagicMock()
     context.get_messages = AsyncMock(return_value=[])
@@ -70,9 +79,25 @@ def _parent_session(
         "providers": mounted,
         "context": context,
     }.get(name)
-    coordinator.get_capability.side_effect = lambda name: (
-        pin if name == "conversation.provider_pin" else None
-    )
+    if resolver is _DEFAULT_RESOLVER:
+        provider_name = current or next(iter(mounted), "")
+        resolver = _resolver(
+            [
+                SimpleNamespace(
+                    provider=provider_name,
+                    model=DEFAULT_PLANNER_MODEL,
+                    config={
+                        "reasoning_effort": DEFAULT_PLANNER_EFFORT,
+                        "refusal_fallback_enabled": False,
+                        "fallback_on_overload": False,
+                    },
+                )
+            ]
+        )
+    coordinator.get_capability.side_effect = lambda name: {
+        "conversation.provider_pin": pin,
+        "model_role_resolver": resolver,
+    }.get(name)
     coordinator.cancellation = cancellation
 
     session = MagicMock()
@@ -129,15 +154,12 @@ async def _emit_resolution(
 
 
 class TestPlannerConfigResolution:
-    def test_implicit_default_is_anthropic_fable_max(self) -> None:
+    def test_missing_settings_selects_automatic_mode(self) -> None:
         config = resolve_planner_config({})
 
-        assert config == DeepPlanConfig(
-            provider=DEFAULT_PLANNER_PROVIDER,
-            model=DEFAULT_PLANNER_MODEL,
-            effort=DEFAULT_PLANNER_EFFORT,
-        )
-        assert resolve_planner_provider({}) == DEFAULT_PLANNER_PROVIDER
+        assert config == DeepPlanConfig(provider=None)
+        assert config.description == "active provider's curated reasoning route"
+        assert resolve_planner_provider({}) is None
 
     def test_provider_only_configuration_is_preserved(self) -> None:
         assert resolve_planner_config(
@@ -196,13 +218,14 @@ class TestPlannerConfigResolution:
             resolve_planner_config(settings)
 
 
+@pytest.mark.asyncio
 class TestPlannerPreflight:
-    def test_default_specializes_only_mounted_anthropic_provider(self) -> None:
+    async def test_automatic_specializes_the_current_provider_route(self) -> None:
         parent, _pin = _parent_session(
             {"anthropic": _provider("anthropic", "claude-opus-5")}
         )
 
-        target = preflight_planner_target(parent, resolve_planner_config({}))
+        target = await preflight_planner_target(parent, resolve_planner_config({}))
 
         assert target.provider == "anthropic"
         assert target.model == "claude-fable-5"
@@ -217,7 +240,191 @@ class TestPlannerPreflight:
         }
         assert target.expected_provider_config == preference.config
 
-    def test_provider_only_uses_mounted_instance_default_model(self) -> None:
+    async def test_automatic_uses_current_openai_reasoning_candidate_exactly(
+        self,
+    ) -> None:
+        candidate_config = {
+            "reasoning_effort": "xhigh",
+            "nested": {"preserved": True},
+        }
+        resolver = _resolver(
+            [
+                SimpleNamespace(
+                    provider="anthropic",
+                    model="claude-opus-5",
+                    config={},
+                ),
+                SimpleNamespace(
+                    provider="openai",
+                    model="gpt-5.6-sol",
+                    config=candidate_config,
+                ),
+            ]
+        )
+        parent, _pin = _parent_session(
+            {
+                "openai": _provider("openai", "gpt-5.6-sol"),
+                "anthropic": _provider("anthropic", "claude-opus-5"),
+            },
+            current="openai",
+            resolver=resolver,
+        )
+
+        target = await preflight_planner_target(parent, resolve_planner_config({}))
+
+        resolver.resolve.assert_awaited_once_with("reasoning")
+        assert target.provider == "openai"
+        assert target.model == "gpt-5.6-sol"
+        assert target.provider_preferences[0].config == candidate_config
+        assert target.expected_provider_config["reasoning_effort"] == "xhigh"
+        candidate_config["nested"]["preserved"] = False
+        assert target.provider_preferences[0].config["nested"]["preserved"] is True
+        assert target.expected_provider_config["nested"]["preserved"] is True
+
+    @pytest.mark.parametrize(
+        ("resolver", "message"),
+        [
+            (None, "requires the parent session's model_role_resolver"),
+            (SimpleNamespace(), "requires the parent session's model_role_resolver"),
+        ],
+    )
+    async def test_automatic_rejects_absent_or_invalid_resolver(
+        self,
+        resolver: Any,
+        message: str,
+    ) -> None:
+        parent, _pin = _parent_session(
+            {"openai": _provider("openai", "gpt-5.6-sol")},
+            resolver=resolver,
+        )
+
+        with pytest.raises(DeepPlanError, match=message):
+            await preflight_planner_target(parent, resolve_planner_config({}))
+
+    @pytest.mark.parametrize(
+        ("result", "message"),
+        [
+            ({}, "invalid candidate list"),
+            ([], "has no exact candidate"),
+            (
+                [
+                    SimpleNamespace(
+                        provider="anthropic",
+                        model="claude-opus-5",
+                        config={},
+                    )
+                ],
+                "has no exact candidate",
+            ),
+            (
+                [
+                    SimpleNamespace(
+                        provider="openai",
+                        model=None,
+                        config={},
+                    )
+                ],
+                "non-empty exact model ID",
+            ),
+            (
+                [
+                    SimpleNamespace(
+                        provider="openai",
+                        model="gpt-*",
+                        config={},
+                    )
+                ],
+                "exact model ID",
+            ),
+            (
+                [
+                    SimpleNamespace(
+                        provider="openai",
+                        model="gpt-5.6-sol",
+                        config=[],
+                    )
+                ],
+                "non-mapping provider configuration",
+            ),
+        ],
+    )
+    async def test_automatic_rejects_invalid_or_unusable_candidates(
+        self,
+        result: Any,
+        message: str,
+    ) -> None:
+        resolver = _resolver(result)
+        parent, _pin = _parent_session(
+            {"openai": _provider("openai", "gpt-5.6-sol")},
+            resolver=resolver,
+        )
+
+        with pytest.raises(DeepPlanError, match=message):
+            await preflight_planner_target(parent, resolve_planner_config({}))
+
+        resolver.resolve.assert_awaited_once_with("reasoning")
+
+    async def test_automatic_failure_occurs_before_planner_spawning(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        resolver = _resolver([])
+        parent, _pin = _parent_session(
+            {"openai": _provider("openai", "gpt-5.6-sol")},
+            resolver=resolver,
+        )
+        spawn = AsyncMock()
+        monkeypatch.setattr("amplifier_app_cli.deep_plan.spawn_sub_session", spawn)
+
+        with pytest.raises(DeepPlanError, match="has no exact candidate"):
+            await run_deep_plan(parent, "Plan this", resolve_planner_config({}))
+
+        spawn.assert_not_awaited()
+
+    async def test_automatic_rejects_resolver_failure(self) -> None:
+        resolver = MagicMock()
+        resolver.resolve = AsyncMock(side_effect=RuntimeError("unavailable"))
+        parent, _pin = _parent_session(
+            {"openai": _provider("openai", "gpt-5.6-sol")},
+            resolver=resolver,
+        )
+
+        with pytest.raises(DeepPlanError, match="could not be resolved"):
+            await preflight_planner_target(parent, resolve_planner_config({}))
+
+        resolver.resolve.assert_awaited_once_with("reasoning")
+
+    async def test_explicit_override_bypasses_resolver_and_preserves_fable_behavior(
+        self,
+    ) -> None:
+        resolver = MagicMock()
+        resolver.resolve = AsyncMock(side_effect=AssertionError("must not resolve"))
+        parent, _pin = _parent_session(
+            {"anthropic": _provider("anthropic", "claude-fable-5")},
+            resolver=resolver,
+        )
+
+        target = await preflight_planner_target(
+            parent,
+            resolve_planner_config(
+                {
+                    "deep_plan": {
+                        "provider": "anthropic",
+                        "model": "claude-fable-5",
+                    }
+                }
+            ),
+        )
+
+        resolver.resolve.assert_not_awaited()
+        assert target.model == "claude-fable-5"
+        assert target.expected_provider_config == {
+            "reasoning_effort": "max",
+            "refusal_fallback_enabled": False,
+            "fallback_on_overload": False,
+        }
+
+    async def test_provider_only_uses_mounted_instance_default_model(self) -> None:
         parent, _pin = _parent_session(
             {
                 "anthropic": _provider("anthropic", "claude-opus-5", priority=1),
@@ -225,7 +432,7 @@ class TestPlannerPreflight:
             }
         )
 
-        target = preflight_planner_target(
+        target = await preflight_planner_target(
             parent,
             DeepPlanConfig(provider="fable"),
         )
@@ -234,7 +441,7 @@ class TestPlannerPreflight:
         assert target.model == "claude-fable-5"
         assert target.effort == "max"
 
-    def test_unmounted_declared_provider_has_actionable_guidance(self) -> None:
+    async def test_unmounted_declared_provider_has_actionable_guidance(self) -> None:
         parent, _pin = _parent_session(
             {"anthropic": _provider("anthropic", "claude-opus-5")}
         )
@@ -243,12 +450,12 @@ class TestPlannerPreflight:
             DeepPlanError,
             match="not mounted.*Mounted provider IDs: anthropic.*not merely",
         ):
-            preflight_planner_target(
+            await preflight_planner_target(
                 parent,
                 DeepPlanConfig(provider="fable"),
             )
 
-    def test_cross_vendor_target_fails_closed(self) -> None:
+    async def test_cross_vendor_target_fails_closed(self) -> None:
         parent, _pin = _parent_session(
             {
                 "openai": _provider("openai", "gpt-5", priority=1),
@@ -257,7 +464,7 @@ class TestPlannerPreflight:
         )
 
         with pytest.raises(DeepPlanError, match="Cross-vendor"):
-            preflight_planner_target(
+            await preflight_planner_target(
                 parent,
                 DeepPlanConfig(
                     provider="anthropic",
@@ -265,7 +472,7 @@ class TestPlannerPreflight:
                 ),
             )
 
-    def test_ambiguous_mixed_vendor_automatic_route_fails_closed(self) -> None:
+    async def test_ambiguous_mixed_vendor_automatic_route_fails_closed(self) -> None:
         parent, _pin = _parent_session(
             {
                 "openai": _provider("openai", "gpt-5", priority=1),
@@ -277,10 +484,10 @@ class TestPlannerPreflight:
             DeepPlanError,
             match="equally preferred providers from different vendors",
         ):
-            preflight_planner_target(parent, resolve_planner_config({}))
+            await preflight_planner_target(parent, resolve_planner_config({}))
 
     @pytest.mark.parametrize("bad_vendor", ["", None])
-    def test_unverifiable_vendor_fails_closed(self, bad_vendor: Any) -> None:
+    async def test_unverifiable_vendor_fails_closed(self, bad_vendor: Any) -> None:
         provider = _provider("anthropic", "claude-opus-5")
         provider.get_info.return_value = SimpleNamespace(
             id=bad_vendor,
@@ -289,7 +496,7 @@ class TestPlannerPreflight:
         parent, _pin = _parent_session({"anthropic": provider})
 
         with pytest.raises(DeepPlanError, match="vendor identity"):
-            preflight_planner_target(parent, resolve_planner_config({}))
+            await preflight_planner_target(parent, resolve_planner_config({}))
 
 
 class TestContextAndPromptBoundaries:
@@ -662,9 +869,23 @@ async def test_mention_is_read_once_and_same_snapshot_reaches_both_phases(
     parent, _pin = _parent_session(
         {"anthropic": _provider("anthropic", "claude-opus-5")}
     )
+    deep_plan_resolver = _resolver(
+        [
+            SimpleNamespace(
+                provider="anthropic",
+                model=DEFAULT_PLANNER_MODEL,
+                config={
+                    "reasoning_effort": DEFAULT_PLANNER_EFFORT,
+                    "refusal_fallback_enabled": False,
+                    "fallback_on_overload": False,
+                },
+            )
+        ]
+    )
     parent.coordinator.get_capability.side_effect = lambda name: {
         "mention_resolver": resolver,
         "conversation.provider_pin": _pin,
+        "model_role_resolver": deep_plan_resolver,
     }.get(name)
     child, _child_pin, callbacks = _child_session(
         {"anthropic": _provider("anthropic", "claude-fable-5")}
