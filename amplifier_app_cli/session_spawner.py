@@ -169,6 +169,64 @@ async def _run_with_finalizer(
     return result
 
 
+async def _capture_child_cancellation(
+    operation: Awaitable[_T],
+) -> tuple[_T | None, asyncio.CancelledError | None]:
+    """Keep a child cancellation as data so asyncio preserves its identity."""
+    try:
+        return await operation, None
+    except asyncio.CancelledError as error:
+        return None, error
+
+
+async def _run_child_execution(
+    operation: Awaitable[_T],
+    lifecycle: _SubSessionLifecycle,
+    child_cancellation: Any,
+    persist_interruption: Callable[[], Awaitable[None]],
+) -> _T:
+    """Shield child execution while cooperatively draining an interruption."""
+
+    def request_interruption() -> None:
+        lifecycle.persist_on_interruption(persist_interruption)
+        try:
+            child_cancellation.request_immediate()
+        except BaseException:
+            # The original cancellation remains authoritative even if the child
+            # cannot be asked to terminate cooperatively.
+            logger.exception("Failed to request immediate child cancellation")
+
+    execution_task = asyncio.create_task(_capture_child_cancellation(operation))
+    try:
+        result, child_error = await asyncio.shield(execution_task)
+    except asyncio.CancelledError:
+        # Register persistence before any cancellation-side await so a repeated
+        # outer cancellation cannot skip interrupted-state persistence.
+        request_interruption()
+
+        while not execution_task.done():
+            try:
+                # asyncio.wait observes completion without propagating the child
+                # task's result, exception, or cancellation into this task.
+                await asyncio.wait({execution_task})
+            except asyncio.CancelledError:
+                # Keep draining the same task; never send outer cancellation to it.
+                continue
+
+        execution_error = execution_task.exception()
+        if execution_error is not None:
+            logger.error(
+                "Child execution failed while draining after cancellation",
+                exc_info=execution_error,
+            )
+        raise
+
+    if child_error is not None:
+        request_interruption()
+        raise child_error
+    return cast(_T, result)
+
+
 # Capture default sys.path entries at import time.
 # Used to filter out bundle-added paths when forwarding sys_paths to subprocess children.
 _DEFAULT_SYS_PATHS: frozenset[str] = frozenset(sys.path)
@@ -1032,44 +1090,45 @@ async def _spawn_sub_session(
     }
     store = SessionStore()
 
-    # Execute and collect the transcript for normal persistence. If either await
-    # is cancelled, the wrapper persists interruption state and tears down in
-    # its shielded finalizer.
-    try:
-        response = await child_session.execute(instruction)
-        transcript = await context.get_messages() if context else []
-    except asyncio.CancelledError:
-
-        async def _persist_interrupted_spawn() -> None:
-            transcript = []
-            turn_count_source = "transcript"
-            if context:
-                try:
-                    transcript = await context.get_messages()
-                except BaseException:
-                    logger.exception(
-                        "Failed to read interrupted sub-session %s transcript; "
-                        "reconstructing submitted instruction",
-                        sub_session_id,
-                    )
-                    transcript = [_submitted_user_message(instruction)]
-                    turn_count_source = "reconstructed-submitted-instruction"
-            interrupted_metadata = {
-                **metadata,
-                "status": "interrupted",
-                "turn_count": count_turns(transcript),
-                "turn_count_source": turn_count_source,
-            }
+    async def _persist_interrupted_spawn() -> None:
+        transcript = []
+        turn_count_source = "transcript"
+        if context:
             try:
-                store.save(sub_session_id, transcript, interrupted_metadata)
-                logger.debug(
-                    "Interrupted sub-session %s state persisted", sub_session_id
-                )
+                transcript = await context.get_messages()
             except BaseException:
                 logger.exception(
-                    "Failed to persist interrupted sub-session %s", sub_session_id
+                    "Failed to read interrupted sub-session %s transcript; "
+                    "reconstructing submitted instruction",
+                    sub_session_id,
                 )
+                transcript = [_submitted_user_message(instruction)]
+                turn_count_source = "reconstructed-submitted-instruction"
+        interrupted_metadata = {
+            **metadata,
+            "status": "interrupted",
+            "turn_count": count_turns(transcript),
+            "turn_count_source": turn_count_source,
+        }
+        try:
+            store.save(sub_session_id, transcript, interrupted_metadata)
+            logger.debug("Interrupted sub-session %s state persisted", sub_session_id)
+        except BaseException:
+            logger.exception(
+                "Failed to persist interrupted sub-session %s", sub_session_id
+            )
 
+    try:
+        response = await _run_child_execution(
+            child_session.execute(instruction),
+            lifecycle,
+            child_session.coordinator.cancellation,
+            _persist_interrupted_spawn,
+        )
+        transcript = await context.get_messages() if context else []
+    except asyncio.CancelledError:
+        # Execution may have completed before cancellation reached transcript
+        # collection. Preserve the interrupted child state in either case.
         lifecycle.persist_on_interruption(_persist_interrupted_spawn)
         raise
 
@@ -1537,48 +1596,49 @@ async def _resume_sub_session(
                 relative_to=_resume_rel,
             )
 
-    # Execute and collect the transcript for normal persistence. If either await
-    # is cancelled, the wrapper persists interruption state and tears down in
-    # its shielded finalizer.
-    try:
-        response = await child_session.execute(instruction)
-        updated_transcript = await context.get_messages() if context else []
-    except asyncio.CancelledError:
-
-        async def _persist_interrupted_resume() -> None:
-            updated_transcript = transcript
-            turn_count_source = "transcript"
-            if context:
-                try:
-                    updated_transcript = await context.get_messages()
-                except BaseException:
-                    logger.exception(
-                        "Failed to read interrupted sub-session %s transcript; "
-                        "reconstructing submitted instruction",
-                        sub_session_id,
-                    )
-                    updated_transcript = [
-                        *transcript,
-                        _submitted_user_message(instruction),
-                    ]
-                    turn_count_source = "reconstructed-submitted-instruction"
-            interrupted_metadata = {
-                **metadata,
-                "status": "interrupted",
-                "turn_count": count_turns(updated_transcript),
-                "turn_count_source": turn_count_source,
-            }
-            interrupted_metadata["last_updated"] = datetime.now(UTC).isoformat()
+    async def _persist_interrupted_resume() -> None:
+        updated_transcript = transcript
+        turn_count_source = "transcript"
+        if context:
             try:
-                store.save(sub_session_id, updated_transcript, interrupted_metadata)
-                logger.debug(
-                    "Interrupted sub-session %s state persisted", sub_session_id
-                )
+                updated_transcript = await context.get_messages()
             except BaseException:
                 logger.exception(
-                    "Failed to persist interrupted sub-session %s", sub_session_id
+                    "Failed to read interrupted sub-session %s transcript; "
+                    "reconstructing submitted instruction",
+                    sub_session_id,
                 )
+                updated_transcript = [
+                    *transcript,
+                    _submitted_user_message(instruction),
+                ]
+                turn_count_source = "reconstructed-submitted-instruction"
+        interrupted_metadata = {
+            **metadata,
+            "status": "interrupted",
+            "turn_count": count_turns(updated_transcript),
+            "turn_count_source": turn_count_source,
+        }
+        interrupted_metadata["last_updated"] = datetime.now(UTC).isoformat()
+        try:
+            store.save(sub_session_id, updated_transcript, interrupted_metadata)
+            logger.debug("Interrupted sub-session %s state persisted", sub_session_id)
+        except BaseException:
+            logger.exception(
+                "Failed to persist interrupted sub-session %s", sub_session_id
+            )
 
+    try:
+        response = await _run_child_execution(
+            child_session.execute(instruction),
+            lifecycle,
+            child_session.coordinator.cancellation,
+            _persist_interrupted_resume,
+        )
+        updated_transcript = await context.get_messages() if context else []
+    except asyncio.CancelledError:
+        # Execution may have completed before cancellation reached transcript
+        # collection. Preserve the interrupted child state in either case.
         lifecycle.persist_on_interruption(_persist_interrupted_resume)
         raise
 

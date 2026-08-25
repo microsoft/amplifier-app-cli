@@ -129,6 +129,8 @@ async def test_spawn_cancellation_persists_partial_transcript_and_unwinds_once()
         )
 
     assert raised.value is cancellation
+    child.coordinator.cancellation.request_immediate.assert_called_once_with()
+    child.coordinator.cancellation.trigger_callbacks.assert_not_called()
     store.save.assert_called_once()
     session_id, saved_transcript, saved_metadata = store.save.call_args.args
     assert session_id == "parent-abcdef_test-agent"
@@ -192,6 +194,8 @@ async def test_resume_cancellation_preserves_metadata_and_unwinds_once():
         await resume_sub_session("resumed-child", "continue", parent)
 
     assert raised.value is cancellation
+    child.coordinator.cancellation.request_immediate.assert_called_once_with()
+    child.coordinator.cancellation.trigger_callbacks.assert_not_called()
     store.save.assert_called_once()
     session_id, saved_transcript, saved_metadata = store.save.call_args.args
     assert session_id == "resumed-child"
@@ -222,7 +226,7 @@ async def test_spawn_cancel_during_post_execute_get_messages_persists_interrupte
     parent = make_parent()
     store = MagicMock()
     transcript_started = asyncio.Event()
-    transcript_cancellations = []
+    release_transcript = asyncio.Event()
     transcript_reads = 0
 
     async def get_messages():
@@ -230,11 +234,7 @@ async def test_spawn_cancel_during_post_execute_get_messages_persists_interrupte
         transcript_reads += 1
         if transcript_reads == 1:
             transcript_started.set()
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError as error:
-                transcript_cancellations.append(error)
-                raise
+            await release_transcript.wait()
         return partial
 
     context.get_messages = AsyncMock(side_effect=get_messages)
@@ -255,11 +255,12 @@ async def test_spawn_cancel_during_post_execute_get_messages_persists_interrupte
         )
         await wait_for_event(transcript_started)
         task.cancel("cancel spawn transcript read")
+        release_transcript.set()
 
-        with pytest.raises(asyncio.CancelledError) as raised:
+        with pytest.raises(asyncio.CancelledError):
             await await_task(task)
 
-    assert raised.value is transcript_cancellations[0]
+    child.coordinator.cancellation.request_immediate.assert_not_called()
     assert context.get_messages.await_count == 2
     store.save.assert_called_once()
     assert store.save.call_args.args[0] == "post-execute-cancel-spawn"
@@ -294,7 +295,7 @@ async def test_resume_cancel_during_post_execute_get_messages_persists_interrupt
     store.exists.return_value = True
     store.load.return_value = (original, metadata)
     transcript_started = asyncio.Event()
-    transcript_cancellations = []
+    release_transcript = asyncio.Event()
     transcript_reads = 0
 
     async def get_messages():
@@ -302,11 +303,7 @@ async def test_resume_cancel_during_post_execute_get_messages_persists_interrupt
         transcript_reads += 1
         if transcript_reads == 1:
             transcript_started.set()
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError as error:
-                transcript_cancellations.append(error)
-                raise
+            await release_transcript.wait()
         return partial
 
     context.get_messages = AsyncMock(side_effect=get_messages)
@@ -323,11 +320,12 @@ async def test_resume_cancel_during_post_execute_get_messages_persists_interrupt
         )
         await wait_for_event(transcript_started)
         task.cancel("cancel resume transcript read")
+        release_transcript.set()
 
-        with pytest.raises(asyncio.CancelledError) as raised:
+        with pytest.raises(asyncio.CancelledError):
             await await_task(task)
 
-    assert raised.value is transcript_cancellations[0]
+    child.coordinator.cancellation.request_immediate.assert_not_called()
     assert context.get_messages.await_count == 2
     store.save.assert_called_once()
     session_id, saved_transcript, saved_metadata = store.save.call_args.args
@@ -444,8 +442,18 @@ async def test_resume_setup_cancellation_unwinds_resources_once():
 
 async def test_spawn_preserves_cancellation_when_persistence_and_teardown_fail():
     child, hooks, context = make_child([{"role": "assistant", "content": "partial"}])
-    cancellation = asyncio.CancelledError("original cancellation")
-    child.execute = AsyncMock(side_effect=cancellation)
+    execute_started = asyncio.Event()
+    release_execution = asyncio.Event()
+
+    async def execute(_instruction):
+        execute_started.set()
+        await release_execution.wait()
+        return "done"
+
+    child.execute = AsyncMock(side_effect=execute)
+    child.coordinator.cancellation.request_immediate.side_effect = RuntimeError(
+        "cancellation request failed"
+    )
     child.cleanup = AsyncMock(side_effect=RuntimeError("cleanup failed"))
     hooks.unregister.side_effect = RuntimeError("hook unregister failed")
     parent = make_parent()
@@ -462,17 +470,24 @@ async def test_spawn_preserves_cancellation_when_persistence_and_teardown_fail()
         patch("amplifier_app_cli.session_spawner.AmplifierSession", return_value=child),
         patch("amplifier_app_cli.paths.create_foundation_resolver"),
         patch("amplifier_app_cli.session_store.SessionStore", return_value=store),
-        pytest.raises(asyncio.CancelledError) as raised,
     ):
-        await spawn_sub_session(
-            agent_name="test-agent",
-            instruction="do work",
-            parent_session=parent,
-            agent_configs={"test-agent": {"description": "test"}},
-            sub_session_id="failure-child",
+        task = asyncio.create_task(
+            spawn_sub_session(
+                agent_name="test-agent",
+                instruction="do work",
+                parent_session=parent,
+                agent_configs={"test-agent": {"description": "test"}},
+                sub_session_id="failure-child",
+            )
         )
+        await wait_for_event(execute_started)
+        task.cancel("original cancellation")
+        release_execution.set()
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await await_task(task)
 
-    assert raised.value is cancellation
+    assert isinstance(raised.value, asyncio.CancelledError)
+    child.coordinator.cancellation.request_immediate.assert_called_once_with()
     context.get_messages.assert_awaited_once_with()
     store.save.assert_called_once()
     hooks.unregister.assert_called_once_with()
@@ -516,14 +531,14 @@ async def test_successful_resume_clears_interrupted_status():
     context.get_messages.assert_awaited_once_with()
 
 
-async def test_spawn_repeated_cancellation_cannot_interrupt_save_or_cleanup():
+async def test_spawn_repeated_cancellation_drains_child_before_persistence_and_cleanup():
     partial = [{"role": "assistant", "content": "partial spawn"}]
     child, hooks, context = make_child(partial)
     parent = make_parent()
     store = MagicMock()
     execute_started = asyncio.Event()
-    transcript_started = asyncio.Event()
-    release_transcript = asyncio.Event()
+    immediate_requested = asyncio.Event()
+    release_execution = asyncio.Event()
     cleanup_started = asyncio.Event()
     release_cleanup = asyncio.Event()
     execution_cancellations = []
@@ -531,22 +546,20 @@ async def test_spawn_repeated_cancellation_cannot_interrupt_save_or_cleanup():
     async def execute(_instruction):
         execute_started.set()
         try:
-            await asyncio.Event().wait()
+            await release_execution.wait()
+            return "done"
         except asyncio.CancelledError as error:
             execution_cancellations.append(error)
             raise
-
-    async def get_messages():
-        transcript_started.set()
-        await release_transcript.wait()
-        return partial
 
     async def cleanup():
         cleanup_started.set()
         await release_cleanup.wait()
 
     child.execute = AsyncMock(side_effect=execute)
-    context.get_messages = AsyncMock(side_effect=get_messages)
+    child.coordinator.cancellation.request_immediate.side_effect = (
+        immediate_requested.set
+    )
     child.cleanup = AsyncMock(side_effect=cleanup)
 
     with (
@@ -565,17 +578,18 @@ async def test_spawn_repeated_cancellation_cannot_interrupt_save_or_cleanup():
         )
         await wait_for_event(execute_started)
         task.cancel("original spawn cancellation")
-        await wait_for_event(transcript_started)
-        task.cancel("cancel while reading transcript")
-        release_transcript.set()
+        await wait_for_event(immediate_requested)
+        task.cancel("repeated spawn cancellation")
+        release_execution.set()
         await wait_for_event(cleanup_started)
         task.cancel("cancel while cleaning up")
         release_cleanup.set()
 
-        with pytest.raises(asyncio.CancelledError) as raised:
+        with pytest.raises(asyncio.CancelledError):
             await await_task(task)
 
-    assert raised.value is execution_cancellations[0]
+    assert execution_cancellations == []
+    child.coordinator.cancellation.request_immediate.assert_called_once_with()
     store.save.assert_called_once()
     assert store.save.call_args.args[1] == partial
     assert store.save.call_args.args[2]["status"] == "interrupted"
@@ -588,7 +602,7 @@ async def test_spawn_repeated_cancellation_cannot_interrupt_save_or_cleanup():
     child.cleanup.assert_awaited_once_with()
 
 
-async def test_resume_repeated_cancellation_cannot_interrupt_save_or_cleanup():
+async def test_resume_repeated_cancellation_drains_child_before_persistence_and_cleanup():
     original = [{"role": "user", "content": "first turn"}]
     partial = original + [{"role": "assistant", "content": "partial resume"}]
     child, hooks, context = make_child(partial)
@@ -613,8 +627,8 @@ async def test_resume_repeated_cancellation_cannot_interrupt_save_or_cleanup():
         },
     )
     execute_started = asyncio.Event()
-    transcript_started = asyncio.Event()
-    release_transcript = asyncio.Event()
+    immediate_requested = asyncio.Event()
+    release_execution = asyncio.Event()
     cleanup_started = asyncio.Event()
     release_cleanup = asyncio.Event()
     execution_cancellations = []
@@ -622,22 +636,20 @@ async def test_resume_repeated_cancellation_cannot_interrupt_save_or_cleanup():
     async def execute(_instruction):
         execute_started.set()
         try:
-            await asyncio.Event().wait()
+            await release_execution.wait()
+            return "done"
         except asyncio.CancelledError as error:
             execution_cancellations.append(error)
             raise
-
-    async def get_messages():
-        transcript_started.set()
-        await release_transcript.wait()
-        return partial
 
     async def cleanup():
         cleanup_started.set()
         await release_cleanup.wait()
 
     child.execute = AsyncMock(side_effect=execute)
-    context.get_messages = AsyncMock(side_effect=get_messages)
+    child.coordinator.cancellation.request_immediate.side_effect = (
+        immediate_requested.set
+    )
     child.cleanup = AsyncMock(side_effect=cleanup)
 
     with (
@@ -652,17 +664,18 @@ async def test_resume_repeated_cancellation_cannot_interrupt_save_or_cleanup():
         )
         await wait_for_event(execute_started)
         task.cancel("original resume cancellation")
-        await wait_for_event(transcript_started)
-        task.cancel("cancel while reading resumed transcript")
-        release_transcript.set()
+        await wait_for_event(immediate_requested)
+        task.cancel("repeated resume cancellation")
+        release_execution.set()
         await wait_for_event(cleanup_started)
         task.cancel("cancel while cleaning up resumed child")
         release_cleanup.set()
 
-        with pytest.raises(asyncio.CancelledError) as raised:
+        with pytest.raises(asyncio.CancelledError):
             await await_task(task)
 
-    assert raised.value is execution_cancellations[0]
+    assert execution_cancellations == []
+    child.coordinator.cancellation.request_immediate.assert_called_once_with()
     store.save.assert_called_once()
     saved_metadata = store.save.call_args.args[2]
     assert store.save.call_args.args[1] == partial
