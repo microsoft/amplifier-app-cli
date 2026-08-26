@@ -171,9 +171,12 @@ def defer_uv_tool_swap(
         "echo(",
         f"echo Waiting for Amplifier PID {pid} to exit...",
         ":waitloop",
-        f'tasklist /FI "PID eq {pid}" 2>NUL | find "{pid}" >NUL',
+        (
+            f'"%SystemRoot%\\System32\\tasklist.exe" /FI "PID eq {pid}" 2>NUL '
+            f'| "%SystemRoot%\\System32\\find.exe" "{pid}" >NUL'
+        ),
         "if not errorlevel 1 (",
-        "    ping -n 2 127.0.0.1 >NUL",
+        '    "%SystemRoot%\\System32\\ping.exe" -n 2 127.0.0.1 >NUL',
         "    goto waitloop",
         ")",
         "echo(",
@@ -194,7 +197,9 @@ def defer_uv_tool_swap(
             lines.append(
                 f"    echo   files still locked, attempt %%i of {step.attempts}; retrying in 3s..."
             )
-            lines.append("    ping -n 4 127.0.0.1 >NUL")
+            lines.append(
+                '    "%SystemRoot%\\System32\\ping.exe" -n 4 127.0.0.1 >NUL'
+            )
             lines.append(")")
             # Out of attempts on a step we cannot skip.
             lines.append("goto locked")
@@ -203,7 +208,9 @@ def defer_uv_tool_swap(
             # exhausting attempts simply falls through to the next step.
             lines.append(f"    {step.command} >NUL 2>&1")
             lines.append(f"    if !errorlevel! EQU 0 goto {nxt}")
-            lines.append("    ping -n 3 127.0.0.1 >NUL")
+            lines.append(
+                '    "%SystemRoot%\\System32\\ping.exe" -n 3 127.0.0.1 >NUL'
+            )
             lines.append(")")
         if not is_last:
             lines.append(f":{nxt}")
@@ -238,7 +245,7 @@ def defer_uv_tool_swap(
         f"echo {success_message}",
         "echo(",
         "echo This window closes in 5 seconds.",
-        "ping -n 6 127.0.0.1 >NUL",
+        '"%SystemRoot%\\System32\\ping.exe" -n 6 127.0.0.1 >NUL',
         # Standard self-delete idiom: (goto) aborts batch parsing, releasing the
         # file handle so del can remove the script. No orphan left in %TEMP%,
         # and no keypress needed on the happy path.

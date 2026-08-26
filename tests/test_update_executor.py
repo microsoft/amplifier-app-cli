@@ -1,6 +1,7 @@
 """Tests for execute_self_update in update_executor."""
 
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -37,12 +38,18 @@ async def test_execute_self_update_uses_upgrade_reinstall_not_force():
         "amplifier_app_cli.utils.update_executor.subprocess.Popen",
         side_effect=fake_popen,
     ):
-        with patch(
-            "amplifier_app_cli.utils.update_executor._invalidate_modules_with_missing_deps",
-            return_value=(0, 0),
+        with (
+            patch(
+                "amplifier_app_cli.utils.update_executor._invalidate_modules_with_missing_deps",
+                return_value=(0, 0),
+            ),
+            patch("amplifier_app_cli.utils.update_executor.remove_stale_uv_lock"),
+            patch(
+                "amplifier_app_cli.utils.update_executor.os",
+                SimpleNamespace(name="posix"),
+            ),
         ):
-            with patch("amplifier_app_cli.utils.update_executor.remove_stale_uv_lock"):
-                await execute_self_update(_FAKE_UMBRELLA)
+            await execute_self_update(_FAKE_UMBRELLA)
 
     assert "--force" not in captured_cmd, (
         "uv must NOT use --force (it destroys the venv unnecessarily)"
@@ -105,6 +112,10 @@ async def test_execute_self_update_force_runs_cache_clean(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "Popen", FakePopen)
     monkeypatch.setattr(
+        "amplifier_app_cli.utils.update_executor.os",
+        SimpleNamespace(name="posix"),
+    )
+    monkeypatch.setattr(
         "amplifier_app_cli.utils.update_executor.remove_stale_uv_lock",
         lambda: None,
     )
@@ -138,6 +149,10 @@ async def test_execute_self_update_no_force_skips_cache_clean(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(
+        "amplifier_app_cli.utils.update_executor.os",
+        SimpleNamespace(name="posix"),
+    )
     monkeypatch.setattr(
         "amplifier_app_cli.utils.update_executor.remove_stale_uv_lock",
         lambda: None,

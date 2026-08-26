@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -124,7 +125,11 @@ def test_execute_self_update_calls_stale_lock_cleanup_before_popen():
                 "amplifier_app_cli.utils.update_executor._invalidate_modules_with_missing_deps",
                 return_value=(0, 0),
             ):
-                asyncio.run(execute_self_update(umbrella))
+                with patch(
+                    "amplifier_app_cli.utils.update_executor.os",
+                    SimpleNamespace(name="posix"),
+                ):
+                    asyncio.run(execute_self_update(umbrella))
 
     assert "remove_stale_uv_lock" in call_order, (
         "execute_self_update must call remove_stale_uv_lock"
