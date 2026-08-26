@@ -160,6 +160,18 @@ def defer_uv_tool_swap(
         )
         return False
 
+    # Every Windows utility below is spelled out as a full path under System32.
+    # Two distinct reasons, both real:
+    #   1. PATH shadowing. Git for Windows ships a GNU `find.exe` in `usr\bin`,
+    #      which its installer will put on PATH ("Use Git and optional Unix
+    #      tools from the Command Prompt"). GNU find reads `"<pid>"` as a path,
+    #      not a pattern, and exits 1 -- so `if not errorlevel 1` goes false and
+    #      the wait loop is skipped entirely.
+    #   2. Current-directory resolution. cmd.exe resolves a bare command name
+    #      from the current directory BEFORE consulting PATH, and this script
+    #      inherits amplifier's cwd -- typically a user's project directory. A
+    #      `ping.exe` or `tasklist.exe` sitting there would be executed instead.
+    #      Nothing shadows those two on PATH; reason 2 is why they are qualified.
     pid = os.getpid()
     lines: list[str] = [
         "@echo off",

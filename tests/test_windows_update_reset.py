@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import tempfile
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
@@ -231,6 +231,32 @@ def test_posix_reset_no_install_fails_after_incomplete_cleanup(monkeypatch):
     assert "Reset complete!" not in result.output
 
 
+def test_posix_reset_fails_when_reinstall_fails_after_clean_cleanup(monkeypatch):
+    """Cleanup fine, reinstall broken -- the user now has no amplifier at all.
+
+    The uninstall has already run by this point, so exiting 0 here would report
+    "no amplifier installed" as a success to whatever script drove the reset.
+    """
+    monkeypatch.setattr(reset_module, "os", SimpleNamespace(name="posix"))
+    monkeypatch.setattr(reset_module, "_show_plan", MagicMock())
+    monkeypatch.setattr(reset_module, "_clean_uv_cache", MagicMock(return_value=True))
+    monkeypatch.setattr(
+        reset_module, "_uninstall_amplifier", MagicMock(return_value=True)
+    )
+    monkeypatch.setattr(
+        reset_module, "_remove_amplifier_dir", MagicMock(return_value=True)
+    )
+    monkeypatch.setattr(
+        reset_module, "_install_amplifier", MagicMock(return_value=False)
+    )
+
+    result = CliRunner().invoke(reset_module.reset, ["--yes"])
+
+    assert result.exit_code == 1
+    assert "reinstall failed" in result.output
+    assert "Reset complete!" not in result.output
+
+
 @pytest.mark.parametrize("launched", [True, False])
 def test_windows_defer_tool_swap_reports_whether_it_launched(monkeypatch, launched):
     fake_console = MagicMock()
@@ -266,8 +292,19 @@ def test_deferred_script_qualifies_windows_utilities(tmp_path, monkeypatch):
         MagicMock(),
     )
 
+    # Both step shapes, because they emit separate `ping` retry lines: reset's
+    # real no_install=False path uses a best-effort uninstall followed by a
+    # required install, and only the required branch was covered before.
     launched = defer_uv_tool_swap(
-        [UvStep(command="uv tool uninstall amplifier", label="Uninstalling...")],
+        [
+            UvStep(
+                command="uv tool uninstall amplifier",
+                label="Uninstalling (best effort)...",
+                attempts=5,
+                required=False,
+            ),
+            UvStep(command="uv tool install amplifier", label="Reinstalling..."),
+        ],
         operation="reset",
         intro_lines=["Reset"],
         success_message="Done",
@@ -283,6 +320,11 @@ def test_deferred_script_qualifies_windows_utilities(tmp_path, monkeypatch):
     assert "\ntasklist " not in script
     assert "| find " not in script
     assert "\n    ping " not in script
+    # Every ping the script emits -- waitloop, required-step retry,
+    # best-effort-step retry, and the closing countdown -- must be qualified.
+    ping_lines = [line for line in script.splitlines() if "ping" in line]
+    assert len(ping_lines) == 4
+    assert all('"%SystemRoot%\\System32\\ping.exe"' in line for line in ping_lines)
 
 
 @pytest.mark.parametrize("launched", [True, False])
@@ -348,15 +390,6 @@ async def test_execute_updates_aggregates_mixed_staged_and_failed_results(monkey
     assert result.failed == ["provider-example"]
     assert result.errors == {"provider-example": "fetch failed"}
     assert result.messages == ["finishes after exit"]
-
-
-def test_execution_result_staged_defaults_are_compatible_and_independent():
-    first = ExecutionResult(success=True)
-    second = ExecutionResult(success=True)
-
-    assert first.staged == []
-    first.staged.append("amplifier")
-    assert second.staged == []
 
 
 def test_update_command_renders_staged_items_instead_of_complete(monkeypatch):

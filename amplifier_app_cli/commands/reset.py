@@ -637,6 +637,12 @@ def reset(
         )
 
     if not install_succeeded:
-        return
+        # The uninstall above already ran, so a failed reinstall leaves the user
+        # with no amplifier at all. Exiting 0 here would report that as success
+        # and hide it from any script or CI step driving the reset.
+        raise click.ClickException(
+            "Reset removed Amplifier but the reinstall failed; "
+            "Amplifier is not currently installed."
+        )
 
     console.print("\n[green]>>>[/green] Reset complete!")
