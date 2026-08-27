@@ -33,6 +33,7 @@ class ExecutionResult:
     failed: list[str] = field(default_factory=list)
     messages: list[str] = field(default_factory=list)
     errors: dict[str, str] = field(default_factory=dict)
+    staged: list[str] = field(default_factory=list)
 
 
 async def execute_selective_module_update(
@@ -594,7 +595,7 @@ def _defer_self_update(url: str) -> ExecutionResult:
 
     return ExecutionResult(
         success=True,
-        updated=["amplifier"],
+        staged=["amplifier"],
         messages=["Amplifier update will finish in the new window after this exits"],
     )
 
@@ -797,6 +798,7 @@ async def execute_updates(
     all_messages = []
     all_errors = {}
     overall_success = True
+    all_staged = []
 
     # 1. Execute selective module update (only modules with updates)
     modules_needing_update = [s for s in report.cached_git_sources if s.has_update]
@@ -810,6 +812,7 @@ async def execute_updates(
         all_failed.extend(result.failed)
         all_messages.extend(result.messages)
         all_errors.update(result.errors)
+        all_staged.extend(result.staged)
 
         if not result.success:
             overall_success = False
@@ -827,6 +830,7 @@ async def execute_updates(
         all_failed.extend(result.failed)
         all_messages.extend(result.messages)
         all_errors.update(result.errors)
+        all_staged.extend(result.staged)
 
         if not result.success:
             overall_success = False
@@ -834,6 +838,7 @@ async def execute_updates(
     # 4. Compile final result
     return ExecutionResult(
         success=overall_success and len(all_failed) == 0,
+        staged=all_staged,
         updated=all_updated,
         failed=all_failed,
         messages=all_messages,

@@ -316,6 +316,7 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
     # Selective removal - preserve specified paths
     removed_count = 0
     preserved_count = 0
+    failed_items: list[str] = []
     clearing_cache = "cache" not in preserve_paths
 
     try:
@@ -333,9 +334,13 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
                         _count, success = clear_download_cache(dry_run=False)
                         if success:
                             removed_count += 1
+                        else:
+                            failed_items.append(item.name)
                     elif clear_registry is not None and item.name == "registry.json":
                         if clear_registry(dry_run=False):
                             removed_count += 1
+                        else:
+                            failed_items.append(item.name)
                     else:
                         # Standard removal (fallback or other items)
                         if item.is_dir():
@@ -365,6 +370,12 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
         console.print(
             f"    {action} {removed_count} items, preserved {preserved_count}"
         )
+        if failed_items:
+            console.print(
+                "[red]Error:[/red] Cleanup incomplete; failed to remove: "
+                f"{', '.join(sorted(failed_items))}"
+            )
+            return False
         return True
     except OSError as e:
         from ..utils.error_format import format_error_message
@@ -407,11 +418,14 @@ def _install_amplifier(dry_run: bool = False) -> bool:
         return False
 
 
-def _windows_defer_tool_swap(no_install: bool) -> None:
+def _windows_defer_tool_swap(no_install: bool) -> bool:
     """Hand the uv tool uninstall/reinstall to a script that runs after we exit.
 
     See ``defer_uv_tool_swap`` for why Windows needs this at all. Reset's shape
     is an uninstall, followed (unless ``--no-install``) by a fresh install.
+
+    Returns:
+        True only when the deferred script was launched successfully.
     """
     if no_install:
         steps = [
@@ -459,10 +473,13 @@ def _windows_defer_tool_swap(no_install: bool) -> None:
         console.print("    Run these yourself once Amplifier has exited:")
         for command in recovery:
             console.print(f"      {command}")
+        console.print(
+            "\n[red]>>>[/red] Reset was not staged; no deferred tool changes will run."
+        )
+        return False
 
-    console.print(
-        "\n[green]>>>[/green] Reset staged - it will finish after this exits."
-    )
+    console.print("\n[green]>>>[/green] Reset staged - it will finish after this exits.")
+    return True
 
 
 @click.command()
@@ -587,20 +604,45 @@ def reset(
     # runs after this process exits. POSIX unlinks open files, so the path below
     # is unchanged there.
     if os.name == "nt" and not dry_run:
-        _remove_amplifier_dir(preserve, dry_run)
-        _windows_defer_tool_swap(no_install)
+        if not _remove_amplifier_dir(preserve, dry_run):
+            raise click.ClickException(
+                "Reset stopped because cleanup was incomplete; "
+                "no reinstall was staged."
+            )
+        if not _windows_defer_tool_swap(no_install):
+            raise click.ClickException("Reset could not be staged.")
         return
 
     _uninstall_amplifier(dry_run)
-    _remove_amplifier_dir(preserve, dry_run)
+    cleanup_succeeded = _remove_amplifier_dir(preserve, dry_run)
 
     if dry_run:
         console.print("\n[green]>>>[/green] Dry run complete - no changes were made")
         return
 
     # Reinstall if not skipped
+    install_succeeded = True
     if not no_install:
-        if not _install_amplifier(dry_run):
-            return
+        install_succeeded = _install_amplifier(dry_run)
+
+    if not cleanup_succeeded:
+        if no_install:
+            recovery_status = "No reinstall was requested."
+        elif install_succeeded:
+            recovery_status = "Amplifier was reinstalled for recovery."
+        else:
+            recovery_status = "The reinstall recovery also failed."
+        raise click.ClickException(
+            f"Reset cleanup was incomplete. {recovery_status}"
+        )
+
+    if not install_succeeded:
+        # The uninstall above already ran, so a failed reinstall leaves the user
+        # with no amplifier at all. Exiting 0 here would report that as success
+        # and hide it from any script or CI step driving the reset.
+        raise click.ClickException(
+            "Reset removed Amplifier but the reinstall failed; "
+            "Amplifier is not currently installed."
+        )
 
     console.print("\n[green]>>>[/green] Reset complete!")

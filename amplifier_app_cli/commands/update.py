@@ -1276,17 +1276,27 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
     # Determine overall success including bundles
     overall_success = result.success and not bundle_failed
     if overall_success:
-        console.print("[green]✓ Update complete[/green]")
+        if result.staged:
+            console.print("[yellow]→ Update staged[/yellow]")
+        else:
+            console.print("[green]✓ Update complete[/green]")
         for item in result.updated:
             console.print(f"  [green]✓[/green] {item}")
+        for item in result.staged:
+            console.print(f"  [yellow]→[/yellow] {item} [dim](staged)[/dim]")
         for bundle_name in bundle_updated:
             console.print(f"  [green]✓[/green] Bundle: {bundle_name}")
         for msg in result.messages:
             console.print(f"  {msg}")
     else:
-        console.print("[yellow]⚠ Update completed with errors[/yellow]")
+        if result.staged:
+            console.print("[yellow]⚠ Update staged with errors[/yellow]")
+        else:
+            console.print("[yellow]⚠ Update completed with errors[/yellow]")
         for item in result.updated:
             console.print(f"  [green]✓[/green] {item}")
+        for item in result.staged:
+            console.print(f"  [yellow]→[/yellow] {item} [dim](staged)[/dim]")
         for bundle_name in bundle_updated:
             console.print(f"  [green]✓[/green] Bundle: {bundle_name}")
         for item in result.failed:
@@ -1297,6 +1307,8 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             console.print(
                 f"  [red]✗[/red] Bundle: {bundle_name}: {escape_markup(error)}"
             )
+        for msg in result.messages:
+            console.print(f"  {msg}")
 
     # Update last check timestamp
     from datetime import datetime
