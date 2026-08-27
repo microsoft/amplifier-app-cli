@@ -506,6 +506,7 @@ def _prompt_for_field(
     collected_config: dict[str, Any],
     existing_config: dict[str, Any] | None = None,
     env_var_overrides: dict[str, str] | None = None,
+    credential_binding_modes: dict[str, str] | None = None,
 ) -> tuple[str, Any]:
     """Prompt user for a single config field value.
 
@@ -518,6 +519,22 @@ def _prompt_for_field(
             instance_env_var}``, resolved by the caller (design §5.2/§5.3)
             when a same-type instance needs a distinct credential name from
             the provider type's declared default.
+        credential_binding_modes: Optional map of ``{resolved_env_var: mode}``
+            where ``mode`` is ``"shared"`` or ``"separate"``. Resolved by the
+            caller when adding/editing a same-type instance:
+
+            * ``"shared"`` -- this instance reuses an existing instance's
+              credential env var. The secret field is NEVER prompted for or
+              overwritten; only its ``${VAR}`` placeholder is persisted, so
+              both instances resolve the same secret at runtime.
+            * ``"separate"`` -- this instance owns a distinct credential env
+              var. It is prompted as usual, but may be left blank to persist
+              the placeholder UNSET for runtime injection (shell / CI / DTU
+              passthrough) instead of hard-failing on a required secret.
+
+            Mechanism only: this function does not decide the mode, it just
+            honors whatever it is handed. Fields with no matching entry keep
+            today's behavior exactly (fully backward compatible).
 
     Returns:
         Tuple of (field_id, value)
@@ -531,6 +548,7 @@ def _prompt_for_field(
         if declared_env_var
         else declared_env_var
     )
+    binding_mode = (credential_binding_modes or {}).get(env_var) if env_var else None
     default = field.get("default")
     required = field.get("required", True)
 
@@ -592,6 +610,17 @@ def _prompt_for_field(
         # No choices defined, fall through to text
 
     if field_type == "secret":
+        # Shared credential binding: this instance reuses another instance's
+        # credential env var. Never prompt for or overwrite its stored value
+        # -- just persist the placeholder so both instances resolve the same
+        # secret at runtime.
+        if env_var and binding_mode == "shared":
+            console.print(
+                f"  [dim]Reusing existing credential {env_var}; its stored "
+                f"value is left untouched.[/dim]"
+            )
+            return field_id, f"${{{env_var}}}"
+
         prompt_suffix = " (press Enter to keep existing)" if existing_value else ""
         value = Prompt.ask(f"{prompt_text}{prompt_suffix}", password=True, default="")
 
@@ -606,6 +635,17 @@ def _prompt_for_field(
         if existing_value:
             console.print("[green]✓ Using existing[/green]")
             return field_id, f"${{{env_var}}}" if env_var else existing_value
+        # Separate credential binding left blank: persist the placeholder
+        # UNSET so the value can be injected from the environment at runtime
+        # (shell / CI / DTU passthrough) instead of hard-failing. Scoped to an
+        # explicit per-instance binding -- a first-instance/normal required
+        # secret still errors, preserving today's setup guardrail.
+        if env_var and binding_mode == "separate":
+            console.print(
+                f"  [yellow]No value entered; {env_var} will be resolved from "
+                f"the environment at runtime.[/yellow]"
+            )
+            return field_id, f"${{{env_var}}}"
         if required:
             console.print("[red]Error: Required field[/red]")
             raise ValueError(f"{field['display_name']} is required")
@@ -640,6 +680,7 @@ def configure_provider(
     existing_config: dict[str, Any] | None = None,
     non_interactive: bool = False,
     env_var_overrides: dict[str, str] | None = None,
+    credential_binding_modes: dict[str, str] | None = None,
     settings: AppSettings | None = None,
 ) -> dict[str, Any] | None:
     """Configure a provider using its self-declared config_fields.
@@ -664,6 +705,11 @@ def configure_provider(
             when a same-type instance needs a distinct credential name.
             Mechanism only -- this function does not compute collisions,
             it just uses whatever name it is handed.
+        credential_binding_modes: Optional map of ``{resolved_env_var: mode}``
+            (``"shared"`` or ``"separate"``) threaded into ``_prompt_for_field``
+            so a reused credential env var is never re-prompted/overwritten and
+            a separate one may be left unset for runtime injection. Mechanism
+            only -- the caller decides the mode.
         settings: Optional AppSettings, used only to detect a same-type
             credential collision in ``non_interactive`` mode and fail loudly
             instead of silently reusing the type default (design §5.4.5).
@@ -738,13 +784,19 @@ def configure_provider(
                     if declared
                     else declared
                 )
+                mode = (
+                    (credential_binding_modes or {}).get(env_var) if env_var else None
+                )
                 # Fail loud instead of silently reusing the type default when
                 # it's already claimed by another instance (design §5.4.5).
+                # An explicit per-instance binding (shared reuse or separate)
+                # is intentional, so it is exempt from this guard.
                 if (
                     settings is not None
                     and declared
                     and env_var == declared
                     and declared not in (env_var_overrides or {})
+                    and mode is None
                     and declared in _claimed_env_vars(settings)
                 ):
                     raise ValueError(
@@ -754,7 +806,13 @@ def configure_provider(
                         f"env_var_overrides mapping for this instance "
                         f"instead of relying on the type default."
                     )
-                if env_var and os.environ.get(env_var):
+                if mode is not None:
+                    # Explicit per-instance binding: persist the placeholder
+                    # whether or not the value is set in the environment. A
+                    # separate binding may be intentionally unset for runtime
+                    # injection; a shared one reuses an existing instance's key.
+                    collected_config[field_id] = f"${{{env_var}}}"
+                elif env_var and os.environ.get(env_var):
                     collected_config[field_id] = f"${{{env_var}}}"
                 elif existing_config and field_id in existing_config:
                     collected_config[field_id] = existing_config[field_id]
@@ -764,7 +822,12 @@ def configure_provider(
 
             # Prompt for the field (pass existing_config for defaults)
             field_id, value = _prompt_for_field(
-                field, key_manager, collected_config, existing_config, env_var_overrides
+                field,
+                key_manager,
+                collected_config,
+                existing_config,
+                env_var_overrides,
+                credential_binding_modes,
             )
             if value is not None:
                 collected_config[field_id] = value
@@ -832,13 +895,19 @@ def configure_provider(
                     if declared
                     else declared
                 )
+                mode = (
+                    (credential_binding_modes or {}).get(env_var) if env_var else None
+                )
                 # Fail loud instead of silently reusing the type default when
                 # it's already claimed by another instance (design §5.4.5).
+                # An explicit per-instance binding (shared reuse or separate)
+                # is intentional, so it is exempt from this guard.
                 if (
                     settings is not None
                     and declared
                     and env_var == declared
                     and declared not in (env_var_overrides or {})
+                    and mode is None
                     and declared in _claimed_env_vars(settings)
                 ):
                     raise ValueError(
@@ -848,7 +917,13 @@ def configure_provider(
                         f"env_var_overrides mapping for this instance "
                         f"instead of relying on the type default."
                     )
-                if env_var and os.environ.get(env_var):
+                if mode is not None:
+                    # Explicit per-instance binding: persist the placeholder
+                    # whether or not the value is set in the environment. A
+                    # separate binding may be intentionally unset for runtime
+                    # injection; a shared one reuses an existing instance's key.
+                    collected_config[field_id] = f"${{{env_var}}}"
+                elif env_var and os.environ.get(env_var):
                     collected_config[field_id] = f"${{{env_var}}}"
                 elif existing_config and field_id in existing_config:
                     collected_config[field_id] = existing_config[field_id]
@@ -858,7 +933,12 @@ def configure_provider(
 
             # Prompt for the field (pass existing_config for defaults)
             field_id, value = _prompt_for_field(
-                field, key_manager, collected_config, existing_config, env_var_overrides
+                field,
+                key_manager,
+                collected_config,
+                existing_config,
+                env_var_overrides,
+                credential_binding_modes,
             )
             if value is not None:
                 collected_config[field_id] = value

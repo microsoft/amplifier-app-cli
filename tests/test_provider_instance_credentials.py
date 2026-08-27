@@ -726,6 +726,408 @@ class TestBug3Integration:
 
 
 # ============================================================
+# Reuse-vs-separate credential binding for same-type instances
+# (offer to reuse an existing credential env var, or configure a
+# separate one). Covers the shared, separate, unset, and
+# edit-preservation paths.
+# ============================================================
+
+
+class TestReuseVsSeparateCredentialBinding:
+    def test_reuse_choice_shares_env_var_and_never_prompts_for_secret(
+        self, tmp_path, monkeypatch
+    ):
+        """Choosing "reuse" (default) binds the new instance to the existing
+        credential env var, adds NO rename, and marks it "shared" so the
+        secret is never prompted for or overwritten."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from amplifier_app_cli.commands.provider import _resolve_env_var_overrides
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"api_key": "${ANTHROPIC_API_KEY}"},
+            provider_id="anthropic-opus",
+            scope="global",
+        )
+        mock_key_manager = MagicMock()
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._secret_env_var_for",
+                return_value="ANTHROPIC_API_KEY",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.Prompt.ask",
+                # Only the fork prompt is asked; "1" = reuse. No name prompt.
+                side_effect=["1"],
+            ) as mock_ask,
+        ):
+            decision = _resolve_env_var_overrides(
+                settings, mock_key_manager, "provider-anthropic", "anthropic-sonnet"
+            )
+
+        assert decision.env_var_overrides == {}
+        assert decision.binding_modes == {"ANTHROPIC_API_KEY": "shared"}
+        mock_ask.assert_called_once()
+
+    def test_reuse_is_the_default_choice(self, tmp_path, monkeypatch):
+        """Pressing Enter (empty input) at the fork prompt must default to
+        reuse -- design requirement: reuse is the DEFAULT offer."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from amplifier_app_cli.commands.provider import _prompt_credential_binding
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"api_key": "${ANTHROPIC_API_KEY}"},
+            provider_id="anthropic-opus",
+            scope="global",
+        )
+        mock_key_manager = MagicMock()
+
+        with patch(
+            "amplifier_app_cli.commands.provider.Prompt.ask"
+        ) as mock_ask:
+            mock_ask.return_value = "1"  # simulate default accepted
+            decision = _prompt_credential_binding(
+                settings,
+                mock_key_manager,
+                "provider-anthropic",
+                "anthropic-sonnet",
+                "ANTHROPIC_API_KEY",
+                {"ANTHROPIC_API_KEY"},
+            )
+
+        # The prompt itself must declare "1" (reuse) as its default.
+        _, kwargs = mock_ask.call_args
+        assert kwargs.get("default") == "1"
+        assert decision.binding_modes == {"ANTHROPIC_API_KEY": "shared"}
+
+    def test_separate_choice_derives_distinct_env_var(self, tmp_path, monkeypatch):
+        """Choosing "separate" derives a distinct env var and marks it
+        "separate" (secure-storage path unchanged: the secret field is
+        still prompted normally)."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from amplifier_app_cli.commands.provider import _resolve_env_var_overrides
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"api_key": "${ANTHROPIC_API_KEY}"},
+            provider_id="anthropic-opus",
+            scope="global",
+        )
+        mock_key_manager = MagicMock()
+        mock_key_manager.has_key.return_value = False
+        mock_key_manager.has_stored_key.return_value = False
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._secret_env_var_for",
+                return_value="ANTHROPIC_API_KEY",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.Prompt.ask",
+                side_effect=["2", "ANTHROPIC_FABLE_API_KEY"],
+            ),
+        ):
+            decision = _resolve_env_var_overrides(
+                settings, mock_key_manager, "provider-anthropic", "anthropic-fable"
+            )
+
+        assert decision.env_var_overrides == {
+            "ANTHROPIC_API_KEY": "ANTHROPIC_FABLE_API_KEY"
+        }
+        assert decision.binding_modes == {"ANTHROPIC_FABLE_API_KEY": "separate"}
+
+    def test_shared_binding_never_prompts_for_or_overwrites_secret(self):
+        """`_prompt_for_field` with binding_mode="shared" must return the
+        placeholder immediately -- no secret Prompt.ask call, no
+        key_manager.save_key call."""
+        from amplifier_app_cli.provider_config_utils import _prompt_for_field
+
+        field = {
+            "id": "api_key",
+            "display_name": "API Key",
+            "field_type": "secret",
+            "prompt": "Enter your API key",
+            "env_var": "ANTHROPIC_API_KEY",
+            "required": True,
+        }
+        mock_key_manager = MagicMock()
+
+        with patch(
+            "amplifier_app_cli.provider_config_utils.Prompt.ask"
+        ) as mock_ask:
+            field_id, value = _prompt_for_field(
+                field,
+                mock_key_manager,
+                collected_config={},
+                existing_config=None,
+                credential_binding_modes={"ANTHROPIC_API_KEY": "shared"},
+            )
+
+        assert field_id == "api_key"
+        assert value == "${ANTHROPIC_API_KEY}"
+        mock_ask.assert_not_called()
+        mock_key_manager.save_key.assert_not_called()
+
+    def test_separate_binding_left_blank_persists_unset_placeholder(self):
+        """A "separate" binding left blank at the prompt must persist the
+        ${VAR} placeholder UNSET for runtime injection -- NOT raise, and
+        NOT call key_manager.save_key (no value to save)."""
+        from amplifier_app_cli.provider_config_utils import _prompt_for_field
+
+        field = {
+            "id": "api_key",
+            "display_name": "API Key",
+            "field_type": "secret",
+            "prompt": "Enter your API key",
+            "env_var": "ANTHROPIC_WORK_API_KEY",
+            "required": True,
+        }
+        mock_key_manager = MagicMock()
+
+        with patch(
+            "amplifier_app_cli.provider_config_utils.Prompt.ask",
+            return_value="",
+        ):
+            field_id, value = _prompt_for_field(
+                field,
+                mock_key_manager,
+                collected_config={},
+                existing_config=None,
+                credential_binding_modes={"ANTHROPIC_WORK_API_KEY": "separate"},
+            )
+
+        assert field_id == "api_key"
+        assert value == "${ANTHROPIC_WORK_API_KEY}"
+        mock_key_manager.save_key.assert_not_called()
+
+    def test_separate_binding_can_still_use_secure_storage(self):
+        """A "separate" binding is NOT forced blank -- entering a value at
+        the prompt still saves it through the existing secure-storage flow
+        (KeyManager.save_key), unchanged."""
+        from amplifier_app_cli.provider_config_utils import _prompt_for_field
+
+        field = {
+            "id": "api_key",
+            "display_name": "API Key",
+            "field_type": "secret",
+            "prompt": "Enter your API key",
+            "env_var": "ANTHROPIC_WORK_API_KEY",
+            "required": True,
+        }
+        mock_key_manager = MagicMock()
+
+        with patch(
+            "amplifier_app_cli.provider_config_utils.Prompt.ask",
+            return_value="sk-separate-value",
+        ):
+            field_id, value = _prompt_for_field(
+                field,
+                mock_key_manager,
+                collected_config={},
+                existing_config=None,
+                credential_binding_modes={"ANTHROPIC_WORK_API_KEY": "separate"},
+            )
+
+        assert field_id == "api_key"
+        assert value == "${ANTHROPIC_WORK_API_KEY}"
+        mock_key_manager.save_key.assert_called_once_with(
+            "ANTHROPIC_WORK_API_KEY", "sk-separate-value"
+        )
+
+    def test_edit_preserves_shared_binding_no_prompt_no_overwrite(self, tmp_path):
+        """Editing ONE of two instances that share a credential env var must
+        recover binding_modes={"shared"} so the edit never prompts for or
+        overwrites the common secret (the reuse invariant must survive
+        edits, not just the initial add)."""
+        from amplifier_app_cli.commands.provider import _manage_edit_provider
+
+        settings = _make_settings(tmp_path)
+        scope_data = {
+            "config": {
+                "providers": [
+                    {
+                        "module": "provider-anthropic",
+                        "id": "anthropic-opus",
+                        "config": {
+                            "default_model": "claude-opus",
+                            "api_key": "${ANTHROPIC_API_KEY}",
+                            "priority": 1,
+                        },
+                    },
+                    {
+                        "module": "provider-anthropic",
+                        "id": "anthropic-sonnet",
+                        "config": {
+                            "default_model": "claude-sonnet",
+                            "api_key": "${ANTHROPIC_API_KEY}",
+                            "priority": 2,
+                        },
+                    },
+                ]
+            }
+        }
+        settings._write_scope("global", scope_data)
+
+        providers = settings.get_provider_overrides()
+        idx = next(
+            i for i, p in enumerate(providers, 1) if p.get("id") == "anthropic-sonnet"
+        )
+
+        captured: dict = {}
+
+        def _fake_configure_provider(module_id, key_manager, **kwargs):
+            captured["env_var_overrides"] = kwargs.get("env_var_overrides")
+            captured["credential_binding_modes"] = kwargs.get(
+                "credential_binding_modes"
+            )
+            return {
+                "default_model": "claude-sonnet",
+                "api_key": "${ANTHROPIC_API_KEY}",
+            }
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider.configure_provider",
+                side_effect=_fake_configure_provider,
+            ),
+            patch("amplifier_app_cli.commands.provider.KeyManager"),
+            patch(
+                "amplifier_app_cli.commands.provider._secret_env_var_for",
+                return_value="ANTHROPIC_API_KEY",
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider._secret_field_id_for",
+                return_value="api_key",
+            ),
+        ):
+            _manage_edit_provider(settings, f"e{idx}", providers, scope="global")
+
+        assert captured["env_var_overrides"] == {}
+        assert captured["credential_binding_modes"] == {"ANTHROPIC_API_KEY": "shared"}
+
+        # The shared value on both instances is untouched.
+        raw = settings.get_scope_provider_overrides("global")
+        by_id = {p["id"]: p for p in raw}
+        assert by_id["anthropic-sonnet"]["config"]["api_key"] == "${ANTHROPIC_API_KEY}"
+        assert by_id["anthropic-opus"]["config"]["api_key"] == "${ANTHROPIC_API_KEY}"
+
+    def test_non_interactive_shared_binding_persists_placeholder_when_unset(self):
+        """Non-interactive parity: a "shared" binding persists the
+        placeholder even when the shared env var happens to be unset in
+        THIS process's environment (it reuses the other instance's stored
+        value at runtime, so it must not be treated as missing)."""
+        from amplifier_app_cli.provider_config_utils import configure_provider
+
+        mock_key_manager = MagicMock()
+        with patch(
+            "amplifier_app_cli.provider_config_utils.get_provider_info",
+            return_value=_mock_provider_info(),
+        ):
+            config = configure_provider(
+                "provider-anthropic",
+                mock_key_manager,
+                non_interactive=True,
+                credential_binding_modes={"ANTHROPIC_API_KEY": "shared"},
+            )
+
+        assert config is not None
+        assert config["api_key"] == "${ANTHROPIC_API_KEY}"
+
+    def test_non_interactive_separate_binding_persists_placeholder_when_unset(self):
+        """Non-interactive parity: a "separate" binding persists the
+        placeholder unset for runtime injection instead of silently
+        skipping the field."""
+        from amplifier_app_cli.provider_config_utils import configure_provider
+
+        mock_key_manager = MagicMock()
+        with patch(
+            "amplifier_app_cli.provider_config_utils.get_provider_info",
+            return_value=_mock_provider_info(env_var="ANTHROPIC_WORK_API_KEY"),
+        ):
+            config = configure_provider(
+                "provider-anthropic",
+                mock_key_manager,
+                non_interactive=True,
+                credential_binding_modes={"ANTHROPIC_WORK_API_KEY": "separate"},
+            )
+
+        assert config is not None
+        assert config["api_key"] == "${ANTHROPIC_WORK_API_KEY}"
+
+    def test_non_interactive_explicit_binding_exempt_from_fail_loud(self, tmp_path):
+        """An explicit binding mode (shared or separate) is intentional, so
+        it must be exempt from the §5.4.5 non-interactive collision
+        fail-loud guard even when the type default is already claimed."""
+        from amplifier_app_cli.provider_config_utils import configure_provider
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"api_key": "${ANTHROPIC_API_KEY}"},
+            provider_id="anthropic-opus",
+            scope="global",
+        )
+        mock_key_manager = MagicMock()
+
+        with patch(
+            "amplifier_app_cli.provider_config_utils.get_provider_info",
+            return_value=_mock_provider_info(),
+        ):
+            # No exception, even though ANTHROPIC_API_KEY is already claimed
+            # by anthropic-opus -- the "shared" mode makes this intentional.
+            config = configure_provider(
+                "provider-anthropic",
+                mock_key_manager,
+                non_interactive=True,
+                settings=settings,
+                credential_binding_modes={"ANTHROPIC_API_KEY": "shared"},
+            )
+
+        assert config is not None
+        assert config["api_key"] == "${ANTHROPIC_API_KEY}"
+
+    def test_first_instance_blank_required_secret_still_errors(self, monkeypatch):
+        """Scope guard: WITHOUT an explicit per-instance binding mode, a
+        blank required secret still errors (today's first-time-setup
+        guardrail is unchanged)."""
+        from amplifier_app_cli.provider_config_utils import _prompt_for_field
+
+        # Use a name guaranteed unset in the ambient environment so the test
+        # exercises the "no existing value" required-field path deterministically.
+        monkeypatch.delenv("UNSET_FIRST_INSTANCE_API_KEY", raising=False)
+        field = {
+            "id": "api_key",
+            "display_name": "API Key",
+            "field_type": "secret",
+            "prompt": "Enter your API key",
+            "env_var": "UNSET_FIRST_INSTANCE_API_KEY",
+            "required": True,
+        }
+        mock_key_manager = MagicMock()
+
+        with patch(
+            "amplifier_app_cli.provider_config_utils.Prompt.ask",
+            return_value="",
+        ):
+            with pytest.raises(ValueError):
+                _prompt_for_field(
+                    field,
+                    mock_key_manager,
+                    collected_config={},
+                    existing_config=None,
+                )
+
+
+# ============================================================
 # Silent-clobber race regression (§5.4.1 fix): a still-unnormalized
 # literal secret for an EXISTING instance must not let a brand-new
 # instance's freshly-saved secret get overwritten when that existing
@@ -901,15 +1303,20 @@ class TestExactNamePrefill:
             ),
             patch(
                 "amplifier_app_cli.commands.provider.Prompt.ask",
-                return_value="ANTHROPIC_FABLE_API_KEY",
+                # 1st prompt = reuse-vs-separate fork (choose separate);
+                # 2nd prompt = the per-instance env var name.
+                side_effect=["2", "ANTHROPIC_FABLE_API_KEY"],
             ) as mock_ask,
         ):
-            overrides = _resolve_env_var_overrides(
+            decision = _resolve_env_var_overrides(
                 settings, mock_key_manager, "provider-anthropic", "anthropic-fable"
             )
 
-        assert overrides == {"ANTHROPIC_API_KEY": "ANTHROPIC_FABLE_API_KEY"}
-        # default= kwarg on the prompt call should be the derived suggestion
+        assert decision.env_var_overrides == {
+            "ANTHROPIC_API_KEY": "ANTHROPIC_FABLE_API_KEY"
+        }
+        assert decision.binding_modes == {"ANTHROPIC_FABLE_API_KEY": "separate"}
+        # default= kwarg on the LAST (name) prompt should be the derived suggestion
         _, kwargs = mock_ask.call_args
         assert kwargs.get("default") == "ANTHROPIC_FABLE_API_KEY"
 
@@ -938,14 +1345,16 @@ class TestExactNamePrefill:
             ),
             patch(
                 "amplifier_app_cli.commands.provider.Prompt.ask",
-                return_value="ANTHROPIC_FABLE_API_KEY",
+                side_effect=["2", "ANTHROPIC_FABLE_API_KEY"],
             ),
         ):
-            overrides = _resolve_env_var_overrides(
+            decision = _resolve_env_var_overrides(
                 settings, mock_key_manager, "provider-anthropic", "anthropic-fable"
             )
 
-        assert overrides == {"ANTHROPIC_API_KEY": "ANTHROPIC_FABLE_API_KEY"}
+        assert decision.env_var_overrides == {
+            "ANTHROPIC_API_KEY": "ANTHROPIC_FABLE_API_KEY"
+        }
 
 
 # ============================================================
@@ -982,7 +1391,7 @@ class TestStaleCredentialWarnAndReuse:
             ),
             patch(
                 "amplifier_app_cli.commands.provider.Prompt.ask",
-                return_value="ANTHROPIC_FABLE_API_KEY",
+                side_effect=["2", "ANTHROPIC_FABLE_API_KEY"],
             ),
             patch("amplifier_app_cli.commands.provider.console") as mock_console,
         ):
@@ -1035,15 +1444,17 @@ class TestStaleCredentialWarnAndReuse:
             ),
             patch(
                 "amplifier_app_cli.commands.provider.Prompt.ask",
-                return_value="ANTHROPIC_FABLE_API_KEY",
+                side_effect=["2", "ANTHROPIC_FABLE_API_KEY"],
             ),
             patch("amplifier_app_cli.commands.provider.console") as mock_console,
         ):
-            overrides = _resolve_env_var_overrides(
+            decision = _resolve_env_var_overrides(
                 settings, key_manager, "provider-anthropic", "anthropic-fable"
             )
 
-        assert overrides == {"ANTHROPIC_API_KEY": "ANTHROPIC_FABLE_API_KEY"}
+        assert decision.env_var_overrides == {
+            "ANTHROPIC_API_KEY": "ANTHROPIC_FABLE_API_KEY"
+        }
         printed = " ".join(str(c) for c in mock_console.print.call_args_list)
         assert "stored credential" in printed.lower()
         assert "already in use by another" not in printed.lower()
@@ -1077,14 +1488,15 @@ class TestStaleKeysEnvIsNotACollision:
             ),
             patch("amplifier_app_cli.commands.provider.Prompt.ask") as mock_ask,
         ):
-            overrides = _resolve_env_var_overrides(
+            decision = _resolve_env_var_overrides(
                 settings, MagicMock(), "provider-anthropic", None
             )
 
-        assert overrides == {}, (
+        assert decision.env_var_overrides == {}, (
             "A keys.env-only leftover is owned by no instance -- the first "
             "instance of the type must use the type default (§5.2 step 3)."
         )
+        assert decision.binding_modes == {}
         mock_ask.assert_not_called()
 
     def test_second_instance_still_collides(self, tmp_path, monkeypatch):
@@ -1112,15 +1524,18 @@ class TestStaleKeysEnvIsNotACollision:
             ),
             patch(
                 "amplifier_app_cli.commands.provider.Prompt.ask",
-                return_value="ANTHROPIC_FABLE_API_KEY",
+                side_effect=["2", "ANTHROPIC_FABLE_API_KEY"],
             ) as mock_ask,
         ):
-            overrides = _resolve_env_var_overrides(
+            decision = _resolve_env_var_overrides(
                 settings, mock_key_manager, "provider-anthropic", "anthropic-fable"
             )
 
-        assert overrides == {"ANTHROPIC_API_KEY": "ANTHROPIC_FABLE_API_KEY"}
-        mock_ask.assert_called_once()
+        assert decision.env_var_overrides == {
+            "ANTHROPIC_API_KEY": "ANTHROPIC_FABLE_API_KEY"
+        }
+        # Collision path entered: fork prompt (choice) + separate-name prompt.
+        assert mock_ask.call_count == 2
 
     def test_provider_add_cli_writes_entry_despite_stale_key(
         self, tmp_path, monkeypatch
@@ -1369,8 +1784,11 @@ class TestMalformedIdCallerWiring:
                 return_value="ANTHROPIC_API_KEY",
             ),
         ):
-            # instance_id "---" sanitizes to an empty suffix.
-            result = runner.invoke(provider, ["add", "anthropic"], input="---\n")
+            # instance_id "---" sanitizes to an empty suffix. Choose the
+            # SEPARATE credential path ("2") so the degenerate id reaches
+            # _suggest_instance_env_var and fails loudly (the reuse path
+            # never derives a name, so it wouldn't exercise this guard).
+            result = runner.invoke(provider, ["add", "anthropic"], input="---\n2\n")
 
         assert result.exit_code != 0
 

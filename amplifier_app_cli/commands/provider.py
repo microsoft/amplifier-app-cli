@@ -3,7 +3,7 @@
 import os
 import re
 import time
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import click
 from rich.console import Console
@@ -162,25 +162,50 @@ def _find_claimed_env_var_owner(settings: AppSettings, env_var: str) -> str:
     return "an existing instance"
 
 
-def _prompt_env_var_collision(
-    settings: AppSettings,
+class CredentialDecision(NamedTuple):
+    """How a provider instance binds to its credential env var.
+
+    ``env_var_overrides``: ``{type_default_env_var: instance_env_var}`` rename
+    map threaded into ``configure_provider`` (empty ⇒ use the type default).
+
+    ``binding_modes``: ``{resolved_env_var: "shared" | "separate"}`` threaded
+    into ``configure_provider`` so a *shared* credential is never prompted
+    for or overwritten, and a *separate* one may be left unset for runtime
+    injection. Empty ⇒ today's behavior (no per-instance binding decision).
+    """
+
+    env_var_overrides: dict[str, str]
+    binding_modes: dict[str, str]
+
+
+def _count_instances_using_env_var(settings: AppSettings, env_var: str) -> int:
+    """Number of configured provider instances (across all merged scopes)
+    whose config references ``${env_var}``. ``>= 2`` means the credential is
+    genuinely shared, so editing any one of them must preserve the shared
+    binding rather than overwrite the common secret.
+    """
+    placeholder = f"${{{env_var}}}"
+    count = 0
+    for p in settings.get_provider_overrides():
+        config = p.get("config", {})
+        if isinstance(config, dict) and placeholder in config.values():
+            count += 1
+    return count
+
+
+def _prompt_separate_env_var(
     key_manager: KeyManager,
     module_id: str,
     instance_id: str | None,
     default_name: str,
     claimed: set[str],
 ) -> str:
-    """Interactive resolution for a same-default-name credential collision
-    (design §5.2 step 4). Returns the chosen, validated, unclaimed env var
-    name for this instance. Raises (EOFError, KeyboardInterrupt) on cancel.
+    """Derive, prefill, prompt for and validate a *distinct* credential env
+    var for a same-type instance that opted for a separate credential
+    (design §5.2 step 4). Returns the chosen, validated, unclaimed name.
+    Raises (EOFError, KeyboardInterrupt) on cancel, or ValueError if the id
+    can't produce a usable, non-colliding suggestion (§5.4.2).
     """
-    owner = _find_claimed_env_var_owner(settings, default_name)
-    console.print(
-        f"\n  [yellow]{module_id} already uses {default_name} "
-        f"(instance '{owner}'). This instance needs its own credential "
-        f"source.[/yellow]"
-    )
-
     suggested = _suggest_instance_env_var(module_id, instance_id or module_id, claimed)
 
     # Exact-name prefill only (design §5.4.3) -- a single os.environ.get()
@@ -225,18 +250,72 @@ def _prompt_env_var_collision(
     return chosen_name
 
 
+def _prompt_credential_binding(
+    settings: AppSettings,
+    key_manager: KeyManager,
+    module_id: str,
+    instance_id: str | None,
+    default_name: str,
+    claimed: set[str],
+) -> CredentialDecision:
+    """Interactive fork for a same-type instance whose type-default
+    credential env var is already claimed: reuse the existing credential
+    (default) or configure a separate one.
+
+    * Reuse  -> bind to ``default_name``; never prompt for or overwrite its
+      value (``binding_modes = {default_name: "shared"}``).
+    * Separate -> derive/validate a distinct name and rename to it
+      (``env_var_overrides = {default_name: chosen}``,
+      ``binding_modes = {chosen: "separate"}``).
+
+    Raises (EOFError, KeyboardInterrupt) on cancel, or ValueError if the id
+    can't produce a usable, non-colliding suggestion for the separate path.
+    """
+    owner = _find_claimed_env_var_owner(settings, default_name)
+    console.print(
+        f"\n  [bold]Another '{module_id}' instance already uses "
+        f"{default_name} (instance '{owner}').[/bold]"
+    )
+    console.print("  How should this instance authenticate?")
+    console.print(
+        f"    [1] Reuse {default_name} -- same credential, different "
+        f"model/settings [dim](default)[/dim]"
+    )
+    console.print(
+        "    [2] Separate credential -- its own env var (different "
+        "account/org/key)"
+    )
+    choice = Prompt.ask("  Choice", choices=["1", "2"], default="1")
+
+    if choice == "1":
+        # Reuse: bind to the existing credential; the secret prompt is
+        # skipped entirely and the stored value is left untouched.
+        console.print(f"  [dim]This instance will reuse {default_name}.[/dim]")
+        return CredentialDecision({}, {default_name: "shared"})
+
+    chosen_name = _prompt_separate_env_var(
+        key_manager, module_id, instance_id, default_name, claimed
+    )
+    return CredentialDecision({default_name: chosen_name}, {chosen_name: "separate"})
+
+
 def _resolve_env_var_overrides(
     settings: AppSettings,
     key_manager: KeyManager,
     module_id: str,
     instance_id: str | None,
-) -> dict[str, str]:
-    """Resolve the `env_var_overrides` map for a new provider instance
-    (design §5.2). Empty dict means "use the type default" -- no collision
-    detected. May raise (EOFError, KeyboardInterrupt) on user cancel, or
-    ValueError if the instance id cannot produce a usable, non-colliding
-    suggestion (design §5.4.2) -- caller decides how to react (re-prompt vs.
-    exit).
+) -> CredentialDecision:
+    """Resolve the credential binding for a NEW provider instance (design
+    §5.2). Returns an empty decision when no collision is detected -- the
+    first instance of a type keeps today's no-extra-prompt UX. When the
+    type-default name is already claimed, forks to reuse-vs-separate via
+    ``_prompt_credential_binding`` (offer to reuse -- the default -- or
+    configure a separate credential).
+
+    May raise (EOFError, KeyboardInterrupt) on user cancel, or ValueError if
+    the instance id cannot produce a usable, non-colliding suggestion for a
+    separate credential (design §5.4.2) -- caller decides how to react
+    (re-prompt vs. exit).
 
     Collision detection asks "does another *configured instance* already own
     this name?", so it uses ``_config_claimed_env_vars`` (${VAR} references
@@ -252,38 +331,56 @@ def _resolve_env_var_overrides(
     claimed = _config_claimed_env_vars(settings)
     default_name = _secret_env_var_for(module_id)
     if not default_name or default_name not in claimed:
-        return {}
+        return CredentialDecision({}, {})
 
-    chosen_name = _prompt_env_var_collision(
+    return _prompt_credential_binding(
         settings, key_manager, module_id, instance_id, default_name, claimed
     )
-    return {default_name: chosen_name}
 
 
 def _recover_env_var_override(
-    module_id: str, existing_config: dict[str, Any] | None
-) -> dict[str, str]:
-    """Recover an instance's existing credential env var from its stored
+    settings: AppSettings,
+    module_id: str,
+    instance_id: str | None,
+    existing_config: dict[str, Any] | None,
+) -> CredentialDecision:
+    """Recover an instance's existing credential binding from its stored
     placeholder so re-configuring it doesn't reset to the type default and
     silently re-collide with another instance (design §5.3 -- the
     "must not miss" fix).
+
+    If the recovered env var is shared by another configured instance, mark
+    it ``"shared"`` so editing this instance never prompts for or overwrites
+    the common secret (the reuse invariant must survive edits, not just the
+    initial add).
     """
     if not existing_config:
-        return {}
+        return CredentialDecision({}, {})
     default_name = _secret_env_var_for(module_id)
     field_id = _secret_field_id_for(module_id)
     if not default_name or not field_id:
-        return {}
+        return CredentialDecision({}, {})
     raw_value = existing_config.get(field_id)
-    if (
+    if not (
         isinstance(raw_value, str)
         and raw_value.startswith("${")
         and raw_value.endswith("}")
     ):
-        current_name = raw_value[2:-1]
-        if current_name and current_name != default_name:
-            return {default_name: current_name}
-    return {}
+        return CredentialDecision({}, {})
+
+    current_name = raw_value[2:-1]
+    if not current_name:
+        return CredentialDecision({}, {})
+
+    overrides: dict[str, str] = {}
+    if current_name != default_name:
+        overrides = {default_name: current_name}
+
+    binding_modes: dict[str, str] = {}
+    if _count_instances_using_env_var(settings, current_name) >= 2:
+        binding_modes = {current_name: "shared"}
+
+    return CredentialDecision(overrides, binding_modes)
 
 
 @click.group()
@@ -479,7 +576,7 @@ def provider_add(ctx: click.Context, provider_type: str | None, scope: str) -> N
     # name in one pass.
     key_manager = KeyManager()
     try:
-        env_var_overrides = _resolve_env_var_overrides(
+        credential = _resolve_env_var_overrides(
             settings, key_manager, module_id, instance_id
         )
     except ValueError as e:
@@ -494,7 +591,8 @@ def provider_add(ctx: click.Context, provider_type: str | None, scope: str) -> N
         config = configure_provider(
             module_id,
             key_manager,
-            env_var_overrides=env_var_overrides,
+            env_var_overrides=credential.env_var_overrides,
+            credential_binding_modes=credential.binding_modes,
             settings=settings,
         )
     except (click.Abort, click.ClickException):
@@ -819,8 +917,11 @@ def provider_edit(name: str, scope: str) -> None:
     # Bug 3 (design §5.3, "must not miss"): recover the instance's existing
     # credential env var from its stored placeholder so re-configuring it
     # doesn't reset to the type default and silently re-collide.
-    env_var_overrides = _recover_env_var_override(
-        module_id, existing_config if isinstance(existing_config, dict) else None
+    credential = _recover_env_var_override(
+        settings,
+        module_id,
+        entry.get("id"),
+        existing_config if isinstance(existing_config, dict) else None,
     )
 
     # Run configure_provider with existing config as defaults
@@ -829,7 +930,8 @@ def provider_edit(name: str, scope: str) -> None:
         module_id,
         key_manager,
         existing_config=existing_config,
-        env_var_overrides=env_var_overrides,
+        env_var_overrides=credential.env_var_overrides,
+        credential_binding_modes=credential.binding_modes,
         settings=settings,
     )
 
@@ -1251,7 +1353,7 @@ def _manage_add_provider(settings: AppSettings, scope: Scope = "global") -> None
     # name in one pass.
     key_manager = KeyManager()
     try:
-        env_var_overrides = _resolve_env_var_overrides(
+        credential = _resolve_env_var_overrides(
             settings, key_manager, module_id, instance_id
         )
     except ValueError as e:
@@ -1266,7 +1368,8 @@ def _manage_add_provider(settings: AppSettings, scope: Scope = "global") -> None
         config = configure_provider(
             module_id,
             key_manager,
-            env_var_overrides=env_var_overrides,
+            env_var_overrides=credential.env_var_overrides,
+            credential_binding_modes=credential.binding_modes,
             settings=settings,
         )
     except (click.Abort, KeyboardInterrupt, EOFError):
@@ -1363,8 +1466,11 @@ def _manage_edit_provider(
     # Bug 3 (design §5.3, "must not miss"): recover the instance's existing
     # credential env var from its stored placeholder so re-configuring it
     # doesn't reset to the type default and silently re-collide.
-    env_var_overrides = _recover_env_var_override(
-        module_id, existing_config if isinstance(existing_config, dict) else None
+    credential = _recover_env_var_override(
+        settings,
+        module_id,
+        entry.get("id"),
+        existing_config if isinstance(existing_config, dict) else None,
     )
 
     key_manager = KeyManager()
@@ -1373,7 +1479,8 @@ def _manage_edit_provider(
             module_id,
             key_manager,
             existing_config=existing_config,
-            env_var_overrides=env_var_overrides,
+            env_var_overrides=credential.env_var_overrides,
+            credential_binding_modes=credential.binding_modes,
             settings=settings,
         )
     except (click.Abort, KeyboardInterrupt, EOFError):
