@@ -16,6 +16,7 @@ from ..lib.settings import AppSettings, NotificationFlags, get_custom_routing_di
 from ..lib.merge_utils import merge_module_items
 from ..lib.merge_utils import merge_tool_configs
 from ..lib.merge_utils import _normalize_module_entry
+from ..provider_loader import get_provider_info
 
 
 if TYPE_CHECKING:
@@ -304,6 +305,15 @@ async def resolve_bundle_config(
 
     if console:
         console.print(f"[dim]Bundle '{bundle_name}' prepared successfully[/dim]")
+
+    # Fail loud (before mount) on an unresolved *required* credential
+    # placeholder, instead of letting env-var expansion silently turn it
+    # into "" and letting the provider module fall back to its own ambient
+    # credential -- see _validate_provider_credentials for why this matters
+    # for the reuse-or-separate multi-instance flow.
+    raw_providers = bundle_config.get("providers")
+    if isinstance(raw_providers, list):
+        _validate_provider_credentials(raw_providers)
 
     # Expand environment variables
     # IMPORTANT: Must expand BEFORE syncing to mount_plan, so ${ANTHROPIC_API_KEY} etc. become actual values
@@ -840,6 +850,79 @@ def _merge_module_lists(
 
 
 ENV_PATTERN = re.compile(r"\$\{([^}:]+)(?::([^}]*))?}")
+
+
+def _validate_provider_credentials(providers: list[Any]) -> None:
+    """Fail loudly, before session mount, when a provider instance's
+    configured credential placeholder resolves to nothing.
+
+    Why this exists: ``expand_env_vars`` (below) treats an unset ``${VAR}``
+    as an empty string. Several provider modules treat an empty/absent
+    ``api_key`` config value as "not configured" and fall back to their own
+    canonical ambient env var (e.g. ``OPENAI_API_KEY``). For a *separate*
+    per-instance credential binding left unset for runtime injection (see
+    the reuse-or-separate wizard flow in ``commands/provider.py`` /
+    ``provider_config_utils.py``, design doc §5.2), that fallback silently
+    routes the instance through a *different* account's key -- exactly the
+    wrong-account failure the reuse-or-separate flow exists to prevent.
+    Raising here turns that into a clear, actionable error at session start
+    instead of a silent cross-account credential mixup.
+
+    Only enforced for fields the provider declares as
+    ``field_type == "secret"`` AND ``required`` (default True): optional /
+    keyless secrets (e.g. a local Chat Completions server with no API key)
+    are intentionally left alone, and a placeholder with an inline
+    ``${VAR:-default}`` default is also left alone (the default already
+    covers "unset").
+
+    App-CLI policy only -- no core, provider-contract, or settings-schema
+    changes. When provider metadata can't be loaded (custom/removed
+    provider, import error, etc.), validation is skipped for that entry --
+    consistent with how the rest of this module already treats a missing
+    ``get_provider_info()`` result.
+    """
+    for entry in providers:
+        if not isinstance(entry, dict):
+            continue
+        module_id = entry.get("module")
+        config = entry.get("config")
+        if not isinstance(module_id, str) or not isinstance(config, dict):
+            continue
+
+        info = get_provider_info(module_id)
+        if not info:
+            continue
+
+        for field in info.get("config_fields") or []:
+            if not isinstance(field, dict) or field.get("field_type") != "secret":
+                continue
+            if not field.get("required", True):
+                continue
+
+            field_id = field.get("id")
+            if not field_id:
+                continue
+            raw_value = config.get(field_id)
+            if not isinstance(raw_value, str):
+                continue
+
+            match = ENV_PATTERN.fullmatch(raw_value)
+            if not match:
+                continue
+            var_name, default = match.group(1), match.group(2)
+            if default is not None:
+                # An inline default already covers "unset" -- not our concern.
+                continue
+            if os.environ.get(var_name):
+                continue
+
+            label = entry.get("id") or module_id
+            raise ValueError(
+                f"Credential environment variable {var_name} for provider "
+                f"'{label}' is not set. Set it before starting the "
+                f"session; Amplifier will not fall back to another "
+                f"provider's credential."
+            )
 
 
 def expand_env_vars(config: dict[str, Any]) -> dict[str, Any]:
