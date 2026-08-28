@@ -14,8 +14,12 @@ Tests cover:
    - help includes /skills and /skill base commands
 """
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
+import yaml
+
+from amplifier_app_cli.runtime import config
 from helpers import _make_command_processor
 
 
@@ -89,6 +93,41 @@ class TestProcessInputSkillShortcuts:
         action, data = self.cp.process_input("/foobar")
         assert action == "unknown_command"
         assert data["command"] == "/foobar"
+
+    def test_packaged_amplifier_config_discovery_and_invocation(
+        self, monkeypatch, tmp_path
+    ):
+        """Discover and invoke amplifier-config from only the packaged skills dir."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path / "isolated-home"))
+        packaged_dir = Path(config.__file__).parent.parent / "data" / "skills"
+
+        shortcuts = {}
+        for skill_file in packaged_dir.glob("*/SKILL.md"):
+            _, frontmatter, _ = skill_file.read_text().split("---", 2)
+            metadata = yaml.safe_load(frontmatter)
+            if metadata.get("user-invocable") is True:
+                shortcuts[metadata["name"]] = {
+                    "name": metadata["name"],
+                    "description": metadata["description"],
+                    "context": metadata.get("context"),
+                }
+
+        assert "amplifier-config" in shortcuts
+        discovery = MagicMock()
+        discovery.get_shortcuts.return_value = shortcuts
+        processor = _make_command_processor(skills_discovery=discovery)
+
+        action, data = processor.process_input(
+            "/amplifier-config make coding agents use the coding provider"
+        )
+
+        assert action == "load_skill"
+        assert data == {
+            "skill_name": "amplifier-config",
+            "arguments": "make coding agents use the coding provider",
+            "command": "/amplifier-config",
+        }
 
 
 # ===========================================================================

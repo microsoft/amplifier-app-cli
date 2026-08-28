@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import yaml
+
 from amplifier_app_cli.lib.merge_utils import _provider_key, merge_module_lists
 from amplifier_app_cli.lib.settings import AppSettings, SettingsPaths
 from amplifier_app_cli.runtime import config
@@ -392,6 +394,25 @@ class TestEnsureDefaultSkillsDirs:
         expected = str(Path(config.__file__).parent.parent / "data" / "skills")
         assert expected in skills
         assert (Path(expected) / "goalify" / "SKILL.md").exists()
+        assert (Path(expected) / "amplifier-config" / "SKILL.md").exists()
+
+    def test_amplifier_config_skill_contract(self):
+        """Packaged configuration consultant must remain inline and authoritative."""
+        skills_dir = Path(config.__file__).parent.parent / "data" / "skills"
+        content = (skills_dir / "amplifier-config" / "SKILL.md").read_text()
+        _, frontmatter, body = content.split("---", 2)
+        metadata = yaml.safe_load(frontmatter)
+
+        assert metadata["name"] == "amplifier-config"
+        assert metadata["user-invocable"] is True
+        assert metadata["license"] == "MIT"
+        assert isinstance(metadata.get("version"), str)
+        assert metadata["version"].strip()
+        assert "context" not in metadata
+        assert "model_role" not in metadata
+        assert "allowed-tools" not in metadata
+        assert "$ARGUMENTS" in body
+        assert "app-cli:cli-expert" in body
 
 
 class TestProviderScopeMerge:
