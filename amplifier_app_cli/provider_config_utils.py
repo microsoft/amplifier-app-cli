@@ -583,29 +583,68 @@ def _prompt_for_field(
     if field_type == "boolean":
         if existing_value:
             default_bool = str(existing_value).lower() in ("true", "1", "yes")
-        else:
-            default_bool = default and default.lower() in ("true", "1", "yes")
+            value = Confirm.ask(prompt_text, default=default_bool)
+            return field_id, str(value).lower()
 
+        if default is None:
+            # No declared default and no existing value: don't force a
+            # True/False choice on the user. Passing default=None to
+            # Confirm.ask lets Enter mean "leave unset" (returns None here,
+            # so the caller omits the key) -- matching the text-field "may
+            # be absent" contract. Previously this branch computed
+            # `default_bool = None and ...` -> None, which Confirm.ask still
+            # accepted as a default, and the string "none" got written to
+            # config on Enter.
+            value = Confirm.ask(
+                f"{prompt_text} [dim](leave blank to use provider/model default)[/dim]",
+                default=None,
+            )
+            if value is None:
+                return field_id, None
+            return field_id, str(value).lower()
+
+        default_bool = default.lower() in ("true", "1", "yes")
         value = Confirm.ask(prompt_text, default=default_bool)
         return field_id, str(value).lower()
 
     if field_type == "choice":
         choices = field.get("choices", [])
         if choices:
+            # A field with no declared default and not required signals
+            # "leave unset -- use provider/model default" (e.g. provider-openai's
+            # prompt_cache_retention/text_verbosity). Previously this collapsed
+            # to `default_choice = "1"` and force-wrote choices[0] on every
+            # Enter, with no way to actually leave the key unset.
+            allow_unset = default is None and not required
+
+            display_choices = list(choices)
+            unset_choice = "(leave unset - use provider/model default)"
+            if allow_unset:
+                display_choices = [unset_choice] + display_choices
+
             console.print(f"{prompt_text}")
-            for idx, choice in enumerate(choices, 1):
-                console.print(f"  [{idx}] {choice}")
+            for idx, choice_label in enumerate(display_choices, 1):
+                console.print(f"  [{idx}] {choice_label}")
 
-            # Use existing value first, then field default
-            effective_value = existing_value or default
+            choice_map = {str(i): c for i, c in enumerate(display_choices, 1)}
+            offset = 1 if allow_unset else 0
+
+            # Default selection: the "unset" option if allowed (position 1),
+            # else choices[0] (original hard-coded behavior for
+            # required/defaulted fields) -- both are position "1".
             default_choice = "1"
-            if effective_value and effective_value in choices:
-                default_choice = str(choices.index(effective_value) + 1)
 
-            choice_map = {str(i): c for i, c in enumerate(choices, 1)}
+            # Existing value or a real field default takes priority as the
+            # pre-selected option, positioned after the prepended unset entry.
+            effective_value = existing_value or default
+            if effective_value and effective_value in choices:
+                default_choice = str(choices.index(effective_value) + 1 + offset)
+
             selected = Prompt.ask(
                 "Choice", choices=list(choice_map.keys()), default=default_choice
             )
+            if allow_unset and selected == "1" and choice_map[selected] == unset_choice:
+                return field_id, None
             return field_id, choice_map[selected]
         # No choices defined, fall through to text
 
@@ -670,13 +709,69 @@ def _prompt_for_field(
     return field_id, value if value else None
 
 
+def _apply_non_interactive_field(
+    field: dict[str, Any],
+    field_id: str,
+    collected_config: dict[str, Any],
+    existing_config: dict[str, Any] | None,
+    env_var_overrides: dict[str, str] | None,
+    credential_binding_modes: dict[str, str] | None,
+    settings: AppSettings | None,
+) -> None:
+    """Resolve one config_field's value in ``non_interactive`` mode and set it
+    into ``collected_config`` in place (env var > existing config > declared
+    default, honoring an explicit credential binding mode).
+
+    Extracted from ``configure_provider()``, where Phase 1 (pre-model) and
+    Phase 3 (post-model) fields previously duplicated this exact 42-line
+    block verbatim.
+
+    Raises:
+        ValueError: Non-interactive configuration would reuse a credential
+            env var already claimed by another configured instance (design
+            §5.4.5), unless an explicit per-instance binding is in play.
+    """
+    declared = field.get("env_var")
+    env_var = (
+        (env_var_overrides or {}).get(declared, declared) if declared else declared
+    )
+    mode = (credential_binding_modes or {}).get(env_var) if env_var else None
+    # Fail loud instead of silently reusing the type default when it's
+    # already claimed by another instance (design §5.4.5). An explicit
+    # per-instance binding (shared reuse or separate) is intentional, so
+    # it is exempt from this guard.
+    if (
+        settings is not None
+        and declared
+        and env_var == declared
+        and declared not in (env_var_overrides or {})
+        and mode is None
+        and declared in _claimed_env_vars(settings)
+    ):
+        raise ValueError(
+            f"Non-interactive configuration would reuse the same "
+            f"credential env var ({declared}) as another "
+            f"configured instance. Pass an explicit "
+            f"env_var_overrides mapping for this instance "
+            f"instead of relying on the type default."
+        )
+    if mode is not None:
+        # Explicit per-instance binding: persist the placeholder whether or
+        # not the value is set in the environment. A separate binding may be
+        # intentionally unset for runtime injection; a shared one reuses an
+        # existing instance's key.
+        collected_config[field_id] = f"${{{env_var}}}"
+    elif env_var and os.environ.get(env_var):
+        collected_config[field_id] = f"${{{env_var}}}"
+    elif existing_config and field_id in existing_config:
+        collected_config[field_id] = existing_config[field_id]
+    elif field.get("default"):
+        collected_config[field_id] = field["default"]
+
+
 def configure_provider(
     provider_id: str,
     key_manager: KeyManager,
-    model: str | None = None,
-    endpoint: str | None = None,
-    deployment: str | None = None,
-    use_azure_cli: bool | None = None,
     existing_config: dict[str, Any] | None = None,
     non_interactive: bool = False,
     env_var_overrides: dict[str, str] | None = None,
@@ -694,10 +789,6 @@ def configure_provider(
     Args:
         provider_id: Provider identifier (e.g., "anthropic", "openai", "azure-openai")
         key_manager: Key manager instance for API key storage
-        model: Optional model name (for CLI flag override)
-        endpoint: Optional endpoint URL (for CLI flag override)
-        deployment: Optional deployment name (Azure OpenAI only)
-        use_azure_cli: Optional Azure CLI auth flag (Azure OpenAI only)
         existing_config: Optional existing config for defaults when re-configuring
         non_interactive: If True, skip all prompts and use CLI values/env vars/defaults only
         env_var_overrides: Optional map of ``{type_default_env_var:
@@ -723,20 +814,6 @@ def configure_provider(
         # Remove "provider-" prefix if present
         if provider_id.startswith("provider-"):
             provider_id = provider_id[9:]
-
-        # Build CLI overrides dict
-        cli_overrides: dict[str, Any] = {}
-        if model:
-            cli_overrides["default_model"] = model
-        if endpoint:
-            cli_overrides["azure_endpoint"] = endpoint
-            cli_overrides["base_url"] = endpoint
-            cli_overrides["host"] = endpoint
-        if deployment:
-            cli_overrides["deployment_name"] = deployment
-        if use_azure_cli is not None:
-            cli_overrides["use_default_credential"] = str(use_azure_cli).lower()
-            cli_overrides["use_managed_identity"] = str(use_azure_cli).lower()
 
         # Get provider info with config_fields
         info = get_provider_info(provider_id)
@@ -767,57 +844,17 @@ def configure_provider(
             if not _should_show_field(field, collected_config):
                 continue
 
-            # Check if value provided via CLI override
-            if field_id in cli_overrides and cli_overrides[field_id] is not None:
-                collected_config[field_id] = cli_overrides[field_id]
-                if not non_interactive:
-                    console.print(
-                        f"\n[bold]{field['display_name']}[/bold]: {cli_overrides[field_id]}"
-                    )
-                continue
-
             # In non-interactive mode, use env var or existing config value
             if non_interactive:
-                declared = field.get("env_var")
-                env_var = (
-                    (env_var_overrides or {}).get(declared, declared)
-                    if declared
-                    else declared
+                _apply_non_interactive_field(
+                    field,
+                    field_id,
+                    collected_config,
+                    existing_config,
+                    env_var_overrides,
+                    credential_binding_modes,
+                    settings,
                 )
-                mode = (
-                    (credential_binding_modes or {}).get(env_var) if env_var else None
-                )
-                # Fail loud instead of silently reusing the type default when
-                # it's already claimed by another instance (design §5.4.5).
-                # An explicit per-instance binding (shared reuse or separate)
-                # is intentional, so it is exempt from this guard.
-                if (
-                    settings is not None
-                    and declared
-                    and env_var == declared
-                    and declared not in (env_var_overrides or {})
-                    and mode is None
-                    and declared in _claimed_env_vars(settings)
-                ):
-                    raise ValueError(
-                        f"Non-interactive configuration would reuse the same "
-                        f"credential env var ({declared}) as another "
-                        f"configured instance. Pass an explicit "
-                        f"env_var_overrides mapping for this instance "
-                        f"instead of relying on the type default."
-                    )
-                if mode is not None:
-                    # Explicit per-instance binding: persist the placeholder
-                    # whether or not the value is set in the environment. A
-                    # separate binding may be intentionally unset for runtime
-                    # injection; a shared one reuses an existing instance's key.
-                    collected_config[field_id] = f"${{{env_var}}}"
-                elif env_var and os.environ.get(env_var):
-                    collected_config[field_id] = f"${{{env_var}}}"
-                elif existing_config and field_id in existing_config:
-                    collected_config[field_id] = existing_config[field_id]
-                elif field.get("default"):
-                    collected_config[field_id] = field["default"]
                 continue
 
             # Prompt for the field (pass existing_config for defaults)
@@ -833,14 +870,7 @@ def configure_provider(
                 collected_config[field_id] = value
 
         # Phase 2: Model selection step
-        # Check if model was provided via CLI override
-        if "default_model" in cli_overrides:
-            collected_config["default_model"] = cli_overrides["default_model"]
-            if not non_interactive:
-                console.print(
-                    f"\n[bold]Default Model[/bold]: {cli_overrides['default_model']}"
-                )
-        elif "deployment_name" in collected_config:
+        if "deployment_name" in collected_config:
             # Azure OpenAI: deployment_name IS the model
             collected_config["default_model"] = collected_config["deployment_name"]
             if not non_interactive:
@@ -878,57 +908,17 @@ def configure_provider(
             if not _should_show_field(field, collected_config):
                 continue
 
-            # Check if value provided via CLI override
-            if field_id in cli_overrides and cli_overrides[field_id] is not None:
-                collected_config[field_id] = cli_overrides[field_id]
-                if not non_interactive:
-                    console.print(
-                        f"\n[bold]{field['display_name']}[/bold]: {cli_overrides[field_id]}"
-                    )
-                continue
-
             # In non-interactive mode, use env var or existing config value
             if non_interactive:
-                declared = field.get("env_var")
-                env_var = (
-                    (env_var_overrides or {}).get(declared, declared)
-                    if declared
-                    else declared
+                _apply_non_interactive_field(
+                    field,
+                    field_id,
+                    collected_config,
+                    existing_config,
+                    env_var_overrides,
+                    credential_binding_modes,
+                    settings,
                 )
-                mode = (
-                    (credential_binding_modes or {}).get(env_var) if env_var else None
-                )
-                # Fail loud instead of silently reusing the type default when
-                # it's already claimed by another instance (design §5.4.5).
-                # An explicit per-instance binding (shared reuse or separate)
-                # is intentional, so it is exempt from this guard.
-                if (
-                    settings is not None
-                    and declared
-                    and env_var == declared
-                    and declared not in (env_var_overrides or {})
-                    and mode is None
-                    and declared in _claimed_env_vars(settings)
-                ):
-                    raise ValueError(
-                        f"Non-interactive configuration would reuse the same "
-                        f"credential env var ({declared}) as another "
-                        f"configured instance. Pass an explicit "
-                        f"env_var_overrides mapping for this instance "
-                        f"instead of relying on the type default."
-                    )
-                if mode is not None:
-                    # Explicit per-instance binding: persist the placeholder
-                    # whether or not the value is set in the environment. A
-                    # separate binding may be intentionally unset for runtime
-                    # injection; a shared one reuses an existing instance's key.
-                    collected_config[field_id] = f"${{{env_var}}}"
-                elif env_var and os.environ.get(env_var):
-                    collected_config[field_id] = f"${{{env_var}}}"
-                elif existing_config and field_id in existing_config:
-                    collected_config[field_id] = existing_config[field_id]
-                elif field.get("default"):
-                    collected_config[field_id] = field["default"]
                 continue
 
             # Prompt for the field (pass existing_config for defaults)
