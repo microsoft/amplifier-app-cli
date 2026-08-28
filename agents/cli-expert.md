@@ -23,13 +23,6 @@ meta:
     `--output json-trace`, output formats for automation, spawn-time
     precedence, what tools and providers a sub-agent inherits
 
-    **MUST be used for:**
-    - "How do I switch models / pin a provider / use a different model?"
-    - Any question naming a slash command or an `amplifier <subcommand>`
-    - "Why did this session load that context / where does session state live?"
-    - Scripting or automating Amplifier (output formats, exit behavior)
-    - "What does a spawned agent inherit?" / delegation precedence questions
-
     <example>
     <context>User wants a different model partway through a conversation</context>
     <user>How do I switch models without losing this conversation?</user>
