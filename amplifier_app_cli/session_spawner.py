@@ -1293,8 +1293,82 @@ async def resume_sub_session(
             },
         )
 
-    # Restore transcript to context
+    # Re-register the agent's system prompt on resume.
+    #
+    # Mirrors the spawn path (see the "Inject agent's system instruction"
+    # block above, ~line 764). That block registers the system instruction
+    # via context.set_system_prompt_factory() rather than a persisted
+    # message: context-simple builds the system message into a per-request
+    # COPY and never writes it into self.messages, so it is never present in
+    # the saved transcript. SessionStore._save_transcript also explicitly
+    # skips system/developer role messages when persisting, so this holds
+    # even for a context module using the add_message() fallback below.
+    #
+    # Restoring the transcript alone (next block) therefore restores ZERO
+    # system-role messages -- every subsequent request on a resumed
+    # sub-session ran with no system prompt at all, and omitting it on a
+    # chained request CLEARS the provider's server-held prompt rather than
+    # preserving it. Recover the same instruction the original spawn used
+    # and re-register it through the same mechanism.
     context = child_session.coordinator.get("context")
+    agent_overlay = metadata.get("agent_overlay") or {}
+    resume_system_instruction = agent_overlay.get("instruction") or agent_overlay.get(
+        "system", {}
+    ).get("instruction")
+    if not resume_system_instruction:
+        # Fallback for metadata saved before agent_overlay existed, or an
+        # empty inherit-as-is overlay: recover the declaration from the
+        # merged config's own agents map, keyed by agent_name.
+        _resume_agents_cfg = merged_config.get("agents") or {}
+        _resume_agent_decl = _resume_agents_cfg.get(agent_name) or {}
+        resume_system_instruction = _resume_agent_decl.get(
+            "instruction"
+        ) or _resume_agent_decl.get("system", {}).get("instruction")
+
+    if resume_system_instruction:
+        # Expand @-mentions exactly like the spawn path does, using the
+        # just-restored resolver/deduplicator/working_dir capabilities.
+        _resume_sys_resolver = child_session.coordinator.get_capability(
+            "mention_resolver"
+        )
+        if _resume_sys_resolver is not None:
+            from amplifier_foundation.mentions import expand_mentions_in_instruction
+
+            _resume_sys_dedup = child_session.coordinator.get_capability(
+                "mention_deduplicator"
+            )
+            _resume_sys_wd = child_session.coordinator.get_capability(
+                "session.working_dir"
+            )
+            _resume_sys_rel = Path(_resume_sys_wd) if _resume_sys_wd else Path.cwd()
+            resume_system_instruction = await expand_mentions_in_instruction(
+                resume_system_instruction,
+                resolver=_resume_sys_resolver,
+                deduplicator=_resume_sys_dedup,
+                relative_to=_resume_sys_rel,
+            )
+        if context and hasattr(context, "set_system_prompt_factory"):
+            _resolved_resume_system_instruction = resume_system_instruction
+
+            async def _resume_system_prompt_factory() -> str:
+                return _resolved_resume_system_instruction
+
+            await context.set_system_prompt_factory(_resume_system_prompt_factory)
+        elif context and hasattr(context, "add_message"):
+            await context.add_message(
+                {"role": "system", "content": resume_system_instruction}
+            )
+    else:
+        logger.warning(
+            "Sub-session %s (agent=%s): no system instruction recoverable from "
+            "persisted metadata (agent_overlay / config.agents) on resume. "
+            "This resumed session will run WITHOUT a system prompt for all "
+            "subsequent requests -- proceeding with resume anyway.",
+            sub_session_id,
+            agent_name,
+        )
+
+    # Restore transcript to context
     if context and hasattr(context, "add_message"):
         for message in transcript:
             await context.add_message(message)

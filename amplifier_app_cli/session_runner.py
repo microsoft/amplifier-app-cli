@@ -235,9 +235,27 @@ async def create_initialized_session(
 
         context = session.coordinator.get("context")
         if context and hasattr(context, "set_messages"):
-            # CRITICAL: create_session() already added a fresh system prompt.
-            # We need to preserve it because the transcript might have lost its system message
-            # during compaction (bug fixed in context-simple, but old sessions are affected).
+            # NOTE ON WHY ROOT RESUME IS SAFE FROM SYSTEM-PROMPT LOSS:
+            # create_session() (PreparedBundle, called before this function runs)
+            # already registered a system-prompt FACTORY via
+            # context.set_system_prompt_factory() -- it does not add a static
+            # system message to context.messages. get_messages_for_request()
+            # calls that factory fresh on every request, independent of
+            # self.messages, and context.set_messages() below only replaces
+            # self.messages -- it never touches the registered factory. So the
+            # factory keeps producing the system prompt on every subsequent
+            # request regardless of what this block does.
+            #
+            # The preserve/re-inject logic below is therefore DEAD CODE on the
+            # current factory-based path: context.get_messages() returns only
+            # self.messages, which never contains a system-role message in
+            # factory mode (the factory's output is injected ephemerally by
+            # get_messages_for_request(), never persisted) -- so
+            # `system_msgs` is always empty and `fresh_system_msg` stays None.
+            # It is kept only as a defensive fallback for a context module
+            # using the older add_message()-based static system message
+            # convention (pre-factory), where a real system message COULD
+            # live in self.messages and get lost by a transcript replace.
             fresh_system_msg = None
             if hasattr(context, "get_messages"):
                 current_msgs = await context.get_messages()
