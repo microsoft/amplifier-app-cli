@@ -98,6 +98,15 @@ amplifier notify reset --all [--scope]               # Clear all notification se
 
 ```
 
+**Note on `extra_request_params`:** some provider modules support an
+`extra_request_params` key inside a provider's `config` block -- a raw,
+user-owned dict of request parameters merged verbatim into every API call
+for options the module doesn't wrap itself. It is entirely your
+responsibility to maintain by hand in `settings.yaml`; config tooling
+(`provider add`/`provider edit`/`provider manage`) round-trips it untouched
+across reconfigures but never prompts for it, displays it in the wizard, or
+validates its contents.
+
 ### Session Commands
 
 ```bash
