@@ -18,6 +18,7 @@ from ..paths import create_config_manager
 from ..provider_config_utils import (
     _config_claimed_env_vars,
     _normalize_id,
+    _preserve_reserved_keys,
     _secret_env_var_for,
     _secret_field_id_for,
     _suggest_instance_env_var,
@@ -650,6 +651,18 @@ def provider_add(ctx: click.Context, provider_type: str | None, scope: str) -> N
         if instance_id:
             scope_providers.append(provider_entry)
         else:
+            # An entry with this module may already be present here (e.g. a
+            # concurrent write landed between our pre-lock read and this
+            # one). Round-trip its reserved, user-owned keys (e.g.
+            # extra_request_params) before it's dropped -- see
+            # _preserve_reserved_keys()'s docstring.
+            old_entry = next(
+                (p for p in scope_providers if p.get("module") == module_id), None
+            )
+            if old_entry is not None:
+                provider_entry["config"] = _preserve_reserved_keys(
+                    old_entry.get("config"), provider_entry["config"]
+                )
             # Replace any existing entry with same module
             scope_providers = [
                 p for p in scope_providers if p.get("module") != module_id
@@ -938,6 +951,12 @@ def provider_edit(name: str, scope: str) -> None:
     if new_config is None:
         console.print("[red]Configuration cancelled.[/red]")
         return
+
+    # Round-trip reserved, user-owned keys (e.g. extra_request_params) that
+    # the wizard never collects -- see _preserve_reserved_keys()'s docstring.
+    new_config = _preserve_reserved_keys(
+        existing_config if isinstance(existing_config, dict) else None, new_config
+    )
 
     # Preserve priority from existing config
     priority = (
@@ -1427,6 +1446,18 @@ def _manage_add_provider(settings: AppSettings, scope: Scope = "global") -> None
         if instance_id:
             scope_providers.append(provider_entry)
         else:
+            # An entry with this module may already be present here (e.g. a
+            # concurrent write landed between our pre-lock read and this
+            # one). Round-trip its reserved, user-owned keys (e.g.
+            # extra_request_params) before it's dropped -- see
+            # _preserve_reserved_keys()'s docstring.
+            old_entry = next(
+                (p for p in scope_providers if p.get("module") == module_id), None
+            )
+            if old_entry is not None:
+                provider_entry["config"] = _preserve_reserved_keys(
+                    old_entry.get("config"), provider_entry["config"]
+                )
             scope_providers = [
                 p for p in scope_providers if p.get("module") != module_id
             ]
@@ -1495,6 +1526,12 @@ def _manage_edit_provider(
     if new_config is None:
         console.print("  [red]Configuration cancelled.[/red]")
         return
+
+    # Round-trip reserved, user-owned keys (e.g. extra_request_params) that
+    # the wizard never collects -- see _preserve_reserved_keys()'s docstring.
+    new_config = _preserve_reserved_keys(
+        existing_config if isinstance(existing_config, dict) else None, new_config
+    )
 
     priority = (
         existing_config.get("priority", 1) if isinstance(existing_config, dict) else 1

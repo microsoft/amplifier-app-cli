@@ -26,6 +26,50 @@ from .provider_loader import get_provider_models
 console = Console()
 logger = logging.getLogger(__name__)
 
+# Reserved, user-owned provider-config keys. Provider modules are adopting
+# ``extra_request_params`` as an owner-beware dict merged verbatim into every
+# API request, for parameters the module itself doesn't wrap -- users
+# maintain it by hand in settings.yaml. It is deliberately never declared as
+# a ConfigField (never a wizard prompt, never displayed, never validated),
+# so every config-rewrite path that rebuilds a provider's config purely from
+# wizard-collected fields must round-trip it verbatim via
+# ``_preserve_reserved_keys()`` below rather than silently dropping it. Keep
+# this tuple as the single, deliberately narrow allow-list for that
+# passthrough convention -- do not widen it to cover arbitrary unknown keys.
+RESERVED_PROVIDER_CONFIG_KEYS: tuple[str, ...] = ("extra_request_params",)
+
+
+def _preserve_reserved_keys(
+    old_config: dict[str, Any] | None, new_config: dict[str, Any]
+) -> dict[str, Any]:
+    """Carry forward reserved, user-owned config keys from ``old_config``
+    into ``new_config`` verbatim, if present.
+
+    Called wherever a config-rewrite path replaces an EXISTING provider
+    instance's config with a freshly wizard-collected one. Only keys in
+    ``RESERVED_PROVIDER_CONFIG_KEYS`` (today, just ``extra_request_params``)
+    are preserved -- any other non-schema key in ``old_config`` is dropped,
+    exactly as before this function existed. If ``new_config`` already
+    carries the key (e.g. a module surfaces it deliberately in the future),
+    the old value is not used -- the freshly collected value wins.
+
+    Args:
+        old_config: The provider instance's config before this reconfigure,
+            or None if this is a fresh instance with no prior config.
+        new_config: The config just rebuilt from wizard/schema answers.
+
+    Returns:
+        ``new_config``, with any missing reserved keys copied in from
+        ``old_config``. Never mutates either input in place.
+    """
+    if not old_config:
+        return new_config
+    result = new_config
+    for key in RESERVED_PROVIDER_CONFIG_KEYS:
+        if key in old_config and key not in result:
+            result = {**result, key: old_config[key]}
+    return result
+
 
 def _prompt_model_selection(
     provider_id: str,
