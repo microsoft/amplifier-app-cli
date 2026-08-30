@@ -165,9 +165,36 @@ def get_provider_models(
         )
         return []
 
-    # Check if provider has list_models
+    return list_models_for_instance(provider)
+
+
+def list_models_for_instance(provider: Any) -> list["ModelInfo"]:
+    """Call list_models() on an ALREADY-INSTANTIATED provider instance.
+
+    Extracted from get_provider_models() so a caller that already holds a
+    live provider instance for another reason (e.g. the configuration
+    wizard's login step, which must reuse one instance across the login
+    check and the subsequent model fetch -- see
+    provider_config_utils._maybe_login_provider()) doesn't have to
+    instantiate a second, separate provider just to list its models.
+    get_provider_models() itself is unchanged in behavior; it now just
+    delegates the "call list_models and clean up" part here.
+
+    Args:
+        provider: An already-instantiated provider object.
+
+    Returns:
+        List of ModelInfo for available models, empty list if the
+        instance has no list_models().
+
+    Raises:
+        Exception: Re-raises whatever list_models() raises (auth errors,
+            API errors, connection errors) so callers can display
+            meaningful error messages -- same contract as
+            get_provider_models().
+    """
     if not hasattr(provider, "list_models"):
-        logger.debug(f"Provider '{provider_id}' does not have list_models()")
+        logger.debug(f"Provider {provider!r} does not have list_models()")
         return []
 
     # Call list_models (may be sync or async) via the shared invocation
@@ -175,9 +202,11 @@ def get_provider_models(
     # list_models, async-aware" mechanic the in-session /provider
     # test|models slash commands use against already-mounted providers, so
     # the two surfaces can't quietly diverge on how a provider is asked for
-    # its models. This function still owns instantiation (above) and
-    # cleanup (below) itself, since only it knows this provider instance is
-    # disposable -- a mounted session provider must never be closed.
+    # its models. This function still owns cleanup (below) itself for the
+    # async path, since only the caller knows whether this instance is
+    # disposable -- a mounted session provider must never be closed here,
+    # so callers that pass in a long-lived instance should be aware a
+    # coroutine list_models() will still trigger a best-effort close().
     # Let exceptions propagate - auth errors, API errors, connection errors
     # should be shown to the user, not silently swallowed
     list_models_fn = provider.list_models
@@ -335,4 +364,9 @@ def get_provider_info(provider_id: str) -> dict[str, Any] | None:
         return None
 
 
-__all__ = ["load_provider_class", "get_provider_models", "get_provider_info"]
+__all__ = [
+    "load_provider_class",
+    "get_provider_models",
+    "get_provider_info",
+    "list_models_for_instance",
+]
