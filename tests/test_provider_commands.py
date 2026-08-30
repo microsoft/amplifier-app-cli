@@ -704,6 +704,55 @@ class TestProviderEdit:
             len(call_kwargs[0]) > 0  # positional args
         )
 
+    def test_provider_edit_interrupted_model_selection_does_not_overwrite_default_model(
+        self, tmp_path
+    ):
+        """Regression: Ctrl-C at the model Choice prompt during `provider edit`
+        must abort the whole wizard -- NOT save a config that is missing the
+        previously-working default_model. Runs the real configure_provider()
+        (only get_provider_info and _prompt_model_selection are mocked) so
+        the fix is exercised end-to-end through the actual edit command."""
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            "provider-anthropic",
+            {"default_model": "claude-sonnet-4-6"},
+            priority=1,
+        )
+
+        from amplifier_app_cli.commands.provider import provider
+
+        runner = CliRunner()
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value={"display_name": "Anthropic", "config_fields": []},
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils._prompt_model_selection",
+                return_value=None,
+            ),
+            patch("amplifier_app_cli.commands.provider.KeyManager"),
+        ):
+            result = runner.invoke(provider, ["edit", "anthropic"])
+
+        assert result.exit_code == 0, f"Output: {result.output}"
+        assert "cancelled" in result.output.lower(), (
+            f"Expected a cancellation message, got: {result.output}"
+        )
+
+        providers = settings.get_scope_provider_overrides("global")
+        assert len(providers) == 1
+        assert providers[0]["config"]["default_model"] == "claude-sonnet-4-6", (
+            "Interrupted model selection must not overwrite the existing "
+            f"default_model, got config: {providers[0]['config']}"
+        )
+
     def test_provider_edit_accepts_scope(self, tmp_path):
         """provider edit --scope project should write the updated entry to project scope."""
         settings = _make_settings(tmp_path)

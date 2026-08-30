@@ -940,6 +940,17 @@ def configure_provider(
             selected_model = _prompt_model_selection(
                 provider_id, default_model, collected_config
             )
+            # None is the strict abort sentinel (Ctrl-C / EOF during the
+            # Choice prompt -- see _prompt_model_selection's docstring). It
+            # is NOT the same as "" (user declined to enter a custom model
+            # name, which is a valid "continue without a model" outcome).
+            # Without this check, an interrupted model prompt fell through
+            # to Phase 3, printed "configured", and saved an empty/partial
+            # config -- matching the outer handler at the bottom of this
+            # function and the precedent in commands/routing.py.
+            if selected_model is None:
+                console.print("\n[dim]Cancelled.[/dim]")
+                return None
             if selected_model:
                 collected_config["default_model"] = selected_model
 

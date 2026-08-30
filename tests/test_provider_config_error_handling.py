@@ -526,6 +526,136 @@ class TestConfigureProviderCtrlC:
 
 
 # ============================================================
+# Regression: model-selection Ctrl-C must abort configure_provider,
+# not fall through to "configured" + save (data-corrupting onboarding bug).
+# ============================================================
+
+
+class TestConfigureProviderAbortsOnModelSelectionInterrupt:
+    """_prompt_model_selection() returning None (Ctrl-C / EOF at the model
+    Choice prompt) must abort configure_provider() the same way the outer
+    except (KeyboardInterrupt, EOFError) handler does -- NOT be treated the
+    same as "" (declined custom model name), which is a valid
+    continue-without-a-model outcome.
+    """
+
+    def _make_mock_provider_info(self):
+        """Provider info with only a pre-model field, so the model-selection
+        step is reached deterministically."""
+        return {
+            "display_name": "Test Provider",
+            "config_fields": [
+                {
+                    "id": "api_key",
+                    "display_name": "API Key",
+                    "field_type": "text",
+                    "prompt": "Enter your API key",
+                    "required": True,
+                }
+            ],
+        }
+
+    def test_configure_provider_returns_none_when_model_selection_interrupted(self):
+        """When _prompt_model_selection() returns None (Ctrl-C at Choice),
+        configure_provider() must return None -- not a "configured" dict."""
+        from amplifier_app_cli.provider_config_utils import configure_provider
+
+        mock_key_manager = MagicMock()
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=self._make_mock_provider_info(),
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                return_value="dummy-api-key",
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils._prompt_model_selection",
+                return_value=None,
+            ),
+            patch("amplifier_app_cli.provider_config_utils.console"),
+        ):
+            result = configure_provider("test-provider", mock_key_manager)
+
+        assert result is None, (
+            f"Expected None when model selection is interrupted, got {result!r}"
+        )
+
+    def test_configure_provider_prints_cancelled_when_model_selection_interrupted(
+        self,
+    ):
+        """The abort must be visible to the user, matching the outer
+        handler's 'Cancelled.' message -- never a silent, empty return."""
+        from amplifier_app_cli.provider_config_utils import configure_provider
+
+        mock_key_manager = MagicMock()
+        mock_console = MagicMock()
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=self._make_mock_provider_info(),
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                return_value="dummy-api-key",
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils._prompt_model_selection",
+                return_value=None,
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.console",
+                mock_console,
+            ),
+        ):
+            configure_provider("test-provider", mock_key_manager)
+
+        printed_texts = [str(call) for call in mock_console.print.call_args_list]
+        joined = " ".join(printed_texts)
+        assert "Cancelled" in joined, (
+            f"Expected 'Cancelled' in console output, got: {printed_texts}"
+        )
+        assert "configured" not in joined, (
+            "Must not print the '<display_name> configured' success message "
+            f"when the model prompt was interrupted, got: {printed_texts}"
+        )
+
+    def test_configure_provider_declined_custom_model_name_still_completes(self):
+        """ "" (empty string -- user declined to type a custom model name) is
+        NOT the abort sentinel. configure_provider() must still complete and
+        return a config dict (without default_model set), matching existing
+        behavior for providers with no models discovered."""
+        from amplifier_app_cli.provider_config_utils import configure_provider
+
+        mock_key_manager = MagicMock()
+
+        with (
+            patch(
+                "amplifier_app_cli.provider_config_utils.get_provider_info",
+                return_value=self._make_mock_provider_info(),
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils.Prompt.ask",
+                return_value="dummy-api-key",
+            ),
+            patch(
+                "amplifier_app_cli.provider_config_utils._prompt_model_selection",
+                return_value="",
+            ),
+            patch("amplifier_app_cli.provider_config_utils.console"),
+        ):
+            result = configure_provider("test-provider", mock_key_manager)
+
+        assert result is not None, (
+            "Declining a custom model name ('') must not abort configuration"
+        )
+        assert "default_model" not in result
+
+
+# ============================================================
 # Task 3: Spinner wraps model fetching
 # ============================================================
 
