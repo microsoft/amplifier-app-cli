@@ -18,7 +18,7 @@ row=$(awk -F'\t' -v l="$LANE" 'NR>1 && $1==l' "$MANIFEST" || true)
 IFS=$'\t' read -r lane wt branch base tmuxn goal log ts <<< "$row"
 
 echo "== lane=$lane branch=$branch base=${base:0:8} wt=$wt"
-if tmux has-session -t "$tmuxn" 2>/dev/null; then
+if tmux -L "${HIGHWAY_TMUX_SOCKET:-hw}" has-session -t "$tmuxn" 2>/dev/null; then
   echo "TMUX: LIVE (still running - do NOT merge yet)"
 else
   echo "TMUX: ended"
@@ -36,6 +36,23 @@ echo "-- commits ahead of base: $(git -C "$wt" rev-list --count "$base..HEAD")"
 mb=$(git -C "$wt" merge-base "$base" HEAD)
 echo "-- diffstat merge-base..HEAD (three-dot truth; two-dot lies after base moves):"
 git -C "$wt" diff --stat "$mb..HEAD" | tail -15
+
+# TEST-EDIT FLAG: from the three-dot name list, always report how many touched
+# paths look like tests, so the orchestrator can weigh a lane's own "I added
+# tests" claim against git ground truth. A path counts as a test edit when it
+# contains a tests?/ directory component, or a test_/_test filename marker.
+names=$(git -C "$wt" diff --name-only "$base...HEAD" || true)
+test_edits=""
+if [ -n "$names" ]; then
+  test_edits=$(printf '%s\n' "$names" | grep -E '(^|/)tests?/|test_|_test' || true)
+fi
+if [ -n "$test_edits" ]; then
+  n=$(printf '%s\n' "$test_edits" | grep -c .)
+  echo "TEST-EDITS: $n file(s)"
+  printf '%s\n' "$test_edits" | sed 's/^/  /'
+else
+  echo "TEST-EDITS: 0 file(s)"
+fi
 
 echo "-- last 3 commits:"
 git -C "$wt" log --oneline -3
