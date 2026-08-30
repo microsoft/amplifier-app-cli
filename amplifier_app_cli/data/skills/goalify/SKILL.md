@@ -1,8 +1,8 @@
 ---
 name: goalify
 description: >
-  Compose a /goal stop-condition from the current conversation and lint it
-  against known termination-failure patterns before showing it to the user.
+  Compose and lint a /goal stop-condition from the current conversation,
+  catching known termination-failure patterns before showing it to the user.
   Use when the user wants to turn the current task into a /goal loop, asks to
   "goalify this", wants a stop condition for autonomous work, says "write a
   goal condition", "make this a /goal", "turn this into a goal", or asks for

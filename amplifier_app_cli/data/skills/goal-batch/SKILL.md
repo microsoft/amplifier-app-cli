@@ -1,23 +1,25 @@
 ---
 name: goal-batch
 description: >
-  Plan a batch of independent work into isolated lanes, get your approval, then
-  run each lane as its own autonomous /goal session — one git worktree, one
-  branch, one tmux session each — and verify and merge the results yourself.
-  Use when work decomposes into pieces that can run at the same time: "run these
-  in parallel", "goal-batch", "launch lanes for these", "work these N tasks
-  simultaneously", "batch these as goals". Nothing launches until you have seen
-  the lane split and said go. This is NOT fire-and-forget: the orchestrating
-  session re-runs the full test suite itself after every merge and never accepts
-  a lane's own claim that it finished. NOT for bounded edits that each end in
-  their own PR — use mass-change for that. For continuous refill-on-drain
-  parallel work toward an outcome, use ten-lane-highway instead. Requires git,
-  tmux, the amplifier CLI on PATH, and the goalify and monitor skills.
+  Batch independent work into isolated /goal lanes — one worktree, branch, and
+  tmux session each — get your approval, then verify and merge every lane
+  yourself. Use when work decomposes into pieces that can run at the same
+  time: "run these in parallel", "goal-batch", "launch lanes for these",
+  "work these N tasks simultaneously", "batch these as goals". Nothing
+  launches until you've seen the lane split and said go, and this is NOT
+  fire-and-forget: the orchestrating session re-runs the full suite after
+  every merge and never accepts a lane's own claim that it finished. NOT for
+  bounded edits that each end in their own PR — use mass-change for that. For
+  continuous refill-on-drain parallel work toward an outcome, use
+  ten-lane-highway instead. Requires git, tmux, the amplifier CLI on PATH,
+  and the goalify and monitor skills.
 version: 2.0.0
 user-invocable: true
 argument-hint: "<the work to batch, or where it is enumerated>"
 allowed-tools: [bash, read_file, write_file, edit_file, grep, glob, delegate, load_skill, todo]
 model_role: general
+visibility:
+  summary: "One-shot batch of parallel /goal lanes that launches once and drains together; for continuous refill-on-drain work use ten-lane-highway."
 ---
 
 # Goal Batch
