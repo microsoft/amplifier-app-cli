@@ -86,7 +86,15 @@ Then do the work that decides whether this batch lands:
 - **Pin the base SHA** every lane branches from, and **record current test
   baselines** so "no regressions" is a number.
 
-No lane cap. Width is bounded by the work.
+No lane cap. Width is bounded by the work. **That no-cap rule governs *lanes*,
+not the resources lanes create.** Anything a lane stands up that outlives a
+process — containers, VMs, background servers, environments — does need a
+cumulative ceiling for the whole batch, because no single lane can enforce one:
+each lane sees only its own usage, never the total. The orchestrator is the only
+actor with the cross-lane view, so it keeps a running resource ledger for the
+batch — beside the manifest and goal files — and holds combined usage under a
+declared ceiling. Unbounded lanes are fine; unbounded resource accumulation
+across them is what exhausts the host.
 
 ## Phase 2 — Review and go
 
@@ -170,6 +178,14 @@ Every goal carries:
 - **Host capability limits, stated plainly.** A lane that authors what this box
   cannot compile ships code that breaks on someone else's first build. Live
   shared services are read-only evidence to a lane; tests use fixtures.
+- **Non-git resources the lane provisions, enumerated with their teardown.**
+  Anything a lane stands up that outlives a process — containers, VMs,
+  background servers, external environments — must be named in the goal, and
+  tearing each one down (or an explicit, named handoff to an owner) must be part
+  of the lane's own DONE criteria. File ownership bounds the *files* a lane
+  touches and says nothing about the *resources* it starts; a lane that exits
+  with resources still running has not finished, and Phase 7 cannot verify
+  teardown for what a lane never declared.
 - **The time bound**, and that exceeding it is a terminal `BUDGET` state, not a
   reason to rush the work or skip the commit.
 - **Add `DONE.json` to the repo's `.gitignore` before writing it.** Four of five
@@ -178,7 +194,9 @@ Every goal carries:
 - **Write `DONE.json` in the worktree root as your final act** — the terminal
   marker. Without it, an exited session is indistinguishable from a killed one.
   Fields: `lane, session_id, verdict, branch, head, pushed, items[],
-  residuals[], pending_human[], suite`. Shape in `examples/`.
+  residuals[], pending_human[], resources[], suite`. `resources[]` names every
+  non-git resource the lane provisioned and whether it was torn down or handed
+  off, so Phase 7 can verify teardown instead of guessing. Shape in `examples/`.
   **`verdict` is exactly one of `COMPLETE` / `BLOCKED` / `PARTIAL`**, and
   `session_id` is this lane's own — two lanes in one batch wrote `"PASS"` and
   `"success"`, which no parser reads the same way, and a `DONE.json` without a
@@ -366,8 +384,15 @@ honestly from a suite run that predated their own last file.
 4. On red: fix at the cause, or revert that merge and report. Never weaken a
    test to pass — the gate is doing its job.
 5. Push main. Then per lane: `git worktree remove`, delete branch local and
-   remote, `tmux kill-session`. Sweep for orphans: `tmux ls -F '#{session_name}'
-   | grep '^gb__<batch>__'` must come back empty.
+   remote, `tmux kill-session`. Sweep for orphaned sessions: `tmux ls -F
+   '#{session_name}' | grep '^gb__<batch>__'` must come back empty. **Then verify
+   teardown of everything the lanes provisioned** — teardown is part of landing,
+   not an afterthought. Read each lane's reported `resources[]`, confirm every
+   entry is actually gone, and extend the orphan sweep beyond tmux to whatever
+   the lanes could have started: check `docker ps`, `incus list`, or the process
+   list for survivors tied to this batch. Reconcile the total against the batch
+   resource ledger from Phase 1 — it must read zero still-running. A batch is not
+   landed while it is still holding resources open.
 6. Report verdict-first: per-lane table (shipped, SHAs, suite results), what
    verification caught that lanes did not self-report, residuals, anything
    `PENDING-HUMAN`, the unowned-files list from Phase 1, and new baselines.

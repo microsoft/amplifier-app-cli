@@ -125,6 +125,15 @@ scan for keywords in isolation and stop at the first clean-looking match.
   exists is not sufficient — confirm nothing else in the document is
   stricter than it.
 
+- **L7 — Infrastructure provisioned without teardown or handoff in DONE.**
+  This one is not about whether the condition can terminate, but about the
+  state it leaves behind when it does. If the goal stands up anything that
+  outlives the run — containers, VMs, background servers, external
+  environments — the condition must make *teardown-complete*, or an explicit
+  named handoff to an owner, part of DONE. A goal whose satisfied state leaves
+  resources running and unowned is abandoned, not finished. Does not fire for
+  goals that provision nothing.
+
 ### WARNINGS — advisory, do not block presentation
 
 - **L6 — Missing disjunctive exit.** The document should state achievement
@@ -193,6 +202,7 @@ Wrote: `.amplifier/goals/<slug>.md`
 | L3 | no known pattern detected | ... |
 | L4 | no known pattern detected | ... |
 | L5 | no known pattern detected | ... |
+| L7 | no known pattern detected | ... |
 | L6, W1–W4 | (list only the ones that fired) | ... |
 
 A clean table means no *known* failure pattern was detected — not that the
