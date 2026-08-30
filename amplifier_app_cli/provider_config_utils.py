@@ -283,16 +283,30 @@ def _sanitize_env_token(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_").upper()
 
 
-def _secret_config_field(module_id: str) -> dict[str, Any] | None:
-    """Return the provider type's secret ConfigField dict
-    (``field_type == "secret"``), if any."""
-    info = get_provider_info(module_id)
+def _secret_config_field_from_info(
+    info: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return the secret ConfigField dict (``field_type == "secret"``) from
+    an already-resolved provider info dict, if any.
+
+    Split out from ``_secret_config_field()`` so callers that must
+    distinguish "module unresolvable" (``info is None``) from "resolved,
+    but this provider has no secret field" (e.g. OAuth-based providers) can
+    call ``get_provider_info()`` once themselves and reuse the result --
+    see ``normalize_provider_secrets()``.
+    """
     if not info:
         return None
     for field in info.get("config_fields", []):
         if isinstance(field, dict) and field.get("field_type") == "secret":
             return field
     return None
+
+
+def _secret_config_field(module_id: str) -> dict[str, Any] | None:
+    """Return the provider type's secret ConfigField dict
+    (``field_type == "secret"``), if any."""
+    return _secret_config_field_from_info(get_provider_info(module_id))
 
 
 def _secret_env_var_for(module_id: str) -> str | None:
@@ -307,6 +321,13 @@ def _secret_field_id_for(module_id: str) -> str | None:
     'api_key'). Used to locate an instance's stored placeholder value on
     edit -- see docs/designs/provider-instance-credentials.md §5.3."""
     field = _secret_config_field(module_id)
+    return field.get("id") if field else None
+
+
+def _secret_field_id_for_info(info: dict[str, Any] | None) -> str | None:
+    """Same as ``_secret_field_id_for()``, but from an already-resolved
+    provider info dict -- see ``_secret_config_field_from_info()``."""
+    field = _secret_config_field_from_info(info)
     return field.get("id") if field else None
 
 
@@ -492,8 +513,13 @@ def normalize_provider_secrets(
             continue
         module_id = raw_module_id
 
-        field_id = _secret_field_id_for(module_id)
-        if field_id is None:
+        # Hoisted once so a genuine resolution failure (module can't be
+        # loaded/instantiated -- e.g. a stale/broken install) and the
+        # normal case of a provider with no secret ConfigField at all
+        # (OAuth-based providers) don't both call get_provider_info() and
+        # don't get conflated into the same loud warning.
+        provider_info = get_provider_info(module_id)
+        if provider_info is None:
             unresolved_label = raw_entry_id or module_id
             console.print(
                 f"[yellow]\u26a0 Could not resolve provider module "
@@ -503,6 +529,21 @@ def normalize_provider_secrets(
             )
             continue
         entry_label: str = str(raw_entry_id) if raw_entry_id else module_id
+
+        field_id = _secret_field_id_for_info(provider_info)
+        if field_id is None:
+            # Not a failure -- this provider type simply has no secret
+            # ConfigField to scan (e.g. an OAuth-based provider with no
+            # api_key field at all). Debug-only; never a user-facing
+            # warning for the normal case.
+            logger.debug(
+                "normalize_provider_secrets: provider module '%s' (entry "
+                "'%s') has no secret ConfigField -- skipping "
+                "plaintext-secret scan for this entry.",
+                module_id,
+                entry_label,
+            )
+            continue
 
         entry_config = entry.get("config") or {}
         value = entry_config.get(field_id)
