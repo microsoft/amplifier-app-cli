@@ -19,6 +19,18 @@ STALL_SECS=${HIGHWAY_STALL_SECS:-900}
 # HIGHWAY_JSON=1 -> emit ONE compact JSON line and nothing else (for the eval's
 # M1 sampler daemon: `HIGHWAY_JSON=1 highway_status.sh ... >> deficit.jsonl`).
 JSON=${HIGHWAY_JSON:-0}
+# WIDTH PIN: if BATCH_DIR/.width holds a single integer, it overrides the
+# positional WIDTH arg. width_source records which value won, so a reader can
+# tell a pinned width from an argument-supplied one.
+WIDTH_FILE="$BATCH_DIR/.width"
+width_source=arg
+if [ -f "$WIDTH_FILE" ]; then
+  _wpin=$(head -n1 "$WIDTH_FILE" | tr -d '[:space:]')
+  if printf '%s' "$_wpin" | grep -qE '^[0-9]+$'; then
+    WIDTH=$_wpin
+    width_source=file
+  fi
+fi
 # Same sanitization as launch_lane.sh — the watchdog name must match byte-for-byte.
 # (stat -c %Y below is GNU/Linux; adjust for macOS if this ever travels.)
 BATCH=$(printf '%s' "$(basename "$BATCH_DIR")" | tr -c 'A-Za-z0-9_-' '_')
@@ -31,7 +43,7 @@ live=0; ended=0; done_n=0; stalled=0; gone=0
 while IFS=$'\t' read -r lane wt branch base tmuxn goal log ts; do
   [ "$lane" = "lane" ] && continue
 
-  if tmux has-session -t "$tmuxn" 2>/dev/null; then st=LIVE; else st=ENDED; fi
+  if tmux -L "${HIGHWAY_TMUX_SOCKET:-hw}" has-session -t "$tmuxn" 2>/dev/null; then st=LIVE; else st=ENDED; fi
 
   age="-"; ahead="-"; dj="-"; wt_present=yes
   if [ -d "$wt" ]; then
@@ -44,7 +56,7 @@ while IFS=$'\t' read -r lane wt branch base tmuxn goal log ts; do
 
   flag=""
   if [ "$st" = "LIVE" ]; then
-    # A live tmux session counts as a live lane even if its worktree vanished —
+    # A live tmux-session counts as a live lane even if its worktree vanished —
     # that is an anomaly to flag, not a lane to ignore.
     live=$((live+1))
     if [ "$wt_present" = "no" ]; then flag="NO-WORKTREE"; fi
@@ -64,19 +76,19 @@ while IFS=$'\t' read -r lane wt branch base tmuxn goal log ts; do
 done < "$MANIFEST"
 
 WD="hw-watchdog__${BATCH}"
-if tmux has-session -t "$WD" 2>/dev/null; then wd_st=LIVE; else wd_st=DEAD; fi
+if tmux -L "${HIGHWAY_TMUX_SOCKET:-hw}" has-session -t "$WD" 2>/dev/null; then wd_st=LIVE; else wd_st=DEAD; fi
 
 open=$(( WIDTH - live )); if [ "$open" -lt 0 ]; then open=0; fi
 if [ "$READY" -lt "$open" ]; then deficit=$READY; else deficit=$open; fi
 
 if [ "$JSON" = 1 ]; then
-  printf '{"ts":"%s","batch":"%s","live":%d,"ended":%d,"done_marker":%d,"stalled":%d,"gone":%d,"width":%d,"ready":%d,"deficit":%d,"watchdog":"%s"}\n' \
-    "$(date -u +%FT%TZ)" "$BATCH" "$live" "$ended" "$done_n" "$stalled" "$gone" "$WIDTH" "$READY" "$deficit" "$wd_st"
+  printf '{"ts":"%s","batch":"%s","live":%d,"ended":%d,"done_marker":%d,"stalled":%d,"gone":%d,"width":%d,"width_source":"%s","ready":%d,"deficit":%d,"watchdog":"%s"}\n' \
+    "$(date -u +%FT%TZ)" "$BATCH" "$live" "$ended" "$done_n" "$stalled" "$gone" "$WIDTH" "$width_source" "$READY" "$deficit" "$wd_st"
   exit 0
 fi
 
 echo
-echo "SUMMARY batch=$BATCH live=$live ended=$ended done_marker=$done_n stalled=$stalled gone=$gone width=$WIDTH ready=$READY watchdog=$wd_st"
+echo "SUMMARY batch=$BATCH live=$live ended=$ended done_marker=$done_n stalled=$stalled gone=$gone width=$WIDTH width_source=$width_source ready=$READY watchdog=$wd_st"
 echo "DEFICIT=$deficit"
 if [ "$deficit" -gt 0 ]; then
   echo "ACTION: launch $deficit lane(s) NOW - refill before anything else."
