@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# launch_lane.sh — start ONE highway lane: worktree + branch + tmux + autonomous /goal session.
+# launch_lane.sh — start ONE highway lane: worktree + branch + tmux-session + autonomous /goal session.
 #
 # Usage: launch_lane.sh BATCH_DIR LANE REPO_PATH GOAL_FILE [BASE_REF]
 #   BATCH_DIR  directory holding this highway's state (manifest, logs, lanes/)
-#   LANE       kebab-case lane name (becomes branch lane/<LANE> and tmux hw__<batch>__<LANE>)
+#   LANE       kebab-case lane name (becomes branch lane/<LANE> and tmux-session hw__<batch>__<LANE>)
 #   REPO_PATH  path to the repo this lane owns
 #   GOAL_FILE  path to the goalify-composed goal file for this lane
 #   BASE_REF   ref to branch from (default: main)
 #
 # This script is the ONLY writer of manifest.tsv. Never hand-write the manifest.
-# Idempotent: re-running skips an existing worktree / running tmux session.
+# Idempotent: re-running skips an existing worktree / running tmux-session.
 set -euo pipefail
 
 BATCH_DIR=${1:?BATCH_DIR required}
@@ -18,7 +18,7 @@ REPO=${3:?REPO_PATH required}
 GOAL=${4:?GOAL_FILE required}
 BASE_REF=${5:-main}
 
-# tmux treats '.' and ':' specially in -t targets: a name built from a raw
+# tmux(1) treats '.' and ':' specially in -t targets: a name built from a raw
 # basename may not round-trip through later has-session checks. Sanitize the
 # batch identifier and REQUIRE clean lane names, so the name we create is
 # byte-identical to the name every later check looks up.
@@ -78,10 +78,10 @@ merge time.
   $DONE_MARKER
 EOF
 
-if tmux has-session -t "$TMUX_NAME" 2>/dev/null; then
+if tmux -L "${HIGHWAY_TMUX_SOCKET:-hw}" has-session -t "$TMUX_NAME" 2>/dev/null; then
   echo "SKIP: $TMUX_NAME already running"
 else
-  tmux new-session -d -s "$TMUX_NAME" -c "$WT" \
+  tmux -L "${HIGHWAY_TMUX_SOCKET:-hw}" new-session -d -s "$TMUX_NAME" -c "$WT" \
     "amplifier run '/goal @GOAL.md' 2>&1 | tee '$LOG'"
   echo "LAUNCHED: $TMUX_NAME -> $WT ($BRANCH @ ${BASE_SHA:0:8})"
 fi
