@@ -10,8 +10,9 @@ description: >
   the lane split and said go. This is NOT fire-and-forget: the orchestrating
   session re-runs the full test suite itself after every merge and never accepts
   a lane's own claim that it finished. NOT for bounded edits that each end in
-  their own PR — use mass-change for that. Requires git, tmux, the amplifier CLI
-  on PATH, and the goalify and monitor skills.
+  their own PR — use mass-change for that. For continuous refill-on-drain
+  parallel work toward an outcome, use ten-lane-highway instead. Requires git,
+  tmux, the amplifier CLI on PATH, and the goalify and monitor skills.
 version: 2.0.0
 user-invocable: true
 argument-hint: "<the work to batch, or where it is enumerated>"
