@@ -1,11 +1,11 @@
 ---
 name: amplifier-config
 description: >-
-  Explain, inspect, troubleshoot, and safely modify Amplifier CLI configuration,
-  including provider selection, settings scopes, bundles, routing, skills, source
-  overrides, and provider-module settings composed into the CLI. Use when someone
-  describes desired Amplifier CLI behavior and needs effective-value provenance, a
-  safe change plan, implementation, or outcome-based verification.
+  Explain, inspect, troubleshoot, and safely modify Amplifier CLI
+  configuration — providers, settings scopes, bundles, routing, skills, and
+  source overrides. Use when someone describes desired Amplifier CLI behavior
+  and needs effective-value provenance, a safe change plan, implementation, or
+  outcome-based verification.
 user-invocable: true
 version: 0.1.0
 license: MIT

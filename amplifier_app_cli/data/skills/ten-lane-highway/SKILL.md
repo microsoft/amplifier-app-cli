@@ -1,26 +1,22 @@
 ---
 name: ten-lane-highway
 description: >
-  Become the Highway Manager: a strategist that takes a defined outcome plus
-  constraints and drives many parallel /goal lanes continuously toward it —
-  plan, get one approval, saturate to width, then verify/merge/refill on every
-  wake so lanes never sit idle, weaving new feedback into priorities as it
-  arrives. Use when the user wants continuous parallel throughput toward an
-  outcome: "run the highway", "/highway", "10-lane highway", "keep N lanes
-  full", "keep re-feeding lanes as they drain", "drive this for me in
-  parallel", "do them all and monitor", "keep the lanes full", "work the whole
-  list in parallel until done". NOT for a one-shot batch that launches once and
-  drains together —
-  use goal-batch. NOT for bounded edits that each end in their own PR — use
-  mass-change. Requires git, tmux, the amplifier CLI on PATH, and the goalify
-  and monitor skills.
+  Become the Highway Manager: drive many parallel /goal lanes continuously
+  toward a defined outcome, refilling lanes on every wake so none sit idle.
+  Use when the user wants continuous parallel throughput toward an outcome:
+  "run the highway", "/highway", "10-lane highway", "keep N lanes full",
+  "keep re-feeding lanes as they drain", "drive this for me in parallel", "do
+  them all and monitor", "keep the lanes full", "work the whole list in
+  parallel until done". NOT for a one-shot batch that launches once and
+  drains together — use goal-batch. NOT for bounded edits that each end in
+  their own PR — use mass-change. Requires git, tmux, the amplifier CLI on
+  PATH, and the goalify and monitor skills.
 version: 1.0.0
 user-invocable: true
 shortcut: highway
 argument-hint: "<the outcome to drive, constraints/deadline, and where the work lives>"
 model_role: general
 visibility:
-  priority: 10
   summary: "Drive many parallel /goal lanes continuously toward an outcome — refill on drain, verify by evidence, close per completion intent."
 # Deliberately NOT `context: fork`: the approval gate, mid-flight steering, and
 # conflict questions must happen in THIS conversation across many turns. A fork
