@@ -241,6 +241,15 @@ reached because no turn ever ended.
 early. It cannot catch one that never stops. For unattended runs, bound the process
 externally (a wall-clock `timeout`, a CI job limit) in addition to `--max-turns`.
 
+Neither bound touches **the resources the work spawns**, either. `--max-turns` counts
+continuations and a wall-clock `timeout` counts seconds; inside one turn, inside one second
+of that budget, a run can start containers, VMs, background servers, or environments that
+outlive it entirely. The caps fence *the agent's activity*, never *what that activity leaves
+running* — a run can exit cleanly at turn 5 having stood up a hundred containers that nothing
+ever tears down, and no turn or wall-clock cap will reclaim them. For any unattended run that
+provisions anything, keep an **external resource ledger with a cumulative ceiling**, and make
+teardown (or an explicit handoff) part of the run itself — the caps will not do it for you.
+
 ---
 
 ## What the evaluator can and cannot see
