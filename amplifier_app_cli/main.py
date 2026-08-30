@@ -182,6 +182,66 @@ def _ensure_utf8_output() -> None:
             pass  # Not a real Windows console (e.g. some CI/test environments)
 
 
+def _configure_console_logging() -> None:
+    """Install a minimal root logging handler if the process has none.
+
+    amplifier-app-cli never calls logging.basicConfig() / logging.config
+    .dictConfig() / Logger.addHandler() anywhere in the codebase (verified).
+    With zero handlers on the root logger, any module's
+    ``logger.warning(..., exc_info=True)`` or ``logger.exception(...)``
+    falls through to Python's ``logging.lastResort`` handler, which dumps
+    the bare message AND the full traceback straight to stderr with no
+    formatting control. That is exactly how the owner's raw
+    AuthenticationError traceback leaked to the terminal during
+    `provider add openai-chatgpt`'s model fetch -- and it is not specific
+    to that one provider or that one call site; it is a structural gap
+    that leaks a traceback from *any* module that logs an exception.
+
+    Installs a single stderr ``StreamHandler`` at ``WARNING`` with a plain
+    ``"%(message)s"`` formatter (no timestamp/logger-name noise -- this is
+    a CLI, not a service) and, unless verbose/debug output was requested,
+    a filter that clears ``exc_info``/``exc_text`` on each record so a
+    logged exception still prints its message but never dumps a raw
+    traceback into the user's terminal. Verbose/debug mode leaves
+    tracebacks intact for debugging.
+
+    Must be called from main() before ``_attach_llm_error_filter()``: that
+    function's primary path (attach to an existing stderr StreamHandler)
+    only works once a real handler exists -- see its own docstring.
+    Without this, it fell back to filtering at the root *logger* level,
+    which is inert for any record emitted by a named child logger (the
+    normal case): ``Logger.callHandlers()`` walks handlers up the
+    hierarchy and checks each handler's own filters, but a logger-level
+    filter is only consulted on the logger that originated the record.
+
+    A no-op if the root logger already has a handler (e.g. under pytest,
+    or if some future code path configures logging itself) -- this never
+    overrides an existing setup.
+    """
+    root = logging.getLogger()
+    if root.handlers:
+        return
+
+    verbose_requested = any(
+        arg in ("--verbose", "-v", "--debug") for arg in sys.argv[1:]
+    )
+
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(logging.WARNING)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+
+    if not verbose_requested:
+
+        def _suppress_traceback(record: logging.LogRecord) -> bool:
+            record.exc_info = None
+            record.exc_text = None
+            return True
+
+        handler.addFilter(_suppress_traceback)
+
+    root.addHandler(handler)
+
+
 def _attach_llm_error_filter() -> None:
     """Attach the LLM error filter to the stderr StreamHandler at runtime.
 
@@ -3538,10 +3598,12 @@ async def interactive_chat(
     # tests miss it because they mock _create_prompt_session.
     try:
         prompt_session = _create_prompt_session(
-            get_active_mode=lambda: command_processor.session.coordinator.session_state.get(
-                "active_mode"
+            get_active_mode=lambda: (
+                command_processor.session.coordinator.session_state.get("active_mode")
             ),
-            get_pinned_provider=lambda: _pinned_provider_name(command_processor.session),
+            get_pinned_provider=lambda: _pinned_provider_name(
+                command_processor.session
+            ),
         )
     except _TERMINAL_UNUSABLE_ERRORS as e:
         _report_terminal_unusable(e, verbose=verbose)
@@ -4529,6 +4591,7 @@ register_session_commands(
 def main():
     """Main entry point."""
     _ensure_utf8_output()
+    _configure_console_logging()
     _attach_llm_error_filter()
     cli()
 

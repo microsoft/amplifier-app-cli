@@ -4,6 +4,7 @@ Provides generic configuration based on provider-declared config_fields.
 Queries provider modules dynamically for model lists and config fields.
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -20,8 +21,11 @@ from rich.prompt import Prompt
 from .key_manager import KeyManager
 from .lib.settings import AppSettings
 from .lib.settings import Scope
+from .provider_loader import _try_instantiate_provider
 from .provider_loader import get_provider_info
 from .provider_loader import get_provider_models
+from .provider_loader import list_models_for_instance
+from .provider_loader import load_provider_class
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -188,6 +192,161 @@ def _prompt_model_selection(
         return None
 
 
+def _run_provider_login(provider: Any) -> bool:
+    """Drive an already-instantiated provider's login() flow.
+
+    Renders whatever the provider's login() prints (device-code URL,
+    instructions, etc.) through this module's rich console via a
+    ``print_fn`` callback -- the provider itself has no console of its
+    own. Shared between the configuration wizard's login step (see
+    ``_maybe_login_provider()``) and the standalone
+    ``amplifier provider login <id>`` command, so the two call sites can
+    never diverge on how a provider's ``login()`` is invoked.
+
+    Args:
+        provider: An already-instantiated provider with a ``login``
+            attribute (sync or async), taking an optional ``print_fn``
+            keyword argument -- see the duck-typed auth contract in
+            ``_maybe_login_provider()``'s docstring.
+
+    Returns:
+        True if ``login()`` reported success, False on a graceful
+        failure. Never raises for a login-specific error -- prints one
+        yellow message and returns False instead of a raw traceback.
+
+    Note:
+        Ctrl-C / EOFError during login are deliberately NOT caught here;
+        they propagate to the caller so the same strict abort semantics
+        from the model-selection fix apply uniformly (see
+        configure_provider()'s outer ``except (KeyboardInterrupt,
+        EOFError)`` handler).
+    """
+
+    def _print_fn(message: str) -> None:
+        console.print(message)
+
+    login_fn = provider.login
+    try:
+        if asyncio.iscoroutinefunction(login_fn):
+            result = asyncio.run(login_fn(print_fn=_print_fn))
+        else:
+            result = login_fn(print_fn=_print_fn)
+    except (KeyboardInterrupt, EOFError):
+        raise
+    except Exception as e:
+        console.print(f"[yellow]Login failed: {escape(str(e))}[/yellow]")
+        return False
+    return bool(result)
+
+
+def _safely_fetch_models_from_instance(provider_id: str, provider: Any) -> list:
+    """Fetch models from an already-instantiated provider, with the exact
+    same connectivity/generic-exception safety net
+    ``_prompt_model_selection()`` uses for its own (self-instantiating)
+    fetch path -- so a login-time prefetch can never leak a raw
+    traceback (e.g. an AuthenticationError) the way the pre-fix
+    onboarding flow did.
+    """
+    try:
+        return list_models_for_instance(provider)
+    except (ConnectionError, OSError) as e:
+        logger.debug(f"Could not connect to provider '{provider_id}': {e}")
+        return []
+    except Exception as e:
+        console.print(
+            f"\n  [yellow]⚠  Could not fetch models for '{escape(str(provider_id))}':[/yellow]"
+            f"\n\n  {escape(str(e))}\n"
+        )
+        return []
+
+
+def _maybe_login_provider(
+    provider_id: str,
+    info: dict[str, Any],
+    collected_config: dict[str, Any],
+) -> Any | None:
+    """Offer a one-time interactive login for a provider that declares an
+    ``"auth:*"`` capability (e.g. ``"auth:oauth-device-code"``), then
+    return the instantiated provider instance so the caller can reuse it
+    for model fetching -- avoiding a second, separate instantiation.
+
+    Duck-types ``auth_status()``/``login()`` via ``hasattr`` so this
+    function -- and configure_provider()'s wizard step that calls it --
+    merges and runs safely independent of whichever provider module PR
+    actually adds those methods and the capability string. A provider
+    that declares the capability but doesn't (yet) implement the methods
+    is treated exactly like one with no login flow at all (the instance
+    is still returned for model-fetch reuse; no login prompt is shown).
+
+    Args:
+        provider_id: Provider ID (e.g. "openai-chatgpt").
+        info: The provider's get_info() dict (from get_provider_info()).
+        collected_config: Config values collected so far in Phase 1
+            (base_url, host, etc.) -- passed through to instantiation so
+            the same connection values are used as the eventual model
+            fetch would use.
+
+    Returns:
+        The instantiated provider instance if one could be created
+        (regardless of whether login ran, was declined, or failed), or
+        None if this provider declares no ``"auth:*"`` capability, or if
+        it could not be instantiated at all. In the None case the caller
+        must fall back to its normal (already-safe) model-fetch path.
+
+    Note:
+        Ctrl-C / EOFError raised from the confirmation prompt are
+        deliberately NOT caught here -- they propagate up to
+        configure_provider()'s own outer except handler, landing the same
+        clean "Cancelled." abort as any other prompt in the wizard (see
+        the model-selection Ctrl-C fix).
+    """
+    capabilities = info.get("capabilities") or []
+    if not any(str(c).startswith("auth:") for c in capabilities):
+        return None
+
+    provider_class = load_provider_class(provider_id)
+    if provider_class is None:
+        return None
+    provider = _try_instantiate_provider(provider_class, collected_config)
+    if provider is None:
+        return None
+
+    if not (hasattr(provider, "auth_status") and hasattr(provider, "login")):
+        return provider
+
+    try:
+        status = provider.auth_status()
+    except Exception:
+        # A broken auth_status() must never crash the wizard -- treat it
+        # like "no login capability" and let the caller proceed with
+        # whatever model list it can otherwise get.
+        return provider
+
+    if status == "authenticated":
+        return provider
+
+    display_name = info.get("display_name", provider_id)
+    console.print()
+    proceed = Confirm.ask(
+        f"[bold]{escape(str(display_name))}[/bold] requires a one-time "
+        "browser login. Start it now?",
+        default=True,
+    )
+    if not proceed:
+        console.print(
+            "[yellow]Skipping login -- model list may be limited; run "
+            f"`amplifier provider login {escape(str(provider_id))}` later[/yellow]"
+        )
+        return provider
+
+    if not _run_provider_login(provider):
+        console.print(
+            "[yellow]Skipping login -- model list may be limited; run "
+            f"`amplifier provider login {escape(str(provider_id))}` later[/yellow]"
+        )
+    return provider
+
+
 def _should_show_field(field: dict[str, Any], collected_config: dict[str, Any]) -> bool:
     """Check if a field should be shown based on show_when conditions.
 
@@ -283,16 +442,30 @@ def _sanitize_env_token(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_").upper()
 
 
-def _secret_config_field(module_id: str) -> dict[str, Any] | None:
-    """Return the provider type's secret ConfigField dict
-    (``field_type == "secret"``), if any."""
-    info = get_provider_info(module_id)
+def _secret_config_field_from_info(
+    info: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return the secret ConfigField dict (``field_type == "secret"``) from
+    an already-resolved provider info dict, if any.
+
+    Split out from ``_secret_config_field()`` so callers that must
+    distinguish "module unresolvable" (``info is None``) from "resolved,
+    but this provider has no secret field" (e.g. OAuth-based providers) can
+    call ``get_provider_info()`` once themselves and reuse the result --
+    see ``normalize_provider_secrets()``.
+    """
     if not info:
         return None
     for field in info.get("config_fields", []):
         if isinstance(field, dict) and field.get("field_type") == "secret":
             return field
     return None
+
+
+def _secret_config_field(module_id: str) -> dict[str, Any] | None:
+    """Return the provider type's secret ConfigField dict
+    (``field_type == "secret"``), if any."""
+    return _secret_config_field_from_info(get_provider_info(module_id))
 
 
 def _secret_env_var_for(module_id: str) -> str | None:
@@ -307,6 +480,13 @@ def _secret_field_id_for(module_id: str) -> str | None:
     'api_key'). Used to locate an instance's stored placeholder value on
     edit -- see docs/designs/provider-instance-credentials.md §5.3."""
     field = _secret_config_field(module_id)
+    return field.get("id") if field else None
+
+
+def _secret_field_id_for_info(info: dict[str, Any] | None) -> str | None:
+    """Same as ``_secret_field_id_for()``, but from an already-resolved
+    provider info dict -- see ``_secret_config_field_from_info()``."""
+    field = _secret_config_field_from_info(info)
     return field.get("id") if field else None
 
 
@@ -492,8 +672,13 @@ def normalize_provider_secrets(
             continue
         module_id = raw_module_id
 
-        field_id = _secret_field_id_for(module_id)
-        if field_id is None:
+        # Hoisted once so a genuine resolution failure (module can't be
+        # loaded/instantiated -- e.g. a stale/broken install) and the
+        # normal case of a provider with no secret ConfigField at all
+        # (OAuth-based providers) don't both call get_provider_info() and
+        # don't get conflated into the same loud warning.
+        provider_info = get_provider_info(module_id)
+        if provider_info is None:
             unresolved_label = raw_entry_id or module_id
             console.print(
                 f"[yellow]\u26a0 Could not resolve provider module "
@@ -503,6 +688,21 @@ def normalize_provider_secrets(
             )
             continue
         entry_label: str = str(raw_entry_id) if raw_entry_id else module_id
+
+        field_id = _secret_field_id_for_info(provider_info)
+        if field_id is None:
+            # Not a failure -- this provider type simply has no secret
+            # ConfigField to scan (e.g. an OAuth-based provider with no
+            # api_key field at all). Debug-only; never a user-facing
+            # warning for the normal case.
+            logger.debug(
+                "normalize_provider_secrets: provider module '%s' (entry "
+                "'%s') has no secret ConfigField -- skipping "
+                "plaintext-secret scan for this entry.",
+                module_id,
+                entry_label,
+            )
+            continue
 
         entry_config = entry.get("config") or {}
         value = entry_config.get(field_id)
@@ -933,13 +1133,48 @@ def configure_provider(
                 existing_config.get("default_model") if existing_config else None
             )
 
+            # Wizard login step: for a provider that declares an "auth:*"
+            # capability (e.g. "auth:oauth-device-code"), offer a
+            # one-time browser login BEFORE fetching models, so a
+            # first-time user gets the live model catalog instead of a
+            # stale/empty fallback list. Reuses ONE provider instance for
+            # both the login check and the model fetch below -- see
+            # _maybe_login_provider()'s docstring. A provider with no
+            # "auth:*" capability (the common case today) is unaffected:
+            # login_provider is None and prefetched_models stays None, so
+            # _prompt_model_selection() below does its own (already-safe)
+            # fetch exactly as before.
+            prefetched_models = None
+            login_provider = _maybe_login_provider(provider_id, info, collected_config)
+            if login_provider is not None:
+                with console.status(
+                    "[dim]Fetching available models...[/dim]", spinner="dots"
+                ):
+                    prefetched_models = _safely_fetch_models_from_instance(
+                        provider_id, login_provider
+                    )
+
             # Prompt for model selection
             # Pass collected_config so providers can connect to real servers for dynamic discovery
             console.print()
             console.print("[bold]Default Model[/bold]")
             selected_model = _prompt_model_selection(
-                provider_id, default_model, collected_config
+                provider_id,
+                default_model,
+                collected_config,
+                models=prefetched_models,
             )
+            # None is the strict abort sentinel (Ctrl-C / EOF during the
+            # Choice prompt -- see _prompt_model_selection's docstring). It
+            # is NOT the same as "" (user declined to enter a custom model
+            # name, which is a valid "continue without a model" outcome).
+            # Without this check, an interrupted model prompt fell through
+            # to Phase 3, printed "configured", and saved an empty/partial
+            # config -- matching the outer handler at the bottom of this
+            # function and the precedent in commands/routing.py.
+            if selected_model is None:
+                console.print("\n[dim]Cancelled.[/dim]")
+                return None
             if selected_model:
                 collected_config["default_model"] = selected_model
 

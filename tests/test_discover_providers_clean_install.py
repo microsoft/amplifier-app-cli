@@ -182,6 +182,7 @@ class TestGitProviderFallbackOnInstallFailure:
         expected_names = {
             "provider-anthropic": "Anthropic",
             "provider-openai": "OpenAI",
+            "provider-openai-chatgpt": "OpenAI ChatGPT",
             "provider-azure-openai": "Azure OpenAI",
             "provider-chat-completions": "OpenAI-Compatible",
             "provider-gemini": "Google Gemini",

@@ -19,17 +19,22 @@ from ..provider_config_utils import (
     _config_claimed_env_vars,
     _normalize_id,
     _preserve_reserved_keys,
+    _run_provider_login,
     _secret_env_var_for,
     _secret_field_id_for,
     _suggest_instance_env_var,
     configure_provider,
 )
+from ..provider_loader import _try_instantiate_provider
+from ..provider_loader import get_provider_info
 from ..provider_loader import get_provider_models
+from ..provider_loader import load_provider_class
 from ..provider_manager import ProviderManager
 from ..provider_manager import resolve_provider_entry
 from ..provider_sources import ensure_provider_installed
 from ..provider_sources import get_effective_provider_sources
 from ..provider_sources import install_known_providers
+from ..provider_sources import is_provider_module_installed
 from ..ui.item_renderer import ItemRenderer
 from ..ui.scope import (
     is_scope_change_available,
@@ -283,8 +288,7 @@ def _prompt_credential_binding(
         f"model/settings [dim](default)[/dim]"
     )
     console.print(
-        "    [2] Separate credential -- its own env var (different "
-        "account/org/key)"
+        "    [2] Separate credential -- its own env var (different account/org/key)"
     )
     choice = Prompt.ask("  Choice", choices=["1", "2"], default="1")
 
@@ -1181,6 +1185,109 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
         )
 
     console.print(table)
+
+
+# ============================================================
+# provider login
+# ============================================================
+
+
+@provider.command("login")
+@click.argument("provider_id")
+@click.pass_context
+def provider_login(ctx: click.Context, provider_id: str) -> None:
+    """Log in to an OAuth-capable provider.
+
+    Runs the same browser-login flow the configuration wizard offers for
+    a provider that supports it (declares an "auth:*" capability in its
+    get_info()). Useful to (re)authenticate later, or if login was
+    skipped/declined during `provider add` or `provider edit`.
+
+    Examples:
+      amplifier provider login openai-chatgpt
+    """
+    module_id = _normalize_module_id(provider_id)
+    display = _display_name(module_id)
+
+    if not is_provider_module_installed(module_id):
+        console.print(f"[red]Provider '{display}' is not installed.[/red]")
+        console.print(
+            f"\nInstall it first with: [cyan]amplifier provider install {display}[/cyan]"
+        )
+        ctx.exit(1)
+
+    info = get_provider_info(module_id)
+    if info is None:
+        console.print(f"[red]Error: Could not load provider '{display}'.[/red]")
+        ctx.exit(1)
+
+    capabilities = info.get("capabilities") or []
+    if not any(str(c).startswith("auth:") for c in capabilities):
+        console.print(
+            f"[yellow]'{display}' uses API-key configuration -- see "
+            f"`amplifier provider edit {display}`.[/yellow]"
+        )
+        return
+
+    provider_class = load_provider_class(module_id)
+    if provider_class is None:
+        console.print(f"[red]Error: Could not load provider '{display}'.[/red]")
+        ctx.exit(1)
+
+    # Instantiate with the saved config for this instance when one
+    # exists, so login uses the same connection values the wizard/runtime
+    # would -- empty dict (not an error) when the provider has never been
+    # configured yet.
+    settings = _get_settings()
+    entry = _find_provider_entry(settings.get_provider_overrides(), provider_id)
+    stored_config = entry.get("config", {}) if entry else {}
+
+    provider_instance = _try_instantiate_provider(provider_class, stored_config)
+    if provider_instance is None:
+        console.print(f"[red]Error: Could not instantiate provider '{display}'.[/red]")
+        ctx.exit(1)
+
+    if not (
+        hasattr(provider_instance, "auth_status")
+        and hasattr(provider_instance, "login")
+    ):
+        console.print(
+            f"[yellow]'{display}' uses API-key configuration -- see "
+            f"`amplifier provider edit {display}`.[/yellow]"
+        )
+        return
+
+    try:
+        status = provider_instance.auth_status()
+    except Exception as e:
+        console.print(
+            f"[red]Could not check login status: {escape_markup(str(e))}[/red]"
+        )
+        ctx.exit(1)
+
+    console.print(f"Current status: [bold]{escape_markup(str(status))}[/bold]")
+    if status == "authenticated":
+        console.print(f"[green]✓ Already logged in to {display}[/green]")
+        return
+
+    success = _run_provider_login(provider_instance)
+
+    try:
+        final_status = provider_instance.auth_status()
+    except Exception:
+        final_status = "unauthenticated" if not success else status
+
+    if success:
+        console.print(
+            f"[green]✓ Logged in to {display} "
+            f"({escape_markup(str(final_status))})[/green]"
+        )
+    else:
+        console.print(
+            f"[red]✗ Login failed for {display} "
+            f"({escape_markup(str(final_status))})[/red]"
+        )
+        ctx.exit(1)
 
 
 # ============================================================
