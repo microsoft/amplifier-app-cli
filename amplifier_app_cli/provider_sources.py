@@ -27,6 +27,7 @@ DEFAULT_PROVIDER_SOURCES = {
     "provider-github-copilot": "git+https://github.com/microsoft/amplifier-module-provider-github-copilot@main",
     "provider-ollama": "git+https://github.com/microsoft/amplifier-module-provider-ollama@main",
     "provider-openai": "git+https://github.com/microsoft/amplifier-module-provider-openai@main",
+    "provider-openai-chatgpt": "git+https://github.com/microsoft/amplifier-module-provider-openai-chatgpt@main",
     "provider-vllm": "git+https://github.com/microsoft/amplifier-module-provider-vllm@main",
 }
 

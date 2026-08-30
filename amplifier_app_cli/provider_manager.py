@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 _PROVIDER_DISPLAY_NAMES = {
     "anthropic": "Anthropic",
     "openai": "OpenAI",
+    "openai-chatgpt": "OpenAI ChatGPT",
     "azure-openai": "Azure OpenAI",
     "gemini": "Google Gemini",
     "ollama": "Ollama",
