@@ -35,15 +35,16 @@ StdinArbiter and CLIApprovalProvider integration tests are preserved unchanged.
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import inspect
+import textwrap
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from amplifier_app_cli.stdin_arbiter import StdinArbiter
 from amplifier_app_cli.steering_input import SteeringInputManager
-
 
 # ---------------------------------------------------------------------------
 # Stub for SteeringQueueFull (produced by the orchestrator, not a test dep)
@@ -789,6 +790,29 @@ def test_ctrl_c_interrupt_sentinel_is_plain_exception():
         "_CtrlCInterrupt must NOT be KeyboardInterrupt; using KeyboardInterrupt "
         "triggers the Task.__step_run_and_handle_result() re-raise bug"
     )
+
+
+def test_steering_prompt_disables_background_exception_handler():
+    """The steering prompt opts out of Prompt Toolkit's Press ENTER fallback."""
+    source = textwrap.dedent(inspect.getsource(SteeringInputManager.run))
+    tree = ast.parse(source)
+    prompt_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "prompt_async"
+    ]
+    assert len(prompt_calls) == 1
+
+    kwargs = {
+        keyword.arg: keyword.value
+        for keyword in prompt_calls[0].keywords
+        if keyword.arg is not None
+    }
+    assert isinstance(kwargs.get("set_exception_handler"), ast.Constant)
+    assert kwargs["set_exception_handler"].value is False
+    assert "Press ENTER" not in source
 
 
 @pytest.mark.asyncio

@@ -72,6 +72,29 @@ def _make_subprocess_runner_module():
 class TestSubprocessRouting:
     """Tests for subprocess opt-in parameter routing in spawn_sub_session."""
 
+    async def test_subprocess_rejects_post_initialize_callback(self, monkeypatch):
+        """A callback needs an in-process child session and cannot run in subprocess mode."""
+        parent = _make_parent_session()
+        fake_module = _make_subprocess_runner_module()
+        monkeypatch.setitem(
+            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
+        )
+
+        with patch("amplifier_app_cli.session_spawner.merge_configs") as mock_merge:
+            mock_merge.return_value = {"session": {}}
+
+            from amplifier_app_cli.session_spawner import spawn_sub_session
+
+            with pytest.raises(ValueError, match="post_initialize_callback"):
+                await spawn_sub_session(
+                    agent_name="some-agent",
+                    instruction="Do something",
+                    parent_session=parent,
+                    agent_configs={"some-agent": {}},
+                    use_subprocess=True,
+                    post_initialize_callback=lambda _child: None,
+                )
+
     async def test_subprocess_param_routes_to_subprocess(self, monkeypatch):
         """use_subprocess=True routes to run_session_in_subprocess, returns expected dict."""
         parent = _make_parent_session()
