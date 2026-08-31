@@ -39,6 +39,50 @@ class EffectiveConfigSummary:
         return f"Bundle: {bundle_name} | Provider: {self.provider_name} | {self.model}"
 
 
+@dataclass(frozen=True)
+class EffectiveProviderModel:
+    """Canonical provider/model provenance for a resolved session config."""
+
+    provider: str
+    model: str
+
+    def as_metadata(self) -> dict[str, str]:
+        """Return the fields persisted by every durable session writer."""
+        return {"provider": self.provider, "model": self.model}
+
+
+def get_effective_provider_model(config: dict[str, Any]) -> EffectiveProviderModel:
+    """Resolve the provider/model pair that will handle the session.
+
+    Provider selection follows orchestrator priority semantics. Within the
+    selected provider's config, ``model`` is the supported explicit runtime
+    setting and therefore takes precedence over the legacy/default
+    ``default_model`` setting.
+    """
+    providers = config.get("providers", [])
+    selected_provider = (
+        _select_provider_by_priority(providers) if isinstance(providers, list) else None
+    )
+    if selected_provider is None:
+        return EffectiveProviderModel(provider="none", model="none")
+
+    provider = selected_provider.get("module")
+    if not isinstance(provider, str) or not provider:
+        provider = "unknown"
+
+    provider_config = selected_provider.get("config", {})
+    if not isinstance(provider_config, dict):
+        provider_config = {}
+
+    model = provider_config.get("model")
+    if not isinstance(model, str) or not model:
+        model = provider_config.get("default_model")
+    if not isinstance(model, str) or not model:
+        model = "default"
+
+    return EffectiveProviderModel(provider=provider, model=model)
+
+
 def get_effective_config_summary(
     config: dict[str, Any],
     config_source: str = "default",
@@ -52,22 +96,14 @@ def get_effective_config_summary(
     Returns:
         EffectiveConfigSummary with display-friendly information
     """
-    # Extract provider info - select by priority (lowest number wins)
-    # This matches the orchestrator's _select_provider() logic
-    providers = config.get("providers", [])
-    selected_provider = _select_provider_by_priority(providers)
-
-    if selected_provider:
-        provider_module = selected_provider.get("module", "unknown")
-        provider_config = selected_provider.get("config", {})
-        model = provider_config.get("default_model", "default")
-
+    provenance = get_effective_provider_model(config)
+    provider_module = provenance.provider
+    model = provenance.model
+    if provider_module != "none":
         # Try to get friendly provider name
         provider_name = _get_provider_display_name(provider_module)
     else:
-        provider_module = "none"
         provider_name = "None"
-        model = "none"
 
     # Extract orchestrator
     session_config = config.get("session", {})
@@ -158,4 +194,9 @@ def _get_provider_display_name(provider_module: str) -> str:
     return name_map.get(name, name.replace("-", " ").title())
 
 
-__all__ = ["EffectiveConfigSummary", "get_effective_config_summary"]
+__all__ = [
+    "EffectiveConfigSummary",
+    "EffectiveProviderModel",
+    "get_effective_config_summary",
+    "get_effective_provider_model",
+]
