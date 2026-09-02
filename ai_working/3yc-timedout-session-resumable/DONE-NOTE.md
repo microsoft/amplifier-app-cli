@@ -34,6 +34,18 @@ await** — `context.get_messages()` — and (b) everything else it needs is ava
 **Chosen: (b) persist the transcript incrementally during the run, so no cancellation-path write is
 needed at all.** The cancellation path gains **no new code, no new await, and no new write**.
 
+**How this satisfies the hard invariant — "the fix must NOT introduce an unbounded await on the
+cancellation path".** The danger is specific: an `await` reached while a task is unwinding a fired
+deadline can *block past the very deadline that caused the unwind*, re-creating the hang the timeout
+exists to bound. Options (a) and (b) differ in *where* they discharge that risk. (a) puts work on the
+cancellation path and then tries to bound it — so the invariant holds only as strongly as the bound,
+and §2 shows the bound is partly fictional. (b) moves the work to normal execution, where blocking is
+already accepted and the post-run save has always done exactly this work; it changes *when* the
+transcript is written, not *what*. The invariant then holds **by construction rather than by
+argument**: there is no new statement on the cancellation path to bound, so there is nothing to get
+wrong. §3 proves it empirically anyway — `get_messages()` is made to hang forever from the instant
+cancellation is delivered, and the unwind is unaffected.
+
 ### Why not (a) — `asyncio.shield` + a hard secondary timeout
 
 Rejected on a measured, not aesthetic, ground: **the bound would be partly fictional.**
