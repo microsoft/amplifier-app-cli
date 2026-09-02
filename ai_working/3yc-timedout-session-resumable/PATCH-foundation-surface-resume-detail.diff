@@ -1,0 +1,21 @@
+--- a/modules/tool-delegate/amplifier_module_tool_delegate/__init__.py
++++ b/modules/tool-delegate/amplifier_module_tool_delegate/__init__.py
+@@ -1327,7 +1327,17 @@
+             return ToolResult(
+                 success=False,
+                 error={
+-                    "message": f"Agent session '{session_id}' not found. May have expired or never existed."
++                    # Surface the SESSION LAYER's own detail rather than a
++                    # hardcoded sentence. Only that layer knows WHY the id is
++                    # gone and therefore what the caller should do instead --
++                    # e.g. amplifier-app-cli now reports "This session is NOT
++                    # resumable -- re-delegate to start a fresh session instead
++                    # of retrying the resume." Hardcoding here discarded that,
++                    # leaving "retry the resume" a plausible reading for the
++                    # model. Falls back to the generic sentence when the
++                    # exception carries no detail.
++                    "message": str(e)
++                    or f"Agent session '{session_id}' not found. May have expired or never existed."
+                 },
+             )
+ 

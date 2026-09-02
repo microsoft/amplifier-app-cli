@@ -163,29 +163,46 @@ resume" as a plausible reading:
   **other way in a real run**: spawn → time out with checkpointing off → the id is genuinely absent
   **and** asking to resume it says so explicitly.
 
-**SCOPE OF BRANCH 2, STATED HONESTLY — one half is not ours, and this was verified at file:line, not
-assumed.** `tool-delegate`'s handler
-(`modules/tool-delegate/amplifier_module_tool_delegate/__init__.py:2148-2166`, foundation cache
-`c909465861f9d6ce`) catches `FileNotFoundError`, uses `str(e)` **only** in the `delegate:error`
-event, and returns a **hardcoded** result message that discards it:
+**BRANCH 2 SPANS TWO REPOS, AND BOTH HALVES ARE NOW DONE — the second ships as a verified patch.**
+Verified at file:line, not assumed: `tool-delegate`'s handler
+(`modules/tool-delegate/amplifier_module_tool_delegate/__init__.py:1314-1332` @ `cc7e23a`) catches
+`FileNotFoundError`, uses `str(e)` **only** in the `delegate:error` event, and returns a **hardcoded**
+message that discards it — so the app-side wording reached the event, the logs and non-foundation
+callers, but **not the ToolResult the model reads**.
+
+`PATCH-foundation-surface-resume-detail.diff` (in this directory) closes it:
 
 ```python
-return ToolResult(
-    success=False,
-    error={"message": f"Agent session '{session_id}' not found. May have expired or never existed."},
-)
+"message": str(e)
+or f"Agent session '{session_id}' not found. May have expired or never existed."
 ```
 
-So the app-side text reaches the `delegate:error` event, the logs, and every non-foundation caller
-(recipes, programmatic callers) — but **not** the model-facing `ToolResult`. Closing that last half
-is a one-line foundation change, specified here so it is trivially landable:
+Detail-preserving, with the original sentence retained as the empty-detail fallback.
 
-```python
-error={"message": str(e)},   # instead of the hardcoded sentence
-```
+| check | result |
+|---|---|
+| `git apply --check` @ `cc7e23a` | **exit 0** |
+| tool-delegate suite, UNPATCHED baseline | **48 passed** |
+| tool-delegate suite, PATCHED (scratch copy) | **48 passed** |
+| foundation working tree afterwards | **clean — the repo was never modified** |
+
+**The round trip is proved, not asserted in halves.**
+`test_resume_message_roundtrip.py` (beside the patch) wires the **real** app-side
+`resume_sub_session` into the **real** tool-delegate resume path and reads the resulting `ToolResult`:
+
+* against **PATCHED** tool-delegate: **2 passed**;
+* against **UNPATCHED**: **1 failed, 1 passed**, and the failure prints the exact string the model
+  would otherwise see — `"Agent session '<id>' not found. May have expired or never existed."`
+
+That asymmetry is the result: it is what makes the foundation diff necessary rather than cosmetic.
+The file lives beside the patch, **not** in `tests/`, because it depends on an unlanded change and
+would otherwise redden CI — the same convention the w3/37n lane used for `test_partial_roundtrip.py`.
+
+**Landing order:** this app-cli PR is safe alone (the wording still reaches the event, the logs and
+non-foundation callers). Land the foundation diff to complete the model-facing half.
 
 Deliberately **not** worked around from this side: the only in-repo lever would be raising a
-different exception type so foundation's generic `except Exception` (`:2146`, which *does* pass
+different exception type so foundation's generic `except Exception` (`:1312`, which *does* pass
 `str(e)` through) caught it instead — trading away a structured, correctly-typed error branch to
 smuggle a string. That is a worse design and it is not done.
 
@@ -259,3 +276,5 @@ event name. The test's intent and assertions are untouched.
 | `tests/test_timedout_session_resumable.py` | 13 new tests — BOTH branches of the disjunctive contract, the invariant, the inverted control, the boundary choice, best-effort behaviour, the throttle and the escape hatch |
 | `tests/test_session_spawner.py` | `FakeHooks` made event-keyed (see §4) |
 | `ai_working/3yc-timedout-session-resumable/DONE-NOTE.md` | this note |
+| `ai_working/3yc-timedout-session-resumable/PATCH-foundation-surface-resume-detail.diff` | the foundation half of branch 2; `git apply --check` exit 0 @ `cc7e23a`, 48 passed patched and unpatched |
+| `ai_working/3yc-timedout-session-resumable/test_resume_message_roundtrip.py` | cross-repo round trip: 2 passed patched, 1 failed unpatched (deliberately outside `tests/`) |
