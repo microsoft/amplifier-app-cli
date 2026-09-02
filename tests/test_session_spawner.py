@@ -639,6 +639,13 @@ class TestSpawnEnrichment:
 
         class FakeHooks:
             def register(self, event, handler, priority=0, name=None):
+                # The real registry is keyed by event; this fake has a single
+                # slot, so it must ignore registrations for other events (the
+                # spawner also registers a provider:request transcript
+                # checkpoint) rather than let the last writer win.
+                if event != "orchestrator:complete":
+                    return lambda: None
+
                 nonlocal captured_handler
                 captured_handler = handler
 
@@ -849,6 +856,13 @@ class TestSpawnEnrichment:
 
         class FakeHooks:
             def register(self, event, handler, priority=0, name=None):
+                # The real registry is keyed by event; this fake has a single
+                # slot, so it must ignore registrations for other events (the
+                # spawner also registers a provider:request transcript
+                # checkpoint) rather than let the last writer win.
+                if event != "orchestrator:complete":
+                    return lambda: None
+
                 nonlocal captured_handler
                 captured_handler = handler
 
