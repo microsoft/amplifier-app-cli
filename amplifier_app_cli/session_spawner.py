@@ -5,7 +5,9 @@ Implements sub-session creation with configuration inheritance and overlays.
 
 import copy
 import logging
+import os
 import sys
+import time
 from pathlib import Path
 
 from amplifier_core import AmplifierSession
@@ -226,6 +228,178 @@ def _find_redacted_values(value: object, path: str = "") -> list[str]:
     elif value == _REDACTION_SENTINEL:
         found.append(path or "<root>")
     return found
+
+
+# ---------------------------------------------------------------------------
+# Mid-run transcript checkpointing
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS
+#
+# Both spawn_sub_session and resume_sub_session used to call store.save() only
+# AFTER a successful `await child_session.execute(...)`. A wall-clock timeout in
+# tool-delegate CANCELS that await, so the save never ran, the child session was
+# cleaned up in the outer finally, and nothing about the timed-out sub-session
+# ever reached SessionStore. The session_id the caller was handed back therefore
+# could not be resumed -- `delegate(session_id=...)` failed with "Session not
+# found. May have expired or never existed."
+#
+# THE CONSTRAINT THAT SHAPES THE FIX
+#
+# Persisting from the CANCELLATION path would require awaiting
+# context.get_messages() while the task is already unwinding a deadline. Any
+# await there can block past the very deadline that caused the unwind,
+# re-creating the hang the timeout exists to bound -- and store.save() is
+# synchronous I/O, so an `asyncio.wait_for` around it could not interrupt the
+# part most likely to be slow anyway. So the cancellation path is left ENTIRELY
+# UNTOUCHED: it gains no await, no write, and no new code at all. Instead the
+# transcript is checkpointed DURING normal execution, where blocking is already
+# accepted (the post-run save has always done exactly this work).
+#
+# WHY THE CHECKPOINT FIRES ON provider:request, NOT provider:response
+#
+# provider:request is the only point in the orchestrator loop where the message
+# list is guaranteed TOOL-PAIR-BALANCED: the previous round's tool results have
+# all been appended, and the next assistant message (which may open new
+# tool_calls) has not been produced yet. Checkpointing after a response would
+# persist an assistant message whose tool_calls have no matching results, and
+# resuming that transcript reproduces the "No tool call found for function call
+# output" class of provider error. Balanced-by-construction is the point.
+
+_CHECKPOINT_INTERVAL_ENV = "AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S"
+
+# CHOSEN, NOT MEASURED. No data exists on sub-session checkpoint sizes because
+# no mid-run checkpoint has ever been written. 30 s bounds the transcript lost
+# to a timeout to at most one window, while capping write amplification on
+# fast-iterating sub-sessions (which would otherwise rewrite the whole
+# transcript once per provider call). Override with the env var above; a
+# negative value disables mid-run checkpointing entirely.
+_DEFAULT_CHECKPOINT_INTERVAL_S = 30.0
+
+
+def _checkpoint_interval_s() -> float:
+    """Resolve the minimum interval between mid-run transcript checkpoints."""
+    raw = os.environ.get(_CHECKPOINT_INTERVAL_ENV)
+    if raw is None or raw.strip() == "":
+        return _DEFAULT_CHECKPOINT_INTERVAL_S
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            f"Invalid {_CHECKPOINT_INTERVAL_ENV}={raw!r}; "
+            f"using default {_DEFAULT_CHECKPOINT_INTERVAL_S}s"
+        )
+        return _DEFAULT_CHECKPOINT_INTERVAL_S
+
+
+async def _write_checkpoint(
+    session: "AmplifierSession",
+    store,
+    session_id: str,
+    metadata: dict,
+) -> bool:
+    """Snapshot the live transcript to SessionStore. Best-effort, never raises.
+
+    MUST only ever be called from the NORMAL execution path (pre-execute, or
+    from a provider:request hook). Calling it while unwinding a cancellation
+    would reintroduce the unbounded await this whole design exists to avoid.
+
+    Returns True if a checkpoint was written, False if it was skipped or failed.
+    """
+    from datetime import UTC
+    from datetime import datetime
+
+    try:
+        context = session.coordinator.get("context")
+        transcript = await context.get_messages() if context else []
+        snapshot = dict(metadata)
+        snapshot["status"] = "in_progress"
+        snapshot["turn_count"] = len(transcript)
+        snapshot["last_updated"] = datetime.now(UTC).isoformat()
+        store.save(session_id, transcript, snapshot)
+        logger.debug(
+            f"Sub-session {session_id} checkpointed ({len(transcript)} messages)"
+        )
+        return True
+    except Exception as e:
+        # A failed checkpoint must never take down the run it is protecting.
+        # CancelledError is a BaseException and is deliberately NOT caught here:
+        # if the hook itself is cancelled, that cancellation must propagate.
+        logger.debug(f"Transcript checkpoint for {session_id} failed: {e}")
+        return False
+
+
+async def _install_transcript_checkpoint(
+    session: "AmplifierSession",
+    store,
+    session_id: str,
+    metadata: dict,
+    write_now: bool = True,
+):
+    """Register a throttled provider:request checkpoint on ``session``.
+
+    When ``write_now`` is True (the spawn path), one checkpoint is written
+    immediately so the session_id is resolvable in SessionStore from before the
+    first provider call onward -- a timeout that fires during the very first
+    LLM request still leaves a resumable (if short) session rather than
+    nothing at all. That write also seeds the throttle.
+
+    When False (the resume path), the store already holds this session and
+    nothing has been added to the transcript yet, so no immediate write is
+    needed and the first provider:request checkpoints straight away.
+
+    Returns a zero-arg callable that unregisters the hook (a no-op if no hook
+    was registered).
+    """
+
+    def _noop() -> None:
+        return None
+
+    interval = _checkpoint_interval_s()
+    if interval < 0:
+        # Explicitly opted out: no pre-registration, no mid-run checkpoints.
+        return _noop
+
+    last_written: list[float | None] = [None]
+
+    if write_now:
+        await _write_checkpoint(session, store, session_id, metadata)
+        last_written[0] = time.monotonic()
+
+    hooks = session.coordinator.get("hooks")
+    if hooks is None or not hasattr(hooks, "register"):
+        # No hook registry: the pre-registration write above still stands, but
+        # no mid-run events will fire, so there is nothing further to install.
+        return _noop
+
+    try:
+        from amplifier_core.events import PROVIDER_REQUEST
+        from amplifier_core.hooks import HookResult
+    except ImportError as e:  # pragma: no cover - kernel always provides these
+        logger.debug(f"Transcript checkpointing unavailable: {e}")
+        return _noop
+
+    async def _on_provider_request(event: str, data: dict) -> HookResult:
+        now = time.monotonic()
+        previous = last_written[0]
+        if previous is not None and (now - previous) < interval:
+            return HookResult()
+        last_written[0] = now
+        await _write_checkpoint(session, store, session_id, metadata)
+        return HookResult()
+
+    try:
+        unregister = hooks.register(
+            PROVIDER_REQUEST,
+            _on_provider_request,
+            priority=999,
+            name="_spawn_transcript_checkpoint",
+        )
+    except Exception as e:
+        logger.debug(f"Could not register transcript checkpoint hook: {e}")
+        return _noop
+
+    return unregister if callable(unregister) else _noop
 
 
 async def spawn_sub_session(
@@ -839,51 +1013,74 @@ async def spawn_sub_session(
                 relative_to=_instr_rel,
             )
 
+    # ---------------------------------------------------------------------
+    # Build persistence state BEFORE execute()
+    #
+    # Everything the metadata needs is already known at this point, and
+    # resume_sub_session reconstructs a session purely from metadata["config"]
+    # + metadata["agent_overlay"] + the transcript. Building it here is what
+    # lets the transcript be checkpointed DURING the run (see
+    # _install_transcript_checkpoint above) instead of only after a successful
+    # execute() -- which is what left timed-out sub-sessions unresumable.
+    # ---------------------------------------------------------------------
+    from datetime import UTC
+    from datetime import datetime
+
+    from .session_store import SessionStore
+
+    # Extract or generate trace_id for W3C Trace Context pattern
+    # Root session ID is the trace_id, propagate it to all children
+    parent_trace_id = getattr(parent_session, "trace_id", parent_session.session_id)
+
+    # Extract child_span from sub_session_id for short_id resolution
+    # Format: {parent_id}-{child_span}_{agent_name}
+    child_span: str | None = None
+    if sub_session_id and "_" in sub_session_id and "-" in sub_session_id:
+        base = sub_session_id.rsplit("_", 1)[0]  # Remove agent name
+        child_span = base.rsplit("-", 1)[-1]  # Get child_span (16 hex chars)
+
+    metadata = {
+        "session_id": sub_session_id,
+        "parent_id": parent_session.session_id,
+        "trace_id": parent_trace_id,  # W3C Trace Context: trace entire conversation
+        "agent_name": agent_name,
+        "child_span": child_span,  # For short_id resolution (first 8 chars = short_id)
+        "created": datetime.now(UTC).isoformat(),
+        "config": merged_config,
+        "agent_overlay": agent_config,
+        "turn_count": 1,
+        "bundle_context": _extract_bundle_context(parent_session),
+        "self_delegation_depth": self_delegation_depth,  # For recursion limit tracking
+        # Store working_dir for session sync between CLI and web
+        "working_dir": str(Path.cwd().resolve()),
+    }
+
+    store = SessionStore()
+    unregister_checkpoint = await _install_transcript_checkpoint(
+        child_session, store, sub_session_id, metadata, write_now=True
+    )
+
     # Execute instruction in child session; cleanup MUST run even on CancelledError
+    #
+    # NOTE: there is deliberately NO `except` here. A timeout cancels
+    # execute(), and the cancellation path must stay free of any await --
+    # the transcript has already been checkpointed above and by the
+    # provider:request hook, so nothing needs to be rescued while unwinding.
     try:
         try:
             response = await child_session.execute(instruction)
         finally:
             if unregister_hook:
                 unregister_hook()
+            unregister_checkpoint()
 
-        # Persist state for multi-turn resumption
-        from datetime import UTC
-        from datetime import datetime
-
-        from .session_store import SessionStore
-
+        # Persist final state for multi-turn resumption
         context = child_session.coordinator.get("context")
         transcript = await context.get_messages() if context else []
 
-        # Extract or generate trace_id for W3C Trace Context pattern
-        # Root session ID is the trace_id, propagate it to all children
-        parent_trace_id = getattr(parent_session, "trace_id", parent_session.session_id)
+        metadata["status"] = "complete"
+        metadata["last_updated"] = datetime.now(UTC).isoformat()
 
-        # Extract child_span from sub_session_id for short_id resolution
-        # Format: {parent_id}-{child_span}_{agent_name}
-        child_span: str | None = None
-        if sub_session_id and "_" in sub_session_id and "-" in sub_session_id:
-            base = sub_session_id.rsplit("_", 1)[0]  # Remove agent name
-            child_span = base.rsplit("-", 1)[-1]  # Get child_span (16 hex chars)
-
-        metadata = {
-            "session_id": sub_session_id,
-            "parent_id": parent_session.session_id,
-            "trace_id": parent_trace_id,  # W3C Trace Context: trace entire conversation
-            "agent_name": agent_name,
-            "child_span": child_span,  # For short_id resolution (first 8 chars = short_id)
-            "created": datetime.now(UTC).isoformat(),
-            "config": merged_config,
-            "agent_overlay": agent_config,
-            "turn_count": 1,
-            "bundle_context": _extract_bundle_context(parent_session),
-            "self_delegation_depth": self_delegation_depth,  # For recursion limit tracking
-            # Store working_dir for session sync between CLI and web
-            "working_dir": str(Path.cwd().resolve()),
-        }
-
-        store = SessionStore()
         store.save(sub_session_id, transcript, metadata)
         logger.debug(f"Sub-session {sub_session_id} state persisted")
 
@@ -1428,15 +1625,30 @@ async def resume_sub_session(
                 relative_to=_resume_rel,
             )
 
+    # Checkpoint the transcript DURING the run so a wall-clock timeout on this
+    # resume does not discard the turn (same defect, same fix, as the spawn
+    # path above). Installed AFTER the transcript restore so the first
+    # checkpoint carries the full history, not an empty list. No immediate
+    # write: the store already holds this session, and the resume path adds
+    # nothing to the transcript until the first provider call.
+    unregister_checkpoint = await _install_transcript_checkpoint(
+        child_session, store, sub_session_id, metadata, write_now=False
+    )
+
     # Execute new instruction with full context; cleanup MUST run even on CancelledError
+    #
+    # NOTE: deliberately NO `except` here -- see the spawn path's note. The
+    # cancellation path must stay free of any await.
     try:
         try:
             response = await child_session.execute(instruction)
         finally:
             if unregister_hook:
                 unregister_hook()
+            unregister_checkpoint()
 
         # Update state for next resumption
+        metadata["status"] = "complete"
         updated_transcript = await context.get_messages() if context else []
         metadata["turn_count"] = len(updated_transcript)
         metadata["last_updated"] = datetime.now(UTC).isoformat()
