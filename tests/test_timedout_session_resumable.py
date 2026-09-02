@@ -316,6 +316,92 @@ class TestTimedOutSessionIsResumable:
         )
 
 
+class TestNonResumableIsStatedExplicitly:
+    """The acceptance's SECOND branch, for the cases option (b) cannot cover.
+
+    The acceptance is disjunctive -- "either the advertised session_id is
+    genuinely resumable ... OR the result states explicitly that it is not
+    resumable and directs the caller to re-delegate". Option (b) satisfies the
+    first branch for every checkpointed session (covered above).
+
+    Two residual cases are NOT checkpointed and so land on the second branch:
+      * the subprocess spawn path (session_spawner.py:637 returns before any
+        checkpointing);
+      * checkpointing explicitly disabled via the env knob.
+    Plus the pre-existing cases: an expired/pruned session, or an id that never
+    existed.
+
+    For all of them the app-side resume surface must say, in words, that the
+    session is not resumable and that the caller should re-delegate -- never
+    leave "retry the resume" as a plausible reading.
+
+    SCOPE, STATED HONESTLY: this pins the boundary THIS repo owns
+    (``resume_sub_session``'s raised error, which reaches the
+    ``delegate:error`` event, the logs, and every non-foundation caller such
+    as recipes and programmatic callers). The MODEL-facing half is not ours:
+    tool-delegate's ``except FileNotFoundError`` handler builds its own
+    message and discards ``str(e)``, so making this text reach the ToolResult
+    needs a one-line foundation change, specified in the PR body. That is a
+    real, disclosed gap -- not something this test pretends to cover.
+    """
+
+    async def test_missing_session_says_not_resumable_and_says_re_delegate(
+        self, tmp_path, monkeypatch
+    ):
+        from amplifier_app_cli.session_spawner import resume_sub_session
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        with pytest.raises(FileNotFoundError) as excinfo:
+            await resume_sub_session("never-existed-session-id", "carry on")
+
+        message = str(excinfo.value)
+        assert "not resumable" in message.lower(), (
+            "the second branch of the acceptance requires the result to state "
+            f"EXPLICITLY that the session is not resumable; got: {message!r}"
+        )
+        assert "re-delegate" in message.lower(), (
+            "the second branch of the acceptance requires the caller be "
+            f"directed to re-delegate; got: {message!r}"
+        )
+
+    async def test_disabled_checkpointing_lands_on_the_non_resumable_branch(
+        self, tmp_path, monkeypatch
+    ):
+        """End to end: a timeout with checkpointing off yields branch 2, in words.
+
+        This is the disjunction resolving the other way in a real run -- spawn,
+        time out, and observe that the advertised session_id is genuinely
+        absent AND that asking to resume it says so explicitly.
+        """
+        from amplifier_app_cli.session_spawner import resume_sub_session
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "-1")
+
+        hooks = FakeHooks()
+        context = FakeContext()
+
+        async def execute_impl(instruction):
+            await hooks.emit("provider:request", {"iteration": 1})
+            context.messages.append({"role": "assistant", "content": "partial work"})
+            await asyncio.Event().wait()
+
+        child = _make_child_session(context, hooks, execute_impl)
+        await _spawn_until_timeout(child, _make_parent_session())
+
+        assert not SessionStore().exists(SUB_SESSION_ID)
+
+        with pytest.raises(FileNotFoundError) as excinfo:
+            await resume_sub_session(SUB_SESSION_ID, "carry on")
+
+        message = str(excinfo.value).lower()
+        assert "not resumable" in message and "re-delegate" in message, (
+            "a timed-out, non-checkpointed session must report its own "
+            f"non-resumability in words; got: {message!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # 2. The hard invariant
 # ---------------------------------------------------------------------------

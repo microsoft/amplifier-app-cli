@@ -130,17 +130,64 @@ Proved by `TestNoUnboundedAwaitOnCancellationPath` — two assertions plus a con
    `TimeoutError`, `child_session.cleanup()` still runs, `unregister_child` still runs, and the
    checkpoint hook is unregistered even on the timeout path.
 
-### The contract the acceptance names
+### The contract the acceptance names — BOTH branches are tested
 
-`TestTimedOutSessionIsResumable` — two tests:
+The acceptance is disjunctive: *"either the advertised session_id is genuinely resumable … **or** the
+result states explicitly that it is not resumable and directs the caller to re-delegate."* Option (b)
+resolves it to the first branch **for every checkpointed session**. Two residual cases are not
+checkpointed and land on the second. Both branches are covered.
+
+**Branch 1 — `TestTimedOutSessionIsResumable`:**
 
 * `test_timed_out_spawn_leaves_a_loadable_session` — after a real 0.2 s timeout, `SessionStore` holds
   the session, the transcript is the preserved messages, `status == "in_progress"`, and
   `metadata["config"]` is present.
 * `test_timed_out_session_round_trips_through_resume` — the **full recovery move, end to end**: spawn
   → time out → call the real `resume_sub_session(session_id)` → assert the preserved transcript is
-  restored into the resumed session's context. This is the acceptance criterion's first branch
-  ("the advertised session_id genuinely resumes and returns the preserved transcript"), executed.
+  restored into the resumed session's context.
+
+**Branch 2 — `TestNonResumableIsStatedExplicitly`:**
+
+Residual non-checkpointed cases: the **subprocess spawn path** (`session_spawner.py:637` returns
+before any checkpointing), checkpointing **explicitly disabled** via the env knob, plus the
+pre-existing expired/pruned/never-existed cases. `resume_sub_session` now raises a message that
+states non-resumability **in words** and names the correct move, rather than leaving "retry the
+resume" as a plausible reading:
+
+> `Sub-session '<id>' not found. Session may have expired or was never created. This session is NOT
+> resumable -- re-delegate to start a fresh session instead of retrying the resume.`
+
+* `test_missing_session_says_not_resumable_and_says_re_delegate` — asserts both `"not resumable"` and
+  `"re-delegate"` are present.
+* `test_disabled_checkpointing_lands_on_the_non_resumable_branch` — the disjunction resolving the
+  **other way in a real run**: spawn → time out with checkpointing off → the id is genuinely absent
+  **and** asking to resume it says so explicitly.
+
+**SCOPE OF BRANCH 2, STATED HONESTLY — one half is not ours, and this was verified at file:line, not
+assumed.** `tool-delegate`'s handler
+(`modules/tool-delegate/amplifier_module_tool_delegate/__init__.py:2148-2166`, foundation cache
+`c909465861f9d6ce`) catches `FileNotFoundError`, uses `str(e)` **only** in the `delegate:error`
+event, and returns a **hardcoded** result message that discards it:
+
+```python
+return ToolResult(
+    success=False,
+    error={"message": f"Agent session '{session_id}' not found. May have expired or never existed."},
+)
+```
+
+So the app-side text reaches the `delegate:error` event, the logs, and every non-foundation caller
+(recipes, programmatic callers) — but **not** the model-facing `ToolResult`. Closing that last half
+is a one-line foundation change, specified here so it is trivially landable:
+
+```python
+error={"message": str(e)},   # instead of the hardcoded sentence
+```
+
+Deliberately **not** worked around from this side: the only in-repo lever would be raising a
+different exception type so foundation's generic `except Exception` (`:2146`, which *does* pass
+`str(e)` through) caught it instead — trading away a structured, correctly-typed error branch to
+smuggle a string. That is a worse design and it is not done.
 
 ---
 
@@ -149,18 +196,23 @@ Proved by `TestNoUnboundedAwaitOnCancellationPath` — two assertions plus a con
 | check | result |
 |---|---|
 | full suite, baseline at `963d793` before any change | **1560 passed, 1 skipped, 13 deselected, 1 xfailed** |
-| full suite, patched (`-p no:randomly`) | **1571 passed, 1 skipped, 13 deselected, 1 xfailed** |
-| full suite, patched (default random order) | **1571 passed, 1 skipped, 13 deselected, 1 xfailed** |
-| new test file alone | **11 passed** |
-| new test file against the UNPATCHED spawner (falsifier check) | **8 failed, 2 passed** |
+| full suite, patched (`-p no:randomly`) | **1573 passed, 1 skipped, 13 deselected, 1 xfailed** |
+| full suite, patched (default random order) | **1573 passed, 1 skipped, 13 deselected, 1 xfailed** |
+| new test file alone | **13 passed** |
+| new test file against the UNPATCHED spawner (falsifier check) | **10 failed, 3 passed** |
 | `ruff check` / `ruff format --check` on every file this PR touches | clean |
 
-**The falsifier check matters, and its two passes are disclosed, not hidden.** Reverting only
-`session_spawner.py` and re-running the new file gives 8 failures. The two that still pass are
-`test_hanging_get_messages_does_not_delay_the_unwind` (correct — the unpatched cancellation path is
-also await-free; this is the regression guard discussed in §3.2) and
-`test_negative_interval_disables_checkpointing_entirely` (correct — it pins that the escape hatch
-reproduces pre-fix behaviour). Neither is a defect reproduction and neither is claimed as one.
+**The falsifier check matters, and its three passes are disclosed, not hidden.** Reverting only
+`session_spawner.py` to `963d793` and re-running the new file gives **10 failed, 3 passed**. The three
+that still pass, and why each is correct rather than vacuous:
+
+| test | why it passes pre-fix |
+|---|---|
+| `test_hanging_get_messages_does_not_delay_the_unwind` | the unpatched cancellation path is also await-free — this is a regression guard, not a defect reproduction (see §3.2) |
+| `test_the_probe_would_catch_a_violating_implementation` | it is a self-contained control over a synthetic option-(a) coroutine; it never touches the spawner |
+| `test_negative_interval_disables_checkpointing_entirely` | it pins that the escape hatch reproduces exactly the pre-fix behaviour |
+
+None is claimed as a defect reproduction.
 
 **One existing test was modified**, and the reason is not "to make the new code pass": `FakeHooks` in
 `tests/test_session_spawner.py` (two copies) modelled the hook registry as a **single handler slot,
@@ -179,9 +231,12 @@ event name. The test's intent and assertions are untouched.
    checkpoint, so cost is O(checkpoints × transcript size), bounded by the throttle. No workload
    measurement exists. `store.save` is synchronous, so each checkpoint briefly blocks the event loop
    — the same operation the post-run save has always performed, now up to N times per run.
-4. **The subprocess spawn path is NOT covered.** `session_spawner.py:637` returns before any
-   checkpointing, so a subprocess-mode delegate that times out is still unresumable. Not in scope
-   here; this is where option (c)'s explicit "not resumable" labelling is still the right answer.
+4. **The subprocess spawn path is still not CHECKPOINTED** — `session_spawner.py:637` returns before
+   any checkpointing, so a subprocess-mode delegate that times out cannot be resumed. It is now
+   covered by the acceptance's second branch instead (it says so explicitly and directs a
+   re-delegate, §3), but the model-facing half of that message needs the one-line foundation change
+   specified in §3. Making the subprocess path itself checkpointable is a separate piece of work and
+   is NOT attempted here.
 5. **Up to one throttle window of transcript can still be lost.** Because the transcript only changes
    between provider calls, the practical loss is "iterations that completed within the last 30 s",
    not 30 s of work — but that is reasoned, not measured.
@@ -200,7 +255,7 @@ event name. The test's intent and assertions are untouched.
 
 | file | what |
 |---|---|
-| `amplifier_app_cli/session_spawner.py` | `_checkpoint_interval_s`, `_write_checkpoint`, `_install_transcript_checkpoint`; metadata + store construction moved before `execute()`; checkpoint wired into both the spawn and resume paths; `status` field on saved metadata |
-| `tests/test_timedout_session_resumable.py` | 11 new tests — the contract, the invariant, the inverted control, the boundary choice, best-effort behaviour, the throttle and the escape hatch |
+| `amplifier_app_cli/session_spawner.py` | `_checkpoint_interval_s`, `_write_checkpoint`, `_install_transcript_checkpoint`; metadata + store construction moved before `execute()`; checkpoint wired into both the spawn and resume paths; `status` field on saved metadata; explicit not-resumable/re-delegate wording on the resume-miss error |
+| `tests/test_timedout_session_resumable.py` | 13 new tests — BOTH branches of the disjunctive contract, the invariant, the inverted control, the boundary choice, best-effort behaviour, the throttle and the escape hatch |
 | `tests/test_session_spawner.py` | `FakeHooks` made event-keyed (see §4) |
 | `ai_working/3yc-timedout-session-resumable/DONE-NOTE.md` | this note |

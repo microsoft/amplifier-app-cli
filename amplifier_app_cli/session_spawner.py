@@ -1148,8 +1148,21 @@ async def resume_sub_session(
     store = SessionStore()
 
     if not store.exists(sub_session_id):
+        # NOT RESUMABLE -- say so, and say what to do instead.
+        #
+        # Mid-run checkpointing (see _install_transcript_checkpoint) means a
+        # normally-spawned sub-session is present in SessionStore from before
+        # its first provider call, so reaching here means one of: the
+        # subprocess spawn path (which returns before any checkpointing),
+        # checkpointing explicitly disabled via
+        # AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S, an expired/pruned session, or
+        # an id that never existed. In every one of those cases the correct
+        # caller move is the same and it is NOT "retry the resume" -- so the
+        # message names it rather than leaving the caller to infer it.
         raise FileNotFoundError(
-            f"Sub-session '{sub_session_id}' not found. Session may have expired or was never created."
+            f"Sub-session '{sub_session_id}' not found. Session may have expired or was never created. "
+            f"This session is NOT resumable -- re-delegate to start a fresh session instead of retrying "
+            f"the resume."
         )
 
     try:
