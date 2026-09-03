@@ -89,12 +89,35 @@ repo** (a real run left `.amplifier/bin/` behind as untracked pollution).
 | `launch_lane.sh BATCH_DIR LANE REPO GOAL [BASE_REF]` | Worktree + branch + tmux + `/goal` session, idempotent; the ONLY writer of `manifest.tsv` | Hand-written manifests diverged on column count and broke a real batch |
 | `verify_lane.sh BATCH_DIR LANE` | Git-facts probe for one landed lane (DONE.json, ahead-count, three-dot diffstat, uncommitted work) | "Ground truth from git and the filesystem, not from what any session said about itself" |
 | `highway_watchdog.sh BATCH_DIR WIDTH SESSION_ID [INTERVAL] [MAX_HOURS]` | Detached tmux loop that re-wakes THIS session (`amplifier run --resume`) on lane-end / under-width / stale heartbeat | The highway once froze overnight because the manager stopped monitoring the moment it reported status |
-| `infra_ledger.sh BATCH_DIR add TYPE ID DESTROY_CMD...` / `infra_ledger.sh BATCH_DIR sweep` | Records any infrastructure a lane OR the manager stands up (DTU, gitea instance, container, service, background process) into `infra.tsv` at creation, each with its teardown command; `sweep` runs those commands and exits non-zero until nothing is left standing | A run closed with a DTU and a gitea container still live — nothing the highway stands up should outlive it (Rule 14) |
+| `infra_ledger.sh BATCH_DIR add TYPE ID DESTROY_CMD...` / `infra_ledger.sh BATCH_DIR sweep --all-owners` | Records any infrastructure a lane OR the manager stands up (DTU, gitea instance, container, service, background process) into `infra.tsv` at creation, each with its teardown command; `sweep` runs those commands and exits non-zero until nothing is left standing | A run closed with a DTU and a gitea container still live — nothing the highway stands up should outlive it (Rule 14) |
+
+**`sweep` is the MANAGER's batch-close verb, never a lane's.** It runs EVERY
+open row's destroy command, so one lane calling it destroys every other lane's
+live infrastructure — that is not hypothetical: on 2026-09-02 a single foreign
+`sweep` took lane l1's three DTUs and lane 161's three, 35 minutes into their
+measurements. The script now **refuses with exit 3, having run nothing**, when
+the open rows span more than one owner or any row is unattributable, so:
+
+- **A lane tearing down its OWN rows uses the batch's lane-scoped teardown
+  tool** (`lane_teardown.sh BATCH_DIR <lane> teardown --yes`; omit `--yes` for a
+  dry run), which touches only the rows that lane claimed. A lane never calls
+  `sweep`.
+- **The manager closing the batch passes `--all-owners`** — the deliberate
+  batch-close override. Every close instruction below says
+  `sweep --all-owners` for exactly this reason: a guard that deadlocks the
+  documented close is a regression, not a fix.
+
+A destroy command for infrastructure that is **already gone** closes its row as
+`swept:already-absent` — distinct from `swept`, because the sweep did not
+perform that teardown. A REAL teardown failure still exits non-zero and leaves
+the row open; the already-gone signature is deliberately narrow, so the signal
+that a teardown genuinely failed is never lost.
 
 State lives in `BATCH_DIR` (create one per highway, e.g. `~/dev/hw-<name>`):
 `manifest.tsv` (scripts write), `HIGHWAY.md` (you write), `goals/` (pre-composed
 goal files), `lanes/` (worktrees), `.width` (authoritative width), `infra.tsv`
-(the infra ledger), `.manager-heartbeat`, `wake-needed`, `watchdog.log`.
+(the infra ledger), `infra.owners.tsv` (which lane claimed which row),
+`.manager-heartbeat`, `wake-needed`, `watchdog.log`.
 
 ## Phase 1 — Intake
 
@@ -143,7 +166,10 @@ Phase 5 invariant); an item arriving at weave-in gets its goal file composed
 when it enters the queue, not at refill. Each goal file MUST instruct its lane to
 register any infrastructure it stands up — DTU, gitea instance, container,
 service, background process — with `infra_ledger.sh <BATCH_DIR> add <type> <id>
-<destroy-cmd…>` at creation (Rule 14).
+<destroy-cmd…>` at creation (Rule 14), and to tear down **only its own rows**
+via the batch's lane-scoped teardown tool. A goal file must never tell a lane to
+run `sweep`: that is the manager's batch-close verb and it destroys every other
+lane's live infrastructure.
 
 **Success criteria**: a priority queue in `HIGHWAY.md` with a one-line
 rationale per item tied to the outcome/constraints, and a pre-composed goal file
@@ -310,9 +336,13 @@ outcome verified with nothing pending.
 
 When you close: final Phase 5 pass; merge
 or honestly disposition every open lane; then **run `infra_ledger.sh BATCH_DIR
-sweep` and do not treat the highway as closed until it exits clean** — it tears
+sweep --all-owners` and do not treat the highway as closed until it exits
+clean** — it tears
 down every DTU, gitea instance, container, service, and background process the
-run ledgered, whether a lane or the manager stood it up (Rule 14). Kill the
+run ledgered, whether a lane or the manager stood it up (Rule 14). `--all-owners`
+is the manager's batch-close override; without it `sweep` refuses (exit 3) the
+moment the open rows span more than one lane, which is the guard that stops a
+lane from destroying its neighbours' infrastructure. Kill the
 watchdog by the exact name `highway_status.sh` reports
 (`tmux -L hw kill-session -t <wd_name>`). **Archive
 the per-lane evidence BEFORE pruning** — pruning the lane dirs otherwise deletes
@@ -328,8 +358,8 @@ status, landed list from `landed_from_git.sh`, residuals with named reasons);
 report with `DONE:` or `GAVE UP:` leading.
 
 **Success criteria**: no `hw__` tmux sessions, no stray worktrees/branches,
-`infra_ledger.sh BATCH_DIR sweep` exits clean (nothing ledgered still standing),
-final report matches git facts.
+`infra_ledger.sh BATCH_DIR sweep --all-owners` exits clean (nothing ledgered
+still standing), final report matches git facts.
 
 ## Rules — each bought with a documented failure
 
@@ -367,8 +397,12 @@ final report matches git facts.
     highway stands up outlives it.** Any DTU, gitea instance, container,
     service, or background process a lane OR the manager stands up is recorded
     with `infra_ledger.sh BATCH_DIR add ...` at creation, and Phase 7 does not
-    close until `infra_ledger.sh BATCH_DIR sweep` exits clean. (A run closed
-    leaving a DTU and a gitea container running.)
+    close until `infra_ledger.sh BATCH_DIR sweep --all-owners` exits clean.
+    (A run closed leaving a DTU and a gitea container running.) **`sweep` is
+    the manager's verb; a lane tears down only its own rows via the batch's
+    lane-scoped teardown tool.** (One foreign `sweep` destroyed two other
+    lanes' DTUs mid-measurement; `sweep` now refuses a multi-owner ledger with
+    exit 3 unless `--all-owners` is passed.)
 
 ## Known limits (still not built)
 
