@@ -146,7 +146,12 @@ find it. **Recommended follow-up:** a separate item against
 so tj2's fix is durable there already *if it is committed*; that is the thing worth
 checking, and it is checkable at zero cost.
 
-### 7. Draft PR + this note — **DONE** (see `publication` block in `DONE.json`)
+### 7. Draft PR + this note — **DONE**
+
+**Draft PR: [microsoft/amplifier-app-cli#299](https://github.com/microsoft/amplifier-app-cli/pull/299)** on branch
+`lane/2nz-upstream-skill-guards`. Publication values in `DONE.json` were read back from
+the remote with `publication_readback.sh` (`git ls-remote` + `gh pr list`), not typed
+from a local `git log`.
 
 ---
 
