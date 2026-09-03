@@ -1207,12 +1207,31 @@ async def resume_sub_session(
             _map_id_to_instance_id,
             deep_merge,
             expand_env_vars,
+            narrow_overrides_to_secrets,
         )
 
         _live_settings = AppSettings()
 
         if merged_config.get("providers"):
-            _live_provider_overrides = _live_settings.get_provider_overrides()
+            # SECRETS ONLY -- see narrow_overrides_to_secrets() for the full
+            # rationale (model_performance-rc0 / -n1i).
+            #
+            # The unnarrowed merge re-imposed EVERY settings key on the
+            # child's own persisted mount plan. `config.priority` is the
+            # load-bearing casualty: a sub-session spawned with a
+            # model_role/provider_preferences promotion carries priority: 0
+            # on the promoted provider, and the settings priority overwrote
+            # it -- so the resumed leg silently re-resolved to the settings
+            # priority-0 provider (measured: 39/66 delegate resumes changed
+            # model, 37 of them cheap -> expensive, basis="priority" on both
+            # sides). `reasoning_effort` and every other per-candidate config
+            # key were structurally exposed to the same wipe.
+            #
+            # Only the keys that redact_secrets() actually redacted need
+            # restoring here, so only those are allowed through.
+            _live_provider_overrides = narrow_overrides_to_secrets(
+                _live_settings.get_provider_overrides()
+            )
             if _live_provider_overrides:
                 _refreshed_providers = _apply_provider_overrides(
                     merged_config["providers"], _live_provider_overrides
@@ -1235,6 +1254,22 @@ async def resume_sub_session(
             # This is the piece that was previously MISSING: only providers
             # were refreshed, so a resumed sub-session kept sending
             # `Bearer [REDACTED]` for any hook/destination api_key.
+            #
+            # DELIBERATE ASYMMETRY with the provider refresh above, which is
+            # narrowed to secrets. Hooks are NOT narrowed, for two reasons:
+            #   1. Nothing in a hook entry carries per-session RESOLUTION
+            #      state. The provider wipe mattered because `config.priority`
+            #      decides which model a leg runs on; a hook has no analogue.
+            #   2. get_notification_hook_overrides() legitimately APPENDS
+            #      hooks that are absent from the persisted plan (see
+            #      _apply_hook_overrides). Narrowing to secrets would append
+            #      those hooks stripped of `enabled`/`topic`/etc, breaking
+            #      notifications on resumed sub-sessions to fix a defect not
+            #      observed here.
+            # The same over-reach IS structurally possible for a hook whose
+            # config an agent overlay customised (settings would re-impose its
+            # own value at resume). No instance has been measured; narrowing
+            # this path needs its own evidence, not a speculative change.
             _config_overrides = _live_settings.get_config_overrides()
             _refreshed_hooks = merged_config["hooks"]
             if _config_overrides:
