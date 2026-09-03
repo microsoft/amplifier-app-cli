@@ -1,0 +1,21 @@
+# NORMAL COMPLETION -- byte-identity, PARENT vs PATCHED
+# same probe, same fixed sub_session_id, only amplifier_app_cli differs
+
+$ diff <(probe normal @parent) <(probe normal @patched)
+(no differences)
+exit=0
+
+$ sha256sum
+ef8c86fdaf3b68e26e02e86e6a1bd59e0b638e4eb9b36f8f0a7f9f0138a35700  /tmp/9w0/normal-parent.json
+ef8c86fdaf3b68e26e02e86e6a1bd59e0b638e4eb9b36f8f0a7f9f0138a35700  /tmp/9w0/normal-patched.json
+
+# the serialized result itself:
+{
+  "metadata": {
+    "o": "loop-basic"
+  },
+  "output": "agent response",
+  "session_id": "parent-session-0000000000000000_explorer",
+  "status": "success",
+  "turn_count": 5
+}

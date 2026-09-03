@@ -21,6 +21,159 @@ from .agent_config import merge_configs
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# Partial-output preservation for delegates that never finish
+# =============================================================================
+# When tool-delegate's wall-clock timeout fires it cancels the spawn coroutine.
+# `child_session.execute()` raises CancelledError, the post-run block below is
+# skipped, and everything the agent produced is discarded -- turning a hang into
+# data loss. This registry keeps the agent's own assistant text so the delegate
+# tool can hand the caller an INCOMPLETE-with-partial result instead of an empty
+# failure.
+#
+# This is the PRODUCER half of the contract whose CONSUMER shipped in
+# amplifier-foundation f42f48c (tool-delegate). That side reads an optional
+# `session.partial` capability:
+#
+#     (sub_session_id: str) -> {"text": str, "segments": int, "source": str} | None
+#
+# and degrades to `partial_available: false` when it is absent, returns None, or
+# raises. Nothing here may raise into the timeout path.
+#
+# NOTE: the transcript is separately checkpointed mid-run (see
+# _install_transcript_checkpoint below) so a timed-out sub-session stays
+# RESUMABLE. That is a different property from this one: the checkpoint makes
+# the work reachable by a later resume, this registry makes it readable by the
+# delegate call that timed out, at the moment it gives up.
+#
+# WHY THE RECORD IS PUBLISHED EAGERLY (and not only on the cancellation path)
+#
+# The obvious shape -- accumulate privately, publish from an `except
+# BaseException:` around execute() -- DOES NOT WORK against the consumer that
+# actually shipped, and fails silently rather than loudly. tool-delegate's
+# `_await_child_with_deadline` deliberately does NOT wait for a child that is
+# slow to unwind: at the deadline it calls `child_task.cancel()`, DETACHES the
+# task, and raises immediately. Its `except _DelegateTimeoutExpired:` handler
+# then calls `session.partial` straight away -- while the cancelled child task
+# has not yet been scheduled to run its own exception handlers. A partial
+# published from the child's unwind is therefore published AFTER the consumer
+# has already read and reported `partial_available: false`.
+#
+# Measured, cross-repo, against foundation f42f48c: the app logged "preserved 2
+# partial text segment(s), 42 chars" AFTER the delegate had logged "No partial
+# output could be recovered". Same run, wrong order, and both halves' own unit
+# tests passed. This is exactly the drift the round-trip check exists to catch.
+#
+# So the record is entered in the registry when the accumulator is installed and
+# is updated in place as text arrives -- readable at ANY instant, with no
+# dependence on cancellation ordering -- and is REMOVED when the sub-session
+# completes normally. `get_partial_output` reads a snapshot; nothing here awaits.
+
+_PARTIAL_OUTPUTS: dict[str, dict] = {}
+_PARTIAL_MAX_SESSIONS = 64
+
+
+def get_partial_output(sub_session_id: str) -> dict | None:
+    """``session.partial`` capability: what a sub-session produced before it died.
+
+    Returns ``{"text", "segments", "source"}`` for a sub-session that was
+    cancelled or timed out mid-flight, or ``None`` when nothing was preserved.
+    ``segments`` counts preserved assistant text segments, not turns.
+
+    Reads are destructive -- one delegate call consumes one record -- so the
+    registry cannot grow without bound on a long-lived root session. A record
+    with no text yet reads as ``None``: "produced nothing" and "produced
+    nothing recoverable" are the same answer to the consumer.
+    """
+    record = _PARTIAL_OUTPUTS.pop(sub_session_id, None)
+    if not record:
+        return None
+    chunks = list(record.get("chunks") or ())
+    if not chunks:
+        return None
+    return {
+        "text": "".join(chunks),
+        "segments": len(chunks),
+        "source": "spawn-accumulator",
+    }
+
+
+def _publish_partial(sub_session_id: str, record: dict) -> None:
+    """Enter an in-flight accumulator in the registry, evicting oldest-first."""
+    while len(_PARTIAL_OUTPUTS) >= _PARTIAL_MAX_SESSIONS:
+        oldest = next(iter(_PARTIAL_OUTPUTS))
+        _PARTIAL_OUTPUTS.pop(oldest, None)
+        logger.warning(
+            "Partial-output registry is at its %d-session cap; evicted %s to "
+            "make room for %s",
+            _PARTIAL_MAX_SESSIONS,
+            oldest,
+            sub_session_id,
+        )
+    _PARTIAL_OUTPUTS[sub_session_id] = record
+
+
+def _discard_partial(sub_session_id: str) -> None:
+    """Drop a record for a sub-session that completed normally."""
+    _PARTIAL_OUTPUTS.pop(sub_session_id, None)
+
+
+def _seal_partial(sub_session_id: str, record: dict) -> None:
+    """Confirm an accumulator is readable after the sub-session failed to finish.
+
+    The record is normally already published (see the note above); this
+    re-publishes it if it was evicted under the cap, and logs what survived.
+    Synchronous by design: awaiting anything while unwinding a timeout risks
+    blocking past the very deadline that caused the unwind.
+    """
+    if not record.get("chunks"):
+        return
+    if sub_session_id not in _PARTIAL_OUTPUTS:
+        _publish_partial(sub_session_id, record)
+    logger.warning(
+        "Sub-session %s did not complete; preserved %d partial text segment(s), %d chars",
+        sub_session_id,
+        len(record["chunks"]),
+        sum(len(c) for c in record["chunks"]),
+    )
+
+
+def _open_partial(sub_session_id: str, hooks):
+    """Start accumulating assistant text, published from the first moment.
+
+    Returns ``(record, unregister)``. ``unregister`` is ``None`` when there is
+    no hooks coordinator to register against -- in that case nothing can ever
+    be accumulated, so nothing is published either and the consumer correctly
+    degrades to ``partial_available: false``.
+
+    The hook is registered at low priority so it observes blocks after the UI
+    has rendered them and never influences rendering.
+    """
+    record: dict = {"chunks": []}
+    if not hooks:
+        return record, None
+
+    from amplifier_core.events import CONTENT_BLOCK_END
+    from amplifier_core.hooks import HookResult
+
+    async def _accumulate_partial(event: str, data: dict) -> HookResult:
+        block = data.get("block")
+        if isinstance(block, dict) and block.get("type") == "text":
+            text = block.get("text") or ""
+            if text:
+                record["chunks"].append(text)
+        return HookResult()
+
+    unregister = hooks.register(
+        CONTENT_BLOCK_END,
+        _accumulate_partial,
+        priority=999,
+        name="_spawn_partial",
+    )
+    _publish_partial(sub_session_id, record)
+    return record, unregister
+
+
 # Capture default sys.path entries at import time.
 # Used to filter out bundle-added paths when forwarding sys_paths to subprocess children.
 _DEFAULT_SYS_PATHS: frozenset[str] = frozenset(sys.path)
@@ -932,6 +1085,8 @@ async def spawn_sub_session(
     child_session.coordinator.register_capability(
         "session.resume", child_resume_capability
     )
+    # Partial-output recovery for grandchildren that time out under this child.
+    child_session.coordinator.register_capability("session.partial", get_partial_output)
 
     # Approval provider (for hooks-approval module, if active)
     register_provider_fn = child_session.coordinator.get_capability(
@@ -1006,6 +1161,10 @@ async def spawn_sub_session(
             name="_spawn_capture",
         )
 
+    # Accumulate assistant text as it is produced, so a delegate killed by
+    # tool-delegate's wall-clock timeout still has recoverable output.
+    partial_record, unregister_partial = _open_partial(sub_session_id, hooks)
+
     # Expand @-mentions in delegation instruction before executing.
     # Content lands inline as <context_file> XML blocks prepended to the instruction.
     if instruction:
@@ -1074,16 +1233,31 @@ async def spawn_sub_session(
 
     # Execute instruction in child session; cleanup MUST run even on CancelledError
     #
-    # NOTE: there is deliberately NO `except` here. A timeout cancels
-    # execute(), and the cancellation path must stay free of any await --
-    # the transcript has already been checkpointed above and by the
-    # provider:request hook, so nothing needs to be rescued while unwinding.
+    # NOTE: the `except BaseException` below is SYNCHRONOUS ONLY and must stay
+    # that way. A timeout cancels execute(), and the cancellation path must
+    # remain free of any await -- the transcript has already been checkpointed
+    # above and by the provider:request hook, so nothing needs to be *fetched*
+    # while unwinding. The handler only confirms and logs an already-published
+    # accumulator; it is NOT what makes the partial readable (see the note at
+    # the top of this module -- the consumer often reads before this runs).
     try:
         try:
             response = await child_session.execute(instruction)
+        except BaseException:
+            # Timed out or cancelled: the post-run block below never runs, so
+            # the agent's own partial text stays published for the delegate
+            # tool to read. Synchronous only -- see _seal_partial.
+            _seal_partial(sub_session_id, partial_record)
+            raise
+        else:
+            # Completed normally: there is no partial to offer, and the
+            # registry must not carry one.
+            _discard_partial(sub_session_id)
         finally:
             if unregister_hook:
                 unregister_hook()
+            if unregister_partial:
+                unregister_partial()
             unregister_checkpoint()
 
         # Persist final state for multi-turn resumption
@@ -1743,6 +1917,8 @@ async def resume_sub_session(
     child_session.coordinator.register_capability(
         "session.resume", child_resume_capability
     )
+    # Partial-output recovery for grandchildren that time out under this child.
+    child_session.coordinator.register_capability("session.partial", get_partial_output)
 
     # Approval provider (for hooks-approval module, if active)
     register_provider_fn = child_session.coordinator.get_capability(
@@ -1885,6 +2061,10 @@ async def resume_sub_session(
             name="_spawn_capture",
         )
 
+    # Accumulate assistant text as it is produced, so a delegate killed by
+    # tool-delegate's wall-clock timeout still has recoverable output.
+    partial_record, unregister_partial = _open_partial(sub_session_id, hooks)
+
     # Wire up cancellation propagation if parent session provided
     # Enables graceful Ctrl+C to stop the child after its current tool call
     if parent_session is not None:
@@ -1929,14 +2109,24 @@ async def resume_sub_session(
 
     # Execute new instruction with full context; cleanup MUST run even on CancelledError
     #
-    # NOTE: deliberately NO `except` here -- see the spawn path's note. The
-    # cancellation path must stay free of any await.
+    # NOTE: the `except BaseException` below is synchronous only -- see the
+    # spawn path's note. The cancellation path must stay free of any await.
     try:
         try:
             response = await child_session.execute(instruction)
+        except BaseException:
+            # Timed out or cancelled: the agent's own partial text stays
+            # published for the delegate tool to read.
+            # Synchronous only -- see _seal_partial.
+            _seal_partial(sub_session_id, partial_record)
+            raise
+        else:
+            _discard_partial(sub_session_id)
         finally:
             if unregister_hook:
                 unregister_hook()
+            if unregister_partial:
+                unregister_partial()
             unregister_checkpoint()
 
         # Update state for next resumption

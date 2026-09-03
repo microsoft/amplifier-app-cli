@@ -1,0 +1,55 @@
+# G-D4: a real timeout that carries partial_available: true
+# consumer = amplifier-foundation f42f48c tool-delegate (merged, PR #353), unmodified
+# producer = amplifier_app_cli on PYTHONPATH; both overlaid via cp -rL, neither repo mutated
+
+================ PARENT (app-cli ab47608) ================
+app-registered capabilities: session.resume, session.spawn
+session.partial registered: False
+
+ToolResult.success = False
+{
+  "agent": "explorer",
+  "completed": false,
+  "guidance": "INCOMPLETE: this delegate did not finish and no partial output could be recovered. Nothing here is a result. Re-delegate a narrower task or complete the work yourself; see metadata.recovery_message before considering this session for resumption.",
+  "metadata": {
+    "elapsed_s": 1.002,
+    "recovery_message": "Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.",
+    "resumable": false,
+    "resume_status": "pending_child_cleanup",
+    "timeout_seconds": 1
+  },
+  "partial_available": false,
+  "partial_chars_total": 0,
+  "partial_response": null,
+  "partial_segments": 0,
+  "partial_source": "none",
+  "partial_truncated": false,
+  "session_id": "0000000000000000-b3d0212ab3024983_explorer",
+  "status": "timeout"
+}
+
+================ PATCHED (this lane) ================
+app-registered capabilities: session.partial, session.resume, session.spawn
+session.partial registered: True
+
+ToolResult.success = False
+{
+  "agent": "explorer",
+  "completed": false,
+  "guidance": "INCOMPLETE: this delegate did not finish. The text in 'partial_response' is unfinished work salvaged from the agent mid-flight -- it has NOT been checked, concluded, or self-reviewed by that agent. Do not report it as a completed result and do not treat its conclusions as final. Re-delegate a narrower task or complete the work yourself; see metadata.recovery_message before considering this session for resumption.",
+  "metadata": {
+    "elapsed_s": 1.001,
+    "recovery_message": "Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.",
+    "resumable": false,
+    "resume_status": "pending_child_cleanup",
+    "timeout_seconds": 1
+  },
+  "partial_available": true,
+  "partial_chars_total": 42,
+  "partial_response": "anchor A1 confirmed. anchor A2 confirmed. ",
+  "partial_segments": 2,
+  "partial_source": "spawn-accumulator",
+  "partial_truncated": false,
+  "session_id": "0000000000000000-d3593d0d39d24acd_explorer",
+  "status": "timeout"
+}

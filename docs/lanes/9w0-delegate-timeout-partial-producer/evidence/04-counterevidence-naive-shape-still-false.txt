@@ -1,0 +1,13 @@
+# COUNTER-EVIDENCE: 37n's ORIGINAL patch shape (publish only from the child's
+# 'except BaseException' unwind) against the REAL merged consumer, foundation f42f48c.
+# Everything else identical to the shipped patch.
+# Result: still partial_available=false. The producer seals AFTER the consumer has read.
+
+E       assert False is True
+WARNING  amplifier_module_tool_delegate:__init__.py:2282 Agent 'explorer' timed out after 1s (delegate tool session-level timeout; elapsed 1.001s). No partial output could be recovered. Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.
+WARNING  amplifier_app_cli.session_spawner:session_spawner.py:133 Sub-session 0000000000000000-14995cfa065d4e59_explorer did not complete; preserved 2 partial text segment(s), 42 chars
+WARNING  amplifier_module_tool_delegate:__init__.py:2282 Agent 'explorer' timed out after 1s (delegate tool session-level timeout; elapsed 1.0s). No partial output could be recovered. Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.
+WARNING  amplifier_app_cli.session_spawner:session_spawner.py:133 Sub-session 0000000000000000-31d194b3a158428e_explorer did not complete; preserved 2 partial text segment(s), 42 chars
+WARNING  amplifier_module_tool_delegate:__init__.py:2282 Agent 'explorer' timed out after 1s (delegate tool session-level timeout; elapsed 1.002s). No partial output could be recovered. Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.
+WARNING  amplifier_app_cli.session_spawner:session_spawner.py:133 Sub-session 0000000000000000-977f57772dd8433b_explorer did not complete; preserved 2 partial text segment(s), 42 chars
+2 failed in 3.30s
