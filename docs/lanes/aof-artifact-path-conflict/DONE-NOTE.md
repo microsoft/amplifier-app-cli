@@ -1,5 +1,16 @@
 # DONE-NOTE — `model_performance-aof` · lane `aof-artifact-path-conflict`
 
+> **STATUS: the item was RESOLVED and then REOPENED by this lane, as a
+> self-correction.** The work below is complete, published and measured, but the
+> checker fix lives on an unmerged branch in the evaluation repo — so the guard
+> is **not live for future lanes**, and this item's own acceptance criterion
+> ("a lane … runs `check_lane_artifact_paths.py` … the checker agrees") is not
+> yet satisfied against the copy a lane actually runs. Resolving while my own
+> resolution said "needs a local merge to take effect" was an overclaim.
+> Nothing about the work changed; only the claim of completion. The one
+> remaining action is a local merge, which this goal forbids a lane to perform —
+> see **Honest limits** for the command and its revert.
+
 **The decision: option (a). The goal template wins.** `check_lane_artifact_paths.py`
 now resolves `amplifier-app-cli` to `docs/lanes/<lane>/` by declaration, not by
 inference. **This note is at `docs/lanes/aof-artifact-path-conflict/DONE-NOTE.md`,
@@ -104,8 +115,8 @@ lane dir containing a `.git`, so a second checkout placed directly beside
 
 | Deliverable | State |
 |---|---|
-| A goal-conformant DONE-NOTE gets NO VIOLATION | **DONE** — demonstrated, not asserted. On **this real lane**: `--strict` exit **1 / VIOLATION** under the parent checker, **0 / COMPLIANT** under the patched one, same command, same directory (`evidence/07-this-lane-graded.txt`). Synthetic control, same script both ways: `evidence/01-fail-before.txt` vs `02-pass-after.txt` |
-| A test pinning the resolution for this repo | **DONE** — `test_pin_survives_every_directory_that_would_have_moved_it` tracks `probes/`, `ai_working/` **and** a three-member R0 wave family at the base ref simultaneously and asserts the answer does not move |
+| A goal-conformant DONE-NOTE gets NO VIOLATION | **DEMONSTRATED, NOT YET LIVE** — true of the patched checker and of the merged tree; **not** of `main`, which is what a future lane runs. On **this real lane**: `--strict` exit **1 / VIOLATION** under the parent checker, **0 / COMPLIANT** under the patched one, same command, same directory (`evidence/07-this-lane-graded.txt`). Synthetic control, same script both ways: `evidence/01-fail-before.txt` vs `02-pass-after.txt` |
+| A test pinning the resolution for this repo | **WRITTEN AND GREEN, NOT YET LIVE** — `test_pin_survives_every_directory_that_would_have_moved_it` tracks `probes/`, `ai_working/` **and** a three-member R0 wave family at the base ref simultaneously and asserts the answer does not move. It passes on the branch and on the merged tree (`evidence/09`), but it does **not run on future lanes until the branch is merged into evals main**, and a guard that does not run is not a guard. This is the row the item was reopened for |
 | The `kez` hazard is still refused | **DONE** — `test_root_done_note_is_still_a_violation` (pinned repo) and `test_root_done_note_is_a_violation_in_an_unpinned_repo_too`. Live confirmation: `adq` is still VIOLATION for `../DONE-NOTE.md` |
 | Landed artifacts under BOTH conventions left where they are | **DONE** — nothing relocated. `ai_working/adq-.../DONE-NOTE.md` and `ai_working/9kk-.../DONE-NOTE.md` are reported `ok` under the pin |
 | Say which option and why | **DONE** — above |
@@ -114,7 +125,10 @@ lane dir containing a `.git`, so a second checkout placed directly beside
 | DRAFT PR on origin | **DONE** — see the PR body; the evals half is carried as a patch artifact because that repo has no remote |
 | DONE-NOTE follows the convention landed on | **DONE** — `docs/lanes/aof-artifact-path-conflict/DONE-NOTE.md` |
 
-Nothing is NOT-POSSIBLE, and the $0 cap never bound.
+Nothing is NOT-POSSIBLE, and the $0 cap never bound. But two rows above are
+GREEN-BUT-NOT-LIVE, and that is why this item was reopened rather than left
+closed: the guard only guards once `lane/aof-artifact-path-conflict` is merged
+into evals main.
 
 ---
 
