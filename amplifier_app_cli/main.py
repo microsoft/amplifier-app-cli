@@ -718,7 +718,16 @@ class CommandProcessor:
             CommandProcessor.MODE_SHORTCUTS.update(shortcuts)
 
     def _populate_skill_shortcuts(self) -> None:
-        """Populate SKILL_SHORTCUTS from skills discovery."""
+        """Populate SKILL_SHORTCUTS from skills discovery.
+
+        NOTE (additive-only cache): this only ever ADDS entries via
+        ``.update()`` on the CLASS-level dict -- it never removes a shortcut
+        that has since disappeared from discovery. That's an accepted
+        limitation for this fix: skills don't disappear mid-session, so a
+        stale-but-present entry is not a practical problem. Safe to call
+        repeatedly (e.g. to refresh after lazy skill resolution) precisely
+        because it's additive rather than a rebuild.
+        """
         discovery = self.session.coordinator.get_capability("skills_discovery")
         if discovery and hasattr(discovery, "get_shortcuts"):
             shortcuts = discovery.get_shortcuts()
@@ -790,12 +799,10 @@ class CommandProcessor:
             # canonical skill name when the lookup key is an alias (the
             # skill's `shortcut:` frontmatter field). Older skills bundles
             # don't populate "name" — fall back to the lookup key.
-            if shortcut_name in self.SKILL_SHORTCUTS:
-                entry = self.SKILL_SHORTCUTS[shortcut_name]
+            def _dispatch_skill_shortcut(name: str) -> tuple[str, dict[str, Any]]:
+                entry = self.SKILL_SHORTCUTS[name]
                 canonical = (
-                    entry.get("name", shortcut_name)
-                    if isinstance(entry, dict)
-                    else shortcut_name
+                    entry.get("name", name) if isinstance(entry, dict) else name
                 )
                 return (
                     "load_skill",
@@ -805,6 +812,22 @@ class CommandProcessor:
                         "command": command,
                     },
                 )
+
+            if shortcut_name in self.SKILL_SHORTCUTS:
+                return _dispatch_skill_shortcut(shortcut_name)
+
+            # Defense-in-depth: SKILL_SHORTCUTS is populated once, additively,
+            # at __init__ time (see _populate_skill_shortcuts). Skills sourced
+            # from @namespace:skills packs resolve LAZILY on first
+            # provider:request, which happens AFTER that startup snapshot --
+            # so a miss here does not necessarily mean the command is
+            # unknown. Refresh against the live skills_discovery capability
+            # and recheck once before giving up. Cheap (a dict read off an
+            # already-resolved capability) and fails soft if the capability
+            # is absent, exactly like the initial population.
+            self._populate_skill_shortcuts()
+            if shortcut_name in self.SKILL_SHORTCUTS:
+                return _dispatch_skill_shortcut(shortcut_name)
 
             return "unknown_command", {"command": command}
 
@@ -2024,7 +2047,11 @@ class CommandProcessor:
                         lines.append(f"  /{name}")
 
         # Add dynamic skills section if skills are available
-        # Use cached SKILL_SHORTCUTS (same source as process_input) for consistency
+        # Refresh the cache first so displayed shortcuts reflect skills that
+        # resolved lazily (e.g. @namespace:skills packs) after __init__'s
+        # startup snapshot -- then use SKILL_SHORTCUTS (same source as
+        # process_input) for consistency.
+        self._populate_skill_shortcuts()
         shortcuts = self.SKILL_SHORTCUTS
         if shortcuts:
             lines.append("")
