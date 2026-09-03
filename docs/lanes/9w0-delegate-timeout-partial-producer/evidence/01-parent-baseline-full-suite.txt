@@ -1,0 +1,3 @@
+# FULL suite on PARENT commit ab47608fc989e13f9674c3f5f9efc5625a9d7673
+.................................................................        [100%]
+1647 passed, 1 skipped, 13 deselected, 1 xfailed in 8.44s

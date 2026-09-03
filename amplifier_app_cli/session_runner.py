@@ -512,10 +512,14 @@ def register_session_spawning(session: AmplifierSession) -> None:
     The capabilities registered:
     - session.spawn: Create new agent sub-session
     - session.resume: Resume existing sub-session
+    - session.partial: Recover a sub-session's preserved partial output after it
+      was cancelled or timed out (tool-delegate reads this to return an
+      incomplete-with-partial result instead of discarding the work)
 
     Args:
         session: The AmplifierSession to register capabilities on
     """
+    from .session_spawner import get_partial_output
     from .session_spawner import resume_sub_session
     from .session_spawner import spawn_sub_session
 
@@ -569,6 +573,7 @@ def register_session_spawning(session: AmplifierSession) -> None:
 
     session.coordinator.register_capability("session.spawn", spawn_capability)
     session.coordinator.register_capability("session.resume", resume_capability)
+    session.coordinator.register_capability("session.partial", get_partial_output)
 
 
 # =============================================================================

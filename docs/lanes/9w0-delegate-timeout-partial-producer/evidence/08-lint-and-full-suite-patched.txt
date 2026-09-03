@@ -1,0 +1,14 @@
+# LINT + FULL SUITE on the patched tree
+
+$ ruff check amplifier_app_cli tests
+1472 |     """Create a minimal Click CLI with the run command registered.
+     |
+
+Found 14 errors.
+[*] 9 fixable with the `--fix` option (1 hidden fix can be enabled with the `--unsafe-fixes` option).
+$ ruff format --check amplifier_app_cli/session_spawner.py amplifier_app_cli/session_runner.py tests/test_session_spawner_partial.py
+3 files already formatted
+
+$ pytest tests/ -q
+.....                                                                    [100%]
+1659 passed, 1 skipped, 13 deselected, 1 xfailed in 10.50s

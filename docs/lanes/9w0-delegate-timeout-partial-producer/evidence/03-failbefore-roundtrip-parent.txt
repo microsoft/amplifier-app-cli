@@ -1,0 +1,45 @@
+# FAIL-BEFORE: the same cross-repo round trip, run against the PARENT app package
+# app-cli parent   : ab47608fc989e13f9674c3f5f9efc5625a9d7673
+# foundation (real): f42f48c  (consumer half, merged as PR #353)
+# tool-delegate    : cp -rL from a fresh clone of foundation main; app pkg: cp -rL, overlaid with parent sources
+
+    async def test_producer_and_consumer_agree_on_the_partial_contract():
+        result, caps = await _run_timeout_leg()
+    
+        # The timeout invariant the consumer half pins: never success, on either channel.
+        assert result.success is False
+        assert result.output["status"] == "timeout"
+        assert "response" not in result.output
+    
+        # The producer half: the straggler's own work survived and was handed over.
+>       assert result.output["partial_available"] is True, (
+            "session.partial produced nothing -- k64's G-D4 would record "
+            "PARTIAL-PATH-NOT-EXERCISED here"
+        )
+E       AssertionError: session.partial produced nothing -- k64's G-D4 would record PARTIAL-PATH-NOT-EXERCISED here
+E       assert False is True
+
+test_partial_roundtrip.py:168: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  amplifier_module_tool_delegate:__init__.py:2282 Agent 'explorer' timed out after 1s (delegate tool session-level timeout; elapsed 1.001s). No partial output could be recovered. Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.
+_________ test_a_second_timeout_leg_does_not_inherit_the_first_partial _________
+
+    async def test_a_second_timeout_leg_does_not_inherit_the_first_partial():
+        """Two legs, two ids -- the second must carry only its own work."""
+        first, _ = await _run_timeout_leg()
+        second, _ = await _run_timeout_leg()
+    
+        assert first.output["session_id"] != second.output["session_id"]
+>       assert second.output["partial_response"] == "".join(PARTIAL_CHUNKS)
+E       AssertionError: assert None == 'anchor A1 confirmed. anchor A2 confirmed. '
+E        +  where 'anchor A1 confirmed. anchor A2 confirmed. ' = <built-in method join of str object at 0xca6ee151d728>(['anchor A1 confirmed. ', 'anchor A2 confirmed. '])
+E        +    where <built-in method join of str object at 0xca6ee151d728> = ''.join
+
+test_partial_roundtrip.py:189: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  amplifier_module_tool_delegate:__init__.py:2282 Agent 'explorer' timed out after 1s (delegate tool session-level timeout; elapsed 1.001s). No partial output could be recovered. Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.
+WARNING  amplifier_module_tool_delegate:__init__.py:2282 Agent 'explorer' timed out after 1s (delegate tool session-level timeout; elapsed 1.001s). No partial output could be recovered. Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.
+=========================== short test summary info ============================
+FAILED test_partial_roundtrip.py::test_producer_and_consumer_agree_on_the_partial_contract
+FAILED test_partial_roundtrip.py::test_a_second_timeout_leg_does_not_inherit_the_first_partial
+2 failed in 3.29s

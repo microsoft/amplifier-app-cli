@@ -1,0 +1,11 @@
+# Baseline on PARENT commit ab47608fc989e13f9674c3f5f9efc5625a9d7673 (2026-09-03T08:07:50Z)
+
+## Named suites (37n's comparison set)
+........................................................................ [ 98%]
+.                                                                        [100%]
+73 passed in 0.27s
+
+## The two failures 37n named at f16375fc
+tests/test_session_spawner.py::TestSpawnEnrichment::test_spawn_result_includes_status_and_turn_count PASSED [ 50%]
+tests/test_session_spawner.py::TestSpawnEnrichment::test_resume_result_includes_status_and_turn_count PASSED [100%]
+============================== 2 passed in 0.02s ===============================

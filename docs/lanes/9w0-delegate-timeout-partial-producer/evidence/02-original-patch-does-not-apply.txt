@@ -1,0 +1,4 @@
+$ git apply --check -p1 PATCH-app-cli-session-spawner.diff   # 37n's patch, cut at f16375fc
+error: patch failed: amplifier_app_cli/session_spawner.py:843
+error: amplifier_app_cli/session_spawner.py: patch does not apply
+exit=1

@@ -1,0 +1,13 @@
+# PASS-AFTER: cross-repo round trip, patched app-cli x foundation f42f48c
+# PYTHONPATH=<tool-delegate copy>:<app-cli copy>   (cp -rL; neither repo mutated)
+
+============================= test session starts ==============================
+platform linux -- Python 3.13.11, pytest-9.0.3, pluggy-1.6.0
+rootdir: /tmp/9w0/run
+plugins: anyio-4.12.0, amplifier-core-1.6.0, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 2 items
+
+test_partial_roundtrip.py ..                                             [100%]
+
+============================== 2 passed in 3.15s ===============================
