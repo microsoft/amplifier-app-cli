@@ -193,19 +193,33 @@ sized for 2 valid runs against a goal asking for 4; nothing of that shape applie
    not exist in most batches. The guard's message was left verbatim as measured.
 4. **Windows skip on the new test module.** Chosen over a CI deselect, per this
    repo's own CI comment ("an excluded test is a test nobody is watching").
-5. **Artifact root is `ai_working/2nz-upstream-skill-guards/`, not the
-   `docs/lanes/…` the goal named.** The goal text asserted
-   `ai_working/2nz-upstream-skill-guards/DONE-NOTE.md` "resolved for THIS repo by
-   artifact-path/v1" and cited `check_lane_artifact_paths.py` as the checker. Run,
-   that checker resolves this repo to **`ai_working/<lane>/` [R2 ai_working/]** —
-   `ai_working/` is tracked at the base ref, so R2 fires and the `docs/lanes/`
-   fallback (R3) never applies. The checker's own docstring lists
-   `ai_working/<lane>/  4 lanes  (amplifier-app-cli)` as this repo's convention and
-   groups `docs/<something>/<lane>/` among the *inconsistent* placements the rule
-   exists to eliminate. This repo's `ai_working/` already holds four prior lanes.
-   The goal's stated path was therefore a mis-resolution; the enforced rule wins,
-   and the note is written where the check passes. Recorded here rather than
-   absorbed, per "choose, record the choice, continue".
+5. **Artifact root is `docs/lanes/2nz-upstream-skill-guards/`, as the goal names —
+   and a goal-vs-checker conflict is reported rather than silently resolved.**
+   The goal names this path twice, once inside SCOPE-OUTS. Run against this repo,
+   `check_lane_artifact_paths.py` instead resolves to **`ai_working/<lane>/`
+   [R2 ai_working/]** (R2 fires because `ai_working/` is tracked at the base ref,
+   so the `docs/lanes/` fallback R3 never applies) and will grade this lane a
+   VIOLATION.
+
+   **Both conventions have precedent at `origin/main` in this very repo** —
+   `docs/lanes/` holds `eem-partial-accumulator-widen`,
+   `9w0-delegate-timeout-partial-producer` and `n1i-resume-thread-role`;
+   `ai_working/` holds `3yc-…`, `9kk-…`, `adq-…` and others. So this is not a lane
+   inventing a location: it is two live conventions in one repo, with the goal
+   template pointing at one and the checker at the other.
+
+   The goal wins here: it is the authoritative spec for this lane, its path has
+   three precedents at HEAD, and the SCOPE-OUT's actual hazard — the repo-root
+   `DONE-NOTE.md` that item `kez` was filed for, where every lane silently
+   overwrote the last — is avoided by either location. **This lane initially
+   placed the note under `ai_working/` on the checker's say-so; that was wrong,
+   and it is corrected here.** Treating a checker's preference as outranking an
+   explicit instruction is exactly the substitution the goal warns against.
+
+   **For the manager, not for this lane to decide:** `artifact-path/v1` and the
+   goal template disagree for `amplifier-app-cli`. One of the two should move.
+   Until it does, every lane in this repo gets graded against a rule its own goal
+   contradicts.
 6. **No `BLOCKED.md`.** Outcome branch A; the item resolves.
 
 ---
