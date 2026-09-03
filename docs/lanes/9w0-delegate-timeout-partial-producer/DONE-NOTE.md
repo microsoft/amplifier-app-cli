@@ -6,6 +6,7 @@
 |---|---|
 | Repo | `microsoft/amplifier-app-cli` |
 | Branch | `lane/9w0-delegate-timeout-partial-producer` |
+| Draft PR | https://github.com/microsoft/amplifier-app-cli/pull/297 |
 | Parent commit | `ab47608fc989e13f9674c3f5f9efc5625a9d7673` |
 | Consumer half it pairs with | amplifier-foundation `f42f48c` (`model_performance-bp0`, PR #353) — **merged** |
 | Spend authority | **$0** (pure code change, no API/DTU spend authorized) |
@@ -67,7 +68,7 @@ invisible to every test either repo owns on its own.
 | 4 | Normal completions unchanged — **byte-identical**, shown not asserted | **DONE** | `evidence/05` — `diff` empty, identical sha256 `ef8c86fd…` |
 | 5 | The two `TestSpawnEnrichment` failures shown on the parent | **DONE, with a correction — see §4** | `evidence/00` |
 | 6 | Fail-before evidence committed and pasted in the PR body | **DONE** | `evidence/03`, `evidence/04` |
-| 7 | Draft PR on origin naming foundation `f42f48c` as the consumer half | **DONE** | see `publication` in `DONE.json` |
+| 7 | Draft PR on origin naming foundation `f42f48c` as the consumer half | **DONE** | [PR #297](https://github.com/microsoft/amplifier-app-cli/pull/297), draft; `publication` block in `DONE.json` read back from the remote |
 | 8 | This DONE-NOTE under the lane artifact root | **DONE** | this file |
 
 Nothing was dropped, and no deliverable was cap-bound.
