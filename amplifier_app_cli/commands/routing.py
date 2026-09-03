@@ -14,6 +14,7 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
+from ..lib.routing_provenance import resolve_matrix_origins
 from ..lib.settings import AppSettings, Scope, get_custom_routing_dir
 from ..provider_loader import get_provider_info, get_provider_models
 from ..provider_manager import resolve_provider_entry
@@ -150,14 +151,80 @@ def _load_matrix(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def _load_all_matrices(matrix_files: list[Path]) -> dict[str, dict[str, Any]]:
-    """Load all matrix files into a name -> data dict."""
-    matrices: dict[str, dict[str, Any]] = {}
+def _load_all_matrices_with_paths(
+    matrix_files: list[Path],
+) -> dict[str, tuple[dict[str, Any], Path]]:
+    """Load all matrix files into a name -> (data, source_path) dict.
+
+    Same last-write-wins keying as :func:`_load_all_matrices`, but it also
+    keeps the file each listed entry actually came from, which is what
+    shadowing provenance is looked up by (hooks-routing resolves matrices by
+    file *stem*, while this dict is keyed by the ``name:`` field inside the
+    YAML -- the two usually agree but are not the same thing).
+    """
+    matrices: dict[str, tuple[dict[str, Any], Path]] = {}
     for path in matrix_files:
         data = _load_matrix(path)
         if data and "name" in data:
-            matrices[data["name"]] = data
+            matrices[data["name"]] = (data, path)
     return matrices
+
+
+def _load_all_matrices(matrix_files: list[Path]) -> dict[str, dict[str, Any]]:
+    """Load all matrix files into a name -> data dict."""
+    return {
+        name: data
+        for name, (data, _) in _load_all_matrices_with_paths(matrix_files).items()
+    }
+
+
+def _display_path(path: Path) -> str:
+    """Render a path with ``~`` for the home directory, for readable output."""
+    try:
+        return f"~/{path.relative_to(Path.home())}"
+    except ValueError:
+        return str(path)
+
+
+def _shadow_label(origin: Any) -> str:
+    """Short marker text naming what kind of file this matrix suppresses."""
+    sources = sorted({src for _, src in origin.shadowed})
+    return "/".join(sources) if sources else "matrix"
+
+
+def _print_shadowing_footer(shadowed: list[tuple[str, Any]]) -> None:
+    """Print the shadowing relationships: winner path, then what it suppresses.
+
+    Only called when at least one matrix is shadowed, so an unshadowed host
+    sees exactly the output it saw before.
+    """
+    if not shadowed:
+        return
+
+    count = len(shadowed)
+    noun = "matrix is" if count == 1 else "matrices are"
+    console.print(
+        f"[yellow]⚠ {count} {noun} shadowed — only the 'in use' file is loaded:[/yellow]"
+    )
+    for name, origin in shadowed:
+        console.print(f"  [bold]{name}[/bold]")
+        _print_origin_paths(origin)
+    console.print()
+
+
+def _print_origin_paths(origin: Any) -> None:
+    """Print the winning path, then each path it suppresses, one per line.
+
+    ``soft_wrap`` keeps Rich from reflowing a long absolute path into the
+    middle of the label column.
+    """
+    winner = _display_path(origin.path) if origin.path else "(none)"
+    console.print(f"    [green]in use[/green]      {winner}", soft_wrap=True)
+    for path, source in origin.shadowed:
+        console.print(
+            f"    [red]suppressed[/red]  {_display_path(path)}  [dim]({source})[/dim]",
+            soft_wrap=True,
+        )
 
 
 def _get_configured_provider_types(settings: AppSettings) -> set[str]:
@@ -251,10 +318,16 @@ def routing_list(compact: bool, detailed: bool, fmt: str):
         )
         return
 
-    matrices = _load_all_matrices(matrix_files)
-    if not matrices:
+    loaded = _load_all_matrices_with_paths(matrix_files)
+    if not loaded:
         console.print("[yellow]No valid routing matrices found.[/yellow]")
         return
+
+    # Shadowing provenance, derived from hooks-routing's own
+    # resolve_matrix_source() -- never from a search order re-derived here.
+    # An empty dict means "provenance unknown" (bundle too old / unreachable),
+    # NOT "nothing is shadowed", so no marker is drawn in that case.
+    origins = resolve_matrix_origins(matrix_files)
 
     routing_config = settings.get_routing_config()
     active_matrix = routing_config.get("matrix", "balanced")
@@ -265,7 +338,8 @@ def routing_list(compact: bool, detailed: bool, fmt: str):
     renderer = ItemRenderer(console)
 
     items: list[dict[str, Any]] = []
-    for name, data in sorted(matrices.items()):
+    shadowed: list[tuple[str, Any]] = []
+    for name, (data, source_path) in sorted(loaded.items()):
         is_active = name == active_matrix
         description = data.get("description", "")
         updated = str(data.get("updated", ""))
@@ -275,18 +349,32 @@ def routing_list(compact: bool, detailed: bool, fmt: str):
             covered, total = _check_compatibility(data, provider_types)
             compat_str = f"{covered}/{total} roles"
 
-        items.append(
-            {
-                "name": ("→ " if is_active else "  ") + name,
-                "enabled": is_active,
-                "behaviors": ["active" if is_active else "available"],
-                "config_summary": {
-                    "description": description,
-                    "compatibility": compat_str,
-                    "updated": updated,
-                },
-            }
-        )
+        origin = origins.get(source_path.stem)
+        is_shadowing = origin is not None and origin.is_shadowed
+
+        config_summary: dict[str, Any] = {
+            "description": description,
+            "compatibility": compat_str,
+            "updated": updated,
+        }
+        item: dict[str, Any] = {
+            "name": ("→ " if is_active else "  ")
+            + name
+            + (f"  ⚠ shadows {_shadow_label(origin)}" if is_shadowing else ""),
+            "enabled": is_active,
+            "behaviors": ["active" if is_active else "available"],
+            "config_summary": config_summary,
+        }
+
+        if is_shadowing:
+            shadowed.append((name, origin))
+            config_summary["shadows"] = ", ".join(
+                _display_path(p) for p, _ in origin.shadowed
+            )
+            # Provenance payload, verbatim from hooks-routing's MatrixSource.
+            item["routing_source"] = origin.to_dict()
+
+        items.append(item)
 
     if fmt == "json":
         renderer.render_json(items)
@@ -295,6 +383,7 @@ def routing_list(compact: bool, detailed: bool, fmt: str):
     renderer.render(
         items, view=view, category="routing", section_title="routing matrices"
     )
+    _print_shadowing_footer(shadowed)
 
 
 # ============================================================
@@ -349,7 +438,8 @@ def routing_show(matrix_name: str | None, compact: bool, detailed: bool, fmt: st
     """
     settings = _get_settings()
     matrix_files = _discover_matrix_files()
-    matrices = _load_all_matrices(matrix_files)
+    loaded = _load_all_matrices_with_paths(matrix_files)
+    matrices = {name: data for name, (data, _) in loaded.items()}
 
     if not matrices:
         console.print("[yellow]No routing matrices found.[/yellow]")
@@ -370,18 +460,41 @@ def routing_show(matrix_name: str | None, compact: bool, detailed: bool, fmt: st
     view = resolve_view(
         ("routing", "show"), compact_flag=compact, detailed_flag=detailed
     )
-    matrix_data = matrices[matrix_name]
+    matrix_data, source_path = loaded[matrix_name]
+    origin = resolve_matrix_origins(matrix_files).get(source_path.stem)
 
     if fmt == "json":
         renderer = ItemRenderer(console)
-        renderer.render_json({"matrix": matrix_name, "data": matrix_data})
+        payload: dict[str, Any] = {"matrix": matrix_name, "data": matrix_data}
+        if origin is not None and origin.is_shadowed:
+            payload["routing_source"] = origin.to_dict()
+        renderer.render_json(payload)
         return
+
+    _print_shadowing_note(origin)
 
     # detailed view → full waterfall; regular/compact → resolved routing
     if view == "detailed":
         _show_matrix_details(matrix_data, settings)
     else:
         _show_matrix_resolution(matrix_data, settings)
+
+
+def _print_shadowing_note(origin: Any) -> None:
+    """Name the file in use and what it suppresses, for one matrix.
+
+    Prints nothing at all when the matrix is not shadowed (or when provenance
+    is unavailable), so unshadowed output is unchanged.
+    """
+    if origin is None or not origin.is_shadowed:
+        return
+
+    console.print(
+        f"\n[yellow]⚠ '{origin.name}' shadows a {_shadow_label(origin)} matrix "
+        f"of the same name — only the 'in use' file is loaded:[/yellow]"
+    )
+    _print_origin_paths(origin)
+    console.print()
 
 
 def _show_matrix_resolution(matrix_data: dict[str, Any], settings: AppSettings) -> None:
