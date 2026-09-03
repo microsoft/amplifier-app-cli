@@ -8,11 +8,14 @@ from pathlib import Path
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+from amplifier_app_cli.lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
 from amplifier_app_cli.lib.merge_utils import deep_merge
 from amplifier_app_cli.runtime.config import (
     _apply_hook_overrides,
     _apply_provider_overrides,
     _apply_tool_overrides,
+    _bundle_declares_hook,
+    _routing_hook_source,
     resolve_bundle_config,
 )
 
@@ -701,3 +704,132 @@ class TestFullPipelineIntegration:
         assert hook["config"]["enabled"] is True  # dedicated wins
         assert hook["config"]["topic"] == "general"  # general fills in
         assert hook["config"]["base"] is True  # original preserved
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PART 4: settings-injected hooks-routing must carry a loadable source
+#
+# Regression. `routing.matrix` in settings.yaml injects a `hooks-routing`
+# override. When the active bundle does not already include the routing-matrix
+# bundle, `_apply_hook_overrides` APPENDS that override verbatim as the mount-
+# plan entry -- and it had no `source`, so the kernel failed it by name at
+# mount ("Module 'hooks-routing' not found in prepared bundle"). Measured on
+# `anchors-amp-dev`: no routing banner, no `model_role` on the delegate tool,
+# every model_role silently falling through to the default provider.
+#
+# Contract pinned here:
+#   * bundle has NO hooks-routing  -> injected entry carries the canonical source
+#   * bundle HAS hooks-routing     -> the bundle's own source is left untouched
+#   * the canonical source is the routing-matrix bundle's registered remote,
+#     narrowed to the hook module's subdirectory
+# ═══════════════════════════════════════════════════════════════════════════
+
+_ROUTING_HOOK_SOURCE = (
+    str(WELL_KNOWN_BUNDLES["routing-matrix"]["remote"])
+    + "#subdirectory=modules/hooks-routing"
+)
+
+
+class TestRoutingHookSource:
+    def test_source_derives_from_well_known_remote(self):
+        """One place knows where routing-matrix lives; the hook source is that
+        remote plus the module subdirectory -- byte-identical to the bundle's
+        own behaviors/routing.yaml declaration."""
+        src = _routing_hook_source()
+        assert src == _ROUTING_HOOK_SOURCE
+        assert src.startswith("git+https://")
+        assert src.endswith("#subdirectory=modules/hooks-routing")
+
+    def test_bundle_declares_hook(self):
+        assert _bundle_declares_hook([{"module": "hooks-routing"}], "hooks-routing")
+        assert not _bundle_declares_hook([{"module": "hooks-ci"}], "hooks-routing")
+        assert not _bundle_declares_hook([], "hooks-routing")
+        assert not _bundle_declares_hook(None, "hooks-routing")
+        # Non-dict entries (e.g. a bare string) never match, never raise.
+        assert not _bundle_declares_hook(["hooks-routing"], "hooks-routing")
+
+
+class TestRoutingHookSourceIntegration:
+    """Through the real resolve_bundle_config(); same patch set as PART 2."""
+
+    @staticmethod
+    def _run(mount_plan, routing_config):
+        mock_prepared = MagicMock()
+        mock_prepared.mount_plan = mount_plan
+        mock_prepared.bundle.load_agent_metadata = MagicMock()
+        settings = _make_app_settings(routing_config=routing_config)
+
+        async def go():
+            with (
+                patch(
+                    "amplifier_app_cli.lib.bundle_loader.prepare.load_and_prepare_bundle",
+                    new_callable=AsyncMock,
+                    return_value=mock_prepared,
+                ),
+                patch(
+                    "amplifier_app_cli.paths.get_bundle_search_paths", return_value=[]
+                ),
+                patch("amplifier_app_cli.lib.bundle_loader.AppBundleDiscovery"),
+            ):
+                result, _ = await resolve_bundle_config(
+                    bundle_name="test", app_settings=settings
+                )
+            return [h for h in result["hooks"] if h.get("module") == "hooks-routing"]
+
+        return go()
+
+    @pytest.mark.asyncio
+    async def test_injected_hook_carries_source_when_bundle_lacks_it(self):
+        """THE defect: the appended entry must be loadable."""
+        entries = await self._run(
+            mount_plan={"hooks": [{"module": "hooks-ci", "config": {}}]},
+            routing_config={"matrix": "anthropic"},
+        )
+        assert len(entries) == 1
+        assert entries[0].get("source") == _ROUTING_HOOK_SOURCE, (
+            "A settings-injected hooks-routing the bundle does not carry must "
+            "have a source, or the kernel fails it by name at mount"
+        )
+        assert entries[0]["config"]["default_matrix"] == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_injected_hook_carries_source_when_bundle_has_no_hooks_at_all(self):
+        entries = await self._run(mount_plan={}, routing_config={"matrix": "anthropic"})
+        assert len(entries) == 1
+        assert entries[0].get("source") == _ROUTING_HOOK_SOURCE
+
+    @pytest.mark.asyncio
+    async def test_bundle_pinned_source_is_never_clobbered(self):
+        """When the bundle already ships hooks-routing (foundation does), its
+        own -- possibly deliberately pinned -- source must survive the merge.
+        merge_module_items lets the override's top-level keys win, so the
+        override must not carry a source on this path."""
+        pinned = (
+            "git+https://github.com/someone/fork-routing-matrix@v1.2.3"
+            "#subdirectory=modules/hooks-routing"
+        )
+        entries = await self._run(
+            mount_plan={
+                "hooks": [
+                    {
+                        "module": "hooks-routing",
+                        "source": pinned,
+                        "config": {"default_matrix": "balanced"},
+                    }
+                ]
+            },
+            routing_config={"matrix": "anthropic"},
+        )
+        assert len(entries) == 1, "no duplicate entry"
+        assert entries[0]["source"] == pinned
+        # settings still win on the config key, as before
+        assert entries[0]["config"]["default_matrix"] == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_no_routing_config_injects_nothing(self):
+        """Unchanged: without routing.matrix there is no hooks-routing at all."""
+        entries = await self._run(
+            mount_plan={"hooks": [{"module": "hooks-ci", "config": {}}]},
+            routing_config=None,
+        )
+        assert entries == []

@@ -13,6 +13,7 @@ from typing import Any
 from amplifier_core.utils.truncate import SENSITIVE_KEYS
 from rich.console import Console
 
+from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
 from ..lib.settings import AppSettings, NotificationFlags, get_custom_routing_dir
 from ..lib.merge_utils import merge_module_items
 from ..lib.merge_utils import merge_tool_configs
@@ -291,6 +292,36 @@ async def resolve_bundle_config(
             **hooks_routing_extra,
             **routing_hook_override["config"],
         }
+        # A hook the bundle does not already carry needs a `source`, or the
+        # module cannot load at all. `_apply_hook_overrides` APPENDS an
+        # override whose module is absent from the bundle's hooks list, and
+        # the appended dict is the mount-plan entry verbatim -- so without a
+        # source here, `hooks-routing` reaches the session as
+        # `{"module": "hooks-routing", "config": {...}}` and the kernel fails
+        # it by name at mount:
+        #
+        #   Failed to load hook 'hooks-routing': Module 'hooks-routing' not
+        #   found in prepared bundle. Available modules: [...]
+        #
+        # Measured on a bundle that does not include routing-matrix
+        # (`anchors-amp-dev`) with `routing.matrix: anthropic` in
+        # settings.yaml: the routing banner left the system prompt, the
+        # delegate tool dropped its `model_role` parameter (no
+        # `model_role_resolver` capability), and every `model_role` fell
+        # through to the default provider. Silent -- the user sees no
+        # routing, not an error.
+        #
+        # Only attached when the bundle has no hooks-routing of its own: the
+        # in-place merge path in `_apply_hook_overrides` lets the override's
+        # top-level keys win (merge_module_items: "child overrides parent,
+        # including 'source'"), so attaching unconditionally would clobber a
+        # bundle's deliberately pinned source. The URI is the routing-matrix
+        # bundle's canonical remote from WELL_KNOWN_BUNDLES -- the same one
+        # `amplifier routing` and `amplifier update` fetch -- narrowed to the
+        # hook module's subdirectory, matching the bundle's own
+        # behaviors/routing.yaml declaration.
+        if not _bundle_declares_hook(bundle_config.get("hooks"), "hooks-routing"):
+            routing_hook_override["source"] = _routing_hook_source()
         if routing_hook_override["config"]:
             hook_overrides.append(routing_hook_override)
 
@@ -678,6 +709,25 @@ def narrow_overrides_to_secrets(
             entry["id"] = override["id"]
         narrowed.append(entry)
     return narrowed
+
+
+def _routing_hook_source() -> str:
+    """Canonical source URI for the ``hooks-routing`` module.
+
+    Derived from the routing-matrix bundle's registered remote so the CLI has
+    exactly one place that knows where that bundle lives (``amplifier routing``
+    and ``amplifier update`` read the same entry). The ``#subdirectory``
+    fragment mirrors the bundle's own ``behaviors/routing.yaml``.
+    """
+    remote = str(WELL_KNOWN_BUNDLES["routing-matrix"]["remote"])
+    return f"{remote}#subdirectory=modules/hooks-routing"
+
+
+def _bundle_declares_hook(hooks: Any, module_id: str) -> bool:
+    """True when *hooks* (a bundle's hooks list, possibly absent) names *module_id*."""
+    if not isinstance(hooks, list):
+        return False
+    return any(isinstance(h, dict) and h.get("module") == module_id for h in hooks)
 
 
 def _apply_hook_overrides(
