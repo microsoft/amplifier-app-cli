@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
 
+from amplifier_core.utils.truncate import SENSITIVE_KEYS
 from rich.console import Console
 
 from ..lib.settings import AppSettings, NotificationFlags, get_custom_routing_dir
@@ -569,6 +570,114 @@ def _apply_provider_overrides(
             result.append(provider)
 
     return result
+
+
+def _prune_to_secret_keys(value: Any) -> Any | None:
+    """Return a copy of ``value`` keeping ONLY secret-bearing branches.
+
+    Companion to ``redact_secrets()`` (amplifier_core.utils.truncate), which
+    is what *creates* the problem this solves: persisting a session redacts
+    every key in ``SENSITIVE_KEYS`` to the literal ``"[REDACTED]"``.  A resume
+    therefore needs to restore exactly those keys from live settings -- and
+    nothing else.  Using the SAME key set in both directions is deliberate:
+    if redaction ever learns a new secret key, the refresh learns it too, with
+    no second list to keep in sync.
+
+    Pruning rules:
+      - dict: keep a key outright if its name is a sensitive key; otherwise
+        recurse and keep the key only if something secret survives beneath it.
+        An empty result is reported as ``None`` (nothing to restore).
+      - list: kept WHOLE if any element carries a secret anywhere, else
+        dropped. Lists are *replaced* (not merged) by ``deep_merge``, so a
+        partially-pruned list would silently truncate the merged result --
+        all-or-nothing is the only safe choice.
+      - scalars: never secret on their own (only a *key* marks a secret).
+
+    Returns:
+        Pruned structure, or None when it holds no secret at any depth.
+    """
+    if isinstance(value, dict):
+        kept: dict[str, Any] = {}
+        for key, sub_value in value.items():
+            if isinstance(key, str) and key.lower() in SENSITIVE_KEYS:
+                kept[key] = sub_value
+                continue
+            pruned = _prune_to_secret_keys(sub_value)
+            if pruned is not None:
+                kept[key] = pruned
+        return kept or None
+    if isinstance(value, list):
+        if any(_prune_to_secret_keys(item) is not None for item in value):
+            return value
+        return None
+    return None
+
+
+def narrow_overrides_to_secrets(
+    overrides: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Reduce settings overrides to their secret-bearing config keys only.
+
+    WHY THIS EXISTS (model_performance-rc0 / -n1i)
+    ---------------------------------------------
+    ``resume_sub_session`` re-applies live ``settings.yaml`` provider
+    overrides onto a resumed sub-session's PERSISTED mount plan, for one
+    stated reason: on-disk metadata has its secrets redacted, so a resumed
+    session would otherwise send ``Bearer [REDACTED]``.
+
+    But the merge it used was the full one (``merge_module_items`` ->
+    ``deep_merge``, "overlay winning conflicts"), so EVERY settings key --
+    not just the secrets -- was re-imposed on the child's own plan.  The
+    load-bearing casualty is ``config.priority``: a sub-session spawned with
+    ``model_role``/``provider_preferences`` carries ``priority: 0`` on the
+    promoted provider, and the settings priority overwrote it.  The resumed
+    leg then silently re-resolved to whatever sits at settings priority 0.
+    Measured across a 2,078-session archive: 39 of 66 delegate resumes
+    changed model across the boundary, 37 of them cheap -> expensive, every
+    one reporting ``basis: "priority"`` on both sides (i.e. not a fallback --
+    a wipe).  Root sessions were untouched (0 of 179), exactly as the
+    mechanism predicts: a root plan has no promotion to lose.
+
+    ``priority`` is not a secret.  Narrowing the override to the keys that
+    were actually redacted restores the credential *without* handing settings
+    a second, unintended vote on provider resolution.
+
+    Identity keys (``module``, ``id``) are carried through so the override
+    still matches its target entry; every other top-level key is dropped, so
+    a settings override cannot rewrite ``source`` or any sibling field at
+    resume time either.
+
+    NOTE ON SCOPE: this is for the RESUME refresh only.  Root/fresh config
+    assembly (``resolve_bundle_config``) still merges overrides in full --
+    there the settings ARE the intended source of truth, and there is no
+    persisted child promotion to protect.
+
+    Args:
+        overrides: Settings override entries (``{module, id?, config}``).
+
+    Returns:
+        A new list holding only entries that carry at least one secret, each
+        narrowed to its secret-bearing config keys. Entries without secrets
+        are dropped entirely (they have nothing to restore).
+    """
+    narrowed: list[dict[str, Any]] = []
+    for override in overrides or []:
+        if not isinstance(override, dict) or "module" not in override:
+            continue
+        config = override.get("config")
+        if not isinstance(config, dict):
+            continue
+        secret_config = _prune_to_secret_keys(config)
+        if not secret_config:
+            continue
+        entry: dict[str, Any] = {
+            "module": override["module"],
+            "config": secret_config,
+        }
+        if override.get("id"):
+            entry["id"] = override["id"]
+        narrowed.append(entry)
+    return narrowed
 
 
 def _apply_hook_overrides(
