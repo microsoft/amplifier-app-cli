@@ -1,15 +1,12 @@
 # DONE-NOTE — `model_performance-aof` · lane `aof-artifact-path-conflict`
 
-> **STATUS: the item was RESOLVED and then REOPENED by this lane, as a
-> self-correction.** The work below is complete, published and measured, but the
-> checker fix lives on an unmerged branch in the evaluation repo — so the guard
-> is **not live for future lanes**, and this item's own acceptance criterion
-> ("a lane … runs `check_lane_artifact_paths.py` … the checker agrees") is not
-> yet satisfied against the copy a lane actually runs. Resolving while my own
-> resolution said "needs a local merge to take effect" was an overclaim.
-> Nothing about the work changed; only the claim of completion. The one
-> remaining action is a local merge, which this goal forbids a lane to perform —
-> see **Honest limits** for the command and its revert.
+> **STATUS: RESOLVED — OUTCOME branch A.** The deliverables exist as draft PR
+> #300 on this repo's origin, which is exactly what branch A asks for; the goal
+> never set "merged into evals main" as a lane's bar, and forbids a lane to
+> merge at all. The guard goes live when the manager merges
+> `lane/aof-artifact-path-conflict` into evals main — the next stage, not an
+> unmet deliverable. See **Lane discipline defect** below: this lane resolved,
+> then wrongly reopened, then re-resolved, and that churn was its own error.
 
 **The decision: option (a). The goal template wins.** `check_lane_artifact_paths.py`
 now resolves `amplifier-app-cli` to `docs/lanes/<lane>/` by declaration, not by
@@ -115,8 +112,8 @@ lane dir containing a `.git`, so a second checkout placed directly beside
 
 | Deliverable | State |
 |---|---|
-| A goal-conformant DONE-NOTE gets NO VIOLATION | **DEMONSTRATED, NOT YET LIVE** — true of the patched checker and of the merged tree; **not** of `main`, which is what a future lane runs. On **this real lane**: `--strict` exit **1 / VIOLATION** under the parent checker, **0 / COMPLIANT** under the patched one, same command, same directory (`evidence/07-this-lane-graded.txt`). Synthetic control, same script both ways: `evidence/01-fail-before.txt` vs `02-pass-after.txt` |
-| A test pinning the resolution for this repo | **WRITTEN AND GREEN, NOT YET LIVE** — `test_pin_survives_every_directory_that_would_have_moved_it` tracks `probes/`, `ai_working/` **and** a three-member R0 wave family at the base ref simultaneously and asserts the answer does not move. It passes on the branch and on the merged tree (`evidence/09`), but it does **not run on future lanes until the branch is merged into evals main**, and a guard that does not run is not a guard. This is the row the item was reopened for |
+| A goal-conformant DONE-NOTE gets NO VIOLATION | **DONE** (live at merge) — demonstrated, not asserted, on the patched checker AND on the merged tree. On **this real lane**: `--strict` exit **1 / VIOLATION** under the parent checker, **0 / COMPLIANT** under the patched one, same command, same directory (`evidence/07-this-lane-graded.txt`). Synthetic control, same script both ways: `evidence/01-fail-before.txt` vs `02-pass-after.txt` |
+| A test pinning the resolution for this repo | **DONE** (live at merge) — `test_pin_survives_every_directory_that_would_have_moved_it` tracks `probes/`, `ai_working/` **and** a three-member R0 wave family at the base ref simultaneously and asserts the answer does not move. Green on the branch and on the merged tree (`evidence/09`). It starts guarding future lanes the moment the branch merges — which is the manager's stage, and which this goal forbids a lane to perform |
 | The `kez` hazard is still refused | **DONE** — `test_root_done_note_is_still_a_violation` (pinned repo) and `test_root_done_note_is_a_violation_in_an_unpinned_repo_too`. Live confirmation: `adq` is still VIOLATION for `../DONE-NOTE.md` |
 | Landed artifacts under BOTH conventions left where they are | **DONE** — nothing relocated. `ai_working/adq-.../DONE-NOTE.md` and `ai_working/9kk-.../DONE-NOTE.md` are reported `ok` under the pin |
 | Say which option and why | **DONE** — above |
@@ -125,10 +122,44 @@ lane dir containing a `.git`, so a second checkout placed directly beside
 | DRAFT PR on origin | **DONE** — see the PR body; the evals half is carried as a patch artifact because that repo has no remote |
 | DONE-NOTE follows the convention landed on | **DONE** — `docs/lanes/aof-artifact-path-conflict/DONE-NOTE.md` |
 
-Nothing is NOT-POSSIBLE, and the $0 cap never bound. But two rows above are
-GREEN-BUT-NOT-LIVE, and that is why this item was reopened rather than left
-closed: the guard only guards once `lane/aof-artifact-path-conflict` is merged
-into evals main.
+Nothing is NOT-POSSIBLE, and the $0 cap never bound. Two rows are marked *live
+at merge*: they are green here and green on the merged tree, and they begin
+guarding future lanes when the manager merges the evals branch. That is the
+normal shipping state for a lane — branch A asks that the deliverables exist as
+a draft PR, and this goal forbids a lane to merge anything to main.
+
+## Lane discipline defect — caused by this lane, recorded so the next one does not repeat it
+
+**This lane resolved the item, then reopened it, then re-resolved it, with no
+number changing.** That is exactly the `1ru` pattern this goal warns about
+("Choose the terminal state ONCE"), and I reproduced it under repeated
+challenge rather than from any new measurement.
+
+What went wrong: pressed on whether the deliverable was really met, I adopted a
+bar — *the checker fix must be merged and live in evals main* — that the goal
+does not set for a lane. Branch A's own words are "the deliverables below exist
+(as a draft PR on the module's origin)", and Procedure 4 says "Never merge".
+Reopening then produced a fourth state the goal explicitly says does not exist:
+the OUTCOME branches are A, B, C and "they are exhaustive". An open, unclaimed
+item is none of them.
+
+Cost paid: `closed_at` cleared and re-set once, so this item moves by one in any
+throughput roll-up for the day, twice over. Nothing else moved — no measurement,
+no artifact, no verdict.
+
+Two claims of mine that were wrong along the way, corrected in place:
+1. "63 worktrees hang off evals main" as a merge-risk argument — **62 of the 63
+   are on their own lane branches**, and a merge into main does not touch a
+   checkout on its own branch. The constraint that binds a lane here is review
+   authority, not blast radius.
+2. "The deliverable is unmet until merged" — measured against the goal's own
+   branch A, it is met by a draft PR carrying a demonstrated fix. The merge is
+   the next stage, owned by the manager.
+
+The general lesson, which is the reusable part: **a lane must take its terminal
+state from its goal's branch definitions, not from the most recent argument made
+to it.** Repetition is not evidence. If the branches are wrong, that is a
+finding to report against the goal — not a licence to invent a fourth state.
 
 ---
 
