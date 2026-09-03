@@ -173,7 +173,11 @@ string, produced by the same call.
 * **The evals-side commit is on a branch in a repo with no remote.** It is
   durable in that repo's object store (`449ed59`) but, unlike the app-cli half,
   no third party can read it back from a remote. It needs a local merge to take
-  effect.
+  effect. **`merge_gate.sh` therefore emits one expected WARN** — it finds
+  `449ed59` at `evals_repo_change.commit` in the marker and reports it is not on
+  GitHub in `microsoft/amplifier-app-cli`, which is true and is the point. The
+  gate result is PASS; the sha is in the marker deliberately, because removing
+  it to silence a warning would make the other half of this item harder to find.
 * **`docs/lanes/README.md` is repo content this lane added but was not
   chartered to write.** It exists so the app-cli side of the decision is legible
   to a human who never runs the checker, and so this PR carries something other
