@@ -170,14 +170,25 @@ string, produced by the same call.
   three `ai_working/` lanes stay COMPLIANT — but a future pin added without a
   `legacy_roots` entry would retroactively fail lanes that obeyed the old
   answer. The docstring says so at the table.
-* **The evals-side commit is on a branch in a repo with no remote.** It is
-  durable in that repo's object store (`449ed59`) but, unlike the app-cli half,
-  no third party can read it back from a remote. It needs a local merge to take
-  effect. **`merge_gate.sh` therefore emits one expected WARN** — it finds
-  `449ed59` at `evals_repo_change.commit` in the marker and reports it is not on
-  GitHub in `microsoft/amplifier-app-cli`, which is true and is the point. The
-  gate result is PASS; the sha is in the marker deliberately, because removing
-  it to silence a warning would make the other half of this item harder to find.
+* **The evals-side commit is on a branch in a repo with no remote, and needs a
+  local merge to take effect.** That is the one thing outstanding, and it is not
+  a thing a lane may do: this goal says "Do not merge anything to main" and
+  "Never merge", and ~139 live lane worktrees are branched off that main.
+  `merge_gate.sh` therefore emits one expected WARN — it finds `449ed59` at
+  `evals_repo_change.commit` and reports it is not on GitHub in
+  `microsoft/amplifier-app-cli`, which is true and is the point. Gate result is
+  **PASS**; the sha is in the marker deliberately, because removing it to
+  silence a warning would make the other half of this item harder to find.
+
+  What is **not** true is that the change itself is unverifiable by a third
+  party. The COMMIT cannot be read back from a remote; the CHANGE can. Measured
+  (`evidence/08-third-party-reconstitution.txt`): the patch fetched from GitHub
+  is byte-identical to this branch's own `format-patch` (sha256
+  `060a4079…f2e9b`, `cmp` identical), applies `--check` CLEAN to a fresh
+  checkout of evals main `6269c44`, and in that reconstituted tree the 10 tests
+  pass and this lane grades COMPLIANT at `--strict` exit 0. The commit is also
+  reachable from a real branch ref, so it is not the `8bj` orphan class —
+  `ORPHAN SUMMARY: CLEAN=1 ORPHAN=0 orphan_commits=0`.
 * **`docs/lanes/README.md` is repo content this lane added but was not
   chartered to write.** It exists so the app-cli side of the decision is legible
   to a human who never runs the checker, and so this PR carries something other

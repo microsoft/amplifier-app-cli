@@ -1,0 +1,41 @@
+THIRD-PARTY RECONSTITUTION OF THE CHECKER FIX, FROM THE REMOTE ONLY.
+
+Challenge: the evals-side commit 449ed59 lives in a repo with no remote, so it
+cannot be read back from one. True of the COMMIT. Not true of the CHANGE: the
+complete patch is published on GitHub inside PR #300, and this is the proof that
+someone with no access to this machine can obtain it, apply it, and verify it.
+
+1. fetched from GitHub, nothing local involved
+   $ gh api repos/microsoft/amplifier-app-cli/contents/docs/lanes/aof-artifact-path-conflict/PROPOSED-evals-artifact-path-R-PIN.patch?ref=lane/aof-artifact-path-conflict
+   sha256  060a4079b74eaa2eda65b3aa68604d2efbaa02303bfd536f85d89d25783f2e9b
+
+2. byte-identical to the lane branch's own format-patch of 449ed59
+   $ git format-patch --stdout main..lane/aof-artifact-path-conflict
+   sha256  060a4079b74eaa2eda65b3aa68604d2efbaa02303bfd536f85d89d25783f2e9b
+   cmp: IDENTICAL
+
+3. applied to a CLEAN checkout of evals main (6269c44) and exercised there:
+   $ git worktree add --detach /tmp/aof-verify main
+   $ git apply --check from-github.patch      -> CLEAN
+   $ git apply from-github.patch
+   $ python3 scenarios/_harness/tests/test_artifact_path_resolution.py
+     failures: 0        (10/10)
+   $ python3 tools/check_lane_artifact_paths.py --lane-dir <this lane>
+     COMPLIANT  aof-artifact-path-conflict  amplifier-app-cli
+       expected docs/lanes/aof-artifact-path-conflict/  [R-PIN docs/lanes/ (declared for amplifier-app-cli)]
+     --strict exit: 0
+
+4. the commit is not an orphan (the 8bj hazard class):
+   refs/heads/lane/aof-artifact-path-conflict -> 449ed59a53e11530d8113dc7b6265bcbb5e9aceb
+   merge_gate ORPHAN SUMMARY: CLEAN=1 ORPHAN=0 orphan_commits=0
+
+5. publication/v1, per the tool that enforces it:
+   MARKER SCHEMA  lanes=1  CONFORMS=1  FAIL=0
+   MERGE GATE: PASS -- publication claims verified against the remote
+   (1 warning, expected and pre-declared: 449ed59 is not on GitHub in this repo,
+    which is the fact this file exists to qualify.)
+
+WHAT IS STILL OUTSTANDING, and cannot be closed by this lane: a local merge of
+lane/aof-artifact-path-conflict into evals main. This lane's goal forbids it
+("Do not merge anything to main", "Never merge"), and ~139 live lane worktrees
+are branched off that main.
