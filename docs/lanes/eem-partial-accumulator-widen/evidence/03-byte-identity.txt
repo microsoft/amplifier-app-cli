@@ -1,0 +1,34 @@
+# BYTE-IDENTITY: serialized delegate results, parent vs patched
+# parent  = git show 26e5f10:amplifier_app_cli/session_spawner.py  (26e5f10, #297)
+# patched = this branch's working tree
+# probe   = docs/lanes/eem-partial-accumulator-widen/byte_identity_probe.py
+# both producers are cp -rL copies under /tmp; the repo is not mutated
+# date    = 2026-09-03T13:05:40Z
+
+## sha256 of each serialized capture
+9d9ed8b1f972f315260d351a3614a5a14f5830e8bf164f318f330ea28bf5933e  03a-parent.json
+71bb1a57cc8fb44a3112aee15f81c51e4db4cf76075a1b679cab62ae3bc22099  03b-patched.json
+
+## per-key comparison
+  IDENTICAL  normal_completion_partial
+  IDENTICAL  normal_completion_registry_after
+  IDENTICAL  normal_completion_result
+  CHANGED    timeout_no_text_partial
+  IDENTICAL  timeout_with_text_partial
+
+## full unified diff
+--- /home/bkrabach/dev/hw-model-performance/lanes/eem-partial-accumulator-widen/amplifier-app-cli/docs/lanes/eem-partial-accumulator-widen/evidence/03a-parent.json	2026-09-03 06:05:39.876381723 -0700
++++ /home/bkrabach/dev/hw-model-performance/lanes/eem-partial-accumulator-widen/amplifier-app-cli/docs/lanes/eem-partial-accumulator-widen/evidence/03b-patched.json	2026-09-03 06:05:40.262380587 -0700
+@@ -10,7 +10,11 @@
+     "status": "success",
+     "turn_count": 5
+   },
+-  "timeout_no_text_partial": null,
++  "timeout_no_text_partial": {
++    "segments": 2,
++    "source": "spawn-accumulator:reasoning",
++    "text": "[RECOVERED FROM AN UNFINISHED DELEGATE -- NOT DRAFT OUTPUT]\nThis delegate was killed before it wrote any answer at all. What follows is NOT prose the agent composed for a reader: it is the agent's own private reasoning and the trace of the tool calls it made, recovered from its event stream. None of it was checked, concluded, self-reviewed, or addressed to anyone. Read it as evidence of what the agent was doing and what it had already looked at -- never as a partial answer.\n\nTOOL CALLS THE AGENT MADE (1), in order:\n  1. read_file(file_path='/repo/router.py', limit=40)\n\nAGENT REASONING (1 segment(s)) -- unreviewed, never addressed to a reader:\n\nthe router loads a matrix; check it\n\n[END OF RECOVERED WORK -- unreviewed agent reasoning and tool-call trace, not a partial answer]"
++  },
+   "timeout_with_text_partial": {
+     "segments": 2,
+     "source": "spawn-accumulator",

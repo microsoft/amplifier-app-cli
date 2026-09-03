@@ -1,0 +1,149 @@
+# FAIL-BEFORE / PASS-AFTER: tests/test_session_spawner_partial.py
+# Same test file, two producers, overlaid copies -- run from /tmp/eem-unit so
+# sys.path[0] cannot shadow the overlay with the checkout.
+# parent  = app-cli 26e5f10 (#297) -- accumulator filters block['type'] == 'text'
+# patched = this branch
+# date: 2026-09-03T13:06:21Z
+
+=== A. PARENT PRODUCER (26e5f10) -- FAIL-BEFORE ===
+............FFF...FF...                                                  [100%]
+=================================== FAILURES ===================================
+_________ test_leg_with_no_text_block_still_carries_a_partial[asyncio] _________
+
+    async def test_leg_with_no_text_block_still_carries_a_partial():
+        """FAIL-BEFORE (26e5f10): the ~99.5% real case recovered nothing.
+    
+        This is the single fact that made the whole bp0+9w0 chain inert.
+        """
+        hooks = FakeHooks()
+    
+        async def _thinks_and_calls_tools_then_dies(instruction):
+            await hooks.fire_thinking_block("I should start by reading the router.")
+            await hooks.fire_tool_call_block("read_file", {"file_path": "/repo/router.py"})
+            await hooks.fire_thinking_block("That names a matrix loader. Check it.")
+            await hooks.fire_tool_call_block("grep", {"pattern": "load_matrix"})
+            raise TimeoutError("wall clock")
+    
+        with pytest.raises(TimeoutError):
+            await _spawn(_child_session(hooks, _thinks_and_calls_tools_then_dies))
+    
+        partial = get_partial_output("child-001")
+>       assert partial is not None, (
+            "a delegate that did 2 thinking blocks and 2 tool calls recovered "
+            "NOTHING -- this is the defect model_performance-eem exists to close"
+        )
+E       AssertionError: a delegate that did 2 thinking blocks and 2 tool calls recovered NOTHING -- this is the defect model_performance-eem exists to close
+E       assert None is not None
+
+test_session_spawner_partial.py:415: AssertionError
+___________ test_measured_k64_timeout_shape_is_recoverable[asyncio] ____________
+
+    async def test_measured_k64_timeout_shape_is_recoverable():
+        """The exact leg k64 watched die: 10 thinking blocks, 45 tool calls, 0 text.
+    
+        Source: probes/k64-delegate-timeout-eval/FINDINGS.md ("THE HEADLINE") and
+        TEXT-WINDOW-TABLE.md row `005_anchors-amp-dev-explorer` (90.016 s, 10
+        thinking, 1 tool_call, 0 text). The 45 tool calls are the count reported
+        for the timed-out leg itself.
+        """
+        hooks = FakeHooks()
+    
+        async def _the_observed_timeout(instruction):
+            for i in range(10):
+                await hooks.fire_thinking_block(f"reasoning step {i}")
+            for i in range(45):
+                await hooks.fire_tool_call_block("read_file", {"file_path": f"/f{i}.py"})
+            raise TimeoutError("90s rung")
+    
+        with pytest.raises(TimeoutError):
+            await _spawn(_child_session(hooks, _the_observed_timeout))
+    
+        partial = get_partial_output("child-001")
+>       assert partial is not None
+E       assert None is not None
+
+test_session_spawner_partial.py:448: AssertionError
+________________ test_tool_calls_alone_are_recoverable[asyncio] ________________
+
+    async def test_tool_calls_alone_are_recoverable():
+        """A non-reasoning model emits no `thinking` blocks at all."""
+        hooks = FakeHooks()
+    
+        async def _only_tools(instruction):
+            await hooks.fire_tool_call_block("bash", {"command": "pytest -q"})
+            raise TimeoutError("wall clock")
+    
+        with pytest.raises(TimeoutError):
+            await _spawn(_child_session(hooks, _only_tools))
+    
+        partial = get_partial_output("child-001")
+>       assert partial is not None
+E       assert None is not None
+
+test_session_spawner_partial.py:465: AssertionError
+_ test_recovered_reasoning_names_itself_as_reasoning_not_draft_output[asyncio] _
+
+    async def test_recovered_reasoning_names_itself_as_reasoning_not_draft_output():
+        """The content says what it is, because the guidance string cannot.
+    
+        Handing a model its own unreviewed reasoning while calling it "unfinished
+        work" is a weaker claim than the shipped guidance makes. The producer
+        cannot change that string (it lives in amplifier-foundation), so it
+        labels the payload and distinguishes the `source`.
+        """
+        hooks = FakeHooks()
+    
+        async def _no_text(instruction):
+            await hooks.fire_thinking_block("maybe the bug is in the loader")
+            raise TimeoutError("wall clock")
+    
+        with pytest.raises(TimeoutError):
+            await _spawn(_child_session(hooks, _no_text))
+    
+        partial = get_partial_output("child-001")
+>       assert partial["source"] == "spawn-accumulator:reasoning", (
+               ^^^^^^^^^^^^^^^^^
+            "a consumer must be able to tell recovered reasoning from recovered "
+            "prose WITHOUT parsing the text"
+        )
+E       TypeError: 'NoneType' object is not subscriptable
+
+test_session_spawner_partial.py:570: TypeError
+________ test_the_label_survives_the_consumers_tail_truncation[asyncio] ________
+
+    async def test_the_label_survives_the_consumers_tail_truncation():
+        """foundation keeps the TAIL, so a leading-only label would be cut off.
+    
+        `_read_partial` (foundation f42f48c) truncates to the LAST
+        `partial_max_chars` characters. 25 thinking blocks routinely exceed the
+        20,000-char default, so the label has to be at the end as well as the
+        start or it is exactly the long partials that lose it.
+        """
+        hooks = FakeHooks()
+    
+        async def _very_talkative(instruction):
+            for i in range(30):
+                await hooks.fire_thinking_block("x" * 2000 + f" step {i}")
+            raise TimeoutError("wall clock")
+    
+        with pytest.raises(TimeoutError):
+            await _spawn(_child_session(hooks, _very_talkative))
+    
+>       text = get_partial_output("child-001")["text"]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: 'NoneType' object is not subscriptable
+
+test_session_spawner_partial.py:599: TypeError
+=========================== short test summary info ============================
+FAILED test_session_spawner_partial.py::test_leg_with_no_text_block_still_carries_a_partial[asyncio]
+FAILED test_session_spawner_partial.py::test_measured_k64_timeout_shape_is_recoverable[asyncio]
+FAILED test_session_spawner_partial.py::test_tool_calls_alone_are_recoverable[asyncio]
+FAILED test_session_spawner_partial.py::test_recovered_reasoning_names_itself_as_reasoning_not_draft_output[asyncio]
+FAILED test_session_spawner_partial.py::test_the_label_survives_the_consumers_tail_truncation[asyncio]
+5 failed, 18 passed in 0.22s
+EXIT=1
+
+=== B. PATCHED PRODUCER (this branch) -- PASS-AFTER ===
+.......................                                                  [100%]
+23 passed in 0.17s
+EXIT=0

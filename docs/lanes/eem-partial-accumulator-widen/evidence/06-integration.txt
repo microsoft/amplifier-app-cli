@@ -1,0 +1,6 @@
+# INTEGRATION JOB (pytest -m integration), patched working tree
+# date: 2026-09-03T13:03:39Z
+
+.............                                                            [100%]
+13 passed, 1672 deselected in 26.02s
+EXIT=0

@@ -69,8 +69,142 @@ logger = logging.getLogger(__name__)
 # dependence on cancellation ordering -- and is REMOVED when the sub-session
 # completes normally. `get_partial_output` reads a snapshot; nothing here awaits.
 
+# WHY `text` BLOCKS ALONE WERE NOT ENOUGH (model_performance-eem)
+#
+# This accumulator originally collected `content_block:end` payloads where
+# `block["type"] == "text"` and nothing else. Wired correctly, tested on both
+# sides, and STRUCTURALLY INCAPABLE of ever firing on a real workload.
+#
+# Measured by lane k64 across 18 delegate legs in 7 runs
+# (openai-evals-team-ci probes/k64-delegate-timeout-eval/TEXT-WINDOW-TABLE.md):
+#
+#   * a leg emits AT MOST ONE `text` block (16 legs: exactly 1; 2 legs: zero);
+#   * it lands in the final 0.19-0.72 s (mean 0.331 s) of a leg lasting
+#     5.4-222.0 s -- about 0.5% of the leg;
+#   * everything before it is `thinking` (1-25 blocks/leg) and `tool_call`
+#     (0-5).
+#
+# So a delegate killed by a per-delegate timeout had, by construction,
+# accumulated nothing. The one real timeout k64 observed had done 10 thinking
+# blocks, 45 tool calls and 11 provider responses -- and correctly returned
+# `partial_available: false`, because there was a great deal of work and no
+# *text*.
+#
+# The accumulator therefore also collects `thinking` and `tool_call` blocks,
+# in a SEPARATE channel used only when no assistant text exists at all. That
+# split is not tidiness, it is the honesty constraint below.
+#
+# THE HONESTY CONSTRAINT
+#
+# The CONSUMER (amplifier-foundation f42f48c) picks its own guidance string
+# from `bool(text)`, and that string says the partial "is unfinished work
+# salvaged from the agent mid-flight -- it has NOT been checked, concluded,
+# or self-reviewed". True of assistant prose. NOT true of raw thinking: prose
+# is at least addressed to a reader, private reasoning never was. Handing a
+# model its own unreviewed reasoning under that sentence is its own defect.
+#
+# foundation is a different repo and this change does not cross that boundary,
+# so honesty is carried the two ways the PRODUCER owns:
+#
+#   1. `source` becomes "spawn-accumulator:reasoning", distinct from the
+#      "spawn-accumulator" a text partial still returns, so a consumer can
+#      branch without parsing prose;
+#   2. the payload labels itself, at the head AND the tail -- the tail because
+#      foundation truncates to the LAST `partial_max_chars` characters
+#      (default 20,000), which 25 thinking blocks routinely exceed, so a
+#      head-only label is lost on exactly the long partials that need it.
+#
+# A leg that DID emit assistant text still returns the pre-widening record
+# byte for byte -- same text, same segments, same source, therefore the same
+# guidance string. The widening only reaches cases that previously returned
+# nothing at all.
+
 _PARTIAL_OUTPUTS: dict[str, dict] = {}
 _PARTIAL_MAX_SESSIONS = 64
+
+# CHOSEN, NOT MEASURED. `chunks` was effectively self-limiting (at most one
+# text block per leg); reasoning is not -- k64 saw up to 25 thinking blocks on
+# a single leg, and the wall-clock backstop allows legs of hours. Retain the
+# most recent reasoning up to this budget, oldest-first, so the registry
+# cannot grow without bound. 5x foundation's 20,000-char forward cap: large
+# enough that trimming here is not what the consumer sees, small enough that
+# 64 concurrent records stay bounded.
+_PARTIAL_REASONING_MAX_CHARS = 100_000
+
+# Per-tool-call rendering limits. A tool input can carry a whole file body;
+# the trace is for "what was it doing", not for replaying the call.
+_PARTIAL_TOOL_ARGS_SHOWN = 6
+_PARTIAL_TOOL_ARG_MAX_CHARS = 120
+
+_RECOVERED_HEADER = (
+    "[RECOVERED FROM AN UNFINISHED DELEGATE -- NOT DRAFT OUTPUT]\n"
+    "This delegate was killed before it wrote any answer at all. What follows "
+    "is NOT prose the agent composed for a reader: it is the agent's own "
+    "private reasoning and the trace of the tool calls it made, recovered "
+    "from its event stream. None of it was checked, concluded, self-reviewed, "
+    "or addressed to anyone. Read it as evidence of what the agent was doing "
+    "and what it had already looked at -- never as a partial answer.\n"
+)
+
+_RECOVERED_FOOTER = (
+    "\n[END OF RECOVERED WORK -- unreviewed agent reasoning and tool-call "
+    "trace, not a partial answer]"
+)
+
+
+def _describe_tool_call(block: dict) -> str:
+    """One line naming a tool call the agent made, with a short argument digest.
+
+    Shape is measured, not assumed: a real `tool_call` block carries
+    ``{"type", "id", "name", "input", "visibility"}`` -- the arguments live
+    under ``input``, NOT ``arguments``.
+    """
+    name = block.get("name") or "<unnamed tool>"
+    raw = block.get("input")
+    if not isinstance(raw, dict) or not raw:
+        return f"{name}()"
+    parts: list[str] = []
+    for key, value in list(raw.items())[:_PARTIAL_TOOL_ARGS_SHOWN]:
+        # Drop the empties that tool schemas default in; they carry no signal
+        # and crowd out the arguments that do.
+        if value is None or value is False or value == "" or value == [] or value == {}:
+            continue
+        if isinstance(value, str):
+            rendered = value
+            if len(rendered) > _PARTIAL_TOOL_ARG_MAX_CHARS:
+                rendered = rendered[:_PARTIAL_TOOL_ARG_MAX_CHARS] + "..."
+            rendered = repr(rendered)
+        else:
+            rendered = repr(value)
+            if len(rendered) > _PARTIAL_TOOL_ARG_MAX_CHARS:
+                rendered = rendered[:_PARTIAL_TOOL_ARG_MAX_CHARS] + "..."
+        parts.append(f"{key}={rendered}")
+    return f"{name}({', '.join(parts)})"
+
+
+def _render_recovered_work(reasoning: list[str], tool_calls: list[str]) -> str:
+    """Render the no-text channel as a self-labelling payload."""
+    sections = [_RECOVERED_HEADER]
+    if tool_calls:
+        sections.append(
+            f"\nTOOL CALLS THE AGENT MADE ({len(tool_calls)}), in order:\n"
+            + "\n".join(f"  {i}. {call}" for i, call in enumerate(tool_calls, 1))
+            + "\n"
+        )
+    if reasoning:
+        sections.append(
+            f"\nAGENT REASONING ({len(reasoning)} segment(s)) -- unreviewed, "
+            "never addressed to a reader:\n\n" + "\n\n".join(reasoning) + "\n"
+        )
+    sections.append(_RECOVERED_FOOTER)
+    return "".join(sections)
+
+
+def _record_has_content(record: dict) -> bool:
+    """True when anything at all was accumulated, in any channel."""
+    return bool(
+        record.get("chunks") or record.get("reasoning") or record.get("tool_calls")
+    )
 
 
 def get_partial_output(sub_session_id: str) -> dict | None:
@@ -78,23 +212,39 @@ def get_partial_output(sub_session_id: str) -> dict | None:
 
     Returns ``{"text", "segments", "source"}`` for a sub-session that was
     cancelled or timed out mid-flight, or ``None`` when nothing was preserved.
-    ``segments`` counts preserved assistant text segments, not turns.
+
+    Two channels, and the first that has anything wins:
+
+    * assistant **text** -> exactly the pre-widening record
+      (``source: "spawn-accumulator"``, ``segments`` counting text segments);
+    * otherwise the agent's **reasoning and tool-call trace** -> a labelled
+      payload under ``source: "spawn-accumulator:reasoning"``, with
+      ``segments`` counting reasoning segments plus tool calls.
 
     Reads are destructive -- one delegate call consumes one record -- so the
     registry cannot grow without bound on a long-lived root session. A record
-    with no text yet reads as ``None``: "produced nothing" and "produced
-    nothing recoverable" are the same answer to the consumer.
+    with nothing in either channel reads as ``None``: "produced nothing" and
+    "produced nothing recoverable" are the same answer to the consumer, and
+    the widening must not manufacture a partial out of an empty accumulator.
     """
     record = _PARTIAL_OUTPUTS.pop(sub_session_id, None)
     if not record:
         return None
     chunks = list(record.get("chunks") or ())
-    if not chunks:
+    if chunks:
+        return {
+            "text": "".join(chunks),
+            "segments": len(chunks),
+            "source": "spawn-accumulator",
+        }
+    reasoning = list(record.get("reasoning") or ())
+    tool_calls = list(record.get("tool_calls") or ())
+    if not reasoning and not tool_calls:
         return None
     return {
-        "text": "".join(chunks),
-        "segments": len(chunks),
-        "source": "spawn-accumulator",
+        "text": _render_recovered_work(reasoning, tool_calls),
+        "segments": len(reasoning) + len(tool_calls),
+        "source": "spawn-accumulator:reasoning",
     }
 
 
@@ -126,30 +276,55 @@ def _seal_partial(sub_session_id: str, record: dict) -> None:
     Synchronous by design: awaiting anything while unwinding a timeout risks
     blocking past the very deadline that caused the unwind.
     """
-    if not record.get("chunks"):
+    if not _record_has_content(record):
         return
     if sub_session_id not in _PARTIAL_OUTPUTS:
         _publish_partial(sub_session_id, record)
+    chunks = record.get("chunks") or []
+    reasoning = record.get("reasoning") or []
+    tool_calls = record.get("tool_calls") or []
     logger.warning(
-        "Sub-session %s did not complete; preserved %d partial text segment(s), %d chars",
+        "Sub-session %s did not complete; preserved %d assistant text "
+        "segment(s) (%d chars), %d reasoning segment(s) (%d chars), "
+        "%d tool call(s)",
         sub_session_id,
-        len(record["chunks"]),
-        sum(len(c) for c in record["chunks"]),
+        len(chunks),
+        sum(len(c) for c in chunks),
+        len(reasoning),
+        sum(len(r) for r in reasoning),
+        len(tool_calls),
     )
 
 
+def _trim_reasoning(reasoning: list[str]) -> None:
+    """Bound retained reasoning in place, dropping oldest segments first.
+
+    Keeps the most recent thinking, which is both the closest to what the
+    agent was doing when it died and consistent with the consumer's own
+    tail-keeping truncation.
+    """
+    total = sum(len(segment) for segment in reasoning)
+    while len(reasoning) > 1 and total > _PARTIAL_REASONING_MAX_CHARS:
+        total -= len(reasoning.pop(0))
+
+
 def _open_partial(sub_session_id: str, hooks):
-    """Start accumulating assistant text, published from the first moment.
+    """Start accumulating the agent's in-flight work, published from the first moment.
 
     Returns ``(record, unregister)``. ``unregister`` is ``None`` when there is
     no hooks coordinator to register against -- in that case nothing can ever
     be accumulated, so nothing is published either and the consumer correctly
     degrades to ``partial_available: false``.
 
+    Three channels are collected, and only one is ever returned (see
+    ``get_partial_output``): assistant ``text``, the agent's ``thinking``, and
+    its ``tool_call`` trace. Collecting the last two is what makes the feature
+    reachable on a real leg at all -- see the module note above.
+
     The hook is registered at low priority so it observes blocks after the UI
     has rendered them and never influences rendering.
     """
-    record: dict = {"chunks": []}
+    record: dict = {"chunks": [], "reasoning": [], "tool_calls": []}
     if not hooks:
         return record, None
 
@@ -158,10 +333,22 @@ def _open_partial(sub_session_id: str, hooks):
 
     async def _accumulate_partial(event: str, data: dict) -> HookResult:
         block = data.get("block")
-        if isinstance(block, dict) and block.get("type") == "text":
+        if not isinstance(block, dict):
+            return HookResult()
+        block_type = block.get("type")
+        if block_type == "text":
             text = block.get("text") or ""
             if text:
                 record["chunks"].append(text)
+        elif block_type == "thinking":
+            # Measured shape: a thinking block carries its reasoning under
+            # `text`, the same field name a text block uses.
+            text = block.get("text") or ""
+            if text:
+                record["reasoning"].append(text)
+                _trim_reasoning(record["reasoning"])
+        elif block_type == "tool_call":
+            record["tool_calls"].append(_describe_tool_call(block))
         return HookResult()
 
     unregister = hooks.register(
