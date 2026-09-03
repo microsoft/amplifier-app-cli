@@ -33,7 +33,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -176,6 +176,17 @@ def _load_module(loader_path: Path) -> Any | None:
         return None
 
 
+def _stems_in_order(matrix_files: Sequence[Path]) -> list[str]:
+    """Every distinct file stem, in first-seen order."""
+    stems: list[str] = []
+    seen: set[str] = set()
+    for file_path in matrix_files:
+        if file_path.stem not in seen:
+            seen.add(file_path.stem)
+            stems.append(file_path.stem)
+    return stems
+
+
 def resolve_matrix_origins(matrix_files: Sequence[Path]) -> dict[str, Any]:
     """Map matrix file stem -> ``MatrixSource`` for every discovered matrix.
 
@@ -192,15 +203,8 @@ def resolve_matrix_origins(matrix_files: Sequence[Path]) -> dict[str, Any]:
     if resolve is None or not bundle_dirs:
         return {}
 
-    stems: list[str] = []
-    seen_stems: set[str] = set()
-    for file_path in matrix_files:
-        if file_path.stem not in seen_stems:
-            seen_stems.add(file_path.stem)
-            stems.append(file_path.stem)
-
     origins: dict[str, Any] = {}
-    for stem in stems:
+    for stem in _stems_in_order(matrix_files):
         best: Any | None = None
         # A host normally has exactly one cached routing-matrix bundle. If it
         # has several, the CLI cannot know which one a session would mount, so
@@ -218,3 +222,81 @@ def resolve_matrix_origins(matrix_files: Sequence[Path]) -> dict[str, Any]:
             origins[stem] = best
 
     return origins
+
+
+def resolve_winning_paths(
+    matrix_files: Sequence[Path],
+    origins: Mapping[str, Any] | None = None,
+) -> dict[str, Path]:
+    """Map matrix file stem -> the file hooks-routing would actually load.
+
+    This is the answer to "which file wins?", and it is deliberately NOT
+    derived from the order ``_discover_matrix_files()`` happens to return.
+    That order is ``sorted()``, and ``sorted()`` puts
+    ``~/.amplifier/cache/...`` before ``~/.amplifier/routing/...`` only
+    because ``"c" < "r"``.  Any rename of either directory silently flips the
+    answer, with no error.
+
+    Two sources, in order:
+
+    1. **The loader's own function.**  ``origins`` (from
+       :func:`resolve_matrix_origins`) carries hooks-routing's
+       ``MatrixSource.path`` -- literally the value its ``mount()`` assigns to
+       ``matrix_path`` and loads (routing-matrix ``__init__.py``: ``matrix_origin
+       = resolve_matrix_source(...)`` then ``matrix_path = matrix_origin.path``).
+       When present, that path is used verbatim.
+
+    2. **Directory precedence, as a labelled fallback.**  When the cached
+       bundle predates routing-matrix PR #52 there is no
+       ``resolve_matrix_source`` to ask, yet the CLI must still put *some* file
+       in each row.  It then picks the first candidate whose directory appears
+       earliest in ``[*custom_dirs, *bundle_dirs]`` -- the same list
+       hooks-routing builds as ``search_dirs = [*custom_routing_dirs,
+       routing_dir]``.
+
+    The distinction between this and the shadowing *marker* is deliberate.  A
+    marker can be omitted when provenance is unknown (and is -- see
+    :func:`resolve_matrix_origins`), because "no claim" is a truthful state.  A
+    listing row cannot be omitted, so the fallback picks by the documented rule
+    rather than by an alphabetical accident.
+
+    Args:
+        matrix_files: Every discovered matrix file.
+        origins: Result of :func:`resolve_matrix_origins`, if already computed.
+            Passing it avoids re-loading the bundle module.
+
+    Returns:
+        ``{stem: winning_path}``, one entry per distinct stem.
+    """
+    if origins is None:
+        origins = resolve_matrix_origins(matrix_files)
+
+    custom_dirs, bundle_dirs = classify_routing_dirs(matrix_files)
+    dir_rank = {_key(d): i for i, d in enumerate([*custom_dirs, *bundle_dirs])}
+
+    by_stem: dict[str, list[Path]] = {}
+    for file_path in matrix_files:
+        by_stem.setdefault(file_path.stem, []).append(file_path)
+
+    winners: dict[str, Path] = {}
+    for stem in _stems_in_order(matrix_files):
+        candidates = by_stem[stem]
+
+        origin = origins.get(stem)
+        loader_path = getattr(origin, "path", None) if origin is not None else None
+        if loader_path is not None:
+            # The loader's own answer. Prefer the discovered Path object that
+            # denotes the same file, so callers keep the path they globbed.
+            loader_key = _key(Path(loader_path))
+            match = next((c for c in candidates if _key(c) == loader_key), None)
+            winners[stem] = match if match is not None else Path(loader_path)
+            continue
+
+        # Fallback: earliest directory in [*custom_dirs, *bundle_dirs].
+        # Ties (same directory reached twice) keep discovery order.
+        winners[stem] = min(
+            candidates,
+            key=lambda p: dir_rank.get(_key(p.parent), len(dir_rank)),
+        )
+
+    return winners
