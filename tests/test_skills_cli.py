@@ -100,6 +100,7 @@ class TestProcessInputSkillShortcuts:
         """Discover and invoke amplifier-config from only the packaged skills dir."""
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("HOME", str(tmp_path / "isolated-home"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "isolated-home"))
         packaged_dir = Path(config.__file__).parent.parent / "data" / "skills"
 
         shortcuts = {}

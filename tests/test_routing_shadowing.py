@@ -301,7 +301,11 @@ class TestRoutingListShadowed:
         assert source["matrix_name"] == "openai"
         assert source["matrix_source"] == "user"
         assert source["matrix_shadowed"] is True
-        assert source["matrix_path"].endswith("/.amplifier/routing/openai.yaml")
+        # matrix_path is a native absolute path (backslashes on Windows) --
+        # compare as a Path, not as a POSIX string.
+        assert (
+            Path(source["matrix_path"]) == tmp_path / ".amplifier/routing/openai.yaml"
+        )
         assert len(source["shadowed_paths"]) == 1
         assert "amplifier-bundle-routing-matrix-test" in source["shadowed_paths"][0]
 

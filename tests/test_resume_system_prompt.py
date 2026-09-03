@@ -47,6 +47,12 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def _home(isolated_home):
+    """Every test here reaches SessionStore() -> Path.home(). See conftest.isolated_home."""
+    return isolated_home
+
+
 class _FakeContextWithFactory:
     """Stands in for context-simple: supports the factory-based system prompt."""
 
@@ -154,7 +160,6 @@ class TestResumeSystemPromptReinjection:
         FAILS BEFORE THE FIX: resume_sub_session never calls
         set_system_prompt_factory at all, so fake_context.factory stays None.
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         store = SessionStore()
         session_id = "test-resume-system-prompt-factory"
@@ -188,7 +193,6 @@ class TestResumeSystemPromptReinjection:
         add_message() system-role message instead (mirrors the spawn path's
         own hasattr-gated fallback).
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         store = SessionStore()
         session_id = "test-resume-system-prompt-fallback"
@@ -223,7 +227,6 @@ class TestResumeSystemPromptReinjection:
         inherit-as-is overlay, or a session saved before agent_overlay
         existed), fall back to config.agents[<agent_name>].instruction.
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         store = SessionStore()
         session_id = "test-resume-system-prompt-config-fallback"
@@ -248,7 +251,6 @@ class TestResumeSystemPromptReinjection:
         succeeds. Today this failure mode is completely silent; the fix
         must surface it rather than leaving the resumed session mute.
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         store = SessionStore()
         session_id = "test-resume-system-prompt-missing"

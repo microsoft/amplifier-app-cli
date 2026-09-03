@@ -52,6 +52,12 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def _home(isolated_home):
+    """Every test here reaches SessionStore() -> Path.home(). See conftest.isolated_home."""
+    return isolated_home
+
+
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
@@ -228,7 +234,6 @@ class TestTimedOutSessionIsResumable:
         self, tmp_path, monkeypatch
     ):
         """The advertised session_id exists in SessionStore after a timeout."""
-        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "0")
 
         hooks = FakeHooks()
@@ -271,7 +276,6 @@ class TestTimedOutSessionIsResumable:
         resume_sub_session(session_id) and observe the preserved messages
         restored into the resumed session's context.
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "0")
 
         hooks = FakeHooks()
@@ -350,8 +354,6 @@ class TestNonResumableIsStatedExplicitly:
     ):
         from amplifier_app_cli.session_spawner import resume_sub_session
 
-        monkeypatch.setenv("HOME", str(tmp_path))
-
         with pytest.raises(FileNotFoundError) as excinfo:
             await resume_sub_session("never-existed-session-id", "carry on")
 
@@ -376,7 +378,6 @@ class TestNonResumableIsStatedExplicitly:
         """
         from amplifier_app_cli.session_spawner import resume_sub_session
 
-        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "-1")
 
         hooks = FakeHooks()
@@ -421,7 +422,6 @@ class TestNoUnboundedAwaitOnCancellationPath:
         accident (e.g. via a short-circuit that skipped the await for an
         unrelated reason).
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "0")
 
         hooks = FakeHooks()
@@ -502,7 +502,6 @@ class TestNoUnboundedAwaitOnCancellationPath:
         self, tmp_path, monkeypatch
     ):
         """Checkpointing must not swallow the timeout or skip child cleanup."""
-        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "0")
 
         hooks = FakeHooks()
@@ -538,7 +537,6 @@ class TestCheckpointBoundary:
         whose tool_calls have no matching results; resuming that transcript
         reproduces "No tool call found for function call output".
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "0")
 
         hooks = FakeHooks()
@@ -565,7 +563,6 @@ class TestCheckpointIsBestEffort:
     async def test_failing_checkpoint_does_not_break_the_run(
         self, tmp_path, monkeypatch
     ):
-        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "0")
 
         hooks = FakeHooks()
@@ -599,7 +596,6 @@ class TestCheckpointIsBestEffort:
         self, tmp_path, monkeypatch
     ):
         """No hooks -> no mid-run checkpoints, but the id must still resolve."""
-        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "0")
 
         context = FakeContext()
@@ -624,7 +620,6 @@ class TestCheckpointIsBestEffort:
 class TestThrottleAndEscapeHatch:
     async def test_interval_throttles_mid_run_checkpoints(self, tmp_path, monkeypatch):
         """A large interval collapses N provider calls to the one pre-registration."""
-        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "3600")
 
         hooks = FakeHooks()
@@ -654,7 +649,6 @@ class TestThrottleAndEscapeHatch:
         self, tmp_path, monkeypatch
     ):
         """The documented escape hatch, and its cost, pinned in one test."""
-        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "-1")
 
         hooks = FakeHooks()

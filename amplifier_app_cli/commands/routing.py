@@ -277,9 +277,18 @@ def _print_name_stem_note(mismatched: list[tuple[str, str]]) -> None:
 
 
 def _display_path(path: Path) -> str:
-    """Render a path with ``~`` for the home directory, for readable output."""
+    """Render a path with ``~`` for the home directory, for readable output.
+
+    The ``~/`` abbreviation is a POSIX-style spelling, so the remainder is
+    rendered with forward slashes on every platform (``as_posix``). Without
+    that, Windows produced the mixed form ``~/.amplifier\\routing\\openai.yaml``
+    -- the separator switched mid-path -- in `routing list`/`show` output and
+    in the JSON ``matrix_file`` field, which the CLI's own help text spells as
+    ``~/.amplifier/routing/...``. A path outside the home directory is
+    returned as-is, in its native form, because it is not being abbreviated.
+    """
     try:
-        return f"~/{path.relative_to(Path.home())}"
+        return f"~/{path.relative_to(Path.home()).as_posix()}"
     except ValueError:
         return str(path)
 

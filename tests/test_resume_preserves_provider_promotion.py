@@ -65,6 +65,12 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def _home(isolated_home):
+    """Every test here reaches SessionStore() -> Path.home(). See conftest.isolated_home."""
+    return isolated_home
+
+
 # ---------------------------------------------------------------------------
 # Fixtures modelled on the rc0 capture
 #   20260901-rebaseline/runs/val-rb-oai-sol-xhigh-s1-01
@@ -260,7 +266,6 @@ class TestResumeRebuildsPromotion:
         resolution`` was reachable only from spawn. The resumed leg resolved
         to the settings priority-0 provider (sol), exactly as captured.
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
         store = SessionStore()
         session_id = "test-resume-keeps-promotion"
         metadata = _base_metadata(
@@ -296,7 +301,6 @@ class TestResumeRebuildsPromotion:
         The persisted promotion must survive the credential refresh on its
         own, and the credential must still be refreshed.
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
         store = SessionStore()
         session_id = "test-resume-fix-a-isolated"
         store.save(session_id, [], _base_metadata(session_id))
@@ -323,7 +327,6 @@ class TestResumeRebuildsPromotion:
         This is the hop the caller (tool-delegate's resume path) gains: it
         can now pass the same preferences it passes at spawn.
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
         store = SessionStore()
         session_id = "test-resume-explicit-prefs"
         store.save(session_id, [], _base_metadata(session_id))
@@ -350,7 +353,6 @@ class TestResumeRebuildsPromotion:
         which is what the rc0 capture observed ("still luna ... simply never
         consulted again").
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
         store = SessionStore()
         session_id = "test-resume-prefs-from-config"
         metadata = _base_metadata(session_id)
@@ -373,7 +375,6 @@ class TestResumeRebuildsPromotion:
         Settles rc0 section 4.6 from the other direction: the preference's own
         ``reasoning_effort`` -- not settings' -- governs the resumed leg.
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
         store = SessionStore()
         session_id = "test-resume-pref-config"
         metadata = _base_metadata(
@@ -405,7 +406,6 @@ class TestResumeRebuildsPromotion:
         The resumed leg's routing hook resolves roles from config; without
         this the role the delegate was spawned with never reaches it.
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
         store = SessionStore()
         session_id = "test-resume-model-role"
         store.save(session_id, [], _base_metadata(session_id))
@@ -423,7 +423,6 @@ class TestResumeRebuildsPromotion:
         leg still has to run on something -- but it must SAY so, naming the
         cause and the provider/model it actually landed on.
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
         store = SessionStore()
         session_id = "test-resume-fallback-event"
         metadata = _base_metadata(
@@ -462,7 +461,6 @@ class TestResumeRebuildsPromotion:
         resumes were affected, because a plan with no promotion has nothing
         to preserve and nothing to rebuild.
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
         store = SessionStore()
         session_id = "test-resume-no-prefs"
         metadata = _base_metadata(session_id)

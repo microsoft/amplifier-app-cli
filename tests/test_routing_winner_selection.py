@@ -343,7 +343,12 @@ class TestSortOrderDisagreement:
         rows = _rows(tmp_path)
         source = rows["openai"]["routing_source"]
 
-        assert source["matrix_path"].endswith("/.amplifier/routing/openai.yaml")
+        # matrix_path is a native absolute path (backslashes on Windows) --
+        # compare as a Path, not as a POSIX string. matrix_file is the display
+        # form and IS POSIX-spelled on every platform (see _display_path).
+        assert (
+            Path(source["matrix_path"]) == tmp_path / ".amplifier/routing/openai.yaml"
+        )
         assert rows["openai"]["matrix_file"] == "~/.amplifier/routing/openai.yaml"
         assert len(source["shadowed_paths"]) == 1
         assert "amplifier-bundle-routing-matrix-test" in source["shadowed_paths"][0]
