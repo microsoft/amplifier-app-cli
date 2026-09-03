@@ -1,0 +1,4 @@
+checker      /home/bkrabach/dev/openai-evals-team-ci/.amplifier/evaluation/tools/check_lane_artifact_paths.py
+RESOLVED     ai_working/<lane>/   [R2 ai_working/]
+GOAL-PATH    docs/lanes/aof-example/DONE-NOTE.md -> VIOLATION (expected ai_working/aof-example/)
+LEGACY-PATH  ai_working/aof-example/DONE-NOTE.md -> COMPLIANT (expected ai_working/aof-example/)

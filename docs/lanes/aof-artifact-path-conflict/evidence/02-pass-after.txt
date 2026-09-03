@@ -1,0 +1,4 @@
+checker      /home/bkrabach/dev/hw-model-performance/lanes/aof-artifact-path-conflict/evals-fix/evaluation/tools/check_lane_artifact_paths.py
+RESOLVED     docs/lanes/<lane>/   [R-PIN docs/lanes/ (declared for amplifier-app-cli)]
+GOAL-PATH    docs/lanes/aof-example/DONE-NOTE.md -> COMPLIANT (expected docs/lanes/aof-example/)
+LEGACY-PATH  ai_working/aof-example/DONE-NOTE.md -> COMPLIANT (expected docs/lanes/aof-example/)
