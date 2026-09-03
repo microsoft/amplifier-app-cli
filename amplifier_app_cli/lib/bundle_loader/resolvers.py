@@ -23,6 +23,7 @@ from typing import Any
 from typing import Protocol
 from typing import runtime_checkable
 
+from amplifier_core.module_sources import ModuleNotFoundError as CoreModuleNotFoundError
 from amplifier_foundation.paths.resolution import get_amplifier_home
 from amplifier_foundation.sources import SimpleSourceResolver
 
@@ -451,6 +452,18 @@ class ModuleResolver(Protocol):
         ...
 
 
+# The kernel's ``amplifier_core.module_sources.ModuleNotFoundError`` is NOT a
+# subclass of the builtin ``ModuleNotFoundError`` (it derives from ``Exception``
+# directly). Foundation's ``BundleModuleResolver`` raises the kernel class, so an
+# ``except ModuleNotFoundError:`` written against the builtin let it escape --
+# and the settings fallback below never ran for a module the bundle did not
+# pre-activate. Catch both, so the fallback policy actually applies.
+_MODULE_NOT_FOUND: tuple[type[BaseException], ...] = (
+    ModuleNotFoundError,
+    CoreModuleNotFoundError,
+)
+
+
 class AppModuleResolver:
     """Composes bundle resolver with settings-based fallback.
 
@@ -515,7 +528,7 @@ class AppModuleResolver:
         # Try bundle first (primary source)
         try:
             return self._bundle.resolve(module_id, hint)
-        except ModuleNotFoundError:
+        except _MODULE_NOT_FOUND:
             pass  # Fall through to settings resolver
 
         # Try settings resolver (fallback)
@@ -529,6 +542,53 @@ class AppModuleResolver:
                 pass  # Fall through to error
 
         # Neither worked - raise informative error
+        available = list(getattr(self._bundle, "_paths", {}).keys())
+        raise ModuleNotFoundError(
+            f"Module '{module_id}' not found in bundle or user settings. "
+            f"Bundle contains: {available}. "
+            f"Ensure the module is included in the bundle or configure a provider in settings."
+        )
+
+    async def async_resolve(
+        self, module_id: str, source_hint: Any = None, profile_hint: Any = None
+    ) -> Any:
+        """Resolve with the bundle resolver's lazy activation, then the same fallback.
+
+        The kernel loader prefers ``async_resolve`` when a resolver exposes it
+        (amplifier_core/loader.py) and only then can a module that was NOT
+        pre-activated at ``Bundle.prepare()`` time still load: foundation's
+        ``BundleModuleResolver.async_resolve`` activates such a module on demand
+        from its ``source_hint`` (clone, install deps, register in ``_paths``).
+
+        Without this method the loader fell to the sync ``resolve()`` above, where
+        the wrapped bundle resolver can only answer for already-activated modules
+        -- so any hook/tool that reaches the mount plan AFTER prepare() (the
+        settings-injected ``hooks-routing`` from ``routing.matrix`` is the
+        measured case) failed at mount with "not found in prepared bundle" even
+        though its mount-plan entry carried a perfectly good ``source``. This
+        wrapper is mounted as the session's ``module-source-resolver`` at root
+        AND inherited by every child session, so the gap was total.
+
+        Policy is unchanged: bundle first, settings second, informative error.
+        """
+        hint = profile_hint if profile_hint is not None else source_hint
+
+        bundle_async = getattr(self._bundle, "async_resolve", None)
+        try:
+            if callable(bundle_async):
+                return await bundle_async(module_id, source_hint=hint)
+            return self._bundle.resolve(module_id, hint)
+        except _MODULE_NOT_FOUND:
+            pass  # Fall through to settings resolver
+
+        if self._settings is not None:
+            try:
+                result = self._settings.resolve(module_id, hint)
+                logger.debug(f"Resolved '{module_id}' from settings fallback")
+                return result
+            except Exception as e:
+                logger.debug(f"Settings fallback failed for '{module_id}': {e}")
+
         available = list(getattr(self._bundle, "_paths", {}).keys())
         raise ModuleNotFoundError(
             f"Module '{module_id}' not found in bundle or user settings. "
