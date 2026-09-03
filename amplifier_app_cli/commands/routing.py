@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -14,7 +15,7 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
-from ..lib.routing_provenance import resolve_matrix_origins
+from ..lib.routing_provenance import resolve_matrix_origins, resolve_winning_paths
 from ..lib.settings import AppSettings, Scope, get_custom_routing_dir
 from ..provider_loader import get_provider_info, get_provider_models
 from ..provider_manager import resolve_provider_entry
@@ -153,29 +154,126 @@ def _load_matrix(path: Path) -> dict[str, Any] | None:
 
 def _load_all_matrices_with_paths(
     matrix_files: list[Path],
+    origins: Mapping[str, Any] | None = None,
 ) -> dict[str, tuple[dict[str, Any], Path]]:
-    """Load all matrix files into a name -> (data, source_path) dict.
+    """Load one row per matrix: file stem -> (data, the file that wins).
 
-    Same last-write-wins keying as :func:`_load_all_matrices`, but it also
-    keeps the file each listed entry actually came from, which is what
-    shadowing provenance is looked up by (hooks-routing resolves matrices by
-    file *stem*, while this dict is keyed by the ``name:`` field inside the
-    YAML -- the two usually agree but are not the same thing).
+    Keyed by **file stem**, and the file behind each row is the one
+    ``resolve_matrix_source()`` would load. Both halves of that sentence are
+    the fix; the previous implementation was::
+
+        matrices: dict[str, tuple[dict[str, Any], Path]] = {}
+        for path in matrix_files:
+            data = _load_matrix(path)
+            if data and "name" in data:
+                matrices[data["name"]] = (data, path)
+
+    which keyed on the ``name:`` field *inside* each YAML and let the LAST
+    file in ``sorted(_discover_matrix_files())`` overwrite the entry. Neither
+    half matches the loader:
+
+    * hooks-routing resolves ``f"{matrix_name}.yaml"`` -- by **file stem**. A
+      file whose internal ``name:`` disagrees with its stem was listed under a
+      name the loader can never resolve: listable, not loadable.
+    * hooks-routing takes the **first** hit in ``[*custom_routing_dirs,
+      bundle routing/]``. Last-write-wins agreed with that only because
+      ``sorted()`` happens to put ``~/.amplifier/cache/...`` before
+      ``~/.amplifier/routing/...``.
+
+    Only the winning file is parsed into the row, so a shadowed file can never
+    supply the description, ``updated:`` date or compatibility count shown for
+    a matrix. A stem whose winner is unparseable or carries no ``name:`` is
+    dropped entirely rather than falling back to a file the loader would not
+    read -- that keeps the old "must have ``name:`` to be listed" rule without
+    letting a loser back in through it.
+
+    Args:
+        matrix_files: Every discovered matrix file.
+        origins: Result of ``resolve_matrix_origins()``, if already computed.
+
+    Returns:
+        ``{stem: (parsed_yaml, winning_path)}``.
     """
+    winners = resolve_winning_paths(matrix_files, origins)
+
     matrices: dict[str, tuple[dict[str, Any], Path]] = {}
-    for path in matrix_files:
+    for stem, path in winners.items():
         data = _load_matrix(path)
         if data and "name" in data:
-            matrices[data["name"]] = (data, path)
+            matrices[stem] = (data, path)
     return matrices
 
 
 def _load_all_matrices(matrix_files: list[Path]) -> dict[str, dict[str, Any]]:
-    """Load all matrix files into a name -> data dict."""
+    """Load all matrix files into a stem -> data dict.
+
+    The key is the file stem because that is the string every consumer of this
+    dict compares against ``settings.routing.matrix`` -- and that setting is
+    what hooks-routing appends ``.yaml`` to. Keying on the YAML's internal
+    ``name:`` made ``amplifier routing use <name>`` able to write a value the
+    loader cannot resolve.
+    """
     return {
         name: data
         for name, (data, _) in _load_all_matrices_with_paths(matrix_files).items()
     }
+
+
+def _declared_name(data: Mapping[str, Any]) -> str:
+    """The ``name:`` field inside a matrix YAML (may differ from its stem)."""
+    return str(data.get("name", ""))
+
+
+def _print_matrix_not_found(
+    matrix_name: str,
+    loaded: Mapping[str, tuple[dict[str, Any], Path]],
+) -> None:
+    """Report an unknown matrix, and rescue the ``name:``-vs-filename case.
+
+    Rows are keyed by file stem because that is what hooks-routing resolves.
+    A user who read the old listing (keyed by the YAML's internal ``name:``)
+    may type that name instead; rather than the bare "not found" they get told
+    which filename actually carries it.
+    """
+    available = ", ".join(sorted(loaded.keys())) if loaded else "none"
+    console.print(
+        f"[red]Matrix '{matrix_name}' not found.[/red] Available: {available}"
+    )
+
+    by_declared = [
+        stem
+        for stem, (data, _) in loaded.items()
+        if _declared_name(data) == matrix_name
+    ]
+    if by_declared:
+        console.print(
+            f"[yellow]'{matrix_name}' is the 'name:' inside "
+            f"{', '.join(sorted(by_declared))}.yaml — routing resolves by "
+            f"filename, so use: {sorted(by_declared)[0]}[/yellow]"
+        )
+
+
+def _print_name_stem_note(mismatched: list[tuple[str, str]]) -> None:
+    """Report every row whose YAML ``name:`` disagrees with its filename.
+
+    Silent on the normal case, so an agreeing tree's output is unchanged.
+    """
+    if not mismatched:
+        return
+
+    count = len(mismatched)
+    noun = "matrix declares a" if count == 1 else "matrices declare a"
+    console.print(
+        f"[yellow]⚠ {count} {noun} 'name:' that differs from its filename — "
+        f"routing resolves by filename:[/yellow]"
+    )
+    for stem, declared in mismatched:
+        console.print(
+            f"    [green]resolves as[/green]  {stem}"
+            f"    [dim](file says name: {declared})[/dim]",
+            soft_wrap=True,
+        )
+    console.print()
 
 
 def _display_path(path: Path) -> str:
@@ -318,16 +416,18 @@ def routing_list(compact: bool, detailed: bool, fmt: str):
         )
         return
 
-    loaded = _load_all_matrices_with_paths(matrix_files)
-    if not loaded:
-        console.print("[yellow]No valid routing matrices found.[/yellow]")
-        return
-
     # Shadowing provenance, derived from hooks-routing's own
     # resolve_matrix_source() -- never from a search order re-derived here.
     # An empty dict means "provenance unknown" (bundle too old / unreachable),
     # NOT "nothing is shadowed", so no marker is drawn in that case.
+    # It is resolved BEFORE the matrices are loaded because it also decides
+    # which file each row is loaded FROM.
     origins = resolve_matrix_origins(matrix_files)
+
+    loaded = _load_all_matrices_with_paths(matrix_files, origins)
+    if not loaded:
+        console.print("[yellow]No valid routing matrices found.[/yellow]")
+        return
 
     routing_config = settings.get_routing_config()
     active_matrix = routing_config.get("matrix", "balanced")
@@ -339,6 +439,7 @@ def routing_list(compact: bool, detailed: bool, fmt: str):
 
     items: list[dict[str, Any]] = []
     shadowed: list[tuple[str, Any]] = []
+    mismatched: list[tuple[str, str]] = []
     for name, (data, source_path) in sorted(loaded.items()):
         is_active = name == active_matrix
         description = data.get("description", "")
@@ -351,6 +452,8 @@ def routing_list(compact: bool, detailed: bool, fmt: str):
 
         origin = origins.get(source_path.stem)
         is_shadowing = origin is not None and origin.is_shadowed
+        declared = _declared_name(data)
+        name_disagrees = declared != name
 
         config_summary: dict[str, Any] = {
             "description": description,
@@ -360,11 +463,19 @@ def routing_list(compact: bool, detailed: bool, fmt: str):
         item: dict[str, Any] = {
             "name": ("→ " if is_active else "  ")
             + name
-            + (f"  ⚠ shadows {_shadow_label(origin)}" if is_shadowing else ""),
+            + (f"  ⚠ shadows {_shadow_label(origin)}" if is_shadowing else "")
+            + (f"  ⚠ file says name: {declared}" if name_disagrees else ""),
             "enabled": is_active,
             "behaviors": ["active" if is_active else "available"],
             "config_summary": config_summary,
         }
+        # The row key is the file stem -- what hooks-routing resolves and what
+        # `routing use` must write. `declared_name` is reported alongside so a
+        # disagreement is visible instead of silently keying on the wrong one.
+        item["matrix_file"] = _display_path(source_path)
+        if name_disagrees:
+            mismatched.append((name, declared))
+            config_summary["declared_name"] = declared
 
         if is_shadowing:
             shadowed.append((name, origin))
@@ -384,6 +495,7 @@ def routing_list(compact: bool, detailed: bool, fmt: str):
         items, view=view, category="routing", section_title="routing matrices"
     )
     _print_shadowing_footer(shadowed)
+    _print_name_stem_note(mismatched)
 
 
 # ============================================================
@@ -404,13 +516,11 @@ def routing_use(matrix_name: str, scope: str):
     validate_scope_cli(scope)
     settings = _get_settings()
     matrix_files = _discover_matrix_files()
-    matrices = _load_all_matrices(matrix_files)
+    loaded = _load_all_matrices_with_paths(matrix_files)
+    matrices = {name: data for name, (data, _) in loaded.items()}
 
     if matrix_name not in matrices:
-        available = ", ".join(sorted(matrices.keys())) if matrices else "none"
-        console.print(
-            f"[red]Matrix '{matrix_name}' not found.[/red] Available: {available}"
-        )
+        _print_matrix_not_found(matrix_name, loaded)
         return
 
     settings.set_routing_matrix(matrix_name, scope=cast(Scope, scope))
@@ -438,7 +548,8 @@ def routing_show(matrix_name: str | None, compact: bool, detailed: bool, fmt: st
     """
     settings = _get_settings()
     matrix_files = _discover_matrix_files()
-    loaded = _load_all_matrices_with_paths(matrix_files)
+    origins = resolve_matrix_origins(matrix_files)
+    loaded = _load_all_matrices_with_paths(matrix_files, origins)
     matrices = {name: data for name, (data, _) in loaded.items()}
 
     if not matrices:
@@ -451,27 +562,28 @@ def routing_show(matrix_name: str | None, compact: bool, detailed: bool, fmt: st
         matrix_name = routing_config.get("matrix", "balanced")
 
     if matrix_name not in matrices:
-        available = ", ".join(sorted(matrices.keys()))
-        console.print(
-            f"[red]Matrix '{matrix_name}' not found.[/red] Available: {available}"
-        )
+        _print_matrix_not_found(matrix_name, loaded)
         return
 
     view = resolve_view(
         ("routing", "show"), compact_flag=compact, detailed_flag=detailed
     )
     matrix_data, source_path = loaded[matrix_name]
-    origin = resolve_matrix_origins(matrix_files).get(source_path.stem)
+    origin = origins.get(source_path.stem)
 
     if fmt == "json":
         renderer = ItemRenderer(console)
         payload: dict[str, Any] = {"matrix": matrix_name, "data": matrix_data}
+        payload["matrix_file"] = _display_path(source_path)
         if origin is not None and origin.is_shadowed:
             payload["routing_source"] = origin.to_dict()
         renderer.render_json(payload)
         return
 
     _print_shadowing_note(origin)
+    declared = _declared_name(matrix_data)
+    if declared != matrix_name:
+        _print_name_stem_note([(matrix_name, declared)])
 
     # detailed view → full waterfall; regular/compact → resolved routing
     if view == "detailed":
