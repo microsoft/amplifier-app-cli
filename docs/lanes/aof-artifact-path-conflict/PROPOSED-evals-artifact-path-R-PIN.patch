@@ -1,0 +1,439 @@
+From 449ed59a53e11530d8113dc7b6265bcbb5e9aceb Mon Sep 17 00:00:00 2001
+From: lane aof <lane@example.invalid>
+Date: Thu, 3 Sep 2026 07:20:47 -0700
+Subject: [PATCH] fix(artifact-path): declare amplifier-app-cli's artifact root
+ instead of inferring it (aof)
+
+`check_lane_artifact_paths.py` resolved amplifier-app-cli to `ai_working/`
+[R2] while the CODE goal template told every app-cli lane `docs/lanes/`, so a
+lane that followed its own authoritative spec was graded a VIOLATION. Four
+consecutive merged lanes (n1i #292, 9w0 #297, eem #298, 2nz #299) were in that
+position; 2nz wrote its note to `ai_working/` on this checker's say-so, then
+deleted it and rewrote it under `docs/lanes/` (c80e04e).
+
+R2 fired only because a LANE ARTIFACT made `ai_working/` tracked: the first
+tracked path there is `ai_working/3yc-.../DONE-NOTE.md` (0d93352). The rule was
+reading its own past output back as repo convention, and the repo tracks no
+other content there at any ref.
+
+Option (a): the goal template wins. R-PIN, checked before R0-R3, resolves a
+named repo to a DECLARED root that no directory in the tree can move.
+`legacy_roots` keeps it retroactively honest -- artifacts that landed under the
+inferred root stay COMPLIANT and stay where they are; only what a NEW lane is
+told changes.
+
+Because `rewrite_goal_artifact_paths.py` derives each goal's ARTIFACT ROOT from
+this same resolver, both sides now say `docs/lanes/` for app-cli: the generator
+emits it and the checker accepts it.
+
+Batch-wide, only app-cli moves: 0 COMPLIANT/7 VIOLATION -> 4/3. The 3 residual
+violations are pre-existing and unrelated to the root choice (adq's
+`../DONE-NOTE.md` outside the repo; 9kk writing into adq's directory; 3yc's
+manifest lane id differing from its directory name).
+
+tests: scenarios/_harness/tests/test_artifact_path_resolution.py (10 tests),
+including the recurrence-stopper (probes/ + ai_working/ + a full R0 wave family
+tracked at once, answer does not move) and `kez`'s hazard -- a repo-root
+DONE-NOTE.md is still a VIOLATION, pinned repo and unpinned repo alike.
+suite: 233 -> 243 passed.
+---
+ .../tests/test_artifact_path_resolution.py    | 262 ++++++++++++++++++
+ tools/check_lane_artifact_paths.py            |  82 +++++-
+ 2 files changed, 342 insertions(+), 2 deletions(-)
+ create mode 100644 scenarios/_harness/tests/test_artifact_path_resolution.py
+
+diff --git a/scenarios/_harness/tests/test_artifact_path_resolution.py b/scenarios/_harness/tests/test_artifact_path_resolution.py
+new file mode 100644
+index 0000000..8fa2c5c
+--- /dev/null
++++ b/scenarios/_harness/tests/test_artifact_path_resolution.py
+@@ -0,0 +1,262 @@
++#!/usr/bin/env python3
++"""The artifact-root resolution guard: R-PIN, and what it must not move
++(`model_performance-aof`).
++
++Runnable either way, like every other test here:
++
++    ./run_tests.sh
++    python3 -m pytest scenarios/_harness/tests/test_artifact_path_resolution.py
++    python3 scenarios/_harness/tests/test_artifact_path_resolution.py
++
++WHAT IS BEING GUARDED
++---------------------
++`artifact-path/v1` used to derive a repo's artifact root ENTIRELY from which
++directories were tracked at the base ref. A lane artifact is a tracked file, so
++the rule could read its own past output back as a repo convention: in
++`amplifier-app-cli` the first tracked path under `ai_working/` was a lane's own
++DONE-NOTE (0d93352), and from that commit on R2 fired and told every later
++app-cli lane `ai_working/` -- while the CODE goal template said `docs/lanes/`.
++Four merged lanes (n1i #292, 9w0 #297, eem #298, 2nz #299) followed their goal
++and were graded VIOLATION.
++
++The defect was never WHICH directory won. It was that the answer was INFERRED
++from a directory's existence, so the next tracked directory could flip it again
++without anyone deciding anything. `PINNED_ARTIFACT_ROOTS` makes it a
++declaration; these tests are what stop it drifting back:
++
++  * `test_pinned_repo_resolves_to_the_declared_root`  -- the resolution itself
++  * `test_pin_survives_every_directory_that_would_have_moved_it`
++        -- the recurrence-stopper: probes/, ai_working/ and a full R0 wave
++           family are all present AND the answer does not move
++  * `test_unpinned_repo_still_infers_from_the_tree`
++        -- the pin is narrow; no other repo's convention changed
++  * `test_root_done_note_is_still_a_violation`
++        -- `kez`'s hazard. A fix that relaxed this to end the disagreement
++           would have made things worse than the disagreement.
++"""
++
++from __future__ import annotations
++
++import subprocess
++import sys
++import tempfile
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++sys.path.insert(0, str(REPO / "tools"))
++
++from check_lane_artifact_paths import (  # noqa: E402
++    PINNED_ARTIFACT_ROOTS,
++    evaluate,
++    resolve_artifact_dir,
++)
++
++PINNED_REPO = "amplifier-app-cli"
++DECLARED_ROOT = "docs/lanes"
++LEGACY_ROOT = "ai_working"
++
++
++# --------------------------------------------------------------------------
++# scratch repos, built from nothing so the result depends on no live history
++# --------------------------------------------------------------------------
++
++
++def _git(repo: Path, *args: str) -> str:
++    out = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=False)
++    assert out.returncode == 0, f"git {' '.join(args)} failed: {out.stderr}"
++    return out.stdout.strip()
++
++
++def _scratch_repo(td: Path, name: str, dirs: list[str], origin: str = "") -> Path:
++    """A repo named `name` whose base commit tracks a file in each of `dirs`."""
++    repo = td / name
++    repo.mkdir(parents=True)
++    _git(repo, "init", "--quiet", "-b", "main")
++    _git(repo, "config", "user.email", "lane@example.invalid")
++    _git(repo, "config", "user.name", "lane")
++    if origin:
++        _git(repo, "remote", "add", "origin", origin)
++    (repo / "README.md").write_text("scratch\n", encoding="utf-8")
++    for d in dirs:
++        (repo / d).mkdir(parents=True, exist_ok=True)
++        (repo / d / "keep.md").write_text("content\n", encoding="utf-8")
++    _git(repo, "add", "-A")
++    _git(repo, "commit", "--quiet", "-m", "base")
++    return repo
++
++
++def _lane_commit(repo: Path, branch: str, path: str) -> str:
++    """Commit `path` on `branch`; returns the base sha the branch left from."""
++    base = _git(repo, "rev-parse", "main")
++    _git(repo, "checkout", "--quiet", "-b", branch)
++    target = repo / path
++    target.parent.mkdir(parents=True, exist_ok=True)
++    target.write_text("# DONE-NOTE\n\nbody\n", encoding="utf-8")
++    _git(repo, "add", "-A")
++    _git(repo, "commit", "--quiet", "-m", "lane note")
++    return base
++
++
++# --------------------------------------------------------------------------
++# R-PIN
++# --------------------------------------------------------------------------
++
++
++def test_pinned_repo_resolves_to_the_declared_root() -> None:
++    """FAIL-BEFORE half: with `ai_working/` tracked, the unpinned rule returned
++    `ai_working/` -- which is exactly the answer the goal contradicted."""
++    with tempfile.TemporaryDirectory() as td:
++        repo = _scratch_repo(Path(td), PINNED_REPO, [LEGACY_ROOT])
++        res = resolve_artifact_dir(repo, "main")
++        assert res.root == DECLARED_ROOT, f"pinned repo resolved to {res.root!r}"
++        assert res.rule.startswith("R-PIN"), res.rule
++        assert res.dir_for("zzz-lane") == "docs/lanes/zzz-lane"
++
++
++def test_pin_survives_every_directory_that_would_have_moved_it() -> None:
++    """THE RECURRENCE-STOPPER.
++
++    `probes/` (R1), `ai_working/` (R2) and a three-member `w9-` wave family
++    (R0) are all tracked at the base ref -- every inference the rule can make,
++    all present at once, each of which alone used to decide the answer. A
++    declared root ignores all of them.
++    """
++    with tempfile.TemporaryDirectory() as td:
++        repo = _scratch_repo(
++            Path(td),
++            PINNED_REPO,
++            ["probes", LEGACY_ROOT, "w9-alpha", "w9-beta", "w9-gamma"],
++        )
++        res = resolve_artifact_dir(repo, "main")
++        assert res.root == DECLARED_ROOT, (
++            f"a tracked directory moved a DECLARED root to {res.root!r} -- "
++            "this is the exact drift the pin exists to prevent"
++        )
++        assert res.prefix == "", f"a wave prefix leaked into a pinned repo: {res.prefix!r}"
++
++
++def test_pin_follows_the_origin_slug_when_the_checkout_is_renamed() -> None:
++    """A pin keyed on the directory name alone stops applying the moment someone
++    clones the repo under a different name."""
++    with tempfile.TemporaryDirectory() as td:
++        repo = _scratch_repo(
++            Path(td),
++            "app-cli-checkout-2",
++            [LEGACY_ROOT],
++            origin=f"https://github.com/microsoft/{PINNED_REPO}.git",
++        )
++        res = resolve_artifact_dir(repo, "main")
++        assert res.root == DECLARED_ROOT, f"renamed checkout resolved to {res.root!r}"
++
++
++def test_unpinned_repo_still_infers_from_the_tree() -> None:
++    """The pin is NARROW. No repo outside the table changed convention -- R0-R3
++    still resolve exactly as they did before."""
++    cases = [
++        (["probes"], "probes", "", "R1"),
++        ([LEGACY_ROOT], LEGACY_ROOT, "", "R2"),
++        ([], "docs/lanes", "", "R3"),
++        (["w3-a", "w3-b", "w3-c"], "", "w3-", "R0"),
++    ]
++    with tempfile.TemporaryDirectory() as td:
++        for i, (dirs, root, prefix, rule) in enumerate(cases):
++            repo = _scratch_repo(Path(td), f"some-other-repo-{i}", dirs)
++            res = resolve_artifact_dir(repo, "main")
++            assert (res.root, res.prefix) == (root, prefix), f"{rule}: got {res.root!r}/{res.prefix!r}"
++            assert res.rule.startswith(rule), f"{rule}: got {res.rule!r}"
++
++
++def test_the_pin_table_is_well_formed() -> None:
++    """A malformed entry would silently resolve to a nonsense directory."""
++    for name, entry in PINNED_ARTIFACT_ROOTS.items():
++        root, legacy = entry
++        assert name and "/" not in name, f"pin key is a repo name, not a path: {name!r}"
++        assert root and not root.startswith("/") and not root.endswith("/"), f"{name}: {root!r}"
++        assert isinstance(legacy, tuple), f"{name}: legacy roots must be a tuple"
++        assert root not in legacy, f"{name}: declared root repeated as legacy"
++
++
++# --------------------------------------------------------------------------
++# end-to-end: what a lane is graded, in a real repo
++# --------------------------------------------------------------------------
++
++
++def test_a_goal_conformant_note_is_compliant() -> None:
++    """THE DELIVERABLE, demonstrated rather than asserted: a lane that places
++    its DONE-NOTE where its goal names gets no VIOLATION."""
++    with tempfile.TemporaryDirectory() as td:
++        repo = _scratch_repo(Path(td), PINNED_REPO, [LEGACY_ROOT])
++        lane = "aaa-example"
++        base = _lane_commit(repo, f"lane/{lane}", f"{DECLARED_ROOT}/{lane}/DONE-NOTE.md")
++        r = evaluate(lane, repo, base, f"lane/{lane}")
++        assert r.status == "COMPLIANT", f"{r.status}: expected {r.expected}, strays {r.strays}"
++
++
++def test_a_landed_legacy_note_stays_compliant() -> None:
++    """Retrospective tolerance: lanes that landed under the inferred root obeyed
++    the answer in force at the time. The pin must not turn merged, verified work
++    into a violation, and must not be a reason to relocate it."""
++    with tempfile.TemporaryDirectory() as td:
++        repo = _scratch_repo(Path(td), PINNED_REPO, [LEGACY_ROOT])
++        lane = "bbb-legacy"
++        base = _lane_commit(repo, f"lane/{lane}", f"{LEGACY_ROOT}/{lane}/DONE-NOTE.md")
++        r = evaluate(lane, repo, base, f"lane/{lane}")
++        assert r.status == "COMPLIANT", f"{r.status}: strays {r.strays}"
++
++
++def test_a_new_lane_is_never_told_the_legacy_root() -> None:
++    """Tolerating a legacy root is not the same as recommending it: exactly one
++    directory is ever named to a new lane."""
++    with tempfile.TemporaryDirectory() as td:
++        repo = _scratch_repo(Path(td), PINNED_REPO, [LEGACY_ROOT])
++        res = resolve_artifact_dir(repo, "main")
++        told = res.dir_for("ccc-new")
++        assert told == f"{DECLARED_ROOT}/ccc-new", told
++        assert LEGACY_ROOT not in told
++
++
++def test_root_done_note_is_still_a_violation() -> None:
++    """`model_performance-kez`'s hazard, under the pin.
++
++    A repo-root DONE-NOTE.md is the shape every lane used to overwrite. It is
++    the real thing this checker is for, and relaxing it to end the app-cli
++    disagreement would have been strictly worse than the disagreement.
++    """
++    with tempfile.TemporaryDirectory() as td:
++        repo = _scratch_repo(Path(td), PINNED_REPO, [LEGACY_ROOT])
++        lane = "ddd-root-note"
++        base = _lane_commit(repo, f"lane/{lane}", "DONE-NOTE.md")
++        r = evaluate(lane, repo, base, f"lane/{lane}")
++        assert r.status == "VIOLATION", f"root DONE-NOTE.md graded {r.status}"
++        assert "DONE-NOTE.md" in r.strays, r.strays
++
++
++def test_root_done_note_is_a_violation_in_an_unpinned_repo_too() -> None:
++    """The same hazard, in a repo the pin never touches -- so the guard cannot
++    be read as depending on it."""
++    with tempfile.TemporaryDirectory() as td:
++        repo = _scratch_repo(Path(td), "some-unpinned-repo", ["probes"])
++        lane = "eee-root-note"
++        base = _lane_commit(repo, f"lane/{lane}", "DONE-NOTE.md")
++        r = evaluate(lane, repo, base, f"lane/{lane}")
++        assert r.status == "VIOLATION", f"root DONE-NOTE.md graded {r.status}"
++
++
++def _main() -> int:
++    failures = 0
++    for name, fn in sorted(globals().items()):
++        if not name.startswith("test_") or not callable(fn):
++            continue
++        try:
++            fn()
++        except AssertionError as exc:
++            failures += 1
++            print(f"FAIL {name}: {exc}")
++        else:
++            print(f"ok   {name}")
++    print("failures:", failures)
++    return 1 if failures else 0
++
++
++if __name__ == "__main__":  # pragma: no cover
++    sys.exit(_main())
+diff --git a/tools/check_lane_artifact_paths.py b/tools/check_lane_artifact_paths.py
+index 5aaa534..be7bfd8 100644
+--- a/tools/check_lane_artifact_paths.py
++++ b/tools/check_lane_artifact_paths.py
+@@ -35,6 +35,8 @@ A lane writes every LANE ARTIFACT under exactly one directory:
+ resolved against the ref the lane branched from (`base_sha` in manifest.tsv),
+ first match wins:
+ 
++  R-PIN  the repo is named in PINNED_ARTIFACT_ROOTS below -> that root, always.
++         DECLARED, not inferred: no directory appearing in the tree moves it.
+   R0  precedent  -- >=3 top-level dirs at the base ref share a `<word>-` name
+                     prefix (a wave convention). ARTIFACT_ROOT = repo root,
+                     DIR_PREFIX = the greatest such prefix.   ai-notes -> `w3-`
+@@ -42,6 +44,35 @@ first match wins:
+   R2  `ai_working/` tracked at the base ref  -> `ai_working/<lane>/`
+   R3  otherwise                              -> `docs/lanes/<lane>/`
+ 
++WHY R-PIN EXISTS (`model_performance-aof`)
++------------------------------------------
++R0-R3 infer a repo's convention from which directories happen to be TRACKED at
++the base ref. A lane artifact is a tracked file, so the rule can read its own
++past output back as evidence of a repo convention. Measured in
++`amplifier-app-cli`: the first tracked path under `ai_working/` is
++`ai_working/3yc-timedout-session-resumable/DONE-NOTE.md` (0d93352, 2026-09-02)
++-- a lane's own note. That directory holds no repo content at any ref; the
++repo's `.gitignore` mentions only `ai_working/tmp`. From that commit onward R2
++fired, so `rewrite_goal_artifact_paths.py` -- which derives each goal's ARTIFACT
++ROOT from THIS resolver, precisely so the instruction and the check cannot
++disagree -- began telling app-cli lanes `ai_working/`, while the hand-written
++CODE goal template kept saying `docs/lanes/`. Four consecutive merged lanes
++(n1i #292, 9w0 #297, eem #298, 2nz #299) followed their goal and this checker
++graded every one of them a VIOLATION. `2nz` first wrote its note to
++`ai_working/` on this checker's say-so, then deleted it and rewrote it under
++`docs/lanes/` (c80e04e), because the goal is a lane's authoritative spec. That
++churn is what a pin removes.
++
++A pin makes a repo's answer a DECLARATION rather than an inference, so the next
++tracked directory added at the base ref cannot silently flip it back. It is
++deliberately narrow: a repo absent from the table resolves exactly as before.
++
++`legacy_roots` keeps the pin retroactively honest. Lanes that landed under the
++inferred root while it was in force (`3yc`, `adq`, `9kk` under `ai_working/`)
++obeyed the answer they were given, so their artifacts stay COMPLIANT and stay
++where they are; only what a NEW lane is TOLD changes. This mirrors R0's
++`family` tolerance, which is likewise retrospective only.
++
+ LANE ARTIFACT vs REPO CONTENT -- the distinction that makes the rule uniform:
+ 
+   * A LANE ARTIFACT is the record of this lane's work: its note, findings,
+@@ -107,6 +138,33 @@ REPO_CONTENT_DIRS = {".github", "tests", "test", "src", "crates", "bindings", "p
+ 
+ WAVE_PREFIX_RE = re.compile(r"^([a-z][a-z0-9]*)-.+$")
+ 
++# --------------------------------------------------------------------------
++# R-PIN -- repos whose artifact root is DECLARED, not inferred from the tree
++# --------------------------------------------------------------------------
++# repo -> (artifact root, legacy roots that stay acceptable retrospectively).
++# Keyed on BOTH the checkout directory name and the `origin` URL's repo slug,
++# so a renamed checkout still pins (see `repo_identities`).
++#
++# Add a repo here only to settle a real disagreement between the rule and that
++# repo's own goal text, and say which one moved. `amplifier-app-cli`:
++# `model_performance-aof` -- goal template wins, option (a).
++PINNED_ARTIFACT_ROOTS: dict[str, tuple[str, tuple[str, ...]]] = {
++    "amplifier-app-cli": ("docs/lanes", ("ai_working",)),
++}
++
++
++def repo_identities(repo: Path) -> set[str]:
++    """Every name this checkout answers to: its directory name and its `origin`
++    repo slug. A pin keyed on the directory name alone would silently stop
++    applying to a checkout someone cloned under a different name."""
++    names = {repo.name}
++    url = git(repo, "remote", "get-url", "origin").strip()
++    if url:
++        slug = url.rstrip("/").removesuffix(".git").rsplit("/", 1)[-1]
++        if slug:
++            names.add(slug)
++    return names
++
+ 
+ def git(repo: Path, *args: str) -> str:
+     out = subprocess.run(
+@@ -141,6 +199,11 @@ class Resolution:
+     # Every prefix in the repo's wave family (R0 only). A goal file pins ONE of
+     # these; a lane that used an earlier wave still followed the convention.
+     family: tuple[str, ...] = ()
++    # Roots this repo used BEFORE it was pinned (R-PIN only). Retrospective
++    # only: a lane that landed under one obeyed the answer in force at the
++    # time, so it stays COMPLIANT and its artifacts stay where they are.
++    # `dir_for` never returns one, so no NEW lane is ever sent there.
++    legacy_roots: tuple[str, ...] = ()
+ 
+     def dir_for(self, lane: str) -> str:
+         name = f"{self.prefix}{lane}"
+@@ -150,11 +213,26 @@ class Resolution:
+         if path.startswith(self.dir_for(lane) + "/"):
+             return True
+         # R0 family tolerance, retrospective only.
+-        return any(path.startswith(f"{p}{lane}/") for p in self.family)
++        if any(path.startswith(f"{p}{lane}/") for p in self.family):
++            return True
++        # R-PIN legacy tolerance, retrospective only.
++        return any(path.startswith(f"{r}/{lane}/") for r in self.legacy_roots)
+ 
+ 
+ def resolve_artifact_dir(repo: Path, ref: str) -> Resolution:
+-    """Apply artifact-path/v1 against `ref`. Pure function of the tree."""
++    """Apply artifact-path/v1 against `ref`.
++
++    A pure function of the tree EXCEPT for R-PIN, which is a function of the
++    repo's identity alone -- that is the point of it: an inference from the
++    tree is what a lane artifact can silently move.
++    """
++    # R-PIN -- declared, and nothing in the tree overrides it.
++    for name in sorted(repo_identities(repo)):
++        pinned = PINNED_ARTIFACT_ROOTS.get(name)
++        if pinned:
++            root, legacy = pinned
++            return Resolution(root, "", f"R-PIN {root}/ (declared for {name})", legacy_roots=legacy)
++
+     dirs, _ = top_level_entries(repo, ref)
+ 
+     # R0 -- wave/precedent convention
+-- 
+2.43.0
+

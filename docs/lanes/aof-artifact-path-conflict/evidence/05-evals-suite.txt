@@ -1,0 +1,22 @@
+$ ./run_tests.sh    # evals repo
+
+PARENT (evals main 6269c44):
+233 passed, 4 subtests passed in 21.19s
+
+PATCHED (lane/aof-artifact-path-conflict 449ed59):
+243 passed, 4 subtests passed in 54.82s
+
++10 = scenarios/_harness/tests/test_artifact_path_resolution.py
+
+$ python3 scenarios/_harness/tests/test_artifact_path_resolution.py   # direct runner
+ok   test_a_goal_conformant_note_is_compliant
+ok   test_a_landed_legacy_note_stays_compliant
+ok   test_a_new_lane_is_never_told_the_legacy_root
+ok   test_pin_follows_the_origin_slug_when_the_checkout_is_renamed
+ok   test_pin_survives_every_directory_that_would_have_moved_it
+ok   test_pinned_repo_resolves_to_the_declared_root
+ok   test_root_done_note_is_a_violation_in_an_unpinned_repo_too
+ok   test_root_done_note_is_still_a_violation
+ok   test_the_pin_table_is_well_formed
+ok   test_unpinned_repo_still_infers_from_the_tree
+failures: 0

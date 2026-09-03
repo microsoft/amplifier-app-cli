@@ -1,0 +1,34 @@
+THE DELIVERABLE, on this real lane rather than a synthetic one.
+Same command, same lane directory, two checkers.
+
+=== PARENT checker (evals main 6269c44) ===
+VIOLATION    aof-artifact-path-conflict         amplifier-app-cli                  expected ai_working/aof-artifact-path-conflict/  [R2 ai_working/]
+    stray-in-repo    docs/lanes/aof-artifact-path-conflict/DONE-NOTE.md
+    stray-in-repo    docs/lanes/aof-artifact-path-conflict/PROPOSED-evals-artifact-path-R-PIN.patch
+    stray-in-repo    docs/lanes/aof-artifact-path-conflict/evidence/00-conflict-today.txt
+    stray-in-repo    docs/lanes/aof-artifact-path-conflict/evidence/01-fail-before.txt
+    stray-in-repo    docs/lanes/aof-artifact-path-conflict/evidence/02-pass-after.txt
+    stray-in-repo    docs/lanes/aof-artifact-path-conflict/evidence/03-batch-report-diff.txt
+    stray-in-repo    docs/lanes/aof-artifact-path-conflict/evidence/03a-batch-before.md
+    stray-in-repo    docs/lanes/aof-artifact-path-conflict/evidence/03b-batch-after.md
+    stray-in-repo    docs/lanes/aof-artifact-path-conflict/evidence/04-goal-generator-before-after.txt
+    stray-in-repo    docs/lanes/aof-artifact-path-conflict/evidence/05-evals-suite.txt
+    stray-in-repo    docs/lanes/aof-artifact-path-conflict/evidence/06-appcli-suite.txt
+    stray-in-repo    docs/lanes/aof-artifact-path-conflict/probe_artifact_root.py
+--strict exit: 1
+
+=== PATCHED checker (lane/aof-artifact-path-conflict 449ed59) ===
+COMPLIANT    aof-artifact-path-conflict         amplifier-app-cli                  expected docs/lanes/aof-artifact-path-conflict/  [R-PIN docs/lanes/ (declared for amplifier-app-cli)]
+    ok               docs/lanes/aof-artifact-path-conflict/DONE-NOTE.md
+    ok               docs/lanes/aof-artifact-path-conflict/PROPOSED-evals-artifact-path-R-PIN.patch
+    ok               docs/lanes/aof-artifact-path-conflict/evidence/00-conflict-today.txt
+    ok               docs/lanes/aof-artifact-path-conflict/evidence/01-fail-before.txt
+    ok               docs/lanes/aof-artifact-path-conflict/evidence/02-pass-after.txt
+    ok               docs/lanes/aof-artifact-path-conflict/evidence/03-batch-report-diff.txt
+    ok               docs/lanes/aof-artifact-path-conflict/evidence/03a-batch-before.md
+    ok               docs/lanes/aof-artifact-path-conflict/evidence/03b-batch-after.md
+    ok               docs/lanes/aof-artifact-path-conflict/evidence/04-goal-generator-before-after.txt
+    ok               docs/lanes/aof-artifact-path-conflict/evidence/05-evals-suite.txt
+    ok               docs/lanes/aof-artifact-path-conflict/evidence/06-appcli-suite.txt
+    ok               docs/lanes/aof-artifact-path-conflict/probe_artifact_root.py
+--strict exit: 0

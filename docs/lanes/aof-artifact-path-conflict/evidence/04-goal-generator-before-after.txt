@@ -1,0 +1,25 @@
+rewrite_goal_artifact_paths.artifact_dir_for() -- the function that WRITES the
+ARTIFACT ROOT sentence into every goal file. It imports resolve_artifact_dir from
+check_lane_artifact_paths (line 49) so the instruction and the check cannot disagree.
+
+BEFORE (evals main 6269c44):
+  3yc-timedout-session-not-resumable     -> ai_working/3yc-timedout-session-not-resumable/   [R2 ai_working/]
+  n1i-resume-thread-role                 -> ai_working/n1i-resume-thread-role/               [R2 ai_working/]
+  adq-routing-list-shadowing             -> ai_working/adq-routing-list-shadowing/           [R2 ai_working/]
+  9kk-routing-list-lastwrite             -> ai_working/9kk-routing-list-lastwrite/           [R2 ai_working/]
+  9w0-delegate-timeout-partial-producer  -> ai_working/9w0-delegate-timeout-partial-producer/ [R2 ai_working/]
+  eem-partial-accumulator-widen          -> ai_working/eem-partial-accumulator-widen/        [R2 ai_working/]
+  2nz-upstream-skill-guards              -> ai_working/2nz-upstream-skill-guards/            [R2 ai_working/]
+  aof-artifact-path-conflict             -> ai_working/aof-artifact-path-conflict/           [R2 ai_working/]
+
+AFTER (lane/aof-artifact-path-conflict 449ed59):
+  3yc-timedout-session-not-resumable     -> docs/lanes/3yc-timedout-session-not-resumable/   [R-PIN docs/lanes/ (declared for amplifier-app-cli)]
+  n1i-resume-thread-role                 -> docs/lanes/n1i-resume-thread-role/               [R-PIN docs/lanes/ (declared for amplifier-app-cli)]
+  adq-routing-list-shadowing             -> docs/lanes/adq-routing-list-shadowing/           [R-PIN docs/lanes/ (declared for amplifier-app-cli)]
+  9kk-routing-list-lastwrite             -> docs/lanes/9kk-routing-list-lastwrite/           [R-PIN docs/lanes/ (declared for amplifier-app-cli)]
+  9w0-delegate-timeout-partial-producer  -> docs/lanes/9w0-delegate-timeout-partial-producer/ [R-PIN docs/lanes/ (declared for amplifier-app-cli)]
+  eem-partial-accumulator-widen          -> docs/lanes/eem-partial-accumulator-widen/        [R-PIN docs/lanes/ (declared for amplifier-app-cli)]
+  2nz-upstream-skill-guards              -> docs/lanes/2nz-upstream-skill-guards/            [R-PIN docs/lanes/ (declared for amplifier-app-cli)]
+  aof-artifact-path-conflict             -> docs/lanes/aof-artifact-path-conflict/           [R-PIN docs/lanes/ (declared for amplifier-app-cli)]
+
+# The generator now emits exactly what the CODE goal template says. Both sides agree.
