@@ -550,10 +550,21 @@ def register_session_spawning(session: AmplifierSession) -> None:
             use_subprocess=use_subprocess,
         )
 
-    async def resume_capability(sub_session_id: str, instruction: str) -> dict:
+    async def resume_capability(
+        sub_session_id: str,
+        instruction: str,
+        provider_preferences: list | None = None,
+        model_role: str | list[str] | None = None,
+    ) -> dict:
+        # Mirrors spawn_capability's provider_preferences: a delegate pinned
+        # to a provider at spawn must stay pinned on every subsequent leg.
+        # Both extras are optional, so a caller still invoking
+        # (sub_session_id, instruction) is unaffected.
         return await resume_sub_session(
             sub_session_id=sub_session_id,
             instruction=instruction,
+            provider_preferences=provider_preferences,
+            model_role=model_role,
         )
 
     session.coordinator.register_capability("session.spawn", spawn_capability)

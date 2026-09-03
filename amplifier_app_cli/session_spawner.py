@@ -9,6 +9,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from amplifier_core import AmplifierSession
 from amplifier_foundation import generate_sub_session_id
@@ -907,11 +908,22 @@ async def spawn_sub_session(
             use_subprocess=use_subprocess,
         )
 
-    async def child_resume_capability(sub_session_id: str, instruction: str) -> dict:
+    async def child_resume_capability(
+        sub_session_id: str,
+        instruction: str,
+        provider_preferences: list | None = None,
+        model_role: str | list[str] | None = None,
+    ) -> dict:
+        # Kept in step with child_spawn_capability above: a caller that can
+        # pin a provider at spawn must be able to pin the same one on every
+        # subsequent leg. Both extras are optional so an older caller that
+        # still invokes (sub_session_id, instruction) keeps working unchanged.
         return await resume_sub_session(
             sub_session_id=sub_session_id,
             instruction=instruction,
             parent_session=parent_session,
+            provider_preferences=provider_preferences,
+            model_role=model_role,
         )
 
     child_session.coordinator.register_capability(
@@ -1117,10 +1129,126 @@ async def spawn_sub_session(
     }
 
 
+# ---------------------------------------------------------------------------
+# Provider promotion across the resume boundary
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS (model_performance-rc0 / -n1i)
+#
+# A delegate spawned with model_role/provider_preferences gets its preferred
+# provider promoted to priority 0 by apply_provider_preferences_with_resolution
+# (see spawn_sub_session). That symbol used to appear EXACTLY ONCE in this
+# file -- inside spawn_sub_session -- so the resume path could not rebuild the
+# promotion after anything disturbed it. Combined with the credential refresh
+# re-imposing settings `priority` (fixed separately, see
+# narrow_overrides_to_secrets), a resumed leg silently re-resolved to the
+# settings priority-0 provider: 39 of 66 delegate resumes changed model in a
+# 2,078-session archive, 37 of them cheap -> expensive.
+#
+# The helpers below let resume REBUILD the promotion rather than merely
+# preserve it, which additionally re-resolves the preference against the
+# CURRENT provider set and gives the honest "could not honour it" signal.
+
+
+def _normalize_model_role(model_role: str | list[str] | None) -> list[str]:
+    """Coerce a model_role declaration to the list form config stores."""
+    if not model_role:
+        return []
+    if isinstance(model_role, str):
+        return [model_role]
+    return [role for role in model_role if isinstance(role, str)]
+
+
+def _coerce_provider_preferences(raw: Any) -> list:
+    """Coerce persisted/passed preferences to ProviderPreference objects.
+
+    Accepts the dict form (how preferences are persisted in session metadata)
+    and already-constructed ProviderPreference objects (how a caller passes
+    them). Malformed entries are dropped with a warning rather than taking
+    down a resume -- a broken preference must not make a session unresumable.
+    """
+    if not raw:
+        return []
+
+    from amplifier_foundation.spawn_utils import ProviderPreference
+
+    coerced: list = []
+    for entry in raw:
+        if isinstance(entry, ProviderPreference):
+            coerced.append(entry)
+            continue
+        if isinstance(entry, dict):
+            try:
+                coerced.append(ProviderPreference.from_dict(entry))
+            except ValueError as e:
+                logger.warning(
+                    "Skipping malformed provider preference %r: %s", entry, e
+                )
+            continue
+        logger.warning("Skipping unusable provider preference %r", entry)
+    return coerced
+
+
+def _provider_entry_keys(entry: dict) -> set[str]:
+    """Every name a preference may use to refer to this provider entry.
+
+    Mirrors foundation's _build_provider_lookup: module id, the id-less short
+    name ("provider-anthropic" -> "anthropic"), and the instance id.
+    """
+    module = entry.get("module") or ""
+    keys = {module, module.replace("provider-", "")}
+    instance_id = entry.get("id")
+    if instance_id:
+        keys.add(instance_id)
+    return {k for k in keys if k}
+
+
+def _find_promoted_provider(providers: list, preferences: list) -> dict | None:
+    """Return the provider entry the preferences actually promoted, if any.
+
+    Checks the OUTCOME (a preferred provider sitting at priority 0) rather
+    than trusting the return value of the apply call, so this stays honest
+    across foundation versions.
+    """
+    wanted = {pref.provider for pref in preferences}
+    for entry in providers or []:
+        if not isinstance(entry, dict):
+            continue
+        if (entry.get("config") or {}).get("priority") != 0:
+            continue
+        if _provider_entry_keys(entry) & wanted:
+            return entry
+    return None
+
+
+def _effective_provider(providers: list) -> dict | None:
+    """The entry the session will actually resolve: lowest priority number.
+
+    Used to name what a leg LANDED on when a promotion could not be honoured.
+    Ties resolve to the first entry, matching mount-plan ordering.
+    """
+    best: dict | None = None
+    best_priority: float | None = None
+    for entry in providers or []:
+        if not isinstance(entry, dict):
+            continue
+        priority = (entry.get("config") or {}).get("priority")
+        if not isinstance(priority, (int, float)) or isinstance(priority, bool):
+            continue
+        if best_priority is None or priority < best_priority:
+            best, best_priority = entry, priority
+    if best is None and providers:
+        first = providers[0]
+        return first if isinstance(first, dict) else None
+    return best
+
+
 async def resume_sub_session(
     sub_session_id: str,
     instruction: str,
     parent_session: AmplifierSession | None = None,
+    provider_preferences: list | None = None,
+    model_role: str | list[str] | None = None,
 ) -> dict:
     """Resume existing sub-session for multi-turn engagement.
 
@@ -1130,6 +1258,16 @@ async def resume_sub_session(
     Args:
         sub_session_id: ID of existing sub-session to resume
         instruction: Follow-up instruction to execute
+        parent_session: Optional parent session (supplies the coordinator used
+            to resolve glob model patterns, and a working_dir fallback)
+        provider_preferences: Optional ordered list of ProviderPreference
+            objects (or their dict form), mirroring spawn_sub_session. When
+            omitted, preferences are recovered from the persisted session --
+            first the agent overlay, then the mount plan -- so a caller that
+            has not yet been taught to thread them still keeps its promotion.
+        model_role: Optional model_role declaration to carry onto the resumed
+            leg, so its routing hook resolves the SAME role the spawn leg was
+            given rather than falling back to settings priority.
 
     Returns:
         Dict with "output" (response) and "session_id" (same ID)
@@ -1337,6 +1475,92 @@ async def resume_sub_session(
     agent_name = metadata.get("agent_name", "unknown")
     trace_id = metadata.get("trace_id")
 
+    # --- Rebuild the provider promotion --------------------------------------
+    # The spawn path applies model_role/provider_preferences here (see
+    # spawn_sub_session's "Apply provider preferences" block). Resume now does
+    # the same, so every leg of a delegate resolves the same way instead of
+    # inheriting whatever survived persistence. See the module-level comment
+    # above _normalize_model_role for the measured defect this closes.
+    _resume_agent_overlay = metadata.get("agent_overlay") or {}
+
+    if model_role:
+        # Carry the caller's role onto the resumed leg so its routing hook
+        # resolves the SAME role the spawn leg was given.
+        merged_config = {
+            **merged_config,
+            "model_role": _normalize_model_role(model_role),
+        }
+
+    # Precedence: what the caller threaded > the agent overlay as persisted >
+    # the persisted mount plan's own copy. The last two are recovery sources:
+    # they let a caller that still resumes with (session_id, instruction) keep
+    # its promotion, which is what makes this fix reach existing sessions.
+    _resume_preferences = _coerce_provider_preferences(provider_preferences)
+    _preferences_source = "caller"
+    if not _resume_preferences:
+        _resume_preferences = _coerce_provider_preferences(
+            _resume_agent_overlay.get("provider_preferences")
+        )
+        _preferences_source = "agent_overlay"
+    if not _resume_preferences:
+        _resume_preferences = _coerce_provider_preferences(
+            merged_config.get("provider_preferences")
+        )
+        _preferences_source = "persisted_config"
+
+    _promotion_fallback: dict | None = None
+    if _resume_preferences:
+        from amplifier_foundation import apply_provider_preferences_with_resolution
+
+        # parent_session may be absent (the root-registered resume capability
+        # passes none). apply_provider_preferences_with_resolution only needs a
+        # coordinator to expand GLOB model patterns and already degrades to
+        # "use the pattern as-is" when it cannot query one, so passing None is
+        # safe rather than fatal.
+        _resume_coordinator = (
+            parent_session.coordinator if parent_session is not None else None
+        )
+        merged_config = await apply_provider_preferences_with_resolution(
+            merged_config, _resume_preferences, _resume_coordinator
+        )
+
+        _promoted = _find_promoted_provider(
+            merged_config.get("providers") or [], _resume_preferences
+        )
+        if _promoted is not None:
+            logger.debug(
+                "Sub-session %s: re-applied provider promotion on resume "
+                "(provider=%s, model=%s, preferences from %s)",
+                sub_session_id,
+                _promoted.get("module"),
+                (_promoted.get("config") or {}).get("default_model"),
+                _preferences_source,
+            )
+        else:
+            # FAIL LOUD, DO NOT SILENTLY RE-RESOLVE. Silent re-resolution by
+            # settings priority is exactly the defect this fix exists to end;
+            # if the pin genuinely cannot be honoured, say so and name what
+            # the leg actually landed on.
+            _landed = _effective_provider(merged_config.get("providers") or [])
+            _promotion_fallback = {
+                "session_id": sub_session_id,
+                "agent_name": agent_name,
+                "reason": "preferred_provider_not_mounted",
+                "requested": [pref.to_dict() for pref in _resume_preferences],
+                "preferences_source": _preferences_source,
+                "provider": (_landed or {}).get("module"),
+                "model": (_landed or {}).get("config", {}).get("default_model"),
+            }
+            logger.warning(
+                "Sub-session %s: cannot honour provider preference(s) %s on "
+                "resume -- none is mounted in this session's plan. Falling "
+                "back to provider=%s model=%s.",
+                sub_session_id,
+                [pref.provider for pref in _resume_preferences],
+                _promotion_fallback["provider"],
+                _promotion_fallback["model"],
+            )
+
     # Sub-session resume creates fresh UX systems. Parent UX context (approval history,
     # display state) is not preserved across resume. This is acceptable because:
     # 1. Sub-sessions are typically short-lived agent delegations
@@ -1495,11 +1719,22 @@ async def resume_sub_session(
             use_subprocess=use_subprocess,
         )
 
-    async def child_resume_capability(sub_session_id: str, instruction: str) -> dict:
+    async def child_resume_capability(
+        sub_session_id: str,
+        instruction: str,
+        provider_preferences: list | None = None,
+        model_role: str | list[str] | None = None,
+    ) -> dict:
+        # Kept in step with child_spawn_capability above: a caller that can
+        # pin a provider at spawn must be able to pin the same one on every
+        # subsequent leg. Both extras are optional so an older caller that
+        # still invokes (sub_session_id, instruction) keeps working unchanged.
         return await resume_sub_session(
             sub_session_id=sub_session_id,
             instruction=instruction,
             parent_session=child_session,
+            provider_preferences=provider_preferences,
+            model_role=model_role,
         )
 
     child_session.coordinator.register_capability(
@@ -1537,6 +1772,15 @@ async def resume_sub_session(
                 "turn_count": len(transcript) + 1,
             },
         )
+
+        # A promotion that could not be honoured is REPORTED, never silent.
+        # Emitted here rather than at merge time because the hook registry
+        # only exists once the session is initialized. The payload names the
+        # cause AND the provider/model the leg actually landed on, so an
+        # observer can tell "the pin was refused" from "the pin was wiped" --
+        # the distinction the rc0 archive had no way to make.
+        if _promotion_fallback:
+            await hooks.emit("provider:fallback", _promotion_fallback)
 
     # Re-register the agent's system prompt on resume.
     #
