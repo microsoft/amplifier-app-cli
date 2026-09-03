@@ -1,0 +1,123 @@
+# CROSS-REPO ROUND TRIP (per ai-notes w3-delegate-timeout/APPLY.md)
+# consumer: amplifier-foundation f42f48c (tool-delegate), extracted read-only with git archive
+#           blob eaee8970d72c474adc26a80da52910dc856a10e4
+# producer: /tmp/eem-parent (app-cli 26e5f10) and /tmp/eem-patched (this branch), both cp -rL
+# NEITHER REPO MUTATED.
+#
+# RUN FROM /tmp/eem-rt, NOT FROM THE CHECKOUT. sys.path[0] is the CWD, so running
+# this from the repo silently imports the WORKING TREE producer and BOTH arms pass.
+# That happened once in this lane before it was caught -- DONE-NOTE.md, Incident.
+# date: 2026-09-03T13:05:53Z
+
+=== producer resolution check (proves the two arms really differ) ===
+A parent  -> /tmp/eem-parent/amplifier_app_cli/session_spawner.py | widened: False
+B patched -> /tmp/eem-patched/amplifier_app_cli/session_spawner.py | widened: True
+
+=== A. PARENT PRODUCER (26e5f10) -- expected: the no-text cases FAIL ===
+.F.F.                                                                    [100%]
+=================================== FAILURES ===================================
+_________ test_a_leg_that_never_emits_text_still_round_trips_a_partial _________
+
+    @pytest.mark.asyncio
+    async def test_a_leg_that_never_emits_text_still_round_trips_a_partial():
+        """FAIL-BEFORE on app-cli 26e5f10: this returned `partial_available: false`.
+    
+        Block shapes are measured, not assumed -- taken from
+        treatment-validation/20260903-k64-delegate-timeout captures
+        (236 thinking, 53 tool_call, 38 text blocks inspected):
+    
+            thinking  {"type": "thinking",  "text": ...}
+            tool_call {"type": "tool_call", "id": ..., "name": ...,
+                       "input": {...}, "visibility": ...}
+        """
+        captured_ids = {}
+    
+        async def _thinks_and_calls_tools_then_hangs(**kwargs):
+            sub_id = kwargs["sub_session_id"]
+            captured_ids["sub"] = sub_id
+            child_hooks = ChildHooks()
+            # The REAL accumulator, registered exactly as spawn_sub_session does.
+            _open_partial(sub_id, child_hooks)
+            await child_hooks.block(
+                {"type": "thinking", "text": "the anchors are probably in the PR body"}
+            )
+            await child_hooks.block(
+                {
+                    "type": "tool_call",
+                    "id": "call_1",
+                    "name": "grep",
+                    "input": {"pattern": "#281", "path": "/repo", "search": ""},
+                    "visibility": None,
+                }
+            )
+            await child_hooks.block(
+                {"type": "thinking", "text": "no hit; try the changelog instead"}
+            )
+            # No text block, ever -- this is the ~99.5% real case.
+            await asyncio.sleep(3600)
+    
+        result = await _run_delegate(_thinks_and_calls_tools_then_hangs)
+    
+        assert result.success is False
+        assert result.output["status"] == "timeout"
+>       assert result.output["partial_available"] is True, (
+            "a leg with 2 thinking blocks and a tool call recovered nothing -- "
+            "this is exactly the defect model_performance-eem closes"
+        )
+E       AssertionError: a leg with 2 thinking blocks and a tool call recovered nothing -- this is exactly the defect model_performance-eem closes
+E       assert False is True
+
+test_partial_roundtrip.py:190: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  amplifier_module_tool_delegate:__init__.py:2282 Agent 'explorer' timed out after 1s (delegate tool session-level timeout; elapsed 1.001s). No partial output could be recovered. Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.
+_____ test_guidance_string_for_the_reasoning_case_is_foundations_to_change _____
+
+    @pytest.mark.asyncio
+    async def test_guidance_string_for_the_reasoning_case_is_foundations_to_change():
+        """PINS THE GAP THIS LANE DOES NOT CROSS.
+    
+        foundation picks its guidance from `bool(text)` alone, so a recovered
+        REASONING partial is currently described by `_PARTIAL_GUIDANCE` -- "...is
+        unfinished work salvaged from the agent mid-flight -- it has NOT been
+        checked, concluded, or self-reviewed...". That is a stronger claim than
+        raw thinking supports: unfinished prose was at least addressed to a
+        reader; private reasoning never was.
+    
+        amplifier-foundation is a different repo and this lane stops at the
+        boundary (see DONE-NOTE.md, "The guidance string"). What the PRODUCER can
+        do it does: `partial_source` distinguishes the two kinds without parsing,
+        and the payload labels itself at head AND tail. This test asserts today's
+        real behaviour so the day foundation makes the string kind-aware, this
+        check fails loudly instead of drifting.
+        """
+    
+        async def _thinks_then_hangs(**kwargs):
+            child_hooks = ChildHooks()
+            _open_partial(kwargs["sub_session_id"], child_hooks)
+            await child_hooks.block({"type": "thinking", "text": "maybe the loader"})
+            await asyncio.sleep(3600)
+    
+        result = await _run_delegate(_thinks_then_hangs)
+    
+        # Current, shipped consumer behaviour -- text-shaped guidance.
+>       assert result.output["guidance"] == _PARTIAL_GUIDANCE
+E       AssertionError: assert 'INCOMPLETE: ...r resumption.' == 'INCOMPLETE: ...r resumption.'
+E         
+E         - INCOMPLETE: this delegate did not finish. The text in 'partial_response' is unfinished work salvaged from the agent mid-flight -- it has NOT been checked, concluded, or self-reviewed by that agent. Do not report it as a completed result and do not treat its conclusions as final. Re-delegate a narrower task or complete the work yourself; see metadata.recovery_message before considering this session for resumption.
+E         + INCOMPLETE: this delegate did not finish and no partial output could be recovered. Nothing here is a result. Re-delegate a narrower task or complete the wor...
+E         
+E         ...Full output truncated (1 line hidden), use '-vv' to show
+
+test_partial_roundtrip.py:253: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  amplifier_module_tool_delegate:__init__.py:2282 Agent 'explorer' timed out after 1s (delegate tool session-level timeout; elapsed 1.001s). No partial output could be recovered. Child cancellation cleanup is still in progress; do not resume this session until cleanup and persistence complete.
+=========================== short test summary info ============================
+FAILED test_partial_roundtrip.py::test_a_leg_that_never_emits_text_still_round_trips_a_partial
+FAILED test_partial_roundtrip.py::test_guidance_string_for_the_reasoning_case_is_foundations_to_change
+2 failed, 3 passed in 5.15s
+EXIT=1
+
+=== B. PATCHED PRODUCER (this branch) -- expected: all pass ===
+.....                                                                    [100%]
+5 passed in 5.13s
+EXIT=0

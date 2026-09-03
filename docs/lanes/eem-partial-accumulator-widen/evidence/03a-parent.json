@@ -1,0 +1,19 @@
+{
+  "normal_completion_partial": null,
+  "normal_completion_registry_after": [],
+  "normal_completion_result": {
+    "metadata": {
+      "o": "loop-basic"
+    },
+    "output": "agent response",
+    "session_id": "child-001",
+    "status": "success",
+    "turn_count": 5
+  },
+  "timeout_no_text_partial": null,
+  "timeout_with_text_partial": {
+    "segments": 2,
+    "source": "spawn-accumulator",
+    "text": "anchor A1 confirmed. anchor A2 confirmed. "
+  }
+}

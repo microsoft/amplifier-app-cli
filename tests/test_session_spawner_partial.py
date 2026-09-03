@@ -66,6 +66,37 @@ class FakeHooks:
     async def fire_text_block(self, text: str):
         await self.emit(CONTENT_BLOCK_END, {"block": {"type": "text", "text": text}})
 
+    async def fire_thinking_block(self, text: str):
+        """A `thinking` block, in the exact shape a real provider emits.
+
+        Measured from k64's captures (20260903-k64-delegate-timeout, 236
+        thinking blocks): `{"type": "thinking", "text": ...}` -- the reasoning
+        rides in `text`, the same field name a `text` block uses.
+        """
+        await self.emit(
+            CONTENT_BLOCK_END, {"block": {"type": "thinking", "text": text}}
+        )
+
+    async def fire_tool_call_block(self, name: str, tool_input: dict | None = None):
+        """A `tool_call` block, in the exact shape a real provider emits.
+
+        Measured from the same captures (53 tool_call blocks):
+        `{"type": "tool_call", "id": ..., "name": ..., "input": {...},
+          "visibility": None}` -- note `input`, NOT `arguments`.
+        """
+        await self.emit(
+            CONTENT_BLOCK_END,
+            {
+                "block": {
+                    "type": "tool_call",
+                    "id": f"call_{name}",
+                    "name": name,
+                    "input": tool_input or {},
+                    "visibility": None,
+                }
+            },
+        )
+
 
 def _parent_session():
     parent_coordinator = MagicMock()
@@ -344,3 +375,272 @@ async def test_root_session_registers_session_partial():
     register_session_spawning(session)
 
     assert registered["session.partial"] is get_partial_output
+
+
+# ---------------------------------------------------------------------------
+# The leg shape that ACTUALLY occurs: no text block at all
+#
+# Everything above this line was true and still passed while the feature was
+# inert in production. k64 measured 18 delegate legs across 7 runs
+# (probes/k64-delegate-timeout-eval/TEXT-WINDOW-TABLE.md): a leg emits AT MOST
+# ONE `text` block and it lands in the final 0.19-0.72 s (mean 0.331 s) of a
+# leg lasting 5.4-222.0 s. Everything before it is `thinking` (1-25/leg) and
+# `tool_call` (0-5). A timeout therefore fires in the text-free phase ~99.5%
+# of the time. The one real timeout k64 observed had done 10 thinking blocks
+# and 45 tool calls and returned `partial_available: false`.
+#
+# These tests replay that shape. On the parent commit (26e5f10) every one of
+# them fails, because `_accumulate_partial` filtered on `type == "text"`.
+# ---------------------------------------------------------------------------
+
+
+async def test_leg_with_no_text_block_still_carries_a_partial():
+    """FAIL-BEFORE (26e5f10): the ~99.5% real case recovered nothing.
+
+    This is the single fact that made the whole bp0+9w0 chain inert.
+    """
+    hooks = FakeHooks()
+
+    async def _thinks_and_calls_tools_then_dies(instruction):
+        await hooks.fire_thinking_block("I should start by reading the router.")
+        await hooks.fire_tool_call_block("read_file", {"file_path": "/repo/router.py"})
+        await hooks.fire_thinking_block("That names a matrix loader. Check it.")
+        await hooks.fire_tool_call_block("grep", {"pattern": "load_matrix"})
+        raise TimeoutError("wall clock")
+
+    with pytest.raises(TimeoutError):
+        await _spawn(_child_session(hooks, _thinks_and_calls_tools_then_dies))
+
+    partial = get_partial_output("child-001")
+    assert partial is not None, (
+        "a delegate that did 2 thinking blocks and 2 tool calls recovered "
+        "NOTHING -- this is the defect model_performance-eem exists to close"
+    )
+    assert partial["text"], "partial exists but carries no content"
+    # The consumer's `partial_available` is `bool(text)` -- foundation
+    # f42f48c, _partial_output_fields. Non-empty text IS the deliverable.
+    assert "read_file" in partial["text"]
+    assert "grep" in partial["text"]
+    assert "reading the router" in partial["text"]
+
+
+async def test_measured_k64_timeout_shape_is_recoverable():
+    """The exact leg k64 watched die: 10 thinking blocks, 45 tool calls, 0 text.
+
+    Source: probes/k64-delegate-timeout-eval/FINDINGS.md ("THE HEADLINE") and
+    TEXT-WINDOW-TABLE.md row `005_anchors-amp-dev-explorer` (90.016 s, 10
+    thinking, 1 tool_call, 0 text). The 45 tool calls are the count reported
+    for the timed-out leg itself.
+    """
+    hooks = FakeHooks()
+
+    async def _the_observed_timeout(instruction):
+        for i in range(10):
+            await hooks.fire_thinking_block(f"reasoning step {i}")
+        for i in range(45):
+            await hooks.fire_tool_call_block("read_file", {"file_path": f"/f{i}.py"})
+        raise TimeoutError("90s rung")
+
+    with pytest.raises(TimeoutError):
+        await _spawn(_child_session(hooks, _the_observed_timeout))
+
+    partial = get_partial_output("child-001")
+    assert partial is not None
+    assert partial["segments"] == 55, "every block the leg produced should count"
+    assert "reasoning step 9" in partial["text"]
+
+
+async def test_tool_calls_alone_are_recoverable():
+    """A non-reasoning model emits no `thinking` blocks at all."""
+    hooks = FakeHooks()
+
+    async def _only_tools(instruction):
+        await hooks.fire_tool_call_block("bash", {"command": "pytest -q"})
+        raise TimeoutError("wall clock")
+
+    with pytest.raises(TimeoutError):
+        await _spawn(_child_session(hooks, _only_tools))
+
+    partial = get_partial_output("child-001")
+    assert partial is not None
+    assert "bash" in partial["text"]
+
+
+async def test_a_leg_that_produced_literally_nothing_still_reads_as_none():
+    """ "Produced nothing" and "produced nothing recoverable" stay the same answer.
+
+    The widening must not manufacture a partial out of an empty accumulator --
+    that would turn `partial_available: false` into a lie in the other
+    direction.
+    """
+    hooks = FakeHooks()
+
+    async def _dies_immediately(instruction):
+        raise TimeoutError("wall clock")
+
+    with pytest.raises(TimeoutError):
+        await _spawn(_child_session(hooks, _dies_immediately))
+
+    assert get_partial_output("child-001") is None
+
+
+# ---------------------------------------------------------------------------
+# GUIDANCE HONESTY
+#
+# foundation f42f48c picks the guidance string itself, from `bool(text)`:
+#
+#   _PARTIAL_GUIDANCE: "...is unfinished work salvaged from the agent
+#   mid-flight -- it has NOT been checked, concluded, or self-reviewed..."
+#
+# That sentence is TRUE of assistant prose and FALSE of raw thinking: prose
+# is at least addressed to a reader, reasoning never was. foundation is a
+# different repo and this lane does not cross that boundary, so the honesty
+# is carried two ways the producer DOES own -- the `source` field, and a
+# label inside the content itself.
+# ---------------------------------------------------------------------------
+
+
+async def test_text_only_case_is_byte_identical_so_the_guidance_is_unchanged():
+    """A leg that DID emit text gets exactly today's record, field for field.
+
+    This is what keeps foundation's `_PARTIAL_GUIDANCE` honest where it was
+    already honest: same `text`, same `segments`, same `source`, therefore
+    the same guidance string, byte for byte.
+    """
+    hooks = FakeHooks()
+
+    async def _text_then_dies(instruction):
+        await hooks.fire_text_block("anchor A1 confirmed. ")
+        await hooks.fire_text_block("anchor A2 confirmed. ")
+        raise TimeoutError("wall clock")
+
+    with pytest.raises(TimeoutError):
+        await _spawn(_child_session(hooks, _text_then_dies))
+
+    assert get_partial_output("child-001") == {
+        "text": "anchor A1 confirmed. anchor A2 confirmed. ",
+        "segments": 2,
+        "source": "spawn-accumulator",
+    }
+
+
+async def test_assistant_text_wins_over_reasoning_when_both_exist():
+    """Reasoning never dilutes or displaces real assistant prose.
+
+    A leg that emitted text is the case the shipped guidance already
+    describes correctly -- so it must keep producing the pre-widening record
+    even though thinking blocks were also captured.
+    """
+    hooks = FakeHooks()
+
+    async def _thinks_then_writes_then_dies(instruction):
+        await hooks.fire_thinking_block("private reasoning that is not an answer")
+        await hooks.fire_tool_call_block("read_file", {"file_path": "/x.py"})
+        await hooks.fire_text_block("the actual finding")
+        raise TimeoutError("wall clock")
+
+    with pytest.raises(TimeoutError):
+        await _spawn(_child_session(hooks, _thinks_then_writes_then_dies))
+
+    partial = get_partial_output("child-001")
+    assert partial["text"] == "the actual finding"
+    assert partial["segments"] == 1
+    assert partial["source"] == "spawn-accumulator"
+    assert "private reasoning" not in partial["text"]
+
+
+async def test_recovered_reasoning_names_itself_as_reasoning_not_draft_output():
+    """The content says what it is, because the guidance string cannot.
+
+    Handing a model its own unreviewed reasoning while calling it "unfinished
+    work" is a weaker claim than the shipped guidance makes. The producer
+    cannot change that string (it lives in amplifier-foundation), so it
+    labels the payload and distinguishes the `source`.
+    """
+    hooks = FakeHooks()
+
+    async def _no_text(instruction):
+        await hooks.fire_thinking_block("maybe the bug is in the loader")
+        raise TimeoutError("wall clock")
+
+    with pytest.raises(TimeoutError):
+        await _spawn(_child_session(hooks, _no_text))
+
+    partial = get_partial_output("child-001")
+    assert partial["source"] == "spawn-accumulator:reasoning", (
+        "a consumer must be able to tell recovered reasoning from recovered "
+        "prose WITHOUT parsing the text"
+    )
+    head = partial["text"].lstrip()
+    assert head.startswith("[RECOVERED FROM AN UNFINISHED DELEGATE"), head[:120]
+    lowered = partial["text"].lower()
+    assert "reasoning" in lowered
+    assert "not" in lowered and "answer" in lowered
+
+
+async def test_the_label_survives_the_consumers_tail_truncation():
+    """foundation keeps the TAIL, so a leading-only label would be cut off.
+
+    `_read_partial` (foundation f42f48c) truncates to the LAST
+    `partial_max_chars` characters. 25 thinking blocks routinely exceed the
+    20,000-char default, so the label has to be at the end as well as the
+    start or it is exactly the long partials that lose it.
+    """
+    hooks = FakeHooks()
+
+    async def _very_talkative(instruction):
+        for i in range(30):
+            await hooks.fire_thinking_block("x" * 2000 + f" step {i}")
+        raise TimeoutError("wall clock")
+
+    with pytest.raises(TimeoutError):
+        await _spawn(_child_session(hooks, _very_talkative))
+
+    text = get_partial_output("child-001")["text"]
+    assert len(text) > 20000, "fixture is not long enough to exercise truncation"
+    tail = text[-20000:]  # what the consumer would actually forward
+    assert "[END OF RECOVERED" in tail
+    assert "not a partial answer" in tail
+
+
+# ---------------------------------------------------------------------------
+# The inverse guard, restated for the widened accumulator
+# ---------------------------------------------------------------------------
+
+
+async def test_normal_completion_with_thinking_still_gains_no_key():
+    """Byte-identical result shape for a delegate that finishes normally."""
+    hooks = FakeHooks()
+
+    async def _completes(instruction):
+        await hooks.fire_thinking_block("plenty of reasoning")
+        await hooks.fire_tool_call_block("read_file", {"file_path": "/x.py"})
+        await hooks.fire_text_block("the finished answer")
+        await hooks.emit(
+            "orchestrator:complete",
+            {"status": "success", "turn_count": 5, "metadata": {"o": "loop-basic"}},
+        )
+        return "agent response"
+
+    result = await _spawn(_child_session(hooks, _completes))
+
+    assert set(result) == {"output", "session_id", "status", "turn_count", "metadata"}
+    assert result["output"] == "agent response"
+    assert session_spawner._PARTIAL_OUTPUTS == {}
+    assert get_partial_output("child-001") is None
+
+
+async def test_seal_accepts_a_legacy_chunks_only_record():
+    """`_seal_partial` predates the widening; old-shaped records still work."""
+    _seal_partial("legacy", {"chunks": ["a", "b"]})
+    assert get_partial_output("legacy") == {
+        "text": "ab",
+        "segments": 2,
+        "source": "spawn-accumulator",
+    }
+
+
+async def test_seal_of_a_fully_empty_record_publishes_nothing():
+    _seal_partial("empty", {"chunks": [], "reasoning": [], "tool_calls": []})
+    assert get_partial_output("empty") is None
+    assert session_spawner._PARTIAL_OUTPUTS == {}
