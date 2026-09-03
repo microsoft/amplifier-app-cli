@@ -252,6 +252,11 @@ def register_run_command(
         help="Execution mode",
     )
     @click.option("--resume", help="Resume specific session with new prompt")
+    @click.option(
+        "--session-id",
+        default=None,
+        help="Use a pre-allocated session ID for a new session (see 'amplifier session new')",
+    )
     @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
     @click.option(
         "--output-format",
@@ -267,11 +272,20 @@ def register_run_command(
         max_tokens: int | None,
         mode: str,
         resume: str | None,
+        session_id: str | None,
         verbose: bool,
         output_format: str,
     ):
         """Execute a prompt or start an interactive session."""
         from ..session_store import SessionStore
+
+        # --session-id applies only to new sessions; --resume already carries an id
+        if session_id and resume:
+            console.print(
+                "[red]Error:[/red] --session-id cannot be combined with --resume\n"
+                "--resume already selects the session to continue"
+            )
+            sys.exit(1)
 
         # Handle --resume flag
         if resume:
@@ -580,7 +594,7 @@ def register_run_command(
                 )
             else:
                 # New session - banner displayed by interactive_chat
-                session_id = str(uuid.uuid4())
+                session_id = session_id or str(uuid.uuid4())
                 asyncio.run(
                     interactive_chat(
                         config_data,
@@ -625,7 +639,7 @@ def register_run_command(
                 )
             else:
                 # Create new session
-                session_id = str(uuid.uuid4())
+                session_id = session_id or str(uuid.uuid4())
                 if output_format == "text":
                     config_summary = get_effective_config_summary(
                         config_data, config_source_name
