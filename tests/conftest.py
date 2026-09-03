@@ -38,3 +38,24 @@ def reset_skill_shortcuts():
     CommandProcessor.SKILL_SHORTCUTS.clear()
     yield
     CommandProcessor.SKILL_SHORTCUTS.clear()
+
+
+# ---------------------------------------------------------------------------
+# Home-directory isolation that actually holds on Windows.
+#
+# ``Path.home()`` is ``os.path.expanduser("~")``. On POSIX that reads HOME; on
+# Windows ``ntpath.expanduser`` reads USERPROFILE (then HOMEDRIVE+HOMEPATH) and
+# NEVER consults HOME. So ``monkeypatch.setenv("HOME", tmp_path)`` alone -- the
+# idiom every SessionStore-touching test used -- isolated nothing on Windows:
+# tests wrote real records into the runner's (or a developer's) actual
+# ``~/.amplifier/projects/<slug>/sessions/``, and two tests asserting that a
+# record did NOT exist found one left by a previous test. Set both.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def isolated_home(tmp_path, monkeypatch) -> Path:
+    """Point ``Path.home()`` at ``tmp_path`` on every platform; returns it."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    return tmp_path

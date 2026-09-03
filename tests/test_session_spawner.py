@@ -48,6 +48,12 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def _home(isolated_home):
+    """Every test here reaches SessionStore() -> Path.home(). See conftest.isolated_home."""
+    return isolated_home
+
+
 class TestGenerateSubSessionId:
     def _assert_format(
         self,
@@ -200,14 +206,12 @@ class TestResumeErrorHandling:
 
     async def test_resume_nonexistent_session_fails(self, tmp_path, monkeypatch):
         """Test that resuming non-existent session raises FileNotFoundError."""
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         with pytest.raises(FileNotFoundError, match="not found.*may have expired"):
             await resume_sub_session("fake-session-id", "Test instruction")
 
     async def test_resume_with_missing_config(self, tmp_path, monkeypatch):
         """Test that resume fails gracefully when metadata lacks config."""
-        monkeypatch.setenv("HOME", str(tmp_path))
         # Use default SessionStore (will use HOME/.amplifier/projects/...)
         store = SessionStore()
 
@@ -230,7 +234,6 @@ class TestResumeErrorHandling:
 
     async def test_resume_with_corrupted_metadata_file(self, tmp_path, monkeypatch):
         """Test that resume handles corrupted metadata.json gracefully."""
-        monkeypatch.setenv("HOME", str(tmp_path))
         # Use default SessionStore (will resolve to HOME/.amplifier/projects/...)
         store = SessionStore()
 
@@ -397,7 +400,6 @@ class TestCapabilityRegistrationIntegration:
         """
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         # Create a valid session to resume
         store = SessionStore()
@@ -469,7 +471,6 @@ class TestCapabilityRegistrationIntegration:
         """Test that resume_sub_session restores session.working_dir from metadata."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         # Create session with working_dir
         store = SessionStore()
@@ -535,7 +536,6 @@ class TestCapabilityRegistrationIntegration:
         """
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         # Create session WITHOUT working_dir
         store = SessionStore()
@@ -613,7 +613,6 @@ class TestSpawnEnrichment:
 
         from amplifier_app_cli.session_spawner import spawn_sub_session
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         # --- parent session mock ---
         parent_coordinator = MagicMock()
@@ -738,7 +737,6 @@ class TestSpawnEnrichment:
 
         from amplifier_app_cli.session_spawner import spawn_sub_session
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         # --- parent session mock ---
         parent_coordinator = MagicMock()
@@ -833,7 +831,6 @@ class TestSpawnEnrichment:
         """Test that resume_sub_session returns status and turn_count from orchestrator:complete."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         # Create a valid session to resume
         store = SessionStore()
@@ -1031,7 +1028,6 @@ class TestSessionMetadataFlow:
 
         from amplifier_app_cli.session_spawner import spawn_sub_session
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         # Track the config passed to AmplifierSession constructor
         captured_config: dict = {}
@@ -1195,7 +1191,6 @@ class TestRoutingFallbackFromAgentConfig:
 
         from amplifier_app_cli.session_spawner import spawn_sub_session
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         apply_called_with = {}
 
@@ -1314,7 +1309,6 @@ class TestRoutingFallbackFromAgentConfig:
         from amplifier_app_cli.session_spawner import spawn_sub_session
         from amplifier_foundation.spawn_utils import ProviderPreference
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         apply_called_with = {}
 
@@ -1425,7 +1419,6 @@ class TestRoutingFallbackFromAgentConfig:
 
         from amplifier_app_cli.session_spawner import spawn_sub_session
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         apply_call_count = {"n": 0}
 
@@ -1533,7 +1526,6 @@ class TestRoutingCapabilityPropagation:
 
         from amplifier_app_cli.session_spawner import spawn_sub_session
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         fake_routing = {"matrix": "balanced", "overrides": {"coding": "anthropic"}}
 
@@ -1638,7 +1630,6 @@ class TestRoutingCapabilityPropagation:
 
         from amplifier_app_cli.session_spawner import spawn_sub_session
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         registered_capabilities = {}
 
@@ -1828,7 +1819,6 @@ class TestSpawnMentionExpansion:
         from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
         from amplifier_app_cli.session_spawner import spawn_sub_session
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         FIXTURE_CONTENT = "SENTINEL_FIXTURE_SYSTEM_CONTENT_12345"
         fixture_file = tmp_path / "fixture.md"
@@ -1901,7 +1891,6 @@ class TestSpawnMentionExpansion:
         from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
         from amplifier_app_cli.session_spawner import spawn_sub_session
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         FIXTURE_CONTENT = "SENTINEL_FIXTURE_INSTRUCTION_67890"
         fixture_file = tmp_path / "task.md"
@@ -2093,7 +2082,6 @@ class TestSpawnSystemPromptFactory:
     async def test_factory_registered_when_context_supports_it(self, tmp_path, monkeypatch):
         """Context exposing set_system_prompt_factory: the factory is registered with
         the exact system_instruction; no static system message is added."""
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         context = _FactoryContext()
         parent_session, child_session = self._make_sessions(context)
@@ -2122,7 +2110,6 @@ class TestSpawnSystemPromptFactory:
         """Context exposing ONLY add_message (no set_system_prompt_factory attribute)
         falls back to the static system message -- regression guard for pre-fix
         behavior."""
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         context = _StaticOnlyContext()
         assert not hasattr(context, "set_system_prompt_factory")
@@ -2146,7 +2133,6 @@ class TestSpawnSystemPromptFactory:
     async def test_no_instruction_registers_nothing(self, tmp_path, monkeypatch):
         """No system_instruction on the agent config: neither the factory nor
         add_message should be invoked for a system message."""
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         context = _FactoryContext()
         parent_session, child_session = self._make_sessions(context)
@@ -2171,7 +2157,6 @@ class TestSpawnSystemPromptFactory:
         raw pre-expansion instruction string."""
         from amplifier_app_cli.lib.mention_loading.app_resolver import AppMentionResolver
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         FIXTURE_CONTENT = "SENTINEL_FACTORY_EXPANSION_54321"
         fixture_file = tmp_path / "fixture.md"
@@ -2276,7 +2261,6 @@ class TestResumeMentionExpansion:
 
         from amplifier_app_cli.session_spawner import resume_sub_session
 
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         FIXTURE_CONTENT = "SENTINEL_FIXTURE_RESUME_CONTENT_99999"
         fixture_file = tmp_path / "resume_task.md"
