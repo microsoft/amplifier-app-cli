@@ -3567,6 +3567,10 @@ async def interactive_chat(
         bundle_name=bundle_name,
         initial_transcript=initial_transcript,
         prepared_bundle=prepared_bundle,
+        # Resolved mode: reaching interactive_chat() IS the resolution -- run.py
+        # dispatches here only after collapsing --mode, prompt presence, and pipe
+        # presence into "chat".
+        invocation_mode="chat",
     )
 
     # Create fully initialized session (handles all setup including resume)
@@ -4235,6 +4239,10 @@ async def execute_single(
         initial_transcript=initial_transcript,
         prepared_bundle=prepared_bundle,
         output_format=output_format,
+        # Resolved mode: reaching execute_single() IS the resolution -- run.py
+        # dispatches here for an explicit --mode single, and for a prompt or a
+        # pipe arriving with no --mode at all.
+        invocation_mode="single",
     )
 
     # Create fully initialized session (handles all setup including resume)
