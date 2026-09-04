@@ -952,8 +952,6 @@ def bundle_add(uri: str, name_override: str | None, app: bool):
     # Use override name if provided, otherwise use name from metadata
     name = name_override or bundle_name
 
-    # All bundles are now stored in settings.yaml under bundle.added
-    # App bundles additionally go in bundle.app for composition policy
     app_settings = AppSettings()
 
     if app:
@@ -967,9 +965,8 @@ def bundle_add(uri: str, name_override: str | None, app: bool):
             console.print(f"  URI: {uri}")
             return
 
-        # Add to bundle.app (composition policy) AND bundle.added (for updates)
+        # App bundles are composition sources, not selectable registrations.
         app_settings.add_app_bundle(uri)
-        app_settings.add_bundle(name, uri)
         console.print(f"[green]✓ Added app bundle '{name}'[/green]")
         console.print(f"  URI: {uri}")
         if bundle_version:
@@ -981,6 +978,22 @@ def bundle_add(uri: str, name_override: str | None, app: bool):
     else:
         # Add to bundle.added in settings.yaml
         existing = app_settings.get_added_bundles()
+        existing_alias = next(
+            (
+                existing_name
+                for existing_name, existing_uri in existing.items()
+                if existing_name != name and existing_uri == uri
+            ),
+            None,
+        )
+        if existing_alias:
+            console.print(
+                "[yellow]Warning:[/yellow] Bundle URI already registered "
+                f"as '{existing_alias}'"
+            )
+            console.print(f"  URI: {uri}")
+            return
+
         if name in existing:
             console.print(
                 f"[yellow]Warning:[/yellow] Bundle '{name}' already registered"
@@ -1043,8 +1056,6 @@ def bundle_remove(name: str, app: bool):
         # Check if name is a URI directly in the list
         if name in app_bundles:
             app_settings.remove_app_bundle(name)
-            # Also remove from bundle.added (keeps settings in sync)
-            app_settings.remove_added_bundle(name)
             console.print("[green]✓ Removed app bundle[/green]")
             console.print(f"  URI: {name}")
             return
@@ -1058,8 +1069,6 @@ def bundle_remove(name: str, app: bool):
 
         if matching_uri:
             app_settings.remove_app_bundle(matching_uri)
-            # Also remove from bundle.added (keeps settings in sync)
-            app_settings.remove_added_bundle(name)
             console.print(f"[green]✓ Removed app bundle '{name}'[/green]")
             console.print(f"  URI: {matching_uri}")
         else:
