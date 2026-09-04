@@ -182,6 +182,72 @@ def _ensure_utf8_output() -> None:
             pass  # Not a real Windows console (e.g. some CI/test environments)
 
 
+class _LateBoundStderrHandler(logging.StreamHandler):
+    """A ``StreamHandler`` that resolves ``sys.stderr`` at emit time, not at init.
+
+    ``logging.StreamHandler.__init__`` does ``self.stream = stream`` and
+    ``emit()`` then writes to that *captured object*. That eager binding is a
+    display bug in an interactive CLI, because ``patch_stdout()`` works by
+    **rebinding the names** ``sys.stdout``/``sys.stderr`` to a ``StdoutProxy``
+    -- it cannot reach through to an object something else already grabbed.
+
+    ``_configure_console_logging()`` runs from ``main()`` at process start,
+    long before any ``patch_stdout()`` context is entered (``main.py:3853``
+    around the whole turn, ``main.py:4014`` around the REPL prompt). So the
+    handler captured the *original* ``TextIOWrapper``, and every
+    ``logger.warning(...)`` in the process wrote straight past the proxy into
+    a terminal that prompt_toolkit was actively rendering into -- injecting
+    the text at the cursor, on top of the input box, with none of the
+    erase/redraw that ``run_in_terminal`` exists to provide.
+
+    Rich never had this bug, and the reason is already documented in this
+    codebase as a load-bearing assumption -- ``steering_input.py:10-14``:
+
+        Rich's ``Console.file`` property reads ``sys.stdout`` dynamically
+        [...] so the patched proxy is picked up at write time automatically
+        -- no changes to ``console.py`` are required.
+
+    That reasoning was simply never extended to ``logging``. This class
+    extends it: ``stream`` becomes a property that returns whatever
+    ``sys.stderr`` is *right now*, so a record emitted inside a
+    ``patch_stdout()`` context goes through the proxy and gets the
+    ``run_in_terminal`` erase-prologue/redraw treatment, exactly like Rich
+    output does. Outside such a context -- non-interactive runs, piped
+    output, ``--output json`` -- ``sys.stderr`` is the ordinary stream and
+    behavior is byte-for-byte what it was before.
+
+    The setter is **required**, not decorative: ``StreamHandler.__init__``
+    assigns ``self.stream``, and ``StreamHandler.setStream()`` assigns it
+    again. A bare read-only property would raise ``AttributeError`` during
+    construction. It also preserves the escape hatch: assigning a stream that
+    is *not* the current ``sys.stderr`` pins it, so ``setStream(open(...))``
+    still behaves like a stock ``StreamHandler``; assigning the live
+    ``sys.stderr`` (which is all ``__init__`` does) leaves the handler
+    late-bound.
+    """
+
+    def __init__(self) -> None:
+        # Must exist before super().__init__() -- that assignment routes
+        # through the setter below.
+        self._pinned_stream: object | None = None
+        super().__init__()
+
+    @property
+    def stream(self):  # type: ignore[override]
+        """The stream to write to, resolved on every access."""
+        if self._pinned_stream is not None:
+            return self._pinned_stream
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, value) -> None:
+        # `value is sys.stderr` is the eager capture this class exists to
+        # defeat (StreamHandler.__init__ does exactly that) -- ignore it and
+        # stay late-bound. Anything else is a deliberate redirect and is
+        # honored, so setStream()/flush()/close() keep working normally.
+        self._pinned_stream = None if value is None or value is sys.stderr else value
+
+
 def _configure_console_logging() -> None:
     """Install a minimal root logging handler if the process has none.
 
@@ -226,7 +292,7 @@ def _configure_console_logging() -> None:
         arg in ("--verbose", "-v", "--debug") for arg in sys.argv[1:]
     )
 
-    handler = logging.StreamHandler(sys.stderr)
+    handler = _LateBoundStderrHandler()
     handler.setLevel(logging.WARNING)
     handler.setFormatter(logging.Formatter("%(message)s"))
 
