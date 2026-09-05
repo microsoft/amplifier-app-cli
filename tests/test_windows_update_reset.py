@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import subprocess
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -106,7 +107,7 @@ def test_remove_amplifier_dir_reports_cache_failure_and_continues(
     fake_console = MagicMock()
     monkeypatch.setattr(reset_module, "console", fake_console)
 
-    success = reset_module._remove_amplifier_dir({"settings"})
+    success = reset_module._remove_amplifier_dir({"cache", "registry", "other"})
 
     assert success is False
     clear_cache.assert_called_once_with(dry_run=False)
@@ -136,7 +137,7 @@ def test_remove_amplifier_dir_reports_registry_failure(tmp_path, monkeypatch):
     fake_console = MagicMock()
     monkeypatch.setattr(reset_module, "console", fake_console)
 
-    success = reset_module._remove_amplifier_dir({"settings", "cache"})
+    success = reset_module._remove_amplifier_dir({"registry"})
 
     assert success is False
     output = _console_text(fake_console)
@@ -179,6 +180,101 @@ def test_windows_reset_returns_failure_when_finisher_cannot_launch(monkeypatch):
     assert "Reset could not be staged" in result.output
 
 
+@pytest.mark.parametrize(
+    ("tool_list", "expected_uninstalls"),
+    [
+        (
+            "amplifier-app-cli v0.1.1\n- amplifier\n",
+            [["uv", "tool", "uninstall", "amplifier-app-cli"]],
+        ),
+        (
+            "amplifier v0.1.0\n- amplifier\n",
+            [["uv", "tool", "uninstall", "amplifier"]],
+        ),
+        (
+            "amplifier v0.1.0\n- amplifier\namplifier-app-cli v0.1.1\n- amplifier\n",
+            [
+                ["uv", "tool", "uninstall", "amplifier"],
+                ["uv", "tool", "uninstall", "amplifier-app-cli"],
+            ],
+        ),
+    ],
+)
+def test_reset_uninstalls_current_and_legacy_tool_distributions(
+    monkeypatch, tool_list, expected_uninstalls
+):
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["uv", "tool", "list"]:
+            return SimpleNamespace(stdout=tool_list)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(reset_module.subprocess, "run", fake_run)
+
+    assert reset_module._uninstall_amplifier() is True
+    assert calls == [["uv", "tool", "list"], *expected_uninstalls]
+
+
+def test_reset_force_installs_to_repair_an_orphaned_executable(monkeypatch):
+    run = MagicMock()
+    monkeypatch.setattr(reset_module.subprocess, "run", run)
+
+    assert reset_module._install_amplifier() is True
+    run.assert_called_once_with(
+        [
+            "uv",
+            "tool",
+            "install",
+            "--force",
+            reset_module.DEFAULT_INSTALL_SOURCE,
+        ],
+        check=True,
+    )
+
+
+def test_reset_force_install_still_surfaces_install_errors(monkeypatch):
+    run = MagicMock(
+        side_effect=subprocess.CalledProcessError(
+            1,
+            [
+                "uv",
+                "tool",
+                "install",
+                "--force",
+                reset_module.DEFAULT_INSTALL_SOURCE,
+            ],
+        )
+    )
+    fake_console = MagicMock()
+    monkeypatch.setattr(reset_module.subprocess, "run", run)
+    monkeypatch.setattr(reset_module, "console", fake_console)
+
+    assert reset_module._install_amplifier() is False
+    assert "Failed to install amplifier" in _console_text(fake_console)
+
+
+def test_windows_reset_finisher_uses_distribution_uninstall_and_forced_install(
+    monkeypatch,
+):
+    defer = MagicMock(return_value=True)
+    monkeypatch.setattr(reset_module, "console", MagicMock())
+    monkeypatch.setattr(reset_module, "defer_uv_tool_swap", defer)
+
+    assert reset_module._windows_defer_tool_swap(no_install=False) is True
+
+    steps = defer.call_args.args[0]
+    assert [step.command for step in steps] == [
+        "uv tool uninstall amplifier-app-cli",
+        f"uv tool install --force {reset_module.DEFAULT_INSTALL_SOURCE}",
+    ]
+    assert defer.call_args.kwargs["recovery_commands"] == [
+        "uv tool uninstall amplifier-app-cli",
+        f"uv tool install --force {reset_module.DEFAULT_INSTALL_SOURCE}",
+    ]
+
+
 def test_posix_reset_reinstalls_then_fails_after_incomplete_cleanup(monkeypatch):
     calls: list[str] = []
 
@@ -193,7 +289,7 @@ def test_posix_reset_reinstalls_then_fails_after_incomplete_cleanup(monkeypatch)
     monkeypatch.setattr(
         reset_module,
         "_remove_amplifier_dir",
-        lambda preserve, dry_run: calls.append("cleanup") or False,
+        lambda remove_cats, dry_run: calls.append("cleanup") or False,
     )
     monkeypatch.setattr(
         reset_module,

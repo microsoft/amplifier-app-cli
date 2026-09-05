@@ -7,11 +7,11 @@ even during self-uninstall scenarios.
 Example:
     >>> from .reset_interactive import run_checklist, ChecklistItem
     >>> items = [
-    ...     ChecklistItem("projects", "Session transcripts", True),
-    ...     ChecklistItem("cache", "Downloaded bundles", False),
+    ...     ChecklistItem("projects", "Session transcripts", False),
+    ...     ChecklistItem("cache", "Downloaded bundles", True),
     ... ]
-    >>> selected = run_checklist(items, title="Select to preserve")
-    >>> print(selected)  # {"projects"}
+    >>> selected = run_checklist(items, title="Select to remove")
+    >>> print(selected)  # {"cache"}
 """
 
 from __future__ import annotations
@@ -155,10 +155,12 @@ def _render_checklist(
     lines.append(title)
     lines.append("=" * len(title))
     lines.append("")
-    lines.append("Your transcripts and settings are preserved by default.")
-    lines.append("Only cache/registry are removed (they auto-regenerate).")
+    lines.append("Checked items will be removed/reset.")
+    lines.append(
+        "Only cache and registry are selected by default (they auto-regenerate)."
+    )
     lines.append("")
-    lines.append("Adjust if needed (↑↓ navigate, space toggle, enter confirm):")
+    lines.append("Adjust what to remove (↑↓ navigate, space toggle, enter confirm):")
     lines.append("")
 
     # Items
@@ -179,7 +181,7 @@ def _render_checklist(
     lines.append(f"Will REMOVE: {remove_str}")
     lines.append(f"Will PRESERVE: {preserve_str}")
     lines.append("")
-    lines.append("[Enter] Continue  [a] Preserve all  [n] Preserve none  [q] Quit")
+    lines.append("[Enter] Continue  [a] Remove all  [n] Remove none  [q] Quit")
 
     # Print all lines
     output = "\n".join(lines)
@@ -210,9 +212,9 @@ def run_checklist(
     _hide_cursor()
     try:
         while True:
-            # Calculate what will be removed/preserved
-            will_preserve = [item.key for item in items if item.selected]
-            will_remove = [item.key for item in items if not item.selected]
+            # Selected entries are the categories that will be removed.
+            will_remove = [item.key for item in items if item.selected]
+            will_preserve = [item.key for item in items if not item.selected]
 
             # Clear previous render
             if lines_printed > 0:
@@ -237,11 +239,11 @@ def run_checklist(
                 print()  # Newline after UI
                 return {item.key for item in items if item.selected}
             elif key.lower() == "a":
-                # Select all
+                # Remove all
                 for item in items:
                     item.selected = True
             elif key.lower() == "n":
-                # Select none
+                # Remove none
                 for item in items:
                     item.selected = False
             elif key.lower() == "q" or key == "ESC":
