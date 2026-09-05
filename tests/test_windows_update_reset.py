@@ -255,24 +255,129 @@ def test_reset_force_install_still_surfaces_install_errors(monkeypatch):
     assert "Failed to install amplifier" in _console_text(fake_console)
 
 
-def test_windows_reset_finisher_uses_distribution_uninstall_and_forced_install(
-    monkeypatch,
-):
+def _stage_windows_swap(monkeypatch, tool_list: str | None, *, no_install: bool):
+    """Run the Windows deferred swap against a given `uv tool list` output.
+
+    `tool_list=None` simulates uv being unreadable.
+    """
+
+    def fake_run(argv, **kwargs):
+        if argv == ["uv", "tool", "list"]:
+            if tool_list is None:
+                raise FileNotFoundError("uv")
+            return SimpleNamespace(stdout=tool_list)
+        return SimpleNamespace()
+
     defer = MagicMock(return_value=True)
+    monkeypatch.setattr(reset_module.subprocess, "run", fake_run)
     monkeypatch.setattr(reset_module, "console", MagicMock())
     monkeypatch.setattr(reset_module, "defer_uv_tool_swap", defer)
 
-    assert reset_module._windows_defer_tool_swap(no_install=False) is True
+    staged = reset_module._windows_defer_tool_swap(no_install=no_install)
+    return staged, defer
+
+
+_MODERN = "amplifier v0.1.0\n- amplifier\n"
+_LEGACY = "amplifier-app-cli v0.1.1\n- amplifier\n"
+_BOTH = _MODERN + _LEGACY
+
+
+@pytest.mark.parametrize(
+    ("tool_list", "expected_uninstalls"),
+    [
+        (_MODERN, ["uv tool uninstall amplifier"]),
+        (_LEGACY, ["uv tool uninstall amplifier-app-cli"]),
+        (
+            _BOTH,
+            [
+                "uv tool uninstall amplifier",
+                "uv tool uninstall amplifier-app-cli",
+            ],
+        ),
+        ("", []),
+    ],
+)
+def test_windows_reset_finisher_uninstalls_the_registered_distribution(
+    monkeypatch, tool_list, expected_uninstalls
+):
+    """The name to uninstall is read back from uv, never assumed.
+
+    Hardcoding either name uninstalls the distribution the user does not have
+    and leaves the one they do have registered.
+    """
+    staged, defer = _stage_windows_swap(monkeypatch, tool_list, no_install=False)
+
+    assert staged is True
+    forced_install = f"uv tool install --force {reset_module.DEFAULT_INSTALL_SOURCE}"
+    expected = [*expected_uninstalls, forced_install]
+
+    assert [step.command for step in defer.call_args.args[0]] == expected
+    assert defer.call_args.kwargs["recovery_commands"] == expected
+
+
+def test_windows_reset_finisher_never_aborts_the_reinstall_on_uninstall_failure(
+    monkeypatch,
+):
+    """Uninstall steps stay best-effort; only the reinstall is required."""
+    _, defer = _stage_windows_swap(monkeypatch, _BOTH, no_install=False)
 
     steps = defer.call_args.args[0]
-    assert [step.command for step in steps] == [
-        "uv tool uninstall amplifier-app-cli",
-        f"uv tool install --force {reset_module.DEFAULT_INSTALL_SOURCE}",
+    assert [step.required for step in steps] == [False, False, True]
+
+
+@pytest.mark.parametrize(
+    ("tool_list", "expected_uninstalls"),
+    [
+        (_MODERN, ["uv tool uninstall amplifier"]),
+        (_LEGACY, ["uv tool uninstall amplifier-app-cli"]),
+    ],
+)
+def test_windows_no_install_uninstalls_what_is_actually_registered(
+    monkeypatch, tool_list, expected_uninstalls
+):
+    """`reset --no-install` must remove the distribution the user has.
+
+    With no reinstall behind it there is no `--force` install to paper over a
+    uninstall aimed at the wrong distribution: the step simply fails, the
+    deferred script aborts, and the tool stays installed.
+    """
+    staged, defer = _stage_windows_swap(monkeypatch, tool_list, no_install=True)
+
+    assert staged is True
+    steps = defer.call_args.args[0]
+    assert [step.command for step in steps] == expected_uninstalls
+    assert all(step.required for step in steps)
+
+
+def test_windows_no_install_stages_nothing_when_no_distribution_is_registered(
+    monkeypatch,
+):
+    staged, defer = _stage_windows_swap(monkeypatch, "", no_install=True)
+
+    assert staged is True
+    defer.assert_not_called()
+
+
+@pytest.mark.parametrize("no_install", [True, False])
+def test_windows_swap_covers_every_distribution_when_uv_cannot_be_read(
+    monkeypatch, no_install
+):
+    """An unreadable `uv tool list` must not collapse to a guessed name.
+
+    Uninstalling a distribution that is not registered is a no-op; missing the
+    one that is registered is what strands the user. Both are attempted, and
+    both are best-effort because neither is known to be present.
+    """
+    _, defer = _stage_windows_swap(monkeypatch, None, no_install=no_install)
+
+    commands = [step.command for step in defer.call_args.args[0]]
+    for package in reset_module.UV_TOOL_PACKAGES:
+        assert f"uv tool uninstall {package}" in commands
+
+    uninstall_steps = [
+        step for step in defer.call_args.args[0] if "uninstall" in step.command
     ]
-    assert defer.call_args.kwargs["recovery_commands"] == [
-        "uv tool uninstall amplifier-app-cli",
-        f"uv tool install --force {reset_module.DEFAULT_INSTALL_SOURCE}",
-    ]
+    assert not any(step.required for step in uninstall_steps)
 
 
 def test_posix_reset_reinstalls_then_fails_after_incomplete_cleanup(monkeypatch):

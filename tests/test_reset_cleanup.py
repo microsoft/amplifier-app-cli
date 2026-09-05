@@ -37,7 +37,6 @@ def _invoke_dry_run(monkeypatch, args: list[str]) -> tuple[MagicMock, MagicMock]
             ["--preserve", "projects,settings,keys,other", "-y"],
             {"cache", "registry"},
         ),
-        (["--preserve", "", "-y"], set(reset_module.RESET_CATEGORIES)),
         (["--full", "-y"], set(reset_module.RESET_CATEGORIES)),
     ],
 )
@@ -46,6 +45,24 @@ def test_cli_options_resolve_to_a_removal_plan(monkeypatch, args, expected_remov
 
     assert show_plan.call_args.args[0] == expected_remove
     assert cleanup.call_args.args[0] == expected_remove
+
+
+def test_empty_preserve_is_refused_rather_than_removing_everything(monkeypatch):
+    """`--preserve "$VAR"` with VAR unset must not become a silent --full.
+
+    An empty --remove is a no-op, so the mirrored empty --preserve reaching
+    "remove every category, projects included" - with -y suppressing the
+    confirm - is a blast radius an unset shell variable should not be able to
+    select. --full is how that is asked for.
+    """
+    cleanup = MagicMock()
+    monkeypatch.setattr(reset_module, "_remove_amplifier_dir", cleanup)
+
+    result = CliRunner().invoke(reset_module.reset, ["--preserve", "", "-y"])
+
+    assert result.exit_code != 0
+    assert "--full" in result.output
+    cleanup.assert_not_called()
 
 
 def _make_amplifier_dir(tmp_path: Path) -> Path:

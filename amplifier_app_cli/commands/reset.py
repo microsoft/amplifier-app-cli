@@ -65,9 +65,10 @@ DEFAULT_INSTALL_SOURCE = "git+https://github.com/microsoft/amplifier"
 
 # The current umbrella source registers `amplifier`; older installations
 # registered the CLI distribution directly. Both expose the `amplifier`
-# executable and must be removed before a reset's replacement install.
-UV_TOOL_PACKAGE = "amplifier-app-cli"
-UV_TOOL_PACKAGES = ("amplifier", UV_TOOL_PACKAGE)
+# executable and must be removed before a reset's replacement install. Neither
+# name may be hardcoded at a call site - which one is registered is a runtime
+# fact, read back via _installed_uv_tool_packages().
+UV_TOOL_PACKAGES = ("amplifier", "amplifier-app-cli")
 
 
 def _get_amplifier_dir() -> Path:
@@ -121,6 +122,18 @@ def _parse_categories(
     if value is None:
         return None
     categories = {c.strip() for c in value.split(",") if c.strip()}
+
+    # An empty --remove is a harmless no-op, but the mirrored empty --preserve
+    # means "preserve nothing" - it removes every category, projects included,
+    # and -y suppresses the confirm. That is the same blast radius as --full
+    # reached by an unset shell variable, so it has to be asked for by name.
+    if not categories and param.name == "preserve_cats":
+        raise click.BadParameter(
+            "--preserve was given an empty value, which would remove every "
+            "category including projects. Pass the categories to keep, or use "
+            "--full if removing everything is what you want."
+        )
+
     valid = set(RESET_CATEGORIES.keys())
     invalid = categories - valid
     if invalid:
@@ -239,11 +252,19 @@ def _clean_uv_cache(dry_run: bool = False) -> bool:
         return False
 
 
-def _uninstall_amplifier(dry_run: bool = False) -> bool:
-    """Uninstall amplifier via uv tool uninstall."""
-    console.print("[bold]>>>[/bold] Checking if amplifier is installed...")
+def _installed_uv_tool_packages() -> tuple[str, ...] | None:
+    """Report which known uv tool distributions are currently registered.
 
-    # Check if amplifier is installed
+    Both entries of ``UV_TOOL_PACKAGES`` expose the same ``amplifier``
+    executable, so the name to uninstall cannot be assumed - it has to be read
+    back from uv. Matching is anchored to ``"<package> "`` at the start of a
+    line so the indented ``- amplifier`` executable rows listed underneath a
+    package never count as a package of their own.
+
+    Returns:
+        The registered distribution names, possibly empty, or None when
+        ``uv tool list`` could not be consulted at all.
+    """
     try:
         result = subprocess.run(
             ["uv", "tool", "list"],
@@ -251,18 +272,27 @@ def _uninstall_amplifier(dry_run: bool = False) -> bool:
             capture_output=True,
             text=True,
         )
-        installed_packages = tuple(
-            package
-            for package in UV_TOOL_PACKAGES
-            if any(
-                line.startswith(f"{package} ") for line in result.stdout.splitlines()
-            )
-        )
-        if not installed_packages:
-            console.print("    [dim]Amplifier is not installed via uv tool[/dim]")
-            return False
     except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+    lines = result.stdout.splitlines()
+    return tuple(
+        package
+        for package in UV_TOOL_PACKAGES
+        if any(line.startswith(f"{package} ") for line in lines)
+    )
+
+
+def _uninstall_amplifier(dry_run: bool = False) -> bool:
+    """Uninstall amplifier via uv tool uninstall."""
+    console.print("[bold]>>>[/bold] Checking if amplifier is installed...")
+
+    installed_packages = _installed_uv_tool_packages()
+    if installed_packages is None:
         console.print("    [dim]Could not check uv tool list[/dim]")
+        return False
+    if not installed_packages:
+        console.print("    [dim]Amplifier is not installed via uv tool[/dim]")
         return False
 
     console.print("[bold]>>>[/bold] Uninstalling amplifier...")
@@ -460,14 +490,35 @@ def _windows_defer_tool_swap(no_install: bool) -> bool:
     Returns:
         True only when the deferred script was launched successfully.
     """
+    # Which distribution is registered cannot be assumed here any more than it
+    # can on POSIX: the umbrella source registers `amplifier`, older installs
+    # registered `amplifier-app-cli`, and uninstalling the name the user does
+    # *not* have is what strands them with the tool still installed.
+    detected = _installed_uv_tool_packages()
+    if detected is None:
+        # uv could not be read. Cover every known distribution best-effort
+        # rather than betting on one name; an uninstall for a distribution that
+        # is not registered is a no-op, missing the registered one is not.
+        uninstall_packages = list(UV_TOOL_PACKAGES)
+        uninstall_required = False
+    else:
+        uninstall_packages = list(detected)
+        uninstall_required = True
+
     if no_install:
+        if not uninstall_packages:
+            console.print("    [dim]Amplifier is not installed via uv tool[/dim]")
+            return True
+
         steps = [
             UvStep(
-                command=f"uv tool uninstall {UV_TOOL_PACKAGE}",
-                label="Uninstalling amplifier...",
+                command=f"uv tool uninstall {package}",
+                label=f"Uninstalling {package}...",
+                required=uninstall_required,
             )
+            for package in uninstall_packages
         ]
-        recovery = [f"uv tool uninstall {UV_TOOL_PACKAGE}"]
+        recovery = [f"uv tool uninstall {package}" for package in uninstall_packages]
         success = "Amplifier removed."
     else:
         steps = [
@@ -475,18 +526,21 @@ def _windows_defer_tool_swap(no_install: bool) -> bool:
             # `amplifier` executable if the uninstall could not complete.
             # Aborting here is what would leave the user with no amplifier.
             UvStep(
-                command=f"uv tool uninstall {UV_TOOL_PACKAGE}",
-                label="Uninstalling amplifier (best effort)...",
+                command=f"uv tool uninstall {package}",
+                label=f"Uninstalling {package} (best effort)...",
                 attempts=5,
                 required=False,
-            ),
+            )
+            for package in uninstall_packages
+        ]
+        steps.append(
             UvStep(
                 command=f"uv tool install --force {DEFAULT_INSTALL_SOURCE}",
                 label="Reinstalling amplifier...",
-            ),
-        ]
+            )
+        )
         recovery = [
-            f"uv tool uninstall {UV_TOOL_PACKAGE}",
+            *(f"uv tool uninstall {package}" for package in uninstall_packages),
             f"uv tool install --force {DEFAULT_INSTALL_SOURCE}",
         ]
         success = "Amplifier reset complete."
