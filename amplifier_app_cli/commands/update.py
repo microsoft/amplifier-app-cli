@@ -9,6 +9,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ..lib.bundle_loader import AppBundleDiscovery
+from ..lib.settings import AppSettings
 from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..utils.display import create_sha_text
@@ -328,60 +329,74 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
     cache_dir = get_amplifier_home() / "cache"
     git_handler = GitSourceHandler()
 
-    # Use cached root bundles for update checking (all roots, not filtered user list)
-    bundle_names = discovery.list_cached_root_bundles()
-    results: dict[str, BundleStatus] = {}
+    async def _check_bundle_uri(bundle_name: str, uri: str) -> BundleStatus:
+        """Check one configured source without loading it."""
+        parsed = parse_uri(uri)
 
-    for bundle_name in bundle_names:
-        try:
-            # Get URI without loading (avoids download side effect)
-            uri = registry.find(bundle_name)
-            if not uri:
-                continue
-
-            # Check status directly from URI
-            parsed = parse_uri(uri)
-
-            # For file:// URIs (editable installs), check if this is a well-known
-            # bundle with a remote URI we can use for update checking
-            if parsed.is_file and bundle_name in WELL_KNOWN_BUNDLES:
-                well_known_info = WELL_KNOWN_BUNDLES[bundle_name]
-                remote_uri_value = well_known_info.get("remote")
-                if remote_uri_value and isinstance(remote_uri_value, str):
-                    # Use remote URI for status checking, but get local SHA from file path
-                    source_status = await _get_file_bundle_status(
-                        bundle_name, uri, remote_uri_value, git_handler, cache_dir
-                    )
-                    results[bundle_name] = BundleStatus(
-                        bundle_name=bundle_name,
-                        bundle_source=uri,
-                        sources=[source_status],
-                    )
-                    continue
-
-            if git_handler.can_handle(parsed):
-                source_status: SourceStatus = await git_handler.get_status(
-                    parsed, cache_dir
+        # For file:// URIs (editable installs), check if this is a well-known
+        # bundle with a remote URI we can use for update checking.
+        if parsed.is_file and bundle_name in WELL_KNOWN_BUNDLES:
+            well_known_info = WELL_KNOWN_BUNDLES[bundle_name]
+            remote_uri_value = well_known_info.get("remote")
+            if remote_uri_value and isinstance(remote_uri_value, str):
+                source_status = await _get_file_bundle_status(
+                    bundle_name, uri, remote_uri_value, git_handler, cache_dir
                 )
-                results[bundle_name] = BundleStatus(
+                return BundleStatus(
                     bundle_name=bundle_name,
                     bundle_source=uri,
                     sources=[source_status],
                 )
-            else:
-                # Non-git bundles - report as unknown
-                results[bundle_name] = BundleStatus(
-                    bundle_name=bundle_name,
-                    bundle_source=uri,
-                    sources=[
-                        SourceStatus(
-                            source_uri=uri,
-                            is_cached=True,
-                            has_update=None,
-                            summary="Update checking not supported for this source type",
-                        )
-                    ],
+
+        if git_handler.can_handle(parsed):
+            source_status: SourceStatus = await git_handler.get_status(
+                parsed, cache_dir
+            )
+            return BundleStatus(
+                bundle_name=bundle_name,
+                bundle_source=uri,
+                sources=[source_status],
+            )
+
+        # Non-git bundles - report as unknown.
+        return BundleStatus(
+            bundle_name=bundle_name,
+            bundle_source=uri,
+            sources=[
+                SourceStatus(
+                    source_uri=uri,
+                    is_cached=True,
+                    has_update=None,
+                    summary="Update checking not supported for this source type",
                 )
+            ],
+        )
+
+    # Use cached root bundles for update checking (all roots, not filtered user list).
+    bundle_names = discovery.list_cached_root_bundles()
+    results: dict[str, BundleStatus] = {}
+    checked_uris: set[str] = set()
+
+    for bundle_name in bundle_names:
+        try:
+            # Get URI without loading (avoids download side effect).
+            uri = registry.find(bundle_name)
+            if not uri:
+                continue
+            checked_uris.add(uri)
+            results[bundle_name] = await _check_bundle_uri(bundle_name, uri)
+        except Exception:
+            continue  # Skip bundles that fail status check
+
+    # App bundles are configured source URIs rather than registry aliases.  Use
+    # the exact URI as the result key so refs and subdirectory fragments remain
+    # separate update targets.
+    for uri in AppSettings().get_app_bundles():
+        if uri in checked_uris:
+            continue
+        checked_uris.add(uri)
+        try:
+            results[uri] = await _check_bundle_uri(uri, uri)
         except Exception:
             continue  # Skip bundles that fail status check
 
@@ -1240,9 +1255,9 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         bundle_errors: dict[str, str] = {}
 
         if has_bundle_updates:
+            from amplifier_foundation import load_bundle
             from amplifier_foundation import update_bundle
 
-            registry = create_bundle_registry()
             bundles_to_update = [
                 name for name, status in bundle_results.items() if status.has_updates
             ]
@@ -1250,7 +1265,11 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             for bundle_name in bundles_to_update:
                 try:
                     _on_update_progress(bundle_name, "updating_bundle")
-                    loaded = asyncio.run(registry.load(bundle_name))
+                    source_uri = bundle_results[bundle_name].bundle_source
+                    # Intentional: check_all_sources(include_all_cached=True) handles
+                    # cached modules separately. Load only the root bundle here to
+                    # prevent redundant include/module refreshes and write amplification.
+                    loaded = asyncio.run(load_bundle(source_uri, auto_include=False))
                     if isinstance(loaded, dict):
                         bundle_errors[bundle_name] = "Expected single bundle, got dict"
                         bundle_failed.append(bundle_name)
