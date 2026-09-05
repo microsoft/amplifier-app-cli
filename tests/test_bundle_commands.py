@@ -230,6 +230,48 @@ async def test_global_update_checks_app_only_sources_by_exact_uri(monkeypatch):
     assert {status.bundle_source for status in results.values()} == set(app_uris)
 
 
+@pytest.mark.asyncio
+async def test_global_update_skips_bundle_when_registry_lookup_fails(monkeypatch):
+    """A failed registry lookup must not prevent later bundles from being checked."""
+    from amplifier_foundation.sources.git import GitSourceHandler
+
+    working_bundle = "working"
+    working_uri = "git+https://github.com/example/amplifier-bundle-working@main"
+    registry = MagicMock()
+
+    def find_bundle(bundle_name):
+        if bundle_name == "broken":
+            raise RuntimeError("registry unavailable")
+        assert bundle_name == working_bundle
+        return working_uri
+
+    registry.find.side_effect = find_bundle
+    monkeypatch.setattr(
+        update_module,
+        "AppBundleDiscovery",
+        lambda: SimpleNamespace(
+            list_cached_root_bundles=lambda: ["broken", working_bundle]
+        ),
+    )
+    monkeypatch.setattr(update_module, "create_bundle_registry", lambda: registry)
+    monkeypatch.setattr(
+        update_module,
+        "AppSettings",
+        lambda: SimpleNamespace(get_app_bundles=lambda: []),
+    )
+
+    async def fake_get_status(self, parsed, cache_dir):
+        return SimpleNamespace(source_uri=working_uri, has_update=False)
+
+    monkeypatch.setattr(GitSourceHandler, "get_status", fake_get_status)
+
+    results = await update_module._check_all_bundle_status()
+
+    assert set(results) == {working_bundle}
+    assert results[working_bundle].bundle_source == working_uri
+    assert registry.find.call_args_list == [(("broken",),), ((working_bundle,),)]
+
+
 def test_global_update_loads_an_app_target_by_source_uri(monkeypatch):
     """Applying a global update must load an app bundle from its URI, not an alias."""
     import amplifier_foundation

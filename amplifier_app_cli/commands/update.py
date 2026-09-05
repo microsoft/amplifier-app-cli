@@ -378,12 +378,12 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
     checked_uris: set[str] = set()
 
     for bundle_name in bundle_names:
-        # Get URI without loading (avoids download side effect).
-        uri = registry.find(bundle_name)
-        if not uri:
-            continue
-        checked_uris.add(uri)
         try:
+            # Get URI without loading (avoids download side effect).
+            uri = registry.find(bundle_name)
+            if not uri:
+                continue
+            checked_uris.add(uri)
             results[bundle_name] = await _check_bundle_uri(bundle_name, uri)
         except Exception:
             continue  # Skip bundles that fail status check
@@ -1266,6 +1266,9 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
                 try:
                     _on_update_progress(bundle_name, "updating_bundle")
                     source_uri = bundle_results[bundle_name].bundle_source
+                    # Intentional: check_all_sources(include_all_cached=True) handles
+                    # cached modules separately. Load only the root bundle here to
+                    # prevent redundant include/module refreshes and write amplification.
                     loaded = asyncio.run(load_bundle(source_uri, auto_include=False))
                     if isinstance(loaded, dict):
                         bundle_errors[bundle_name] = "Expected single bundle, got dict"
