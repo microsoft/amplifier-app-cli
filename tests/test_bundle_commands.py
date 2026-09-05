@@ -152,11 +152,40 @@ def test_non_app_add_rejects_uri_already_registered_under_alias(monkeypatch):
     loaded_uris = _stub_bundle_load(monkeypatch)
     monkeypatch.setattr(bundle_module, "AppSettings", lambda: settings)
 
-    _invoke_bundle_add(_URI, name_override="new-alias")
+    with pytest.raises(SystemExit) as excinfo:
+        _invoke_bundle_add(_URI, name_override="new-alias")
 
+    # A refusal must be distinguishable from a successful registration by a
+    # scripted caller -- exit 0 here would read as "added under new-alias".
+    assert excinfo.value.code == 1
     assert loaded_uris == [_URI]
     assert settings.get_added_bundles() == {"existing-alias": _URI}
     settings.add_bundle.assert_not_called()
+
+
+def test_non_app_add_alias_conflict_exits_non_zero_through_cli(monkeypatch):
+    """The refusal surfaces as a non-zero process exit, not just an exception."""
+    settings = _FakeSettings(added_bundles={"existing-alias": _URI})
+    _stub_bundle_load(monkeypatch)
+    monkeypatch.setattr(bundle_module, "AppSettings", lambda: settings)
+
+    result = CliRunner().invoke(bundle_module.bundle_add, [_URI, "--name", "new-alias"])
+
+    assert result.exit_code == 1, result.output
+    assert "already registered as 'existing-alias'" in result.output
+    settings.add_bundle.assert_not_called()
+
+
+def test_repeated_non_app_add_same_name_same_uri_still_succeeds(monkeypatch):
+    """Re-adding an identical name+URI pair stays an idempotent success."""
+    settings = _FakeSettings(added_bundles={"team": _URI})
+    _stub_bundle_load(monkeypatch)
+    monkeypatch.setattr(bundle_module, "AppSettings", lambda: settings)
+
+    result = CliRunner().invoke(bundle_module.bundle_add, [_URI])
+
+    assert result.exit_code == 0, result.output
+    assert settings.get_added_bundles() == {"team": _URI}
 
 
 def test_non_app_add_updates_existing_name_to_new_uri(monkeypatch):

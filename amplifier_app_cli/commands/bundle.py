@@ -987,12 +987,20 @@ def bundle_add(uri: str, name_override: str | None, app: bool):
             None,
         )
         if existing_alias:
+            # Refusal, not a no-op: the requested alias was NOT created, so the
+            # end state does not match what was asked for. Exit non-zero -- a
+            # caller scripting `bundle add` must be able to tell "registered"
+            # from "refused", and a silent exit 0 here reads as success.
             console.print(
-                "[yellow]Warning:[/yellow] Bundle URI already registered "
-                f"as '{existing_alias}'"
+                f"[red]Error:[/red] Bundle URI already registered as '{existing_alias}'"
             )
             console.print(f"  URI: {uri}")
-            return
+            console.print(
+                f"\n[dim]Use '{existing_alias}' to refer to it, or run "
+                f"'amplifier bundle remove {existing_alias}' first to re-add "
+                "it under a different name.[/dim]"
+            )
+            sys.exit(1)
 
         if name in existing:
             console.print(
