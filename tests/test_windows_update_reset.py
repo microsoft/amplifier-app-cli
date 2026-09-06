@@ -92,6 +92,13 @@ def test_remove_amplifier_dir_reports_cache_failure_and_continues(
         return True
 
     monkeypatch.setattr(reset_module, "_get_amplifier_dir", lambda: amplifier_dir)
+    # Redirect both resolutions of ~/.amplifier coherently: reset only
+    # delegates to the shared utilities when they agree with the directory
+    # being cleaned, so patching one alone would silently bypass them.
+    monkeypatch.setattr(
+        "amplifier_app_cli.utils.cache_management.get_amplifier_dir",
+        lambda: amplifier_dir,
+    )
     monkeypatch.setattr(
         "amplifier_app_cli.utils.cache_management.clear_download_cache",
         clear_cache,
@@ -107,13 +114,15 @@ def test_remove_amplifier_dir_reports_cache_failure_and_continues(
     fake_console = MagicMock()
     monkeypatch.setattr(reset_module, "console", fake_console)
 
-    success = reset_module._remove_amplifier_dir({"cache", "registry", "other"})
+    success = reset_module._remove_amplifier_dir({"cache", "registry"})
 
     assert success is False
     clear_cache.assert_called_once_with(dry_run=False)
-    assert not removable.exists(), "independent cleanup must continue after cache failure"
-    assert not (amplifier_dir / "registry.json").exists()
+    assert not (amplifier_dir / "registry.json").exists(), (
+        "independent cleanup must continue after cache failure"
+    )
     assert (amplifier_dir / "settings.yaml").exists()
+    assert removable.exists(), "unmanaged files are never swept by a category"
     output = _console_text(fake_console)
     assert "Cleanup incomplete" in output
     assert "cache" in output
@@ -126,6 +135,13 @@ def test_remove_amplifier_dir_reports_registry_failure(tmp_path, monkeypatch):
     (amplifier_dir / "settings.yaml").write_text("keep", encoding="utf-8")
 
     monkeypatch.setattr(reset_module, "_get_amplifier_dir", lambda: amplifier_dir)
+    # Redirect both resolutions of ~/.amplifier coherently: reset only
+    # delegates to the shared utilities when they agree with the directory
+    # being cleaned, so patching one alone would silently bypass them.
+    monkeypatch.setattr(
+        "amplifier_app_cli.utils.cache_management.get_amplifier_dir",
+        lambda: amplifier_dir,
+    )
     monkeypatch.setattr(
         "amplifier_app_cli.utils.cache_management.clear_registry",
         MagicMock(return_value=False),
@@ -394,7 +410,7 @@ def test_posix_reset_reinstalls_then_fails_after_incomplete_cleanup(monkeypatch)
     monkeypatch.setattr(
         reset_module,
         "_remove_amplifier_dir",
-        lambda remove_cats, dry_run: calls.append("cleanup") or False,
+        lambda remove_cats, full, dry_run: calls.append("cleanup") or False,
     )
     monkeypatch.setattr(
         reset_module,

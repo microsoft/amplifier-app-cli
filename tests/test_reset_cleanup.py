@@ -34,7 +34,7 @@ def _invoke_dry_run(monkeypatch, args: list[str]) -> tuple[MagicMock, MagicMock]
         (["--remove", "cache", "-y"], {"cache"}),
         (["--remove", "", "-y"], set()),
         (
-            ["--preserve", "projects,settings,keys,other", "-y"],
+            ["--preserve", "projects,settings,keys", "-y"],
             {"cache", "registry"},
         ),
         (["--full", "-y"], set(reset_module.RESET_CATEGORIES)),
@@ -89,19 +89,41 @@ def test_cleanup_removes_only_explicitly_selected_paths(tmp_path, monkeypatch):
         assert (amplifier_dir / name).exists(), name
 
 
-def test_cleanup_removes_only_dynamic_other_paths(tmp_path, monkeypatch):
+def test_cleanup_never_touches_unmanaged_state(tmp_path, monkeypatch):
+    """Entries no category names belong to other components, and are kept.
+
+    ~/.amplifier accumulates state from components reset does not model -
+    device memory, user skills, credentials modules store outside keys.env.
+    Selecting every category reset *does* know about must not reach any of it.
+    """
     amplifier_dir = _make_amplifier_dir(tmp_path)
-    custom_dir = amplifier_dir / "plugin"
-    custom_dir.mkdir()
-    (custom_dir / "entry.py").write_text("plugin")
+    unmanaged_dir = amplifier_dir / "engram"
+    unmanaged_dir.mkdir()
+    (unmanaged_dir / "memory.json").write_text("irreplaceable")
     monkeypatch.setattr(reset_module, "_get_amplifier_dir", lambda: amplifier_dir)
+    monkeypatch.setattr(
+        "amplifier_app_cli.paths.get_install_state_path",
+        lambda: tmp_path / "install-state.json",
+    )
 
-    assert reset_module._remove_amplifier_dir({"other"})
+    assert reset_module._remove_amplifier_dir(set(reset_module.RESET_CATEGORIES))
 
-    assert not (amplifier_dir / "custom.toml").exists()
-    assert not custom_dir.exists()
-    for name in ("projects", "cache", "registry.json", "settings.yaml", "keys.env"):
-        assert (amplifier_dir / name).exists(), name
+    assert (unmanaged_dir / "memory.json").read_text() == "irreplaceable"
+    assert (amplifier_dir / "custom.toml").exists()
+    assert amplifier_dir.exists()
+    for name in ("projects", "settings.yaml", "keys.env", "cache", "registry.json"):
+        assert not (amplifier_dir / name).exists(), name
+
+
+def test_retired_other_category_is_refused_with_an_explanation(monkeypatch):
+    cleanup = MagicMock()
+    monkeypatch.setattr(reset_module, "_remove_amplifier_dir", cleanup)
+
+    result = CliRunner().invoke(reset_module.reset, ["--remove", "other", "-y"])
+
+    assert result.exit_code != 0
+    assert "--full" in result.output
+    cleanup.assert_not_called()
 
 
 def test_full_cleanup_removes_the_root_directory(tmp_path, monkeypatch):
@@ -112,10 +134,33 @@ def test_full_cleanup_removes_the_root_directory(tmp_path, monkeypatch):
         "amplifier_app_cli.paths.get_install_state_path", get_install_state_path
     )
 
-    assert reset_module._remove_amplifier_dir(set(reset_module.RESET_CATEGORIES))
+    assert reset_module._remove_amplifier_dir(
+        set(reset_module.RESET_CATEGORIES), full=True
+    )
 
     assert not amplifier_dir.exists()
     get_install_state_path.assert_not_called()
+
+
+def test_whole_directory_removal_requires_full_not_a_complete_category_set(
+    tmp_path, monkeypatch
+):
+    """Naming every category is not a request to delete a sixth thing.
+
+    Inferring "remove the root" from set equality is the same overloading that
+    made an empty preserve set mean "nuke everything"; ``full`` is explicit.
+    """
+    amplifier_dir = _make_amplifier_dir(tmp_path)
+    monkeypatch.setattr(reset_module, "_get_amplifier_dir", lambda: amplifier_dir)
+    monkeypatch.setattr(
+        "amplifier_app_cli.paths.get_install_state_path",
+        lambda: tmp_path / "install-state.json",
+    )
+
+    assert reset_module._remove_amplifier_dir(set(reset_module.RESET_CATEGORIES))
+
+    assert amplifier_dir.exists()
+    assert (amplifier_dir / "custom.toml").exists()
 
 
 def test_empty_removal_plan_is_a_data_cleanup_no_op(tmp_path, monkeypatch):
@@ -175,3 +220,38 @@ def test_selected_directory_symlink_is_unlinked_without_touching_target(
 
     assert not project_link.is_symlink()
     assert target_file.read_text() == "session"
+
+
+def test_cleanup_never_clears_the_real_cache_for_another_directory(
+    tmp_path, monkeypatch
+):
+    """Selecting cache/registry must act on the directory being cleaned.
+
+    clear_download_cache/clear_registry resolve ~/.amplifier themselves, via a
+    second copy of the path logic in cache_management. Without a guard, a
+    _remove_amplifier_dir call pointed anywhere else still wiped the *real*
+    cache and registry -- a cross-directory delete, and a live footgun for any
+    test that selects those categories.
+    """
+    amplifier_dir = _make_amplifier_dir(tmp_path)
+    monkeypatch.setattr(reset_module, "_get_amplifier_dir", lambda: amplifier_dir)
+
+    real_cache = MagicMock(return_value=(0, True))
+    real_registry = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "amplifier_app_cli.utils.cache_management.clear_download_cache", real_cache
+    )
+    monkeypatch.setattr(
+        "amplifier_app_cli.utils.cache_management.clear_registry", real_registry
+    )
+    monkeypatch.setattr(
+        "amplifier_app_cli.paths.get_install_state_path",
+        lambda: tmp_path / "install-state.json",
+    )
+
+    assert reset_module._remove_amplifier_dir({"cache", "registry"})
+
+    real_cache.assert_not_called()
+    real_registry.assert_not_called()
+    assert not (amplifier_dir / "cache").exists()
+    assert not (amplifier_dir / "registry.json").exists()
