@@ -13,6 +13,7 @@ scripts and assert on observable behaviour, never grep-for-a-marker.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -62,19 +63,33 @@ def test_every_socket_user_derives_the_default_from_the_batch(script: str) -> No
     )
 
 
-def _derived_socket(batch_dir: Path) -> str:
-    """Run the real derivation the scripts use, via bash -- not a reimplementation."""
+def _derived_socket(batch_dir: Path, *, explicit: str | None = None) -> str:
+    """Run the real derivation the scripts use, via bash -- not a reimplementation.
+
+    The environment is built EXPLICITLY rather than inherited. These scripts are
+    run by the highway itself, and a lane's own environment exports
+    HIGHWAY_TMUX_SOCKET -- so an inherited env silently satisfies the `:-`
+    default and the derivation under test never runs. That is
+    model_performance-etuz: this file passed in CI and failed inside every lane,
+    which is the worst possible direction for a test to be wrong in.
+
+    `explicit` sets the variable on purpose, for the backward-compatibility case.
+    """
     snippet = (
         'BATCH_DIR="$1"\n'
         'HIGHWAY_TMUX_SOCKET="${HIGHWAY_TMUX_SOCKET:-hw-$(printf \'%s\' '
         '"$(basename "$BATCH_DIR")" | tr -c \'A-Za-z0-9_-\' \'_\')}"\n'
         'printf %s "$HIGHWAY_TMUX_SOCKET"\n'
     )
+    env = {k: v for k, v in os.environ.items() if k != "HIGHWAY_TMUX_SOCKET"}
+    if explicit is not None:
+        env["HIGHWAY_TMUX_SOCKET"] = explicit
     return subprocess.run(
         ["bash", "-c", snippet, "_", str(batch_dir)],
         capture_output=True,
         text=True,
         check=True,
+        env=env,
     ).stdout
 
 
@@ -92,10 +107,25 @@ def test_two_batches_derive_two_different_sockets(tmp_path: Path) -> None:
 
 
 @needs_bash
-def test_an_explicit_socket_still_wins(tmp_path: Path, monkeypatch) -> None:
+def test_an_explicit_socket_still_wins(tmp_path: Path) -> None:
     """Backward compatibility: only the DEFAULT changes."""
-    monkeypatch.setenv("HIGHWAY_TMUX_SOCKET", "hw-explicit")
-    assert _derived_socket(tmp_path / "whatever") == "hw-explicit"
+    assert _derived_socket(tmp_path / "whatever", explicit="hw-explicit") == "hw-explicit"
+
+
+@needs_bash
+def test_the_default_derivation_ignores_an_ambient_socket(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """model_performance-etuz, pinned.
+
+    A highway lane exports HIGHWAY_TMUX_SOCKET, so before this fix the tests
+    above inherited it and asserted against the ambient value instead of the
+    derivation. This makes that failure mode a test rather than a surprise.
+    """
+    monkeypatch.setenv("HIGHWAY_TMUX_SOCKET", "hw-ambient-should-be-ignored")
+    batch = tmp_path / "some-batch"
+    batch.mkdir()
+    assert _derived_socket(batch) == "hw-some-batch"
 
 
 @needs_bash
