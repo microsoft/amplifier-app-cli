@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from amplifier_foundation.paths.resolution import get_amplifier_home
 from .fs_utils import rmtree_robust
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 def get_amplifier_dir() -> Path:
     """Return the ~/.amplifier directory path."""
-    return Path.home() / ".amplifier"
+    return get_amplifier_home()
 
 
 def get_cache_dir() -> Path:

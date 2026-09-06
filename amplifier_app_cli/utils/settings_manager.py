@@ -25,18 +25,18 @@ host, and this module's only writer -- the update-check timestamp -- fires at
 
 import logging
 from datetime import datetime
-from pathlib import Path
 
 import yaml
 from filelock import BaseFileLock
 from filelock import FileLock
 from filelock import Timeout
 
+from amplifier_foundation.paths.resolution import get_amplifier_home
 from .atomic_write import atomic_write_yaml
 
 logger = logging.getLogger(__name__)
 
-SETTINGS_FILE = Path.home() / ".amplifier" / "settings.yaml"
+SETTINGS_FILE = get_amplifier_home() / "settings.yaml"
 
 # Must match lib/settings.py::AppSettings._scope_lock for the "global" scope,
 # or the two writers lock against nothing.

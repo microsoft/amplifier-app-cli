@@ -20,6 +20,7 @@ import logging
 from pathlib import Path
 
 from amplifier_foundation import BundleRegistry
+from amplifier_foundation.paths.resolution import get_amplifier_home
 
 
 logger = logging.getLogger(__name__)
@@ -219,7 +220,7 @@ class AppBundleDiscovery:
             paths.append(project_bundles)
 
         # User
-        user_bundles = Path.home() / ".amplifier" / "bundles"
+        user_bundles = get_amplifier_home() / "bundles"
         if user_bundles.exists():
             paths.append(user_bundles)
 
@@ -425,7 +426,7 @@ class AppBundleDiscovery:
         """Get bundles that were explicitly requested by the user."""
         import json
 
-        registry_path = Path.home() / ".amplifier" / "registry.json"
+        registry_path = get_amplifier_home() / "registry.json"
         if not registry_path.exists():
             return set()
 
@@ -447,7 +448,7 @@ class AppBundleDiscovery:
         """Read ALL bundle names from persisted registry (no filtering)."""
         import json
 
-        registry_path = Path.home() / ".amplifier" / "registry.json"
+        registry_path = get_amplifier_home() / "registry.json"
         if not registry_path.exists():
             return []
 
@@ -534,7 +535,7 @@ class AppBundleDiscovery:
         #
         # URI priority for resolving a bundle's URI:
         #   registry data > user-added settings (added_bundles) > WELL_KNOWN_BUNDLES
-        registry_path = Path.home() / ".amplifier" / "registry.json"
+        registry_path = get_amplifier_home() / "registry.json"
         if registry_path.exists():
             try:
                 with open(registry_path, encoding="utf-8") as f:
@@ -618,7 +619,7 @@ class AppBundleDiscovery:
             )
 
         # Read persisted registry for dependencies and nested bundles
-        registry_path = Path.home() / ".amplifier" / "registry.json"
+        registry_path = get_amplifier_home() / "registry.json"
         if registry_path.exists():
             try:
                 with open(registry_path, encoding="utf-8") as f:
@@ -665,7 +666,7 @@ class AppBundleDiscovery:
         """
         import json
 
-        registry_path = Path.home() / ".amplifier" / "registry.json"
+        registry_path = get_amplifier_home() / "registry.json"
         if not registry_path.exists():
             return set(), set()
 

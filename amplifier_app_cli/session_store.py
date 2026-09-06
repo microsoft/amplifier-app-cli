@@ -21,6 +21,7 @@ from amplifier_foundation import sanitize_message
 from amplifier_foundation import write_with_backup
 
 from amplifier_app_cli.project_utils import get_project_slug
+from amplifier_foundation.paths.resolution import get_amplifier_home
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +95,7 @@ class SessionStore:
         """
         if base_dir is None:
             project_slug = get_project_slug()
-            base_dir = (
-                Path.home() / ".amplifier" / "projects" / project_slug / "sessions"
-            )
+            base_dir = get_amplifier_home() / "projects" / project_slug / "sessions"
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
 

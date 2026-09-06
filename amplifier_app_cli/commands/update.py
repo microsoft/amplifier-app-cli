@@ -12,6 +12,7 @@ from rich.text import Text
 
 from amplifier_foundation.updates import BundleStatus as _BundleStatus
 
+from amplifier_foundation.paths.resolution import get_amplifier_home
 from ..lib.bundle_loader import AppBundleDiscovery
 
 # Reused rather than reimplemented: bundle preparation already derives a
@@ -1183,11 +1184,10 @@ def _refresh_skills_cache(console: Console) -> None:
     import shutil
     import subprocess
     from datetime import datetime
-    from pathlib import Path
 
     _logger = logging.getLogger(__name__)
 
-    skills_cache_dir = Path.home() / ".amplifier" / "cache" / "skills"
+    skills_cache_dir = get_amplifier_home() / "cache" / "skills"
     if not skills_cache_dir.exists():
         return
 

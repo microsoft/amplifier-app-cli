@@ -11,6 +11,7 @@ from pathlib import Path
 
 import httpx
 
+from amplifier_foundation.paths.resolution import get_amplifier_home
 from .atomic_write import atomic_write_json
 from .atomic_write import atomic_write_text
 from .source_status import UpdateReport
@@ -24,8 +25,8 @@ UPDATE_CHECK_INTERVAL = 86400
 UPDATE_CACHE_TTL = 3600
 
 # Cache file locations
-UPDATE_CHECK_FILE = Path.home() / ".amplifier" / ".last_update_check"
-UPDATE_CACHE_FILE = Path.home() / ".amplifier" / ".update_cache.json"
+UPDATE_CHECK_FILE = get_amplifier_home() / ".last_update_check"
+UPDATE_CACHE_FILE = get_amplifier_home() / ".update_cache.json"
 
 
 async def check_updates(include_all_cached: bool = False) -> UpdateReport:

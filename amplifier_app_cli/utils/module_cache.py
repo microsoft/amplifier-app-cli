@@ -27,6 +27,7 @@ except ImportError:
     import tomli as tomllib  # type: ignore[import-not-found]
 
 import yaml
+from amplifier_foundation.paths.resolution import get_amplifier_home
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +172,7 @@ def get_cache_dir() -> Path:
     and bundle caching. This unified path ensures update checks find modules
     regardless of whether they were installed via bundles.
     """
-    return Path.home() / ".amplifier" / "cache"
+    return get_amplifier_home() / "cache"
 
 
 def _infer_module_type_from_name(module_id: str) -> str:

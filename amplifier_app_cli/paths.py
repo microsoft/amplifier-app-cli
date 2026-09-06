@@ -11,6 +11,7 @@ from typing import Literal
 
 from amplifier_foundation import BundleRegistry
 
+from amplifier_foundation.paths.resolution import get_amplifier_home
 from .lib.settings import AppSettings
 
 # LEGACY: These imports are no longer available - bundles are the only supported mode
@@ -45,7 +46,7 @@ def get_install_state_path() -> Path:
     Returns:
         Path to ~/.amplifier/cache/install-state.json
     """
-    return Path.home() / ".amplifier" / "cache" / "install-state.json"
+    return get_amplifier_home() / "cache" / "install-state.json"
 
 
 # ===== COMMON PATH HELPERS =====
@@ -75,7 +76,7 @@ def _get_user_and_project_paths(
         paths.append(project_path)
 
     # User
-    user_path = Path.home() / ".amplifier" / resource_type
+    user_path = get_amplifier_home() / resource_type
     if not check_exists or user_path.exists():
         paths.append(user_path)
 
