@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
 
+from .atomic_write import atomic_write_json
 from .source_status import CachedGitStatus
 from .source_status import UpdateReport
 from .umbrella_discovery import UmbrellaInfo
@@ -526,10 +527,10 @@ def _invalidate_modules_with_missing_deps() -> tuple[int, int]:
                 f"Invalidated install state for {module_name} (missing dependencies)"
             )
 
-        # Write back the modified state
+        # Write back the modified state. Atomic: another process reading
+        # install-state.json mid-write would fail to parse it as JSON.
         try:
-            with open(install_state_file, "w") as f:
-                json.dump(state, f, indent=2)
+            atomic_write_json(install_state_file, state)
         except OSError as e:
             logger.warning(f"Failed to update install-state.json: {e}")
 

@@ -18,6 +18,7 @@ from ..lib.bundle_loader.prepare import _extract_behavior_name
 from ..lib.settings import AppSettings
 from ..paths import create_bundle_registry
 from ..paths import create_config_manager
+from ..utils.atomic_write import atomic_write_json
 from ..utils.display import create_sha_text
 from ..utils.display import create_status_symbol
 from ..utils.display import print_legend
@@ -1120,9 +1121,8 @@ def _refresh_skills_cache(console: Console) -> None:
                     "git_url": git_url,
                     "type": "skills",
                 }
-                (cached_repo / ".amplifier_cache_meta.json").write_text(
-                    json.dumps(new_meta, indent=2)
-                )
+                # Atomic: see utils/atomic_write.py.
+                atomic_write_json(cached_repo / ".amplifier_cache_meta.json", new_meta)
                 refreshed += 1
                 console.print(
                     f"    [green]\u2713[/green] Updated ({cached_commit[:8]} \u2192 {new_sha[:8]})"

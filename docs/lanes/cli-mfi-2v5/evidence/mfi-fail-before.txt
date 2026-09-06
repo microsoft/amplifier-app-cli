@@ -1,0 +1,2 @@
+--- HEAD (pre-fix): timeout 25 uv run python .../probe_invoke.py
+PROBE_EXIT=124

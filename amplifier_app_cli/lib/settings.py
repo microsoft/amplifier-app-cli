@@ -5,8 +5,6 @@ Philosophy: Simple, scope-aware YAML settings.
 
 from __future__ import annotations
 
-import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +13,8 @@ from typing import Literal
 import yaml
 from filelock import BaseFileLock
 from filelock import FileLock
+
+from ..utils.atomic_write import atomic_write_yaml
 
 Scope = Literal["local", "project", "global", "session"]
 
@@ -1226,9 +1226,10 @@ class AppSettings:
         before the write proceeds: if it raises, this method's own write
         never happens and the old scope file is preserved untouched.
 
-        Atomic write (tmp-file-then-replace) so a crash or a concurrent
-        writer mid-write can't corrupt the file -- a reader always sees
-        either the old or the new content, never a partial write. See
+        Atomic write (tmp-file-in-same-dir, fsync, ``os.replace`` -- see
+        ``utils/atomic_write.py``) so a crash or a concurrent writer
+        mid-write can't corrupt the file: a reader always sees either the
+        old or the new content, never a partial write. See
         docs/designs/provider-instance-credentials.md §5.5.
         """
         providers = (settings.get("config") or {}).get("providers")
@@ -1241,15 +1242,7 @@ class AppSettings:
             normalize_provider_secrets(self, settings, scope)
 
         path = self._get_scope_path(scope)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                yaml.safe_dump(settings, f, default_flow_style=False)
-            os.replace(tmp, path)
-        except BaseException:
-            Path(tmp).unlink(missing_ok=True)
-            raise
+        atomic_write_yaml(path, settings, sort_keys=True)
 
     def _scope_lock(self, scope: Scope) -> BaseFileLock:
         """Advisory file lock guarding the read-modify-write critical

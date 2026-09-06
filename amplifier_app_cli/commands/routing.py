@@ -20,6 +20,7 @@ from ..lib.settings import AppSettings, Scope, get_custom_routing_dir
 from ..provider_loader import get_provider_info, get_provider_models
 from ..provider_manager import resolve_provider_entry
 from ..ui.item_renderer import ItemRenderer
+from ..utils.atomic_write import atomic_write_yaml
 from ..ui.view_policy import resolve_view, view_flags
 from ..ui.scope import (
     is_scope_change_available,
@@ -1039,8 +1040,8 @@ def save_custom_matrix(
     }
 
     output_path = output_dir / f"{name}.yaml"
-    with open(output_path, "w", encoding="utf-8") as f:
-        yaml.dump(matrix_data, f, default_flow_style=False, sort_keys=False)
+    # Atomic: a routing matrix is registry state every starting session reads.
+    atomic_write_yaml(output_path, matrix_data)
 
     return output_path
 
@@ -1934,8 +1935,8 @@ def _routing_edit_matrix(settings: AppSettings) -> None:
     }
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    with open(output_file, "w", encoding="utf-8") as f:
-        yaml.safe_dump(matrix_data, f, default_flow_style=False, sort_keys=False)
+    # Atomic: a routing matrix is registry state every starting session reads.
+    atomic_write_yaml(output_file, matrix_data)
 
     console.print(f"\n[green]\u2713 Saved to {output_file}[/green]")
 

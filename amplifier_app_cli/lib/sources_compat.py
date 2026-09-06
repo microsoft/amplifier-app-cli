@@ -15,6 +15,8 @@ import subprocess
 import urllib.error
 import urllib.request
 from datetime import datetime
+
+from ..utils.atomic_write import atomic_write_json
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -294,8 +296,9 @@ class GitSource:
             "is_mutable": self._is_mutable_ref(),
         }
 
-        metadata_file = cache_path / ".amplifier_cache_metadata.json"
-        metadata_file.write_text(json.dumps(metadata, indent=2))
+        # Atomic: update checks in other processes read this while it is
+        # being rewritten.
+        atomic_write_json(cache_path / ".amplifier_cache_metadata.json", metadata)
 
     def _get_remote_sha_sync(self) -> str | None:
         """Get SHA from GitHub API synchronously."""

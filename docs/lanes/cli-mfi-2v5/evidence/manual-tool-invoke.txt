@@ -1,0 +1,8 @@
+### default bound (30s), warm
+Bundle 'anchors-amp-dev' prepared successfully
+Result from recipes:
+  {'sessions': [], 'count': 0}
+
+real	0m2.601s
+user	0m2.098s
+sys	0m0.428s

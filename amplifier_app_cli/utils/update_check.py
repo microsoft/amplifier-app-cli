@@ -11,6 +11,8 @@ from pathlib import Path
 
 import httpx
 
+from .atomic_write import atomic_write_json
+from .atomic_write import atomic_write_text
 from .source_status import UpdateReport
 from .source_status import check_all_sources
 
@@ -107,16 +109,18 @@ def _should_check_update() -> bool:
 
 
 def _mark_checked():
-    """Record that we checked for updates."""
-    UPDATE_CHECK_FILE.parent.mkdir(parents=True, exist_ok=True)
-    UPDATE_CHECK_FILE.write_text(str(time.time()), encoding="utf-8")
+    """Record that we checked for updates.
+
+    Atomic: every starting session on the host reads this, and a torn read
+    here is parsed as "never checked" (see ``_should_check_update``).
+    """
+    atomic_write_text(UPDATE_CHECK_FILE, str(time.time()))
 
 
 def _save_cached_result(report: UpdateReport):
     """Cache update report."""
     from dataclasses import asdict
 
-    UPDATE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     cache = {
         "cached_at": time.time(),
         "report": {
@@ -124,7 +128,9 @@ def _save_cached_result(report: UpdateReport):
             "cached_git_sources": [asdict(s) for s in report.cached_git_sources],
         },
     }
-    UPDATE_CACHE_FILE.write_text(json.dumps(cache, indent=2, default=str), encoding="utf-8")
+    # Atomic: a concurrently-starting session reading a half-written cache
+    # would fail to parse it as JSON.
+    atomic_write_json(UPDATE_CACHE_FILE, cache)
 
 
 def _load_cached_result() -> UpdateReport | None:

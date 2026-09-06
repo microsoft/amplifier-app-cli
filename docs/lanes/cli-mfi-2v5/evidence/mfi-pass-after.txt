@@ -1,0 +1,16 @@
+--- returned after 2.01s, exit_code=0
+--- CLI OUTPUT START
+{
+  "status": "success",
+  "tool": "probe",
+  "result": {
+    "status": "list",
+    "recipes": [
+      "a",
+      "b"
+    ]
+  }
+}
+Session cleanup exceeded 2.0s and was ABANDONED -- the tool's result was already emitted, so the run's outcome is intact. Raise the bound with AMPLIFIER_TOOL_CLEANUP_TIMEOUT if a slow teardown is expected.
+--- CLI OUTPUT END
+PROBE_EXIT=0
