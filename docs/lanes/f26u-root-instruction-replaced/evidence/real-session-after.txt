@@ -1,0 +1,40 @@
+SESSION: 6c22e2f8-8258-4a38-9c95-bc6c1af87e28  (AFTER fix, same host/settings/bundle)
+
+--- $ jq: llm:request raw.system, first block, length + first 120 chars ---
+chars=97895  head=@anchors-amp-dev:context/system.md
+
+---
+
+--- marker 'configured for development OF' present in raw.system? ---
+true
+
+--- the marker line, in context ---
+configured for development OF the Amplifier ecosystem itself --
+
+--- notify README still present anywhere in raw.system? ---
+false
+
+--- mentions:resolved -- is anchors-amp-dev:context/system.md listed? ---
+adhd:context/adhd-ruleset.md
+amplifier-online:context/amplifier-online-pointer.md
+amplifier-tester:context/amplifier-tester-awareness.md
+@anchors-amp-dev:context/system.md
+android-tester:context/android-awareness.md
+app-cli:context/cli-awareness.md
+browser-bridge:context/awareness.md
+browser-tester:context/browser-awareness.md
+converge:context/converge-awareness.md
+design-council:context/design-council-awareness.md
+digital-twin-universe:context/dtu-awareness.md
+gitea:context/gitea-awareness.md
+infographic-builder:context/infographic-awareness.md
+ios-tester:context/ios-awareness.md
+made-support:context/trigger-rules.md
+modes:context/modes-instructions.md
+reality-check:context/reality-check-awareness.md
+recipes:context/recipe-awareness.md
+skills:context/skills-instructions.md
+terminal-tester:context/terminal-awareness.md
+wayfinder:context/propose-and-ack.md
+wayfinder:context/wayfinder-voice.md
+work-tracker:context/awareness.md
