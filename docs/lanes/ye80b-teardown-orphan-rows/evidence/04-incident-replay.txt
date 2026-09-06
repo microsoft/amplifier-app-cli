@@ -1,0 +1,32 @@
+INCIDENT REPLAY — the 2026-09-05 state, against a COPY of the real batch files
+date: 2026-09-06T10:14:18Z
+
+The live batch is never written to. Its three state files are copied to
+$TMPDIR and drbf's six rows are set back to 'open' — the state they were
+actually in when the lane died and the containers kept running.
+
+$ HIGHWAY_JSON=1 highway_status.sh /home/bkrabach/dev/hw-model-performance 10 1   # the LIVE batch today
+{"ts":"2026-09-06T10:14:19Z","batch":"hw-model-performance","live":1,"ended":147,"done_marker":146,"stalled":0,"gone":0,"width":1,"width_source":"file","ready":1,"deficit":0,"watchdog":"LIVE","orphan_rows":0,"orphan_owners":""}
+  -> 0 open rows today, so orphan_rows:0. The report is not crying wolf.
+
+reopened rows (as they were on 2026-09-05):
+   val-drbf-a	open
+   val-drbf-b	open
+   val-drbf-c	open
+   val-drbf-a2	open
+   val-drbf-b2	open
+   val-drbf-c2	open
+
+$ HIGHWAY_JSON=1 highway_status.sh <replay-copy> 10 1
+{"ts":"2026-09-06T10:14:21Z","batch":"replay2","live":1,"ended":147,"done_marker":146,"stalled":0,"gone":0,"width":10,"width_source":"arg","ready":1,"deficit":1,"watchdog":"DEAD","orphan_rows":6,"orphan_owners":"drbf-compaction-notice-ab(6)"}
+
+human form:
+ACTION: launch 1 lane(s) NOW - refill before anything else.
+WARNING: watchdog hw-watchdog__replay2 is not running - do not end the turn until it is.
+WARNING: orphan_rows=6 owned by: drbf-compaction-notice-ab(6)
+  Open infra-ledger rows whose owning lane is NOT live - infrastructure
+  with nothing driving it (Rule 14). Nothing was destroyed; reclaim each
+  with: lane_teardown.sh /tmp/orphantest/replay2 <lane> teardown --yes
+
+ledger unchanged by the report (byte-identical):
+   OK — highway_status.sh wrote nothing

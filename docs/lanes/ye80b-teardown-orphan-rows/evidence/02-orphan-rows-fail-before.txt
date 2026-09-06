@@ -1,0 +1,24 @@
+FAIL-BEFORE — sub-finding 2, new tests against pre-change highway_status.sh
+baseline: HEAD 569c9b8 (git checkout HEAD -- amplifier_app_cli/data/skills/ten-lane-highway/scripts/highway_status.sh)
+date:     2026-09-06T10:13:57Z
+
+>           assert got["orphan_rows"] == 1, "a REAL live lane's row was reported orphaned"
+                   ^^^^^^^^^^^^^^^^^^
+E           KeyError: 'orphan_rows'
+
+tests/test_ten_lane_highway_orphan_rows.py:406: KeyError
+=========================== short test summary info ============================
+FAILED tests/test_ten_lane_highway_orphan_rows.py::test_the_ye80_incident_is_now_visible
+FAILED tests/test_ten_lane_highway_orphan_rows.py::test_a_live_lanes_rows_are_never_reported_as_orphaned
+FAILED tests/test_ten_lane_highway_orphan_rows.py::test_every_lane_live_means_no_orphans
+FAILED tests/test_ten_lane_highway_orphan_rows.py::test_a_short_owner_id_resolves_to_its_live_lane_by_prefix
+FAILED tests/test_ten_lane_highway_orphan_rows.py::test_a_short_owner_id_still_orphans_when_its_lane_is_dead
+FAILED tests/test_ten_lane_highway_orphan_rows.py::test_an_ambiguous_owner_prefix_is_reported_not_guessed
+FAILED tests/test_ten_lane_highway_orphan_rows.py::test_an_owner_naming_no_lane_is_flagged_distinctly
+FAILED tests/test_ten_lane_highway_orphan_rows.py::test_an_unclaimed_row_is_an_orphan
+FAILED tests/test_ten_lane_highway_orphan_rows.py::test_closed_rows_are_never_counted
+FAILED tests/test_ten_lane_highway_orphan_rows.py::test_reporting_destroys_nothing
+FAILED tests/test_ten_lane_highway_orphan_rows.py::test_a_batch_with_no_ledger_reports_zero
+FAILED tests/test_ten_lane_highway_orphan_rows.py::test_the_human_summary_names_the_owning_lane
+FAILED tests/test_ten_lane_highway_orphan_rows.py::test_real_tmux_agrees_with_the_stub
+13 failed in 0.70s

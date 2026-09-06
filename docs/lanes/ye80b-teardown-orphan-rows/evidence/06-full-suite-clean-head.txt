@@ -1,0 +1,14 @@
+FULL SUITE — clean HEAD, this lane's changes stashed
+Proves the one failure is PRE-EXISTING and not this lane's.
+Written to $TMPDIR first: 'git stash -u' would delete an open untracked
+file mid-write, and silently lose exactly the evidence being captured.
+date: 2026-09-06T10:15:25Z
+
+E        +  where False = issubclass(ModuleActivationError, BundleError)
+
+tests/test_fail_loud_bundle_activation.py:93: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_fail_loud_bundle_activation.py::TestActivationFailureIsRenderedNotTracebacked343::test_error_is_a_bundle_error
+1 failed, 1805 passed, 2 skipped, 13 deselected, 1 xfailed in 12.24s
+
+restored working tree:  M amplifier_app_cli/data/skills/ten-lane-highway/SKILL.md  M amplifier_app_cli/data/skills/ten-lane-highway/scripts/highway_status.sh ?? docs/lanes/ye80b-teardown-orphan-rows/ ?? tests/test_ten_lane_highway_orphan_rows.py 

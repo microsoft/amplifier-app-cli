@@ -1,0 +1,79 @@
+--- a/.amplifier/evaluation/tools/lane_teardown.sh
++++ b/.amplifier/evaluation/tools/lane_teardown.sh
+@@ -299,7 +299,75 @@
+ if [ "$CMD" = "list" ]; then exit 0; fi
+ 
+ if [ "${#sel_ids[@]}" -eq 0 ]; then
+-  echo; echo "${CMD^^}: lane '$LANE' owns no open rows — nothing to do"; exit 0
++  # ---- NEAR-MISS GUARD (model_performance-ye80) ----------------------------
++  # A lane name that ALMOST matches must never exit 0 having done nothing.
++  #
++  # Observed 2026-09-05, mid-recovery, with six containers still billing:
++  #     lane_teardown.sh <batch> drbf teardown --yes
++  #       -> "TEARDOWN: lane 'drbf' owns no open rows - nothing to do"  (exit 0)
++  # while SIX rows were open under the full name `drbf-compaction-notice-ab`.
++  #
++  # WHY it looked clean: the ids (val-drbf-a...) are exactly what inference
++  # WOULD have selected for lane `drbf`, but classify() consults claims FIRST
++  # and those rows carry a claim under the LONG name, so classify() returned
++  # OTHER:drbf-compaction-notice-ab and every candidate landed in PROTECTED.
++  # Empty selection then printed a success message. This is the one path an
++  # operator reaches for in an emergency: on it, a near miss must be an ERROR
++  # that names the candidates. (Same class as 2nz's: a guard that reports
++  # success while doing nothing.)
++  #
++  # Deliberately NOT "any protected row is an error": a lane that provisioned
++  # nothing runs teardown as a matter of course, and failing it merely because
++  # some unrelated lane holds rows would make every clean lane look broken.
++  # Only a NEAR MISS -- prefix-related on a token boundary, or an id inference
++  # would have claimed -- is treated as an operator typo.
++  near_owner=(); near_count=()
++  for i in "${!prot_ids[@]}"; do
++    pid=${prot_ids[$i]}; pwhy=${prot_why[$i]}
++    powner=""; case "$pwhy" in OTHER:*) powner=${pwhy#OTHER:} ;; esac
++    hit=0
++    # (a) an id inference WOULD have selected for this lane, had no claim won.
++    if [ "$pid" = "val-$LANE" ] || [[ "$pid" == "val-$LANE-"* ]]; then hit=1; fi
++    # (b) owner name and LANE are prefix-related on a token boundary -- covers
++    #     BOTH directions, because this batch's ledger genuinely carries both
++    #     short work-item ids and long manifest names as owners.
++    if [ -n "$powner" ] && { [[ "$powner" == "$LANE-"* ]] || [[ "$LANE" == "$powner-"* ]]; }; then hit=1; fi
++    [ "$hit" = 1 ] || continue
++    label=${powner:-<unattributed>}
++    found=0
++    for j in "${!near_owner[@]}"; do
++      if [ "${near_owner[$j]}" = "$label" ]; then
++        near_count[$j]=$(( near_count[j] + 1 )); found=1; break
++      fi
++    done
++    [ "$found" = 0 ] && { near_owner+=("$label"); near_count+=(1); }
++  done
++
++  if [ "${#near_owner[@]}" -gt 0 ]; then
++    {
++      echo
++      echo "ERROR: lane '$LANE' owns no open rows, but open rows ARE held under a NEAR-MISS lane name."
++      echo "       Refusing to report success for a teardown that would do nothing."
++      echo
++      for j in "${!near_owner[@]}"; do
++        printf "   candidate: %-32s %s open row(s)\n" "${near_owner[$j]}" "${near_count[$j]}"
++      done
++      echo
++      echo "Re-run with the EXACT owner name, e.g.:"
++      echo "   lane_teardown.sh \"$BATCH_DIR\" ${near_owner[0]} $CMD --yes"
++      echo "Or inspect first (read-only, destroys nothing):"
++      echo "   lane_teardown.sh \"$BATCH_DIR\" $LANE audit"
++    } >&2
++    exit 4
++  fi
++
++  echo
++  echo "${CMD^^}: lane '$LANE' owns no open rows - nothing to do"
++  if [ "${#prot_ids[@]}" -gt 0 ]; then
++    echo "  (${#prot_ids[@]} open row(s) belong to other lanes; none resemble '$LANE')"
++  fi
++  exit 0
++  # ---- end near-miss guard -------------------------------------------------
+ fi
+ 
+ # ---- decide, per row, whether it may leave `open` --------------------------

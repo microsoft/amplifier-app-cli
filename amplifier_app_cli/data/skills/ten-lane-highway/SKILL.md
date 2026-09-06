@@ -113,6 +113,21 @@ perform that teardown. A REAL teardown failure still exits non-zero and leaves
 the row open; the already-gone signature is deliberately narrow, so the signal
 that a teardown genuinely failed is never lost.
 
+**`highway_status.sh` reports `orphan_rows=N owned by: <lane>(n)`** — open
+ledger rows whose owning lane is **not live**. On 2026-09-05 a tmux server
+restart killed three lanes at once and left six DTU containers RUNNING with
+open rows; the ledger recorded all six correctly and the status report showed
+the lanes ENDED, but **nothing joined the two**, so the manager found the
+containers only by running `incus list` by hand. A non-zero `orphan_rows` means
+infrastructure with nothing driving it (Rule 14) — reclaim each named lane with
+`lane_teardown.sh BATCH_DIR <lane> teardown --yes`. The report **destroys
+nothing**: a false positive that prints is a nuisance, a false positive that
+destroys is another 0rg. A **live** lane's rows are never counted. Owners are
+matched by exact lane name, else by a unique lane-name prefix (so a row claimed
+with the short work-item id `vbs` still resolves to lane `vbs-…`); an owner
+that matches no lane, matches ambiguously, or is unclaimed is reported as such
+rather than guessed at.
+
 State lives in `BATCH_DIR` (create one per highway, e.g. `~/dev/hw-<name>`):
 `manifest.tsv` (scripts write), `HIGHWAY.md` (you write), `goals/` (pre-composed
 goal files), `lanes/` (worktrees), `.width` (authoritative width), `infra.tsv`

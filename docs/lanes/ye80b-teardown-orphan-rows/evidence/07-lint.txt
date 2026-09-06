@@ -1,0 +1,11 @@
+LINT — date: 2026-09-06T10:15:38Z
+
+$ ruff check tests/test_ten_lane_highway_orphan_rows.py
+All checks passed!
+
+$ ruff format --check tests/test_ten_lane_highway_orphan_rows.py
+1 file already formatted
+
+NOTE: `ruff check tests/` reports 6 PRE-EXISTING errors in
+test_message_renderer.py and test_pre_turn_repair.py (unused imports).
+Not this lane; not touched.
