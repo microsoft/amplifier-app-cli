@@ -77,22 +77,32 @@ done < "$MANIFEST"
 
 WD="hw-watchdog__${BATCH}"
 if tmux -L "${HIGHWAY_TMUX_SOCKET:-hw}" has-session -t "$WD" 2>/dev/null; then wd_st=LIVE; else wd_st=DEAD; fi
+# SUPERVISION HEARTBEAT (model_performance-6c3y): the watchdog touches
+# .watchdog-heartbeat every poll, so a lapse is reported with a DURATION rather
+# than inferred from a wake that never came. -1 = no heartbeat file at all
+# (watchdog never started here, or predates the heartbeat).
+WD_HB="$BATCH_DIR/.watchdog-heartbeat"
+if [ -f "$WD_HB" ]; then wd_hb_age=$(( now - $(stat -c %Y "$WD_HB") )); else wd_hb_age=-1; fi
 
 open=$(( WIDTH - live )); if [ "$open" -lt 0 ]; then open=0; fi
 if [ "$READY" -lt "$open" ]; then deficit=$READY; else deficit=$open; fi
 
 if [ "$JSON" = 1 ]; then
-  printf '{"ts":"%s","batch":"%s","live":%d,"ended":%d,"done_marker":%d,"stalled":%d,"gone":%d,"width":%d,"width_source":"%s","ready":%d,"deficit":%d,"watchdog":"%s"}\n' \
-    "$(date -u +%FT%TZ)" "$BATCH" "$live" "$ended" "$done_n" "$stalled" "$gone" "$WIDTH" "$width_source" "$READY" "$deficit" "$wd_st"
+  printf '{"ts":"%s","batch":"%s","live":%d,"ended":%d,"done_marker":%d,"stalled":%d,"gone":%d,"width":%d,"width_source":"%s","ready":%d,"deficit":%d,"watchdog":"%s","watchdog_hb_age":%d}\n' \
+    "$(date -u +%FT%TZ)" "$BATCH" "$live" "$ended" "$done_n" "$stalled" "$gone" "$WIDTH" "$width_source" "$READY" "$deficit" "$wd_st" "$wd_hb_age"
   exit 0
 fi
 
 echo
-echo "SUMMARY batch=$BATCH live=$live ended=$ended done_marker=$done_n stalled=$stalled gone=$gone width=$WIDTH width_source=$width_source ready=$READY watchdog=$wd_st"
+echo "SUMMARY batch=$BATCH live=$live ended=$ended done_marker=$done_n stalled=$stalled gone=$gone width=$WIDTH width_source=$width_source ready=$READY watchdog=$wd_st watchdog_hb_age=${wd_hb_age}s"
 echo "DEFICIT=$deficit"
 if [ "$deficit" -gt 0 ]; then
   echo "ACTION: launch $deficit lane(s) NOW - refill before anything else."
 fi
 if [ "$wd_st" = "DEAD" ]; then
-  echo "WARNING: watchdog $WD is not running - do not end the turn until it is."
+  if [ "$wd_hb_age" -ge 0 ]; then
+    echo "WARNING: watchdog $WD is not running - SUPERVISION LAPSED ${wd_hb_age}s ago (last .watchdog-heartbeat) - do not end the turn until it is."
+  else
+    echo "WARNING: watchdog $WD is not running - lapse duration unknown (no .watchdog-heartbeat) - do not end the turn until it is."
+  fi
 fi

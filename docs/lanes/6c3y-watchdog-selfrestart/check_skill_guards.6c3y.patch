@@ -1,0 +1,19 @@
+# PROPOSED ADDITION to the manager's BATCH_DIR/check_skill_guards.sh
+# (model_performance-6c3y). That file lives in the highway BATCH_DIR, which is
+# OUTSIDE this repo and outside this lane's ownership -- so this lane ships the
+# patch rather than applying it. Append these four `check` lines next to the
+# existing 0rg/bqu ones.
+#
+# The fourth line is the 2nz lesson applied to this fix: a guard and the
+# documentation of its escape hatch are ONE artifact. Cycle 49 restored 0rg's
+# guard but not its --all-owners docs and this very script certified the
+# half-restored state as OK.
+
+check scripts/highway_watchdog.sh "CAP RE-ARM GUARD" "model_performance-6c3y" \
+  "re-apply the cap re-arm (re-exec at the cap while the batch is open; wind down when it is not)"
+check scripts/highway_watchdog.sh "SUPERVISION HEARTBEAT" "model_performance-6c3y" \
+  "re-apply the watchdog's own .watchdog-heartbeat touch on every poll"
+check scripts/highway_status.sh "SUPERVISION HEARTBEAT" "model_performance-6c3y (instrument half)" \
+  "re-apply watchdog_hb_age + 'SUPERVISION LAPSED <n>s ago' reporting in highway_status.sh"
+check SKILL.md "re-arms itself at its runtime cap" "model_performance-6c3y (docs half)" \
+  "restore SKILL.md's cap re-arm text: re-arm-while-open, wind-down-when-abandoned, HIGHWAY_ABANDON_MAX, and the do-NOT-kill-session rule"
