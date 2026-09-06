@@ -1,0 +1,107 @@
+FFFF.                                                                    [100%]
+=================================== FAILURES ===================================
+_____________ test_root_instruction_survives_behavior_composition ______________
+
+tmp_path = PosixPath('/tmp/pytest-of-bkrabach/pytest-5370/test_root_instruction_survives0')
+
+    async def test_root_instruction_survives_behavior_composition(tmp_path: Path) -> None:
+        """FAIL-BEFORE: the root's body must not be replaced by a behavior's body."""
+        root_uri = _write_root_bundle(tmp_path)
+        behavior_uri = _write_behavior_bundle(tmp_path)
+    
+        prepared = await _prepare(root_uri, [behavior_uri])
+    
+        assert prepared.bundle.instruction is not None
+>       assert ROOT_MENTION in prepared.bundle.instruction, (
+            "the root bundle's instruction was replaced during behavior "
+            f"composition; got: {prepared.bundle.instruction!r}"
+        )
+E       AssertionError: the root bundle's instruction was replaced during behavior composition; got: '# behaviorbundle\n\nBEHAVIOR-README-BODY-f26u'
+E       assert '@rootbundle:context/system.md' in '# behaviorbundle\n\nBEHAVIOR-README-BODY-f26u'
+E        +  where '# behaviorbundle\n\nBEHAVIOR-README-BODY-f26u' = Bundle(name='behaviorbundle', version='0.1.0', description='An app-level behavior bundle', includes=[], namespace_root...es0/behaviorbundle')}, _pending_context={}, origins={'instruction:': [Origin(bundle='rootbundle', via_behavior=None)]}).instruction
+E        +    where Bundle(name='behaviorbundle', version='0.1.0', description='An app-level behavior bundle', includes=[], namespace_root...es0/behaviorbundle')}, _pending_context={}, origins={'instruction:': [Origin(bundle='rootbundle', via_behavior=None)]}) = PreparedBundle(mount_plan={}, resolver=<amplifier_foundation.bundle._prepared.BundleModuleResolver object at 0xe18ab36...'], 'hooks-logging': ['LoggingHandler'], 'hooks-python-check': ['python-check'], 'hooks-cost-bridge': ['cost-bridge']}).bundle
+
+tests/lib/bundle_loader/test_root_instruction_survives_behaviors.py:171: AssertionError
+_________________ test_last_behavior_with_a_body_does_not_win __________________
+
+tmp_path = PosixPath('/tmp/pytest-of-bkrabach/pytest-5370/test_last_behavior_with_a_body0')
+
+    async def test_last_behavior_with_a_body_does_not_win(tmp_path: Path) -> None:
+        """Several behaviors compose in order; none of them may take the instruction."""
+        root_uri = _write_root_bundle(tmp_path)
+        behaviors = [
+            _write_behavior_bundle(tmp_path, "behavior-one"),
+            _write_behavior_bundle(tmp_path, "behavior-two"),
+            _write_behavior_bundle(tmp_path, "behavior-three"),
+        ]
+    
+        prepared = await _prepare(root_uri, behaviors)
+    
+        assert prepared.bundle.instruction is not None
+>       assert ROOT_MENTION in prepared.bundle.instruction
+E       AssertionError: assert '@rootbundle:context/system.md' in '# behavior-three\n\nBEHAVIOR-README-BODY-f26u'
+E        +  where '# behavior-three\n\nBEHAVIOR-README-BODY-f26u' = Bundle(name='behavior-three', version='0.1.0', description='An app-level behavior bundle', includes=[], namespace_root...dy0/behavior-three')}, _pending_context={}, origins={'instruction:': [Origin(bundle='rootbundle', via_behavior=None)]}).instruction
+E        +    where Bundle(name='behavior-three', version='0.1.0', description='An app-level behavior bundle', includes=[], namespace_root...dy0/behavior-three')}, _pending_context={}, origins={'instruction:': [Origin(bundle='rootbundle', via_behavior=None)]}) = PreparedBundle(mount_plan={}, resolver=<amplifier_foundation.bundle._prepared.BundleModuleResolver object at 0xe18ab38...'], 'hooks-logging': ['LoggingHandler'], 'hooks-python-check': ['python-check'], 'hooks-cost-bridge': ['cost-bridge']}).bundle
+
+tests/lib/bundle_loader/test_root_instruction_survives_behaviors.py:190: AssertionError
+_____________ test_root_mention_still_expands_in_the_system_prompt _____________
+
+tmp_path = PosixPath('/tmp/pytest-of-bkrabach/pytest-5370/test_root_mention_still_expand0')
+
+    async def test_root_mention_still_expands_in_the_system_prompt(
+        tmp_path: Path,
+    ) -> None:
+        """Half two: restoring the body is useless if its @mention never resolves.
+    
+        The real defect showed BOTH halves -- the marker absent from ``raw.system``
+        AND the root's own mention absent from ``mentions:resolved``.
+        """
+        root_uri = _write_root_bundle(tmp_path)
+        behavior_uri = _write_behavior_bundle(tmp_path)
+    
+        prepared = await _prepare(root_uri, [behavior_uri])
+        prompt, emitted = await _build_system_prompt(prepared, tmp_path)
+    
+>       assert ROOT_MARKER in prompt, (
+            "the root bundle's system.md never reached the system prompt; "
+            f"prompt was: {prompt[:400]!r}"
+        )
+E       AssertionError: the root bundle's system.md never reached the system prompt; prompt was: '# behaviorbundle\n\nBEHAVIOR-README-BODY-f26u'
+E       assert 'ROOT-SYSTEM-MARKER-f26u' in '# behaviorbundle\n\nBEHAVIOR-README-BODY-f26u'
+
+tests/lib/bundle_loader/test_root_instruction_survives_behaviors.py:208: AssertionError
+______________ test_dropped_behavior_body_is_reported_not_silent _______________
+
+tmp_path = PosixPath('/tmp/pytest-of-bkrabach/pytest-5370/test_dropped_behavior_body_is_0')
+caplog = <_pytest.logging.LogCaptureFixture object at 0xe18ab36b74d0>
+
+    async def test_dropped_behavior_body_is_reported_not_silent(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A body that loses must be named in the log -- silence is the same defect.
+    
+        The fix makes the ROOT win.  That decision drops the behavior's body, so it
+        must be announced: a silent drop in the other direction is the same class
+        of bug this item exists to remove.
+        """
+        root_uri = _write_root_bundle(tmp_path)
+        behavior_uri = _write_behavior_bundle(tmp_path, "noisy-behavior")
+    
+        with caplog.at_level(logging.WARNING, logger="amplifier_app_cli"):
+            await _prepare(root_uri, [behavior_uri])
+    
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+>       assert any("noisy-behavior" in message for message in warnings), (
+            f"the dropped body was not reported; warnings were: {warnings}"
+        )
+E       AssertionError: the dropped body was not reported; warnings were: []
+E       assert False
+E        +  where False = any(<generator object test_dropped_behavior_body_is_reported_not_silent.<locals>.<genexpr> at 0xe18ab36e2330>)
+
+tests/lib/bundle_loader/test_root_instruction_survives_behaviors.py:244: AssertionError
+=========================== short test summary info ============================
+FAILED tests/lib/bundle_loader/test_root_instruction_survives_behaviors.py::test_root_instruction_survives_behavior_composition
+FAILED tests/lib/bundle_loader/test_root_instruction_survives_behaviors.py::test_last_behavior_with_a_body_does_not_win
+FAILED tests/lib/bundle_loader/test_root_instruction_survives_behaviors.py::test_root_mention_still_expands_in_the_system_prompt
+FAILED tests/lib/bundle_loader/test_root_instruction_survives_behaviors.py::test_dropped_behavior_body_is_reported_not_silent
+4 failed, 1 passed in 0.09s

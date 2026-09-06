@@ -68,6 +68,98 @@ def _is_namespace_path(source: str) -> bool:
     return bool(_NAMESPACE_PATH_PATTERN.match(source))
 
 
+def _preserve_root_instruction(
+    composed: Bundle,
+    *,
+    root_instruction: str | None,
+    composed_bundle: Bundle,
+    behavior_uri: str,
+) -> None:
+    """Keep the user's bundle in charge of the system prompt.
+
+    THE DEFECT THIS EXISTS TO PREVENT
+    ---------------------------------
+    ``Bundle.compose()`` documents *"instruction: later replaces earlier"* and
+    implements exactly that (foundation ``bundle/_dataclass.py``)::
+
+        # Instruction: later replaces
+        if other.instruction:
+            result.instruction = other.instruction
+
+    Every other section of ``compose()`` merges, accumulates, or namespaces:
+    ``session``/``spawn`` deep-merge, ``providers``/``tools``/``hooks`` merge by
+    module id, ``context`` accumulates under a bundle prefix, ``agents``
+    updates by name.  ``instruction`` is the ONLY field whose earlier value is
+    destroyed rather than combined -- which is why this guard is scoped to that
+    one field and nothing else.
+
+    Here the user's chosen bundle is ``self`` and app-level behaviors are
+    ``others``, so a behavior whose ``bundle.md`` carries a markdown body
+    silently took over the system prompt.  Measured on the reporting host: 54
+    of 54 ``anchors-amp-dev`` sessions since 2026-08-26 ran with
+    ``amplifier-bundle-notify``'s README as their entire system prompt, and the
+    root's own body -- the single line ``@anchors-amp-dev:context/system.md``
+    -- never reached the model.  The @mention was never even resolved, because
+    the text carrying it was gone before mention expansion ran.
+
+    Notify is only the bundle that fires today.  ``_build_notification_behaviors()``
+    composes the notify ROOT bundle deliberately ("a minimal marker that just
+    identifies the repo"), and that root ``bundle.md`` has a README body.  Any
+    behavior or app bundle with a body does the same thing, so the guard lives
+    here in the compose loop rather than in any one bundle.
+
+    WHY RESTORE RATHER THAN REORDER
+    -------------------------------
+    The alternative was to compose behaviors into a base first and the user
+    bundle LAST, so "later replaces earlier" favours the user -- which is what
+    foundation itself does for ``includes:`` (``registry.py``: ``result =
+    result.compose(included)`` in a loop, then ``return result.compose(bundle)``)
+    and what ``compose()``'s own docstring calls typical usage.
+
+    It is the better long-term shape and it is NOT what this fix does, because
+    moving the user bundle to last also inverts precedence for ``session``,
+    ``spawn``, ``providers``, ``tools``, ``hooks``, ``agents``, ``name``,
+    ``version``, ``description`` and ``base_path`` -- nine surfaces that are
+    not broken, across every app bundle a user has configured.  One defect in
+    one field is repaired in that field; the reorder is a separate change that
+    needs its own evidence.
+
+    WHAT HAPPENS TO THE BEHAVIOR'S OWN BODY
+    ---------------------------------------
+    It is DROPPED, and a warning names the bundle that lost it.  A behavior
+    bundle has no business supplying the session's system prompt, but dropping
+    it silently would be the same class of defect in the other direction -- an
+    author who put content in ``bundle.md`` expecting it to be read deserves to
+    be told it was not.  The fix for such a bundle is to move that prose into
+    ``README.md`` and leave ``bundle.md``'s body empty.
+
+    A root bundle with NO body of its own still inherits a composed body: only
+    a non-empty root instruction is restored, so a bodyless root behaves
+    exactly as it did before this guard existed.
+
+    Args:
+        composed: Result of ``root.compose(composed_bundle)``.  Mutated in place.
+        root_instruction: The user root bundle's instruction, captured before
+            any behavior was composed.
+        composed_bundle: The behavior/app bundle just composed in.
+        behavior_uri: Its URI, for the warning message.
+    """
+    if not root_instruction or not composed_bundle.instruction:
+        return
+    if composed.instruction == root_instruction:
+        return
+
+    logger.warning(
+        "Bundle '%s' (%s) carries a markdown body; dropping it. A composed "
+        "behavior/app bundle must not replace the root bundle's system "
+        "instruction. Move that prose into README.md and leave bundle.md's "
+        "body empty.",
+        composed_bundle.name or "<unnamed>",
+        behavior_uri,
+    )
+    composed.instruction = root_instruction
+
+
 async def load_and_prepare_bundle(
     bundle_name: str,
     discovery: AppBundleDiscovery,
@@ -179,6 +271,11 @@ async def load_and_prepare_bundle(
 
     # 3. Compose additional behavior bundles (app-level policies like notifications)
     if compose_behaviors:
+        # The user's own bundle owns the system prompt -- see
+        # _preserve_root_instruction() for why this has to be re-asserted after
+        # every single compose() call.
+        root_instruction = bundle.instruction
+
         for behavior_uri in compose_behaviors:
             behavior_name = _extract_behavior_name(behavior_uri)
             logger.info(f"Composing behavior: {behavior_uri}")
@@ -188,7 +285,14 @@ async def load_and_prepare_bundle(
                 behavior_bundle = await load_bundle(
                     behavior_uri, registry=discovery.registry
                 )
-                bundle = bundle.compose(behavior_bundle)
+                composed = bundle.compose(behavior_bundle)
+                _preserve_root_instruction(
+                    composed,
+                    root_instruction=root_instruction,
+                    composed_bundle=behavior_bundle,
+                    behavior_uri=behavior_uri,
+                )
+                bundle = composed
                 logger.debug(
                     f"Composed behavior '{behavior_bundle.name}' onto '{bundle.name}'"
                 )
