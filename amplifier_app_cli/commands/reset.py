@@ -10,6 +10,18 @@ Categories:
     cache     - Downloaded bundles (auto-regenerates)
     registry  - Bundle mappings (auto-regenerates)
 
+Anything in ~/.amplifier that is not named by a category above is *not managed
+by reset*: selective cleanup never touches it, and the plan lists it so it is
+visible rather than implied. Only --full, which removes the directory outright,
+takes unmanaged state with it.
+
+That rule exists because the category list is a static description of a
+directory other components keep adding to. It previously had a catch-all
+"other" category that expanded, at runtime, to every unrecognised entry - one
+checkbox that on a real machine covered 76% of ~/.amplifier, including state
+belonging to components this module has never heard of. A taxonomy that goes
+stale by default must fail towards keeping data, not towards deleting it.
+
 Example:
     # Interactive mode (default)
     amplifier reset
@@ -33,19 +45,19 @@ from ..utils.uv_utils import UvStep, defer_uv_tool_swap
 from ..utils.uv_utils import remove_stale_uv_lock as _remove_stale_uv_lock
 from .reset_interactive import ChecklistItem, run_checklist
 
-# Category definitions: category name -> list of files/dirs in ~/.amplifier
-# Note: "other" is a special dynamic category - see _get_other_files()
+# Category definitions: category name -> list of files/dirs in ~/.amplifier.
+# Every entry is an explicit, static path. There is deliberately no dynamic
+# catch-all: an entry that appears here is one someone decided reset owns.
 RESET_CATEGORIES = {
     "projects": ["projects"],
     "settings": ["settings.yaml"],
     "keys": ["keys.env"],
     "cache": ["cache"],
     "registry": ["registry.json"],
-    "other": [],  # Dynamic - populated at runtime with uncategorized files
 }
 
 # Display order for categories
-CATEGORY_ORDER = ["projects", "settings", "keys", "cache", "registry", "other"]
+CATEGORY_ORDER = ["projects", "settings", "keys", "cache", "registry"]
 
 # Descriptions for each category (used in UI)
 CATEGORY_DESCRIPTIONS = {
@@ -54,8 +66,11 @@ CATEGORY_DESCRIPTIONS = {
     "keys": "API keys (keys.env)",
     "cache": "Downloaded bundles (auto-regenerates)",
     "registry": "Bundle mappings (auto-regenerates)",
-    "other": "Other files (custom configs, plugins, etc.)",
 }
+
+# Retired category. Kept only so the parser can explain what happened rather
+# than emitting a bare "invalid category" for a spelling that used to work.
+_RETIRED_CATEGORIES = {"other"}
 
 # Default categories to remove - safe by default, only remove auto-regenerating items
 DEFAULT_REMOVE = {"cache", "registry"}
@@ -77,41 +92,42 @@ def _get_amplifier_dir() -> Path:
 
 
 def _get_known_files() -> set[str]:
-    """Get all file/directory names covered by non-dynamic categories."""
+    """Get all file/directory names covered by a category."""
     known = set()
-    for category, files in RESET_CATEGORIES.items():
-        if category != "other":  # Skip dynamic category
-            known.update(files)
+    for files in RESET_CATEGORIES.values():
+        known.update(files)
     return known
 
 
-def _get_other_files() -> list[str]:
-    """Get list of files in ~/.amplifier not covered by any category.
+def _get_unmanaged_files() -> list[str]:
+    """List entries in ~/.amplifier that no category claims.
 
-    These are user-created files like custom configs, plugins, etc.
-    Returns empty list if directory doesn't exist.
+    These belong to components reset does not model - other modules' state,
+    credentials they store outside keys.env, anything added since this
+    taxonomy was written. Selective cleanup never removes them; this exists so
+    the plan can *show* what is being left alone. Returns an empty list if the
+    directory does not exist.
     """
     amplifier_dir = _get_amplifier_dir()
     if not amplifier_dir.exists():
         return []
 
     known = _get_known_files()
-    other = []
-    for item in amplifier_dir.iterdir():
-        if item.name not in known:
-            other.append(item.name)
-    return sorted(other)
+    return sorted(
+        item.name for item in amplifier_dir.iterdir() if item.name not in known
+    )
 
 
 def _get_remove_paths(remove_cats: set[str]) -> set[str]:
-    """Convert category names to actual file/directory names."""
+    """Convert category names to actual file/directory names.
+
+    Only ever expands to statically declared category paths. Nothing here
+    reads the directory, so an entry reset does not know about cannot be
+    selected for removal by any category.
+    """
     paths = set()
     for category in remove_cats:
-        if category == "other":
-            # Dynamic category - include all uncategorized files
-            paths.update(_get_other_files())
-        elif category in RESET_CATEGORIES:
-            paths.update(RESET_CATEGORIES[category])
+        paths.update(RESET_CATEGORIES.get(category, []))
     return paths
 
 
@@ -135,6 +151,16 @@ def _parse_categories(
         )
 
     valid = set(RESET_CATEGORIES.keys())
+    retired = categories & _RETIRED_CATEGORIES
+    if retired:
+        raise click.BadParameter(
+            f"The '{', '.join(sorted(retired))}' category was removed. It "
+            "expanded at runtime to every unrecognised entry in ~/.amplifier, "
+            "so it swept state belonging to components reset does not model. "
+            "Files outside the named categories are now always preserved; use "
+            "--full to remove the directory outright."
+        )
+
     invalid = categories - valid
     if invalid:
         raise click.BadParameter(
@@ -164,6 +190,7 @@ def _run_interactive() -> set[str] | None:
 
 def _show_plan(
     remove_cats: set[str],
+    full: bool,
     no_install: bool,
     dry_run: bool,
 ) -> None:
@@ -174,7 +201,7 @@ def _show_plan(
         console.print("[yellow]DRY RUN - No changes will be made[/yellow]\n")
 
     # Upfront reassurance about what's safe
-    if "projects" not in remove_cats:
+    if not full and "projects" not in remove_cats:
         console.print(
             "[green]Your session transcripts are safe[/green] - "
             "projects/ will be preserved.\n"
@@ -189,26 +216,28 @@ def _show_plan(
         category for category in CATEGORY_ORDER if category not in remove_cats
     ]
 
-    # Show what "other" actually contains when it is selected for removal.
-    other_files = _get_other_files() if "other" in remove_cats else []
-
-    if remove_cats == set(RESET_CATEGORIES):
+    if full:
         console.print(f"  3. Remove {amplifier_dir} [red](ALL contents)[/red]")
+        unmanaged = _get_unmanaged_files()
+        if unmanaged:
+            # --full is the only path that takes unmanaged state with it, so
+            # it is the one place the user has to be told by name.
+            console.print(
+                "       [red]Including state reset does not manage:[/red] "
+                f"{', '.join(unmanaged)}"
+            )
     else:
         console.print(f"  3. Clean parts of {amplifier_dir}")
-        # Build removal display with "other" expansion.
-        remove_display = []
-        for name in remove_names:
-            if name == "other" and other_files:
-                remove_display.append(f"other ({', '.join(other_files)})")
-            else:
-                remove_display.append(name)
-        console.print(
-            f"       [red]Removing:[/red] {', '.join(remove_display) or 'none'}"
-        )
+        console.print(f"       [red]Removing:[/red] {', '.join(remove_names) or 'none'}")
         console.print(
             f"       [green]Preserving:[/green] {', '.join(preserve_names) or 'none'}"
         )
+        unmanaged = _get_unmanaged_files()
+        if unmanaged:
+            console.print(
+                "       [green]Preserving (not managed by reset):[/green] "
+                f"{', '.join(unmanaged)}"
+            )
 
     if no_install:
         console.print("  4. [dim]Skip reinstall (--no-install)[/dim]")
@@ -321,8 +350,15 @@ def _uninstall_amplifier(dry_run: bool = False) -> bool:
     return success
 
 
-def _remove_amplifier_dir(remove_cats: set[str], dry_run: bool = False) -> bool:
-    """Remove only paths from selected reset categories.
+def _remove_amplifier_dir(
+    remove_cats: set[str], full: bool = False, dry_run: bool = False
+) -> bool:
+    """Remove paths from the selected reset categories.
+
+    Whole-directory removal is driven by ``full``, never inferred from the
+    category set. Selecting every category still only removes the paths those
+    categories name, because the directory holds state no category models and
+    naming five things is not a request to delete a sixth.
 
     Uses shared cache_management utilities for cache/registry removal when those
     categories are being removed, ensuring DRY compliance across commands.
@@ -337,16 +373,31 @@ def _remove_amplifier_dir(remove_cats: set[str], dry_run: bool = False) -> bool:
         pass  # Will use inline rmtree_robust fallback
 
     amplifier_dir = _get_amplifier_dir()
+
+    # The shared utilities resolve ~/.amplifier independently, via
+    # cache_management.get_amplifier_dir(). Only delegate to them when that
+    # answer matches the directory actually being cleaned - otherwise they
+    # would clear the real cache and registry while this loop removes paths
+    # from somewhere else entirely, which is a silent cross-directory delete
+    # rather than a redirected one.
+    if clear_download_cache is not None or clear_registry is not None:
+        from ..utils.cache_management import get_amplifier_dir as _shared_dir
+
+        if _shared_dir() != amplifier_dir:
+            clear_download_cache = None
+            clear_registry = None
+
     console.print(f"[bold]>>>[/bold] Removing {amplifier_dir}...")
 
     if not amplifier_dir.exists():
         console.print("    [dim]Directory does not exist, skipping[/dim]")
         return True
 
-    # Removing every category has the established --full behavior: remove the
-    # root in one operation. An empty category set is deliberately *not* the
-    # inverse of this case; it is a data-cleanup no-op.
-    if remove_cats == set(RESET_CATEGORIES):
+    # --full is the only way to reach whole-directory removal: it is the one
+    # request that explicitly includes state reset does not manage. An empty
+    # category set is deliberately *not* the inverse of this case; it is a
+    # data-cleanup no-op.
+    if full:
         if dry_run:
             console.print(
                 f"    [dim][dry-run] Would remove entire directory: {amplifier_dir}[/dim]"
@@ -626,9 +677,13 @@ def reset(
       projects   - Session transcripts and history [not removed by default]
       settings   - User configuration (settings.yaml) [not removed by default]
       keys       - API keys (keys.env) [not removed by default]
-      other      - Custom files you've added [not removed by default]
       cache      - Downloaded bundles (auto-regenerates) [removed by default]
       registry   - Bundle mappings (auto-regenerates) [removed by default]
+
+    \b
+    Anything else in ~/.amplifier belongs to components reset does not model
+    and is always preserved. Only --full removes it, and the plan names it
+    first.
 
     \b
     Examples:
@@ -672,7 +727,7 @@ def reset(
             return
 
     # Show plan
-    _show_plan(remove_cats, no_install, dry_run)
+    _show_plan(remove_cats, full, no_install, dry_run)
 
     # Confirm unless -y or dry-run
     if not yes and not dry_run:
@@ -691,7 +746,7 @@ def reset(
     # runs after this process exits. POSIX unlinks open files, so the path below
     # is unchanged there.
     if os.name == "nt" and not dry_run:
-        if not _remove_amplifier_dir(remove_cats, dry_run):
+        if not _remove_amplifier_dir(remove_cats, full=full, dry_run=dry_run):
             raise click.ClickException(
                 "Reset stopped because cleanup was incomplete; "
                 "no reinstall was staged."
@@ -701,7 +756,7 @@ def reset(
         return
 
     _uninstall_amplifier(dry_run)
-    cleanup_succeeded = _remove_amplifier_dir(remove_cats, dry_run)
+    cleanup_succeeded = _remove_amplifier_dir(remove_cats, full=full, dry_run=dry_run)
 
     if dry_run:
         console.print("\n[green]>>>[/green] Dry run complete - no changes were made")
