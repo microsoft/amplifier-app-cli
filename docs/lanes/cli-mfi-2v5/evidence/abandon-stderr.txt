@@ -1,0 +1,4 @@
+Session cleanup exceeded 0.0s and was ABANDONED -- the tool's result was already emitted, so the run's outcome is intact. Raise the bound with AMPLIFIER_TOOL_CLEANUP_TIMEOUT if a slow teardown is expected.
+/home/bkrabach/.local/share/uv/python/cpython-3.13.11-linux-aarch64-gnu/lib/python3.13/asyncio/base_events.py:750: RuntimeWarning: coroutine 'mount.<locals>.cleanup' was never awaited
+  self._ready.clear()
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback

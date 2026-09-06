@@ -1,0 +1,128 @@
+$ git show HEAD:amplifier_app_cli/utils/settings_manager.py > amplifier_app_cli/utils/settings_manager.py
+$ uv run pytest tests/test_settings_atomic_write.py -q -k 'timestamp or load_settings'
+
+.FFFF.                                                                   [100%]
+=================================== FAILURES ===================================
+____ test_timestamp_write_refuses_to_overwrite_an_unparseable_settings_file ____
+
+settings_file = PosixPath('/tmp/pytest-of-bkrabach/pytest-5329/test_timestamp_write_refuses_t0/.amplifier/settings.yaml')
+caplog = <_pytest.logging.LogCaptureFixture object at 0xeed69a47f8c0>
+
+    def test_timestamp_write_refuses_to_overwrite_an_unparseable_settings_file(
+        settings_file, caplog
+    ):
+        """A read that failed is not a mandate to replace the file with defaults.
+    
+        Before: `load_settings()` swallowed the parse error and returned
+        DEFAULT_SETTINGS, which `save_update_last_check` then wrote back --
+        replacing a real settings file with a three-key stub.
+        """
+        corrupt = "bundle: {added: {a: b\nrouting: [unclosed\n"
+        settings_file.write_text(corrupt, encoding="utf-8")
+    
+        settings_manager.save_update_last_check(datetime(2026, 9, 6, 12, 0, 0))
+    
+>       assert settings_file.read_text(encoding="utf-8") == corrupt
+E       assert "updates:\n  ...6T12:00:00'\n" == 'bundle: {add...: [unclosed\n'
+E         
+E         - bundle: {added: {a: b
+E         - routing: [unclosed
+E         + updates:
+E         +   check_frequency_hours: 4
+E         +   auto_prompt: true
+E         +   last_check: '2026-09-06T12:00:00'
+
+tests/test_settings_atomic_write.py:203: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  amplifier_app_cli.utils.settings_manager:settings_manager.py:50 Could not load settings from /tmp/pytest-of-bkrabach/pytest-5329/test_timestamp_write_refuses_t0/.amplifier/settings.yaml: while parsing a flow mapping
+  in "/tmp/pytest-of-bkrabach/pytest-5329/test_timestamp_write_refuses_t0/.amplifier/settings.yaml", line 1, column 17
+expected ',' or '}', but got ':'
+  in "/tmp/pytest-of-bkrabach/pytest-5329/test_timestamp_write_refuses_t0/.amplifier/settings.yaml", line 2, column 8
+________________________ test_timestamp_write_is_atomic ________________________
+
+settings_file = PosixPath('/tmp/pytest-of-bkrabach/pytest-5329/test_timestamp_write_is_atomic0/.amplifier/settings.yaml')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xeed69a52fad0>
+
+    def test_timestamp_write_is_atomic(settings_file, monkeypatch):
+        settings_file.write_text(yaml.safe_dump(_REGISTERED_BUNDLE), encoding="utf-8")
+    
+        at_replace: list[str] = []
+        real_replace = os.replace
+    
+        def spy_replace(src, dst):
+            at_replace.append(Path(dst).read_text(encoding="utf-8"))
+            return real_replace(src, dst)
+    
+        monkeypatch.setattr(os, "replace", spy_replace)
+        settings_manager.save_update_last_check(datetime(2026, 9, 6, 12, 0, 0))
+    
+>       assert at_replace, "settings.yaml must be written via os.replace, not in place"
+E       AssertionError: settings.yaml must be written via os.replace, not in place
+E       assert []
+
+tests/test_settings_atomic_write.py:219: AssertionError
+________ test_timestamp_write_blocks_on_the_same_lock_lib_settings_uses ________
+
+settings_file = PosixPath('/tmp/pytest-of-bkrabach/pytest-5329/test_timestamp_write_blocks_on0/.amplifier/settings.yaml')
+
+    def test_timestamp_write_blocks_on_the_same_lock_lib_settings_uses(settings_file):
+        """The read AND the write happen under one lock, not just the write.
+    
+        Holding `settings.yaml.lock` -- the same lock file
+        `lib/settings.py::_scope_lock` takes for the global scope -- must stop
+        `save_update_last_check` from making any change at all. That is what
+        makes a concurrent `bundle add` safe.
+        """
+        settings_file.write_text(yaml.safe_dump(_REGISTERED_BUNDLE), encoding="utf-8")
+        before = settings_file.read_text(encoding="utf-8")
+    
+        lock = FileLock(str(settings_file) + ".lock", timeout=10)
+        done = threading.Event()
+    
+        def writer():
+            settings_manager.save_update_last_check(datetime(2026, 9, 6, 12, 0, 0))
+            done.set()
+    
+        with lock:
+            thread = threading.Thread(target=writer, daemon=True)
+            thread.start()
+            time.sleep(0.6)
+>           assert not done.is_set(), "the write proceeded while the lock was held"
+E           AssertionError: the write proceeded while the lock was held
+E           assert not True
+E            +  where True = is_set()
+E            +    where is_set = <threading.Event at 0xeed69a4a3ed0: set>.is_set
+
+tests/test_settings_atomic_write.py:247: AssertionError
+________________ test_load_settings_creates_defaults_atomically ________________
+
+settings_file = PosixPath('/tmp/pytest-of-bkrabach/pytest-5329/test_load_settings_creates_def0/.amplifier/settings.yaml')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xeed69a380f30>
+
+    def test_load_settings_creates_defaults_atomically(settings_file, monkeypatch):
+        assert not settings_file.exists()
+    
+        replaced: list[tuple[str, str]] = []
+        real_replace = os.replace
+    
+        def spy_replace(src, dst):
+            replaced.append((str(src), str(dst)))
+            return real_replace(src, dst)
+    
+        monkeypatch.setattr(os, "replace", spy_replace)
+        loaded = settings_manager.load_settings()
+    
+        assert loaded["updates"]["auto_prompt"] is True
+        assert settings_file.exists()
+>       assert replaced, "the defaults file must be created via os.replace too"
+E       AssertionError: the defaults file must be created via os.replace too
+E       assert []
+
+tests/test_settings_atomic_write.py:273: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_settings_atomic_write.py::test_timestamp_write_refuses_to_overwrite_an_unparseable_settings_file
+FAILED tests/test_settings_atomic_write.py::test_timestamp_write_is_atomic - ...
+FAILED tests/test_settings_atomic_write.py::test_timestamp_write_blocks_on_the_same_lock_lib_settings_uses
+FAILED tests/test_settings_atomic_write.py::test_load_settings_creates_defaults_atomically
+4 failed, 2 passed, 6 deselected in 0.96s
+EXIT=1
