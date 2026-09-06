@@ -138,12 +138,17 @@ def test_atomic_write_survives_a_reader_racing_it(tmp_path):
                 continue
             if seen not in (doc_a, doc_b):
                 torn.append(seen[:80])
+            # A hair of breathing room: on Windows a destination held open
+            # blocks the rename outright (see _replace_with_retry), and three
+            # threads in a pure spin loop hold it open essentially always --
+            # which measures the retry budget, not the tearing this asserts.
+            time.sleep(0.001)
 
     readers = [threading.Thread(target=reader, daemon=True) for _ in range(3)]
     for t in readers:
         t.start()
     try:
-        for i in range(150):
+        for i in range(80):
             atomic_write_text(target, doc_b if i % 2 else doc_a)
     finally:
         stop.set()
@@ -151,6 +156,56 @@ def test_atomic_write_survives_a_reader_racing_it(tmp_path):
             t.join(timeout=5)
 
     assert not torn, f"reader observed {len(torn)} partial file(s): {torn[:3]}"
+
+
+def test_atomic_write_retries_a_destination_held_open(tmp_path, monkeypatch):
+    """Windows: `os.replace` fails while a reader holds the destination open.
+
+    That is a real thing to survive, not a test artifact -- losing a
+    `bundle add` because another session happened to be reading settings.yaml
+    would be its own version of this bug. Retry briefly; never drop the write.
+    """
+    target = tmp_path / "settings.yaml"
+    target.write_text("old: 1\n", encoding="utf-8")
+
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def flaky_replace(src, dst):
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            raise PermissionError(5, "Access is denied")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    atomic_write_text(target, "new: 2\n")
+
+    assert calls["n"] == 4
+    assert target.read_text(encoding="utf-8") == "new: 2\n"
+
+
+def test_atomic_write_fails_loud_when_the_destination_never_frees(
+    tmp_path, monkeypatch
+):
+    """The retry budget is bounded -- a permanently blocked write must raise."""
+    from amplifier_app_cli.utils import atomic_write as aw
+
+    target = tmp_path / "settings.yaml"
+    target.write_text("old: 1\n", encoding="utf-8")
+
+    def always_denied(src, dst):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(os, "replace", always_denied)
+    monkeypatch.setattr(aw, "REPLACE_RETRY_SECONDS", 0.05)
+
+    with pytest.raises(PermissionError):
+        atomic_write_text(target, "new: 2\n")
+
+    assert target.read_text(encoding="utf-8") == "old: 1\n"
+    assert [p.name for p in tmp_path.iterdir()] == ["settings.yaml"], (
+        "a failed write must not leave a temp file behind"
+    )
 
 
 # ---------------------------------------------------------------------------

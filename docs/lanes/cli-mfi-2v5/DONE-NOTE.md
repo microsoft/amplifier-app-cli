@@ -185,10 +185,18 @@ config) go through `amplifier_foundation.write_with_backup` — a different repo
 and per-session directories are not shared state. `main.py:1305` writes a
 per-session transcript file, same reasoning.
 
-**Known limitation, stated rather than hidden:** on Windows `os.replace` raises
-`PermissionError` if another process holds the destination open. Readers here
-open-read-close in one breath, so the window is small — and this is the shape
-`lib/settings.py` already shipped, so it is not a new exposure.
+**Windows — found by CI, then fixed properly.** On Windows `os.replace`
+(`MoveFileEx`) fails with `PermissionError` while another process holds the
+*destination* open, even for reading. POSIX never raises this here. The
+race test hit it immediately on `windows-latest` (both 3.11 and 3.12) — and
+that is a real production hazard, not a test artifact: losing a `bundle add`
+because another session happened to be reading settings.yaml would be its own
+version of this bug. `_replace_with_retry` now retries the rename with
+exponential backoff for up to `REPLACE_RETRY_SECONDS` (5s) and then **raises**,
+with a WARNING naming the cause. The write is never silently dropped. Two
+tests cover it: the retry succeeds after transient denials, and a permanently
+blocked destination raises while leaving both the original file and the
+directory clean.
 
 ### Measured
 
@@ -203,16 +211,16 @@ FAILED ...::test_timestamp_write_blocks_on_the_same_lock_lib_settings_uses
 FAILED ...::test_load_settings_creates_defaults_atomically
 ```
 
-`tests/test_settings_atomic_write.py` (12 tests) covers both the shape and the
-race:
+`tests/test_settings_atomic_write.py` (14 tests) covers the shape, the race,
+and the Windows rename hazard:
 
 * **shape** — the destination still holds the **old** bytes at the instant
   `os.replace` is called, the temp file is in the same directory, and it was
   `fsync`ed. Applied to `atomic_write_text`, to `save_update_last_check`, and
   to `AppSettings._write_scope`.
-* **race** — three reader threads polling flat-out through 150 rewrites
-  alternating two large, different-length documents: every observation must be
-  one complete document. (Asserted only for the atomic writer — a "prove the
+* **race** — three reader threads polling through 80 rewrites alternating two
+  large, different-length documents: every observation must be one complete
+  document. (Asserted only for the atomic writer — a "prove the
   old code tears" control would be timing-dependent, and a flaky test is worse
   than no control. The fail-before run above is the control.)
 * **lost update** — holding `settings.yaml.lock` (the same lock file
@@ -227,11 +235,11 @@ race:
 
 | Gate | Result |
 |------|--------|
-| `uv run pytest -q` | **1834 passed, 1 skipped, 13 deselected, 1 xfailed** (`evidence/full-suite.txt`) |
+| `uv run pytest -q` | **1836 passed, 1 skipped, 13 deselected, 1 xfailed** (`evidence/full-suite.txt`) |
 | `uv run pytest -m integration -q` | **13 passed** (`evidence/integration-suite.txt`) |
 | `ruff check` on every touched file | clean (repo has 16 pre-existing findings in untouched files; ruff is not in CI) |
 | Manual: `amplifier tool invoke recipes -b anchors-amp-dev operation=list` | prints result, exit 0, 2.6s (`evidence/manual-tool-invoke.txt`) |
-| Full CI matrix (ubuntu/macos/windows × py3.11/3.12) | runs on the PR |
+| Full CI matrix (ubuntu/macos/windows × py3.11/3.12) | first push: 7/9 green, **windows 3.11 + 3.12 failed** on the `os.replace`-while-held-open behaviour above; fixed in the follow-up commit and re-run — see PR #314 checks |
 
 One transient: the very first full-suite run failed
 `test_truststore_wrap_bio_shim.py::test_real_truststore_is_covered_at_cli_import`

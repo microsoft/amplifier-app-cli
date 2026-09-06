@@ -27,14 +27,57 @@ hold the file's lock across *both* the read and the write -- see
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+logger = logging.getLogger(__name__)
+
 __all__ = ["atomic_write_text", "atomic_write_yaml", "atomic_write_json"]
+
+# Windows only: ``MoveFileEx`` (what ``os.replace`` calls) fails with
+# ``PermissionError`` while another process has the DESTINATION open, even for
+# reading. POSIX never raises this here. Readers of these files open, read and
+# close in one breath, so the collision window is microseconds -- but on a host
+# running hundreds of Amplifier processes it will happen, and losing a
+# ``bundle add`` to it would be its own version of this bug. Retry briefly,
+# then fail loud; never silently drop the write.
+REPLACE_RETRY_SECONDS = 5.0
+_REPLACE_RETRY_INITIAL_SLEEP = 0.002
+_REPLACE_RETRY_MAX_SLEEP = 0.05
+
+
+def _replace_with_retry(src: str, dst: Path) -> None:
+    deadline = time.monotonic() + REPLACE_RETRY_SECONDS
+    sleep_for = _REPLACE_RETRY_INITIAL_SLEEP
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            os.replace(src, dst)
+            if attempts > 1:
+                logger.debug(
+                    "Replaced %s after %d attempts (destination was held open).",
+                    dst,
+                    attempts,
+                )
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Could not replace %s after %.1fs of retries -- another "
+                    "process is holding it open.",
+                    dst,
+                    REPLACE_RETRY_SECONDS,
+                )
+                raise
+            time.sleep(sleep_for)
+            sleep_for = min(sleep_for * 2, _REPLACE_RETRY_MAX_SLEEP)
 
 
 def atomic_write_text(path: Path | str, content: str, *, encoding: str = "utf-8") -> None:
@@ -43,10 +86,8 @@ def atomic_write_text(path: Path | str, content: str, *, encoding: str = "utf-8"
     Creates parent directories as needed. On any failure the temp file is
     removed and the original file is left exactly as it was.
 
-    Note for Windows: ``os.replace`` fails with ``PermissionError`` if another
-    process holds the destination open. Readers here open, read and close in
-    one breath, so the window is small -- and the alternative (truncate in
-    place) has no window at all, it is simply always wrong.
+    On Windows the final rename is retried briefly if another process is
+    holding the destination open -- see :func:`_replace_with_retry`.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +98,7 @@ def atomic_write_text(path: Path | str, content: str, *, encoding: str = "utf-8"
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, path)
+        _replace_with_retry(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
