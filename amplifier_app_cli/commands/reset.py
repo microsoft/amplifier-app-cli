@@ -1,6 +1,6 @@
 """Reset command for Amplifier CLI.
 
-Provides interactive reset with category-based preservation.
+Provides interactive reset with category-based removal selection.
 Uninstalls amplifier, clears selected data, and reinstalls fresh.
 
 Categories:
@@ -57,11 +57,18 @@ CATEGORY_DESCRIPTIONS = {
     "other": "Other files (custom configs, plugins, etc.)",
 }
 
-# Default categories to preserve - safe by default, only remove auto-regenerating items
-DEFAULT_PRESERVE = {"projects", "settings", "keys", "other"}
+# Default categories to remove - safe by default, only remove auto-regenerating items
+DEFAULT_REMOVE = {"cache", "registry"}
 
 # Default install source
 DEFAULT_INSTALL_SOURCE = "git+https://github.com/microsoft/amplifier"
+
+# The current umbrella source registers `amplifier`; older installations
+# registered the CLI distribution directly. Both expose the `amplifier`
+# executable and must be removed before a reset's replacement install. Neither
+# name may be hardcoded at a call site - which one is registered is a runtime
+# fact, read back via _installed_uv_tool_packages().
+UV_TOOL_PACKAGES = ("amplifier", "amplifier-app-cli")
 
 
 def _get_amplifier_dir() -> Path:
@@ -96,10 +103,10 @@ def _get_other_files() -> list[str]:
     return sorted(other)
 
 
-def _get_preserve_paths(preserve: set[str]) -> set[str]:
+def _get_remove_paths(remove_cats: set[str]) -> set[str]:
     """Convert category names to actual file/directory names."""
     paths = set()
-    for category in preserve:
+    for category in remove_cats:
         if category == "other":
             # Dynamic category - include all uncategorized files
             paths.update(_get_other_files())
@@ -115,6 +122,18 @@ def _parse_categories(
     if value is None:
         return None
     categories = {c.strip() for c in value.split(",") if c.strip()}
+
+    # An empty --remove is a harmless no-op, but the mirrored empty --preserve
+    # means "preserve nothing" - it removes every category, projects included,
+    # and -y suppresses the confirm. That is the same blast radius as --full
+    # reached by an unset shell variable, so it has to be asked for by name.
+    if not categories and param.name == "preserve_cats":
+        raise click.BadParameter(
+            "--preserve was given an empty value, which would remove every "
+            "category including projects. Pass the categories to keep, or use "
+            "--full if removing everything is what you want."
+        )
+
     valid = set(RESET_CATEGORIES.keys())
     invalid = categories - valid
     if invalid:
@@ -129,13 +148,13 @@ def _run_interactive() -> set[str] | None:
     """Run the interactive checklist for category selection.
 
     Returns:
-        Set of category names to preserve, or None if cancelled
+        Set of category names to remove, or None if cancelled
     """
     # Build checklist items with defaults
     items = []
     for category in CATEGORY_ORDER:
         description = CATEGORY_DESCRIPTIONS.get(category, "")
-        selected = category in DEFAULT_PRESERVE
+        selected = category in DEFAULT_REMOVE
         items.append(
             ChecklistItem(key=category, description=description, selected=selected)
         )
@@ -144,7 +163,7 @@ def _run_interactive() -> set[str] | None:
 
 
 def _show_plan(
-    preserve: set[str],
+    remove_cats: set[str],
     no_install: bool,
     dry_run: bool,
 ) -> None:
@@ -155,7 +174,7 @@ def _show_plan(
         console.print("[yellow]DRY RUN - No changes will be made[/yellow]\n")
 
     # Upfront reassurance about what's safe
-    if "projects" in preserve:
+    if "projects" not in remove_cats:
         console.print(
             "[green]Your session transcripts are safe[/green] - "
             "projects/ will be preserved.\n"
@@ -165,27 +184,31 @@ def _show_plan(
     console.print("  1. Clean UV cache")
     console.print("  2. Uninstall amplifier (if installed)")
 
-    preserve_names = sorted(preserve) if preserve else []
-    remove_names = sorted(set(RESET_CATEGORIES.keys()) - preserve)
+    remove_names = [category for category in CATEGORY_ORDER if category in remove_cats]
+    preserve_names = [
+        category for category in CATEGORY_ORDER if category not in remove_cats
+    ]
 
-    # Show what "other" actually contains if present
-    other_files = _get_other_files()
+    # Show what "other" actually contains when it is selected for removal.
+    other_files = _get_other_files() if "other" in remove_cats else []
 
-    if not preserve:
+    if remove_cats == set(RESET_CATEGORIES):
         console.print(f"  3. Remove {amplifier_dir} [red](ALL contents)[/red]")
     else:
         console.print(f"  3. Clean parts of {amplifier_dir}")
-        # Build preserve display with "other" expansion
-        preserve_display = []
-        for name in preserve_names:
+        # Build removal display with "other" expansion.
+        remove_display = []
+        for name in remove_names:
             if name == "other" and other_files:
-                preserve_display.append(f"other ({', '.join(other_files)})")
+                remove_display.append(f"other ({', '.join(other_files)})")
             else:
-                preserve_display.append(name)
+                remove_display.append(name)
         console.print(
-            f"       [green]Preserving:[/green] {', '.join(preserve_display)}"
+            f"       [red]Removing:[/red] {', '.join(remove_display) or 'none'}"
         )
-        console.print(f"       [red]Removing:[/red] {', '.join(remove_names)}")
+        console.print(
+            f"       [green]Preserving:[/green] {', '.join(preserve_names) or 'none'}"
+        )
 
     if no_install:
         console.print("  4. [dim]Skip reinstall (--no-install)[/dim]")
@@ -229,11 +252,19 @@ def _clean_uv_cache(dry_run: bool = False) -> bool:
         return False
 
 
-def _uninstall_amplifier(dry_run: bool = False) -> bool:
-    """Uninstall amplifier via uv tool uninstall."""
-    console.print("[bold]>>>[/bold] Checking if amplifier is installed...")
+def _installed_uv_tool_packages() -> tuple[str, ...] | None:
+    """Report which known uv tool distributions are currently registered.
 
-    # Check if amplifier is installed
+    Both entries of ``UV_TOOL_PACKAGES`` expose the same ``amplifier``
+    executable, so the name to uninstall cannot be assumed - it has to be read
+    back from uv. Matching is anchored to ``"<package> "`` at the start of a
+    line so the indented ``- amplifier`` executable rows listed underneath a
+    package never count as a package of their own.
+
+    Returns:
+        The registered distribution names, possibly empty, or None when
+        ``uv tool list`` could not be consulted at all.
+    """
     try:
         result = subprocess.run(
             ["uv", "tool", "list"],
@@ -241,35 +272,57 @@ def _uninstall_amplifier(dry_run: bool = False) -> bool:
             capture_output=True,
             text=True,
         )
-        if "amplifier" not in result.stdout:
-            console.print("    [dim]Amplifier is not installed via uv tool[/dim]")
-            return False
     except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+    lines = result.stdout.splitlines()
+    return tuple(
+        package
+        for package in UV_TOOL_PACKAGES
+        if any(line.startswith(f"{package} ") for line in lines)
+    )
+
+
+def _uninstall_amplifier(dry_run: bool = False) -> bool:
+    """Uninstall amplifier via uv tool uninstall."""
+    console.print("[bold]>>>[/bold] Checking if amplifier is installed...")
+
+    installed_packages = _installed_uv_tool_packages()
+    if installed_packages is None:
         console.print("    [dim]Could not check uv tool list[/dim]")
+        return False
+    if not installed_packages:
+        console.print("    [dim]Amplifier is not installed via uv tool[/dim]")
         return False
 
     console.print("[bold]>>>[/bold] Uninstalling amplifier...")
 
     if dry_run:
-        console.print("    [dim][dry-run] Would run: uv tool uninstall amplifier[/dim]")
+        for package in installed_packages:
+            console.print(
+                f"    [dim][dry-run] Would run: uv tool uninstall {package}[/dim]"
+            )
         return True
 
-    try:
-        subprocess.run(
-            ["uv", "tool", "uninstall", "amplifier"],
-            check=True,
-            capture_output=True,
-        )
-        return True
-    except subprocess.CalledProcessError as e:
-        console.print(
-            f"[yellow]Warning:[/yellow] Failed to uninstall amplifier: {escape_markup(str(e))}"
-        )
-        return False
+    success = True
+    for package in installed_packages:
+        try:
+            subprocess.run(
+                ["uv", "tool", "uninstall", package],
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as e:
+            console.print(
+                "[yellow]Warning:[/yellow] Failed to uninstall "
+                f"{package}: {escape_markup(str(e))}"
+            )
+            success = False
+    return success
 
 
-def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
-    """Remove ~/.amplifier directory contents based on category preservation.
+def _remove_amplifier_dir(remove_cats: set[str], dry_run: bool = False) -> bool:
+    """Remove only paths from selected reset categories.
 
     Uses shared cache_management utilities for cache/registry removal when those
     categories are being removed, ensuring DRY compliance across commands.
@@ -290,11 +343,10 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
         console.print("    [dim]Directory does not exist, skipping[/dim]")
         return True
 
-    # Convert categories to actual paths
-    preserve_paths = _get_preserve_paths(preserve)
-
-    # If nothing to preserve, remove entire directory
-    if not preserve_paths:
+    # Removing every category has the established --full behavior: remove the
+    # root in one operation. An empty category set is deliberately *not* the
+    # inverse of this case; it is a data-cleanup no-op.
+    if remove_cats == set(RESET_CATEGORIES):
         if dry_run:
             console.print(
                 f"    [dim][dry-run] Would remove entire directory: {amplifier_dir}[/dim]"
@@ -313,41 +365,49 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
             )
             return False
 
-    # Selective removal - preserve specified paths
+    # Expand only the selected categories. This must not iterate the root to
+    # decide what to delete; "other" is the one explicit dynamic expansion.
+    remove_paths = _get_remove_paths(remove_cats)
+
+    # Selective removal deletes only the explicit paths selected above.
     removed_count = 0
-    preserved_count = 0
     failed_items: list[str] = []
-    clearing_cache = "cache" not in preserve_paths
+    clearing_cache = "cache" in remove_cats
 
     try:
-        for item in amplifier_dir.iterdir():
-            if item.name in preserve_paths:
-                console.print(f"    [green]Preserving:[/green] {item.name}")
-                preserved_count += 1
-            else:
-                if dry_run:
-                    console.print(f"    [dim][dry-run] Would remove: {item.name}[/dim]")
+        for path_name in sorted(remove_paths):
+            item = amplifier_dir / path_name
+            if not item.exists() and not item.is_symlink():
+                continue
+
+            if dry_run:
+                console.print(f"    [dim][dry-run] Would remove: {item.name}[/dim]")
+                removed_count += 1
+                continue
+
+            # Never let rmtree follow a selected directory symlink.
+            if item.is_symlink():
+                item.unlink()
+                removed_count += 1
+            # Use shared utilities for cache and registry if available.
+            elif clear_download_cache is not None and item.name == "cache":
+                _count, success = clear_download_cache(dry_run=False)
+                if success:
                     removed_count += 1
                 else:
-                    # Use shared utilities for cache and registry if available
-                    if clear_download_cache is not None and item.name == "cache":
-                        _count, success = clear_download_cache(dry_run=False)
-                        if success:
-                            removed_count += 1
-                        else:
-                            failed_items.append(item.name)
-                    elif clear_registry is not None and item.name == "registry.json":
-                        if clear_registry(dry_run=False):
-                            removed_count += 1
-                        else:
-                            failed_items.append(item.name)
-                    else:
-                        # Standard removal (fallback or other items)
-                        if item.is_dir():
-                            rmtree_robust(item)
-                        else:
-                            item.unlink()
-                        removed_count += 1
+                    failed_items.append(item.name)
+            elif clear_registry is not None and item.name == "registry.json":
+                if clear_registry(dry_run=False):
+                    removed_count += 1
+                else:
+                    failed_items.append(item.name)
+            # Standard removal (fallback or other items).
+            elif item.is_dir():
+                rmtree_robust(item)
+                removed_count += 1
+            else:
+                item.unlink()
+                removed_count += 1
 
         # CRITICAL: Clear install-state.json when cache is being removed
         # The install state tracks module dependency fingerprints. When cache is cleared,
@@ -367,9 +427,7 @@ def _remove_amplifier_dir(preserve: set[str], dry_run: bool = False) -> bool:
             console.print("    [dim][dry-run] Would clear install-state.json[/dim]")
 
         action = "Would remove" if dry_run else "Removed"
-        console.print(
-            f"    {action} {removed_count} items, preserved {preserved_count}"
-        )
+        console.print(f"    {action} {removed_count} items")
         if failed_items:
             console.print(
                 "[red]Error:[/red] Cleanup incomplete; failed to remove: "
@@ -394,13 +452,18 @@ def _install_amplifier(dry_run: bool = False) -> bool:
 
     if dry_run:
         console.print(
-            f"    [dim][dry-run] Would run: uv tool install {DEFAULT_INSTALL_SOURCE}[/dim]"
+            f"    [dim][dry-run] Would run: uv tool install --force {DEFAULT_INSTALL_SOURCE}[/dim]"
         )
         return True
 
     try:
         subprocess.run(
-            ["uv", "tool", "install", DEFAULT_INSTALL_SOURCE],
+            # `--force` is narrowly about replacing an existing executable in
+            # uv's bin directory. Reset explicitly owns the `amplifier`
+            # executable, and this repairs an orphan left by an interrupted or
+            # historically mis-targeted uninstall; resolution/install errors
+            # still fail this command normally.
+            ["uv", "tool", "install", "--force", DEFAULT_INSTALL_SOURCE],
             check=True,
         )
         return True
@@ -411,7 +474,7 @@ def _install_amplifier(dry_run: bool = False) -> bool:
             f"[red]Error:[/red] Failed to install amplifier: {format_error_message(e)}"
         )
         console.print("\n[yellow]To recover manually:[/yellow]")
-        console.print(f"  uv tool install {DEFAULT_INSTALL_SOURCE}")
+        console.print(f"  uv tool install --force {DEFAULT_INSTALL_SOURCE}")
         return False
     except FileNotFoundError:
         console.print("[red]Error:[/red] uv not found")
@@ -427,34 +490,58 @@ def _windows_defer_tool_swap(no_install: bool) -> bool:
     Returns:
         True only when the deferred script was launched successfully.
     """
+    # Which distribution is registered cannot be assumed here any more than it
+    # can on POSIX: the umbrella source registers `amplifier`, older installs
+    # registered `amplifier-app-cli`, and uninstalling the name the user does
+    # *not* have is what strands them with the tool still installed.
+    detected = _installed_uv_tool_packages()
+    if detected is None:
+        # uv could not be read. Cover every known distribution best-effort
+        # rather than betting on one name; an uninstall for a distribution that
+        # is not registered is a no-op, missing the registered one is not.
+        uninstall_packages = list(UV_TOOL_PACKAGES)
+        uninstall_required = False
+    else:
+        uninstall_packages = list(detected)
+        uninstall_required = True
+
     if no_install:
+        if not uninstall_packages:
+            console.print("    [dim]Amplifier is not installed via uv tool[/dim]")
+            return True
+
         steps = [
             UvStep(
-                command="uv tool uninstall amplifier",
-                label="Uninstalling amplifier...",
+                command=f"uv tool uninstall {package}",
+                label=f"Uninstalling {package}...",
+                required=uninstall_required,
             )
+            for package in uninstall_packages
         ]
-        recovery = ["uv tool uninstall amplifier"]
+        recovery = [f"uv tool uninstall {package}" for package in uninstall_packages]
         success = "Amplifier removed."
     else:
         steps = [
-            # Best effort: `uv tool install` overwrites an existing install, so
-            # a failed uninstall must not abort the reinstall that is the goal.
+            # Best effort: the forced reinstall replaces an orphaned
+            # `amplifier` executable if the uninstall could not complete.
             # Aborting here is what would leave the user with no amplifier.
             UvStep(
-                command="uv tool uninstall amplifier",
-                label="Uninstalling amplifier (best effort)...",
+                command=f"uv tool uninstall {package}",
+                label=f"Uninstalling {package} (best effort)...",
                 attempts=5,
                 required=False,
-            ),
-            UvStep(
-                command=f"uv tool install {DEFAULT_INSTALL_SOURCE}",
-                label="Reinstalling amplifier...",
-            ),
+            )
+            for package in uninstall_packages
         ]
+        steps.append(
+            UvStep(
+                command=f"uv tool install --force {DEFAULT_INSTALL_SOURCE}",
+                label="Reinstalling amplifier...",
+            )
+        )
         recovery = [
-            "uv tool uninstall amplifier",
-            f"uv tool install {DEFAULT_INSTALL_SOURCE}",
+            *(f"uv tool uninstall {package}" for package in uninstall_packages),
+            f"uv tool install --force {DEFAULT_INSTALL_SOURCE}",
         ]
         success = "Amplifier reset complete."
 
@@ -526,22 +613,22 @@ def reset(
     dry_run: bool,
     no_install: bool,
 ) -> None:
-    """Reinstall Amplifier while preserving your data.
+    """Reinstall Amplifier and reset selected data.
 
     Safe by default: Your session transcripts, settings, API keys, and any
     custom files are preserved. Only the cache and registry are cleared
     (they auto-regenerate on next run).
 
-    Runs in interactive mode by default where you can adjust what to keep.
+    Runs in interactive mode by default where you select what to remove/reset.
 
     \b
     Categories:
-      projects   - Session transcripts and history [preserved by default]
-      settings   - User configuration (settings.yaml) [preserved by default]
-      keys       - API keys (keys.env) [preserved by default]
-      other      - Custom files you've added [preserved by default]
-      cache      - Downloaded bundles (auto-regenerates)
-      registry   - Bundle mappings (auto-regenerates)
+      projects   - Session transcripts and history [not removed by default]
+      settings   - User configuration (settings.yaml) [not removed by default]
+      keys       - API keys (keys.env) [not removed by default]
+      other      - Custom files you've added [not removed by default]
+      cache      - Downloaded bundles (auto-regenerates) [removed by default]
+      registry   - Bundle mappings (auto-regenerates) [removed by default]
 
     \b
     Examples:
@@ -564,28 +651,28 @@ def reset(
             "Options --preserve, --remove, and --full are mutually exclusive"
         )
 
-    # Determine preserve set based on arguments
-    preserve: set[str]
+    # Determine the removal plan. --preserve remains a compatibility boundary
+    # adapter; every downstream operation receives the removal set.
+    all_categories = set(RESET_CATEGORIES)
 
     if full:
-        preserve = set()
+        remove_cats = all_categories
     elif remove_cats is not None:
-        preserve = set(RESET_CATEGORIES.keys()) - remove_cats
+        pass
     elif preserve_cats is not None:
-        preserve = preserve_cats
+        remove_cats = all_categories - preserve_cats
     elif yes:
         # Non-interactive with -y but no category flags: use defaults
-        preserve = DEFAULT_PRESERVE.copy()
+        remove_cats = DEFAULT_REMOVE.copy()
     else:
         # Interactive mode
-        result = _run_interactive()
-        if result is None:
+        remove_cats = _run_interactive()
+        if remove_cats is None:
             console.print("[yellow]Cancelled.[/yellow]")
             return
-        preserve = result
 
     # Show plan
-    _show_plan(preserve, no_install, dry_run)
+    _show_plan(remove_cats, no_install, dry_run)
 
     # Confirm unless -y or dry-run
     if not yes and not dry_run:
@@ -604,7 +691,7 @@ def reset(
     # runs after this process exits. POSIX unlinks open files, so the path below
     # is unchanged there.
     if os.name == "nt" and not dry_run:
-        if not _remove_amplifier_dir(preserve, dry_run):
+        if not _remove_amplifier_dir(remove_cats, dry_run):
             raise click.ClickException(
                 "Reset stopped because cleanup was incomplete; "
                 "no reinstall was staged."
@@ -614,7 +701,7 @@ def reset(
         return
 
     _uninstall_amplifier(dry_run)
-    cleanup_succeeded = _remove_amplifier_dir(preserve, dry_run)
+    cleanup_succeeded = _remove_amplifier_dir(remove_cats, dry_run)
 
     if dry_run:
         console.print("\n[green]>>>[/green] Dry run complete - no changes were made")
