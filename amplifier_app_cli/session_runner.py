@@ -26,6 +26,7 @@ Philosophy:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import uuid
 from collections import Counter
@@ -82,6 +83,13 @@ class SessionConfig:
 
     # Execution mode
     output_format: str = "text"  # text | json | json-trace
+
+    # Resolved execution mode ("chat" | "single"), recorded as invocation
+    # provenance on session:start.  This is the value AFTER prompt- and
+    # pipe-presence inference (commands/run.py), not the raw --mode flag: an
+    # interactive session launched without --mode would otherwise be recorded
+    # as "single".  None => recorded as "unknown", never guessed.
+    invocation_mode: str | None = None
 
     @property
     def is_resume(self) -> bool:
@@ -378,6 +386,93 @@ def _inject_observability_events(prepared_bundle: "PreparedBundle") -> None:
     inject_additional_events(prepared_bundle.mount_plan, _CLEANUP_EVENTS)
 
 
+# Names the session that launched this OS process, when the launcher is a
+# *different* process (an agent shelling out `amplifier run`, or foundation's
+# subprocess spawn).  In-process lineage is already carried end-to-end by
+# ``parent_id``; this covers only the cross-process case ``parent_id`` cannot
+# see.  The ``AMPLIFIER_`` prefix is on foundation's subprocess env allowlist,
+# so it propagates to children for free.  Unset => null, never a fabricated id.
+LAUNCHER_SESSION_ID_ENV = "AMPLIFIER_LAUNCHED_BY_SESSION_ID"
+
+# Bump only on a breaking change to the meaning of the fields below.
+INVOCATION_SCHEMA = 1
+
+
+def _fd_isatty(fd: int) -> bool:
+    """``os.isatty`` that cannot take a session down.
+
+    fd-level rather than ``sys.stdin.isatty()`` -- see dedicated_tty_input.py,
+    which already reasoned about this distinction: the fd is the thing that
+    actually matters, since sys.stdin can be swapped in-process.  A closed or
+    invalid fd (daemonised harness) reads as "not a tty", which is the truth.
+    """
+    try:
+        return os.isatty(fd)
+    except (OSError, ValueError):
+        return False
+
+
+def _build_invocation_metadata(mode: str | None) -> dict[str, Any]:
+    """Describe HOW this session was invoked, for provenance consumers.
+
+    Deliberately NOT recorded: argv / the full command line.  Prompt text,
+    ``--api-key ...``, and ``"$(cat token)"`` all land in argv, while
+    events.jsonl is a long-lived, greppable, exported artifact.  Raw config was
+    already moved *off* ``session:start`` onto the separate, redacted
+    ``session:config`` event -- adding an unredactable free-text field here
+    would reverse that.  The fields below answer the provenance question
+    without opening that hole.
+
+    This is a self-report, not a security control.  A harness that fills these
+    in dishonestly will be believed, exactly as one that declines to pass
+    ``parent_id`` is believed.  It defends against the overwhelmingly common
+    case -- a harness that never thought about provenance at all.
+
+    Args:
+        mode: The *resolved* execution mode ("chat" / "single"), i.e. the value
+            after prompt- and pipe-presence inference, not the raw ``--mode``
+            flag.  ``None`` when a caller did not state one -- recorded as
+            "unknown" rather than guessed, since a wrong mode is worse than an
+            absent one.
+    """
+    return {
+        "schema": INVOCATION_SCHEMA,
+        "mode": mode or "unknown",
+        "stdin_isatty": _fd_isatty(0),
+        "stdout_isatty": _fd_isatty(1),
+        "launched_by": "cli",
+        "launched_by_session_id": os.environ.get(LAUNCHER_SESSION_ID_ENV) or None,
+    }
+
+
+def _inject_invocation_metadata(
+    prepared_bundle: "PreparedBundle", *, mode: str | None
+) -> None:
+    """Record invocation provenance on the root session's mount plan.
+
+    Rides the kernel's existing ``session.metadata`` passthrough channel
+    (amplifier-core ``docs/specs/CONTRIBUTION_CHANNELS.md``), so this surfaces
+    at ``session:start`` as ``metadata.invocation`` and lands in events.jsonl
+    at ``data.metadata.invocation``.  No new event, no schema change, and no
+    change required in hooks-logging (``metadata`` is not a promoted key, so it
+    nests under ``data`` automatically).
+
+    Merges under the ``invocation`` key only: any other metadata a bundle or
+    caller already placed on the mount plan is left exactly as it was.
+
+    Args:
+        prepared_bundle: The PreparedBundle whose mount_plan will be updated
+            in-place.  Same ordering constraint as
+            ``_inject_observability_events``: must run after
+            inject_user_providers() (step 4b) and before create_session()
+            (step 4c), which is when the kernel reads session.metadata.
+        mode: Resolved execution mode -- see ``_build_invocation_metadata``.
+    """
+    session_section = prepared_bundle.mount_plan.setdefault("session", {})
+    metadata = session_section.setdefault("metadata", {})
+    metadata["invocation"] = _build_invocation_metadata(mode)
+
+
 async def _create_bundle_session(
     config: SessionConfig,
     session_id: str,
@@ -417,6 +512,12 @@ async def _create_bundle_session(
     # This MUST run before create_session() (which calls mount() internally) so the
     # config dict is populated when each hook module is mounted.
     _inject_observability_events(prepared_bundle)
+
+    # Step 4b-post: Record how this session was invoked, on the same mount plan
+    # and under the same ordering constraint. The kernel reads session.metadata
+    # when it builds the session:start payload, so this must land before
+    # create_session() below.
+    _inject_invocation_metadata(prepared_bundle, mode=config.invocation_mode)
 
     # Step 4c: Create session (foundation handles init internally)
     # Self-healing: The kernel intentionally swallows module load errors to be resilient.
