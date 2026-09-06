@@ -5,7 +5,7 @@
 # talk to the human). Wakes the orchestrator session when attention is needed.
 #
 # Run it DETACHED in its own tmux-session (the launcher is the orchestrator):
-#   tmux -L "${HIGHWAY_TMUX_SOCKET:-hw}" new-session -d -s "hw-watchdog__<batch>" \
+#   tmux -L "$HIGHWAY_TMUX_SOCKET" new-session -d -s "hw-watchdog__<batch>" \
 #     "<skill_dir>/scripts/highway_watchdog.sh BATCH_DIR WIDTH SESSION_ID [INTERVAL] [MAX_HOURS]"
 #
 # Wake triggers: a lane ended since last poll | live < WIDTH | manager heartbeat stale.
@@ -16,6 +16,24 @@
 set -uo pipefail   # deliberately NOT -e: the watch loop must survive transient failures
 
 BATCH_DIR=${1:?BATCH_DIR required}
+
+# --- PER-BATCH TMUX SOCKET (model_performance-ye80) -------------------------
+# Default the socket to hw-<batch>, NOT a shared "hw".
+#
+# WHY: a tmux SERVER restart destroys every session on its socket. With every
+# batch on one shared socket, any batch can annihilate every other batch's
+# lanes AND their watchdogs in a single instant. Observed 2026-09-05: a second
+# batch restarted the server on socket "hw" and killed three unrelated lanes
+# plus this batch's watchdog at once -- no lane logged an error, because
+# nothing in a lane went wrong. Six DTU containers were left RUNNING with open
+# infra-ledger rows (Rule 14: nothing the highway stands up should outlive it).
+#
+# An explicitly exported HIGHWAY_TMUX_SOCKET still wins, so this is
+# backward-compatible; only the DEFAULT changes.
+HIGHWAY_TMUX_SOCKET="${HIGHWAY_TMUX_SOCKET:-hw-$(printf '%s' "$(basename "$BATCH_DIR")" | tr -c 'A-Za-z0-9_-' '_')}"
+export HIGHWAY_TMUX_SOCKET
+# ---------------------------------------------------------------------------
+
 WIDTH=${2:?WIDTH required}
 SESSION_ID=${3:?SESSION_ID required (the orchestrator session to wake)}
 INTERVAL=${4:-300}
@@ -75,7 +93,7 @@ live_lanes() {
   local n=0 lane wt branch base tmuxn rest
   while IFS=$'\t' read -r lane wt branch base tmuxn rest; do
     [ "$lane" = "lane" ] && continue
-    tmux -L "${HIGHWAY_TMUX_SOCKET:-hw}" has-session -t "$tmuxn" 2>/dev/null && n=$((n+1))
+    tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "$tmuxn" 2>/dev/null && n=$((n+1))
   done < "$MANIFEST"
   echo "$n"
 }
@@ -84,7 +102,7 @@ ended_list() {
   local lane wt branch base tmuxn rest
   while IFS=$'\t' read -r lane wt branch base tmuxn rest; do
     [ "$lane" = "lane" ] && continue
-    tmux -L "${HIGHWAY_TMUX_SOCKET:-hw}" has-session -t "$tmuxn" 2>/dev/null || echo "$lane"
+    tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "$tmuxn" 2>/dev/null || echo "$lane"
   done < "$MANIFEST"
 }
 

@@ -11,6 +11,24 @@
 set -euo pipefail
 
 BATCH_DIR=${1:?BATCH_DIR required}
+
+# --- PER-BATCH TMUX SOCKET (model_performance-ye80) -------------------------
+# Default the socket to hw-<batch>, NOT a shared "hw".
+#
+# WHY: a tmux SERVER restart destroys every session on its socket. With every
+# batch on one shared socket, any batch can annihilate every other batch's
+# lanes AND their watchdogs in a single instant. Observed 2026-09-05: a second
+# batch restarted the server on socket "hw" and killed three unrelated lanes
+# plus this batch's watchdog at once -- no lane logged an error, because
+# nothing in a lane went wrong. Six DTU containers were left RUNNING with open
+# infra-ledger rows (Rule 14: nothing the highway stands up should outlive it).
+#
+# An explicitly exported HIGHWAY_TMUX_SOCKET still wins, so this is
+# backward-compatible; only the DEFAULT changes.
+HIGHWAY_TMUX_SOCKET="${HIGHWAY_TMUX_SOCKET:-hw-$(printf '%s' "$(basename "$BATCH_DIR")" | tr -c 'A-Za-z0-9_-' '_')}"
+export HIGHWAY_TMUX_SOCKET
+# ---------------------------------------------------------------------------
+
 WIDTH=${2:?WIDTH required}
 READY=${3:?READY required (ready unblocked work item count)}
 
@@ -43,7 +61,7 @@ live=0; ended=0; done_n=0; stalled=0; gone=0
 while IFS=$'\t' read -r lane wt branch base tmuxn goal log ts; do
   [ "$lane" = "lane" ] && continue
 
-  if tmux -L "${HIGHWAY_TMUX_SOCKET:-hw}" has-session -t "$tmuxn" 2>/dev/null; then st=LIVE; else st=ENDED; fi
+  if tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "$tmuxn" 2>/dev/null; then st=LIVE; else st=ENDED; fi
 
   age="-"; ahead="-"; dj="-"; wt_present=yes
   if [ -d "$wt" ]; then
@@ -76,7 +94,7 @@ while IFS=$'\t' read -r lane wt branch base tmuxn goal log ts; do
 done < "$MANIFEST"
 
 WD="hw-watchdog__${BATCH}"
-if tmux -L "${HIGHWAY_TMUX_SOCKET:-hw}" has-session -t "$WD" 2>/dev/null; then wd_st=LIVE; else wd_st=DEAD; fi
+if tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "$WD" 2>/dev/null; then wd_st=LIVE; else wd_st=DEAD; fi
 
 open=$(( WIDTH - live )); if [ "$open" -lt 0 ]; then open=0; fi
 if [ "$READY" -lt "$open" ]; then deficit=$READY; else deficit=$open; fi

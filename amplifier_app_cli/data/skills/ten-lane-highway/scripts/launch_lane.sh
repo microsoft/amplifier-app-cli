@@ -13,6 +13,24 @@
 set -euo pipefail
 
 BATCH_DIR=${1:?BATCH_DIR required}
+
+# --- PER-BATCH TMUX SOCKET (model_performance-ye80) -------------------------
+# Default the socket to hw-<batch>, NOT a shared "hw".
+#
+# WHY: a tmux SERVER restart destroys every session on its socket. With every
+# batch on one shared socket, any batch can annihilate every other batch's
+# lanes AND their watchdogs in a single instant. Observed 2026-09-05: a second
+# batch restarted the server on socket "hw" and killed three unrelated lanes
+# plus this batch's watchdog at once -- no lane logged an error, because
+# nothing in a lane went wrong. Six DTU containers were left RUNNING with open
+# infra-ledger rows (Rule 14: nothing the highway stands up should outlive it).
+#
+# An explicitly exported HIGHWAY_TMUX_SOCKET still wins, so this is
+# backward-compatible; only the DEFAULT changes.
+HIGHWAY_TMUX_SOCKET="${HIGHWAY_TMUX_SOCKET:-hw-$(printf '%s' "$(basename "$BATCH_DIR")" | tr -c 'A-Za-z0-9_-' '_')}"
+export HIGHWAY_TMUX_SOCKET
+# ---------------------------------------------------------------------------
+
 LANE=${2:?LANE required}
 REPO=${3:?REPO_PATH required}
 GOAL=${4:?GOAL_FILE required}
@@ -78,10 +96,10 @@ merge time.
   $DONE_MARKER
 EOF
 
-if tmux -L "${HIGHWAY_TMUX_SOCKET:-hw}" has-session -t "$TMUX_NAME" 2>/dev/null; then
+if tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "$TMUX_NAME" 2>/dev/null; then
   echo "SKIP: $TMUX_NAME already running"
 else
-  tmux -L "${HIGHWAY_TMUX_SOCKET:-hw}" new-session -d -s "$TMUX_NAME" -c "$WT" \
+  tmux -L "$HIGHWAY_TMUX_SOCKET" new-session -d -s "$TMUX_NAME" -c "$WT" \
     "amplifier run '/goal @GOAL.md' 2>&1 | tee '$LOG'"
   echo "LAUNCHED: $TMUX_NAME -> $WT ($BRANCH @ ${BASE_SHA:0:8})"
 fi
