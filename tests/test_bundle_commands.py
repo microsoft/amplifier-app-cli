@@ -407,3 +407,38 @@ def test_strip_uri_fragment_keeps_the_ref():
         update_module._strip_uri_fragment(_FRAGMENT_URI) == _URI
     ), "only the #fragment is redundant with the root bundle"
     assert update_module._strip_uri_fragment(_URI) == _URI
+
+
+def test_app_bundle_rows_display_a_friendly_name():
+    """An app bundle keyed by URI must not print the URI as its Name.
+
+    The key stays the URI -- it is the update target's identity and has to
+    round-trip into update_bundle -- so only the label changes.
+    """
+    labels = update_module._bundle_display_names(["modes", _FRAGMENT_URI])
+
+    assert labels["modes"] == "modes"
+    assert labels[_FRAGMENT_URI] == "team"
+
+
+def test_colliding_app_bundle_labels_fall_back_to_the_full_uri():
+    """Two rows showing the same name would misidentify which one updates."""
+    first = "git+https://github.com/a/repo-one@main#subdirectory=behaviors/main.yaml"
+    second = "git+https://github.com/b/repo-two@main#subdirectory=behaviors/main.yaml"
+
+    labels = update_module._bundle_display_names([first, second])
+
+    assert labels[first] == first
+    assert labels[second] == second
+
+
+def test_an_app_bundle_label_never_shadows_a_registry_alias():
+    collides = (
+        "git+https://github.com/x/amplifier-bundle-modes@main"
+        "#subdirectory=behaviors/modes.yaml"
+    )
+
+    labels = update_module._bundle_display_names(["modes", collides])
+
+    assert labels["modes"] == "modes", "the registry alias keeps its name"
+    assert labels[collides] == collides
