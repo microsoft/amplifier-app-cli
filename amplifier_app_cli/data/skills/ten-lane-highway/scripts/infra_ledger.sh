@@ -23,7 +23,8 @@
 #   sweep  THE MANAGER'S BATCH-CLOSE VERB, NEVER A LANE'S. It runs EVERY open
 #          row's destroy_cmd, so a lane calling it destroys other lanes' live
 #          infrastructure. A lane tearing down its OWN rows uses the batch's
-#          lane-scoped teardown tool (lane_teardown.sh) instead.
+#          lane-scoped teardown tool instead: `lane_teardown.sh`, the SIBLING
+#          of this script in <skill_directory>/scripts/.
 #          Refuses with exit 3, having run NOTHING, when the open rows span
 #          more than one owner or any row is unattributable; the manager
 #          closing the batch passes --all-owners to proceed anyway.
@@ -42,6 +43,14 @@ set -uo pipefail
 BATCH_DIR=${1:?BATCH_DIR required}
 CMD=${2:?command required (add|list|sweep)}
 LEDGER="$BATCH_DIR/infra.tsv"
+
+# The lane-scoped teardown tool this script's refusal sends operators to. It is
+# a SIBLING in this same scripts/ directory, resolved from this file rather than
+# spelled as a literal (item model_performance-giwq): the refusal used to name
+# `.amplifier/evaluation/tools/lane_teardown.sh` — a path in a DIFFERENT repo,
+# where the file was untracked. An operator hitting the refusal mid-incident
+# followed that path to nothing.
+LANE_TEARDOWN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lane_teardown.sh"
 
 # Signatures meaning "the thing you asked me to destroy does not exist".
 # Deliberately NARROW: a blanket exit-code amnesty would destroy the signal
@@ -80,7 +89,7 @@ case "$CMD" in
     # infrastructure. Observed 2026-09-02: one foreign sweep took lane l1's
     # three DTUs and lane 161's three, 35 minutes into their measurements.
     # A lane tearing down its OWN rows uses the lane-scoped tool:
-    #   .amplifier/evaluation/tools/lane_teardown.sh BATCH_DIR LANE teardown
+    #   <skill_directory>/scripts/lane_teardown.sh BATCH_DIR LANE teardown
     ALL_OWNERS=0
     for a in "$@"; do [ "$a" = "--all-owners" ] && ALL_OWNERS=1; done
     if [ "$ALL_OWNERS" != 1 ]; then
@@ -96,7 +105,7 @@ case "$CMD" in
         echo "" >&2
         echo "sweep is the MANAGER's batch-close verb and destroys EVERY open row." >&2
         echo "A lane tearing down its OWN rows must use the lane-scoped tool:" >&2
-        echo "  .amplifier/evaluation/tools/lane_teardown.sh $BATCH_DIR <lane> teardown --yes" >&2
+        echo "  $LANE_TEARDOWN $BATCH_DIR <lane> teardown --yes" >&2
         echo "The manager closing the batch passes --all-owners." >&2
         exit 3
       fi
