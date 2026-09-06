@@ -1,0 +1,45 @@
+LIVE fail-before / pass-after -- real amplifier-bundle-notify repo, real `amplifier update --check-only`
+Isolated AMPLIFIER_HOME=/tmp/ozbw/home-live (the shared ~/.amplifier cache was never touched).
+CLI under test: amplifier, version 2026.09.06-dab0f7c (core 1.6.1)
+
+--- BEFORE: nothing from the notify repo fetched into this cache ---
+$ AMPLIFIER_HOME=/tmp/ozbw/home-live amplifier update --check-only
+│ dot-graph             │ unknown │ 8f50273 │ ● │
+│ evaluation            │ unknown │ 3531ccd │ ● │
+│ foundation            │ unknown │ e681764 │ ● │
+│ infographic           │ unknown │ 4bbe7f7 │ ● │
+│ ios-tester            │ unknown │ a1fe589 │ ● │
+│ jarvis                │ unknown │ unknown │ ✓ │
+│ made-support          │ unknown │ cac05dd │ ● │
+│ modes                 │ unknown │ 3e2a9e6 │ ● │
+│ notify                │ unknown │ 7f5ff46 │ ● │
+│ reality-check         │ unknown │ 683f518 │ ● │
+│ recipes               │ unknown │ 342760d │ ● │
+│ routing-matrix        │ unknown │ 8f51709 │ ● │
+│ stories               │ unknown │ 1f2019e │ ● │
+
+--- ACTION: fetch ONLY the two #subdirectory=behaviors/*.yaml URIs. The ROOT URI is never resolved. ---
+fetched (behavior URI only): behaviors/desktop-notifications.yaml
+fetched (behavior URI only): behaviors/push-notifications.yaml
+cache entries now: ['amplifier-bundle-notify-a1c452253c0fb2e2']
+
+--- AFTER: same command, same isolated home ---
+│ dot-graph             │ unknown │ 8f50273 │ ● │
+│ evaluation            │ unknown │ 3531ccd │ ● │
+│ foundation            │ unknown │ e681764 │ ● │
+│ infographic           │ unknown │ 4bbe7f7 │ ● │
+│ ios-tester            │ unknown │ a1fe589 │ ● │
+│ jarvis                │ unknown │ unknown │ ✓ │
+│ made-support          │ unknown │ cac05dd │ ● │
+│ modes                 │ unknown │ 3e2a9e6 │ ● │
+│ notify                │ 7f5ff46 │ 7f5ff46 │ ✓ │
+│ reality-check         │ unknown │ 683f518 │ ● │
+│ recipes               │ unknown │ 342760d │ ● │
+│ routing-matrix        │ unknown │ 8f51709 │ ● │
+│ stories               │ unknown │ 1f2019e │ ● │
+
+READ THE TWO TABLES TOGETHER:
+  notify  unknown -> 7f5ff46  (matches remote, marked up-to-date) -- caused ONLY by fetching behavior URIs
+  modes   unknown -> unknown  (CONTROL: behavior-only in code today, nothing fetched it here)
+The control rules out 'the second run just works'. The SHA appears because the behavior
+fetch populates the same cache entry the ROOT URI's status check reads.

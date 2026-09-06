@@ -1321,6 +1321,32 @@ def _build_notification_behaviors(flags: NotificationFlags) -> list[str]:
     sibling consumer ``AppSettings.get_notification_hook_overrides()`` reads
     the same flags, so the two paths cannot drift apart on defaults.
 
+    Only the behaviors, NEVER the root ``bundle.md`` — same reasoning as
+    ``_build_modes_behaviors`` / ``_build_skills_behaviors`` /
+    ``_build_wayfinder_behaviors`` / ``_build_app_cli_behaviors``, all of
+    which already compose behavior-only URIs. notify's root ``bundle.md``
+    carries an 82-line README body, and ``Bundle.compose()`` replaces the
+    instruction whenever the composed bundle has a non-empty markdown body.
+
+    The root URI used to be composed here anyway, as "a minimal marker …
+    ensures the bundle gets cached with proper SHA metadata (fixes the
+    'unknown' version issue during `amplifier update`)". It is not needed
+    for that, and it never was: ``GitSourceHandler._get_cache_path()`` keys
+    the clone on ``sha256("<git_url>@<ref>")``, which does NOT include the
+    ``#subdirectory=`` fragment. Fetching a behavior URI therefore populates
+    the exact same cache entry that ``amplifier update``'s status check for
+    the ROOT URI reads (``update.py::_check_bundle_uri`` →
+    ``GitSourceHandler.get_status``, resolving "notify" through
+    ``WELL_KNOWN_BUNDLES``). Measured on the real repo in an isolated
+    ``AMPLIFIER_HOME``: with only the two behavior URIs fetched and the root
+    never composed, ``amplifier update --check-only`` reports notify at
+    ``7f5ff46``, not ``unknown``.
+
+    That invariant is pinned by
+    ``tests/test_notify_behaviors_not_root.py`` so a future
+    fragment-sensitive cache key in amplifier-foundation fails loudly here
+    instead of silently reintroducing the "unknown" version.
+
     Args:
         flags: Resolved notification enablement.
 
@@ -1332,12 +1358,6 @@ def _build_notification_behaviors(flags: NotificationFlags) -> list[str]:
         return []
 
     behaviors: list[str] = []
-
-    # Root bundle first — a minimal marker that just identifies the repo
-    # and ensures the bundle gets cached with proper SHA metadata (fixes
-    # the "unknown" version issue during `amplifier update`). The actual
-    # functionality comes from the subdirectory behaviors below.
-    behaviors.append("git+https://github.com/microsoft/amplifier-bundle-notify@main")
 
     if flags.desktop_enabled:
         behaviors.append(

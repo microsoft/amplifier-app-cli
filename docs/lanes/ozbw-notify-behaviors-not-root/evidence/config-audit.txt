@@ -1,0 +1,37 @@
+AUDIT -- every URI that config.py composes as a behavior onto the user's root bundle.
+Method: read compose_behaviors assembly (config.py:86-127), then every _build_*_behaviors().
+
+$ grep -n 'compose_behaviors' amplifier_app_cli/runtime/config.py
+86:        compose_behaviors: list[str] = []
+90:        compose_behaviors.extend(_build_modes_behaviors())
+97:        compose_behaviors.extend(_build_app_cli_behaviors())
+104:        compose_behaviors.extend(_build_skills_behaviors())
+113:        compose_behaviors.extend(_build_wayfinder_behaviors())
+119:        compose_behaviors.extend(
+127:            compose_behaviors = compose_behaviors + app_bundles
+156:        # If compose_behaviors is provided, those behaviors are composed onto the bundle
+162:            compose_behaviors=compose_behaviors if compose_behaviors else None,
+383:    # Note: Notification hooks are now composed via compose_behaviors parameter
+
+$ grep -n 'git+https\|file://' amplifier_app_cli/runtime/config.py
+1161:        "git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=behaviors/modes.yaml",
+1181:        "git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=behaviors/skills.yaml",
+1205:        "git+https://github.com/microsoft/amplifier-bundle-wayfinder@main#subdirectory=behaviors/wayfinder.yaml",
+1308:    return [f"file://{bundle_root}#subdirectory={_APP_CLI_BEHAVIOR_RELPATH}"]
+1364:            "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/desktop-notifications.yaml"
+1369:            "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/push-notifications.yaml"
+
+VERDICT per builder (does every URI it returns carry #subdirectory= ?):
+  [OK ] _build_modes_behaviors           git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=behaviors/modes.yaml
+  [OK ] _build_app_cli_behaviors         file:///home/bkrabach/dev/hw-model-performance/lanes/ozbw-notify-behaviors-not-root/amplifier-app-cli#subdirectory=behaviors/cli-expertise.yaml
+  [OK ] _build_skills_behaviors          git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=behaviors/skills.yaml
+  [OK ] _build_wayfinder_behaviors       git+https://github.com/microsoft/amplifier-bundle-wayfinder@main#subdirectory=behaviors/wayfinder.yaml
+  [OK ] _build_notification_behaviors    git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/desktop-notifications.yaml
+  [OK ] _build_notification_behaviors    git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/push-notifications.yaml
+
+bare-root URIs composed as behaviors: 0
+
+The 6th source of compose_behaviors is settings' bundle.app list (config.py:127),
+which is user-authored, not app-cli's to police -- and #315's guard is exactly
+what protects the user there. Pinned by tests/test_notify_behaviors_not_root.py::
+test_no_always_on_behavior_builder_composes_a_bare_root_bundle.

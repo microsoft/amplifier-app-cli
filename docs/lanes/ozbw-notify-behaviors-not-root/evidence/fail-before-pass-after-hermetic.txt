@@ -1,0 +1,38 @@
+local repo HEAD (ground truth) = 1b327bfc81d44423a21925945bee5cafa9efbc20
+
+STATE 1  FAIL-BEFORE -- nothing from the repo fetched (the original symptom)
+    cache entries      : []
+    root is_cached     : False
+    root cached_commit : unknown
+    `amplifier update` would show: unknown
+
+    fetched behavior-only URI -> active_path ends with: .../desktop-notifications.yaml
+    fetched behavior-only URI -> active_path ends with: .../push-notifications.yaml
+
+STATE 2  PASS-AFTER -- ONLY behaviors/*.yaml composed, root NEVER composed
+    cache entries      : ['amplifier-bundle-notify-2b4c86a1610c36e0']
+    root is_cached     : True
+    root cached_commit : 1b327bfc81d44423a21925945bee5cafa9efbc20
+    `amplifier update` would show: 1b327bf
+
+STATE 3  CONTROL (today's code) -- root URI composed first, then behaviors
+    cache entries      : ['amplifier-bundle-notify-2b4c86a1610c36e0']
+    root is_cached     : True
+    root cached_commit : 1b327bfc81d44423a21925945bee5cafa9efbc20
+    `amplifier update` would show: 1b327bf
+
+==============================================================================
+STATE 1 (nothing fetched)      -> unknown   <-- the reported symptom, reproduced
+STATE 2 (behaviors only)       -> 1b327bfc81d44423a21925945bee5cafa9efbc20
+STATE 3 (root + behaviors)     -> 1b327bfc81d44423a21925945bee5cafa9efbc20
+
+STATE 2 == STATE 3 == real HEAD : True
+CONCLUSION: composing the ROOT URI contributes NOTHING to the SHA metadata.
+The cache key is sha256('<git_url>@<ref>') -- the #subdirectory fragment is not
+part of it -- so fetching a behavior URI populates the very cache entry that
+get_status() on the ROOT URI reads. Removing the root line needs no replacement.
+ROOT     cache_path = amplifier-bundle-notify-a1c452253c0fb2e2   subpath=''
+DESKTOP  cache_path = amplifier-bundle-notify-a1c452253c0fb2e2   subpath='behaviors/desktop-notifications.yaml'
+PUSH     cache_path = amplifier-bundle-notify-a1c452253c0fb2e2   subpath='behaviors/push-notifications.yaml'
+
+identical: True
