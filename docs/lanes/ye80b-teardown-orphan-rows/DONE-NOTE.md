@@ -253,6 +253,26 @@ divergence there is worse than the footgun.
   wrote to `/home/bkrabach/dev/hw-model-performance`. The incident replay used a
   `cp` of its three state files into `$TMPDIR`.
 
+## Incidental finding — `verify_lane_publication.sh` scrapes outside the block
+
+Worth two lines because it will bite the next lane. The verifier reads **any
+`branch` key anywhere in `DONE.json`** as a publication claim, not just the one
+inside the `publication/v1` block. This lane's suite counts were recorded as
+`deliverables.full_suite_green_in_pr_body.branch`, and the verifier duly
+reported:
+
+```
+WARN: branch microsoft/amplifier-app-cli:1 failed, 1818 passed, … does NOT exist on origin
+```
+
+Renamed here to `suite_on_branch` / `suite_on_parent`; the marker now verifies
+with `warnings=0`. This is precisely the class of guessing
+`check_done_marker_schema.py`'s own docstring was written to end ("DONE.json is
+free-form English and every lane invented its own keys … that guessing produced
+real false alarms"). The schema half now exists; the **verify** half still
+scrapes the whole document. Both tools live in the evals repo, so this is
+recorded, not fixed here.
+
 ## Files
 
 | path | what |
