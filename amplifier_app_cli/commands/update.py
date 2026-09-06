@@ -1,6 +1,7 @@
 """Update command for Amplifier CLI."""
 
 import asyncio
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 import click
@@ -9,6 +10,11 @@ from rich.table import Table
 from rich.text import Text
 
 from ..lib.bundle_loader import AppBundleDiscovery
+
+# Reused rather than reimplemented: bundle preparation already derives a
+# human-readable name from a behavior URI, and a second copy of that rule here
+# would drift from the one users see everywhere else.
+from ..lib.bundle_loader.prepare import _extract_behavior_name
 from ..lib.settings import AppSettings
 from ..paths import create_bundle_registry
 from ..paths import create_config_manager
@@ -57,6 +63,39 @@ def _strip_uri_fragment(uri: str) -> str:
     bundle - the ref is not.
     """
     return uri.split("#", 1)[0]
+
+
+def _bundle_display_names(bundle_keys: Iterable[str]) -> dict[str, str]:
+    """Map bundle result keys to the label shown to the user.
+
+    Registry-backed bundles are already keyed by a friendly name. App bundles
+    are keyed by their configured source URI, because that URI *is* the update
+    target's identity and has to survive round-tripping into
+    ``update_bundle``. Printing it as a table row's Name, though, is
+    unreadable and drags the table past any sane terminal width:
+
+        git+https://github.com/org/amplifier-bundle-x@main#subdirectory=behaviors/x.yaml
+
+    So the key stays the URI and only the label changes.
+
+    A derived label that would collide with another row's - two repos both
+    shipping ``behaviors/main.yaml``, or a derived name equal to a registry
+    alias - falls back to the full URI for the colliding rows. Two rows
+    showing the same name is worse than one long name, because it silently
+    misidentifies which one has an update.
+    """
+    labels = {
+        key: (_extract_behavior_name(key) if "://" in key else key)
+        for key in bundle_keys
+    }
+
+    seen: dict[str, int] = {}
+    for label in labels.values():
+        seen[label] = seen.get(label, 0) + 1
+
+    return {
+        key: (label if seen[label] == 1 else key) for key, label in labels.items()
+    }
 
 
 def _extract_module_name_from_uri(source_uri: str) -> str:
@@ -710,7 +749,11 @@ def _show_concise_report(
         table.add_column("Remote", style="dim", justify="right")
         table.add_column("", width=1, justify="center")
 
-        for bundle_name in sorted(bundle_results.keys()):
+        display_names = _bundle_display_names(bundle_results.keys())
+
+        for bundle_name in sorted(
+            bundle_results.keys(), key=lambda key: display_names[key]
+        ):
             bundle_status = bundle_results[bundle_name]
             # Get the bundle repo's own SHA info from its sources
             repo_info = _get_bundle_repo_info(bundle_status)
@@ -731,9 +774,9 @@ def _show_concise_report(
                 status_symbol = Text("✓", style="green")
 
             # Add "(active)" marker if this is the active bundle
-            display_name = bundle_name
+            display_name = display_names[bundle_name]
             if active_bundle and bundle_name == active_bundle:
-                display_name = f"{bundle_name} [green](active)[/green]"
+                display_name = f"{display_name} [green](active)[/green]"
 
             table.add_row(
                 display_name,
@@ -914,13 +957,17 @@ def _show_verbose_report(
     # === BUNDLES ===
     if bundle_results:
         active_bundle = _get_active_bundle_name()
-        for bundle_name in sorted(bundle_results.keys()):
+        display_names = _bundle_display_names(bundle_results.keys())
+        for bundle_name in sorted(
+            bundle_results.keys(), key=lambda key: display_names[key]
+        ):
             status = bundle_results[bundle_name]
             if status.sources:
                 # Add "(active)" marker if this is the active bundle
                 title_suffix = " (active)" if bundle_name == active_bundle else ""
                 console.print(
-                    f"[bold cyan]Bundle: {bundle_name}{title_suffix}[/bold cyan]"
+                    f"[bold cyan]Bundle: {display_names[bundle_name]}"
+                    f"{title_suffix}[/bold cyan]"
                 )
                 console.print()
 
@@ -1290,10 +1337,13 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             bundles_to_update = [
                 name for name, status in bundle_results.items() if status.has_updates
             ]
+            # Progress lines are read by a human; the key stays the URI because
+            # bundle_source below has to round-trip into update_bundle.
+            update_labels = _bundle_display_names(bundles_to_update)
 
             for bundle_name in bundles_to_update:
                 try:
-                    _on_update_progress(bundle_name, "updating_bundle")
+                    _on_update_progress(update_labels[bundle_name], "updating_bundle")
                     source_uri = bundle_results[bundle_name].bundle_source
                     # Intentional: check_all_sources(include_all_cached=True) handles
                     # cached modules separately. Load only the root bundle here to
@@ -1306,7 +1356,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
                     bundle_obj = loaded
 
                     # Refresh bundle sources
-                    _on_update_progress(bundle_name, "refreshing_bundle")
+                    _on_update_progress(update_labels[bundle_name], "refreshing_bundle")
                     asyncio.run(update_bundle(bundle_obj))
                     bundle_updated.append(bundle_name)
                 except Exception as exc:
