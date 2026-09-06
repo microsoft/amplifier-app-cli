@@ -14,10 +14,23 @@ scripts and assert on observable behaviour, never grep-for-a-marker.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+# The highway scripts are GNU/Linux shell scripts (`stat -c %Y`, tmux, bash).
+# The text assertions below read them as data and run anywhere; the ones that
+# EXECUTE the derivation need a real bash, which Windows runners do not have.
+needs_bash = pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason=(
+        "executes the scripts' own derivation via bash; the ten-lane-highway "
+        "scripts are GNU/Linux-only (stat -c %Y, tmux) and no bash is present"
+    ),
+)
 
 SCRIPTS = (
     Path(__file__).resolve().parents[1]
@@ -65,6 +78,7 @@ def _derived_socket(batch_dir: Path) -> str:
     ).stdout
 
 
+@needs_bash
 def test_two_batches_derive_two_different_sockets(tmp_path: Path) -> None:
     """The whole point: batch isolation, so one server restart cannot cross over."""
     a = tmp_path / "hw-model-performance"
@@ -77,12 +91,14 @@ def test_two_batches_derive_two_different_sockets(tmp_path: Path) -> None:
     assert sa != sb, "two batches must not share a tmux server"
 
 
+@needs_bash
 def test_an_explicit_socket_still_wins(tmp_path: Path, monkeypatch) -> None:
     """Backward compatibility: only the DEFAULT changes."""
     monkeypatch.setenv("HIGHWAY_TMUX_SOCKET", "hw-explicit")
     assert _derived_socket(tmp_path / "whatever") == "hw-explicit"
 
 
+@needs_bash
 def test_a_batch_name_with_shell_metacharacters_is_sanitised(tmp_path: Path) -> None:
     nasty = tmp_path / "batch; rm -rf x"
     nasty.mkdir()
