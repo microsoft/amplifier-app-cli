@@ -188,7 +188,7 @@ def test_consumers_agree_on_desktop_enabled(tmp_path):
     behaviors = _build_notification_behaviors(flags)
     overrides = settings.get_notification_hook_overrides()
 
-    # Behavior path composes the root bundle + the desktop behavior.
+    # Behavior path composes the desktop behavior URI (never the root bundle).
     assert any("amplifier-bundle-notify" in b for b in behaviors)
     assert any("desktop-notifications" in b for b in behaviors)
     # Hook-override path emits exactly the hooks-notify override.
@@ -233,7 +233,7 @@ def test_consumers_agree_when_both_desktop_and_push_enabled(tmp_path):
     behaviors = _build_notification_behaviors(flags)
     overrides = settings.get_notification_hook_overrides()
 
-    # Behavior path composes root + both per-notification behaviors.
+    # Behavior path composes both per-notification behavior URIs (never the root).
     assert any("desktop-notifications" in b for b in behaviors)
     assert any("push-notifications" in b for b in behaviors)
     # Hook-override path emits both overrides.

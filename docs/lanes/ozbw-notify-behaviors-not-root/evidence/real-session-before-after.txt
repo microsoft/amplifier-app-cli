@@ -1,0 +1,42 @@
+REAL-SESSION CHECK -- amplifier run "hi" -B anchors-amp-dev, from a scratch build (uv run) of each tree.
+Same host, same ~/.amplifier settings (notifications.desktop.enabled=true, notifications.ntfy.enabled=true), same bundle.
+
+SESSION: 10d7a2e8-1295-481f-881d-c4c5f95c92e7   (BEFORE -- baseline worktree at HEAD dab0f7c, notify ROOT still composed)
+
+raw.system chars                                : 97978
+raw.system first line                           : @anchors-amp-dev:context/system.md
+marker 'configured for development OF' present  : true
+  the marker line                               : You are Amplifier, configured for development OF the Amplifier ecosyst
+'# Notify Bundle' present anywhere              : false
+<context_file  blocks (app-bundle includes)     : 23
+mentions:resolved count                         : 23
+
+#315 guard warning in the run's own output ("carries a markdown body; dropping it"):
+  occurrences                                   : 1
+  naming amplifier-bundle-notify                : 1
+
+--------------------------------------------------------------------------
+
+SESSION: 05457635-b553-4559-8815-55306e3bfd59   (AFTER -- this branch, behavior-only compose)
+
+raw.system chars                                : 98339
+raw.system first line                           : @anchors-amp-dev:context/system.md
+marker 'configured for development OF' present  : true
+  the marker line                               : You are Amplifier, configured for development OF the Amplifier ecosyst
+'# Notify Bundle' present anywhere              : false
+<context_file  blocks (app-bundle includes)     : 23
+mentions:resolved count                         : 23
+
+#315 guard warning in the run's own output ("carries a markdown body; dropping it"):
+  occurrences                                   : 0
+  naming amplifier-bundle-notify                : 0
+
+==========================================================================
+The ONLY line that moves is the last one.
+  BEFORE: the #315 guard fires once per session, naming amplifier-bundle-notify.
+          The root body enters compose() and is dropped with a warning.
+  AFTER : 0 occurrences. The root bundle never enters compose at all.
+raw.system is correct in BOTH (marker true, '# Notify Bundle' false) -- that is
+#315 doing its job, and it is left untouched. This change removes the trigger.
+The 23 <context_file> blocks = 22 app-bundle context includes + the root bundle's
+own @anchors-amp-dev:context/system.md, matching f26u's measured mentions:resolved=23.

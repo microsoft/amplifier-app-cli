@@ -1,0 +1,29 @@
+FULL SUITE -- uv run pytest -q
+
+=== BASELINE (git worktree at HEAD dab0f7c, unmodified) ===
+........................................................................ [ 97%]
+...........................................                              [100%]
+1841 passed, 1 skipped, 13 deselected, 1 xfailed in 18.21s
+
+=== THIS BRANCH ===
+........................................................................ [ 97%]
+.......................................................                  [100%]
+1853 passed, 1 skipped, 13 deselected, 1 xfailed in 18.36s
+
+Both trees GREEN on this capture. Delta = +12 tests, all new, all passing.
+
+Reported honestly: an EARLIER full-suite run of BOTH trees produced one failure --
+tests/test_truststore_wrap_bio_shim.py::test_real_truststore_is_covered_at_cli_import,
+"skipped: truststore is not importable" -- at 1 failed/1840 passed (baseline) and
+1 failed/1852 passed (branch). Identical failure, identical cause, present with and
+without this change. It is the known collection-order dependency named in the goal;
+it did not reproduce on this capture. Either way it is not this lane's and was not
+absorbed: the failure set is the same in both trees, and the only delta is +12 passes.
+
+=== that test in isolation, on this branch ===
+...........                                                              [100%]
+11 passed in 0.47s
+
+=== the new + guard tests, this branch ===
+..............................                                           [100%]
+30 passed in 0.24s

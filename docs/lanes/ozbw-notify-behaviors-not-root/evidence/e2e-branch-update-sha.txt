@@ -1,0 +1,9 @@
+Uninstalled 1 package in 1ms
+Installed 1 package in 21ms
+_build_notification_behaviors(desktop=True, push=True) returned:
+    git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/desktop-notifications.yaml
+    git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/push-notifications.yaml
+
+cache before: []
+cache after : ['amplifier-bundle-notify-a1c452253c0fb2e2']
+│ notify                                               │ 7f5ff46 │ 7f5ff46 │ ✓ │
