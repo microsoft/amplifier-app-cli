@@ -229,6 +229,20 @@ the collection-order dependency the goal names, and it passes in isolation (11 p
 did not reproduce on the recorded capture. Either way the failure set is the same in both
 trees and the only delta is +12 passes. Not absorbed.
 
+### CI on PR #316 — all green
+
+All 9 checks pass: `pytest` on ubuntu/macOS/Windows × py3.11/py3.12, both
+`pytest -m integration` jobs (ubuntu, macOS), and `license/cla`.
+
+The first attempt showed `pytest (macos-latest, py3.11)` red at 18s. That was **not a
+test failure** — the job died in the `Install uv` step with
+`API rate limit exceeded for 13.105.117.96` (`astral-sh/setup-uv@v5` falling back to
+anonymous GitHub API access). The suite never ran. Re-running the failed job passed in
+30s. Recorded rather than quietly re-run, because "macOS red" on a PR that adds a
+platform-guarded test is exactly the shape a real skipif bug would take — it was checked
+before being dismissed. Windows py3.11 and py3.12 both pass, which is the check that
+matters for the `skipif(win32)` decorator.
+
 **Baseline method:** a `git worktree` at HEAD rather than `git stash`, so the comparison
 tree is a real independent checkout and there is no window in which the work could be lost.
 
