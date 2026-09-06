@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
+from amplifier_foundation.paths.resolution import get_amplifier_home
 from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
 from ..lib.routing_provenance import resolve_matrix_origins, resolve_winning_paths
 from ..lib.settings import AppSettings, Scope, get_custom_routing_dir
@@ -110,11 +111,10 @@ def _discover_matrix_files() -> list[Path]:
     routing list` work out of the box instead of silently returning an
     empty list and telling the user to run a different command.
     """
-    home = Path.home()
     files: list[Path] = []
 
     # Bundle cache matrices (lazy-fetch on first use)
-    cache_base = home / ".amplifier" / "cache"
+    cache_base = get_amplifier_home() / "cache"
     bundle_dirs = (
         list(cache_base.glob("amplifier-bundle-routing-matrix-*"))
         if cache_base.exists()
@@ -1475,7 +1475,7 @@ def _pick_base_matrix(
     active_matrix = routing_config.get("matrix", "balanced")
 
     # Custom matrices live under ~/.amplifier/routing/
-    custom_dir = Path.home() / ".amplifier" / "routing"
+    custom_dir = get_amplifier_home() / "routing"
 
     matrix_names = sorted(matrices.keys())
 
@@ -1691,7 +1691,7 @@ def _routing_create_interactive(settings: AppSettings) -> None:
         )
         return
 
-    output_dir = Path.home() / ".amplifier" / "routing"
+    output_dir = get_amplifier_home() / "routing"
     saved = save_custom_matrix(matrix_name, assignments, output_dir)
     console.print(f"\n[green]\u2713 Saved to {saved}[/green]")
 
@@ -1897,7 +1897,7 @@ def _routing_edit_matrix(settings: AppSettings) -> None:
         )
         return
 
-    output_dir = Path.home() / ".amplifier" / "routing"
+    output_dir = get_amplifier_home() / "routing"
     output_file = output_dir / f"{matrix_name}.yaml"
 
     # Check for overwrite

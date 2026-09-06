@@ -13,6 +13,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Protocol
+from amplifier_foundation.paths.resolution import get_amplifier_home
 
 if TYPE_CHECKING:
     from amplifier_foundation.mentions.resolver import BaseMentionResolver
@@ -131,7 +132,7 @@ class AppMentionResolver:
         if not path:
             return None
 
-        user_path = Path.home() / ".amplifier" / path
+        user_path = get_amplifier_home() / path
         if user_path.exists():
             logger.debug(f"User shortcut resolved: {mention} -> {user_path}")
             return user_path.resolve()

@@ -16,6 +16,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
+from amplifier_foundation.paths.resolution import get_amplifier_home
 from ..utils.atomic_write import atomic_write_json
 from pathlib import Path
 
@@ -95,7 +96,7 @@ class GitSource:
         self.ref = ref
         self.subdirectory = subdirectory
         # Use consolidated cache path
-        self.cache_dir = Path.home() / ".amplifier" / "cache"
+        self.cache_dir = get_amplifier_home() / "cache"
         self._cached_commit_sha: str | None = None
 
     def _get_effective_url(self) -> str:

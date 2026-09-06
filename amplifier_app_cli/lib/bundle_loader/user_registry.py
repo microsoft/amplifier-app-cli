@@ -19,13 +19,13 @@ from __future__ import annotations
 
 import logging
 import warnings
-from pathlib import Path
 from typing import Any
+from amplifier_foundation.paths.resolution import get_amplifier_home
 
 logger = logging.getLogger(__name__)
 
 # Legacy registry location (kept for migration)
-REGISTRY_PATH = Path.home() / ".amplifier" / "bundle-registry.yaml"
+REGISTRY_PATH = get_amplifier_home() / "bundle-registry.yaml"
 
 
 def _emit_deprecation_warning(func_name: str) -> None:

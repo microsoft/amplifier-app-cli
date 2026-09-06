@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
+from amplifier_foundation.paths.resolution import get_amplifier_home
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ def resolve_dev_override(resource_type: ResourceType, resource_id: str) -> Path 
     scope_paths = [
         (Path.cwd() / ".amplifier" / "settings.local.yaml", Path.cwd() / ".amplifier"),
         (Path.cwd() / ".amplifier" / "settings.yaml", Path.cwd() / ".amplifier"),
-        (Path.home() / ".amplifier" / "settings.yaml", Path.home() / ".amplifier"),
+        (get_amplifier_home() / "settings.yaml", get_amplifier_home()),
     ]
 
     for settings_file, scope_dir in scope_paths:

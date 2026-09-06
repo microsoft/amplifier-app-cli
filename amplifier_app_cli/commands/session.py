@@ -16,6 +16,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
+from amplifier_foundation.paths.resolution import get_amplifier_home
 from ..console import console
 from ..ui.item_renderer import ItemRenderer
 from ..ui.view_policy import resolve_view, view_flags
@@ -622,7 +623,7 @@ def register_session_commands(
             )
             return
         if all_projects:
-            projects_dir = Path.home() / ".amplifier" / "projects"
+            projects_dir = get_amplifier_home() / "projects"
             if not projects_dir.exists():
                 console.print("[yellow]No sessions found.[/yellow]")
                 return
@@ -716,9 +717,7 @@ def register_session_commands(
             if not project_slug.startswith("-"):
                 project_slug = "-" + project_slug
 
-            sessions_dir = (
-                Path.home() / ".amplifier" / "projects" / project_slug / "sessions"
-            )
+            sessions_dir = get_amplifier_home() / "projects" / project_slug / "sessions"
             if not sessions_dir.exists():
                 console.print(
                     f"[yellow]No sessions found for project: {project}[/yellow]"

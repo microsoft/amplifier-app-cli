@@ -38,6 +38,7 @@ from pathlib import Path
 
 import click
 
+from amplifier_foundation.paths.resolution import get_amplifier_home
 from ..console import console
 from ..utils.error_format import escape_markup
 from ..utils.fs_utils import rmtree_robust
@@ -88,7 +89,7 @@ UV_TOOL_PACKAGES = ("amplifier", "amplifier-app-cli")
 
 def _get_amplifier_dir() -> Path:
     """Get the ~/.amplifier directory path."""
-    return Path.home() / ".amplifier"
+    return get_amplifier_home()
 
 
 def _get_known_files() -> set[str]:

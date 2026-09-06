@@ -48,6 +48,7 @@ else:
     _TERMINAL_UNUSABLE_ERRORS = ()
 
 
+from amplifier_foundation.paths.resolution import get_amplifier_home
 from .commands.agents import agents as agents_group
 from .commands.allowed_dirs import allowed_dirs as allowed_dirs_group
 from .commands.bundle import bundle as bundle_group
@@ -3210,7 +3211,7 @@ def get_module_search_paths() -> list[Path]:
         paths.append(project_modules)
 
     # Then user modules
-    user_modules = Path.home() / ".amplifier" / "modules"
+    user_modules = get_amplifier_home() / "modules"
     if user_modules.exists():
         paths.append(user_modules)
 
@@ -3463,9 +3464,7 @@ def _create_prompt_session(
     from amplifier_app_cli.project_utils import get_project_slug
 
     project_slug = get_project_slug()
-    history_path = (
-        Path.home() / ".amplifier" / "projects" / project_slug / "repl_history"
-    )
+    history_path = get_amplifier_home() / "projects" / project_slug / "repl_history"
 
     # Ensure project directory exists
     history_path.parent.mkdir(parents=True, exist_ok=True)

@@ -14,6 +14,7 @@ import yaml
 from filelock import BaseFileLock
 from filelock import FileLock
 
+from amplifier_foundation.paths.resolution import get_amplifier_home
 from ..utils.atomic_write import atomic_write_yaml
 
 Scope = Literal["local", "project", "global", "session"]
@@ -34,7 +35,7 @@ def get_custom_routing_dir() -> Path:
     *loadable* -- the exact "Matrix file not found -- routing disabled" bug
     this function exists to prevent by construction.
     """
-    return Path.home() / ".amplifier" / "routing"
+    return get_amplifier_home() / "routing"
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,7 @@ class SettingsPaths:
     def default(cls) -> SettingsPaths:
         """Create default paths for standard amplifier layout."""
         return cls(
-            global_settings=Path.home() / ".amplifier" / "settings.yaml",
+            global_settings=get_amplifier_home() / "settings.yaml",
             project_settings=Path.cwd() / ".amplifier" / "settings.yaml",
             local_settings=Path.cwd() / ".amplifier" / "settings.local.yaml",
             session_settings=None,
@@ -80,8 +81,7 @@ class SettingsPaths:
         """Create paths including session-scoped settings."""
         base = cls.default()
         base.session_settings = (
-            Path.home()
-            / ".amplifier"
+            get_amplifier_home()
             / "projects"
             / project_slug
             / "sessions"
@@ -292,8 +292,8 @@ class AppSettings:
 
         Migration is idempotent - skipped if already migrated.
         """
-        legacy_path = Path.home() / ".amplifier" / "bundle-registry.yaml"
-        migrated_marker = Path.home() / ".amplifier" / "bundle-registry.yaml.migrated"
+        legacy_path = get_amplifier_home() / "bundle-registry.yaml"
+        migrated_marker = get_amplifier_home() / "bundle-registry.yaml.migrated"
 
         # Skip if no legacy file or already migrated
         if not legacy_path.exists() or migrated_marker.exists():
@@ -1045,8 +1045,7 @@ class AppSettings:
         # Also check session-scoped settings if session context provided
         if session_id and project_slug:
             session_settings_path = (
-                Path.home()
-                / ".amplifier"
+                get_amplifier_home()
                 / "projects"
                 / project_slug
                 / "sessions"
