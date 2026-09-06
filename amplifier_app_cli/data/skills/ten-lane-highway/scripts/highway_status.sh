@@ -204,5 +204,8 @@ if [ "$orphan_rows" -gt 0 ]; then
   echo "WARNING: orphan_rows=$orphan_rows owned by: $orphan_owners"
   echo "  Open infra-ledger rows whose owning lane is NOT live - infrastructure"
   echo "  with nothing driving it (Rule 14). Nothing was destroyed; reclaim each"
-  echo "  with: lane_teardown.sh $BATCH_DIR <lane> teardown --yes"
+  # Resolved from THIS file so the printed command is copy-pasteable. It used
+  # to be a bare name that is on no PATH, and before item model_performance-giwq
+  # the tool was not even shipped with this skill (item kez's sibling defect).
+  echo "  with: $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lane_teardown.sh $BATCH_DIR <lane> teardown --yes"
 fi

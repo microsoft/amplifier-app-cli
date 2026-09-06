@@ -90,6 +90,7 @@ repo** (a real run left `.amplifier/bin/` behind as untracked pollution).
 | `verify_lane.sh BATCH_DIR LANE` | Git-facts probe for one landed lane (DONE.json, ahead-count, three-dot diffstat, uncommitted work) | "Ground truth from git and the filesystem, not from what any session said about itself" |
 | `highway_watchdog.sh BATCH_DIR WIDTH SESSION_ID [INTERVAL] [MAX_HOURS]` | Detached tmux loop that re-wakes THIS session (`amplifier run --resume`) on lane-end / under-width / stale heartbeat | The highway once froze overnight because the manager stopped monitoring the moment it reported status |
 | `infra_ledger.sh BATCH_DIR add TYPE ID DESTROY_CMD...` / `infra_ledger.sh BATCH_DIR sweep --all-owners` | Records any infrastructure a lane OR the manager stands up (DTU, gitea instance, container, service, background process) into `infra.tsv` at creation, each with its teardown command; `sweep` runs those commands and exits non-zero until nothing is left standing | A run closed with a DTU and a gitea container still live — nothing the highway stands up should outlive it (Rule 14) |
+| `lane_teardown.sh BATCH_DIR LANE claim ID...` / `lane_teardown.sh BATCH_DIR LANE teardown\|reconcile\|list\|audit` | **A LANE's** teardown: destroys only the rows that lane claimed, verifies each container is actually gone before flipping its row, and never runs another lane's destroy command. Dry-run by default; `--yes` to act | The emergency recovery path used to live in another repo, untracked — the skill named a tool it did not ship, and an operator mid-incident followed that path to nothing |
 
 **`sweep` is the MANAGER's batch-close verb, never a lane's.** It runs EVERY
 open row's destroy command, so one lane calling it destroys every other lane's
@@ -98,10 +99,16 @@ live infrastructure — that is not hypothetical: on 2026-09-02 a single foreign
 measurements. The script now **refuses with exit 3, having run nothing**, when
 the open rows span more than one owner or any row is unattributable, so:
 
-- **A lane tearing down its OWN rows uses the batch's lane-scoped teardown
-  tool** (`lane_teardown.sh BATCH_DIR <lane> teardown --yes`; omit `--yes` for a
-  dry run), which touches only the rows that lane claimed. A lane never calls
-  `sweep`.
+- **A lane tearing down its OWN rows uses the lane-scoped teardown tool that
+  ships with this skill** —
+  `<skill_directory>/scripts/lane_teardown.sh BATCH_DIR <lane> teardown --yes`;
+  omit `--yes` for a dry run — which touches only the rows that lane claimed. A
+  lane never calls `sweep`. A lane name that ALMOST matches the claimed owner
+  **exits 4 naming the candidate owners and their open-row counts**, rather than
+  reporting success for a teardown that would do nothing: on 2026-09-05
+  `lane_teardown.sh <batch> drbf teardown --yes` printed *"lane 'drbf' owns no
+  open rows — nothing to do"* and exited 0 while six rows were open under
+  `drbf-compaction-notice-ab`.
 - **The manager closing the batch passes `--all-owners`** — the deliberate
   batch-close override. Every close instruction below says
   `sweep --all-owners` for exactly this reason: a guard that deadlocks the
@@ -120,7 +127,8 @@ open rows; the ledger recorded all six correctly and the status report showed
 the lanes ENDED, but **nothing joined the two**, so the manager found the
 containers only by running `incus list` by hand. A non-zero `orphan_rows` means
 infrastructure with nothing driving it (Rule 14) — reclaim each named lane with
-`lane_teardown.sh BATCH_DIR <lane> teardown --yes`. The report **destroys
+`<skill_directory>/scripts/lane_teardown.sh BATCH_DIR <lane> teardown --yes`
+(the report prints that path resolved, ready to paste). The report **destroys
 nothing**: a false positive that prints is a nuisance, a false positive that
 destroys is another 0rg. A **live** lane's rows are never counted. Owners are
 matched by exact lane name, else by a unique lane-name prefix (so a row claimed

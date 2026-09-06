@@ -1,0 +1,27 @@
+### A. adopted file swapped for the UNPATCHED upstream copy (near-miss guard absent)
+$ uv run pytest tests/test_ten_lane_highway_lane_teardown.py -q
+tests/test_ten_lane_highway_lane_teardown.py:270: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_ten_lane_highway_lane_teardown.py::test_near_miss_lane_name_refuses_instead_of_reporting_success
+FAILED tests/test_ten_lane_highway_lane_teardown.py::test_near_miss_refusal_names_the_candidate_lane_and_its_open_row_count
+FAILED tests/test_ten_lane_highway_lane_teardown.py::test_the_mirror_near_miss_long_name_typed_rows_claimed_short
+3 failed, 11 passed in 0.65s
+
+### B. full PRE-ADOPTION state: script absent, docs at origin/main
+$ uv run pytest tests/test_ten_lane_highway_lane_teardown.py -q
+
+tests/test_ten_lane_highway_lane_teardown.py:435: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_ten_lane_highway_lane_teardown.py::test_near_miss_lane_name_refuses_instead_of_reporting_success
+FAILED tests/test_ten_lane_highway_lane_teardown.py::test_near_miss_refusal_names_the_candidate_lane_and_its_open_row_count
+FAILED tests/test_ten_lane_highway_lane_teardown.py::test_the_exact_lane_name_tears_down_exactly_its_own_six_rows
+FAILED tests/test_ten_lane_highway_lane_teardown.py::test_a_live_lanes_rows_are_never_touched
+FAILED tests/test_ten_lane_highway_lane_teardown.py::test_a_genuinely_idle_lane_still_exits_zero
+FAILED tests/test_ten_lane_highway_lane_teardown.py::test_the_mirror_near_miss_long_name_typed_rows_claimed_short
+FAILED tests/test_ten_lane_highway_lane_teardown.py::test_lane_teardown_has_no_sweep_verb
+FAILED tests/test_ten_lane_highway_lane_teardown.py::test_lane_teardown_offers_no_all_owners_escape_hatch
+FAILED tests/test_ten_lane_highway_lane_teardown.py::test_the_sweep_refusal_names_a_lane_teardown_path_that_actually_exists
+FAILED tests/test_ten_lane_highway_lane_teardown.py::test_no_shipped_instruction_sends_an_operator_into_another_repo
+FAILED tests/test_ten_lane_highway_lane_teardown.py::test_skill_md_and_status_report_name_the_shipped_script
+FAILED tests/test_ten_lane_highway_lane_teardown.py::test_reconcile_still_refuses_to_reclaim_a_live_row
+12 failed, 2 passed in 0.15s

@@ -1,0 +1,34 @@
+$ bash docs/lanes/ye80b-teardown-orphan-rows/test_lane_teardown_near_miss.sh /home/bkrabach/dev/openai-evals-team-ci/.amplifier/evaluation/tools/lane_teardown.sh
+== SUT: /home/bkrabach/dev/openai-evals-team-ci/.amplifier/evaluation/tools/lane_teardown.sh
+
+CASE 1 — the incident: a NEAR-MISS lane name must FAIL LOUDLY
+         (2026-09-05: `lane_teardown.sh <batch> drbf teardown --yes`
+          exited 0 saying 'owns no open rows' while six were open)
+  FAIL  exited 0 on a near-miss name (the footgun: reports success, does nothing)
+  FAIL  did not name the candidate lane — an operator cannot act on this
+  PASS  destroyed nothing and flipped no row while refusing
+
+CASE 2 — the EXACT lane name still works, unchanged
+  PASS  exact name exits 0
+  PASS  verified-gone=6 (the transcript recorded that day)
+  PASS  rows-flipped=6
+
+CASE 3 — a LIVE lane's rows are NEVER touched by either path
+         (dead lane and two live lanes hold rows simultaneously)
+  PASS  protected-untouched=4 (the two live lanes' rows)
+  PASS  exactly the 4 live-lane rows remain open
+  PASS  every live-lane container still exists (observable, not inferred)
+
+CASE 4 — a genuinely idle lane still exits 0 (no new false failure)
+         a lane that provisioned nothing must not fail merely because
+         unrelated lanes hold rows
+  PASS  unrelated idle lane exits 0
+  PASS  and touched nothing
+
+CASE 5 — the MIRROR near miss: long name typed, rows claimed short
+         (this batch's ledger genuinely carries both conventions)
+  FAIL  mirror near miss exited 0 without naming a candidate
+
+==================================================
+RESULT: FAIL — 3 expectation(s) unmet
+rc=1

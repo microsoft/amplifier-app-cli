@@ -1,0 +1,4 @@
+$ git -C /home/bkrabach/dev/openai-evals-team-ci ls-files --error-unmatch .amplifier/evaluation/tools/lane_teardown.sh
+error: pathspec '.amplifier/evaluation/tools/lane_teardown.sh' did not match any file(s) known to git
+Did you forget to 'git add'?
+rc=1
