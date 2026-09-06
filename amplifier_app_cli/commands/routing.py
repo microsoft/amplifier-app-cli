@@ -182,10 +182,29 @@ def _load_all_matrices_with_paths(
 
     Only the winning file is parsed into the row, so a shadowed file can never
     supply the description, ``updated:`` date or compatibility count shown for
-    a matrix. A stem whose winner is unparseable or carries no ``name:`` is
-    dropped entirely rather than falling back to a file the loader would not
-    read -- that keeps the old "must have ``name:`` to be listed" rule without
-    letting a loser back in through it.
+    a matrix. A stem whose winner is unparseable is dropped entirely rather
+    than falling back to a file the loader would not read.
+
+    A row survives on exactly the loader's own terms: ``load_matrix()`` accepts
+    any file that parses to a mapping (``"Matrix file must contain a YAML
+    mapping"``) and ``validate_matrix()`` asks for ``general``/``fast`` roles.
+    **Neither reads the YAML's ``name:`` field** -- as of routing-matrix
+    ``972b0ce``, ``matrix_loader.py`` and ``resolver_class.py`` contain no read
+    of it at all. This function used to require it anyway::
+
+        if data and "name" in data:
+            matrices[stem] = (data, path)
+
+    which made a matrix the runtime loads and routes through invisible here:
+    absent from ``list`` (contributing to neither the active nor the disabled
+    count) and "not found" in ``show``. Measured on a live host with
+    ``routing.matrix = anthropic-knob-consistent`` in effect and 13 agents
+    routing through it, the CLI reported ``Matrix 'anthropic-knob-consistent'
+    not found`` and ``0 active, 9 disabled`` -- the opposite of the truth, from
+    the tool an operator reaches for precisely when routing is misbehaving.
+
+    ``name:`` is CLI-facing metadata. It is reported when it disagrees with the
+    stem (see :func:`_print_name_stem_note`), and never decides existence.
 
     Args:
         matrix_files: Every discovered matrix file.
@@ -199,7 +218,10 @@ def _load_all_matrices_with_paths(
     matrices: dict[str, tuple[dict[str, Any], Path]] = {}
     for stem, path in winners.items():
         data = _load_matrix(path)
-        if data and "name" in data:
+        # The loader's rule, not ours: a non-empty YAML mapping. An empty or
+        # non-mapping file raises in load_matrix(), so it has no runtime
+        # identity to report and must not gain a row here either.
+        if isinstance(data, dict) and data:
             matrices[stem] = (data, path)
     return matrices
 
@@ -222,6 +244,21 @@ def _load_all_matrices(matrix_files: list[Path]) -> dict[str, dict[str, Any]]:
 def _declared_name(data: Mapping[str, Any]) -> str:
     """The ``name:`` field inside a matrix YAML (may differ from its stem)."""
     return str(data.get("name", ""))
+
+
+def _disagreeing_name(data: Mapping[str, Any], stem: str) -> str | None:
+    """The declared ``name:`` when it is present AND differs from *stem*.
+
+    ``None`` covers both "agrees" and "not declared at all", which are the two
+    cases an operator must not be warned about. Absence is not disagreement:
+    the runtime never reads ``name:``, so a file without one is entirely
+    ordinary, and a warning there would send someone looking for a problem
+    that does not exist -- the same wasted trip the "not found" message caused.
+    """
+    if "name" not in data:
+        return None
+    declared = _declared_name(data)
+    return declared if declared != stem else None
 
 
 def _print_matrix_not_found(
@@ -461,8 +498,8 @@ def routing_list(compact: bool, detailed: bool, fmt: str):
 
         origin = origins.get(source_path.stem)
         is_shadowing = origin is not None and origin.is_shadowed
-        declared = _declared_name(data)
-        name_disagrees = declared != name
+        declared = _disagreeing_name(data, name)
+        name_disagrees = declared is not None
 
         config_summary: dict[str, Any] = {
             "description": description,
@@ -482,7 +519,7 @@ def routing_list(compact: bool, detailed: bool, fmt: str):
         # `routing use` must write. `declared_name` is reported alongside so a
         # disagreement is visible instead of silently keying on the wrong one.
         item["matrix_file"] = _display_path(source_path)
-        if name_disagrees:
+        if declared is not None:
             mismatched.append((name, declared))
             config_summary["declared_name"] = declared
 
@@ -538,7 +575,7 @@ def routing_use(matrix_name: str, scope: str):
     )
 
     # Show the effective resolution as a preview
-    _show_matrix_resolution(matrices[matrix_name], settings)
+    _show_matrix_resolution(matrices[matrix_name], settings, matrix_name)
 
 
 # ============================================================
@@ -590,15 +627,17 @@ def routing_show(matrix_name: str | None, compact: bool, detailed: bool, fmt: st
         return
 
     _print_shadowing_note(origin)
-    declared = _declared_name(matrix_data)
-    if declared != matrix_name:
+    declared = _disagreeing_name(matrix_data, matrix_name)
+    if declared is not None:
         _print_name_stem_note([(matrix_name, declared)])
 
-    # detailed view → full waterfall; regular/compact → resolved routing
+    # detailed view → full waterfall; regular/compact → resolved routing.
+    # `matrix_name` is the file stem the runtime resolved, so the heading names
+    # the identity in effect rather than the YAML's own `name:` field.
     if view == "detailed":
-        _show_matrix_details(matrix_data, settings)
+        _show_matrix_details(matrix_data, settings, matrix_name)
     else:
-        _show_matrix_resolution(matrix_data, settings)
+        _show_matrix_resolution(matrix_data, settings, matrix_name)
 
 
 def _print_shadowing_note(origin: Any) -> None:
@@ -618,9 +657,31 @@ def _print_shadowing_note(origin: Any) -> None:
     console.print()
 
 
-def _show_matrix_resolution(matrix_data: dict[str, Any], settings: AppSettings) -> None:
+def _resolved_identity(matrix_data: Mapping[str, Any], stem: str | None) -> str:
+    """What to call this matrix in a heading.
+
+    *stem* -- the file stem the runtime resolved -- wins whenever the caller
+    knows it, because that is the identity in effect: it is what
+    ``routing.matrix`` holds and what ``resolve_matrix_source()`` appends
+    ``.yaml`` to. Titling by the YAML's own ``name:`` printed a string the
+    runtime never reads, which for a file carrying no ``name:`` rendered as
+    the actively misleading ``Matrix: unknown``.
+
+    ``None`` is for the one caller with no stem to offer -- the unsaved
+    working copy inside ``routing edit`` -- which keeps its previous heading.
+    """
+    if stem is not None:
+        return stem
+    return str(matrix_data.get("name", "unknown"))
+
+
+def _show_matrix_resolution(
+    matrix_data: dict[str, Any],
+    settings: AppSettings,
+    stem: str | None = None,
+) -> None:
     """Display a role-by-role resolution table for a matrix."""
-    matrix_name = matrix_data.get("name", "unknown")
+    matrix_name = _resolved_identity(matrix_data, stem)
     provider_types = _get_configured_provider_types(settings)
 
     roles = matrix_data.get("roles", {})
@@ -662,13 +723,17 @@ def _show_matrix_resolution(matrix_data: dict[str, Any], settings: AppSettings) 
         )
 
 
-def _show_matrix_details(matrix_data: dict[str, Any], settings: AppSettings) -> None:
+def _show_matrix_details(
+    matrix_data: dict[str, Any],
+    settings: AppSettings,
+    stem: str | None = None,
+) -> None:
     """Display the full candidate waterfall for a routing matrix.
 
     Shows every candidate for each role with ★/✓/✗ indicators based on
     whether the provider is configured, and highlights the active winner.
     """
-    name = matrix_data.get("name", "unknown")
+    name = _resolved_identity(matrix_data, stem)
     description = matrix_data.get("description", "")
     updated = str(matrix_data.get("updated", ""))
 
@@ -798,7 +863,9 @@ def routing_manage_loop(settings: AppSettings, scope: Scope = "global") -> Scope
 
             # 3. Show current resolution table
             if active_matrix in matrices:
-                _show_matrix_resolution(matrices[active_matrix], settings)
+                _show_matrix_resolution(
+                    matrices[active_matrix], settings, active_matrix
+                )
 
         # 4. Actions menu
         console.print("\n  Actions:")
@@ -880,7 +947,7 @@ def _manage_view_matrix(
         num = int(num_str)
         if 1 <= num <= len(matrix_names):
             name = matrix_names[num - 1]
-            _show_matrix_details(matrices[name], settings)
+            _show_matrix_details(matrices[name], settings, name)
         else:
             console.print(f"  [red]Invalid number. Enter 1-{len(matrix_names)}.[/red]")
     except ValueError:

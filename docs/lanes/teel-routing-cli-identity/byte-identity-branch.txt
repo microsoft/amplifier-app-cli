@@ -1,0 +1,231 @@
+$ amplifier routing list
+[exit 0]
+── routing matrices (1 active, 9 disabled) ──
+  [off]    anthropic  (available)  ← disabled
+  [on]  → balanced  (active)
+  [off]    copilot  (available)  ← disabled
+  [off]    economy  (available)  ← disabled
+  [off]    gemini  (available)  ← disabled
+  [off]    my-custom  (available)  ← disabled
+  [off]    ollama  (available)  ← disabled
+  [off]    openai  (available)  ← disabled
+  [off]    openai-knob-consistent  (available)  ← disabled
+  [off]    quality  (available)  ← disabled
+
+
+$ amplifier routing list --format json
+[exit 0]
+[
+  {
+    "name": "  anthropic",
+    "enabled": false,
+    "behaviors": [
+      "available"
+    ],
+    "config_summary": {
+      "description": "Shipped anthropic.",
+      "compatibility": "2/2 roles",
+      "updated": "2026-09-02"
+    },
+    "matrix_file": "~/.amplifier/cache/amplifier-bundle-routing-matrix-test/routing/anthropic.yaml"
+  },
+  {
+    "name": "\u2192 balanced",
+    "enabled": true,
+    "behaviors": [
+      "active"
+    ],
+    "config_summary": {
+      "description": "Shipped balanced.",
+      "compatibility": "2/2 roles",
+      "updated": "2026-09-02"
+    },
+    "matrix_file": "~/.amplifier/cache/amplifier-bundle-routing-matrix-test/routing/balanced.yaml"
+  },
+  {
+    "name": "  copilot",
+    "enabled": false,
+    "behaviors": [
+      "available"
+    ],
+    "config_summary": {
+      "description": "Shipped copilot.",
+      "compatibility": "2/2 roles",
+      "updated": "2026-09-02"
+    },
+    "matrix_file": "~/.amplifier/cache/amplifier-bundle-routing-matrix-test/routing/copilot.yaml"
+  },
+  {
+    "name": "  economy",
+    "enabled": false,
+    "behaviors": [
+      "available"
+    ],
+    "config_summary": {
+      "description": "Shipped economy.",
+      "compatibility": "2/2 roles",
+      "updated": "2026-09-02"
+    },
+    "matrix_file": "~/.amplifier/cache/amplifier-bundle-routing-matrix-test/routing/economy.yaml"
+  },
+  {
+    "name": "  gemini",
+    "enabled": false,
+    "behaviors": [
+      "available"
+    ],
+    "config_summary": {
+      "description": "Shipped gemini.",
+      "compatibility": "2/2 roles",
+      "updated": "2026-09-02"
+    },
+    "matrix_file": "~/.amplifier/cache/amplifier-bundle-routing-matrix-test/routing/gemini.yaml"
+  },
+  {
+    "name": "  my-custom",
+    "enabled": false,
+    "behaviors": [
+      "available"
+    ],
+    "config_summary": {
+      "description": "Custom matrix.",
+      "compatibility": "2/2 roles",
+      "updated": "2026-09-02"
+    },
+    "matrix_file": "~/.amplifier/routing/my-custom.yaml"
+  },
+  {
+    "name": "  ollama",
+    "enabled": false,
+    "behaviors": [
+      "available"
+    ],
+    "config_summary": {
+      "description": "Shipped ollama.",
+      "compatibility": "2/2 roles",
+      "updated": "2026-09-02"
+    },
+    "matrix_file": "~/.amplifier/cache/amplifier-bundle-routing-matrix-test/routing/ollama.yaml"
+  },
+  {
+    "name": "  openai",
+    "enabled": false,
+    "behaviors": [
+      "available"
+    ],
+    "config_summary": {
+      "description": "Shipped openai.",
+      "compatibility": "2/2 roles",
+      "updated": "2026-09-02"
+    },
+    "matrix_file": "~/.amplifier/cache/amplifier-bundle-routing-matrix-test/routing/openai.yaml"
+  },
+  {
+    "name": "  openai-knob-consistent",
+    "enabled": false,
+    "behaviors": [
+      "available"
+    ],
+    "config_summary": {
+      "description": "Shipped openai-knob-consistent.",
+      "compatibility": "2/2 roles",
+      "updated": "2026-09-02"
+    },
+    "matrix_file": "~/.amplifier/cache/amplifier-bundle-routing-matrix-test/routing/openai-knob-consistent.yaml"
+  },
+  {
+    "name": "  quality",
+    "enabled": false,
+    "behaviors": [
+      "available"
+    ],
+    "config_summary": {
+      "description": "Shipped quality.",
+      "compatibility": "2/2 roles",
+      "updated": "2026-09-02"
+    },
+    "matrix_file": "~/.amplifier/cache/amplifier-bundle-routing-matrix-test/routing/quality.yaml"
+  }
+]
+
+$ amplifier routing show
+[exit 0]
+
+  Matrix: balanced
+  Shipped balanced.
+  Updated: 2026-09-02
+
+  fast — Quick tasks
+    ★ anthropic / claude-haiku-*  ← active
+
+  general — Catch-all
+    ★ anthropic / claude-sonnet-*  ← active
+
+$ amplifier routing show balanced
+[exit 0]
+
+  Matrix: balanced
+  Shipped balanced.
+  Updated: 2026-09-02
+
+  fast — Quick tasks
+    ★ anthropic / claude-haiku-*  ← active
+
+  general — Catch-all
+    ★ anthropic / claude-sonnet-*  ← active
+
+$ amplifier routing show balanced --detailed
+[exit 0]
+
+  Matrix: balanced
+  Shipped balanced.
+  Updated: 2026-09-02
+
+  fast — Quick tasks
+    ★ anthropic / claude-haiku-*  ← active
+
+  general — Catch-all
+    ★ anthropic / claude-sonnet-*  ← active
+
+$ amplifier routing show balanced --compact
+[exit 0]
+            Routing: balanced            
+┏━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┓
+┃ Role    ┃ Model           ┃ Provider  ┃
+┡━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━┩
+│ fast    │ claude-haiku-*  │ anthropic │
+│ general │ claude-sonnet-* │ anthropic │
+└─────────┴─────────────────┴───────────┘
+
+Providers: anthropic (★)
+
+$ amplifier routing show my-custom
+[exit 0]
+
+  Matrix: my-custom
+  Custom matrix.
+  Updated: 2026-09-02
+
+  fast — Quick tasks
+    ★ anthropic / claude-haiku-*  ← active
+
+  general — Catch-all
+    ★ anthropic / claude-sonnet-*  ← active
+
+$ amplifier routing show nonexistent
+[exit 0]
+Matrix 'nonexistent' not found. Available: anthropic, balanced, copilot, economy, gemini, my-custom,
+ollama, openai, openai-knob-consistent, quality
+
+$ amplifier routing use balanced
+[exit 0]
+✓ Routing matrix set to 'balanced' (global scope)
+            Routing: balanced            
+┏━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┓
+┃ Role    ┃ Model           ┃ Provider  ┃
+┡━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━┩
+│ fast    │ claude-haiku-*  │ anthropic │
+│ general │ claude-sonnet-* │ anthropic │
+└─────────┴─────────────────┴───────────┘
+
+Providers: anthropic (★)
