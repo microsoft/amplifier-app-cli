@@ -1,0 +1,17 @@
+FULL SUITE — with this lane's changes
+date: 2026-09-06T10:14:31Z
+
+        """Pins the foundation contract this CLI handler depends on.
+    
+        If foundation ever moves ``ModuleActivationError`` back out of the
+        ``BundleError`` hierarchy, the generic handler stops covering it and
+        tracebacks return. Fail here rather than in a user's terminal.
+        """
+>       assert issubclass(ModuleActivationError, BundleError)
+E       assert False
+E        +  where False = issubclass(ModuleActivationError, BundleError)
+
+tests/test_fail_loud_bundle_activation.py:93: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_fail_loud_bundle_activation.py::TestActivationFailureIsRenderedNotTracebacked343::test_error_is_a_bundle_error
+1 failed, 1818 passed, 2 skipped, 13 deselected, 1 xfailed in 12.86s

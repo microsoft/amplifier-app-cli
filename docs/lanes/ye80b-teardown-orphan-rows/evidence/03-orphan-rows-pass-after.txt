@@ -1,0 +1,25 @@
+PASS-AFTER — same tests, orphan-row join in place
+date: 2026-09-06T10:13:59Z
+
+cachedir: .pytest_cache
+rootdir: /home/bkrabach/dev/hw-model-performance/lanes/ye80b-teardown-orphan-rows/amplifier-app-cli
+configfile: pyproject.toml
+plugins: amplifier-core-1.6.0, timeout-2.4.0, pytest_httpserver-1.1.4, anyio-4.12.1, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 13 items
+
+tests/test_ten_lane_highway_orphan_rows.py::test_the_ye80_incident_is_now_visible PASSED [  7%]
+tests/test_ten_lane_highway_orphan_rows.py::test_a_live_lanes_rows_are_never_reported_as_orphaned PASSED [ 15%]
+tests/test_ten_lane_highway_orphan_rows.py::test_every_lane_live_means_no_orphans PASSED [ 23%]
+tests/test_ten_lane_highway_orphan_rows.py::test_a_short_owner_id_resolves_to_its_live_lane_by_prefix PASSED [ 30%]
+tests/test_ten_lane_highway_orphan_rows.py::test_a_short_owner_id_still_orphans_when_its_lane_is_dead PASSED [ 38%]
+tests/test_ten_lane_highway_orphan_rows.py::test_an_ambiguous_owner_prefix_is_reported_not_guessed PASSED [ 46%]
+tests/test_ten_lane_highway_orphan_rows.py::test_an_owner_naming_no_lane_is_flagged_distinctly PASSED [ 53%]
+tests/test_ten_lane_highway_orphan_rows.py::test_an_unclaimed_row_is_an_orphan PASSED [ 61%]
+tests/test_ten_lane_highway_orphan_rows.py::test_closed_rows_are_never_counted PASSED [ 69%]
+tests/test_ten_lane_highway_orphan_rows.py::test_reporting_destroys_nothing PASSED [ 76%]
+tests/test_ten_lane_highway_orphan_rows.py::test_a_batch_with_no_ledger_reports_zero PASSED [ 84%]
+tests/test_ten_lane_highway_orphan_rows.py::test_the_human_summary_names_the_owning_lane PASSED [ 92%]
+tests/test_ten_lane_highway_orphan_rows.py::test_real_tmux_agrees_with_the_stub PASSED [100%]
+
+============================== 13 passed in 0.66s ==============================
