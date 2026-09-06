@@ -324,3 +324,86 @@ def test_global_update_loads_an_app_target_by_source_uri(monkeypatch):
     assert result.exit_code == 0, result.output
     assert loaded_uris == [_FRAGMENT_URI]
     assert len(updated_bundles) == 1
+
+
+@pytest.mark.asyncio
+async def test_global_update_collapses_an_app_subdirectory_into_its_root_bundle(
+    monkeypatch,
+):
+    """A behavior YAML added as an app bundle is not a second row for its repo.
+
+    `amplifier bundle add --app <repo>@main#subdirectory=behaviors/x.yaml`
+    records the fragment URI in settings. When the same repo is already a
+    tracked root bundle, the two are the same repo at the same ref and one
+    status check covers both -- the rule list_cached_root_bundles() applies to
+    registry sub-bundles. Comparing the exact strings can never match, so
+    without a fragment-stripped comparison every such app bundle rendered a
+    duplicate row alongside its root.
+    """
+    from amplifier_foundation.sources.git import GitSourceHandler
+
+    registry = MagicMock()
+    registry.find.return_value = _URI
+    monkeypatch.setattr(
+        update_module,
+        "AppBundleDiscovery",
+        lambda: SimpleNamespace(list_cached_root_bundles=lambda: ["team"]),
+    )
+    monkeypatch.setattr(update_module, "create_bundle_registry", lambda: registry)
+    monkeypatch.setattr(
+        update_module,
+        "AppSettings",
+        lambda: SimpleNamespace(get_app_bundles=lambda: [_FRAGMENT_URI]),
+    )
+
+    async def fake_get_status(self, parsed, cache_dir):
+        return SimpleNamespace(source_uri=_URI, has_update=False)
+
+    monkeypatch.setattr(GitSourceHandler, "get_status", fake_get_status)
+
+    results = await update_module._check_all_bundle_status()
+
+    assert set(results) == {"team"}, (
+        "the fragment URI must not appear as a row of its own next to the "
+        "root bundle it shares a repo and ref with"
+    )
+
+
+@pytest.mark.asyncio
+async def test_global_update_keeps_an_app_subdirectory_on_a_different_ref(monkeypatch):
+    """Only the fragment is redundant with the root - the ref is not."""
+    from amplifier_foundation.sources.git import GitSourceHandler
+
+    other_ref_uri = (
+        "git+https://github.com/example/amplifier-bundle-team@v2"
+        "#subdirectory=behaviors/team.yaml"
+    )
+    registry = MagicMock()
+    registry.find.return_value = _URI
+    monkeypatch.setattr(
+        update_module,
+        "AppBundleDiscovery",
+        lambda: SimpleNamespace(list_cached_root_bundles=lambda: ["team"]),
+    )
+    monkeypatch.setattr(update_module, "create_bundle_registry", lambda: registry)
+    monkeypatch.setattr(
+        update_module,
+        "AppSettings",
+        lambda: SimpleNamespace(get_app_bundles=lambda: [other_ref_uri]),
+    )
+
+    async def fake_get_status(self, parsed, cache_dir):
+        return SimpleNamespace(source_uri=_URI, has_update=False)
+
+    monkeypatch.setattr(GitSourceHandler, "get_status", fake_get_status)
+
+    results = await update_module._check_all_bundle_status()
+
+    assert set(results) == {"team", other_ref_uri}
+
+
+def test_strip_uri_fragment_keeps_the_ref():
+    assert (
+        update_module._strip_uri_fragment(_FRAGMENT_URI) == _URI
+    ), "only the #fragment is redundant with the root bundle"
+    assert update_module._strip_uri_fragment(_URI) == _URI

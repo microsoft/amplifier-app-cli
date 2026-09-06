@@ -44,6 +44,21 @@ def _normalize_git_url(url: str) -> str:
     return url.rstrip("/")
 
 
+def _strip_uri_fragment(uri: str) -> str:
+    """Drop a URI's #fragment, keeping the ref intact.
+
+    Examples:
+        git+https://github.com/org/bundle@main#subdirectory=behaviors/x.yaml
+        -> git+https://github.com/org/bundle@main
+
+    Deliberately not _normalize_git_url(): that also strips ``@ref``, which
+    would collapse ``@main`` and ``@v2`` into a single update target. The
+    subdirectory fragment is the only part redundant with the repo's root
+    bundle - the ref is not.
+    """
+    return uri.split("#", 1)[0]
+
+
 def _extract_module_name_from_uri(source_uri: str) -> str:
     """Extract a clean module name from a source URI.
 
@@ -388,11 +403,25 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
         except Exception:
             continue  # Skip bundles that fail status check
 
-    # App bundles are configured source URIs rather than registry aliases.  Use
-    # the exact URI as the result key so refs and subdirectory fragments remain
-    # separate update targets.
+    # App bundles are configured source URIs rather than registry aliases, so
+    # the exact URI stays the result key: different refs are genuinely
+    # different update targets.
+    #
+    # Dedupe against the ROOT bundles checked above on the fragment-stripped
+    # URI, though. An app bundle added as
+    # `<repo>@main#subdirectory=behaviors/x.yaml` is the same repo at the same
+    # ref as the `<repo>@main` root bundle already checked, so one status check
+    # covers both and a second row is noise. That is the rule
+    # AppBundleDiscovery.list_cached_root_bundles() already applies to registry
+    # sub-bundles; app bundles arrive here without having passed through it,
+    # and an exact-string comparison can never match a fragment against a root
+    # that has none.
+    #
+    # Scoped to the root URIs deliberately: two app entries that share a repo
+    # are both things the user asked for by name, and stay independent.
+    root_bases = {_strip_uri_fragment(uri) for uri in checked_uris}
     for uri in AppSettings().get_app_bundles():
-        if uri in checked_uris:
+        if uri in checked_uris or _strip_uri_fragment(uri) in root_bases:
             continue
         checked_uris.add(uri)
         try:
