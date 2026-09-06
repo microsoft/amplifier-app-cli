@@ -1,0 +1,43 @@
+PASS-AFTER on branch lane/teel-routing-cli-identity (2026-09-06T09:42:42Z)
+command: uv run pytest tests/test_routing_cli_runtime_identity.py -q
+
+............................                                                                 [100%]
+28 passed in 0.61s
+
+=== same tree, same commands, after the fix ===
+### routing.matrix = anthropic-knob-consistent  (file exists, runtime loads it)
+
+--- amplifier routing list ---
+── routing matrices (1 active, 9 disabled) ──
+  [off]    anthropic  (available)  ← disabled
+  [on]  → anthropic-knob-consistent  (active)
+  [off]    balanced  (available)  ← disabled
+  [off]    copilot  (available)  ← disabled
+  [off]    economy  (available)  ← disabled
+  [off]    gemini  (available)  ← disabled
+  [off]    ollama  (available)  ← disabled
+  [off]    openai  (available)  ← disabled
+  [off]    openai-knob-consistent  (available)  ← disabled
+  [off]    quality  (available)  ← disabled
+
+--- amplifier routing show ---
+Matrix: anthropic-knob-consistent
+  Knob-consistent anthropic routing.
+  Updated: 2026-09-02
+
+  fast — Quick tasks
+    ★ anthropic / claude-haiku-*  ← active
+
+  general — Catch-all
+    ★ anthropic / claude-sonnet-*  ← active
+
+--- amplifier routing show anthropic-knob-consistent ---
+Matrix: anthropic-knob-consistent
+  Knob-consistent anthropic routing.
+  Updated: 2026-09-02
+
+  fast — Quick tasks
+    ★ anthropic / claude-haiku-*  ← active
+
+  general — Catch-all
+    ★ anthropic / claude-sonnet-*  ← active

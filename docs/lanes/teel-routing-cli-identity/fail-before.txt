@@ -1,0 +1,46 @@
+FAIL-BEFORE at parent commit 3bb010409b7b41e693d8c0aa59c3fcb90be9217a (2026-09-06T09:38:07Z)
+command: uv run pytest tests/test_routing_cli_runtime_identity.py -q
+
+tests/test_routing_cli_runtime_identity.py:430: KeyError
+----------------------------- Captured stdout call -----------------------------
+⚠ Could not resolve provider module 'provider-anthropic' for entry 
+'provider-anthropic' -- skipping plaintext-secret scan for this entry.
+⚠ Could not resolve provider module 'provider-anthropic' for entry 
+'provider-anthropic' -- skipping plaintext-secret scan for this entry.
+=========================== short test summary info ============================
+FAILED tests/test_routing_cli_runtime_identity.py::TestLiveMatrixWithNoDeclaredName::test_list_reports_the_live_matrix_as_present
+FAILED tests/test_routing_cli_runtime_identity.py::TestLiveMatrixWithNoDeclaredName::test_list_reports_the_live_matrix_as_active
+FAILED tests/test_routing_cli_runtime_identity.py::TestLiveMatrixWithNoDeclaredName::test_console_listing_never_says_zero_active
+FAILED tests/test_routing_cli_runtime_identity.py::TestLiveMatrixWithNoDeclaredName::test_show_renders_the_live_matrix_instead_of_not_found
+FAILED tests/test_routing_cli_runtime_identity.py::TestLiveMatrixWithNoDeclaredName::test_bare_show_follows_the_active_setting_to_the_live_matrix
+FAILED tests/test_routing_cli_runtime_identity.py::TestLiveMatrixWithNoDeclaredName::test_show_detailed_titles_the_matrix_by_the_stem_the_runtime_uses
+FAILED tests/test_routing_cli_runtime_identity.py::TestLiveMatrixWithNoDeclaredName::test_show_compact_titles_the_matrix_by_the_stem
+FAILED tests/test_routing_cli_runtime_identity.py::TestLiveMatrixWithNoDeclaredName::test_use_accepts_the_stem_the_runtime_resolves
+FAILED tests/test_routing_cli_runtime_identity.py::TestLiveMatrixWithNoDeclaredName::test_absent_name_is_not_reported_as_a_disagreement
+FAILED tests/test_routing_cli_runtime_identity.py::TestCliAndRuntimeCannotDiverge::test_row_set_equals_the_runtime_resolvable_set_with_a_nameless_matrix
+FAILED tests/test_routing_cli_runtime_identity.py::TestMismatchedNameStillWarns::test_show_titles_a_mismatched_matrix_by_its_stem_not_its_declared_name
+FAILED tests/test_routing_cli_runtime_identity.py::TestRuntimeSelectionUnchanged::test_the_row_points_at_the_file_the_runtime_would_load
+12 failed, 16 passed in 0.43s
+
+=== live CLI reproduction at 3bb010409b7b41e693d8c0aa59c3fcb90be9217a (otr's measured output) ===
+### routing.matrix = anthropic-knob-consistent  (file exists, runtime loads it)
+
+--- amplifier routing list ---
+── routing matrices (0 active, 9 disabled) ──
+  [off]    anthropic  (available)  ← disabled
+  [off]    balanced  (available)  ← disabled
+  [off]    copilot  (available)  ← disabled
+  [off]    economy  (available)  ← disabled
+  [off]    gemini  (available)  ← disabled
+  [off]    ollama  (available)  ← disabled
+  [off]    openai  (available)  ← disabled
+  [off]    openai-knob-consistent  (available)  ← disabled
+  [off]    quality  (available)  ← disabled
+
+--- amplifier routing show ---
+Matrix 'anthropic-knob-consistent' not found. Available: anthropic, balanced, 
+copilot, economy, gemini, ollama, openai, openai-knob-consistent, quality
+
+--- amplifier routing show anthropic-knob-consistent ---
+Matrix 'anthropic-knob-consistent' not found. Available: anthropic, balanced, 
+copilot, economy, gemini, ollama, openai, openai-knob-consistent, quality
