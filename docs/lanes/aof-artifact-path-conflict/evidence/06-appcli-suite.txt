@@ -1,0 +1,7 @@
+$ uv run pytest -q      # amplifier-app-cli, full suite, on lane/aof-artifact-path-conflict
+
+............................                                             [100%]
+1682 passed, 1 skipped, 13 deselected, 1 xfailed in 8.51s
+
+baseline at 35ab604 (from the goal): 1682 passed, 1 skipped, 13 deselected, 1 xfailed
+identical -- this lane changes no app-cli source.

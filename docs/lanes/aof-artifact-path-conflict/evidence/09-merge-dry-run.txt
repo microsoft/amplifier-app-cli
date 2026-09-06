@@ -1,0 +1,31 @@
+THE MERGE IS PROVEN MECHANICAL AND GREEN. It is the manager's to run.
+
+Dry-run performed in a throwaway detached worktree off CURRENT evals main,
+then aborted and removed. evals main was not modified: still 6269c44.
+
+$ git rev-list --count 6269c44..main
+  0            # main has not advanced since this branch was cut -- no rebase needed
+
+$ git merge --no-ff --no-commit lane/aof-artifact-path-conflict
+  MERGE: CLEAN, 0 conflicts
+   scenarios/_harness/tests/test_artifact_path_resolution.py | 262 +++++
+   tools/check_lane_artifact_paths.py                        |  82 ++-
+   2 files changed, 342 insertions(+), 2 deletions(-)
+
+$ ./run_tests.sh                      # ON THE MERGED STATE
+  243 passed, 4 subtests passed in 41.34s      (main alone: 233)
+
+$ python3 tools/check_lane_artifact_paths.py --lane-dir <this lane>   # MERGED STATE
+  COMPLIANT  aof-artifact-path-conflict  amplifier-app-cli
+    expected docs/lanes/aof-artifact-path-conflict/  [R-PIN docs/lanes/ (declared for amplifier-app-cli)]
+  --strict exit: 0
+
+So the post-merge state is not a prediction: it was built, tested and graded,
+then thrown away. The command that makes it permanent:
+
+  git -C <evals> merge --no-ff lane/aof-artifact-path-conflict \
+      -m 'merge lane/aof-artifact-path-conflict into main (artifact-path: declare app-cli root)'
+
+This lane does not run it: its goal says 'Do not merge anything to main' and
+'Never merge', and 63 worktrees / ~139 lane branches hang off that main --
+changing it mid-batch would move other live lanes' grading underneath them.

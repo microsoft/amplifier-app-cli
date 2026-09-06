@@ -1,0 +1,19 @@
+$ grep -o 'ARTIFACT ROOT.*' /home/bkrabach/dev/hw-model-performance/goals/aof-artifact-path-conflict.md | head -1
+ARTIFACT ROOT `docs/lanes/aof-artifact-path-conflict/`
+
+$ python3 tools/check_lane_artifact_paths.py --lane-dir /home/bkrabach/dev/hw-model-performance/lanes/aof-artifact-path-conflict      # evals main 6269c44
+NO-COMMITS   aof-artifact-path-conflict         amplifier-app-cli                  expected ai_working/aof-artifact-path-conflict/  [R2 ai_working/]
+
+# the goal says docs/lanes/; the checker says ai_working/. Same lane, same day.
+
+$ git -C /home/bkrabach/dev/hw-model-performance/lanes/aof-artifact-path-conflict/amplifier-app-cli ls-tree -r --name-only 35ab604 -- ai_working
+ai_working/3yc-timedout-session-resumable/DONE-NOTE.md
+ai_working/3yc-timedout-session-resumable/PATCH-foundation-surface-resume-detail.diff
+ai_working/3yc-timedout-session-resumable/test_resume_message_roundtrip.py
+ai_working/9kk-routing-list-lastwrite/DONE-NOTE.md
+ai_working/adq-routing-list-shadowing/DONE-NOTE.md
+# every tracked path under ai_working/ is a lane artifact. No repo content, at any ref.
+
+$ git -C /home/bkrabach/dev/hw-model-performance/lanes/aof-artifact-path-conflict/amplifier-app-cli log --reverse --format='%h %ad %s' --date=short -- ai_working | head -1
+0d93352 2026-09-02 fix(spawn): checkpoint sub-session transcripts during the run so a timed-out delegate is resumable
+# R2 began firing for this repo when THAT lane's note was merged.

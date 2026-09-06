@@ -1,0 +1,29 @@
+diff <(evals main) <(lane/aof) of:
+  python3 tools/check_lane_artifact_paths.py --manifest <HW>/manifest.tsv --all --markdown
+
+3c3
+< | COMPLIANT | 58 |
+---
+> | COMPLIANT | 62 |
+7c7
+< | VIOLATION | 56 |
+---
+> | VIOLATION | 52 |
+12c12
+< | `amplifier-app-cli` | R2 ai_working/ | `ai_working/<lane>/` | 0 | 7 | 0 | 1 |
+---
+> | `amplifier-app-cli` | R-PIN docs/lanes/ (declared for amplifier-app-cli) | `docs/lanes/<lane>/` | 4 | 3 | 0 | 1 |
+81d80
+< | n1i-resume-thread-role | `amplifier-app-cli` | VIOLATION | `ai_working/n1i-resume-thread-role/` | `docs/lanes/n1i-resume-thread-role/DONE-NOTE.md` |
+88c87
+< | adq-routing-list-shadowing | `amplifier-app-cli` | VIOLATION | `ai_working/adq-routing-list-shadowing/` | `../DONE-NOTE.md` |
+---
+> | adq-routing-list-shadowing | `amplifier-app-cli` | VIOLATION | `docs/lanes/adq-routing-list-shadowing/` | `../DONE-NOTE.md` |
+90c89
+< | 9kk-routing-list-lastwrite | `amplifier-app-cli` | VIOLATION | `ai_working/9kk-routing-list-lastwrite/` | `ai_working/adq-routing-list-shadowing/DONE-NOTE.md` |
+---
+> | 9kk-routing-list-lastwrite | `amplifier-app-cli` | VIOLATION | `docs/lanes/9kk-routing-list-lastwrite/` | `ai_working/adq-routing-list-shadowing/DONE-NOTE.md` |
+94,96d92
+< | 9w0-delegate-timeout-partial-producer | `amplifier-app-cli` | VIOLATION | `ai_working/9w0-delegate-timeout-partial-producer/` | `docs/lanes/9w0-delegate-timeout-partial-producer/DONE-NOTE.md`, `docs/lanes/9w0-delegate-timeout-partial-producer/conftest.py`, `docs/lanes/9w0-delegate-timeout-partial-producer/evidence/00-parent-baseline-named-suites.txt`, `docs/lanes/9w0-delegate-timeout-partial-producer/evidence/01-parent-baseline-full-suite.txt`, `docs/lanes/9w0-delegate-timeout-partial-producer/evidence/02-original-patch-does-not-apply.txt`, `docs/lanes/9w0-delegate-timeout-partial-producer/evidence/03-failbefore-roundtrip-parent.txt`, `docs/lanes/9w0-delegate-timeout-partial-producer/evidence/04-counterevidence-naive-shape-still-false.txt`, `docs/lanes/9w0-delegate-timeout-partial-producer/evidence/05-normal-completion-byte-identical.txt`, `docs/lanes/9w0-delegate-timeout-partial-producer/evidence/06-gd4-partial-available-true.txt`, `docs/lanes/9w0-delegate-timeout-partial-producer/evidence/07-passafter-roundtrip-patched.txt`, `docs/lanes/9w0-delegate-timeout-partial-producer/evidence/08-lint-and-full-suite-patched.txt`, `docs/lanes/9w0-delegate-timeout-partial-producer/probe_partial_roundtrip.py`, `docs/lanes/9w0-delegate-timeout-partial-producer/test_partial_roundtrip.py` |
+< | eem-partial-accumulator-widen | `amplifier-app-cli` | VIOLATION | `ai_working/eem-partial-accumulator-widen/` | `docs/lanes/eem-partial-accumulator-widen/DONE-NOTE.md`, `docs/lanes/eem-partial-accumulator-widen/byte_identity_probe.py`, `docs/lanes/eem-partial-accumulator-widen/evidence/00-baseline-suite-parent.txt`, `docs/lanes/eem-partial-accumulator-widen/evidence/01-fail-before.txt`, `docs/lanes/eem-partial-accumulator-widen/evidence/03-byte-identity.txt`, `docs/lanes/eem-partial-accumulator-widen/evidence/03a-parent.json`, `docs/lanes/eem-partial-accumulator-widen/evidence/03b-patched.json`, `docs/lanes/eem-partial-accumulator-widen/evidence/04-roundtrip.txt`, `docs/lanes/eem-partial-accumulator-widen/evidence/05-full-suite.txt`, `docs/lanes/eem-partial-accumulator-widen/evidence/06-integration.txt`, `docs/lanes/eem-partial-accumulator-widen/evidence/07-real-leg-reachability.md`, `docs/lanes/eem-partial-accumulator-widen/test_partial_roundtrip.py` |
+< | 2nz-upstream-skill-guards | `amplifier-app-cli` | VIOLATION | `ai_working/2nz-upstream-skill-guards/` | `docs/lanes/2nz-upstream-skill-guards/DONE-NOTE.md` |
