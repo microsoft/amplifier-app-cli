@@ -1205,6 +1205,84 @@ def bundle_update(
         )
 
 
+async def _augment_with_transitive(
+    status: "BundleStatus",
+    bundle_name: str,
+    bundle_obj,
+    registry,
+) -> dict[str, str]:
+    """Fold ``includes:``-only git sources into *status*, in place.
+
+    ``check_bundle_status()`` deliberately does not collect included bundles
+    (foundation ``updates/__init__.py:138-140``): it assumes every include is
+    also registered as a first-class bundle and gets checked independently.
+    For a bundle that only ever arrives through someone else's ``includes:``
+    that assumption does not hold, and the source drops out of every check --
+    while foundation's loader never refreshes a cached ``@<branch>`` source on
+    its own (``sources/git.py:697-709``). Result: a permanently stale cache
+    under a green "All sources are up to date."
+
+    Returns:
+        source_uri -> including bundle name, for annotating the display.
+        Empty when nothing transitive was found.
+    """
+    from amplifier_foundation.paths.resolution import get_amplifier_home
+
+    from ..utils.include_graph import strip_uri_fragment
+    from ..utils.include_graph import transitive_statuses_for
+
+    seed_uri = getattr(bundle_obj, "_source_uri", None) or registry.find(bundle_name)
+    if not seed_uri:
+        return {}
+
+    known = {strip_uri_fragment(s.source_uri) for s in status.sources}
+    known.add(strip_uri_fragment(seed_uri))
+
+    try:
+        entries = await transitive_statuses_for(
+            {bundle_name: seed_uri},
+            registry=registry,
+            cache_dir=get_amplifier_home() / "cache",
+            known_uris=known,
+        )
+    except Exception:
+        return {}  # A failed walk must not take the whole check down with it
+
+    annotations: dict[str, str] = {}
+    for entry in entries.values():
+        status.sources.append(entry.status)
+        annotations[entry.status.source_uri] = entry.parent
+    return annotations
+
+
+async def _refresh_transitive(
+    annotations: dict[str, str], status: "BundleStatus"
+) -> list[str]:
+    """Re-clone every transitive source that actually has an update.
+
+    ``update_bundle()`` re-derives its own work list from the bundle object,
+    so it never sees the rows appended by ``_augment_with_transitive``.
+    Refresh them with the same ``GitSourceHandler.update()`` a direct refresh
+    bottoms out in. A pinned ref never lands here: ``get_status()`` already
+    reports ``has_update=False`` for it.
+    """
+    from amplifier_foundation.paths.resolution import get_amplifier_home
+
+    from ..utils.include_graph import refresh_transitive_source
+
+    if not annotations:
+        return []
+
+    cache_dir = get_amplifier_home() / "cache"
+    refreshed: list[str] = []
+    for source in status.sources:
+        if source.source_uri not in annotations or source.has_update is not True:
+            continue
+        await refresh_transitive_source(source.source_uri, cache_dir=cache_dir)
+        refreshed.append(source.source_uri)
+    return refreshed
+
+
 async def _bundle_update_async(
     name: str | None, check_only: bool, auto_confirm: bool, specific_source: str | None
 ) -> None:
@@ -1249,9 +1327,12 @@ async def _bundle_update_async(
     # Check status
     console.print("\n[dim]Checking for updates...[/dim]")
     status: BundleStatus = await check_bundle_status(bundle_obj)
+    transitive = await _augment_with_transitive(
+        status, bundle_name, bundle_obj, registry
+    )
 
     # Display status table
-    _display_bundle_status(status)
+    _display_bundle_status(status, transitive)
 
     # Summary
     console.print(f"\n{status.summary}")
@@ -1289,6 +1370,9 @@ async def _bundle_update_async(
             console.print(f"[green]✓ Updated:[/green] {specific_source}")
         else:
             await update_bundle(bundle_obj)
+            refreshed = await _refresh_transitive(transitive, status)
+            for uri in refreshed:
+                console.print(f"[green]✓ Updated (transitive):[/green] {uri}")
             console.print(
                 f"[green]✓ Updated {len(status.updateable_sources)} source(s)[/green]"
             )
@@ -1321,6 +1405,7 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
     results: dict[str, BundleStatus] = {}
     errors: dict[str, str] = {}
     bundles_with_updates: list[str] = []
+    transitive_by_bundle: dict[str, dict[str, str]] = {}
 
     # Check each bundle
     for bundle_name in bundle_names:
@@ -1332,6 +1417,9 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
             bundle_obj = loaded
 
             status: BundleStatus = await check_bundle_status(bundle_obj)
+            transitive_by_bundle[bundle_name] = await _augment_with_transitive(
+                status, bundle_name, bundle_obj, registry
+            )
             results[bundle_name] = status
 
             if status.has_updates:
@@ -1443,6 +1531,9 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
             bundle_obj = loaded
 
             await update_bundle(bundle_obj)
+            await _refresh_transitive(
+                transitive_by_bundle.get(bundle_name, {}), results[bundle_name]
+            )
             updated_count += 1
             console.print(f"[green]✓[/green] {bundle_name}")
         except Exception as exc:
@@ -1461,8 +1552,16 @@ async def _bundle_update_all_async(check_only: bool, auto_confirm: bool) -> None
             console.print(f"  [green]✓[/green] {name}")
 
 
-def _display_bundle_status(status: BundleStatus) -> None:
-    """Display bundle status in a formatted table."""
+def _display_bundle_status(
+    status: BundleStatus, transitive: dict[str, str] | None = None
+) -> None:
+    """Display bundle status in a formatted table.
+
+    *transitive* maps a source URI to the bundle whose ``includes:`` reaches
+    it. Those rows are annotated rather than shown bare: a source with no
+    registry entry of its own, printed unlabelled, reads as something the
+    user added and forgot.
+    """
     if not status.sources:
         console.print("[dim]No sources to check.[/dim]")
         return
@@ -1478,9 +1577,14 @@ def _display_bundle_status(status: BundleStatus) -> None:
 
     for source in status.sources:
         # Truncate long URIs
+        included_by = (transitive or {}).get(source.source_uri)
         uri = source.source_uri
         if len(uri) > 57:
             uri = uri[:54] + "..."
+        # The attribution goes in Details, not in front of the URI: this
+        # column is already narrow enough that Rich ellipsizes it, and a
+        # prefix here just pushes the URI onto a second line where it is
+        # harder to read, not easier.
 
         # Status indicator
         if source.has_update:
@@ -1492,6 +1596,8 @@ def _display_bundle_status(status: BundleStatus) -> None:
 
         # Details
         details_parts = []
+        if included_by:
+            details_parts.append(f"via {included_by}")
         if source.cached_commit and source.remote_commit:
             local_short = source.cached_commit[:7]
             remote_short = source.remote_commit[:7]
@@ -1502,7 +1608,9 @@ def _display_bundle_status(status: BundleStatus) -> None:
         elif source.error:
             details_parts.append(f"error: {source.error[:30]}")
 
-        details = " ".join(details_parts) if details_parts else source.summary[:40]
+        if not details_parts:
+            details_parts.append(source.summary[:40])
+        details = " ".join(details_parts)
 
         table.add_row(uri, status_text, details)
 

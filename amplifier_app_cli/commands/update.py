@@ -2,12 +2,15 @@
 
 import asyncio
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import click
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
+
+from amplifier_foundation.updates import BundleStatus as _BundleStatus
 
 from ..lib.bundle_loader import AppBundleDiscovery
 
@@ -31,6 +34,29 @@ if TYPE_CHECKING:
     from amplifier_foundation import BundleStatus
 
 console = Console()
+
+
+@dataclass
+class TransitiveBundleStatus(_BundleStatus):
+    """A bundle reachable only through another bundle's ``includes:``.
+
+    A plain ``BundleStatus`` cannot say *why* a source is in the closure, and
+    a transitive source needs exactly that: it has no registry entry and no
+    settings entry, so without an attribution the row would appear from
+    nowhere. Carrying it on the status object keeps
+    ``_check_all_bundle_status()``'s return type unchanged -- several tests
+    substitute a plain ``dict[str, BundleStatus]`` for it -- while letting the
+    renderer and the executor branch on ``included_by``.
+    """
+
+    included_by: str = ""
+    """Immediate includer -- the honest answer to 'who pulls this in?'."""
+
+    included_under: str = ""
+    """Registered root the walk started from -- what the table groups by."""
+
+    is_pinned: bool = False
+    """Ref is a commit SHA or version tag: reported, never refreshed."""
 
 
 def _normalize_git_url(url: str) -> str:
@@ -97,6 +123,26 @@ def _bundle_display_names(bundle_keys: Iterable[str]) -> dict[str, str]:
     return {
         key: (label if seen[label] == 1 else key) for key, label in labels.items()
     }
+
+
+def _bundle_row_sort_key(
+    key: str,
+    status: "BundleStatus",
+    display_names: dict[str, str],
+) -> tuple[str, int, str]:
+    """Order the Bundles table so a transitive row sits under its parent row.
+
+    Grouped by the *registered root* rather than the immediate includer:
+    ``digital-twin-universe-behavior`` is the truthful parent of the gitea
+    bundle, but it has no row of its own, so grouping on it would scatter the
+    child under a heading that is not there. The annotation still names the
+    real includer -- grouping and attribution answer different questions.
+    """
+    label = display_names.get(key, key)
+    root = getattr(status, "included_under", "") or ""
+    if root:
+        return (root.lower(), 1, label.lower())
+    return (label.lower(), 0, label.lower())
 
 
 def _extract_module_name_from_uri(source_uri: str) -> str:
@@ -469,7 +515,75 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
         except Exception:
             continue  # Skip bundles that fail status check
 
+    # Everything above enumerates sources somebody REGISTERED: registry roots
+    # and app-bundle settings entries. A bundle that reaches the active
+    # closure only through another bundle's `includes:` is in neither place,
+    # so its cache was never checked -- and because the loader never refreshes
+    # a cached @<branch> source on its own (foundation
+    # sources/git.py:697-709), the only thing that would ever move it is this
+    # command. Skipping it here is what let a transitively-included @main
+    # bundle sit indefinitely behind a green "All sources up to date".
+    results.update(await _check_transitive_bundle_status(checked_uris, results))
+
     return results
+
+
+async def _check_transitive_bundle_status(
+    checked_uris: set[str],
+    direct_results: dict[str, "BundleStatus"],
+) -> dict[str, "BundleStatus"]:
+    """Status-check every git source reachable via ``includes:`` from *checked_uris*.
+
+    Never returns a row for a source already covered directly -- a repo the
+    user has registered is not "transitive", and two rows for one cache would
+    misreport which one carries the update.
+    """
+    from amplifier_foundation.paths.resolution import get_amplifier_home
+
+    from ..utils.include_graph import check_transitive_sources
+    from ..utils.include_graph import collect_transitive_git_sources
+
+    if not checked_uris:
+        return {}
+
+    cache_dir = get_amplifier_home() / "cache"
+    registry = create_bundle_registry()
+
+    # Seed the walk with the label each direct row already displays, so a
+    # transitive row can name a parent the user can actually find in the table.
+    seed_labels = _bundle_display_names(direct_results.keys())
+    roots = {
+        seed_labels.get(key, key): status.bundle_source
+        for key, status in direct_results.items()
+        if status.bundle_source
+    }
+
+    known = {_strip_uri_fragment(uri) for uri in checked_uris}
+    known.update(
+        _strip_uri_fragment(s.bundle_source)
+        for s in direct_results.values()
+        if s.bundle_source
+    )
+
+    try:
+        found = await collect_transitive_git_sources(
+            roots, registry=registry, cache_dir=cache_dir, known_uris=known
+        )
+        statuses = await check_transitive_sources(found, cache_dir=cache_dir)
+    except Exception:
+        return {}  # A failed walk must not take the whole report down with it
+
+    return {
+        key: TransitiveBundleStatus(
+            bundle_name=key,
+            bundle_source=key,
+            sources=[entry.status],
+            included_by=entry.parent,
+            included_under=entry.root,
+            is_pinned=entry.is_pinned,
+        )
+        for key, entry in statuses.items()
+    }
 
 
 async def _get_file_bundle_status(
@@ -753,7 +867,8 @@ def _show_concise_report(
         display_names = _bundle_display_names(bundle_results.keys())
 
         for bundle_name in sorted(
-            bundle_results.keys(), key=lambda key: display_names[key]
+            bundle_results.keys(),
+            key=lambda n: _bundle_row_sort_key(n, bundle_results[n], display_names),
         ):
             bundle_status = bundle_results[bundle_name]
             # Get the bundle repo's own SHA info from its sources
@@ -779,10 +894,27 @@ def _show_concise_report(
             if active_bundle and bundle_name == active_bundle:
                 display_name = f"{display_name} [green](active)[/green]"
 
+            # A transitive source has no registry entry and no settings entry
+            # of its own, so an unannotated row would look like something the
+            # user added and forgot. Indent it and name what pulls it in.
+            included_by = getattr(bundle_status, "included_by", "")
+            if included_by:
+                display_name = (
+                    f"  \u21b3 {display_name} "
+                    f"[dim](via {escape_markup(included_by)})[/dim]"
+                )
+
+            if getattr(bundle_status, "is_pinned", False):
+                # A pinned ref cannot move. "pinned" is the honest cell; a SHA
+                # here would imply an upstream comparison never made.
+                remote_cell: Any = Text("pinned", style="dim")
+            else:
+                remote_cell = create_sha_text(remote_sha)
+
             table.add_row(
                 display_name,
                 create_sha_text(cached_sha),
-                create_sha_text(remote_sha),
+                remote_cell,
                 status_symbol,
             )
 
@@ -960,12 +1092,16 @@ def _show_verbose_report(
         active_bundle = _get_active_bundle_name()
         display_names = _bundle_display_names(bundle_results.keys())
         for bundle_name in sorted(
-            bundle_results.keys(), key=lambda key: display_names[key]
+            bundle_results.keys(),
+            key=lambda n: _bundle_row_sort_key(n, bundle_results[n], display_names),
         ):
             status = bundle_results[bundle_name]
             if status.sources:
                 # Add "(active)" marker if this is the active bundle
                 title_suffix = " (active)" if bundle_name == active_bundle else ""
+                included_by = getattr(status, "included_by", "")
+                if included_by:
+                    title_suffix += f" (via {included_by})"
                 console.print(
                     f"[bold cyan]Bundle: {display_names[bundle_name]}"
                     f"{title_suffix}[/bold cyan]"
@@ -1341,10 +1477,31 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             # bundle_source below has to round-trip into update_bundle.
             update_labels = _bundle_display_names(bundles_to_update)
 
+            from amplifier_foundation.paths.resolution import get_amplifier_home
+
+            from ..utils.include_graph import refresh_transitive_source
+
+            transitive_cache_dir = get_amplifier_home() / "cache"
+
             for bundle_name in bundles_to_update:
                 try:
                     _on_update_progress(update_labels[bundle_name], "updating_bundle")
-                    source_uri = bundle_results[bundle_name].bundle_source
+                    bundle_status_obj = bundle_results[bundle_name]
+                    source_uri = bundle_status_obj.bundle_source
+
+                    # A transitive source is a cache, not a bundle we compose
+                    # here: load_bundle() would resolve and re-register a
+                    # bundle nobody asked for. Refresh the cache with the same
+                    # GitSourceHandler.update() a direct refresh bottoms out
+                    # in -- same mechanism, none of the extra machinery.
+                    if getattr(bundle_status_obj, "included_by", "") and source_uri:
+                        asyncio.run(
+                            refresh_transitive_source(
+                                source_uri, cache_dir=transitive_cache_dir
+                            )
+                        )
+                        bundle_updated.append(bundle_name)
+                        continue
                     # Intentional: check_all_sources(include_all_cached=True) handles
                     # cached modules separately. Load only the root bundle here to
                     # prevent redundant include/module refreshes and write amplification.
