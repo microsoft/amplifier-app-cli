@@ -88,7 +88,7 @@ repo** (a real run left `.amplifier/bin/` behind as untracked pollution).
 | `highway_status.sh BATCH_DIR WIDTH READY` | ONE call reports every lane + watchdog liveness and **computes DEFICIT by code** | "Keep lanes full" stopped being prose the day a run sat at 1 lane with work for 10 |
 | `launch_lane.sh BATCH_DIR LANE REPO GOAL [BASE_REF]` | Worktree + branch + tmux + `/goal` session, idempotent; the ONLY writer of `manifest.tsv` | Hand-written manifests diverged on column count and broke a real batch |
 | `verify_lane.sh BATCH_DIR LANE` | Git-facts probe for one landed lane (DONE.json, ahead-count, three-dot diffstat, uncommitted work) | "Ground truth from git and the filesystem, not from what any session said about itself" |
-| `highway_watchdog.sh BATCH_DIR WIDTH SESSION_ID [INTERVAL] [MAX_HOURS]` | Detached tmux loop that re-wakes THIS session (`amplifier run --resume`) on lane-end / under-width / stale heartbeat | The highway once froze overnight because the manager stopped monitoring the moment it reported status |
+| `highway_watchdog.sh BATCH_DIR WIDTH SESSION_ID [INTERVAL] [MAX_HOURS]` | Detached tmux loop that re-wakes THIS session (`amplifier run --resume`) on lane-end / under-width / stale heartbeat; **re-arms itself at its runtime cap while the batch is open** | The highway once froze overnight because the manager stopped monitoring the moment it reported status — then froze ~34h more when the watchdog hit its own cap |
 | `infra_ledger.sh BATCH_DIR add TYPE ID DESTROY_CMD...` / `infra_ledger.sh BATCH_DIR sweep --all-owners` | Records any infrastructure a lane OR the manager stands up (DTU, gitea instance, container, service, background process) into `infra.tsv` at creation, each with its teardown command; `sweep` runs those commands and exits non-zero until nothing is left standing | A run closed with a DTU and a gitea container still live — nothing the highway stands up should outlive it (Rule 14) |
 
 **`sweep` is the MANAGER's batch-close verb, never a lane's.** It runs EVERY
@@ -113,11 +113,41 @@ perform that teardown. A REAL teardown failure still exits non-zero and leaves
 the row open; the already-gone signature is deliberately narrow, so the signal
 that a teardown genuinely failed is never lost.
 
+**The watchdog's runtime cap re-arms; it does not silently stop.** `MAX_HOURS`
+(default 12) exists so an orphaned watchdog cannot outlive its batch. It used to
+be enforced by exiting — and on 2026-09-03 that exit put the highway to sleep for
+~34 hours, because the only channel a dying watchdog had left was a `wake-needed`
+file read by the thing it was supervising. At the cap it now:
+
+- **re-execs itself** (same arguments, generation counter bumped in
+  `watchdog.log`) while the batch is **open** — `BATCH_DIR/lanes/` exists AND the
+  manager touched `.manager-heartbeat` within `HIGHWAY_ABANDON_MAX` (default
+  21600s / 6h). A re-arm costs you nothing: no wake, no `wake-needed` entry;
+- **winds down** otherwise, so the cap's original purpose survives — an orphan
+  can now outlive its batch by at most one cap period, never indefinitely.
+
+On wind-down it writes the `wake-needed` line **and** dispatches
+`amplifier run --resume` **detached** (`setsid`), never as its own child. That
+detail is load-bearing: in the measured outage the manager answered the death
+notice from inside the watchdog's own tmux session, ran
+`tmux kill-session -t hw-watchdog__<batch>` to clear the "expired" watchdog, and
+killed itself mid-restart before it reached the line that starts the replacement.
+**Never `kill-session` a watchdog that told you it is exiting — it has already
+gone; just start a fresh one.** Escape hatches, all env vars:
+`HIGHWAY_ABANDON_MAX` (how long a silent manager means "abandoned"),
+`HIGHWAY_MAX_SECONDS` (second-resolution cap, overrides `MAX_HOURS`).
+
+The watchdog also touches `BATCH_DIR/.watchdog-heartbeat` every poll, and
+`highway_status.sh` reports `watchdog_hb_age` (`-1` = never ran here) plus
+`SUPERVISION LAPSED <n>s ago` when it is DEAD — so a lapse is read off an
+instrument, never inferred from a wake that never came.
+
 State lives in `BATCH_DIR` (create one per highway, e.g. `~/dev/hw-<name>`):
 `manifest.tsv` (scripts write), `HIGHWAY.md` (you write), `goals/` (pre-composed
 goal files), `lanes/` (worktrees), `.width` (authoritative width), `infra.tsv`
 (the infra ledger), `infra.owners.tsv` (which lane claimed which row),
-`.manager-heartbeat`, `wake-needed`, `watchdog.log`.
+`.manager-heartbeat`, `.watchdog-heartbeat` (the watchdog's own proof of life),
+`wake-needed`, `watchdog.log`.
 
 ## Phase 1 — Intake
 
@@ -308,7 +338,12 @@ The documented failure: the manager reported status and the highway froze
 until morning. Before ANY turn-ending message while lanes run:
 
 1. `highway_status.sh` must show `watchdog=LIVE` — if DEAD, start it (Phase 4
-   command; the session ID is in `<BATCH_DIR>/.session-id`) and re-check.
+   command; the session ID is in `<BATCH_DIR>/.session-id`) and re-check. Read
+   `SUPERVISION LAPSED <n>s ago` in the same output as the size of the blind
+   spot you are re-opening. **Do NOT `tmux kill-session` the dead watchdog
+   first** — if it exited on its own it is already gone, and if you are reading
+   its death notice you are running *inside* that session; killing it kills you
+   (measured, 2026-09-03, ~34h idle). Start the new one directly.
    **Never end a turn with the watchdog dead while lanes are live.**
 2. The todo lane board is current.
 3. The message leads with a state token in the first 100 characters —
