@@ -46,8 +46,12 @@ import pytest
 # POSIX shell (exec, setsid, stat -c, tab-delimited read loops), only ever run on
 # the POSIX hosts that run a highway -- same module-level skip as the ledger tests.
 pytestmark = pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("bash") is None,
-    reason="highway_watchdog.sh is a POSIX shell script; requires bash",
+    sys.platform != "linux" or shutil.which("bash") is None,
+    reason=(
+        "highway_watchdog.sh is a GNU/Linux shell script: it uses `stat -c %Y`, a GNU "
+        "coreutils flag with no BSD/macOS equivalent -- the script documents "
+        "this itself at highway_status.sh:53. Requires Linux + bash."
+    ),
 )
 
 SCRIPTS = (
