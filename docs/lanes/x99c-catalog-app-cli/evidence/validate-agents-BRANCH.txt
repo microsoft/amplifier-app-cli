@@ -1,0 +1,72 @@
+validate-agents v1.8.0  |  run_id run-846079b2a5c5  |  session a2b213e0bc734b7a-20260907-144230_recipe
+recipe: @foundation:recipes/validate-agents.yaml
+foundation @v2.1.2 (resolved a27d5824517d078097b60d84779dd3eae80202cd,
+  content_digest sha256:be3f7685411e2706d4cea700ee9a0e0615910fdd912ae90c1a6f0c4de6b1548c)
+repo_path: <this worktree>  (branch lane/x99c-catalog-app-cli)
+run date: 2026-09-07
+status: completed  (all 11 steps; `quick-approval` skipped in favour of the full LLM analysis path)
+
+VERDICT (verbatim from the recipe's own final_report):
+
+  "- **Overall Verdict**: PASS WITH WARNINGS
+   - **Agents Found**: 1 total across 1 location
+   - **Quality Breakdown**: 0 good, 0 polish, 1 needs_work, 0 critical
+   - **Issues**: 0 errors, 1 warning, 1 suggestion (optional)"
+
+  "The single warning is structural (`NO_TOOLS_SECTION`) and lives outside the
+   frontmatter `description`. Description quality itself passes every gate:
+   trigger-first, 600 chars (at, not over, budget), explicit USE WHEN / DO NOT
+   USE WHEN, zero `<example>`/`<commentary>` blocks."
+
+DISCOVERED AGENT COUNT FOR THIS REPO: 1
+  discovery_results.total_count      = 1
+  discovery_results.candidates_scanned = 1
+  discovery_results.non_agent_count  = 0   (non_agents_found = [])
+  location_counts                    = {"agents/": 1}
+  classifier                         = "frontmatter declares a top-level `meta:` key (docs/AGENT_AUTHORING.md)"
+  scan_patterns                      = ["<repo>/**/agents/*.md", "<repo>/agents/*.md"]
+  excluded_parts                     = [".git", ".venv", "docs", "node_modules", "test-fixtures", "tests"]
+
+STRUCTURAL RESULTS (Phase 2):
+  summary: {"errors": 0, "passed": 1, "total": 1, "warnings": 1}
+  cli-expert  desc 600 chars / 150 tok  example_count 0  commentary_count 0
+              has_strong_trigger true  triggers_found ["DO NOT"]
+              model_role "general"  model_role_issues []
+              ERRORS   : []
+              WARNINGS : ["NO_TOOLS_SECTION"]
+
+THE ONE WARNING, AND WHY IT IS NOT REMEDIATED HERE (verbatim from the run's own
+"Scope note for the x99c lane"):
+
+  "this lane's charter is the frontmatter `description` only, with bodies
+   byte-identical to stock and 'an edit that exists to produce a diff is worse
+   than no edit.' Adding `tools:` is a frontmatter change but **not** a
+   description change -- it falls outside x99c's deliverables and would
+   contaminate that PR's fidelity story. Land it as a **separate commit or
+   PR**; leave the current x99c diff on `agents/cli-expert.md` (10 insertions,
+   58 deletions, description-only) untouched."
+
+NO_TOOLS_SECTION is present IDENTICALLY on stock (see structural-before-after.txt) --
+it is pre-existing, not introduced by this lane.
+
+DESCRIPTION-QUALITY PHASE, verdict on this lane's rewrite (verbatim):
+
+  "[LOW] Agent: cli-expert - Description: make NO edit
+   Improved: (none -- leave unedited)"
+
+  "Rewriting it would produce a diff with no fidelity gain and a real risk of
+   dropping one of the enumerated trigger surfaces."
+
+---
+REBASE NOTE (added after the branch was rebased onto origin/main f166328):
+
+This run executed on the pre-rebase tree. It remains the branch's verdict because the
+validated file is byte-identical on both sides of the rebase:
+
+  pre-rebase  (commit 67ebf93:agents/cli-expert.md)  md5 59bb85a00f7dab26d9466c41b80f5e38
+  post-rebase (working tree)                          md5 59bb85a00f7dab26d9466c41b80f5e38
+
+`agents/cli-expert.md` is the repo's ONLY agent (total_count 1, non_agent_count 0), so
+nothing the rebase brought in from main is inside this recipe's scope. The deterministic
+discovery + structural phases were additionally re-run on the rebased tree and reproduce
+the same figures -- see structural-before-after.txt.

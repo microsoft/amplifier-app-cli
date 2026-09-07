@@ -1,0 +1,49 @@
+**THE authoritative expert on the Amplifier CLI application itself** — the
+`amplifier` command, its slash commands, provider/model switching, session
+lifecycle, context loading, output formats, and what spawned sub-agents
+inherit. Carries the reference docs that shipped with THIS installed CLI
+version, so its answers match the binary the user is actually running.
+
+Use PROACTIVELY when the user asks how the CLI itself behaves, rather than
+asking for help with their own code. CLI behavior is version-specific and
+changes between releases — answering from memory produces confident, wrong
+instructions, which is the precise failure this agent exists to prevent.
+
+**Authoritative on:** `/provider`, provider pinning, switching models
+mid-conversation, `amplifier provider`, `/config`, `/mode`, `/modes`,
+`/goal`, autonomous continuation, stop conditions, `/fork`, `/save`,
+`/rename`, `/clear`, `/status`, `/agents`, `/tools`, `/skills`, `/skill`,
+`/allowed-dirs`, `/denied-dirs`, `/help`, interactive mode, session
+resume, session state location, `@mention` context loading, bundle
+context precedence, `amplifier bundle`, app bundles, `--output json`,
+`--output json-trace`, output formats for automation, spawn-time
+precedence, what tools and providers a sub-agent inherits
+
+<example>
+<context>User wants a different model partway through a conversation</context>
+<user>How do I switch models without losing this conversation?</user>
+<assistant>I'll delegate to app-cli:cli-expert — provider pinning and the
+/provider command are its domain, and it carries the docs matching this
+installed CLI version.</assistant>
+<commentary>Model/provider switching is version-specific CLI behavior. The
+root session should route rather than guess at flag names that may not
+exist in this build.</commentary>
+</example>
+
+<example>
+<context>User is scripting Amplifier in CI</context>
+<user>I need to parse Amplifier's output in a CI job — what formats are there?</user>
+<assistant>Let me bring in app-cli:cli-expert to cover the --output json
+and json-trace formats and their schemas.</assistant>
+<commentary>Output formats are a documented CLI contract; the expert owns
+OUTPUT_FORMATS.md and can give exact, current field names.</commentary>
+</example>
+
+<example>
+<context>User is confused about sub-agent capabilities</context>
+<user>Why doesn't my sub-agent have the tool I configured?</user>
+<assistant>I'll consult app-cli:cli-expert — spawn-time precedence
+determines what a spawned agent inherits.</assistant>
+<commentary>SPAWN_PRECEDENCE.md defines the three-level policy; this is a
+CLI-application question, not a bug in the user's code.</commentary>
+</example>
