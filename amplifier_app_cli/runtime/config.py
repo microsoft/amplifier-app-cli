@@ -103,6 +103,12 @@ async def resolve_bundle_config(
         # packaged skills dir onto.
         compose_behaviors.extend(_build_skills_behaviors())
 
+        # Model routing (hooks-routing + the model_role contract + the
+        # role-definitions skill). Always composed: the CLI ships the routing
+        # UX, so the hook it describes must be present whatever the base
+        # bundle. sources.bundles["routing-matrix"] swaps the implementation.
+        compose_behaviors.extend(_build_routing_behaviors(app_settings))
+
         # Wayfinder (in-session guidance channel). Always composed so every
         # user gets the public wayfinder channel by default -- not just those
         # who add an internal app bundle (e.g. made-support) that also brings
@@ -1180,6 +1186,44 @@ def _build_skills_behaviors() -> list[str]:
         # _build_modes_behaviors / _build_app_cli_behaviors).
         "git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=behaviors/skills.yaml",
     ]
+
+
+ROUTING_BEHAVIOR_SUBDIRECTORY = "behaviors/routing.yaml"
+
+
+def _build_routing_behaviors(app_settings: AppSettings) -> list[str]:
+    """Return the routing behavior URI for composition.
+
+    Routing is app-level policy: this CLI ships `amplifier routing show/use/
+    create/manage` and `amplifier init`'s routing panel, so the hook those
+    commands describe must be in every session this CLI starts -- regardless
+    of which base bundle the user selected -- or the UX lies. Measured
+    2026-09-07 on the DEFAULT bundle (`anchors`, which did not include
+    routing-matrix): `routing show` printed "balanced ... <- active" for every
+    role while `delegate:agent_spawned` carried `provider_preferences: null`
+    and sub-agents ran on the parent's model. Same reasoning as
+    _build_skills_behaviors / _build_wayfinder_behaviors, same shape.
+
+    Only the behavior file, NOT the bundle's root bundle.md (which would pull
+    in whatever it includes and could clobber the user's system prompt).
+
+    SWAPPING THE IMPLEMENTATION: `sources.bundles["routing-matrix"]` -- the
+    same `amplifier source add` vocabulary used to redirect any bundle -- is
+    consulted FIRST, so a user who prefers a fork composes that fork here
+    instead of the well-known bundle, and exactly one routing hook is ever
+    composed. The override is a bundle root; the behavior subdirectory is
+    appended the same way the well-known one is. Without an override, the URI
+    is derived from WELL_KNOWN_BUNDLES so the CLI has exactly one place that
+    knows where routing-matrix lives (`amplifier routing`, `amplifier update`
+    and `_routing_hook_source` read the same entry).
+
+    Bases that already include routing-matrix (`foundation`, and `anchors`
+    since amplifier-foundation#374) are unaffected: compose dedupes hooks by
+    module id, so they mount exactly one hooks-routing either way.
+    """
+    override = app_settings.get_bundle_sources().get("routing-matrix")
+    root = override or str(WELL_KNOWN_BUNDLES["routing-matrix"]["remote"])
+    return [f"{root}#subdirectory={ROUTING_BEHAVIOR_SUBDIRECTORY}"]
 
 
 def _build_wayfinder_behaviors() -> list[str]:
