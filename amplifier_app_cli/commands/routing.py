@@ -657,7 +657,6 @@ def routing_show(matrix_name: str | None, compact: bool, detailed: bool, fmt: st
         return
 
     _print_shadowing_note(origin)
-    _print_not_mounted_warning(settings)
     declared = _disagreeing_name(matrix_data, matrix_name)
     if declared is not None:
         _print_name_stem_note([(matrix_name, declared)])
@@ -669,88 +668,6 @@ def routing_show(matrix_name: str | None, compact: bool, detailed: bool, fmt: st
         _show_matrix_details(matrix_data, settings, matrix_name)
     else:
         _show_matrix_resolution(matrix_data, settings, matrix_name)
-
-
-ROUTING_BEHAVIOR_URI = (
-    "git+https://github.com/microsoft/amplifier-bundle-routing-matrix@main"
-    "#subdirectory=behaviors/routing.yaml"
-)
-
-
-def _routing_hook_is_composed(settings: AppSettings) -> bool | None:
-    """Is ``hooks-routing`` actually in the session this cwd would start?
-
-    `routing show` reads matrix files straight from the bundle cache, so it
-    can render a matrix as "active" on a host whose ACTIVE BUNDLE never mounts
-    the routing hook -- in which case nothing applies the matrix and every
-    sub-agent silently inherits the parent's provider. Measured 2026-09-07 on
-    a project pinned to `anchors-amp-dev` (a lean base that does not include
-    routing-matrix): `routing show` said "balanced ... active" for every role
-    while `delegate:agent_spawned` carried `provider_preferences: null`.
-
-    Composes the same way a session does -- active bundle + every app bundle,
-    in that order -- but stops at ``to_mount_plan()``: no ``prepare()``, so no
-    module installs and no network beyond what is already cached (~0.1s).
-
-    Returns ``True`` / ``False``, or ``None`` when it cannot tell (the caller
-    prints nothing in that case; a diagnostic must never break the command).
-
-    Only runs when an active bundle is EXPLICITLY set. With none set the CLI
-    starts its built-in default, `foundation`, which includes routing-matrix --
-    so there is nothing to warn about, and skipping the composition keeps this
-    out of every code path (and test fixture) that never chose a bundle.
-    """
-    active = settings.get_active_bundle()
-    if not active:
-        return None
-    try:
-        import asyncio
-
-        from amplifier_foundation import load_bundle
-
-        from ..lib.bundle_loader import AppBundleDiscovery
-
-        discovery = AppBundleDiscovery()
-        base_uri = discovery.find(active)
-        if not base_uri:
-            return None
-
-        async def _compose() -> list[str]:
-            base = await load_bundle(base_uri, registry=discovery.registry)
-            overlays = [
-                await load_bundle(uri, registry=discovery.registry)
-                for uri in settings.get_app_bundles()
-            ]
-            composed = base.compose(*overlays) if overlays else base
-            return [
-                h.get("module", "")
-                for h in composed.to_mount_plan().get("hooks", [])
-                if isinstance(h, dict)
-            ]
-
-        return "hooks-routing" in asyncio.run(_compose())
-    except Exception as exc:  # pragma: no cover - environment dependent
-        logger.debug("Could not determine whether hooks-routing is composed: %s", exc)
-        return None
-
-
-def _print_not_mounted_warning(settings: AppSettings) -> None:
-    """Warn when this matrix is displayed but nothing in the session applies it."""
-    if _routing_hook_is_composed(settings) is not False:
-        return
-    active = settings.get_active_bundle()
-    console.print(
-        f"\n[yellow]\u26a0 Not applied in your sessions.[/yellow] The active bundle "
-        f"[bold]{active}[/bold] (and your app bundles) never mount the "
-        f"[bold]hooks-routing[/bold] hook, so this matrix is only displayed here -- "
-        f"sub-agents will inherit the parent session's provider instead.\n"
-        f"  To apply it in every session regardless of active bundle:"
-    )
-    # soft_wrap: the command must survive copy-paste, so Rich must not fold it.
-    console.print(
-        f"    [cyan]amplifier bundle add {ROUTING_BEHAVIOR_URI} --app[/cyan]",
-        soft_wrap=True,
-    )
 
 
 def _print_shadowing_note(origin: Any) -> None:
