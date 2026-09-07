@@ -1,0 +1,9 @@
+license/cla	pass	0	https://github.com/apps/microsoft-github-policy-service	
+pytest (macos-latest, py3.11)	pass	38s	https://github.com/microsoft/amplifier-app-cli/actions/runs/34146578224/job/101819817760	
+pytest (macos-latest, py3.12)	pass	35s	https://github.com/microsoft/amplifier-app-cli/actions/runs/34146578224/job/101819817774	
+pytest (ubuntu-latest, py3.11)	pass	33s	https://github.com/microsoft/amplifier-app-cli/actions/runs/34146578224/job/101819817659	
+pytest (ubuntu-latest, py3.12)	pass	32s	https://github.com/microsoft/amplifier-app-cli/actions/runs/34146578224/job/101819817803	
+pytest (windows-latest, py3.11)	pass	57s	https://github.com/microsoft/amplifier-app-cli/actions/runs/34146578224/job/101819817772	
+pytest (windows-latest, py3.12)	pass	1m2s	https://github.com/microsoft/amplifier-app-cli/actions/runs/34146578224/job/101819817757	
+pytest -m integration (macos-latest)	pass	45s	https://github.com/microsoft/amplifier-app-cli/actions/runs/34146578224/job/101819817599	
+pytest -m integration (ubuntu-latest)	pass	39s	https://github.com/microsoft/amplifier-app-cli/actions/runs/34146578224/job/101819817799	
