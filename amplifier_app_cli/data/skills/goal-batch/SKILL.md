@@ -169,6 +169,14 @@ Every goal carries:
   `PENDING-HUMAN` is distinct on purpose: a lane that discharges a review by
   assigning it to a person has deferred, not finished, and Phase 7 must show
   that separately.
+- **A reachable terminal verb, when the lane must record its outcome in a
+  work-tracker** (goalify L7). `work_resolve` and `work_release` both refuse a
+  session that does not hold the item, so a lane pointed at an item a sibling
+  has already resolved cannot record anything and cannot terminate. Name
+  `work_erratum` — append-only, no claim needed — as the terminal verb for
+  that case, in every such lane's goal. (Two lanes that lacked this spent
+  **855 turns / $202.91** and **~887 turns / ~$184** repeating one evaluator
+  line, hours after their own PRs had merged.)
 - **Working directory + branch + base SHA.** "Work ONLY here. Do not touch the
   main checkout or sibling worktrees."
 - **File ownership** with the residual protocol: crossing into another lane's

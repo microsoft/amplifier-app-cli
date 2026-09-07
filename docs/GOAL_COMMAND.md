@@ -224,6 +224,51 @@ the run, or the evaluator itself breaking, says nothing about whether the goal w
 achievable.) It is not gated by `--max-turns`; it can trip well before the cap if the run is
 genuinely stuck.
 
+### Repeat circuit breaker (`NEEDS-MANAGER`)
+
+Stall detection asks a model. Every trigger it owns — the zero-tool streak, the token-overlap
+pre-filter — only decides whether to *pay for* a stall-judge call, and the judge's answer
+decides whether the run stops. That is right for ambiguous cases and wrong for one case: when
+the evaluator returns the **same message verbatim, turn after turn**, the loop is provably
+producing no new information and no model needs to confirm it.
+
+The CLI therefore runs a second, mechanical, judge-free breaker. When the evaluator's reason
+is identical (whitespace-normalized) for **6 consecutive turns**, the goal is cleared and the
+run stops with:
+
+```
+⛔ NEEDS-MANAGER — goal stopped at goal turn 6: same message 6 turns running
+  repeated verbatim: <the message, in full>
+  The goal was neither met nor refuted -- the loop stopped producing new information,
+  so it stopped spending. A human decides what happens next.
+```
+
+This is not a verdict on the goal. It means the loop wedged and a person should look.
+
+| | |
+|---|---|
+| Threshold | `AMPLIFIER_GOAL_REPEAT_LIMIT` (default `6`; `0` or `1` disables) |
+| Match rule | identical after whitespace collapse and `(×N)` stripping — **not** fuzzy |
+| Overshoot | at most one further turn (the orchestrator re-reads the goal at the top of its *next* iteration) |
+| Recorded at | `session_state["goal_circuit_breaker"]` |
+
+Why 6, and why exact-match: the orchestrator's own judge-backed pre-filter uses a 3-turn
+window, so 6 leaves its full trip → escalate → re-trip sequence room to run first and keeps
+first refusal with the judge. Exact-match keeps the false-positive rate near zero — a reason
+that differs by one content word *is* new information, and fuzzy resemblance is already the
+judge-backed path's job.
+
+It was bought with two measured incidents. Lane `j1e6-ci-tool-web` ran **855 turns / $202.91**
+against a $0 authority, and lane `hd-browser-bridge` **~887 turns / ~$184**, both *after* their
+actual deliverable had already merged, both repeating one line every turn:
+
+> No verified successful `work_resolve` or `work_release` appears in the available
+> transcript, so the required terminal outcome is not established.
+
+The goal was unsatisfiable by construction (the work item was already resolved and held by a
+sibling session; `work_resolve`/`work_release` refuse a session that never held it), and the
+judge kept reading it as resolvable. See `amplifier_app_cli/goal_circuit_breaker.py`.
+
 ### What the cap does NOT bound
 
 `--max-turns` bounds **goal continuations** — the number of times the goal loop starts a new
