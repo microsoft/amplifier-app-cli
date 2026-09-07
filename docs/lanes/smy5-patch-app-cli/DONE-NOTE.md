@@ -290,8 +290,29 @@ and unrelated to a markdown file**; a context-file edit cannot influence
 truststore importability. Recorded rather than quietly re-run into a green.
 
 **CI green is claimed only where it is real.** The runs above are **local**.
-GitHub Actions CI is confirmed on the PR itself, and the PR is left **DRAFT
-until its own CI is green**. No green run is implied that does not exist.
+GitHub Actions CI was then confirmed on the PR itself — **all 9 checks pass** on
+`84e3f99` (run `34146578224`, PR
+[#320](https://github.com/microsoft/amplifier-app-cli/pull/320)):
+
+```
+pytest (ubuntu-latest,  py3.11)   pass  33s
+pytest (ubuntu-latest,  py3.12)   pass  32s
+pytest (macos-latest,   py3.11)   pass  38s
+pytest (macos-latest,   py3.12)   pass  35s
+pytest (windows-latest, py3.11)   pass  57s
+pytest (windows-latest, py3.12)   pass  1m2s
+pytest -m integration (ubuntu-latest)  pass  39s
+pytest -m integration (macos-latest)   pass  45s
+license/cla                            pass
+```
+
+**Both windows legs pass**, which is the live confirmation that the pin test's
+newline normalisation does the job — a byte-exact pin on a file in a repo with
+no `.gitattributes` is exactly the shape that goes red on Windows for the wrong
+reason, and it does not.
+
+The PR was marked **ready for review only after** this green, per the goal.
+It remains **unmerged** — the manager merges.
 
 ---
 
