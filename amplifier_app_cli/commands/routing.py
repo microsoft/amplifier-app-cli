@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import re
 from collections.abc import Mapping
@@ -447,18 +448,193 @@ def _check_compatibility(
     return covered, total
 
 
+_GLOB_CHARS = frozenset("*?[")
+
+
+def _is_glob(model: str) -> bool:
+    return any(ch in model for ch in _GLOB_CHARS)
+
+
+def _best_glob_match(pattern: str, models: list[str]) -> str | None:
+    """The model id the routing hook would pick for *pattern* from *models*.
+
+    Reuses the hook's own version-aware sort when importable so the id shown
+    here is the id that actually runs; falls back to a plain reverse sort
+    (the same matcher, minus the date-suffix awareness) when it is not.
+    """
+    lowered = pattern.lower()
+    matched = [m for m in models if fnmatch.fnmatch(m.lower(), lowered)]
+    if not matched:
+        return None
+    try:
+        from amplifier_module_hooks_routing.resolver import _version_sort_key
+
+        return sorted(matched, key=_version_sort_key, reverse=True)[0]
+    except Exception:  # pragma: no cover - import environment dependent
+        return sorted(matched, reverse=True)[0]
+
+
+# Wall-clock cap on ONE provider's live model listing, in seconds.
+#
+# Why a cap and not just "let it fail": a provider with no usable credentials
+# does not fail fast -- provider-anthropic, for one, retries list_models() up
+# to 5 times with backoff (its __init__.py: max_retries=5), which measured at
+# ~35s per provider. `show` is a display command; a user with one dead key
+# must not wait half a minute per role for it. Anything that misses the cap is
+# reported as UNVERIFIED, exactly like a provider that could not be listed at
+# all. Override with AMPLIFIER_ROUTING_LIST_TIMEOUT (seconds) when a slow but
+# healthy backend needs more.
+_LIVE_LIST_TIMEOUT_S = 6.0
+
+
+def _list_models_bounded(selector: str, settings: AppSettings) -> list[str]:
+    """`_list_models_for_provider` with a hard wall-clock cap.
+
+    Runs the listing on a worker thread and abandons it on timeout. The thread
+    is left to finish on its own (``shutdown(wait=False)``) -- for a CLI that
+    is about to exit that is the right trade, and it cannot leak into the
+    process's own event loop because the listing helper builds its own.
+    Returns ``[]`` on timeout, the same "could not list" value the helper
+    itself uses for every other failure.
+    """
+    import concurrent.futures
+    import os
+
+    try:
+        timeout = float(
+            os.environ.get("AMPLIFIER_ROUTING_LIST_TIMEOUT", _LIVE_LIST_TIMEOUT_S)
+        )
+    except ValueError:
+        timeout = _LIVE_LIST_TIMEOUT_S
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        future = pool.submit(_list_models_for_provider, selector, settings)
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        logger.debug(
+            "list_models() for %r exceeded %.1fs; treating as unverified",
+            selector,
+            timeout,
+        )
+        return []
+    except Exception:
+        return []
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+class _LiveModels:
+    """Memoized live ``list_models()`` per matrix provider name, for `show`.
+
+    WHY `show` NEEDS THIS. "Configured" is a property of the PROVIDER; a
+    candidate's model is a GLOB that must also match something that provider
+    actually lists. `show` used to mark a candidate active on provider presence
+    alone, so it claimed models the session could not serve -- measured
+    2026-09-07 in a DTU with only `gpt-5.6-terra` configured: `fast -> *
+    openai / gpt-?.?-luna <- active`, a model nothing would resolve.
+
+    One ``list_models()`` per DISTINCT matrix provider name, fetched lazily
+    (only for candidates that are actually evaluated) and memoized across
+    roles, so a typical matrix costs a handful of calls, not one per candidate.
+    Alias-aware: a `provider: openai` candidate lists models from whichever
+    openai-family backend is configured, canonical first -- the same
+    preference the resolver applies.
+
+    Honest about what it could not check: a provider whose list could not be
+    fetched (offline, no key, module not installed, empty list) is UNVERIFIED,
+    never "no match". Unverified candidates render exactly as before this
+    class existed, and `show` names them once in a footer.
+    """
+
+    def __init__(self, settings: AppSettings) -> None:
+        self._settings = settings
+        self._cache: dict[str, list[str] | None] = {}
+        self.unverified: set[str] = set()
+
+    def _configured_selector(self, provider: str) -> str | None:
+        """The configured provider (type or instance) a candidate name resolves to.
+
+        Canonical name first, then its family aliases -- mirrors the resolver.
+        Checks against the RAW configured names (module types + instance ids),
+        not the alias-expanded set `_get_configured_provider_types` returns:
+        with only `openai-chatgpt` configured that set contains "openai" too,
+        and listing models from a provider entry that does not exist would
+        silently return [] and mark every openai candidate unverified.
+        """
+        raw: set[str] = set()
+        for p in self._settings.get_provider_overrides():
+            module = str(p.get("module", ""))
+            raw.add(module.removeprefix("provider-"))
+            if p.get("id"):
+                raw.add(str(p["id"]))
+        for name in (provider, *_provider_family_aliases().get(provider, ())):
+            if name in raw:
+                return name
+        return None
+
+    def models_for(self, provider: str) -> list[str] | None:
+        if provider in self._cache:
+            return self._cache[provider]
+        selector = self._configured_selector(provider)
+        models: list[str] | None = None
+        if selector is not None:
+            listed = _list_models_bounded(selector, self._settings)
+            models = listed or None  # [] means "could not list", not "lists nothing"
+        if models is None:
+            self.unverified.add(provider)
+        self._cache[provider] = models
+        return models
+
+    def resolve(self, provider: str, model: str) -> tuple[str, str | None]:
+        """Return ``(status, resolved_id)``.
+
+        status is ``"active"`` (an exact name, or a glob with a live match),
+        ``"no-match"`` (a glob that matches nothing the provider lists), or
+        ``"unverified"`` (the list could not be fetched -- treated as active,
+        exactly as before, and named in the footer).
+        """
+        if not _is_glob(model):
+            # The resolver passes exact names straight to the API without
+            # consulting list_models(); so does this.
+            return "active", model
+        models = self.models_for(provider)
+        if models is None:
+            return "unverified", None
+        best = _best_glob_match(model, models)
+        return ("active", best) if best else ("no-match", None)
+
+    def print_footer(self) -> None:
+        if not self.unverified:
+            return
+        console.print(
+            f"\n[dim]Model lists not fetched for: {', '.join(sorted(self.unverified))} "
+            f"-- their globs are shown as configured but not verified live.[/dim]"
+        )
+
+
 def _resolve_role(
-    role_config: dict[str, Any], provider_types: set[str]
+    role_config: dict[str, Any],
+    provider_types: set[str],
+    live: _LiveModels | None = None,
 ) -> tuple[str | None, str | None]:
     """Resolve a role to its first matching candidate.
 
     Returns (model_pattern, provider_type) or (None, None) if unresolvable.
+    With *live*, a configured candidate whose glob matches no live model is
+    skipped -- the resolver would skip it too -- so the winner shown is the
+    winner the session gets. Without *live* (the compatibility counts in
+    `routing list`, which must stay offline-fast) this is provider-presence
+    only, byte-identical to before.
     """
     candidates = role_config.get("candidates", [])
     for candidate in candidates:
         provider = candidate.get("provider", "")
-        if provider in provider_types:
-            return candidate.get("model", "?"), provider
+        if provider not in provider_types:
+            continue
+        model = candidate.get("model", "?")
+        if live is not None and live.resolve(provider, model)[0] == "no-match":
+            continue
+        return model, provider
     return None, None
 
 
@@ -724,14 +900,42 @@ def _show_matrix_resolution(
     table.add_column("Model", style="green")
     table.add_column("Provider")
 
-    for role_name, role_config in roles.items():
-        model, provider_type = _resolve_role(role_config, provider_types)
-        if model and provider_type:
-            table.add_row(role_name, model, provider_type)
-        else:
-            table.add_row(role_name, "[yellow]⚠ (no provider)[/yellow]", "[dim]-[/dim]")
+    live = _LiveModels(settings)
+    rows: list[tuple[str, str, str]] = []
+    with console.status(
+        "[dim]Checking globs against live model lists...[/dim]", spinner="dots"
+    ):
+        for role_name, role_config in roles.items():
+            model, provider_type = _resolve_role(role_config, provider_types, live)
+            if model and provider_type:
+                status, resolved = live.resolve(provider_type, model)
+                shown = (
+                    f"{model} → {resolved}"
+                    if status == "active" and resolved and resolved != model
+                    else model
+                )
+                rows.append((role_name, shown, provider_type))
+            elif any(
+                c.get("provider", "") in provider_types
+                for c in role_config.get("candidates", [])
+            ):
+                # A provider IS configured; no candidate glob matches what it lists.
+                rows.append(
+                    (
+                        role_name,
+                        "[yellow]⚠ (no matching model)[/yellow]",
+                        "[dim]-[/dim]",
+                    )
+                )
+            else:
+                rows.append(
+                    (role_name, "[yellow]⚠ (no provider)[/yellow]", "[dim]-[/dim]")
+                )
+    for row in rows:
+        table.add_row(*row)
 
     console.print(table)
+    live.print_footer()
 
     # Show provider summary
     if provider_types:
@@ -776,6 +980,7 @@ def _show_matrix_details(
 
     provider_types = _get_configured_provider_types(settings)
     roles = matrix_data.get("roles", {})
+    live = _LiveModels(settings)
 
     for role_name, role_config in roles.items():
         role_desc = role_config.get("description", "")
@@ -786,6 +991,7 @@ def _show_matrix_details(
 
         candidates = role_config.get("candidates", [])
         winner_found = False
+        any_configured = False
 
         for candidate in candidates:
             provider = candidate.get("provider", "")
@@ -800,12 +1006,30 @@ def _show_matrix_details(
                 config_str = f"  [dim]\\[{pairs}][/dim]"
 
             is_configured = provider in provider_types
+            any_configured = any_configured or is_configured
+            status, resolved = (
+                live.resolve(provider, model)
+                if is_configured
+                else ("unconfigured", None)
+            )
 
-            if is_configured and not winner_found:
+            if status == "no-match":
+                # The provider is here; nothing it lists matches this glob. The
+                # resolver would fall through, and so does this display.
+                line = (
+                    f"    [dim]✗ {provider} / {model}[/dim]"
+                    f"{config_str}  [yellow]no model matches this glob[/yellow]"
+                )
+            elif is_configured and not winner_found:
                 winner_found = True
+                tail = (
+                    f" ({resolved})"
+                    if status == "active" and resolved and resolved != model
+                    else ""
+                )
                 line = (
                     f"    [green]★ {provider} / {model}[/green]"
-                    f"{config_str}  [green]← active[/green]"
+                    f"{config_str}  [green]← active{tail}[/green]"
                 )
             elif is_configured:
                 line = f"    [dim]✓ {provider} / {model}[/dim]{config_str}"
@@ -818,9 +1042,17 @@ def _show_matrix_details(
             console.print(line)
 
         if not winner_found:
-            console.print(
-                "    [yellow]⚠ No configured provider can serve this role[/yellow]"
-            )
+            if any_configured:
+                console.print(
+                    "    [yellow]⚠ A provider is configured but none of its models "
+                    "matches any candidate glob[/yellow]"
+                )
+            else:
+                console.print(
+                    "    [yellow]⚠ No configured provider can serve this role[/yellow]"
+                )
+
+    live.print_footer()
 
 
 # ============================================================
@@ -1246,7 +1478,15 @@ def _list_models_for_provider(
             )
         )
         models = get_provider_models(provider_id, collected_config=collected_config)
-        return [str(getattr(m, "name", m)) for m in models]
+        # ModelInfo's identifier is `.id`, not `.name`. This helper had no
+        # caller until `_LiveModels` arrived, so the old `getattr(m, "name",
+        # m)` -- which fell through to str(m) and returned the whole dataclass
+        # repr (`"id='gpt-5.6-terra' display_name=..."`) -- went unnoticed: a
+        # list of reprs matches no glob, and every live-verified candidate
+        # showed "no model matches". Measured on this host, 2026-09-07.
+        return [
+            str(getattr(m, "id", None) or getattr(m, "name", None) or m) for m in models
+        ]
     except Exception:
         return []
 

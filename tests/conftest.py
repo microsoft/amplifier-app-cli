@@ -33,6 +33,27 @@ from amplifier_app_cli.main import CommandProcessor  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
+def no_live_model_listing(monkeypatch):
+    """`routing show` verifies candidate globs against live ``list_models()``.
+
+    Unit tests must never do that: a fixture provider with no credentials
+    retries for ~35s before failing (measured: the routing test files went
+    from 3s to 578s), and the result would depend on the network anyway. The
+    default here is "could not list" -- every glob renders as unverified,
+    which is byte-identical to the pre-verification output. Tests that
+    exercise verification itself patch ``_list_models_bounded`` with an
+    explicit table on top of this (tests/test_routing_show_verifies_globs.py).
+
+    Patched at the bounded wrapper, not at ``_list_models_for_provider``, so
+    the tests that exercise THAT helper directly still see the real thing.
+    """
+    monkeypatch.setattr(
+        "amplifier_app_cli.commands.routing._list_models_bounded",
+        lambda _selector, _settings: [],
+    )
+
+
+@pytest.fixture(autouse=True)
 def reset_skill_shortcuts():
     """Clear SKILL_SHORTCUTS before and after every test in this suite."""
     CommandProcessor.SKILL_SHORTCUTS.clear()
