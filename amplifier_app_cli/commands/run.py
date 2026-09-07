@@ -242,6 +242,11 @@ def register_run_command(
     @cli.command()
     @click.argument("prompt", required=False)
     @click.option("--bundle", "-B", help="Bundle to use for this session")
+    @click.option(
+        "--matrix",
+        default=None,
+        help="Routing matrix to use for this session (e.g. anthropic, balanced)",
+    )
     @click.option("--provider", "-p", default=None, help="LLM provider to use")
     @click.option("--model", "-m", help="Model to use (provider-specific)")
     @click.option("--max-tokens", type=int, help="Maximum output tokens")
@@ -262,6 +267,7 @@ def register_run_command(
     def run(
         prompt: str | None,
         bundle: str | None,
+        matrix: str | None,
         provider: str,
         model: str | None,
         max_tokens: int | None,
@@ -413,6 +419,28 @@ def register_run_command(
             sys.exit(1)
 
         search_paths = get_module_search_paths()
+
+        # Per-session routing matrix override (--matrix).
+        # Bridge the flag into the mounted hooks-routing config's default_matrix,
+        # mirroring how --bundle selects a per-session bundle. This intentionally
+        # does not persist anything to settings; it only affects this session.
+        if matrix and prepared_bundle and hasattr(prepared_bundle, "mount_plan"):
+            routing_entry = None
+            for hook in prepared_bundle.mount_plan.get("hooks") or []:
+                if isinstance(hook, dict) and hook.get("module") == "hooks-routing":
+                    routing_entry = hook
+                    break
+            if routing_entry is None:
+                console.print(
+                    "[yellow]Warning:[/yellow] --matrix ignored: this bundle does "
+                    "not mount the 'hooks-routing' module"
+                )
+            else:
+                routing_config = routing_entry.get("config")
+                if not isinstance(routing_config, dict):
+                    routing_config = {}
+                    routing_entry["config"] = routing_config
+                routing_config["default_matrix"] = matrix
 
         # Handle provider/model CLI overrides
         if model and not provider:
