@@ -1,0 +1,11 @@
+{
+  "kind": "context",
+  "index": 4,
+  "status": "out-of-repo",
+  "source": "__app_cli__/amplifier_app_cli/_bundle/context/cli-awareness.md",
+  "resolved": "/home/bkrabach/.local/share/uv/tools/amplifier/lib/python3.13/site-packages/amplifier_app_cli/_bundle/context/cli-awareness.md",
+  "stock_chars": 398,
+  "lean_chars": 338,
+  "saved_chars": 60,
+  "missing_rules": []
+}

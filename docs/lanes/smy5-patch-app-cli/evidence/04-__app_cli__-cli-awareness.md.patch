@@ -1,0 +1,12 @@
+--- a/amplifier_app_cli/_bundle/context/cli-awareness.md
++++ b/amplifier_app_cli/_bundle/context/cli-awareness.md
+@@ -1,8 +1,2 @@
+ # Amplifier CLI: there is an expert for this
+-
+-You are running inside the **Amplifier CLI application**. The CLI itself —
+-its commands, flags, config, and session machinery — is a domain with a
+-dedicated expert that carries the authoritative, version-matched docs.
+-
+-If the question is about *your own task* (writing code, debugging the user's
+-project), that is not this domain — handle it normally.
++You run inside the Amplifier CLI application. The CLI itself — commands, flags, config, session machinery — is a domain with a dedicated expert carrying the authoritative, version-matched docs. Your own task (writing code, debugging the user's project) is not that domain; handle it normally.

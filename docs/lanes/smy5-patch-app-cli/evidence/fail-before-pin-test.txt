@@ -1,0 +1,202 @@
+.FF...FFFFFF.                                                            [100%]
+=================================== FAILURES ===================================
+___________________________ test_text_is_byte_exact ____________________________
+
+    def test_text_is_byte_exact() -> None:
+        """Exact anti-drift pin: the lean text is what ships, character for character."""
+        actual = _read()
+>       assert actual == EXPECTED, (
+            "context/cli-awareness.md has drifted from the measured lean text.\n"
+            "This file renders into the ALWAYS-ON head -- it is paid for on every "
+            "request of every session.\n"
+            f"expected ({len(EXPECTED)} chars):\n{EXPECTED!r}\n"
+            f"actual   ({len(actual)} chars):\n{actual!r}\n"
+            "If the change is deliberate, update EXPECTED and EXPECTED_CHARS here and "
+            "say what the new cost is."
+        )
+E       AssertionError: context/cli-awareness.md has drifted from the measured lean text.
+E         This file renders into the ALWAYS-ON head -- it is paid for on every request of every session.
+E         expected (338 chars):
+E         "# Amplifier CLI: there is an expert for this\nYou run inside the Amplifier CLI application. The CLI itself — commands, flags, config, session machinery — is a domain with a dedicated expert carrying the authoritative, version-matched docs. Your own task (writing code, debugging the user's project) is not that domain; handle it normally.\n"
+E         actual   (398 chars):
+E         "# Amplifier CLI: there is an expert for this\n\nYou are running inside the **Amplifier CLI application**. The CLI itself —\nits commands, flags, config, and session machinery — is a domain with a\ndedicated expert that carries the authoritative, version-matched docs.\n\nIf the question is about *your own task* (writing code, debugging the user's\nproject), that is not this domain — handle it normally.\n"
+E         If the change is deliberate, update EXPECTED and EXPECTED_CHARS here and say what the new cost is.
+E       assert '# Amplifier ...t normally.\n' == '# Amplifier ...t normally.\n'
+E         
+E         Skipping 35 identical leading characters in diff, use -v to show
+E            for this
+E         - You run inside the Amplifier CLI application. The CLI itself — commands, flags, config, session machinery — is a domain with a dedicated expert carrying the authoritative, version-matched docs. Your own task (writing code, debugging the user's project) is not that domain; handle it normally.
+E         + 
+E         + You are running inside the **Amplifier CLI application**. The CLI itself —
+E         + its commands, flags, config, and session machinery — is a domain with a...
+E         
+E         ...Full output truncated (4 lines hidden), use '-vv' to show
+
+tests/test_cli_awareness_lean_pin.py:119: AssertionError
+_______________________________ test_char_budget _______________________________
+
+    def test_char_budget() -> None:
+        """The always-on head is a budget. Growth has to be a decision, not an accident."""
+        actual = _read()
+>       assert len(actual) == EXPECTED_CHARS, (
+            f"always-on head budget for cli-awareness.md is {EXPECTED_CHARS} characters "
+            f"(stock was 398); this file is now {len(actual)}. "
+            f"Delta {len(actual) - EXPECTED_CHARS:+d} characters on EVERY request."
+        )
+E       AssertionError: always-on head budget for cli-awareness.md is 338 characters (stock was 398); this file is now 398. Delta +60 characters on EVERY request.
+E       assert 398 == 338
+E        +  where 398 = len("# Amplifier CLI: there is an expert for this\n\nYou are running inside the **Amplifier CLI application**. The CLI its...s about *your own task* (writing code, debugging the user's\nproject), that is not this domain — handle it normally.\n")
+
+tests/test_cli_awareness_lean_pin.py:133: AssertionError
+__ test_semantic_invariants_survive[the negative boundary: the user's own ta] __
+
+why = "the negative boundary: the user's own task is explicitly NOT this domain, otherwise the pointer fires on every coding question"
+required = ('own task', 'not that domain')
+
+    @pytest.mark.parametrize(
+        "why,required",
+        SEMANTIC_INVARIANTS,
+        ids=[inv[0][:40] for inv in SEMANTIC_INVARIANTS],
+    )
+    def test_semantic_invariants_survive(why: str, required: tuple[str, ...]) -> None:
+        """A further shrink is welcome; dropping a load-bearing claim is not.
+    
+        This is the fidelity half of the pin: it survives a rewrite that the byte-exact
+        test would reject, so it still guards the next lean pass.
+        """
+        text = _read().lower()
+        for fragment in required:
+>           assert fragment.lower() in text, (
+                f"lean text lost a load-bearing element ({why}): {fragment!r} is gone. "
+                "Fidelity failure -- a shrink may not drop a rule, constraint, command, "
+                "or pointer."
+            )
+E           AssertionError: lean text lost a load-bearing element (the negative boundary: the user's own task is explicitly NOT this domain, otherwise the pointer fires on every coding question): 'not that domain' is gone. Fidelity failure -- a shrink may not drop a rule, constraint, command, or pointer.
+E           assert 'not that domain' in "# amplifier cli: there is an expert for this\n\nyou are running inside the **amplifier cli application**. the cli its...s about *your own task* (writing code, debugging the user's\nproject), that is not this domain — handle it normally.\n"
+E            +  where 'not that domain' = <built-in method lower of str object at 0xfc0fa4348270>()
+E            +    where <built-in method lower of str object at 0xfc0fa4348270> = 'not that domain'.lower
+
+tests/test_cli_awareness_lean_pin.py:153: AssertionError
+_ test_v1_prose_has_not_returned[You are running inside the **Amplifier CLI application**] _
+
+fragment = 'You are running inside the **Amplifier CLI application**'
+
+    @pytest.mark.parametrize("fragment", V1_ONLY_PROSE)
+    def test_v1_prose_has_not_returned(fragment: str) -> None:
+        """Name the exact v1 phrasing, so a revert fails with a legible reason."""
+>       assert fragment not in _read(), (
+            f"pre-lean (v1) wording is back: {fragment!r}. "
+            "The lean rewrite saved 60 characters on every request of every session; "
+            "reverting it silently gives that back."
+        )
+E       AssertionError: pre-lean (v1) wording is back: 'You are running inside the **Amplifier CLI application**'. The lean rewrite saved 60 characters on every request of every session; reverting it silently gives that back.
+E       assert 'You are run...pplication**' not in '# Amplifier... normally.\n'
+E         
+E         'You are running in...r CLI application**' is contained here:
+E           for this
+E           
+E           You are running inside the **Amplifier CLI application**. The CLI itself —
+E           its commands, flags, config, and session machinery — is a domain with a
+E           dedicated expert that carries the authoritative, version-matched docs....
+E         
+E         ...Full output truncated (3 lines hidden), use '-vv' to show
+
+tests/test_cli_awareness_lean_pin.py:163: AssertionError
+_ test_v1_prose_has_not_returned[its commands, flags, config, and session machinery] _
+
+fragment = 'its commands, flags, config, and session machinery'
+
+    @pytest.mark.parametrize("fragment", V1_ONLY_PROSE)
+    def test_v1_prose_has_not_returned(fragment: str) -> None:
+        """Name the exact v1 phrasing, so a revert fails with a legible reason."""
+>       assert fragment not in _read(), (
+            f"pre-lean (v1) wording is back: {fragment!r}. "
+            "The lean rewrite saved 60 characters on every request of every session; "
+            "reverting it silently gives that back."
+        )
+E       AssertionError: pre-lean (v1) wording is back: 'its commands, flags, config, and session machinery'. The lean rewrite saved 60 characters on every request of every session; reverting it silently gives that back.
+E       assert 'its command...on machinery' not in '# Amplifier... normally.\n'
+E         
+E         'its commands, flag...d session machinery' is contained here:
+E            itself —
+E           its commands, flags, config, and session machinery — is a domain with a
+E           dedicated expert that carries the authoritative, version-matched docs.
+E           
+E           If the question is about *your own task* (writing code, debugging the user's
+E           project), that is not this domain — handle it normally.
+
+tests/test_cli_awareness_lean_pin.py:163: AssertionError
+_ test_v1_prose_has_not_returned[dedicated expert that carries the authoritative] _
+
+fragment = 'dedicated expert that carries the authoritative'
+
+    @pytest.mark.parametrize("fragment", V1_ONLY_PROSE)
+    def test_v1_prose_has_not_returned(fragment: str) -> None:
+        """Name the exact v1 phrasing, so a revert fails with a legible reason."""
+>       assert fragment not in _read(), (
+            f"pre-lean (v1) wording is back: {fragment!r}. "
+            "The lean rewrite saved 60 characters on every request of every session; "
+            "reverting it silently gives that back."
+        )
+E       AssertionError: pre-lean (v1) wording is back: 'dedicated expert that carries the authoritative'. The lean rewrite saved 60 characters on every request of every session; reverting it silently gives that back.
+E       assert 'dedicated e...uthoritative' not in '# Amplifier... normally.\n'
+E         
+E         'dedicated expert t...s the authoritative' is contained here:
+E           in with a
+E           dedicated expert that carries the authoritative, version-matched docs.
+E           
+E           If the question is about *your own task* (writing code, debugging the user's
+E           project), that is not this domain — handle it normally.
+
+tests/test_cli_awareness_lean_pin.py:163: AssertionError
+___ test_v1_prose_has_not_returned[If the question is about *your own task*] ___
+
+fragment = 'If the question is about *your own task*'
+
+    @pytest.mark.parametrize("fragment", V1_ONLY_PROSE)
+    def test_v1_prose_has_not_returned(fragment: str) -> None:
+        """Name the exact v1 phrasing, so a revert fails with a legible reason."""
+>       assert fragment not in _read(), (
+            f"pre-lean (v1) wording is back: {fragment!r}. "
+            "The lean rewrite saved 60 characters on every request of every session; "
+            "reverting it silently gives that back."
+        )
+E       AssertionError: pre-lean (v1) wording is back: 'If the question is about *your own task*'. The lean rewrite saved 60 characters on every request of every session; reverting it silently gives that back.
+E       assert 'If the ques...ur own task*' not in '# Amplifier... normally.\n'
+E         
+E         'If the question is about *your own task*' is contained here:
+E           ed docs.
+E           
+E           If the question is about *your own task* (writing code, debugging the user's
+E           project), that is not this domain — handle it normally.
+
+tests/test_cli_awareness_lean_pin.py:163: AssertionError
+_ test_v1_prose_has_not_returned[that is not this domain \u2014 handle it normally] _
+
+fragment = 'that is not this domain — handle it normally'
+
+    @pytest.mark.parametrize("fragment", V1_ONLY_PROSE)
+    def test_v1_prose_has_not_returned(fragment: str) -> None:
+        """Name the exact v1 phrasing, so a revert fails with a legible reason."""
+>       assert fragment not in _read(), (
+            f"pre-lean (v1) wording is back: {fragment!r}. "
+            "The lean rewrite saved 60 characters on every request of every session; "
+            "reverting it silently gives that back."
+        )
+E       AssertionError: pre-lean (v1) wording is back: 'that is not this domain — handle it normally'. The lean rewrite saved 60 characters on every request of every session; reverting it silently gives that back.
+E       assert 'that is not... it normally' not in '# Amplifier... normally.\n'
+E         
+E         'that is not this d... handle it normally' is contained here:
+E           project), that is not this domain — handle it normally.
+
+tests/test_cli_awareness_lean_pin.py:163: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_cli_awareness_lean_pin.py::test_text_is_byte_exact - Assert...
+FAILED tests/test_cli_awareness_lean_pin.py::test_char_budget - AssertionErro...
+FAILED tests/test_cli_awareness_lean_pin.py::test_semantic_invariants_survive[the negative boundary: the user's own ta]
+FAILED tests/test_cli_awareness_lean_pin.py::test_v1_prose_has_not_returned[You are running inside the **Amplifier CLI application**]
+FAILED tests/test_cli_awareness_lean_pin.py::test_v1_prose_has_not_returned[its commands, flags, config, and session machinery]
+FAILED tests/test_cli_awareness_lean_pin.py::test_v1_prose_has_not_returned[dedicated expert that carries the authoritative]
+FAILED tests/test_cli_awareness_lean_pin.py::test_v1_prose_has_not_returned[If the question is about *your own task*]
+FAILED tests/test_cli_awareness_lean_pin.py::test_v1_prose_has_not_returned[that is not this domain \u2014 handle it normally]
+8 failed, 5 passed in 0.06s
