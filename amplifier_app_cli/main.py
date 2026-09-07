@@ -3600,6 +3600,15 @@ async def interactive_chat(
 
     register_goal_progress_hook(session)
 
+    # Register the /goal repeat circuit breaker on the same event stream: a
+    # goal whose evaluator reason repeats verbatim N turns running is producing
+    # no new information and is halted with a NEEDS-MANAGER report rather than
+    # left to spend (measured: 855 turns / $203 and ~887 / ~$184 on two lanes
+    # whose work had already merged). See goal_circuit_breaker.py.
+    from .goal_circuit_breaker import register_goal_circuit_breaker
+
+    register_goal_circuit_breaker(session)
+
     # Show banner only for NEW sessions (resume shows banner via history display in commands/session.py)
     if not session_config.is_resume:
         config_summary = get_effective_config_summary(config, bundle_name)
@@ -4276,6 +4285,14 @@ async def execute_single(
         from .goal_progress_hook import register_goal_progress_hook
 
         register_goal_progress_hook(session)
+
+        # Repeat circuit breaker (goal_circuit_breaker.py). Headless is where
+        # this matters most: an unattended lane has nobody watching the
+        # progress lines scroll past, which is exactly how one repeated
+        # message reached 855 turns / $203.
+        from .goal_circuit_breaker import register_goal_circuit_breaker
+
+        register_goal_circuit_breaker(session)
 
         # === /goal support in headless mode (see docs/GOAL_COMMAND.md) ===
         # The auto-continue loop itself now lives in the orchestrator (see
