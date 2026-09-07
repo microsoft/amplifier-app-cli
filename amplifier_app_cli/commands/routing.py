@@ -372,6 +372,23 @@ def _print_origin_paths(origin: Any) -> None:
         )
 
 
+def _provider_family_aliases() -> dict[str, tuple[str, ...]]:
+    """The routing hook's family-alias table, or ``{}`` if the hook isn't importable.
+
+    Read from the hook module itself so this display can never disagree with
+    what the resolver actually does at routing time -- the table has exactly
+    one home. The hook is editable-installed from the bundle cache, so the
+    import succeeds on any host that has ever loaded the routing-matrix
+    bundle; on a clean install before that first fetch it degrades to "no
+    aliases", which is the pre-alias behaviour, not an error.
+    """
+    try:
+        from amplifier_module_hooks_routing.resolver import PROVIDER_FAMILY_ALIASES
+    except Exception:  # pragma: no cover - import environment dependent
+        return {}
+    return dict(PROVIDER_FAMILY_ALIASES)
+
+
 def _get_configured_provider_types(settings: AppSettings) -> set[str]:
     """Get the set of configured provider identifiers a matrix candidate may reference.
 
@@ -382,6 +399,13 @@ def _get_configured_provider_types(settings: AppSettings) -> set[str]:
     provider-chat-completions entries named "qwen-3.6" and "ornith") -- and
     both forms must be recognized as "configured" here to match how
     find_provider_by_type() resolves candidates at actual routing time.
+
+    ALSO includes every family name a configured module SATISFIES via the
+    hook's ``PROVIDER_FAMILY_ALIASES``. ``openai-chatgpt`` (the ChatGPT-
+    subscription backend) satisfies ``provider: openai`` at routing time, so a
+    ChatGPT-only user must see the openai candidates as configured here too --
+    before this, `routing show` told exactly that user "not configured" for
+    every openai role while the session routed them fine.
 
     E.g., {'anthropic', 'openai', 'github-copilot', 'ornith', 'qwen-3.6'}
     """
@@ -396,6 +420,11 @@ def _get_configured_provider_types(settings: AppSettings) -> set[str]:
         provider_id = p.get("id")
         if provider_id:
             types.add(provider_id)
+
+    # A configured alias module satisfies its canonical family name.
+    for canonical, aliases in _provider_family_aliases().items():
+        if any(alias in types for alias in aliases):
+            types.add(canonical)
     return types
 
 
@@ -628,6 +657,7 @@ def routing_show(matrix_name: str | None, compact: bool, detailed: bool, fmt: st
         return
 
     _print_shadowing_note(origin)
+    _print_not_mounted_warning(settings)
     declared = _disagreeing_name(matrix_data, matrix_name)
     if declared is not None:
         _print_name_stem_note([(matrix_name, declared)])
@@ -639,6 +669,88 @@ def routing_show(matrix_name: str | None, compact: bool, detailed: bool, fmt: st
         _show_matrix_details(matrix_data, settings, matrix_name)
     else:
         _show_matrix_resolution(matrix_data, settings, matrix_name)
+
+
+ROUTING_BEHAVIOR_URI = (
+    "git+https://github.com/microsoft/amplifier-bundle-routing-matrix@main"
+    "#subdirectory=behaviors/routing.yaml"
+)
+
+
+def _routing_hook_is_composed(settings: AppSettings) -> bool | None:
+    """Is ``hooks-routing`` actually in the session this cwd would start?
+
+    `routing show` reads matrix files straight from the bundle cache, so it
+    can render a matrix as "active" on a host whose ACTIVE BUNDLE never mounts
+    the routing hook -- in which case nothing applies the matrix and every
+    sub-agent silently inherits the parent's provider. Measured 2026-09-07 on
+    a project pinned to `anchors-amp-dev` (a lean base that does not include
+    routing-matrix): `routing show` said "balanced ... active" for every role
+    while `delegate:agent_spawned` carried `provider_preferences: null`.
+
+    Composes the same way a session does -- active bundle + every app bundle,
+    in that order -- but stops at ``to_mount_plan()``: no ``prepare()``, so no
+    module installs and no network beyond what is already cached (~0.1s).
+
+    Returns ``True`` / ``False``, or ``None`` when it cannot tell (the caller
+    prints nothing in that case; a diagnostic must never break the command).
+
+    Only runs when an active bundle is EXPLICITLY set. With none set the CLI
+    starts its built-in default, `foundation`, which includes routing-matrix --
+    so there is nothing to warn about, and skipping the composition keeps this
+    out of every code path (and test fixture) that never chose a bundle.
+    """
+    active = settings.get_active_bundle()
+    if not active:
+        return None
+    try:
+        import asyncio
+
+        from amplifier_foundation import load_bundle
+
+        from ..lib.bundle_loader import AppBundleDiscovery
+
+        discovery = AppBundleDiscovery()
+        base_uri = discovery.find(active)
+        if not base_uri:
+            return None
+
+        async def _compose() -> list[str]:
+            base = await load_bundle(base_uri, registry=discovery.registry)
+            overlays = [
+                await load_bundle(uri, registry=discovery.registry)
+                for uri in settings.get_app_bundles()
+            ]
+            composed = base.compose(*overlays) if overlays else base
+            return [
+                h.get("module", "")
+                for h in composed.to_mount_plan().get("hooks", [])
+                if isinstance(h, dict)
+            ]
+
+        return "hooks-routing" in asyncio.run(_compose())
+    except Exception as exc:  # pragma: no cover - environment dependent
+        logger.debug("Could not determine whether hooks-routing is composed: %s", exc)
+        return None
+
+
+def _print_not_mounted_warning(settings: AppSettings) -> None:
+    """Warn when this matrix is displayed but nothing in the session applies it."""
+    if _routing_hook_is_composed(settings) is not False:
+        return
+    active = settings.get_active_bundle()
+    console.print(
+        f"\n[yellow]\u26a0 Not applied in your sessions.[/yellow] The active bundle "
+        f"[bold]{active}[/bold] (and your app bundles) never mount the "
+        f"[bold]hooks-routing[/bold] hook, so this matrix is only displayed here -- "
+        f"sub-agents will inherit the parent session's provider instead.\n"
+        f"  To apply it in every session regardless of active bundle:"
+    )
+    # soft_wrap: the command must survive copy-paste, so Rich must not fold it.
+    console.print(
+        f"    [cyan]amplifier bundle add {ROUTING_BEHAVIOR_URI} --app[/cyan]",
+        soft_wrap=True,
+    )
 
 
 def _print_shadowing_note(origin: Any) -> None:
