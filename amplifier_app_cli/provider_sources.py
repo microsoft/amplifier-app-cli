@@ -6,11 +6,12 @@ import importlib.util
 import logging
 import site
 import subprocess
-import sys
 from typing import TYPE_CHECKING
 
 from rich.console import Console
 
+from .lib.home_env import activate_home_env
+from .lib.home_env import uv_target_args
 from .utils.error_format import escape_markup
 
 if TYPE_CHECKING:
@@ -314,8 +315,7 @@ def ensure_provider_installed(
                 "install",
                 "-e",
                 str(module_path),
-                "--python",
-                sys.executable,
+                *uv_target_args(),
                 "--refresh",  # Force fresh fetch from git sources
             ],
             capture_output=True,
@@ -329,6 +329,9 @@ def ensure_provider_installed(
         importlib.invalidate_caches()
         for site_dir in site.getsitepackages():
             site.addsitedir(site_dir)
+        # And this home's own environment, which is where the install landed
+        # when per-home environments are on (no-op when they are off).
+        activate_home_env()
         if hasattr(importlib.metadata, "distributions"):
             list(importlib.metadata.distributions())
 
@@ -399,6 +402,10 @@ def install_known_providers(
     # (e.g., provider-openai before provider-azure-openai)
     ordered_providers = _get_ordered_providers(sources)
 
+    # Resolve the install target once, not once per provider: it creates this
+    # home's environment on first use and rewrites its constraints file.
+    target_args = uv_target_args()
+
     for module_id, source_uri in ordered_providers:
         # Leave already-installed providers alone. Overwriting them would
         # discard the build the user actually has in place.
@@ -430,8 +437,7 @@ def install_known_providers(
                     "install",
                     "-e",
                     str(module_path),
-                    "--python",
-                    sys.executable,
+                    *target_args,
                 ],
                 capture_output=True,
                 text=True,
@@ -475,6 +481,7 @@ def install_known_providers(
         # Re-add site directories to ensure newly installed packages are found
         for site_dir in site.getsitepackages():
             site.addsitedir(site_dir)
+        activate_home_env()
 
         # Force refresh of importlib.metadata distributions cache
         if hasattr(importlib.metadata, "distributions"):

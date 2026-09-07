@@ -1,0 +1,18 @@
+########## PASS-AFTER (real uv tool venv as base) ##########
+
+== base environment
+  /home/bkrabach/.local/share/uv/tools/amplifier/lib/python3.13/site-packages
+  .pth files before: 75
+
+== install the same module name from both homes
+  home-a -> /tmp/xq95-overlay.Jv52zd/home-a/env/py3.13/bin/python
+  home-b -> /tmp/xq95-overlay.Jv52zd/home-b/env/py3.13/bin/python
+
+== claims
+  PASS  base .pth count unchanged                            75
+  PASS  home-a .pth points into home-a                       yes
+  PASS  home-b .pth points into home-b                       yes
+  PASS  home-a survived home-b's install                     yes
+  PASS  base environment has no probe .pth                   0
+
+artifacts: /tmp/xq95-overlay.Jv52zd

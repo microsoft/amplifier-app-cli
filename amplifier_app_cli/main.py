@@ -4654,12 +4654,34 @@ def _guard_shared_venv_home() -> None:
         )
 
 
+def _activate_home_env() -> None:
+    """Put this AMPLIFIER_HOME's own Python environment on ``sys.path``.
+
+    Thin CLI wrapper: the behavior lives in ``lib.home_env``. It runs after the
+    guard because the guard describes the state this is meant to make
+    impossible, and before ``cli()`` because modules installed into the overlay
+    must be importable by everything the command then does.
+
+    A no-op unless ``AMPLIFIER_HOME_ENV`` is set -- see ``lib.home_env``.
+    """
+    from .lib.home_env import activate_home_env
+
+    try:
+        added = activate_home_env()
+    except Exception as e:  # pragma: no cover - must never be fatal
+        logger.debug(f"per-home environment activation skipped: {e}")
+        return
+    if added is not None:
+        logger.debug(f"per-home environment on sys.path: {added}")
+
+
 def main():
     """Main entry point."""
     _ensure_utf8_output()
     _configure_console_logging()
     _attach_llm_error_filter()
     _guard_shared_venv_home()
+    _activate_home_env()
     cli()
 
 

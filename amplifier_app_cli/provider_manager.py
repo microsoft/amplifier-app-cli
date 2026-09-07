@@ -6,6 +6,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
+from .lib.home_env import uv_target_args
 from .lib.settings import AppSettings
 from .lib.settings import ScopeType
 from .provider_loader import get_provider_info
@@ -402,8 +403,7 @@ class ProviderManager:
                                 "install",
                                 "-e",
                                 str(module_path),
-                                "--python",
-                                sys.executable,
+                                *uv_target_args(),
                             ],
                             capture_output=True,
                             text=True,

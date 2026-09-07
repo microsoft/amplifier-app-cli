@@ -1,0 +1,23 @@
+throwaway base: /tmp/xq95-failbefore.wlW4sc/base
+
+== base environment
+  /tmp/xq95-failbefore.wlW4sc/base/lib/python3.12/site-packages
+  .pth files before: 1
+
+== install the same module name from both homes
+  home-a -> /tmp/xq95-failbefore.wlW4sc/base/bin/python
+  home-b -> /tmp/xq95-failbefore.wlW4sc/base/bin/python
+
+== claims
+  FAIL  base .pth count unchanged                            got 2, want 1
+  FAIL  home-a has its own editable .pth                     got missing, want present
+  FAIL  home-b has its own editable .pth                     got missing, want present
+  FAIL  home-a survived home-b's install                     got no (missing), want yes
+  FAIL  base environment has no probe .pth                   got 1, want 0
+
+artifacts: /tmp/xq95-overlay.VQCVAG
+
+the shared .pth the two homes fought over, and who won:
+  _editable_impl_amplifier_module_probe.pth -> /tmp/xq95-overlay.VQCVAG/home-b/cache/amplifier-module-probe-0123456789abcdef/src
+
+exit 1  (non-zero is the expected fail-before result)
