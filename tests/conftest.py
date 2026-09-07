@@ -33,7 +33,7 @@ from amplifier_app_cli.main import CommandProcessor  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def no_live_model_listing(monkeypatch):
+def no_live_model_listing():
     """`routing show` verifies candidate globs against live ``list_models()``.
 
     Unit tests must never do that: a fixture provider with no credentials
@@ -46,11 +46,21 @@ def no_live_model_listing(monkeypatch):
 
     Patched at the bounded wrapper, not at ``_list_models_for_provider``, so
     the tests that exercise THAT helper directly still see the real thing.
+
+    Uses a PRIVATE MonkeyPatch, deliberately not the shared ``monkeypatch``
+    fixture. Requesting the shared one from an autouse fixture makes it set
+    up before -- and therefore torn down after -- every test's own fixtures.
+    Tests that ``monkeypatch.chdir()`` into a ``TemporaryDirectory`` then had
+    that directory deleted while it was still the process cwd: fine on
+    Linux/macOS, PermissionError on Windows, deterministically, in
+    tests/lib/mention_loading/test_resolver.py. Measured on CI for #323.
     """
-    monkeypatch.setattr(
-        "amplifier_app_cli.commands.routing._list_models_bounded",
-        lambda _selector, _settings: [],
-    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "amplifier_app_cli.commands.routing._list_models_bounded",
+            lambda _selector, _settings: [],
+        )
+        yield
 
 
 @pytest.fixture(autouse=True)
