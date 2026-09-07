@@ -4541,7 +4541,11 @@ def _guard_shared_venv_home() -> None:
     try:
         conflict = enforce_home_ownership(sys.argv[1:])
     except SharedVenvHomeError as e:
-        console.print(f"[red]{escape_markup(str(e))}[/red]")
+        # soft_wrap: the message is nothing but paths and commands the user has
+        # to copy. Rich's default wrapping breaks a long path across lines and
+        # makes it uncopyable -- which is how a guard that names the fix stops
+        # naming the fix.
+        console.print(f"[red]{escape_markup(str(e))}[/red]", soft_wrap=True)
         sys.exit(1)
     except Exception as e:  # pragma: no cover - the guard must never be fatal
         logger.debug(f"venv home guard skipped: {e}")
@@ -4549,7 +4553,8 @@ def _guard_shared_venv_home() -> None:
 
     if conflict is not None:
         console.print(
-            f"[yellow]{escape_markup(format_conflict(conflict, override_active=True))}[/yellow]"
+            f"[yellow]{escape_markup(format_conflict(conflict, override_active=True))}[/yellow]",
+            soft_wrap=True,
         )
 
 

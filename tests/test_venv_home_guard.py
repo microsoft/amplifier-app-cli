@@ -271,9 +271,12 @@ def test_cli_entrypoint_refuses_and_exits_nonzero(two_homes, monkeypatch, capsys
         _guard_shared_venv_home()
 
     assert excinfo.value.code == 1
+    # Rich may still break lines depending on the runner's console width, and a
+    # tmp_path on macOS is long enough to hit it -- compare with line breaks
+    # removed so the assertion is about content, not terminal geometry.
     output = capsys.readouterr().out
     assert "Refusing to run" in output
-    assert str(home_a.resolve()) in output
+    assert str(home_a.resolve()) in output.replace("\n", "")
 
 
 def test_cli_entrypoint_warns_and_continues_under_override(
