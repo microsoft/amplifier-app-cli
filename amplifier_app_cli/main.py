@@ -4526,10 +4526,38 @@ register_session_commands(
 )
 
 
+def _guard_shared_venv_home() -> None:
+    """Refuse to run when this environment belongs to a different AMPLIFIER_HOME.
+
+    Thin CLI wrapper: all of the behavior lives in ``lib.venv_home_guard``.
+    It runs here, before ``cli()``, because it must fire ahead of *every*
+    editable install -- this package's own provider installs AND foundation's
+    ModuleActivator -- not just the ones this repo owns.
+    """
+    from .lib.venv_home_guard import SharedVenvHomeError
+    from .lib.venv_home_guard import enforce_home_ownership
+    from .lib.venv_home_guard import format_conflict
+
+    try:
+        conflict = enforce_home_ownership(sys.argv[1:])
+    except SharedVenvHomeError as e:
+        console.print(f"[red]{escape_markup(str(e))}[/red]")
+        sys.exit(1)
+    except Exception as e:  # pragma: no cover - the guard must never be fatal
+        logger.debug(f"venv home guard skipped: {e}")
+        return
+
+    if conflict is not None:
+        console.print(
+            f"[yellow]{escape_markup(format_conflict(conflict, override_active=True))}[/yellow]"
+        )
+
+
 def main():
     """Main entry point."""
     _ensure_utf8_output()
     _attach_llm_error_filter()
+    _guard_shared_venv_home()
     cli()
 
 

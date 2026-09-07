@@ -1,0 +1,24 @@
+# Reproduction environment for model_performance-q99f.
+#
+# One shared uv tool venv, two AMPLIFIER_HOME directories. Shows that
+# AMPLIFIER_HOME does NOT isolate the venv: the editable .pth pointers in the
+# shared venv are silently rewritten to whichever home ran last.
+name: q99f-pth-repro
+description: >
+  Isolated Amplifier install used to reproduce the AMPLIFIER_HOME / shared-venv
+  .pth rewrite (model_performance-q99f). No LLM traffic required.
+base:
+  image: ubuntu:24.04
+  config:
+    limits.memory: "4GiB"
+    limits.cpu: "2"
+
+passthrough:
+  allow_external: true
+
+provision:
+  setup_cmds:
+    - apt-get update && apt-get install -y git curl
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - uv tool install -vv git+https://github.com/microsoft/amplifier
+    - amplifier --version
