@@ -214,6 +214,13 @@ For each lane in the first wave, launch from the goal file Phase 2 already
 pre-composed in `BATCH_DIR/goals/` — no goalify here:
 
 - `launch_lane.sh BATCH_DIR <lane> <repo> BATCH_DIR/goals/<item>.md [base]`.
+- **Every pre-composed goal file whose item lives in a work-tracker project
+  must clear goalify's L7 at composition time (Phase 2)**: the goal names
+  `work_erratum` as the terminal verb for the case where the item is already
+  resolved or held by another session. `work_resolve` and `work_release` both
+  refuse a session that never held the item, so a lane that ends only in
+  those verbs has no reachable terminal state the moment a sibling resolves
+  the item (rule 14).
 
 Then start the watchdog. **`<BATCH_DIR>`, `<WIDTH>`, `<SESSION_ID>` below are
 documentation placeholders — substitute literal values; they do not exist as
@@ -287,9 +294,14 @@ invariant exists to prevent.)
    straggler block the others.
 6. Strategize: process anything new (weave-in log: now / queued / declined,
    with reasons) — and the instant you queue an incoming item, goalify it inline
-   and write its `BATCH_DIR/goals/` file so a later refill stays a bare launch.
-   Re-prioritize, handle STALLED and ENDED-NO-DONE lanes (inspect the lane log
-   tail; relaunch or reassign).
+   and write its `BATCH_DIR/goals/` file (clearing L7, rule 14) so a later
+   refill stays a bare launch. Re-prioritize, handle STALLED, ENDED-NO-DONE and
+   NEEDS-MANAGER lanes (inspect the lane log tail; relaunch or reassign). A
+   **NEEDS-MANAGER** lane stopped itself because its `/goal` evaluator
+   repeated one message verbatim for 6 turns — the loop had stopped producing
+   new information. Read the quoted message: it names the wedge. Usually the
+   goal's terminal verb is unreachable (rule 14) and the fix is a corrected
+   goal file plus a relaunch, never a bare restart of the same condition.
 7. Update the **todo lane board** and rewrite `HIGHWAY.md`. Regenerate its
    Landed section from git ground truth — `scripts/landed_from_git.sh <repo>
    [base]` — so the Operating Picture can never drift from what actually merged
@@ -426,6 +438,17 @@ still standing), final report matches git facts.
     lane-scoped teardown tool.** (One foreign `sweep` destroyed two other
     lanes' DTUs mid-measurement; `sweep` now refuses a multi-owner ledger with
     exit 3 unless `--all-owners` is passed.)
+15. **A lane goal on a shared work item must name `work_erratum` as its
+    terminal verb for the already-resolved case** (goalify L7). Many lanes on
+    one container item is a normal shape here, and the first lane to resolve
+    it makes `work_resolve`/`work_release` permanently unreachable for every
+    other lane — which is a stop condition that can never be satisfied, not a
+    lane that needs more turns. (`j1e6-ci-tool-web` spent **855 turns /
+    $202.91** and `hd-browser-bridge` **~887 turns / ~$184** repeating one
+    line — "No verified successful `work_resolve` or `work_release` appears in
+    the available transcript" — hours after both lanes' PRs had already
+    merged. At least 3 earlier lanes hit the same wall and each rediscovered
+    `work_erratum` alone.)
 
 ## Known limits (still not built)
 

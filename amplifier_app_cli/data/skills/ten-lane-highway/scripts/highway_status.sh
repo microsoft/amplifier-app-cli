@@ -55,7 +55,7 @@ BATCH=$(printf '%s' "$(basename "$BATCH_DIR")" | tr -c 'A-Za-z0-9_-' '_')
 [ -f "$MANIFEST" ] || { echo "ERROR: no manifest at $MANIFEST (launch_lane.sh creates it)" >&2; exit 1; }
 
 now=$(date +%s)
-live=0; ended=0; done_n=0; stalled=0; gone=0
+live=0; ended=0; done_n=0; stalled=0; gone=0; needs_mgr_n=0
 # Lane-name sets for the ORPHAN-ROWS join below (newline-joined, awk splits them).
 live_lanes=""; all_lanes=""
 
@@ -65,9 +65,18 @@ while IFS=$'\t' read -r lane wt branch base tmuxn goal log ts; do
 
   if tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "$tmuxn" 2>/dev/null; then st=LIVE; else st=ENDED; fi
 
-  age="-"; ahead="-"; dj="-"; wt_present=yes
+  age="-"; ahead="-"; dj="-"; wt_present=yes; needs_mgr=no
   if [ -d "$wt" ]; then
-    if [ -f "$log" ]; then age="$(( now - $(stat -c %Y "$log") ))s"; fi
+    if [ -f "$log" ]; then
+      age="$(( now - $(stat -c %Y "$log") ))s"
+      # The CLI's /goal repeat circuit breaker prints NEEDS-MANAGER when a
+      # lane's evaluator repeated one message verbatim N turns running and the
+      # loop was halted. That is a distinct disposition from STALLED (frozen
+      # log) or ENDED-NO-DONE (died without saying why): the lane stopped
+      # ITSELF and named the wedge. Surface it here so the manager reads the
+      # reason instead of digging for it.
+      if tail -n 200 "$log" 2>/dev/null | grep -q 'NEEDS-MANAGER'; then needs_mgr=yes; fi
+    fi
     ahead=$(git -C "$wt" rev-list --count "$base..HEAD" 2>/dev/null || echo "?")
     if [ -f "$(dirname "$wt")/DONE.json" ]; then dj=yes; else dj=no; fi
   else
@@ -93,6 +102,9 @@ while IFS=$'\t' read -r lane wt branch base tmuxn goal log ts; do
       if [ "$dj" = "no" ]; then flag="ENDED-NO-DONE"; fi
     fi
   fi
+  # More specific than STALLED or ENDED-NO-DONE, so it wins the flag slot:
+  # those say "no signal", this one carries the lane's own stated reason.
+  if [ "$needs_mgr" = "yes" ]; then flag="NEEDS-MANAGER"; needs_mgr_n=$((needs_mgr_n+1)); fi
   if [ "$dj" = "yes" ]; then done_n=$((done_n+1)); fi
 
   [ "$JSON" = 1 ] || printf '%-20s %-6s %-9s %-6s %-5s %-14s %s\n' "$lane" "$st" "$age" "$ahead" "$dj" "$flag" "$wt"
@@ -184,16 +196,19 @@ if [ "$JSON" = 1 ]; then
   # The owner list is ledger-derived text landing inside a JSON string; keep it
   # to characters that cannot terminate one.
   oo=$(printf '%s' "$orphan_owners" | tr -c 'A-Za-z0-9_,()<>.:-' '_')
-  printf '{"ts":"%s","batch":"%s","live":%d,"ended":%d,"done_marker":%d,"stalled":%d,"gone":%d,"width":%d,"width_source":"%s","ready":%d,"deficit":%d,"watchdog":"%s","orphan_rows":%d,"orphan_owners":"%s"}\n' \
-    "$(date -u +%FT%TZ)" "$BATCH" "$live" "$ended" "$done_n" "$stalled" "$gone" "$WIDTH" "$width_source" "$READY" "$deficit" "$wd_st" "$orphan_rows" "$oo"
+  printf '{"ts":"%s","batch":"%s","live":%d,"ended":%d,"done_marker":%d,"stalled":%d,"needs_manager":%d,"gone":%d,"width":%d,"width_source":"%s","ready":%d,"deficit":%d,"watchdog":"%s","orphan_rows":%d,"orphan_owners":"%s"}\n' \
+    "$(date -u +%FT%TZ)" "$BATCH" "$live" "$ended" "$done_n" "$stalled" "$needs_mgr_n" "$gone" "$WIDTH" "$width_source" "$READY" "$deficit" "$wd_st" "$orphan_rows" "$oo"
   exit 0
 fi
 
 echo
-echo "SUMMARY batch=$BATCH live=$live ended=$ended done_marker=$done_n stalled=$stalled gone=$gone width=$WIDTH width_source=$width_source ready=$READY watchdog=$wd_st orphan_rows=$orphan_rows"
+echo "SUMMARY batch=$BATCH live=$live ended=$ended done_marker=$done_n stalled=$stalled needs_manager=$needs_mgr_n gone=$gone width=$WIDTH width_source=$width_source ready=$READY watchdog=$wd_st orphan_rows=$orphan_rows"
 echo "DEFICIT=$deficit"
 if [ "$deficit" -gt 0 ]; then
   echo "ACTION: launch $deficit lane(s) NOW - refill before anything else."
+fi
+if [ "$needs_mgr_n" -gt 0 ]; then
+  echo "ACTION: $needs_mgr_n lane(s) flagged NEEDS-MANAGER - the /goal loop halted itself on a repeated message. Read the quoted line in the lane log; fix the goal file before relaunching."
 fi
 if [ "$wd_st" = "DEAD" ]; then
   echo "WARNING: watchdog $WD is not running - do not end the turn until it is."

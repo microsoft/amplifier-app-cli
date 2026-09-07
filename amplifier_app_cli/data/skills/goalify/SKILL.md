@@ -8,7 +8,7 @@ description: >
   goal condition", "make this a /goal", "turn this into a goal", or asks for
   help wording a condition for /goal.
 user-invocable: true
-version: 1.2.0
+version: 1.3.0
 license: MIT
 ---
 
@@ -60,10 +60,17 @@ unless marked optional.
    this by directly converting anything from Phase 1's "not required" list
    into a plain negative statement (e.g. "No production soak time required."
    / "Uniformity across all N items is NOT the goal.").
-5. **KNOWN section (optional)** — facts already established, so the actor
+5. **Reachable terminal verb**, whenever finishing depends on an external
+   system that can *refuse* — a work-tracker claim or resolution, a merge, a
+   deploy, a publish. Name the primary verb AND the verb to use when the
+   primary refuses. A terminal verb with no reachable fallback is a missing
+   disjunctive exit one layer down: the actor can reach the end state and
+   still be unable to record it, which reads to the evaluator as "not done"
+   forever. See L7 for the work-tracker case, which is mandatory.
+6. **KNOWN section (optional)** — facts already established, so the actor
    doesn't re-derive them. Label it explicitly as a speed aid: it prevents
    wasted turns, it does not by itself prevent stalls, so it never replaces
-   items 1–4.
+   items 1–5.
 
 ## Phase 3 — Lint
 
@@ -114,13 +121,42 @@ scan for keywords in isolation and stop at the first clean-looking match.
   under this phrasing, so it never terminates. Convert to a closed, named
   list, or to a single representative artifact.
 
+- **L7 — Work-tracker terminal verb that can refuse.** Any condition whose
+  completion requires `work_resolve` or `work_release` is a blocker **unless
+  the condition also names `work_erratum` as the terminal verb for the case
+  where the item is already resolved, or held by another session.** Both
+  `work_resolve` and `work_release` refuse a session that does not hold the
+  item, and no amount of further work makes them succeed — so a condition
+  that ends only in those verbs has no reachable terminal state from the
+  moment a sibling session resolves the item. `work_erratum` is append-only,
+  requires no claim, and any actor may call it at any time, which is exactly
+  why it is the fallback.
+
+  **This applies to EVERY lane targeting a shared or many-lanes work item, not
+  only the lane that happens to discover the problem.** Write the fallback in;
+  do not leave each lane to rediscover it.
+
+  Required wording in the composed condition (adapt the names, keep the
+  structure and keep it as a plain instruction, per W4):
+
+  ```
+  TERMINAL VERBS. Record the outcome with
+  work_resolve(id=<item>, reason=<user-readable summary>) when this session
+  holds the item. If work_claim refused, or the item is already resolved, or
+  another session holds it: record the outcome with
+  work_erratum(project=<project>, item_id=<item>, text=<same summary>)
+  instead — append-only, no claim required — and treat that as the terminal
+  step, complete. Do NOT retry work_resolve or work_release in that state;
+  both refuse a session that never held the item.
+  ```
+
 - **L0 — Cross-clause consistency (meta-rule).** *An escape hatch is only as
   strong as the strictest other clause in the same document.* After
-  confirming L1–L5 pass individually and a disjunctive exit exists, re-read
+  confirming L1–L7 pass individually and a disjunctive exit exists, re-read
   the document once more asking only: **is there any other sentence, anywhere
   in the document, that is stricter than the stated exit and would override
   it?** A document can have a textbook-perfect exit clause and still be
-  unsatisfiable because one unrelated sentence elsewhere re-imposes an L1–L5
+  unsatisfiable because one unrelated sentence elsewhere re-imposes an L1–L7
   style constraint the exit clause doesn't cover. Confirming an exit clause
   exists is not sufficient — confirm nothing else in the document is
   stricter than it.
