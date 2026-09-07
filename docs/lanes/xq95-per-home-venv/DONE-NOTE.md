@@ -4,6 +4,9 @@ Work item: `model_performance-xq95` (deferred fix **(a)** from
 `model_performance-q99f`). Spend authority: **$0**; **$0 spent** — no paid API
 measurement, and **no DTU was created**, for the reason argued in §5.
 
+Draft PR: [microsoft/amplifier-app-cli#326](https://github.com/microsoft/amplifier-app-cli/pull/326).
+Foundation follow-up filed: `model_performance-zv3p`.
+
 **Outcome branch: B — resolved at the cap.** The item flags itself as *"larger
 than a $0 lane"* and asks, if both cannot be funded, for the **design plus a
 proof-of-concept demonstrating the mechanism in one repo**. That is what shipped:
@@ -124,8 +127,8 @@ issue in this worktree, not a product regression. Delta from this branch: **0**.
 
 ## 8. Open / filed
 
-1. **The foundation half** — `ModuleActivator` install target. Filed as a linked
-   follow-up. Without it this is nine modules, not isolation.
+1. **The foundation half** — `ModuleActivator` install target. Filed as
+   `model_performance-zv3p` (discovered-from this item). Without it this is nine modules, not isolation.
 2. **The two-homes DTU verification** — blocked on 1 (§5).
 3. **Flip `AMPLIFIER_HOME_ENV` to default-on** — after 1 and 2.
 4. **`amplifier reset` should remove `<home>/env`** — it removes `<home>/cache`

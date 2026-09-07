@@ -311,7 +311,7 @@ provider modules isolated and everything else still colliding.
 
 ## 8. Open, and deliberately not done here
 
-1. **The foundation half** (§6) — filed as a linked follow-up item. Without it
+1. **The foundation half** (§6) — filed as `model_performance-zv3p`. Without it
    this is nine modules, not isolation.
 2. **The two-homes DTU verification** (§7) — blocked on 1.
 3. **Flip the default.** `AMPLIFIER_HOME_ENV` is opt-in in this PR. Partial
