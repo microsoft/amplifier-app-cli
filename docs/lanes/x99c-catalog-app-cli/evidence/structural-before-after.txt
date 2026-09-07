@@ -1,0 +1,26 @@
+validate-agents v1.8.0 structural phases (agent-discovery + structural-validation),
+run locally at $0 against BOTH sides. These two phases are pure python -- no LLM
+call -- so the stock (pre-edit) side is reproducible without spend.
+recipe: foundation @v2.1.2 (a27d5824517d078097b60d84779dd3eae80202cd)
+gates quoted from the recipe source: DESCRIPTION_WARN_CHARS = 600, DESCRIPTION_ERROR_CHARS = 1200
+
+STOCK baseline is origin/main @ f166328 -- this branch was rebased onto it, so the
+baseline is the code the PR actually merges into, not the older fork point.
+
+===== STOCK  @ origin/main f166328 (agents/cli-expert.md) =====
+  agents discovered: 1  (candidates_scanned 1, non_agent_count 0, locations {"agents/": 1})
+  structural summary: {"errors": 3, "passed": 0, "total": 1, "warnings": 1}
+  cli-expert   desc  2659 chars / 664 tok  example_count 3  commentary_count 3  triggers ["PROACTIVELY"]
+    ERRORS  : ["DESCRIPTION_EXCESSIVE", "COMMENTARY_TAG_PRESENT", "EXAMPLE_BLOCK_PRESENT"]
+    WARNINGS: ["NO_TOOLS_SECTION"]
+
+===== BRANCH @ lane/x99c-catalog-app-cli =====
+  agents discovered: 1  (candidates_scanned 1, non_agent_count 0, locations {"agents/": 1})
+  structural summary: {"errors": 0, "passed": 1, "total": 1, "warnings": 1}
+  cli-expert   desc   600 chars / 150 tok  example_count 0  commentary_count 0  triggers ["DO NOT"]
+    ERRORS  : []
+    WARNINGS: ["NO_TOOLS_SECTION"]
+
+TRANSITION: 3 structural ERRORs -> 0.  The 1 remaining WARNING (NO_TOOLS_SECTION) is
+IDENTICAL TO STOCK -- pre-existing, outside this lane's description-only charter,
+left unremediated deliberately (see DONE-NOTE.md).

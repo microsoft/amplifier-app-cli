@@ -1,0 +1,21 @@
+Body byte-identity check -- agents/cli-expert.md
+
+The BODY is everything after the closing frontmatter `---`. Only the
+frontmatter `description` was touched by this lane.
+
+  STOCK  (git show origin/main:agents/cli-expert.md)  md5 b229c3d9258265c012d074146c74ed8e  bytes 2550
+  BRANCH (working tree)                               md5 b229c3d9258265c012d074146c74ed8e  bytes 2550
+
+  IDENTICAL: True
+
+Description character counts (YAML-parsed value -- the string the delegate
+catalog injects; stock is a `|` literal block so it carries one trailing
+newline, lean is a `>-` folded block so it carries none):
+
+  STOCK  2659 chars (2658 stripped)
+  LEAN   600 chars
+  DELTA  -2059 chars (-77.4%)
+
+For the record, the OLDER fork point this lane started from (6f2ad04) carried a
+3,037-char description; main had since dropped its 7-line `MUST be used for`
+block (68c8cf4), leaving 2,659. The rebase makes 2,659 the honest baseline.
