@@ -96,7 +96,7 @@ merge time.
   $DONE_MARKER
 EOF
 
-if tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "$TMUX_NAME" 2>/dev/null; then
+if tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "=$TMUX_NAME" 2>/dev/null; then
   echo "SKIP: $TMUX_NAME already running"
 else
   tmux -L "$HIGHWAY_TMUX_SOCKET" new-session -d -s "$TMUX_NAME" -c "$WT" \

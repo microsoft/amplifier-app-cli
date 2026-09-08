@@ -99,7 +99,7 @@ live_lanes() {
   local n=0 lane wt branch base tmuxn rest
   while IFS=$'\t' read -r lane wt branch base tmuxn rest; do
     [ "$lane" = "lane" ] && continue
-    tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "$tmuxn" 2>/dev/null && n=$((n+1))
+    tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "=$tmuxn" 2>/dev/null && n=$((n+1))
   done < "$MANIFEST"
   echo "$n"
 }
@@ -108,7 +108,7 @@ ended_list() {
   local lane wt branch base tmuxn rest
   while IFS=$'\t' read -r lane wt branch base tmuxn rest; do
     [ "$lane" = "lane" ] && continue
-    tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "$tmuxn" 2>/dev/null || echo "$lane"
+    tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "=$tmuxn" 2>/dev/null || echo "$lane"
   done < "$MANIFEST"
 }
 

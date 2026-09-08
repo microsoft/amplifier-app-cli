@@ -395,7 +395,7 @@ is the manager's batch-close override; without it `sweep` refuses (exit 3) the
 moment the open rows span more than one lane, which is the guard that stops a
 lane from destroying its neighbours' infrastructure. Kill the
 watchdog by the exact name `highway_status.sh` reports
-(`tmux -L "$HIGHWAY_TMUX_SOCKET" kill-session -t <wd_name>`). **Archive
+(`tmux -L "$HIGHWAY_TMUX_SOCKET" kill-session -t "=<wd_name>"`). **Archive
 the per-lane evidence BEFORE pruning** — pruning the lane dirs otherwise deletes
 `lane.log` and the markers with them:
 ```bash

@@ -50,6 +50,7 @@ def make_fakes(tmp_path: Path) -> Path:
 set -euo pipefail
 [ "$1" = -L ] && [ "$2" = "$EXPECTED_SOCKET" ] || exit 97
 last="${@: -1}"
+last="${last#=}"
 for arg in "$@"; do
   if [ "$arg" = has-session ]; then
     case " ${LIVE_SESSIONS:-} " in *" $last "*) exit 0 ;; *) exit 1 ;; esac

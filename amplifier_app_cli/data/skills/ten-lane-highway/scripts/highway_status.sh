@@ -68,7 +68,7 @@ live_lanes=""; all_lanes=""
 while IFS=$'\t' read -r lane wt branch base tmuxn goal log ts; do
   [ "$lane" = "lane" ] && continue
 
-  if tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "$tmuxn" 2>/dev/null; then st=LIVE; else st=ENDED; fi
+  if tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "=$tmuxn" 2>/dev/null; then st=LIVE; else st=ENDED; fi
 
   age="-"; ahead="-"; dj="-"; wt_present=yes; needs_mgr=no
   if [ -d "$wt" ]; then
@@ -116,7 +116,7 @@ while IFS=$'\t' read -r lane wt branch base tmuxn goal log ts; do
 done < "$MANIFEST"
 
 WD="hw-watchdog__${BATCH}"
-if tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "$WD" 2>/dev/null; then wd_st=LIVE; else wd_st=DEAD; fi
+if tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "=$WD" 2>/dev/null; then wd_st=LIVE; else wd_st=DEAD; fi
 
 # --- ORPHAN ROWS (model_performance-ye80) -----------------------------------
 # Join lane liveness (above) to infra-ledger row ownership. Nothing else does.

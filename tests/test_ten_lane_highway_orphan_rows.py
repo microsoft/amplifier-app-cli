@@ -109,6 +109,7 @@ def _stub_tmux(tmp_path: Path) -> Path:
         'for a in "$@"; do [ "$a" = "has-session" ] && want=1; done\n'
         'last="${@: -1}"\n'
         'if [ "${want:-0}" = 1 ]; then\n'
+        '  last="${last#=}"\n'
         '  case " ${LIVE_SESSIONS:-} " in *" $last "*) exit 0 ;; *) exit 1 ;; esac\n'
         "fi\n"
         "exit 0\n",
