@@ -45,6 +45,15 @@ nonempty resolved snapshot only in sub-session persistence metadata, never in
 `session.metadata` telemetry; keep subprocess self dispatch as its explicit
 legacy limitation.
 
+## Root instruction AGENTS.md tail
+
+`load_and_prepare_bundle()` appends `@~/.amplifier/AGENTS.md` and then
+`@.amplifier/AGENTS.md` only after all behavior composition and before
+preparation. Do not move this seam: injecting earlier makes a bodyless
+root instruction truthy and changes its existing behavior-body inheritance.
+Keep the injection non-mutating because the foundation registry caches bundles;
+foundation's prompt factory resolves these optional files freshly per request.
+
 ## Update reporting
 
 Keep report labels separate from update eligibility: a missing mutable cache is
