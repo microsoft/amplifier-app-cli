@@ -8,7 +8,7 @@
 #   tmux -L "$HIGHWAY_TMUX_SOCKET" new-session -d -s "hw-watchdog__<batch>" \
 #     "<skill_dir>/scripts/highway_watchdog.sh BATCH_DIR WIDTH SESSION_ID [INTERVAL] [MAX_HOURS]"
 #
-# Wake triggers: a lane ended since last poll | live < WIDTH | manager heartbeat stale.
+# Wake triggers: a lane ended | fresh runnable work below WIDTH | stale live manager.
 # Wake path: `amplifier run --resume SESSION_ID "<wake prompt>"` (verified CLI flag),
 # plus a durable `wake-needed` file in BATCH_DIR in case the resume fails.
 # The orchestrator touches BATCH_DIR/.manager-heartbeat every cycle and deletes
@@ -58,6 +58,9 @@ ACTIVE_WINDOW=${HIGHWAY_ACTIVE_WINDOW:-120}
 WIDTH_ARG=$WIDTH
 WIDTH_FILE="$BATCH_DIR/.width"
 width_source=arg
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=highway_readiness.sh
+source "$SCRIPT_DIR/highway_readiness.sh"
 resolve_width() {
   width_source=arg
   WIDTH=$WIDTH_ARG
@@ -76,8 +79,9 @@ resolve_width() {
 # BATCH_DIR/escalation-needed and switch the wake prompt to the escalation form.
 ESCALATE_AFTER=${HIGHWAY_ESCALATE_AFTER:-3}
 prev_live=-1        # -1 so the very first poll never looks like a non-increase
-ineffective=0       # consecutive ineffective (under-width, non-recovering) polls
+ineffective=0       # consecutive ineffective runnable-under-width polls
 escalate=0          # 1 while the ineffective count is at/over the threshold
+prev_readiness=
 
 deadline=$(( $(date +%s) + MAX_HOURS * 3600 ))
 START_TS=$(date +%s)
@@ -86,6 +90,8 @@ START_TS=$(date +%s)
 # pre-first-heartbeat race window (graded trial 01).
 GRACE=${HIGHWAY_HB_GRACE:-300}
 last_wake=0
+# Test-only bounded loop control. Zero retains the production infinite loop.
+MAX_POLLS=${HIGHWAY_WATCHDOG_MAX_POLLS:-0}
 
 log() { echo "$(date -u +%FT%TZ) $*" >> "$LOGF"; }
 
@@ -93,7 +99,7 @@ live_lanes() {
   local n=0 lane wt branch base tmuxn rest
   while IFS=$'\t' read -r lane wt branch base tmuxn rest; do
     [ "$lane" = "lane" ] && continue
-    tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "$tmuxn" 2>/dev/null && n=$((n+1))
+    tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "=$tmuxn" 2>/dev/null && n=$((n+1))
   done < "$MANIFEST"
   echo "$n"
 }
@@ -102,7 +108,7 @@ ended_list() {
   local lane wt branch base tmuxn rest
   while IFS=$'\t' read -r lane wt branch base tmuxn rest; do
     [ "$lane" = "lane" ] && continue
-    tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "$tmuxn" 2>/dev/null || echo "$lane"
+    tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "=$tmuxn" 2>/dev/null || echo "$lane"
   done < "$MANIFEST"
 }
 
@@ -140,6 +146,8 @@ touch "$STATE"
 
 while :; do
   sleep "$INTERVAL"
+  polls=${polls:-0}
+  polls=$((polls + 1))
 
   if [ "$(date +%s)" -ge "$deadline" ]; then
     wake "watchdog max runtime (${MAX_HOURS}h) reached - restart me if the highway is still open"
@@ -177,18 +185,22 @@ while :; do
   # treat as stale so the safety-net wakes below still fire.
   [ "$hb_age" -lt 0 ] && hb_age=$(( HB_MAX + 1 ))
 
-  # ESCALATION LADDER: count consecutive polls where live < width AND live did
-  # not increase vs the previous poll; reset the moment live increases or the
-  # deficit clears. Computed on non-deferred polls only (a deferred poll means
-  # the manager is active and refilling inline, so it is not an ineffective wake).
-  if [ "$live" -ge "$WIDTH" ]; then
-    ineffective=0          # deficit cleared
-  elif [ "$live" -gt "$prev_live" ]; then
-    ineffective=0          # live increased since the previous poll
+  readiness_load "$BATCH_DIR"
+  readiness_changed=0
+  [ "$READINESS_STATE" != "$prev_readiness" ] && readiness_changed=1
+  prev_readiness=$READINESS_STATE
+  log "readiness=$READINESS_STATE runnable=${READINESS_RUNNABLE:--} age=${READINESS_AGE_SECONDS:--}s"
+
+  # ESCALATION LADDER: only fresh runnable work below capacity is ineffective.
+  # Missing, malformed, and stale observations are explicit unknown states,
+  # never a quiet claim that the queue drained.
+  if [ "$READINESS_STATE" = runnable ] && [ "$live" -lt "$WIDTH" ]; then
+    if [ "$live" -gt "$prev_live" ]; then ineffective=0; else ineffective=$(( ineffective + 1 )); fi
+    prev_live=$live
   else
-    ineffective=$(( ineffective + 1 ))
+    ineffective=0
+    prev_live=-1
   fi
-  prev_live=$live
   escalate=0
   if [ "$ineffective" -ge "$ESCALATE_AFTER" ]; then
     escalate=1
@@ -196,9 +208,17 @@ while :; do
     log "ESCALATION: ineffective=$ineffective >= ${ESCALATE_AFTER} (live=$live width=$WIDTH) - marker touched"
   fi
 
-  if [ -n "${new_ended// /}" ]; then wake "lane(s) ended: ${new_ended}"; continue; fi
-  if [ "$live" -lt "$WIDTH" ]; then wake "under width: live=$live < width=$WIDTH"; continue; fi
-  if [ "$hb_age" -gt "$HB_MAX" ] && [ "$live" -gt 0 ]; then
+  if [ -n "${new_ended// /}" ]; then
+    wake "lane(s) ended: ${new_ended}"
+  elif [ "$READINESS_STATE" = runnable ] && [ "$live" -lt "$WIDTH" ]; then
+    wake "under width with runnable work: live=$live < width=$WIDTH runnable=$READINESS_RUNNABLE"
+  elif [ "$hb_age" -gt "$HB_MAX" ] && [ "$live" -gt 0 ]; then
     wake "manager heartbeat stale (${hb_age}s) with $live live lanes"
+  elif { [ "$READINESS_STATE" = unknown ] || [ "$READINESS_STATE" = stale ]; } && [ "$readiness_changed" = 1 ]; then
+    wake "readiness $READINESS_STATE (runnable work cannot be determined)"
+  fi
+  if [ "$MAX_POLLS" -gt 0 ] && [ "$polls" -ge "$MAX_POLLS" ]; then
+    log "exit: max polls ($MAX_POLLS) reached"
+    exit 0
   fi
 done

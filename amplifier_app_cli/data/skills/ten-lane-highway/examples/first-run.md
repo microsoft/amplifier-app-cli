@@ -35,7 +35,8 @@ small enough to watch every moving part.
    Reply `go`. Nothing launched before this.
 
 4. **Saturate (Phase 4).** Two lanes come up — each a worktree + branch + tmux
-   session running `/goal` — then the **watchdog** starts on the `hw` tmux
+   session running `/goal` — then the **watchdog** starts on its isolated batch
+   tmux
    socket. Confirm with the status instrument: both lanes LIVE, watchdog LIVE,
    `DEFICIT=0`.
 
@@ -62,14 +63,17 @@ small enough to watch every moving part.
 ## Stop everything (panic button)
 
 ```bash
-# BATCH is the sanitized batch name (basename of BATCH_DIR, non-alnum → _)
-tmux -L hw kill-session -t "hw-watchdog__${BATCH}"        # the watchdog
-tmux -L hw list-sessions -F '#{session_name}' \
-  | grep "^hw__${BATCH}__" | xargs -r -n1 tmux -L hw kill-session -t   # lanes
+# BATCH is the sanitized batch name (basename of BATCH_DIR, non-alnum → _).
+# Every tmux call names this batch's private server, never the user's mux.
+HIGHWAY_TMUX_SOCKET="${HIGHWAY_TMUX_SOCKET:-hw-${BATCH}}"
+export HIGHWAY_TMUX_SOCKET
+tmux -L "$HIGHWAY_TMUX_SOCKET" kill-session -t "hw-watchdog__${BATCH}" # watchdog
+tmux -L "$HIGHWAY_TMUX_SOCKET" list-sessions -F '#{session_name}' \
+  | grep "^hw__${BATCH}__" | xargs -r -n1 tmux -L "$HIGHWAY_TMUX_SOCKET" kill-session -t # lanes
 infra_ledger.sh "$BATCH_DIR" sweep    # tear down anything lanes stood up
 rm -rf "$BATCH_DIR"                   # worktrees, goals, HIGHWAY.md, logs
 ```
 
-All highway tmux commands use `-L hw` (the `HIGHWAY_TMUX_SOCKET`, default `hw`),
-so a stray `tmux kill-server` on the default socket never touches the highway,
-and this never touches your other tmux work.
+All highway tmux commands use the explicitly named `-L "$HIGHWAY_TMUX_SOCKET"`
+(default `hw-<sanitized-batch>`), so a stray `tmux kill-server` on the default
+socket never touches the highway, and one batch cannot touch another's lanes.

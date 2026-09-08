@@ -36,7 +36,7 @@ row=$(awk -F'\t' -v l="$LANE" 'NR>1 && $1==l' "$MANIFEST" || true)
 IFS=$'\t' read -r lane wt branch base tmuxn goal log ts <<< "$row"
 
 echo "== lane=$lane branch=$branch base=${base:0:8} wt=$wt"
-if tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "$tmuxn" 2>/dev/null; then
+if tmux -L "$HIGHWAY_TMUX_SOCKET" has-session -t "=$tmuxn" 2>/dev/null; then
   echo "TMUX: LIVE (still running - do NOT merge yet)"
 else
   echo "TMUX: ended"
