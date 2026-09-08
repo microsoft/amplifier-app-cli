@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # highway_status.sh — THE instrument. One call reports every lane AND computes the deficit.
 #
-# Usage: highway_status.sh BATCH_DIR WIDTH READY
+# Usage: highway_status.sh BATCH_DIR WIDTH [RUNNABLE]
 #   WIDTH  target lane count (the number written in HIGHWAY.md)
-#   READY  count of ready, unblocked work items (read it from the work queue and pass it)
+#   RUNNABLE optional fresh batch-runnable count to publish before reporting
 #
 # The deficit is COMPUTED HERE, BY CODE — never "noticed" by a model.
 #   deficit = min(READY, max(0, WIDTH - live))
@@ -30,7 +30,10 @@ export HIGHWAY_TMUX_SOCKET
 # ---------------------------------------------------------------------------
 
 WIDTH=${2:?WIDTH required}
-READY=${3:?READY required (ready unblocked work item count)}
+RUNNABLE=${3:-}
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=highway_readiness.sh
+source "$SCRIPT_DIR/highway_readiness.sh"
 
 MANIFEST="$BATCH_DIR/manifest.tsv"
 STALL_SECS=${HIGHWAY_STALL_SECS:-900}
@@ -53,6 +56,8 @@ fi
 # (stat -c %Y below is GNU/Linux; adjust for macOS if this ever travels.)
 BATCH=$(printf '%s' "$(basename "$BATCH_DIR")" | tr -c 'A-Za-z0-9_-' '_')
 [ -f "$MANIFEST" ] || { echo "ERROR: no manifest at $MANIFEST (launch_lane.sh creates it)" >&2; exit 1; }
+if [ -n "$RUNNABLE" ]; then readiness_publish "$BATCH_DIR" "$RUNNABLE"; fi
+readiness_load "$BATCH_DIR"
 
 now=$(date +%s)
 live=0; ended=0; done_n=0; stalled=0; gone=0; needs_mgr_n=0
@@ -190,21 +195,31 @@ fi
 # ---------------------------------------------------------------------------
 
 open=$(( WIDTH - live )); if [ "$open" -lt 0 ]; then open=0; fi
-if [ "$READY" -lt "$open" ]; then deficit=$READY; else deficit=$open; fi
+if [ "$READINESS_STATE" = runnable ] || [ "$READINESS_STATE" = drained ]; then
+  READY=$READINESS_RUNNABLE
+  if [ "$READY" -lt "$open" ]; then deficit=$READY; else deficit=$open; fi
+  ready_json=$READY
+  deficit_json=$deficit
+else
+  READY=UNKNOWN
+  deficit=UNKNOWN
+  ready_json=null
+  deficit_json=null
+fi
 
 if [ "$JSON" = 1 ]; then
   # The owner list is ledger-derived text landing inside a JSON string; keep it
   # to characters that cannot terminate one.
   oo=$(printf '%s' "$orphan_owners" | tr -c 'A-Za-z0-9_,()<>.:-' '_')
-  printf '{"ts":"%s","batch":"%s","live":%d,"ended":%d,"done_marker":%d,"stalled":%d,"needs_manager":%d,"gone":%d,"width":%d,"width_source":"%s","ready":%d,"deficit":%d,"watchdog":"%s","orphan_rows":%d,"orphan_owners":"%s"}\n' \
-    "$(date -u +%FT%TZ)" "$BATCH" "$live" "$ended" "$done_n" "$stalled" "$needs_mgr_n" "$gone" "$WIDTH" "$width_source" "$READY" "$deficit" "$wd_st" "$orphan_rows" "$oo"
+  printf '{"ts":"%s","batch":"%s","live":%d,"ended":%d,"done_marker":%d,"stalled":%d,"needs_manager":%d,"gone":%d,"width":%d,"width_source":"%s","readiness":"%s","readiness_age_seconds":%s,"ready":%s,"deficit":%s,"watchdog":"%s","orphan_rows":%d,"orphan_owners":"%s"}\n' \
+    "$(date -u +%FT%TZ)" "$BATCH" "$live" "$ended" "$done_n" "$stalled" "$needs_mgr_n" "$gone" "$WIDTH" "$width_source" "$READINESS_STATE" "${READINESS_AGE_SECONDS:-null}" "$ready_json" "$deficit_json" "$wd_st" "$orphan_rows" "$oo"
   exit 0
 fi
 
 echo
-echo "SUMMARY batch=$BATCH live=$live ended=$ended done_marker=$done_n stalled=$stalled needs_manager=$needs_mgr_n gone=$gone width=$WIDTH width_source=$width_source ready=$READY watchdog=$wd_st orphan_rows=$orphan_rows"
+echo "SUMMARY batch=$BATCH live=$live ended=$ended done_marker=$done_n stalled=$stalled needs_manager=$needs_mgr_n gone=$gone width=$WIDTH width_source=$width_source readiness=$READINESS_STATE readiness_age_seconds=${READINESS_AGE_SECONDS:--} ready=$READY watchdog=$wd_st orphan_rows=$orphan_rows"
 echo "DEFICIT=$deficit"
-if [ "$deficit" -gt 0 ]; then
+if [ "$deficit" != UNKNOWN ] && [ "$deficit" -gt 0 ]; then
   echo "ACTION: launch $deficit lane(s) NOW - refill before anything else."
 fi
 if [ "$needs_mgr_n" -gt 0 ]; then

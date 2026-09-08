@@ -43,9 +43,9 @@ New to the highway? Do a throwaway run first — a scratch repo you can break,
 **width 2**. Invoke `/highway` with a small outcome + that repo + "width 2";
 approve at the Phase 3 gate (nothing launches before you say go); then watch
 **gate → 2 lanes → watchdog → merges**, refilling until the queue drains. Stop
-everything with `tmux -L hw kill-session -t hw-watchdog__<batch>` (plus any
-`hw__<batch>__*` lane sessions), then delete `BATCH_DIR`. Full command sequence
-and expected output: `examples/first-run.md`.
+everything through the batch's explicit `HIGHWAY_TMUX_SOCKET` (default
+`hw-<sanitized-batch>`), then delete `BATCH_DIR`. Full command sequence and
+expected output: `examples/first-run.md`.
 
 ## You are the Highway Manager — a strategist, not an intake clerk
 
@@ -85,7 +85,8 @@ repo** (a real run left `.amplifier/bin/` behind as untracked pollution).
 
 | Script | Job | Rule it mechanizes |
 |---|---|---|
-| `highway_status.sh BATCH_DIR WIDTH READY` | ONE call reports every lane + watchdog liveness and **computes DEFICIT by code** | "Keep lanes full" stopped being prose the day a run sat at 1 lane with work for 10 |
+| `highway_readiness.sh publish BATCH_DIR RUNNABLE` | Atomically publishes the manager's current batch-runnable count | The watchdog must not mistake unused capacity for work to invent |
+| `highway_status.sh BATCH_DIR WIDTH [RUNNABLE]` | ONE call reports every lane + watchdog liveness and **computes DEFICIT by code** from shared readiness | "Keep lanes full" stopped being prose the day a run sat at 1 lane with work for 10 |
 | `launch_lane.sh BATCH_DIR LANE REPO GOAL [BASE_REF]` | Worktree + branch + tmux + `/goal` session, idempotent; the ONLY writer of `manifest.tsv` | Hand-written manifests diverged on column count and broke a real batch |
 | `verify_lane.sh BATCH_DIR LANE` | Git-facts probe for one landed lane (DONE.json, ahead-count, three-dot diffstat, uncommitted work) | "Ground truth from git and the filesystem, not from what any session said about itself" |
 | `highway_watchdog.sh BATCH_DIR WIDTH SESSION_ID [INTERVAL] [MAX_HOURS]` | Detached tmux loop that re-wakes THIS session (`amplifier run --resume`) on lane-end / under-width / stale heartbeat | The highway once froze overnight because the manager stopped monitoring the moment it reported status |
@@ -140,7 +141,8 @@ State lives in `BATCH_DIR` (create one per highway, e.g. `~/dev/hw-<name>`):
 `manifest.tsv` (scripts write), `HIGHWAY.md` (you write), `goals/` (pre-composed
 goal files), `lanes/` (worktrees), `.width` (authoritative width), `infra.tsv`
 (the infra ledger), `infra.owners.tsv` (which lane claimed which row),
-`.manager-heartbeat`, `wake-needed`, `watchdog.log`.
+`.manager-heartbeat`, `.runnable-work` (an atomic batch-runnable snapshot),
+`wake-needed`, `watchdog.log`.
 
 ## Phase 1 — Intake
 
@@ -232,23 +234,32 @@ not depend on context:
 printf '%s\n' "<SESSION_ID>" > <BATCH_DIR>/.session-id
 printf '%s\n' "<WIDTH>" > <BATCH_DIR>/.width   # authoritative width — the single
                                                # source of truth the scripts read
+# Publish the manager's verified batch-runnable count before the watchdog can
+# decide whether unused capacity needs attention. This is not raw tracker-ready:
+# exclude conflicts, dependencies, and work without a pre-composed goal.
+<skill_directory>/scripts/highway_readiness.sh publish <BATCH_DIR> <RUNNABLE>
 touch <BATCH_DIR>/.manager-heartbeat   # BEFORE the watchdog starts, so it never
                                         # sees an absent heartbeat and wakes a
                                         # concurrent instance mid-saturation
 BATCH=$(printf '%s' "$(basename <BATCH_DIR>)" | tr -c 'A-Za-z0-9_-' '_')   # same sanitization the scripts use
-tmux -L hw new-session -d -s "hw-watchdog__${BATCH}" \
+HIGHWAY_TMUX_SOCKET="${HIGHWAY_TMUX_SOCKET:-hw-${BATCH}}"
+export HIGHWAY_TMUX_SOCKET
+tmux -L "$HIGHWAY_TMUX_SOCKET" new-session -d -s "hw-watchdog__${BATCH}" \
   "<skill_directory>/scripts/highway_watchdog.sh <BATCH_DIR> <WIDTH> <SESSION_ID> 300 12 2>&1 | tee -a <BATCH_DIR>/watchdog.log"
 ```
 Then touch `<BATCH_DIR>/.manager-heartbeat` again at the start of every Phase 5
 cycle (step 1) and after each merge, so the watchdog defers while your turn is
 active and only takes over once you have genuinely gone idle.
 
-**Width, the tmux socket, and escalation.** `<BATCH_DIR>/.width` is the single
+**Width, readiness, the tmux socket, and escalation.** `<BATCH_DIR>/.width` is the single
 source of truth for the target lane count (the scripts read it there); changing
 width mid-run is an explicit act — **edit `<BATCH_DIR>/.width` AND log it in the
 weave-in log**, nothing else moves width. Every highway tmux command runs on the
-socket `HIGHWAY_TMUX_SOCKET` (default `hw`) — hence the `-L hw` above and on the
-Phase 7 kill. A wake whose prompt begins `HIGHWAY ESCALATION` means go straight
+per-batch socket `HIGHWAY_TMUX_SOCKET` (default `hw-<sanitized-batch>`) — hence
+the explicit `-L "$HIGHWAY_TMUX_SOCKET"` above and on the Phase 7 kill. The
+manager publishes its current batch-runnable count through `highway_readiness.sh`;
+`drained` means zero fresh runnable work, while `unknown` or `stale` readiness is
+never a zero and must be investigated. A wake whose prompt begins `HIGHWAY ESCALATION` means go straight
 to Phase 6 and lead with `NEEDS YOU:`; the watchdog stays alive throughout.
 
 Verify launch: run `highway_status.sh` once — every lane LIVE past its first
@@ -272,8 +283,12 @@ capacity 135–286s while 15–20 items waited. That is the exact failure this
 invariant exists to prevent.)
 
 1. `touch $BATCH_DIR/.manager-heartbeat`.
-2. Get READY (count of ready, unblocked items) from the work queue.
-3. **Run `highway_status.sh BATCH_DIR WIDTH READY` and paste its output.**
+2. Get RUNNABLE (the batch's ready, dependency-clear, non-conflicting items with
+   pre-composed goals) from the work queue and current lane board.
+3. **Run `highway_status.sh BATCH_DIR WIDTH RUNNABLE` and paste its output.**
+   This atomically refreshes `.runnable-work`; use
+   `highway_readiness.sh publish BATCH_DIR RUNNABLE` when publishing without a
+   status report.
 4. **If `DEFICIT>0`: refill FIRST** — before merging, before reporting, before
    anything. Pick the top-priority ready items (strategist's choice) and
    `launch_lane.sh` each from its pre-composed `BATCH_DIR/goals/` file — refill
@@ -313,7 +328,7 @@ invariant exists to prevent.)
    context_depth="none", model_role="fast")` — with an instruction that
    includes ALL of:
    - the exact loop: sleep `<interval>`, then ONE
-     `highway_status.sh <BATCH_DIR> <WIDTH> <READY>` call, repeat up to N times;
+     `highway_status.sh <BATCH_DIR> <WIDTH> <RUNNABLE>` call, repeat up to N times;
    - **SEQUENTIAL-ONLY — never issue checks in parallel** (a batched watcher
      once issued 15 simultaneous checks sampling the same instant and
      reported success);
@@ -350,7 +365,8 @@ until morning. Before ANY turn-ending message while lanes run:
    `DONE:` / `NEEDS YOU:` / `PAUSED:` / or a one-line highway status — because
    the notification renders from those characters.
 
-The watchdog will re-wake you on lane-end, under-width, or stale heartbeat;
+The watchdog will re-wake you on lane-end, fresh runnable work under width, or
+stale heartbeat with live lanes; each wake runs Phase 5.
 each wake runs Phase 5.
 
 ## Phase 7 — Close the highway
@@ -379,7 +395,7 @@ is the manager's batch-close override; without it `sweep` refuses (exit 3) the
 moment the open rows span more than one lane, which is the guard that stops a
 lane from destroying its neighbours' infrastructure. Kill the
 watchdog by the exact name `highway_status.sh` reports
-(`tmux -L hw kill-session -t <wd_name>`). **Archive
+(`tmux -L "$HIGHWAY_TMUX_SOCKET" kill-session -t <wd_name>`). **Archive
 the per-lane evidence BEFORE pruning** — pruning the lane dirs otherwise deletes
 `lane.log` and the markers with them:
 ```bash
