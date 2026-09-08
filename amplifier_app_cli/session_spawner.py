@@ -20,6 +20,139 @@ from .agent_config import merge_configs
 
 logger = logging.getLogger(__name__)
 
+BASE_SYSTEM_PROMPT_BUILDER_CAPABILITY = "session.base_system_prompt_builder"
+BASE_SYSTEM_PROMPT_BUILDER_ERROR_CAPABILITY = (
+    "session.base_system_prompt_builder_error"
+)
+SYSTEM_PROMPT_SNAPSHOT_KEY = "base-prompt-snapshot"
+SYSTEM_PROMPT_SNAPSHOT_SCHEMA = 1
+
+
+def _prepared_bundle_has_system_prompt_source(prepared_bundle: Any) -> bool:
+    """Match foundation's factory-registration eligibility without rendering."""
+    bundle = getattr(prepared_bundle, "bundle", None)
+    return bool(
+        bundle
+        and (
+            getattr(bundle, "instruction", None)
+            or getattr(bundle, "context", None)
+            or getattr(bundle, "_pending_context", None)
+        )
+    )
+
+
+def register_base_system_prompt_builder(
+    session: "AmplifierSession", prepared_bundle: Any
+) -> None:
+    """Register a clean root-prompt builder without retaining parent context."""
+    if not _prepared_bundle_has_system_prompt_source(prepared_bundle):
+        return
+
+    if not callable(
+        getattr(prepared_bundle, "create_system_prompt_factory", None)
+    ):
+        session.coordinator.register_capability(
+            BASE_SYSTEM_PROMPT_BUILDER_ERROR_CAPABILITY,
+            "Self delegation requires amplifier-foundation with the public "
+            "PreparedBundle.create_system_prompt_factory API because this root "
+            "bundle has prompt sources. Upgrade amplifier-foundation, then start "
+            "a new self delegation.",
+        )
+        return
+
+    def build_for(target_session: "AmplifierSession"):
+        target_cwd = target_session.coordinator.get_capability("session.working_dir")
+        return prepared_bundle.create_system_prompt_factory(
+            target_session,
+            session_cwd=Path(target_cwd) if target_cwd else None,
+        )
+
+    session.coordinator.register_capability(
+        BASE_SYSTEM_PROMPT_BUILDER_CAPABILITY, build_for
+    )
+
+
+def _get_self_base_prompt_builder(parent_session: "AmplifierSession"):
+    """Return the safe builder or fail when a source-bearing root lacks its API."""
+    builder = parent_session.coordinator.get_capability(
+        BASE_SYSTEM_PROMPT_BUILDER_CAPABILITY
+    )
+    if callable(builder):
+        return builder
+
+    error = parent_session.coordinator.get_capability(
+        BASE_SYSTEM_PROMPT_BUILDER_ERROR_CAPABILITY
+    )
+    if error:
+        raise RuntimeError(str(error))
+    return None
+
+
+def _load_system_prompt_snapshot(metadata: dict[str, Any]) -> str:
+    """Return a valid persisted snapshot, never a guessed reconstruction."""
+    persisted_snapshot = metadata.get(SYSTEM_PROMPT_SNAPSHOT_KEY)
+    if (
+        isinstance(persisted_snapshot, dict)
+        and persisted_snapshot.get("schema") == SYSTEM_PROMPT_SNAPSHOT_SCHEMA
+        and isinstance(persisted_snapshot.get("content"), str)
+        and persisted_snapshot["content"]
+    ):
+        return persisted_snapshot["content"]
+    return ""
+
+
+def _register_frozen_base_system_prompt_builder(
+    session: "AmplifierSession", snapshot: str
+) -> None:
+    """Let nested self-delegation reuse an immutable resolved base prompt."""
+
+    def build_for(_target_session: "AmplifierSession"):
+        async def factory() -> str:
+            return snapshot
+
+        return factory
+
+    session.coordinator.register_capability(
+        BASE_SYSTEM_PROMPT_BUILDER_CAPABILITY, build_for
+    )
+
+
+async def _install_frozen_system_prompt(context: Any, snapshot: str) -> bool:
+    """Install a frozen base prompt without importing any parent factory."""
+    if not snapshot:
+        return False
+    if hasattr(context, "set_system_prompt_factory"):
+        async def factory() -> str:
+            return snapshot
+
+        await context.set_system_prompt_factory(factory)
+        return True
+    if hasattr(context, "add_message"):
+        await context.add_message({"role": "system", "content": snapshot})
+        return True
+    return False
+
+
+async def _expand_system_instruction(
+    instruction: str, child_session: "AmplifierSession"
+) -> str:
+    """Expand one source using state local to the child and this source."""
+    resolver = child_session.coordinator.get_capability("mention_resolver")
+    if resolver is None:
+        return instruction
+
+    from amplifier_foundation.mentions import ContentDeduplicator
+    from amplifier_foundation.mentions import expand_mentions_in_instruction
+
+    working_dir = child_session.coordinator.get_capability("session.working_dir")
+    return await expand_mentions_in_instruction(
+        instruction,
+        resolver=resolver,
+        # Persona and task text must not deduplicate one another.
+        deduplicator=ContentDeduplicator(),
+        relative_to=Path(working_dir) if working_dir else Path.cwd(),
+    )
+
 
 # =============================================================================
 # Partial-output preservation for delegates that never finish
@@ -978,6 +1111,12 @@ async def spawn_sub_session(
     if use_subprocess or spawn_mode == "subprocess":
         from amplifier_foundation.subprocess_runner import run_session_in_subprocess
 
+        if agent_name == "self":
+            logger.warning(
+                "Self-delegated subprocess %s cannot inherit the in-process base "
+                "system prompt; preserving legacy subprocess dispatch.",
+                sub_session_id,
+            )
         project_path = str(
             parent_session.coordinator.get_capability("session.working_dir")
             or Path.cwd()
@@ -1039,6 +1178,13 @@ async def spawn_sub_session(
             "turn_count": 1,
             "metadata": {},
         }
+
+    self_base_prompt_builder = None
+    if agent_name == "self":
+        # A source-bearing root without the public Foundation factory must
+        # refuse before creating a child. A no-source root intentionally has
+        # neither capability and preserves its ordinary child behavior.
+        self_base_prompt_builder = _get_self_base_prompt_builder(parent_session)
 
     # Create child session with parent_id and inherited UX systems (kernel mechanism)
     # NOTE: We intentionally do NOT share parent's loader here.
@@ -1185,19 +1331,12 @@ async def spawn_sub_session(
             "mention_resolver", AppMentionResolver()
         )
 
-    # Mention deduplicator - inherit from parent to preserve session-wide deduplication state
-    parent_deduplicator = parent_session.coordinator.get_capability(
-        "mention_deduplicator"
+    # A child must not reuse the parent's deduplicator.  Persona and task
+    # expansion use distinct fresh instances below, and the capability remains
+    # child-owned for consumers that need one.
+    child_session.coordinator.register_capability(
+        "mention_deduplicator", ContentDeduplicator()
     )
-    if parent_deduplicator:
-        child_session.coordinator.register_capability(
-            "mention_deduplicator", parent_deduplicator
-        )
-    else:
-        # Fallback to fresh deduplicator if parent doesn't have one
-        child_session.coordinator.register_capability(
-            "mention_deduplicator", ContentDeduplicator()
-        )
 
     # Routing capability — inherit so child's hooks-routing can compose runtime overrides.
     # When the parent has a session.routing capability (registered by the routing-matrix
@@ -1289,45 +1428,43 @@ async def spawn_sub_session(
         register_provider_fn(approval_provider)
         logger.debug(f"Registered approval provider for child session {sub_session_id}")
 
-    # Inject agent's system instruction
-    # Check top-level instruction first (from agent .md file body), then nested system.instruction
+    # Render exactly one immutable base prompt AFTER child initialization and
+    # child-owned cwd/mention capabilities are ready.  Never await or copy the
+    # parent's installed factory: hooks may have wrapped it with parent-specific
+    # status/routing/skills state.
     system_instruction = agent_config.get("instruction") or agent_config.get(
         "system", {}
     ).get("instruction")
+    base_prompt_snapshot = ""
     if system_instruction:
         context = child_session.coordinator.get("context")
-        # Expand @-mentions in the agent body before injecting as system message.
-        # Content lands inline as <context_file> XML blocks prepended to the instruction.
-        _resolver = child_session.coordinator.get_capability("mention_resolver")
-        if _resolver is not None:
-            from amplifier_foundation.mentions import expand_mentions_in_instruction
-
-            _deduplicator = child_session.coordinator.get_capability(
-                "mention_deduplicator"
+        base_prompt_snapshot = await _expand_system_instruction(
+            system_instruction, child_session
+        )
+    elif agent_name == "self":
+        if self_base_prompt_builder is not None:
+            child_factory = self_base_prompt_builder(child_session)
+            base_prompt_snapshot = await child_factory()
+        else:
+            logger.warning(
+                "Self-delegated child %s has no reconstructable base-prompt "
+                "builder; preserving existing child context behavior without "
+                "installing an empty system-prompt factory.",
+                sub_session_id,
             )
-            _wd = child_session.coordinator.get_capability("session.working_dir")
-            _rel_to = Path(_wd) if _wd else Path.cwd()
-            system_instruction = await expand_mentions_in_instruction(
-                system_instruction,
-                resolver=_resolver,
-                deduplicator=_deduplicator,
-                relative_to=_rel_to,
+
+    if base_prompt_snapshot:
+        context = child_session.coordinator.get("context")
+        if await _install_frozen_system_prompt(context, base_prompt_snapshot):
+            _register_frozen_base_system_prompt_builder(
+                child_session, base_prompt_snapshot
             )
-        if context and hasattr(context, "set_system_prompt_factory"):
-            # Register a factory rather than a static system message so
-            # hooks that compose onto the system prompt (e.g. the skills
-            # visibility hook's "prefix" placement) have a surface to wrap.
-            # Without this, those hooks fall back to re-injecting their
-            # content on every provider:request, outside the cached prefix.
-            # Mirrors amplifier-foundation _prepared.py spawn path.
-            _resolved_system_instruction = system_instruction
-
-            async def _system_prompt_factory() -> str:
-                return _resolved_system_instruction
-
-            await context.set_system_prompt_factory(_system_prompt_factory)
-        elif context and hasattr(context, "add_message"):
-            await context.add_message({"role": "system", "content": system_instruction})
+        else:
+            logger.warning(
+                "Child %s has no system-prompt installation surface; resolved "
+                "base prompt will not be installed.",
+                sub_session_id,
+            )
 
     # Register temporary hook to capture orchestrator:complete data
     # This gives us status, turn_count, and metadata from the orchestrator
@@ -1355,21 +1492,7 @@ async def spawn_sub_session(
     # Expand @-mentions in delegation instruction before executing.
     # Content lands inline as <context_file> XML blocks prepended to the instruction.
     if instruction:
-        _instr_resolver = child_session.coordinator.get_capability("mention_resolver")
-        if _instr_resolver is not None:
-            from amplifier_foundation.mentions import expand_mentions_in_instruction
-
-            _instr_dedup = child_session.coordinator.get_capability(
-                "mention_deduplicator"
-            )
-            _instr_wd = child_session.coordinator.get_capability("session.working_dir")
-            _instr_rel = Path(_instr_wd) if _instr_wd else Path.cwd()
-            instruction = await expand_mentions_in_instruction(
-                instruction,
-                resolver=_instr_resolver,
-                deduplicator=_instr_dedup,
-                relative_to=_instr_rel,
-            )
+        instruction = await _expand_system_instruction(instruction, child_session)
 
     # ---------------------------------------------------------------------
     # Build persistence state BEFORE execute()
@@ -1412,6 +1535,13 @@ async def spawn_sub_session(
         # Store working_dir for session sync between CLI and web
         "working_dir": str(Path.cwd().resolve()),
     }
+    # This persistence metadata is intentionally outside config/session
+    # metadata, so it is never emitted through kernel telemetry.
+    if base_prompt_snapshot:
+        metadata[SYSTEM_PROMPT_SNAPSHOT_KEY] = {
+            "schema": SYSTEM_PROMPT_SNAPSHOT_SCHEMA,
+            "content": base_prompt_snapshot,
+        }
 
     store = SessionStore()
     unregister_checkpoint = await _install_transcript_checkpoint(
@@ -1678,6 +1808,17 @@ async def resume_sub_session(
             f"Corrupted session metadata for '{sub_session_id}'. Cannot reconstruct session without config."
         )
 
+    parent_id = metadata.get("parent_id")
+    agent_name = metadata.get("agent_name", "unknown")
+    trace_id = metadata.get("trace_id")
+    if agent_name == "self" and not _load_system_prompt_snapshot(metadata):
+        raise RuntimeError(
+            f"Cannot resume self-delegated sub-session '{sub_session_id}': its "
+            "persisted base-prompt snapshot is missing or invalid, so its "
+            "historical root identity cannot be reconstructed safely. Start a "
+            "new self delegation instead."
+        )
+
     # --- Credential refresh ---------------------------------------------------
     # On-disk metadata has secrets (provider api_keys, and hook/destination
     # secrets like the context-intelligence hook's private destination
@@ -1831,10 +1972,6 @@ async def resume_sub_session(
                 _REDACTION_SENTINEL,
                 _redacted_paths,
             )
-
-    parent_id = metadata.get("parent_id")
-    agent_name = metadata.get("agent_name", "unknown")
-    trace_id = metadata.get("trace_id")
 
     # --- Rebuild the provider promotion --------------------------------------
     # The spawn path applies model_role/provider_preferences here (see
@@ -2145,77 +2282,48 @@ async def resume_sub_session(
         if _promotion_fallback:
             await hooks.emit("provider:fallback", _promotion_fallback)
 
-    # Re-register the agent's system prompt on resume.
-    #
-    # Mirrors the spawn path (see the "Inject agent's system instruction"
-    # block above, ~line 764). That block registers the system instruction
-    # via context.set_system_prompt_factory() rather than a persisted
-    # message: context-simple builds the system message into a per-request
-    # COPY and never writes it into self.messages, so it is never present in
-    # the saved transcript. SessionStore._save_transcript also explicitly
-    # skips system/developer role messages when persisting, so this holds
-    # even for a context module using the add_message() fallback below.
-    #
-    # Restoring the transcript alone (next block) therefore restores ZERO
-    # system-role messages -- every subsequent request on a resumed
-    # sub-session ran with no system prompt at all, and omitting it on a
-    # chained request CLEARS the provider's server-held prompt rather than
-    # preserving it. Recover the same instruction the original spawn used
-    # and re-register it through the same mechanism.
+    # Restore the resolved frozen snapshot first.  Old named children did not
+    # persist one, so retain their overlay/config reconstruction fallback.
+    # Do not manufacture an empty factory: a legacy static context may still
+    # provide a system message outside the unavailable reconstruction source.
     context = child_session.coordinator.get("context")
-    agent_overlay = metadata.get("agent_overlay") or {}
-    resume_system_instruction = agent_overlay.get("instruction") or agent_overlay.get(
-        "system", {}
-    ).get("instruction")
-    if not resume_system_instruction:
-        # Fallback for metadata saved before agent_overlay existed, or an
-        # empty inherit-as-is overlay: recover the declaration from the
-        # merged config's own agents map, keyed by agent_name.
-        _resume_agents_cfg = merged_config.get("agents") or {}
-        _resume_agent_decl = _resume_agents_cfg.get(agent_name) or {}
-        resume_system_instruction = _resume_agent_decl.get(
+    resume_base_prompt = _load_system_prompt_snapshot(metadata)
+    if not resume_base_prompt and agent_name != "self":
+        agent_overlay = metadata.get("agent_overlay") or {}
+        resume_system_instruction = agent_overlay.get(
             "instruction"
-        ) or _resume_agent_decl.get("system", {}).get("instruction")
-
-    if resume_system_instruction:
-        # Expand @-mentions exactly like the spawn path does, using the
-        # just-restored resolver/deduplicator/working_dir capabilities.
-        _resume_sys_resolver = child_session.coordinator.get_capability(
-            "mention_resolver"
-        )
-        if _resume_sys_resolver is not None:
-            from amplifier_foundation.mentions import expand_mentions_in_instruction
-
-            _resume_sys_dedup = child_session.coordinator.get_capability(
-                "mention_deduplicator"
+        ) or agent_overlay.get("system", {}).get("instruction")
+        if not resume_system_instruction:
+            _resume_agents_cfg = merged_config.get("agents") or {}
+            _resume_agent_decl = _resume_agents_cfg.get(agent_name) or {}
+            resume_system_instruction = _resume_agent_decl.get(
+                "instruction"
+            ) or _resume_agent_decl.get("system", {}).get("instruction")
+        if resume_system_instruction:
+            resume_base_prompt = await _expand_system_instruction(
+                resume_system_instruction, child_session
             )
-            _resume_sys_wd = child_session.coordinator.get_capability(
-                "session.working_dir"
-            )
-            _resume_sys_rel = Path(_resume_sys_wd) if _resume_sys_wd else Path.cwd()
-            resume_system_instruction = await expand_mentions_in_instruction(
-                resume_system_instruction,
-                resolver=_resume_sys_resolver,
-                deduplicator=_resume_sys_dedup,
-                relative_to=_resume_sys_rel,
-            )
-        if context and hasattr(context, "set_system_prompt_factory"):
-            _resolved_resume_system_instruction = resume_system_instruction
+            metadata[SYSTEM_PROMPT_SNAPSHOT_KEY] = {
+                "schema": SYSTEM_PROMPT_SNAPSHOT_SCHEMA,
+                "content": resume_base_prompt,
+            }
 
-            async def _resume_system_prompt_factory() -> str:
-                return _resolved_resume_system_instruction
-
-            await context.set_system_prompt_factory(_resume_system_prompt_factory)
-        elif context and hasattr(context, "add_message"):
-            await context.add_message(
-                {"role": "system", "content": resume_system_instruction}
+    if resume_base_prompt:
+        if await _install_frozen_system_prompt(context, resume_base_prompt):
+            _register_frozen_base_system_prompt_builder(
+                child_session, resume_base_prompt
+            )
+        else:
+            logger.warning(
+                "Resumed sub-session %s has no system-prompt installation "
+                "surface; resolved base prompt will not be installed.",
+                sub_session_id,
             )
     else:
         logger.warning(
-            "Sub-session %s (agent=%s): no system instruction recoverable from "
-            "persisted metadata (agent_overlay / config.agents) on resume. "
-            "This resumed session will run WITHOUT a system prompt for all "
-            "subsequent requests -- proceeding with resume anyway.",
+            "Sub-session %s (agent=%s): no persisted base-prompt snapshot or "
+            "legacy named instruction is reconstructable. Preserving existing "
+            "context behavior without installing an empty system-prompt factory.",
             sub_session_id,
             agent_name,
         )
@@ -2268,21 +2376,7 @@ async def resume_sub_session(
     # Expand @-mentions in the resumed instruction (consistent with spawn path).
     # Content lands inline as <context_file> XML blocks prepended to the instruction.
     if instruction:
-        _resume_resolver = child_session.coordinator.get_capability("mention_resolver")
-        if _resume_resolver is not None:
-            from amplifier_foundation.mentions import expand_mentions_in_instruction
-
-            _resume_dedup = child_session.coordinator.get_capability(
-                "mention_deduplicator"
-            )
-            _resume_wd = child_session.coordinator.get_capability("session.working_dir")
-            _resume_rel = Path(_resume_wd) if _resume_wd else Path.cwd()
-            instruction = await expand_mentions_in_instruction(
-                instruction,
-                resolver=_resume_resolver,
-                deduplicator=_resume_dedup,
-                relative_to=_resume_rel,
-            )
+        instruction = await _expand_system_instruction(instruction, child_session)
 
     # Checkpoint the transcript DURING the run so a wall-clock timeout on this
     # resume does not discard the turn (same defect, same fix, as the spawn

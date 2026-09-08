@@ -34,6 +34,9 @@ from unittest.mock import patch
 
 import pytest
 from amplifier_app_cli.session_spawner import resume_sub_session
+from amplifier_app_cli.session_spawner import BASE_SYSTEM_PROMPT_BUILDER_CAPABILITY
+from amplifier_app_cli.session_spawner import SYSTEM_PROMPT_SNAPSHOT_KEY
+from amplifier_app_cli.session_spawner import SYSTEM_PROMPT_SNAPSHOT_SCHEMA
 from amplifier_app_cli.session_store import SessionStore
 
 pytestmark = pytest.mark.anyio
@@ -105,7 +108,7 @@ def _base_metadata(session_id: str, **overrides) -> dict:
 
 async def _resume_with_fake_context(
     fake_context, session_id: str, instruction: str = "follow-up"
-) -> None:
+) -> dict:
     """Run resume_sub_session() against a fully mocked AmplifierSession.
 
     `fake_context` is wired in as the resumed session's "context" capability
@@ -118,7 +121,10 @@ async def _resume_with_fake_context(
         return None
 
     mock_coordinator = MagicMock()
-    mock_coordinator.register_capability = MagicMock()
+    registered_capabilities = {}
+    mock_coordinator.register_capability = MagicMock(
+        side_effect=lambda name, value: registered_capabilities.setdefault(name, value)
+    )
     # mention_resolver intentionally returns None: the mention-expansion
     # branch (both for the follow-up instruction AND the system instruction)
     # is exercised elsewhere (test_session_spawner.py); returning None here
@@ -141,6 +147,7 @@ async def _resume_with_fake_context(
             with patch("amplifier_app_cli.ui.CLIDisplaySystem"):
                 with patch("amplifier_app_cli.paths.create_foundation_resolver"):
                     await resume_sub_session(session_id, instruction)
+    return registered_capabilities
 
 
 class TestResumeSystemPromptReinjection:
@@ -243,6 +250,78 @@ class TestResumeSystemPromptReinjection:
         assert fake_context.factory is not None
         produced = await fake_context.factory()
         assert SENTINEL_INSTRUCTION in produced
+
+    async def test_resume_snapshot_wins_over_legacy_named_instruction(
+        self, tmp_path, monkeypatch
+    ):
+        """A resolved snapshot preserves self identity without re-expanding."""
+        store = SessionStore()
+        session_id = "test-resume-frozen-base-snapshot"
+        metadata = _base_metadata(
+            session_id,
+            agent_name="self",
+            agent_overlay={"instruction": "LEGACY_NAMED_PERSONA"},
+            **{
+                SYSTEM_PROMPT_SNAPSHOT_KEY: {
+                    "schema": SYSTEM_PROMPT_SNAPSHOT_SCHEMA,
+                    "content": "ROOT_BASE_SNAPSHOT",
+                }
+            },
+        )
+        store.save(session_id, [], metadata)
+
+        fake_context = _FakeContextWithFactory()
+        registered_capabilities = await _resume_with_fake_context(
+            fake_context, session_id
+        )
+
+        assert fake_context.factory is not None
+        assert await fake_context.factory() == "ROOT_BASE_SNAPSHOT"
+        nested_factory = registered_capabilities[
+            BASE_SYSTEM_PROMPT_BUILDER_CAPABILITY
+        ](MagicMock())
+        assert await nested_factory() == "ROOT_BASE_SNAPSHOT"
+
+    @pytest.mark.parametrize("has_parent", [False, True])
+    @pytest.mark.parametrize(
+        "snapshot",
+        [
+            None,
+            {"schema": SYSTEM_PROMPT_SNAPSHOT_SCHEMA + 1, "content": "OLD_ROOT"},
+        ],
+    )
+    async def test_historic_self_without_valid_snapshot_refuses_before_child_creation(
+        self, tmp_path, monkeypatch, has_parent, snapshot
+    ):
+        """A current root must never supply identity to a historic self child."""
+        store = SessionStore()
+        session_id = "test-resume-historic-self-without-snapshot"
+        metadata = _base_metadata(session_id, agent_name="self", agent_overlay={})
+        if snapshot is not None:
+            metadata[SYSTEM_PROMPT_SNAPSHOT_KEY] = snapshot
+        store.save(session_id, [{"role": "user", "content": "saved turn"}], metadata)
+
+        child = MagicMock()
+        child.initialize = AsyncMock()
+        child.execute = AsyncMock()
+        child.cleanup = AsyncMock()
+        parent = MagicMock() if has_parent else None
+
+        with (
+            patch(
+                "amplifier_app_cli.session_spawner.AmplifierSession",
+                return_value=child,
+            ) as session_class,
+            pytest.raises(RuntimeError, match="Start a new self delegation"),
+        ):
+            await resume_sub_session(
+                session_id, "follow-up", parent_session=parent
+            )
+
+        session_class.assert_not_called()
+        child.initialize.assert_not_awaited()
+        child.execute.assert_not_awaited()
+        child.cleanup.assert_not_awaited()
 
     async def test_resume_with_no_recoverable_instruction_warns_but_succeeds(
         self, tmp_path, monkeypatch, caplog

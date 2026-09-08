@@ -574,7 +574,7 @@ async def _create_bundle_session(
     register_mention_handling(session)
 
     # Step 6: Register session spawning
-    register_session_spawning(session)
+    register_session_spawning(session, prepared_bundle=prepared_bundle)
 
     return session
 
@@ -604,7 +604,9 @@ def register_mention_handling(session: AmplifierSession) -> None:
     session.coordinator.register_capability("mention_resolver", mention_resolver)
 
 
-def register_session_spawning(session: AmplifierSession) -> None:
+def register_session_spawning(
+    session: AmplifierSession, prepared_bundle: Any | None = None
+) -> None:
     """Register session spawning capabilities for agent delegation.
 
     This is app-layer policy that enables kernel modules (like tool-task) to
@@ -619,7 +621,16 @@ def register_session_spawning(session: AmplifierSession) -> None:
 
     Args:
         session: The AmplifierSession to register capabilities on
+        prepared_bundle: Optional root PreparedBundle. When supplied, register
+            its clean public prompt-factory builder for in-process self
+            delegation before the standard spawning capabilities. Omitted for
+            backwards compatibility with external callers and child sessions.
     """
+    if prepared_bundle is not None:
+        from .session_spawner import register_base_system_prompt_builder
+
+        register_base_system_prompt_builder(session, prepared_bundle)
+
     from .session_spawner import get_partial_output
     from .session_spawner import resume_sub_session
     from .session_spawner import spawn_sub_session

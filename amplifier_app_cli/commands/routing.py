@@ -19,6 +19,7 @@ from amplifier_foundation.paths.resolution import get_amplifier_home
 from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
 from ..lib.routing_provenance import resolve_matrix_origins, resolve_winning_paths
 from ..lib.settings import AppSettings, Scope, get_custom_routing_dir
+from ..provider_config_utils import _should_show_field
 from ..provider_loader import get_provider_info, get_provider_models
 from ..provider_manager import resolve_provider_entry
 from ..ui.item_renderer import ItemRenderer
@@ -1671,21 +1672,11 @@ def _edit_role(
             description = field_dict.get("description", "")
 
             # Check show_when conditions (simple key=value evaluation)
-            show_when = field_dict.get("show_when")
-            if show_when:
-                should_show = True
-                for sw_key, sw_val in show_when.items():
-                    current_val = str(candidate_config.get(sw_key, ""))
-                    if sw_val.startswith("contains:"):
-                        if sw_val[9:] not in current_val:
-                            should_show = False
-                    elif sw_val.startswith("not_contains:"):
-                        if sw_val[13:] in current_val:
-                            should_show = False
-                    elif current_val != sw_val:
-                        should_show = False
-                if not should_show:
-                    continue
+            # The selected model lives alongside config in a routing candidate,
+            # but model-dependent fields still need it to evaluate show_when.
+            predicate_context = {**candidate_config, "default_model": selected_model}
+            if not _should_show_field(field_dict, predicate_context):
+                continue
 
             try:
                 if description:

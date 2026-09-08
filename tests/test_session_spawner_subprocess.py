@@ -9,10 +9,12 @@ Also verifies spawn_mode is stripped from child config before passing to subproc
 """
 
 import sys
+import logging
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from amplifier_app_cli.session_spawner import spawn_sub_session
 
 # Configure anyio for async tests (asyncio backend only)
 pytestmark = pytest.mark.anyio
@@ -122,6 +124,28 @@ class TestSubprocessRouting:
         assert result["status"] == "success"
         assert result["turn_count"] == 1
         assert result["metadata"] == {}
+
+    async def test_self_subprocess_warns_that_base_prompt_cannot_inherit(
+        self, monkeypatch, caplog
+    ):
+        """Subprocess dispatch remains legacy, with a self-specific limitation."""
+        parent = _make_parent_session()
+        fake_module = _make_subprocess_runner_module()
+        monkeypatch.setitem(
+            sys.modules, "amplifier_foundation.subprocess_runner", fake_module
+        )
+
+        with caplog.at_level(logging.WARNING):
+            await spawn_sub_session(
+                agent_name="self",
+                instruction="Do something",
+                parent_session=parent,
+                agent_configs={},
+                sub_session_id="self-subprocess-id",
+                use_subprocess=True,
+            )
+
+        assert "cannot inherit the in-process base system prompt" in caplog.text
 
     async def test_live_registry_agents_propagate_to_subprocess_config(
         self, monkeypatch
