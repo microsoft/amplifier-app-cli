@@ -12,11 +12,11 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Callable
+from copy import copy
 from typing import TYPE_CHECKING
-from typing import Callable
 
-from amplifier_foundation import Bundle
-from amplifier_foundation import load_bundle
+from amplifier_foundation import Bundle, load_bundle
 from amplifier_foundation.bundle import PreparedBundle
 
 if TYPE_CHECKING:
@@ -37,6 +37,18 @@ logger = logging.getLogger(__name__)
 # block a user entirely (a proxy that blocks one module host, a repo that went
 # private). This env var lets them keep working while they fix the real problem.
 _ALLOW_PARTIAL_ENV = "AMPLIFIER_ALLOW_PARTIAL_BUNDLE"
+
+# These are @mentions rather than loaded content so foundation's system-prompt
+# factory can resolve them against the current home and session working
+# directory on every request.
+_AGENTS_INSTRUCTION_TAIL = "@~/.amplifier/AGENTS.md\n@.amplifier/AGENTS.md"
+
+
+def _append_agents_instruction_tail(instruction: str | None) -> str:
+    """Return instruction with the CLI's optional AGENTS.md mentions at its tail."""
+    if not instruction:
+        return _AGENTS_INSTRUCTION_TAIL
+    return f"{instruction}\n\n{_AGENTS_INSTRUCTION_TAIL}"
 
 
 def _activation_is_strict() -> bool:
@@ -299,6 +311,16 @@ async def load_and_prepare_bundle(
             except Exception as e:
                 logger.warning(f"Failed to compose behavior '{behavior_uri}': {e}")
                 # Continue without this behavior - notifications are optional
+
+    # Append only after every behavior has composed.  Appending before
+    # composition would make a bodyless root instruction truthy and change the
+    # behavior-body inheritance that _preserve_root_instruction() preserves.
+    #
+    # load_bundle() caches Bundle instances on the registry.  Work on a shallow
+    # copy so preparing through the same registry again neither mutates its
+    # cached root nor accumulates this tail.
+    bundle = copy(bundle)
+    bundle.instruction = _append_agents_instruction_tail(bundle.instruction)
 
     # 3b. Load agent metadata BEFORE prepare so the agent's declared modules
     # (tools/providers/hooks with `source:` URIs in their .md frontmatter) are

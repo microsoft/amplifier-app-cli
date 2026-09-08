@@ -43,20 +43,25 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from unittest.mock import AsyncMock
-from unittest.mock import MagicMock
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from amplifier_foundation import load_bundle
 
 from amplifier_app_cli.lib.bundle_loader.discovery import AppBundleDiscovery
-from amplifier_app_cli.lib.bundle_loader.prepare import load_and_prepare_bundle
+from amplifier_app_cli.lib.bundle_loader.prepare import (
+    _AGENTS_INSTRUCTION_TAIL,
+    load_and_prepare_bundle,
+)
 
 pytestmark = pytest.mark.anyio
 
 ROOT_MARKER = "ROOT-SYSTEM-MARKER-f26u"
 ROOT_MENTION = "@rootbundle:context/system.md"
 BEHAVIOR_MARKER = "BEHAVIOR-README-BODY-f26u"
+HOME_AGENTS_MARKER = "HOME-AGENTS-MARKER"
+PROJECT_AGENTS_MARKER = "PROJECT-AGENTS-MARKER"
+PLAIN_CWD_AGENTS_MARKER = "PLAIN-CWD-AGENTS-MARKER"
 
 
 @pytest.fixture(scope="module")
@@ -107,9 +112,13 @@ def _write_behavior_bundle(tmp_path: Path, name: str = "behaviorbundle") -> str:
     return f"file://{behavior}"
 
 
-async def _prepare(root_uri: str, behavior_uris: list[str]):
+async def _prepare(
+    root_uri: str,
+    behavior_uris: list[str],
+    discovery: AppBundleDiscovery | None = None,
+):
     """Run the real app-cli compose+prepare path over local bundles."""
-    discovery = AppBundleDiscovery(search_paths=[])
+    discovery = discovery or AppBundleDiscovery(search_paths=[])
     return await load_and_prepare_bundle(
         root_uri,
         discovery,
@@ -132,12 +141,13 @@ class _FakeContext:
         self.messages.append(message)
 
 
-async def _build_system_prompt(prepared, session_cwd: Path) -> tuple[str, list]:
-    """Drive foundation's real system-prompt factory over the prepared bundle.
+async def _install_system_prompt_factory(
+    prepared, session_cwd: Path, *, is_resumed: bool = False
+):
+    """Install foundation's real system-prompt factory over the prepared bundle.
 
-    Returns (system_prompt, emitted_hook_calls).  The session itself is a mock
-    -- no provider, no modules -- so this exercises the mention-expansion and
-    ``mentions:resolved`` emission paths without needing a live session.
+    The session itself is a mock -- no provider, no modules -- so this exercises
+    the mention-expansion path without needing a live session.
     """
     fake_context = _FakeContext()
     session = MagicMock()
@@ -150,14 +160,19 @@ async def _build_system_prompt(prepared, session_cwd: Path) -> tuple[str, list]:
     )
 
     with patch("amplifier_core.AmplifierSession", return_value=session):
-        await prepared.create_session(session_cwd=session_cwd)
+        await prepared.create_session(session_cwd=session_cwd, is_resumed=is_resumed)
 
     assert fake_context.factory is not None, (
         "foundation registered no system-prompt factory -- the bundle carried "
         "neither an instruction nor context"
     )
-    prompt = await fake_context.factory()
-    return prompt, list(session.coordinator.hooks.emit.await_args_list)
+    return fake_context.factory, session.coordinator.hooks.emit
+
+
+async def _build_system_prompt(prepared, session_cwd: Path) -> tuple[str, list]:
+    """Return one render from foundation's real system-prompt factory."""
+    factory, emit = await _install_system_prompt_factory(prepared, session_cwd)
+    return await factory(), list(emit.await_args_list)
 
 
 async def test_root_instruction_survives_behavior_composition(tmp_path: Path) -> None:
@@ -171,6 +186,24 @@ async def test_root_instruction_survives_behavior_composition(tmp_path: Path) ->
     assert ROOT_MENTION in prepared.bundle.instruction, (
         "the root bundle's instruction was replaced during behavior "
         f"composition; got: {prepared.bundle.instruction!r}"
+    )
+    assert BEHAVIOR_MARKER not in prepared.bundle.instruction
+
+
+async def test_agents_tail_follows_preserved_root_instruction_after_behaviors(
+    tmp_path: Path,
+) -> None:
+    """The final instruction retains the root body, then both CLI mentions."""
+    root_uri = _write_root_bundle(tmp_path)
+    behavior_uri = _write_behavior_bundle(tmp_path)
+    original_root_instruction = (
+        await load_bundle(root_uri, registry=AppBundleDiscovery(search_paths=[]).registry)
+    ).instruction
+
+    prepared = await _prepare(root_uri, [behavior_uri])
+
+    assert prepared.bundle.instruction == (
+        f"{original_root_instruction}\n\n{_AGENTS_INSTRUCTION_TAIL}"
     )
     assert BEHAVIOR_MARKER not in prepared.bundle.instruction
 
@@ -259,3 +292,110 @@ async def test_behavior_body_still_used_when_root_has_none(tmp_path: Path) -> No
 
     assert prepared.bundle.instruction is not None
     assert BEHAVIOR_MARKER in prepared.bundle.instruction
+    assert prepared.bundle.instruction.endswith(_AGENTS_INSTRUCTION_TAIL)
+    assert (
+        prepared.bundle.instruction.index(BEHAVIOR_MARKER)
+        < prepared.bundle.instruction.index("@~/.amplifier/AGENTS.md")
+        < prepared.bundle.instruction.index("@.amplifier/AGENTS.md")
+    )
+
+
+async def test_empty_root_without_behaviors_gets_only_agents_tail(tmp_path: Path) -> None:
+    """A missing instruction still registers both optional AGENTS.md mentions."""
+    prepared = await _prepare(_write_root_bundle(tmp_path, body=""), [])
+
+    assert prepared.bundle.instruction == _AGENTS_INSTRUCTION_TAIL
+
+
+async def test_agents_tail_reads_home_and_project_files_but_not_plain_cwd_file(
+    tmp_path: Path, isolated_home: Path
+) -> None:
+    """The CLI tail uses foundation's home and session-CWD mention resolution."""
+    home = isolated_home
+    session_cwd = tmp_path / "project"
+    (home / ".amplifier").mkdir(parents=True, exist_ok=True)
+    (home / ".amplifier" / "AGENTS.md").write_text(HOME_AGENTS_MARKER, encoding="utf-8")
+    (session_cwd / ".amplifier").mkdir(parents=True)
+    (session_cwd / ".amplifier" / "AGENTS.md").write_text(
+        PROJECT_AGENTS_MARKER, encoding="utf-8"
+    )
+    (session_cwd / "AGENTS.md").write_text(PLAIN_CWD_AGENTS_MARKER, encoding="utf-8")
+    prepared = await _prepare(_write_root_bundle(tmp_path, body=""), [])
+    prompt, _ = await _build_system_prompt(prepared, session_cwd)
+
+    assert prompt.count(HOME_AGENTS_MARKER) == 1
+    assert prompt.count(PROJECT_AGENTS_MARKER) == 1
+    assert PLAIN_CWD_AGENTS_MARKER not in prompt
+
+
+async def test_agents_tail_files_are_optional_and_refreshed_each_request(
+    tmp_path: Path, isolated_home: Path
+) -> None:
+    """Missing files do not fail, then later-created and changed files are re-read."""
+    home = isolated_home
+    session_cwd = tmp_path / "project"
+    session_cwd.mkdir()
+    prepared = await _prepare(_write_root_bundle(tmp_path, body=""), [])
+    factory, _ = await _install_system_prompt_factory(prepared, session_cwd)
+
+    prompt_without_files = await factory()
+    assert HOME_AGENTS_MARKER not in prompt_without_files
+    assert PROJECT_AGENTS_MARKER not in prompt_without_files
+
+    (home / ".amplifier").mkdir(parents=True, exist_ok=True)
+    home_agents = home / ".amplifier" / "AGENTS.md"
+    home_agents.write_text(f"{HOME_AGENTS_MARKER}-ONE", encoding="utf-8")
+    (session_cwd / ".amplifier").mkdir()
+    project_agents = session_cwd / ".amplifier" / "AGENTS.md"
+    project_agents.write_text(f"{PROJECT_AGENTS_MARKER}-ONE", encoding="utf-8")
+
+    prompt_after_creation = await factory()
+    assert prompt_after_creation.count(f"{HOME_AGENTS_MARKER}-ONE") == 1
+    assert prompt_after_creation.count(f"{PROJECT_AGENTS_MARKER}-ONE") == 1
+
+    home_agents.write_text(f"{HOME_AGENTS_MARKER}-TWO", encoding="utf-8")
+    project_agents.write_text(f"{PROJECT_AGENTS_MARKER}-TWO", encoding="utf-8")
+
+    refreshed_prompt = await factory()
+    assert refreshed_prompt.count(f"{HOME_AGENTS_MARKER}-TWO") == 1
+    assert refreshed_prompt.count(f"{PROJECT_AGENTS_MARKER}-TWO") == 1
+    assert f"{HOME_AGENTS_MARKER}-ONE" not in refreshed_prompt
+    assert f"{PROJECT_AGENTS_MARKER}-ONE" not in refreshed_prompt
+
+
+async def test_root_resume_uses_agents_tail_and_resolves_files(
+    tmp_path: Path, isolated_home: Path
+) -> None:
+    """A root PreparedBundle creates the same dynamic prompt on resume."""
+    session_cwd = tmp_path / "project"
+    (isolated_home / ".amplifier").mkdir(exist_ok=True)
+    (isolated_home / ".amplifier" / "AGENTS.md").write_text(
+        HOME_AGENTS_MARKER, encoding="utf-8"
+    )
+    (session_cwd / ".amplifier").mkdir(parents=True)
+    (session_cwd / ".amplifier" / "AGENTS.md").write_text(
+        PROJECT_AGENTS_MARKER, encoding="utf-8"
+    )
+
+    prepared = await _prepare(_write_root_bundle(tmp_path, body=""), [])
+    factory, _ = await _install_system_prompt_factory(
+        prepared, session_cwd, is_resumed=True
+    )
+    prompt = await factory()
+
+    assert prepared.bundle.instruction == _AGENTS_INSTRUCTION_TAIL
+    assert prompt.count(HOME_AGENTS_MARKER) == 1
+    assert prompt.count(PROJECT_AGENTS_MARKER) == 1
+
+
+async def test_reusing_registry_does_not_accumulate_agents_tail(tmp_path: Path) -> None:
+    """A registry caches loaded roots, so injection must not mutate that cache."""
+    root_uri = _write_root_bundle(tmp_path)
+    discovery = AppBundleDiscovery(search_paths=[])
+
+    first = await _prepare(root_uri, [], discovery)
+    second = await _prepare(root_uri, [], discovery)
+
+    assert first.bundle.instruction == second.bundle.instruction
+    assert first.bundle.instruction.count("@~/.amplifier/AGENTS.md") == 1
+    assert first.bundle.instruction.count("@.amplifier/AGENTS.md") == 1
