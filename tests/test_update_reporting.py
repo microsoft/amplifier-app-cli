@@ -13,9 +13,11 @@ from rich.console import Console
 
 from amplifier_app_cli.commands import update as update_module
 from amplifier_app_cli.commands.update import _classify_source_status
+from amplifier_app_cli.commands.update import _revision_report_state
 from amplifier_app_cli.commands.update import TransitiveBundleStatus
 from amplifier_app_cli.commands.update import update
 from amplifier_app_cli.utils.source_status import CachedGitStatus
+from amplifier_app_cli.utils.source_status import LocalFileStatus
 from amplifier_app_cli.utils.source_status import UpdateReport
 from amplifier_app_cli.utils.update_executor import ExecutionResult
 from amplifier_foundation.sources.protocol import SourceStatus
@@ -70,6 +72,31 @@ def test_source_status_current_requires_a_confirmed_equal_comparison(
     )
 
     assert _classify_source_status(source) == expected
+
+
+@pytest.mark.parametrize(
+    ("local_sha", "remote_sha", "has_local_changes", "checked", "expected"),
+    [
+        ("a", "a", False, True, "current"),
+        ("a", "b", False, True, "update"),
+        ("a", "", False, True, "not_checked"),
+        ("a", "unknown", False, True, "not_checked"),
+        ("a", "b", False, False, "not_checked"),
+        ("a", "b", True, False, "local_changes"),
+    ],
+)
+def test_revision_report_state_requires_a_known_checked_comparison(
+    local_sha, remote_sha, has_local_changes, checked, expected
+):
+    assert (
+        _revision_report_state(
+            local_sha,
+            remote_sha,
+            has_local_changes=has_local_changes,
+            checked=checked,
+        )
+        == expected
+    )
 
 
 def _command_patches(report, bundle_results, *, details=None, execute_calls=None):
@@ -374,8 +401,8 @@ def test_empty_bundle_is_unchecked_and_does_not_run_or_claim_all_current():
 
 
 @pytest.mark.parametrize("verbose", [False, True])
-def test_local_umbrella_dependencies_are_neutral_or_cyan_not_green(monkeypatch, verbose):
-    """Clean local dependencies are uncheckable; dirty ones retain cyan status."""
+def test_local_umbrella_dependencies_use_plain_language_statuses(monkeypatch, verbose):
+    """Clean local dependencies are unchecked; dirty ones report local changes."""
 
     details = [
         {
@@ -414,11 +441,144 @@ def test_local_umbrella_dependencies_are_neutral_or_cyan_not_green(monkeypatch, 
             report, True, False, umbrella_deps=details
         )
 
-    rows, _, _ = buffer.getvalue().partition("Legend:")
-    assert "clean-local" in rows
-    assert "?" in rows
-    assert "\x1b[32m?\x1b[0m" not in rows
-    assert "\x1b[36m◦" in rows
+    output = buffer.getvalue()
+    assert "clean-local" in output
+    assert "Not checked" in output
+    assert "Local changes" in output
+    assert "Legend:" not in output
+
+
+@pytest.fixture
+def _status_consistency_fixture():
+    report = UpdateReport(
+        local_file_sources=[
+            LocalFileStatus(name="clean-local", local_sha="a" * 7),
+            LocalFileStatus(
+                name="dirty-local",
+                local_sha="b" * 7,
+                uncommitted_changes=True,
+            ),
+            LocalFileStatus(
+                name="stale-local",
+                local_sha="c" * 7,
+                remote_sha="d" * 7,
+                has_remote=True,
+            ),
+        ],
+        cached_git_sources=[
+            CachedGitStatus(name="current-module", cached_sha="e" * 7, remote_sha="e" * 7),
+            CachedGitStatus(
+                name="stale-module",
+                cached_sha="f" * 7,
+                remote_sha="0" * 7,
+                has_update=False,
+            ),
+            CachedGitStatus(name="unknown-module", cached_sha="1" * 7, remote_sha="unknown"),
+        ],
+    )
+    dependencies = [
+        {
+            "name": "current-package",
+            "local_sha": "2" * 7,
+            "remote_sha": "2" * 7,
+            "source_url": "https://example.invalid/current",
+            "has_update": False,
+            "is_local": False,
+            "path": None,
+            "has_changes": False,
+        },
+        {
+            "name": "stale-package",
+            "local_sha": "3" * 7,
+            "remote_sha": "4" * 7,
+            "source_url": "https://example.invalid/stale",
+            "has_update": False,
+            "is_local": False,
+            "path": None,
+            "has_changes": False,
+        },
+        {
+            "name": "unknown-package",
+            "local_sha": "5" * 7,
+            "remote_sha": "",
+            "source_url": "https://example.invalid/unknown",
+            "has_update": False,
+            "is_local": False,
+            "path": None,
+            "has_changes": False,
+        },
+    ]
+    bundles = {
+        "current-bundle": _bundle(
+            "current-bundle",
+            _source(
+                "git+https://example.invalid/current-bundle@main",
+                is_cached=True,
+                has_update=False,
+                cached_commit="6" * 40,
+                remote_commit="6" * 40,
+            ),
+        ),
+        "missing-bundle": _bundle(
+            "missing-bundle",
+            _source(
+                "git+https://example.invalid/missing-bundle@main",
+                is_cached=False,
+                has_update=True,
+                remote_commit="7" * 40,
+            ),
+        ),
+        "pinned-bundle": _bundle(
+            "pinned-bundle",
+            _source(
+                "git+https://example.invalid/pinned-bundle@v1.0.0",
+                is_cached=True,
+                has_update=False,
+                cached_ref="v1.0.0",
+            ),
+        ),
+        "unknown-bundle": _bundle(
+            "unknown-bundle",
+            _source("file:///synthetic/unknown-bundle", is_cached=True, has_update=None),
+        ),
+    }
+    return report, dependencies, bundles
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+def test_update_reports_consistent_word_statuses_without_a_legend(
+    _status_consistency_fixture, verbose
+):
+    """The real command renders source statuses as words without changing execution."""
+
+    report, dependencies, bundles = _status_consistency_fixture
+    execute_calls: list[tuple[tuple, dict]] = []
+    patches = _command_patches(
+        report,
+        bundles,
+        details=dependencies,
+        execute_calls=execute_calls,
+    )
+    with ExitStack() as stack:
+        for boundary in patches:
+            stack.enter_context(boundary)
+        runner = CliRunner()
+        result = runner.invoke(
+            update,
+            ["--check-only", *(["--verbose"] if verbose else [])],
+        )
+        declined = runner.invoke(update, input="n\n")
+
+    assert result.exit_code == 0, result.output
+    assert declined.exit_code == 0, declined.output
+    assert not execute_calls
+    for label in ("Current", "Update", "Not checked", "Local changes", "Download", "Pinned"):
+        assert label in result.output
+    assert "Legend:" not in result.output
+    if not verbose:
+        assert result.output.count("Status") == 4
+    for symbol in ("✓", "●", "◦", "?"):
+        assert symbol not in result.output
 
 
 def test_verbose_file_bundle_source_is_local_not_remote(monkeypatch):
