@@ -24,8 +24,6 @@ from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..utils.atomic_write import atomic_write_json
 from ..utils.display import create_sha_text
-from ..utils.display import create_status_symbol
-from ..utils.display import print_legend
 from ..utils.error_format import escape_markup
 from ..utils.settings_manager import save_update_last_check
 from ..utils.source_status import check_all_sources
@@ -114,6 +112,28 @@ def _classify_source_status(
     if not source.cached_commit:
         return "refresh_cache"
     return "update" if source.cached_commit != source.remote_commit else "not_checked"
+
+
+def _revision_report_state(
+    local_sha: str | None,
+    remote_sha: str | None,
+    *,
+    has_local_changes: bool = False,
+    checked: bool = True,
+) -> SourceReportState:
+    """Classify a known revision comparison for display only."""
+
+    if has_local_changes:
+        return "local_changes"
+    if (
+        not checked
+        or not local_sha
+        or not remote_sha
+        or local_sha == "unknown"
+        or remote_sha == "unknown"
+    ):
+        return "not_checked"
+    return "current" if local_sha == remote_sha else "update"
 
 
 def _bundle_source_states(status: "BundleStatus") -> tuple[SourceReportState, ...]:
@@ -961,14 +981,17 @@ def _create_local_package_table(packages: list[dict], title: str) -> Table | Non
     table.add_column("Package", style="green")
     table.add_column("Version", style="dim", justify="right")
     table.add_column("SHA", style="dim", justify="right")
-    table.add_column("", width=1, justify="center")
+    table.add_column("Status", justify="center")
 
     for pkg in packages:
-        # Status: ◦ only if actual uncommitted changes, otherwise ✓
-        if pkg["has_changes"]:
-            status_symbol = Text("◦", style="cyan")
-        else:
-            status_symbol = Text("✓", style="green")
+        status_text = _report_state_text(
+            _revision_report_state(
+                pkg["sha"],
+                None,
+                has_local_changes=pkg["has_changes"],
+                checked=False,
+            )
+        )
 
         # SHA display: show SHA if available, "local" if local but no git, "-" otherwise
         if pkg["sha"]:
@@ -982,7 +1005,7 @@ def _create_local_package_table(packages: list[dict], title: str) -> Table | Non
             pkg["name"],
             Text(pkg["version"], style="dim"),
             sha_display,
-            status_symbol,
+            status_text,
         )
 
     return table
@@ -999,7 +1022,7 @@ def _show_concise_report(
     """Show concise table format for all sources.
 
     Organized by type: Core → Application → Libraries → Modules → Collections → Bundles
-    Uses Rich Tables with status symbols: ✓ (up to date), ● (update available), ◦ (local changes)
+    Uses Rich Tables with plain-language statuses.
     """
     console.print()
 
@@ -1010,7 +1033,7 @@ def _show_concise_report(
         table.add_column("Package", style="green")
         table.add_column("Local", style="dim", justify="right")
         table.add_column("Remote", style="dim", justify="right")
-        table.add_column("", width=1, justify="center")
+        table.add_column("Status", justify="center")
 
         for dep in sorted(umbrella_deps, key=lambda x: x["name"]):
             # Handle local installs specially - show path indicator
@@ -1026,13 +1049,12 @@ def _show_concise_report(
                     name_display = f"{dep['name']} [dim]({path})[/dim]"
                 else:
                     name_display = f"{dep['name']} [dim](local)[/dim]"
-                # Local changes indicator
-                status_symbol = create_status_symbol(
+                status_text = _report_state_text(_revision_report_state(
                     dep["local_sha"],
-                    dep["local_sha"],
-                    dep.get("has_changes", False),
+                    dep.get("remote_sha"),
+                    has_local_changes=dep.get("has_changes", False),
                     checked=False,
-                )
+                ))
                 remote_display = Text("-", style="dim")
             elif dep.get("display_type") == "version":
                 # PyPI package: show full version strings, not 7-char SHA truncation.
@@ -1040,27 +1062,27 @@ def _show_concise_report(
                 name_display = dep["name"]
                 local_display = Text(dep["local_sha"] or "unknown", style="dim")
                 remote_display = Text(dep["remote_sha"] or "unknown", style="dim")
-                status_symbol = create_status_symbol(
+                status_text = _report_state_text(_revision_report_state(
                     dep["local_sha"],
                     dep["remote_sha"],
-                    checked=dep.get("remote_sha") not in (None, "unknown"),
-                )
+                    checked=dep.get("remote_sha") not in (None, "", "unknown"),
+                ))
             else:
                 # Standard git install - compare local vs remote
                 name_display = dep["name"]
                 local_display = create_sha_text(dep["local_sha"])
                 remote_display = create_sha_text(dep["remote_sha"])
-                status_symbol = create_status_symbol(
+                status_text = _report_state_text(_revision_report_state(
                     dep["local_sha"],
                     dep["remote_sha"],
-                    checked=dep.get("remote_sha") not in (None, "unknown"),
-                )
+                    checked=dep.get("remote_sha") not in (None, "", "unknown"),
+                ))
 
             table.add_row(
                 name_display,
                 local_display,
                 remote_display,
-                status_symbol,
+                status_text,
             )
 
         console.print(table)
@@ -1077,16 +1099,16 @@ def _show_concise_report(
         table.add_column("Name", style="green")
         table.add_column("SHA", style="dim", justify="right")
         table.add_column("Path", style="dim")
-        table.add_column("", width=1, justify="center")
+        table.add_column("Status", justify="center")
 
         for status in sorted(report.local_file_sources, key=lambda x: x.name):
             has_local_changes = status.uncommitted_changes or status.unpushed_commits
-            status_symbol = create_status_symbol(
+            status_text = _report_state_text(_revision_report_state(
                 status.local_sha,
-                status.local_sha,
-                has_local_changes,
+                status.remote_sha,
+                has_local_changes=has_local_changes,
                 checked=bool(status.has_remote and status.remote_sha),
-            )
+            ))
 
             # Truncate path for display
             path_str = str(status.path) if status.path else "-"
@@ -1097,7 +1119,7 @@ def _show_concise_report(
                 status.name,
                 create_sha_text(status.local_sha),
                 Text(path_str, style="dim"),
-                status_symbol,
+                status_text,
             )
 
         console.print(table)
@@ -1113,21 +1135,21 @@ def _show_concise_report(
         table.add_column("Name", style="green")
         table.add_column("Cached", style="dim", justify="right")
         table.add_column("Remote", style="dim", justify="right")
-        table.add_column("", width=1, justify="center")
+        table.add_column("Status", justify="center")
 
         for name in sorted(unified_modules.keys()):
             info = unified_modules[name]
-            status_symbol = create_status_symbol(
+            status_text = _report_state_text(_revision_report_state(
                 info["cached_sha"],
                 info["remote_sha"],
-                checked=info["remote_sha"] not in (None, "unknown"),
-            )
+                checked=info["remote_sha"] not in (None, "", "unknown"),
+            ))
 
             table.add_row(
                 name,
                 create_sha_text(info["cached_sha"]),
                 create_sha_text(info["remote_sha"]),
-                status_symbol,
+                status_text,
             )
 
         console.print(table)
@@ -1198,7 +1220,6 @@ def _show_concise_report(
         console.print(table)
 
     console.print()
-    print_legend()
 
 def _print_verbose_item(
     name: str,
@@ -1268,12 +1289,12 @@ def _show_verbose_report(
         for dep in sorted(umbrella_deps, key=lambda x: x["name"]):
             # Handle local installs specially
             if dep.get("is_local"):
-                status_symbol = create_status_symbol(
+                status_symbol = _report_state_text(_revision_report_state(
                     dep["local_sha"],
-                    dep["local_sha"],
-                    dep.get("has_changes", False),
+                    dep.get("remote_sha"),
+                    has_local_changes=dep.get("has_changes", False),
                     checked=False,
-                )
+                ))
                 _print_verbose_item(
                     name=dep["name"],
                     status_symbol=status_symbol,
@@ -1281,11 +1302,11 @@ def _show_verbose_report(
                     local_path=dep.get("path"),
                 )
             else:
-                status_symbol = create_status_symbol(
+                status_symbol = _report_state_text(_revision_report_state(
                     dep["local_sha"],
                     dep["remote_sha"],
-                    checked=dep.get("remote_sha") not in (None, "unknown"),
-                )
+                    checked=dep.get("remote_sha") not in (None, "", "unknown"),
+                ))
                 _print_verbose_item(
                     name=dep["name"],
                     status_symbol=status_symbol,
@@ -1320,6 +1341,7 @@ def _show_verbose_report(
             "remote_sha": status.remote_sha if status.has_remote else None,
             "remote_url": None,
             "ref": None,
+            "checked": bool(status.has_remote and status.remote_sha),
         }
 
     # Merge/add cached git sources
@@ -1331,6 +1353,11 @@ def _show_verbose_report(
                 status.url if hasattr(status, "url") else None
             )
             modules_by_name[status.name]["ref"] = status.ref
+            modules_by_name[status.name]["checked"] = status.remote_sha not in (
+                None,
+                "",
+                "unknown",
+            )
         else:
             # Add new entry
             modules_by_name[status.name] = {
@@ -1341,6 +1368,7 @@ def _show_verbose_report(
                 "remote_sha": status.remote_sha,
                 "remote_url": status.url if hasattr(status, "url") else None,
                 "ref": status.ref,
+                "checked": status.remote_sha not in (None, "", "unknown"),
             }
 
     if modules_by_name:
@@ -1348,12 +1376,12 @@ def _show_verbose_report(
         console.print()
 
         for mod in sorted(modules_by_name.values(), key=lambda x: x["name"]):
-            status_symbol = create_status_symbol(
+            status_symbol = _report_state_text(_revision_report_state(
                 mod["local_sha"],
                 mod["remote_sha"],
-                mod["has_local_changes"],
-                checked=mod["remote_sha"] not in (None, "unknown"),
-            )
+                has_local_changes=mod["has_local_changes"],
+                checked=mod["checked"],
+            ))
             _print_verbose_item(
                 name=mod["name"],
                 status_symbol=status_symbol,
@@ -1424,9 +1452,6 @@ def _show_verbose_report(
                         ),
                     )
                     console.print()
-
-    print_legend()
-
 
 def _format_update_progress(name: str, phase: str) -> str:
     """Format an update progress callback into a human-readable label for the spinner.
