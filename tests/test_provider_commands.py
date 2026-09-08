@@ -1392,6 +1392,173 @@ class TestProviderTest:
 
 
 # ============================================================
+# provider models: configured instance resolution
+# ============================================================
+
+
+class TestProviderModelsConfiguredInstances:
+    """Configured instance ids must retain their module and exact config."""
+
+    @staticmethod
+    def _model(model_id: str) -> MagicMock:
+        model = MagicMock()
+        model.id = model_id
+        model.display_name = model_id
+        model.context_window = 0
+        model.max_output_tokens = 0
+        model.capabilities = []
+        return model
+
+    def test_instance_id_uses_its_module_and_not_another_instances_config(self):
+        """A configured id resolves before same-module alias selection."""
+        from amplifier_app_cli.commands.provider import provider
+
+        providers = [
+            {
+                "id": "other-fixture",
+                "module": "provider-openai",
+                "config": {
+                    "default_model": "other-model",
+                    "base_url": "http://127.0.0.1:8766/v1",
+                    "priority": 1,
+                },
+            },
+            {
+                "id": "astra-fixture",
+                "module": "provider-openai",
+                "config": {
+                    "default_model": "gpt-6-astra",
+                    "base_url": "http://127.0.0.1:8765/v1",
+                    "priority": 99,
+                },
+            },
+        ]
+        settings = MagicMock()
+        settings.get_provider_overrides.return_value = providers
+        requested: list[tuple[str, dict | None]] = []
+
+        def list_models(module_id, config_manager, collected_config=None):
+            requested.append((module_id, collected_config))
+            return [self._model(collected_config["default_model"])]
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch(
+                "amplifier_app_cli.commands.provider.create_config_manager",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.get_provider_models",
+                side_effect=list_models,
+            ),
+        ):
+            result = CliRunner().invoke(provider, ["models", "astra-fixture"])
+
+        assert result.exit_code == 0, result.output
+        assert "Models for astra-fixture" in result.output
+        assert "gpt-6-astra" in result.output
+        assert requested == [
+            (
+                "provider-openai",
+                {
+                    "default_model": "gpt-6-astra",
+                    "base_url": "http://127.0.0.1:8765/v1",
+                    "priority": 99,
+                },
+            )
+        ]
+
+    def test_module_alias_uses_the_shared_resolvers_priority_selection(self):
+        """A module alias still resolves to the configured priority winner."""
+        from amplifier_app_cli.commands.provider import provider
+
+        selected_config = {"default_model": "priority-model", "priority": 1}
+        settings = MagicMock()
+        settings.get_provider_overrides.return_value = [
+            {
+                "id": "lower-priority",
+                "module": "provider-openai",
+                "config": {"default_model": "wrong-model", "priority": 9},
+            },
+            {
+                "id": "higher-priority",
+                "module": "provider-openai",
+                "config": selected_config,
+            },
+        ]
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch(
+                "amplifier_app_cli.commands.provider.create_config_manager",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.get_provider_models",
+                return_value=[self._model("priority-model")],
+            ) as get_models,
+        ):
+            result = CliRunner().invoke(provider, ["models", "openai"])
+
+        assert result.exit_code == 0, result.output
+        assert "priority-model" in result.output
+        get_models.assert_called_once()
+        assert get_models.call_args.args[0] == "provider-openai"
+        assert get_models.call_args.kwargs["collected_config"] == selected_config
+
+    def test_unknown_id_falls_back_to_its_module_without_borrowing_config(self):
+        """An unknown selector is an unconfigured module alias, not another instance."""
+        from amplifier_app_cli.commands.provider import provider
+
+        settings = MagicMock()
+        settings.get_provider_overrides.return_value = [
+            {
+                "id": "configured-openai",
+                "module": "provider-openai",
+                "config": {"default_model": "must-not-be-used", "priority": 1},
+            }
+        ]
+        manager = MagicMock()
+        manager.get_provider_config.return_value = None
+
+        with (
+            patch(
+                "amplifier_app_cli.commands.provider._get_settings",
+                return_value=settings,
+            ),
+            patch("amplifier_app_cli.commands.provider._ensure_providers_ready"),
+            patch(
+                "amplifier_app_cli.commands.provider.create_config_manager",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.ProviderManager",
+                return_value=manager,
+            ),
+            patch(
+                "amplifier_app_cli.commands.provider.get_provider_models",
+                return_value=[],
+            ) as get_models,
+        ):
+            result = CliRunner().invoke(provider, ["models", "unconfigured"])
+
+        assert result.exit_code == 0, result.output
+        assert "No models available for provider 'unconfigured'" in result.output
+        manager.get_provider_config.assert_called_once_with("provider-unconfigured")
+        get_models.assert_called_once()
+        assert get_models.call_args.args[0] == "provider-unconfigured"
+        assert get_models.call_args.kwargs["collected_config"] is None
+
+
+# ============================================================
 # Task 11: Remove old commands, first-run detection
 # ============================================================
 

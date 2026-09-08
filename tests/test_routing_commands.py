@@ -1964,6 +1964,53 @@ class TestEditRole:
             f"Hidden field should not appear in config, got: {result['config']}"
         )
 
+    def test_edit_role_shows_model_dependent_field_for_selected_astra_model(
+        self, tmp_path
+    ):
+        """A routing candidate keeps its model outside config, but predicates
+        must still evaluate against that just-selected model."""
+        from amplifier_app_cli.commands.routing import _edit_role
+
+        settings = _make_settings(tmp_path)
+        _seed_provider(
+            settings,
+            [{"module": "provider-openai", "config": {"default_model": "gpt-5.6-sol"}}],
+        )
+        long_context_field = {
+            "id": "enable_long_context",
+            "display_name": "Enable long context",
+            "field_type": "boolean",
+            "show_when": {
+                "default_model": r"matches:^(?:gpt-5\.6(?:-.*)?|gpt-6-astra)$"
+            },
+        }
+
+        con, _ = _make_test_console()
+        with (
+            patch("amplifier_app_cli.commands.routing.console", con),
+            patch("amplifier_app_cli.commands.routing.Prompt") as mock_prompt,
+            patch("amplifier_app_cli.commands.routing.Confirm") as mock_confirm,
+            patch(
+                "amplifier_app_cli.provider_config_utils._prompt_model_selection",
+                return_value="gpt-6-astra",
+            ),
+            patch(
+                "amplifier_app_cli.commands.routing._get_routing_config_fields",
+                return_value=[long_context_field],
+            ),
+        ):
+            mock_prompt.ask.return_value = "1"
+            mock_confirm.ask.return_value = True
+            result = _edit_role(
+                role_name="general",
+                role_desc="General purpose",
+                provider_names=["openai"],
+                settings=settings,
+            )
+
+        assert result is not None
+        assert result["config"]["enable_long_context"] == "true"
+
 
 # ============================================================
 # Fix 5: _get_provider_config() helper

@@ -306,6 +306,23 @@ class TestShouldShowFieldPredicates:
         assert pcu._should_show_field(field, {"default_model": "gpt-4o"}) is True
         assert pcu._should_show_field(field, {"default_model": "gpt-5.6-mini"}) is False
 
+    def test_matches_pattern_and_invalid_regex(self):
+        field = {
+            "show_when": {
+                "default_model": r"matches:^(?:gpt-5\.6(?:-.*)?|gpt-6-astra)$"
+            }
+        }
+        assert pcu._should_show_field(field, {"default_model": "gpt-5.6-terra"}) is True
+        assert pcu._should_show_field(field, {"default_model": "gpt-6-astra"}) is True
+        assert pcu._should_show_field(field, {"default_model": "gpt-6-other"}) is False
+        assert (
+            pcu._should_show_field(
+                {"show_when": {"default_model": "matches:("}},
+                {"default_model": "gpt-6-astra"},
+            )
+            is False
+        )
+
     def test_missing_key_treated_as_empty_string(self):
         field = {"show_when": {"default_model": "contains:sonnet"}}
         assert pcu._should_show_field(field, {}) is False

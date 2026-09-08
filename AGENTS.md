@@ -34,3 +34,13 @@ that load on demand (skills, agent-scoped context) over anything injected uncond
 
 This section exists to keep `data/` from becoming a junk drawer — re-run the three tests
 before adding, not after.
+
+## In-process self-child prompts
+
+For `agent_name: self`, `session_spawner` must build a new foundation prompt
+factory for the target child from the root prepared bundle, render it once, and
+install only that frozen result. Never copy or await a parent's installed
+context factory: hooks can wrap it with parent-specific state. Persist a
+nonempty resolved snapshot only in sub-session persistence metadata, never in
+`session.metadata` telemetry; keep subprocess self dispatch as its explicit
+legacy limitation.

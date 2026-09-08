@@ -69,6 +69,41 @@ The kernel doesn't enforce any precedence. The capability contract is just
 "spawn a sub-session" — what each implementation does with provider preferences
 is its own choice.
 
+## In-process system-prompt inheritance
+
+For an in-process `agent_name: self` child, the CLI renders the root prepared
+bundle's clean, unwrapped prompt factory once for the child, then installs that
+resolved text as the child's frozen base prompt. It deliberately does **not**
+copy or await the parent's installed context factory: application hooks may
+have wrapped that factory with parent-specific state. The child can still apply
+its own prompt wrappers around this base; this rule only prevents parent prompt
+wrappers from leaking into the child.
+
+An instructed named agent still takes precedence over that root base. Its
+top-level `instruction` wins over `system.instruction`, and its mentions are
+expanded against the child's capabilities before the frozen base is installed.
+The nonempty snapshot is stored only in sub-session persistence metadata so
+resume can restore the same base without placing it in `session.metadata`
+telemetry. Runtime skills overlay and `session.routing` continue to be inherited
+as child discovery and model-policy inputs; neither is parent-prompt leakage.
+
+This behavior has a Foundation release gate: a root bundle with prompt sources
+requires the public `PreparedBundle.create_system_prompt_factory` API. If that
+API is unavailable, in-process self delegation refuses before child execution
+and instructs the user to upgrade `amplifier-foundation` and start a new self
+delegation. Ordinary roots, named instructed agents, and no-source root bundles
+remain supported. Do not update the CLI lockfile's Foundation revision until the
+upstream Foundation merge is available.
+
+Historic self-delegated sessions require a valid persisted frozen snapshot to
+resume. The current root cannot safely establish a historic child's identity,
+so missing or invalid snapshots fail with an instruction to start a new self
+delegation. Older named sessions still use their saved overlay/config fallback.
+
+Subprocess self delegation remains a known limitation. Dispatch happens before
+an in-process child can be initialized, so it preserves legacy dispatch and
+logs that clean base-prompt inheritance is unavailable.
+
 ## Cross-references
 
 - `amplifier_app_cli/session_spawner.py` — reference implementation of

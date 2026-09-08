@@ -1133,13 +1133,27 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
             ctx.exit(1)
         provider_id = current.module_id
 
-    # Normalize provider ID (handle both "anthropic" and "provider-anthropic")
-    module_id = _normalize_module_id(provider_id)
-    display = _display_name(module_id)
-
-    # Get stored provider config (for credentials/endpoints)
-    manager = ProviderManager(config_manager)
-    stored_config = manager.get_provider_config(module_id)
+    # Resolve configured instance ids before normalizing module aliases.  An
+    # instance id such as "astra-fixture" is not itself a module, and turning
+    # it into "provider-astra-fixture" would lose the entry's module and
+    # per-instance endpoint/credentials.  _find_provider_entry delegates to
+    # the shared resolver, which checks exact ids first and applies the normal
+    # priority rule only for module aliases.
+    entry = _find_provider_entry(_get_settings().get_provider_overrides(), provider_id)
+    if entry is not None:
+        module_id = _normalize_module_id(entry["module"])
+        stored_config = entry.get("config", {})
+        display = (
+            provider_id
+            if entry.get("id") == provider_id
+            else _display_name(module_id)
+        )
+    else:
+        # Preserve the original fallback for an unconfigured module alias.
+        module_id = _normalize_module_id(provider_id)
+        display = _display_name(module_id)
+        manager = ProviderManager(config_manager)
+        stored_config = manager.get_provider_config(module_id)
 
     # Fetch models
     try:

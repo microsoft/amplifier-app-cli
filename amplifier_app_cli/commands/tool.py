@@ -433,7 +433,7 @@ async def _invoke_tool_from_bundle_async(
     await session.initialize()
 
     # Register session spawning (enables tools like recipes to spawn sub-sessions)
-    register_session_spawning(session)
+    register_session_spawning(session, prepared_bundle=prepared_bundle)
 
     failed = False
     try:

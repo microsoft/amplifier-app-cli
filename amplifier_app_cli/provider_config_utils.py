@@ -363,6 +363,7 @@ def _should_show_field(field: dict[str, Any], collected_config: dict[str, Any]) 
         - "not_contains:substring" - Match if actual value does NOT contain substring
         - "startswith:prefix" - Match if actual value starts with prefix
         - "not_startswith:prefix" - Match if actual value does NOT start with prefix
+        - "matches:regex" - Match if actual value matches a case-insensitive regex
     """
     show_when = field.get("show_when")
     if not show_when:
@@ -375,7 +376,13 @@ def _should_show_field(field: dict[str, Any], collected_config: dict[str, Any]) 
         expected_str = str(expected_value).lower()
 
         # Check for pattern matching prefixes
-        if expected_str.startswith("not_contains:"):
+        if expected_str.startswith("matches:"):
+            try:
+                if re.search(str(expected_value)[8:], actual_value, re.IGNORECASE) is None:
+                    return False
+            except re.error:
+                return False
+        elif expected_str.startswith("not_contains:"):
             pattern = expected_str[13:]  # Remove "not_contains:" prefix
             if pattern in actual_value:
                 return False
