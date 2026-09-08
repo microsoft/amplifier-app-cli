@@ -2,7 +2,7 @@
 
 from .approval import CLIApprovalSystem
 from .display import CLIDisplaySystem
-from .message_renderer import render_message
+from .message_renderer import is_displayable_session_message, render_message
 from .scope import (
     is_scope_change_available,
     print_scope_indicator,
@@ -13,6 +13,7 @@ from .scope import (
 __all__ = [
     "CLIApprovalSystem",
     "CLIDisplaySystem",
+    "is_displayable_session_message",
     "render_message",
     "is_scope_change_available",
     "print_scope_indicator",

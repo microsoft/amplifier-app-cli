@@ -10,11 +10,16 @@ from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
+
+if TYPE_CHECKING:
+    from amplifier_foundation.bundle import PreparedBundle
+    from rich.console import Console
 
 from amplifier_foundation.paths.resolution import get_amplifier_home
 from ..console import console
@@ -39,7 +44,6 @@ try:
         get_session_lineage,
         get_turn_summary,
         count_turns,
-        ForkResult,
     )
 
     HAS_SESSION_FORK = True
@@ -182,7 +186,7 @@ def _display_session_history(
         show_thinking: Whether to show thinking blocks
         max_messages: Max messages to show (0 = all, default 10)
     """
-    from ..ui import render_message
+    from ..ui import is_displayable_session_message, render_message
 
     # Build banner with session info
     session_id = metadata.get("session_id", "unknown")
@@ -214,8 +218,8 @@ def _display_session_history(
     console.print(Panel.fit(banner_text, border_style="cyan"))
     console.print()
 
-    # Filter to user/assistant messages only
-    display_messages = [m for m in transcript if m.get("role") in ("user", "assistant")]
+    # Filter display-only persisted reminders before applying the history limit.
+    display_messages = [m for m in transcript if is_displayable_session_message(m)]
 
     # Handle message limiting
     skipped_count = 0
@@ -251,7 +255,7 @@ async def _replay_session_history(
         speed: Speed multiplier (2.0 = twice as fast)
         show_thinking: Whether to show thinking blocks
     """
-    from ..ui import render_message
+    from ..ui import is_displayable_session_message, render_message
 
     # Build banner with session info and replay status
     session_id = metadata.get("session_id", "unknown")
@@ -289,10 +293,7 @@ async def _replay_session_history(
 
     for idx, message in enumerate(transcript):
         try:
-            role = message.get("role")
-
-            # Skip system/developer messages
-            if role not in ("user", "assistant"):
+            if not is_displayable_session_message(message):
                 continue
 
             # Calculate delay (uses timestamps if available, else content-based)
@@ -325,7 +326,7 @@ async def _replay_session_history(
     # Show remaining messages if interrupted
     if interrupted:
         for remaining_message in transcript[interrupt_index + 1 :]:
-            if remaining_message.get("role") in ("user", "assistant"):
+            if is_displayable_session_message(remaining_message):
                 render_message(remaining_message, console, show_thinking=show_thinking)
 
 
@@ -591,7 +592,6 @@ def register_session_commands(
 
             # Show current session
             current_indent = "  " * len(ancestors)
-            session_info = _get_session_display_info(store, session_id)
             forked_info = ""
             if lineage.get("forked_from_turn"):
                 forked_info = (
@@ -865,7 +865,7 @@ def register_session_commands(
             # Load transcript to count turns
             transcript_path = session_dir / "transcript.jsonl"
             if not transcript_path.exists():
-                console.print(f"[red]Error:[/red] No transcript found for session")
+                console.print("[red]Error:[/red] No transcript found for session")
                 sys.exit(1)
 
             messages = []
@@ -935,7 +935,7 @@ def register_session_commands(
         try:
             preview = get_fork_preview(session_dir, turn)
             console.print()
-            console.print(f"[bold]Fork Preview:[/bold]")
+            console.print("[bold]Fork Preview:[/bold]")
             console.print(f"  Parent: {preview['parent_id'][:8]}...")
             console.print(f"  Fork at turn: {turn} of {preview['max_turns']}")
             console.print(f"  Messages to copy: {preview['message_count']}")
@@ -1311,7 +1311,7 @@ def _interactive_resume_impl(
 
     # If only one session, auto-select it
     if len(all_session_ids) == 1:
-        console.print(f"[dim]Only one session found, resuming...[/dim]")
+        console.print("[dim]Only one session found, resuming...[/dim]")
         ctx.invoke(
             sessions_resume_cmd,
             session_id=all_session_ids[0],
