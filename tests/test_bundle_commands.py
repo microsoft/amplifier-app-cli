@@ -11,6 +11,8 @@ from click.testing import CliRunner
 
 from amplifier_app_cli.utils.source_status import UpdateReport
 from amplifier_app_cli.utils.update_executor import ExecutionResult
+from amplifier_foundation.sources.protocol import SourceStatus
+from amplifier_foundation.updates import BundleStatus
 
 
 bundle_module = importlib.import_module("amplifier_app_cli.commands.bundle")
@@ -276,7 +278,19 @@ def test_global_update_loads_an_app_target_by_source_uri(monkeypatch):
     """Applying a global update must load an app bundle from its URI, not an alias."""
     import amplifier_foundation
 
-    status = SimpleNamespace(has_updates=True, bundle_source=_FRAGMENT_URI)
+    status = BundleStatus(
+        bundle_name="app target",
+        bundle_source=_FRAGMENT_URI,
+        sources=[
+            SourceStatus(
+                source_uri=_FRAGMENT_URI,
+                is_cached=True,
+                cached_commit="a" * 40,
+                remote_commit="b" * 40,
+                has_update=True,
+            )
+        ],
+    )
     loaded_uris = []
     updated_bundles = []
 

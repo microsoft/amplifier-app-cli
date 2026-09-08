@@ -44,3 +44,10 @@ context factory: hooks can wrap it with parent-specific state. Persist a
 nonempty resolved snapshot only in sub-session persistence metadata, never in
 `session.metadata` telemetry; keep subprocess self dispatch as its explicit
 legacy limitation.
+
+## Update reporting
+
+Keep report labels separate from update eligibility: a missing mutable cache is
+a download, not a newer revision, and an unchecked source is not current.
+Exercise the real Click command in `tests/test_update_reporting.py`; mock only
+status/apply boundaries so tests never touch a user's caches or installation.

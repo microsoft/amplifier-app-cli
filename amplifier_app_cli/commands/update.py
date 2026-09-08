@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import click
 from rich.console import Console
@@ -58,6 +58,267 @@ class TransitiveBundleStatus(_BundleStatus):
 
     is_pinned: bool = False
     """Ref is a commit SHA or version tag: reported, never refreshed."""
+
+
+SourceReportState = Literal[
+    "current",
+    "download",
+    "update",
+    "refresh_cache",
+    "not_checked",
+    "pinned",
+    "pinned_missing",
+    "local_changes",
+    "mixed_actions",
+]
+
+_ACTIONABLE_REPORT_STATES = {"download", "update", "refresh_cache"}
+_REPORT_STATE_LABELS: dict[SourceReportState, str] = {
+    "current": "Current",
+    "download": "Download",
+    "update": "Update",
+    "refresh_cache": "Refresh cache",
+    "not_checked": "Not checked",
+    "pinned": "Pinned",
+    "pinned_missing": "Pinned; not cached",
+    "local_changes": "Local changes",
+    "mixed_actions": "Mixed actions",
+}
+
+
+def _classify_source_status(
+    source: Any, *, has_local_changes: bool = False
+) -> SourceReportState:
+    """Return a presentation-only status without deriving action eligibility."""
+
+    if getattr(source, "error", None):
+        return "not_checked"
+    if getattr(source, "is_pinned", False):
+        return "pinned" if source.is_cached else "pinned_missing"
+    if has_local_changes:
+        return "local_changes"
+    if source.has_update is not True:
+        if (
+            source.has_update is False
+            and source.is_cached
+            and source.cached_commit
+            and source.remote_commit
+            and source.cached_commit == source.remote_commit
+        ):
+            return "current"
+        return "not_checked"
+    if not source.remote_commit:
+        return "not_checked"
+    if not source.is_cached:
+        return "download"
+    if not source.cached_commit:
+        return "refresh_cache"
+    return "update" if source.cached_commit != source.remote_commit else "not_checked"
+
+
+def _bundle_source_states(status: "BundleStatus") -> tuple[SourceReportState, ...]:
+    """Classify every source, treating an empty bundle as unchecked."""
+
+    if not status.sources:
+        return ("not_checked",)
+    return tuple(
+        _classify_source_status(
+            source, has_local_changes=bool(getattr(source, "_has_local_changes", False))
+        )
+        for source in status.sources
+    )
+
+
+def _bundle_action_states(status: "BundleStatus") -> tuple[SourceReportState, ...]:
+    """Return each distinct actionable source state in stable display order."""
+
+    states = _bundle_source_states(status)
+    return tuple(
+        state
+        for state in ("download", "refresh_cache", "update")
+        if state in states
+    )
+
+
+def _classify_bundle_status(status: "BundleStatus") -> SourceReportState:
+    """Collapse a bundle's source statuses into one visible, non-counting label."""
+
+    if not status.sources:
+        return "not_checked"
+    if getattr(status, "is_pinned", False):
+        return "pinned_missing" if any(not s.is_cached for s in status.sources) else "pinned"
+
+    states = _bundle_source_states(status)
+    action_states = _bundle_action_states(status)
+    if len(action_states) > 1:
+        return "mixed_actions"
+    if action_states:
+        return action_states[0]
+    if "local_changes" in states:
+        return "local_changes"
+    if "not_checked" in states:
+        return "not_checked"
+    if "pinned_missing" in states:
+        return "pinned_missing"
+    if "pinned" in states:
+        return "pinned"
+    return "current"
+
+
+def _bundle_report_plan(
+    bundle_results: dict[str, "BundleStatus"] | None,
+) -> dict[str, SourceReportState]:
+    """Build the one presentation plan used by every update report surface."""
+
+    return {
+        name: _classify_bundle_status(status)
+        for name, status in (bundle_results or {}).items()
+    }
+
+
+def _report_state_text(state: SourceReportState) -> Text:
+    """Render a plain-language report state with the corresponding neutral color."""
+
+    style = (
+        "yellow"
+        if state in _ACTIONABLE_REPORT_STATES
+        else "cyan"
+        if state == "local_changes"
+        else "green"
+        if state == "current"
+        else "dim"
+    )
+    return Text(_REPORT_STATE_LABELS[state], style=style)
+
+
+def _bundle_report_state_text(
+    status: "BundleStatus", state: SourceReportState
+) -> Text:
+    """Describe a bundle's composite action plan without changing its selection."""
+
+    if state != "mixed_actions":
+        return _report_state_text(state)
+    actions = " + ".join(_REPORT_STATE_LABELS[action].lower() for action in _bundle_action_states(status))
+    return Text(f"Mixed actions ({actions})", style="yellow")
+
+
+def _bundle_action_phrase(status: "BundleStatus") -> str:
+    """Turn a composite action set into a compact, grammatical noun phrase."""
+
+    nouns = {
+        "download": "downloads",
+        "refresh_cache": "cache refreshes",
+        "update": "updates",
+    }
+    parts = [nouns[action] for action in _bundle_action_states(status)]
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    if len(parts) > 2:
+        return f"{', '.join(parts[:-1])}, and {parts[-1]}"
+    return parts[0] if parts else "unconfirmed operations"
+
+
+def _bundle_action_lines(
+    bundle_names: list[str],
+    plan: dict[str, SourceReportState],
+    bundle_results: dict[str, "BundleStatus"],
+) -> list[str]:
+    """Group selected bundle targets by their existing, presentation-only plan."""
+
+    counts: dict[SourceReportState, int] = {}
+    mixed: dict[str, int] = {}
+    for name in bundle_names:
+        state = plan.get(name, "not_checked")
+        if state == "mixed_actions":
+            phrase = _bundle_action_phrase(bundle_results[name])
+            mixed[phrase] = mixed.get(phrase, 0) + 1
+        else:
+            counts[state] = counts.get(state, 0) + 1
+    lines = [
+        f"{_REPORT_STATE_LABELS[state]} {count} bundle{'s' if count != 1 else ''}"
+        for state in ("download", "refresh_cache", "update")
+        if (count := counts.get(state, 0))
+    ]
+    lines.extend(
+        f"Process {count} bundle{'s' if count != 1 else ''} with {phrase}"
+        for phrase, count in mixed.items()
+    )
+    lines.extend(
+        f"Process {count} bundle{'s' if count != 1 else ''} with "
+        f"{'local changes' if state == 'local_changes' else 'unconfirmed sources'}"
+        for state in ("local_changes", "not_checked")
+        if (count := counts.get(state, 0))
+    )
+    return lines
+
+
+def _bundle_completion_verb(state: SourceReportState | None) -> str:
+    """Use the checked report plan for a completed bundle operation."""
+
+    return {
+        "download": "Downloaded",
+        "refresh_cache": "Refreshed",
+        "update": "Updated",
+    }.get(state or "not_checked", "Processed")
+
+
+def _bundle_failure_verb(state: SourceReportState | None) -> str:
+    """Describe a failed operation without implying it completed successfully."""
+
+    return {
+        "download": "Failed to download",
+        "refresh_cache": "Failed to refresh",
+        "update": "Failed to update",
+    }.get(state or "not_checked", "Failed to process")
+
+
+def _unconfirmed_source_counts(
+    report, bundle_results: dict[str, "BundleStatus"] | None, umbrella_deps
+) -> tuple[int, int, int]:
+    """Count report rows that cannot support an all-current claim."""
+
+    unchecked: set[str] = set()
+    local_changes: set[str] = set()
+    pinned: set[str] = set()
+
+    for status in (bundle_results or {}).values():
+        if not status.sources:
+            unchecked.add(status.bundle_source or status.bundle_name)
+            continue
+        for source in status.sources:
+            key = source.source_uri
+            state = _classify_source_status(
+                source, has_local_changes=bool(getattr(source, "_has_local_changes", False))
+            )
+            if state == "not_checked":
+                unchecked.add(key)
+            elif state == "local_changes":
+                local_changes.add(key)
+            elif state in ("pinned", "pinned_missing"):
+                pinned.add(key)
+
+    for status in report.local_file_sources:
+        key = f"local:{status.name}"
+        if status.uncommitted_changes or status.unpushed_commits:
+            local_changes.add(key)
+        elif not status.has_remote or not status.remote_sha:
+            unchecked.add(key)
+
+    for status in report.cached_git_sources:
+        if not status.remote_sha or status.remote_sha == "unknown":
+            unchecked.add(f"module:{status.name}")
+
+    for dependency in umbrella_deps or []:
+        remote = dependency.get("remote_sha")
+        if dependency.get("is_local"):
+            if dependency.get("has_changes"):
+                local_changes.add(f"package:{dependency['name']}")
+            else:
+                unchecked.add(f"package:{dependency['name']}")
+        elif not remote or remote == "unknown":
+            unchecked.add(f"package:{dependency['name']}")
+
+    return len(unchecked), len(local_changes), len(pinned)
 
 
 def _normalize_git_url(url: str) -> str:
@@ -668,7 +929,7 @@ async def _get_file_bundle_status(
     if has_local_changes:
         summary = "Local editable install (with uncommitted changes)"
 
-    return SourceStatus(
+    status = SourceStatus(
         source_uri=file_uri,
         is_cached=True,
         has_update=has_update,
@@ -676,6 +937,8 @@ async def _get_file_bundle_status(
         remote_commit=remote_sha,
         summary=summary,
     )
+    status._has_local_changes = has_local_changes
+    return status
 
 
 def _get_active_bundle_name() -> str | None:
@@ -731,6 +994,7 @@ def _show_concise_report(
     has_umbrella_updates: bool,
     umbrella_deps=None,
     bundle_results: dict[str, "BundleStatus"] | None = None,
+    bundle_plan: dict[str, SourceReportState] | None = None,
 ) -> None:
     """Show concise table format for all sources.
 
@@ -764,7 +1028,10 @@ def _show_concise_report(
                     name_display = f"{dep['name']} [dim](local)[/dim]"
                 # Local changes indicator
                 status_symbol = create_status_symbol(
-                    dep["local_sha"], dep["local_sha"], dep.get("has_changes", False)
+                    dep["local_sha"],
+                    dep["local_sha"],
+                    dep.get("has_changes", False),
+                    checked=False,
                 )
                 remote_display = Text("-", style="dim")
             elif dep.get("display_type") == "version":
@@ -774,7 +1041,9 @@ def _show_concise_report(
                 local_display = Text(dep["local_sha"] or "unknown", style="dim")
                 remote_display = Text(dep["remote_sha"] or "unknown", style="dim")
                 status_symbol = create_status_symbol(
-                    dep["local_sha"], dep["remote_sha"]
+                    dep["local_sha"],
+                    dep["remote_sha"],
+                    checked=dep.get("remote_sha") not in (None, "unknown"),
                 )
             else:
                 # Standard git install - compare local vs remote
@@ -782,7 +1051,9 @@ def _show_concise_report(
                 local_display = create_sha_text(dep["local_sha"])
                 remote_display = create_sha_text(dep["remote_sha"])
                 status_symbol = create_status_symbol(
-                    dep["local_sha"], dep["remote_sha"]
+                    dep["local_sha"],
+                    dep["remote_sha"],
+                    checked=dep.get("remote_sha") not in (None, "unknown"),
                 )
 
             table.add_row(
@@ -811,7 +1082,10 @@ def _show_concise_report(
         for status in sorted(report.local_file_sources, key=lambda x: x.name):
             has_local_changes = status.uncommitted_changes or status.unpushed_commits
             status_symbol = create_status_symbol(
-                status.local_sha, status.local_sha, has_local_changes
+                status.local_sha,
+                status.local_sha,
+                has_local_changes,
+                checked=bool(status.has_remote and status.remote_sha),
             )
 
             # Truncate path for display
@@ -843,7 +1117,11 @@ def _show_concise_report(
 
         for name in sorted(unified_modules.keys()):
             info = unified_modules[name]
-            status_symbol = create_status_symbol(info["cached_sha"], info["remote_sha"])
+            status_symbol = create_status_symbol(
+                info["cached_sha"],
+                info["remote_sha"],
+                checked=info["remote_sha"] not in (None, "unknown"),
+            )
 
             table.add_row(
                 name,
@@ -863,9 +1141,10 @@ def _show_concise_report(
         table.add_column("Name", style="green")
         table.add_column("Cached", style="dim", justify="right")
         table.add_column("Remote", style="dim", justify="right")
-        table.add_column("", width=1, justify="center")
+        table.add_column("Status", justify="center")
 
         display_names = _bundle_display_names(bundle_results.keys())
+        bundle_plan = bundle_plan or _bundle_report_plan(bundle_results)
 
         for bundle_name in sorted(
             bundle_results.keys(),
@@ -883,12 +1162,9 @@ def _show_concise_report(
                 cached_sha = None
                 remote_sha = None
 
-            # Status symbol reflects aggregate bundle state (bundle repo + ALL module sources)
-            # not just the bundle repo's SHA - this makes status consistent with "Update X bundles" message
-            if bundle_status.has_updates:
-                status_symbol = Text("●", style="yellow")
-            else:
-                status_symbol = Text("✓", style="green")
+            status_text = _bundle_report_state_text(
+                bundle_status, bundle_plan[bundle_name]
+            )
 
             # Add "(active)" marker if this is the active bundle
             display_name = display_names[bundle_name]
@@ -916,25 +1192,13 @@ def _show_concise_report(
                 display_name,
                 create_sha_text(cached_sha),
                 remote_cell,
-                status_symbol,
+                status_text,
             )
 
         console.print(table)
 
     console.print()
     print_legend()
-
-    # Determine if there are bundle updates
-    has_bundle_updates = bundle_results and any(
-        s.has_updates for s in bundle_results.values()
-    )
-
-    if not check_only and (
-        report.has_updates or has_umbrella_updates or has_bundle_updates
-    ):
-        console.print()
-        console.print("Run [cyan]amplifier update[/cyan] to install")
-
 
 def _print_verbose_item(
     name: str,
@@ -945,6 +1209,7 @@ def _print_verbose_item(
     local_path: str | None = None,
     remote_url: str | None = None,
     ref: str | None = None,
+    status_text: Text | None = None,
 ) -> None:
     """Print a single item in verbose multi-line format."""
     # Header line: name + status
@@ -952,6 +1217,9 @@ def _print_verbose_item(
     header.append(name, style="green bold")
     header.append(" ")
     header.append(status_symbol)
+    if status_text:
+        header.append("  ")
+        header.append(status_text)
     if version:
         header.append(f"  v{version}", style="dim")
     console.print(header)
@@ -986,6 +1254,7 @@ def _show_verbose_report(
     check_only: bool,
     umbrella_deps=None,
     bundle_results: dict[str, "BundleStatus"] | None = None,
+    bundle_plan: dict[str, SourceReportState] | None = None,
 ) -> None:
     """Show detailed multi-line format for each source (no truncation)."""
 
@@ -1000,7 +1269,10 @@ def _show_verbose_report(
             # Handle local installs specially
             if dep.get("is_local"):
                 status_symbol = create_status_symbol(
-                    dep["local_sha"], dep["local_sha"], dep.get("has_changes", False)
+                    dep["local_sha"],
+                    dep["local_sha"],
+                    dep.get("has_changes", False),
+                    checked=False,
                 )
                 _print_verbose_item(
                     name=dep["name"],
@@ -1010,7 +1282,9 @@ def _show_verbose_report(
                 )
             else:
                 status_symbol = create_status_symbol(
-                    dep["local_sha"], dep["remote_sha"]
+                    dep["local_sha"],
+                    dep["remote_sha"],
+                    checked=dep.get("remote_sha") not in (None, "unknown"),
                 )
                 _print_verbose_item(
                     name=dep["name"],
@@ -1075,7 +1349,10 @@ def _show_verbose_report(
 
         for mod in sorted(modules_by_name.values(), key=lambda x: x["name"]):
             status_symbol = create_status_symbol(
-                mod["local_sha"], mod["remote_sha"], mod["has_local_changes"]
+                mod["local_sha"],
+                mod["remote_sha"],
+                mod["has_local_changes"],
+                checked=mod["remote_sha"] not in (None, "unknown"),
             )
             _print_verbose_item(
                 name=mod["name"],
@@ -1092,12 +1369,13 @@ def _show_verbose_report(
     if bundle_results:
         active_bundle = _get_active_bundle_name()
         display_names = _bundle_display_names(bundle_results.keys())
+        bundle_plan = bundle_plan or _bundle_report_plan(bundle_results)
         for bundle_name in sorted(
             bundle_results.keys(),
             key=lambda n: _bundle_row_sort_key(n, bundle_results[n], display_names),
         ):
             status = bundle_results[bundle_name]
-            if status.sources:
+            if status.sources is not None:
                 # Add "(active)" marker if this is the active bundle
                 title_suffix = " (active)" if bundle_name == active_bundle else ""
                 included_by = getattr(status, "included_by", "")
@@ -1106,6 +1384,9 @@ def _show_verbose_report(
                 console.print(
                     f"[bold cyan]Bundle: {display_names[bundle_name]}"
                     f"{title_suffix}[/bold cyan]"
+                )
+                console.print(
+                    _bundle_report_state_text(status, bundle_plan[bundle_name])
                 )
                 console.print()
 
@@ -1120,15 +1401,27 @@ def _show_verbose_report(
                         elif "@" in source_name:
                             source_name = source_name.split("@")[0]
 
-                    status_symbol = create_status_symbol(
-                        source.cached_commit, source.remote_commit
+                    source_state = _classify_source_status(
+                        source,
+                        has_local_changes=bool(
+                            getattr(source, "_has_local_changes", False)
+                        ),
                     )
                     _print_verbose_item(
                         name=source_name,
-                        status_symbol=status_symbol,
+                        status_symbol=_report_state_text(source_state),
                         local_sha=source.cached_commit,
                         remote_sha=source.remote_commit,
-                        remote_url=source.source_uri,
+                        local_path=(
+                            source.source_uri
+                            if source.source_uri.startswith("file://")
+                            else None
+                        ),
+                        remote_url=(
+                            None
+                            if source.source_uri.startswith("file://")
+                            else source.source_uri
+                        ),
                     )
                     console.print()
 
@@ -1345,6 +1638,8 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
     if not force:
         console.print("  Checking bundles...")
     bundle_results = asyncio.run(_check_all_bundle_status())
+    bundle_plan = _bundle_report_plan(bundle_results)
+    bundle_labels = _bundle_display_names(bundle_results.keys())
     has_bundle_updates = (
         any(s.has_updates for s in bundle_results.values()) if bundle_results else False
     )
@@ -1370,6 +1665,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             check_only,
             umbrella_deps=umbrella_deps,
             bundle_results=bundle_results,
+            bundle_plan=bundle_plan,
         )
     else:
         _show_concise_report(
@@ -1378,6 +1674,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             has_umbrella_updates,
             umbrella_deps=umbrella_deps,
             bundle_results=bundle_results,
+            bundle_plan=bundle_plan,
         )
 
     # Check if anything actually needs updating
@@ -1390,12 +1687,33 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
 
     # Exit early if nothing to update
     if nothing_to_update:
-        console.print("[green]✓ All sources up to date[/green]")
+        unchecked, local_changes, pinned = _unconfirmed_source_counts(
+            report, bundle_results, umbrella_deps
+        )
+        if unchecked:
+            console.print(
+                f"[dim]No confirmed updates; {unchecked} source"
+                f"{'s' if unchecked != 1 else ''} could not be checked[/dim]"
+            )
+        elif local_changes:
+            console.print(
+                f"[dim]No confirmed updates; {local_changes} source"
+                f"{'s' if local_changes != 1 else ''} "
+                f"{'have' if local_changes != 1 else 'has'} local changes[/dim]"
+            )
+        elif pinned:
+            console.print(
+                f"[dim]No confirmed updates; {pinned} pinned source"
+                f"{'s' if pinned != 1 else ''} "
+                f"{'were' if pinned != 1 else 'was'} not checked[/dim]"
+            )
+        else:
+            console.print("[green]✓ All sources up to date[/green]")
         return
 
     # Check-only mode (we know there ARE updates if we got here)
     if check_only:
-        console.print("\n[yellow]Updates available:[/yellow]")
+        console.print("\n[yellow]Available actions:[/yellow]")
         if has_umbrella_updates:
             console.print("  • Amplifier (umbrella dependencies have updates)")
         if report.has_updates:
@@ -1404,7 +1722,10 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             bundles_with_updates = [
                 name for name, status in bundle_results.items() if status.has_updates
             ]
-            console.print(f"  • {len(bundles_with_updates)} bundle(s)")
+            for line in _bundle_action_lines(
+                bundles_with_updates, bundle_plan, bundle_results
+            ):
+                console.print(f"  • {line}")
         console.print("\nRun [cyan]amplifier update[/cyan] to install")
         return
 
@@ -1425,8 +1746,10 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
                 f"  • Update {count} cached module{'s' if count != 1 else ''}"
             )
         if bundles_with_updates:
-            count = len(bundles_with_updates)
-            console.print(f"  • Update {count} bundle{'s' if count != 1 else ''}")
+            for line in _bundle_action_lines(
+                bundles_with_updates, bundle_plan, bundle_results
+            ):
+                console.print(f"  • {line}")
         if has_umbrella_updates:
             console.print(
                 "  • Update Amplifier to latest version (dependencies have updates)"
@@ -1540,7 +1863,11 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         for item in result.staged:
             console.print(f"  [yellow]→[/yellow] {item} [dim](staged)[/dim]")
         for bundle_name in bundle_updated:
-            console.print(f"  [green]✓[/green] Bundle: {bundle_name}")
+            console.print(
+                f"  [green]✓[/green] "
+                f"{_bundle_completion_verb(bundle_plan.get(bundle_name))} bundle: "
+                f"{escape_markup(bundle_labels[bundle_name])}"
+            )
         for msg in result.messages:
             console.print(f"  {msg}")
     else:
@@ -1553,14 +1880,20 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         for item in result.staged:
             console.print(f"  [yellow]→[/yellow] {item} [dim](staged)[/dim]")
         for bundle_name in bundle_updated:
-            console.print(f"  [green]✓[/green] Bundle: {bundle_name}")
+            console.print(
+                f"  [green]✓[/green] "
+                f"{_bundle_completion_verb(bundle_plan.get(bundle_name))} bundle: "
+                f"{escape_markup(bundle_labels[bundle_name])}"
+            )
         for item in result.failed:
             error = result.errors.get(item, "Unknown error")
             console.print(f"  [red]✗[/red] {item}: {escape_markup(error)}")
         for bundle_name in bundle_failed:
             error = bundle_errors.get(bundle_name, "Unknown error")
             console.print(
-                f"  [red]✗[/red] Bundle: {bundle_name}: {escape_markup(error)}"
+                f"  [red]✗[/red] "
+                f"{_bundle_failure_verb(bundle_plan.get(bundle_name))} bundle: "
+                f"{escape_markup(bundle_labels[bundle_name])}: {escape_markup(error)}"
             )
         for msg in result.messages:
             console.print(f"  {msg}")

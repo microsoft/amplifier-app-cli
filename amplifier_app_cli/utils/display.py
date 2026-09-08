@@ -11,16 +11,25 @@ from rich.text import Text
 console = Console()
 
 
-def create_status_symbol(local_sha: str | None, remote_sha: str | None, has_local_changes: bool = False) -> Text:
+def create_status_symbol(
+    local_sha: str | None,
+    remote_sha: str | None,
+    has_local_changes: bool = False,
+    *,
+    checked: bool = True,
+) -> Text:
     """Create styled status symbol based on update state.
 
     Returns:
         ● (yellow) - update available (remote has value and local is missing or different)
         ◦ (cyan) - local changes
         ✓ (green) - up to date
+        ? (dim) - comparison was not available
     """
     if has_local_changes:
         return Text("◦", style="cyan")
+    if not checked:
+        return Text("?", style="dim")
     # Update available if: remote exists AND (local is missing OR local differs from remote)
     if remote_sha and (not local_sha or local_sha != remote_sha):
         return Text("●", style="yellow")
@@ -35,7 +44,7 @@ def create_sha_text(sha: str | None, style: str = "dim") -> Text:
 def print_legend() -> None:
     """Print status symbol legend at the bottom of reports."""
     console.print(
-        "[dim]Legend: [green]✓[/green] up to date  [yellow]●[/yellow] update available  [cyan]◦[/cyan] local changes[/dim]"
+        "[dim]Legend: [green]✓[/green] up to date  [yellow]●[/yellow] update available  [cyan]◦[/cyan] local changes  ? not checked[/dim]"
     )
 
 
