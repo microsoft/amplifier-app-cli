@@ -6,9 +6,100 @@ messages, used consistently across live chat, history display, and replay mode.
 Zero duplication: All message rendering goes through these functions.
 """
 
+from collections.abc import Mapping
+
 from rich.console import Console
 
 from ..console import Markdown
+
+
+def is_displayable_session_message(message: Mapping[str, object]) -> bool:
+    """Return whether a persisted message belongs in session history or replay.
+
+    Persisted ephemeral reminder envelopes remain part of the session context,
+    but do not represent user-facing conversation history.
+    """
+    if not isinstance(message, Mapping):
+        return False
+
+    role = message.get("role")
+    if role == "assistant":
+        return True
+    if role != "user":
+        return False
+
+    metadata = message.get("metadata")
+    is_persisted_ephemeral_reminder = (
+        isinstance(metadata, Mapping)
+        and metadata.get("ephemeral") is True
+        and metadata.get("persisted") is True
+        and _is_reminder_content(message.get("content"))
+    )
+    return not is_persisted_ephemeral_reminder
+
+
+def _is_reminder_content(content: object) -> bool:
+    """Recognize only complete persisted reminder envelopes."""
+    if isinstance(content, str):
+        return _is_reminder_envelope(content.strip())
+
+    if not isinstance(content, list) or not content:
+        return False
+
+    found_envelope = False
+    for block in content:
+        if not isinstance(block, Mapping) or block.get("type") != "text":
+            return False
+        text = block.get("text")
+        if not isinstance(text, str):
+            return False
+        stripped_text = text.strip()
+        if stripped_text:
+            if not _is_reminder_envelope(stripped_text):
+                return False
+            found_envelope = True
+    return found_envelope
+
+
+def _is_reminder_envelope(text: str) -> bool:
+    """Recognize one complete singular or plural reminder wrapper."""
+    singular_open = "<system-reminder"
+    singular_close = "</system-reminder>"
+    plural_open = "<system-reminders>"
+    plural_close = "</system-reminders>"
+
+    if text.startswith(plural_open) and text.endswith(plural_close):
+        body = text[len(plural_open) : -len(plural_close)]
+        return not _contains_tag(body, "system-reminders")
+
+    if not text.startswith(singular_open) or not text.endswith(singular_close):
+        return False
+
+    opening_end = len(singular_open)
+    if text[opening_end : opening_end + 1] == ">":
+        opening_end += 1
+    elif text.startswith(' source="', opening_end):
+        source_end = text.find('"', opening_end + len(' source="'))
+        if source_end == -1 or text[source_end + 1 : source_end + 2] != ">":
+            return False
+        opening_end = source_end + 2
+    else:
+        return False
+
+    body = text[opening_end : -len(singular_close)]
+    return not _contains_tag(body, "system-reminder")
+
+
+def _contains_tag(text: str, name: str) -> bool:
+    """Return whether text contains an opening or closing tag with this exact name."""
+    for prefix in (f"<{name}", f"</{name}"):
+        position = text.find(prefix)
+        while position != -1:
+            boundary = position + len(prefix)
+            if text[boundary : boundary + 1] in (">", " ", "\t", "\r", "\n"):
+                return True
+            position = text.find(prefix, boundary)
+    return False
 
 
 def render_message(

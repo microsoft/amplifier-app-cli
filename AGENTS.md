@@ -62,3 +62,11 @@ Use the same word-status vocabulary in every `amplifier update` section,
 including verbose output.
 Exercise the real Click command in `tests/test_update_reporting.py`; mock only
 status/apply boundaries so tests never touch a user's caches or installation.
+
+## Persisted reminder display
+
+`ui.is_displayable_session_message()` is display-only: history and replay hide
+only persisted transcript entries marked `ephemeral is True` and
+`persisted is True` whose content is a reminder envelope. Keep the original
+transcript and its source metadata intact so resume context restores the reminders;
+`reminder_placement` controls ordering, not display eligibility.
