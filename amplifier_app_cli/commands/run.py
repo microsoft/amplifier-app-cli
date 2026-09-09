@@ -273,6 +273,20 @@ def register_run_command(
         """Execute a prompt or start an interactive session."""
         from ..session_store import SessionStore
 
+        diagnostics_to_stderr = output_format in ["json", "json-trace"]
+        original_stdout = sys.stdout
+        original_console_file = console._file
+
+        def restore_diagnostic_streams() -> None:
+            if diagnostics_to_stderr:
+                sys.stdout = original_stdout
+                console.file = original_console_file
+
+        if diagnostics_to_stderr:
+            sys.stdout = sys.stderr
+            console.file = sys.stderr
+            click.get_current_context().call_on_close(restore_diagnostic_streams)
+
         # Handle --resume flag
         if resume:
             store = SessionStore()
@@ -359,12 +373,6 @@ def register_run_command(
         # GAP-027: wrapped for scoped SIGINT handling + a clean cancellation
         # message instead of a raw traceback landing wherever an interrupt
         # happens to surface (see _resolve_config_interruptibly docstring).
-        diagnostics_to_stderr = output_format in ["json", "json-trace"]
-        original_stdout = sys.stdout
-        original_console_file = console._file
-        if diagnostics_to_stderr:
-            sys.stdout = sys.stderr
-            console.file = sys.stderr
         try:
             config_data, prepared_bundle = _resolve_config_interruptibly(
                 bundle_name=bundle,
@@ -417,10 +425,6 @@ def register_run_command(
                 )
             )
             sys.exit(1)
-        finally:
-            if diagnostics_to_stderr:
-                sys.stdout = original_stdout
-                console.file = original_console_file
 
         search_paths = get_module_search_paths()
 
@@ -557,6 +561,7 @@ def register_run_command(
 
         # Run update check (uses unified startup_checker with settings.yaml)
         _run_startup_update_check()
+        restore_diagnostic_streams()
 
         if mode == "chat":
             # Interactive mode - supports optional initial_prompt for auto-execution

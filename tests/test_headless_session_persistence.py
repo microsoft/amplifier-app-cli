@@ -264,6 +264,12 @@ def test_run_routes_preparation_output_away_from_json_payload(
         test_console.print("PREPARATION CONSOLE MARKER")
         return {}, prepared_bundle
 
+    startup_console = Console()
+
+    def _startup_check() -> None:
+        print("STARTUP MARKER")
+        startup_console.print("STARTUP CONSOLE MARKER")
+
     register_run_command(
         cli,
         interactive_chat=AsyncMock(),
@@ -282,7 +288,10 @@ def test_run_routes_preparation_output_away_from_json_payload(
             "amplifier_app_cli.commands.run.create_config_manager",
             return_value=MagicMock(get_merged_settings=dict),
         ),
-        patch("amplifier_app_cli.commands.run._run_startup_update_check"),
+        patch(
+            "amplifier_app_cli.commands.run._run_startup_update_check",
+            side_effect=_startup_check,
+        ),
         patch(
             f"{_MAIN}.create_initialized_session",
             new=AsyncMock(return_value=initialized),
@@ -298,10 +307,14 @@ def test_run_routes_preparation_output_away_from_json_payload(
     stream = result.stderr if marker_stream == "stderr" else result.stdout
     assert "PREPARATION MARKER" in stream
     assert "PREPARATION CONSOLE MARKER" in stream
+    assert "STARTUP MARKER" in stream
+    assert "STARTUP CONSOLE MARKER" in stream
 
     if output_format in {"json", "json-trace"}:
         assert "PREPARATION MARKER" not in result.stdout
         assert "PREPARATION CONSOLE MARKER" not in result.stdout
+        assert "STARTUP MARKER" not in result.stdout
+        assert "STARTUP CONSOLE MARKER" not in result.stdout
         payload = json.loads(result.stdout)
         assert payload["status"] == "success"
         assert payload["session_id"] == _SESSION_ID

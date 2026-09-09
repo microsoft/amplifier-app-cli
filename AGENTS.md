@@ -78,6 +78,8 @@ Save paths preserving metadata from an earlier hook must use
 user-requested lookups and must still fail for a missing session.
 JSON output paths must restore the console's configured backing stream, not a
 dynamic temporary stdout capture.
+Run-command diagnostics before headless execution belong on stderr so JSON
+stdout remains one parseable payload.
 
 ## Interactive slash completion
 
