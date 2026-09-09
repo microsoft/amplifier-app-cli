@@ -69,6 +69,30 @@ The kernel doesn't enforce any precedence. The capability contract is just
 "spawn a sub-session" — what each implementation does with provider preferences
 is its own choice.
 
+## Resume continuity
+
+Resume reconstructs a child from a redacted persisted mount plan. Before the
+child is mounted it writes the one effective, serialized preference chain back
+to `config.provider_preferences`. The sources are ordered:
+
+1. Preferences supplied to this resume call.
+2. The prior explicit caller override saved as
+   `caller_provider_preferences`.
+3. The persisted agent overlay's authored preferences.
+4. Legacy `config.provider_preferences` from sessions saved before the
+   caller-provenance field existed.
+
+The separate caller field is deliberate: a caller's temporary routing choice
+must survive a cold resume without mutating the agent definition that new
+children will inherit. An explicit override on a later resume replaces that
+field for subsequent cold resumes.
+
+Credential refresh is also resume-only. It restores only sensitive leaves that
+are exactly `[REDACTED]` from matching live provider/module settings, including
+registered agent module sections. It never deep-merges live settings into the
+persisted plan, so child URLs, priority order, and routing configuration remain
+the child's own.
+
 ## In-process system-prompt inheritance
 
 For an in-process `agent_name: self` child, the CLI renders the root prepared

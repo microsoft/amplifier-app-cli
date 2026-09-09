@@ -4,6 +4,7 @@ Implements sub-session creation with configuration inheritance and overlays.
 """
 
 import copy
+import inspect
 import logging
 import os
 import sys
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from amplifier_core import AmplifierSession
+from amplifier_core.utils.truncate import SENSITIVE_KEYS
 from amplifier_foundation import generate_sub_session_id
 from amplifier_foundation import bridge_child_cost
 from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
@@ -674,7 +676,9 @@ def _filter_hooks(
 _REDACTION_SENTINEL = "[REDACTED]"
 
 
-def _find_redacted_values(value: object, path: str = "") -> list[str]:
+def _find_redacted_values(
+    value: object, path: str = "", is_sensitive_value: bool = False
+) -> list[str]:
     """Recursively collect dotted/bracketed paths still holding the redaction sentinel.
 
     Used at resume time (see resume_sub_session's credential refresh) to detect
@@ -695,11 +699,17 @@ def _find_redacted_values(value: object, path: str = "") -> list[str]:
     found: list[str] = []
     if isinstance(value, dict):
         for key, sub_value in value.items():
-            found.extend(_find_redacted_values(sub_value, f"{path}.{key}"))
+            found.extend(
+                _find_redacted_values(
+                    sub_value,
+                    f"{path}.{key}",
+                    isinstance(key, str) and key.lower() in SENSITIVE_KEYS,
+                )
+            )
     elif isinstance(value, list):
         for index, item in enumerate(value):
             found.extend(_find_redacted_values(item, f"{path}[{index}]"))
-    elif value == _REDACTION_SENTINEL:
+    elif is_sensitive_value and value == _REDACTION_SENTINEL:
         found.append(path or "<root>")
     return found
 
@@ -1038,6 +1048,11 @@ async def spawn_sub_session(
             merged_config, hook_inheritance, agent_hook_modules
         )
 
+    # Keep caller intent separate from the agent-authored fallback.  The
+    # merged mount plan gets the actual effective chain below, while metadata
+    # records only an explicit caller override for cold resume precedence.
+    _caller_provider_preferences = _serialize_provider_preferences(provider_preferences)
+
     # Defense-in-depth: read routing-resolved provider_preferences from agent config
     # when no explicit preferences were passed by the caller.
     # The routing hook (hooks-routing) writes provider_preferences into agent configs
@@ -1061,13 +1076,44 @@ async def spawn_sub_session(
                 len(provider_preferences),
             )
 
-    # Apply provider preferences if specified (ordered fallback chain)
-    if provider_preferences:
-        from amplifier_foundation import apply_provider_preferences_with_resolution
+    # Serialize the same complete ordered chain that resolution sees before
+    # mounting and persisting.  In particular, do not leave an older
+    # agent/default chain at config["provider_preferences"] when a caller
+    # supplied a different preference.
+    _effective_provider_preferences = _serialize_provider_preferences(
+        provider_preferences
+    )
+    if _effective_provider_preferences:
+        merged_config = {
+            **merged_config,
+            "provider_preferences": _effective_provider_preferences,
+        }
+    else:
+        merged_config = dict(merged_config)
+        merged_config.pop("provider_preferences", None)
 
-        merged_config = await apply_provider_preferences_with_resolution(
+    # Apply provider preferences if specified (ordered fallback chain).
+    # Newer Foundation records every attempt in ``_resolution_diagnostics``;
+    # it suppresses its per-attempt warning when a sink is supplied so the
+    # CLI can emit one final, truthful diagnostic after the full chain fails.
+    _spawn_preference_failure: dict[str, Any] | None = None
+    if provider_preferences:
+        merged_config, _resolution_diagnostics = await _apply_provider_preferences(
             merged_config, provider_preferences, parent_session.coordinator
         )
+        failure = _preference_failure(
+            _resolution_diagnostics,
+            merged_config.get("providers") or [],
+            provider_preferences,
+        )
+        if failure is not None:
+            _spawn_preference_failure = {
+                "agent_name": agent_name,
+                "preferences_source": (
+                    "caller" if _caller_provider_preferences else "agent_overlay"
+                ),
+                **failure,
+            }
 
     # Apply orchestrator config override if specified (recipe-level rate limiting)
     # Session reads orchestrator config from: config["session"]["orchestrator"]["config"]
@@ -1470,6 +1516,18 @@ async def spawn_sub_session(
     # This gives us status, turn_count, and metadata from the orchestrator
     completion_data: dict = {}
     hooks = child_session.coordinator.get("hooks")
+    if _spawn_preference_failure is not None:
+        _spawn_preference_failure["session_id"] = sub_session_id
+        logger.warning(
+            "Sub-session %s: provider preference chain was unresolved "
+            "(reason=%s); selected provider=%s model=%s.",
+            sub_session_id,
+            _spawn_preference_failure["reason"],
+            _spawn_preference_failure["provider"],
+            _spawn_preference_failure["model"],
+        )
+        if hooks:
+            await hooks.emit("provider:fallback", _spawn_preference_failure)
     unregister_hook = None
     if hooks:
         from amplifier_core.hooks import HookResult
@@ -1535,6 +1593,8 @@ async def spawn_sub_session(
         # Store working_dir for session sync between CLI and web
         "working_dir": str(Path.cwd().resolve()),
     }
+    if _caller_provider_preferences:
+        metadata["caller_provider_preferences"] = _caller_provider_preferences
     # This persistence metadata is intentionally outside config/session
     # metadata, so it is never emitted through kernel telemetry.
     if base_prompt_snapshot:
@@ -1650,6 +1710,19 @@ def _normalize_model_role(model_role: str | list[str] | None) -> list[str]:
     return [role for role in model_role if isinstance(role, str)]
 
 
+def _serialize_provider_preferences(raw: Any) -> list[dict[str, Any]]:
+    """Return the durable, full ordered preference chain without mutating it."""
+    if not raw:
+        return []
+    serialized: list[dict[str, Any]] = []
+    for entry in raw:
+        if isinstance(entry, dict):
+            serialized.append(copy.deepcopy(entry))
+        elif callable(getattr(entry, "to_dict", None)):
+            serialized.append(copy.deepcopy(entry.to_dict()))
+    return serialized
+
+
 def _coerce_provider_preferences(raw: Any) -> list:
     """Coerce persisted/passed preferences to ProviderPreference objects.
 
@@ -1734,6 +1807,176 @@ def _effective_provider(providers: list) -> dict | None:
     return best
 
 
+async def _apply_provider_preferences(
+    config: dict,
+    preferences: list,
+    coordinator: Any,
+) -> tuple[dict, list[Any] | None]:
+    """Call Foundation's resolver, opting into its diagnostics when available.
+
+    CLI releases supported before Foundation's diagnostics sink remain usable.
+    The compatibility decision is based on the callable's inspected signature,
+    never by swallowing an unrelated ``TypeError`` raised inside Foundation.
+    """
+    from amplifier_foundation import apply_provider_preferences_with_resolution
+
+    parameters = inspect.signature(
+        apply_provider_preferences_with_resolution
+    ).parameters.values()
+    supports_diagnostics = any(
+        parameter.name == "diagnostics"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+    diagnostics: list[Any] | None = [] if supports_diagnostics else None
+    if diagnostics is None:
+        return (
+            await apply_provider_preferences_with_resolution(
+                config, preferences, coordinator
+            ),
+            None,
+        )
+    return (
+        await apply_provider_preferences_with_resolution(
+            config, preferences, coordinator, diagnostics=diagnostics
+        ),
+        diagnostics,
+    )
+
+
+def _preference_failure(
+    diagnostics: list[Any] | None,
+    providers: list,
+    preferences: list,
+) -> dict[str, Any] | None:
+    """Describe an unresolved preference chain, or ``None`` after success."""
+    if diagnostics is not None:
+        if any(getattr(result, "status", None) == "resolved" for result in diagnostics):
+            return None
+        terminal = diagnostics[-1] if diagnostics else None
+        statuses = [
+            getattr(result, "status", None) for result in diagnostics if result is not None
+        ]
+        if statuses and all(status == "provider_not_mounted" for status in statuses):
+            reason = "preferred_provider_not_mounted"
+        elif getattr(terminal, "status", None):
+            reason = terminal.status
+        else:
+            reason = "provider_preferences_unresolved"
+    else:
+        # Older Foundation has no truthful resolution result. Retain the
+        # pre-diagnostics compatibility check rather than claiming a result
+        # exists where that Foundation release cannot report one.
+        if _find_promoted_provider(providers, preferences) is not None:
+            return None
+        reason = "preferred_provider_not_mounted"
+
+    landed = _effective_provider(providers)
+    return {
+        "reason": reason,
+        "provider": (landed or {}).get("module"),
+        "model": ((landed or {}).get("config") or {}).get("default_model"),
+    }
+
+
+def _provider_override_configs(overrides: Any) -> dict[str, dict[str, Any]]:
+    """Index live provider overrides by both module and instance identity."""
+    result: dict[str, dict[str, Any]] = {}
+    for override in overrides or []:
+        if not isinstance(override, dict) or not isinstance(
+            override.get("config"), dict
+        ):
+            continue
+        for key in (override.get("module"), override.get("id")):
+            if isinstance(key, str):
+                result[key] = override["config"]
+    return result
+
+
+def _refresh_section_redacted_secrets(
+    section: Any,
+    config_overrides: dict[str, Any],
+    *,
+    provider_overrides: dict[str, dict[str, Any]] | None = None,
+    notification_overrides: dict[str, dict[str, Any]] | None = None,
+) -> Any:
+    """Restore redacted secret leaves in one active or registered module list."""
+    if not isinstance(section, list):
+        return section
+
+    from amplifier_app_cli.runtime.config import restore_redacted_secret_values
+
+    refreshed: list[Any] = []
+    changed = False
+    for item in section:
+        if not isinstance(item, dict) or not isinstance(item.get("config"), dict):
+            refreshed.append(item)
+            continue
+        module = item.get("module")
+        identities = (item.get("id"), module)
+        live_configs: list[dict[str, Any]] = []
+        if isinstance(module, str) and isinstance(config_overrides.get(module), dict):
+            live_configs.append(config_overrides[module])
+        for mapping in (provider_overrides, notification_overrides):
+            if mapping:
+                for identity in identities:
+                    if isinstance(identity, str) and isinstance(mapping.get(identity), dict):
+                        live_configs.append(mapping[identity])
+
+        config = item["config"]
+        for live_config in live_configs:
+            config = restore_redacted_secret_values(config, live_config)
+        if config != item["config"]:
+            refreshed.append({**item, "config": config})
+            changed = True
+        else:
+            refreshed.append(item)
+    return refreshed if changed else section
+
+
+def _refresh_registered_agent_secrets(
+    agents: Any,
+    config_overrides: dict[str, Any],
+    provider_overrides: dict[str, dict[str, Any]],
+    notification_overrides: dict[str, dict[str, Any]],
+) -> Any:
+    """Refresh registered agents recursively without adding absent modules."""
+    if not isinstance(agents, dict):
+        return agents
+    result: dict[str, Any] = {}
+    changed = False
+    for name, agent_config in agents.items():
+        if not isinstance(agent_config, dict):
+            result[name] = agent_config
+            continue
+        refreshed = agent_config
+        for section_name in ("providers", "tools", "hooks"):
+            section = refreshed.get(section_name)
+            new_section = _refresh_section_redacted_secrets(
+                section,
+                config_overrides,
+                provider_overrides=(
+                    provider_overrides if section_name == "providers" else None
+                ),
+                notification_overrides=(
+                    notification_overrides if section_name == "hooks" else None
+                ),
+            )
+            if new_section is not section:
+                refreshed = {**refreshed, section_name: new_section}
+        nested = _refresh_registered_agent_secrets(
+            refreshed.get("agents"),
+            config_overrides,
+            provider_overrides,
+            notification_overrides,
+        )
+        if nested is not refreshed.get("agents"):
+            refreshed = {**refreshed, "agents": nested}
+        result[name] = refreshed
+        changed = changed or refreshed is not agent_config
+    return result if changed else agents
+
+
 async def resume_sub_session(
     sub_session_id: str,
     instruction: str,
@@ -1802,11 +2045,15 @@ async def resume_sub_session(
         ) from e
 
     # Extract reconstruction data
-    merged_config = metadata.get("config")
-    if not merged_config:
+    persisted_config = metadata.get("config")
+    if not persisted_config:
         raise RuntimeError(
             f"Corrupted session metadata for '{sub_session_id}'. Cannot reconstruct session without config."
         )
+    # Never mutate the object SessionStore returned.  Tests and callers may
+    # retain it, and resume-specific credential hydration belongs only to this
+    # reconstructed child.
+    merged_config = copy.deepcopy(persisted_config)
 
     parent_id = metadata.get("parent_id")
     agent_name = metadata.get("agent_name", "unknown")
@@ -1839,106 +2086,60 @@ async def resume_sub_session(
     # overrides, then hook overrides, then env-var expansion) -- just applied
     # to the loaded snapshot instead of a freshly prepared bundle.
     # --------------------------------------------------------------------------
-    if merged_config.get("providers") or merged_config.get("hooks"):
+    if any(
+        merged_config.get(section)
+        for section in ("providers", "tools", "hooks", "agents")
+    ):
         from amplifier_app_cli.lib.settings import AppSettings
         from amplifier_app_cli.runtime.config import (
-            _apply_hook_overrides,
-            _apply_provider_overrides,
-            _map_id_to_instance_id,
-            deep_merge,
             expand_env_vars,
-            narrow_overrides_to_secrets,
         )
 
         _live_settings = AppSettings()
+        _config_overrides_raw = _live_settings.get_config_overrides()
+        _config_overrides = (
+            _config_overrides_raw
+            if isinstance(_config_overrides_raw, dict)
+            else {}
+        )
+        _provider_overrides = _provider_override_configs(
+            _live_settings.get_provider_overrides()
+        )
+        _notification_overrides = _provider_override_configs(
+            _live_settings.get_notification_hook_overrides()
+        )
 
-        if merged_config.get("providers"):
-            # SECRETS ONLY -- see narrow_overrides_to_secrets() for the full
-            # rationale (model_performance-rc0 / -n1i).
-            #
-            # The unnarrowed merge re-imposed EVERY settings key on the
-            # child's own persisted mount plan. `config.priority` is the
-            # load-bearing casualty: a sub-session spawned with a
-            # model_role/provider_preferences promotion carries priority: 0
-            # on the promoted provider, and the settings priority overwrote
-            # it -- so the resumed leg silently re-resolved to the settings
-            # priority-0 provider (measured: 39/66 delegate resumes changed
-            # model, 37 of them cheap -> expensive, basis="priority" on both
-            # sides). `reasoning_effort` and every other per-candidate config
-            # key were structurally exposed to the same wipe.
-            #
-            # Only the keys that redact_secrets() actually redacted need
-            # restoring here, so only those are allowed through.
-            _live_provider_overrides = narrow_overrides_to_secrets(
-                _live_settings.get_provider_overrides()
+        _refreshed_config = dict(merged_config)
+        for _section_name in ("providers", "tools", "hooks"):
+            _section = merged_config.get(_section_name)
+            _new_section = _refresh_section_redacted_secrets(
+                _section,
+                _config_overrides,
+                provider_overrides=(
+                    _provider_overrides
+                    if _section_name == "providers"
+                    else None
+                ),
+                notification_overrides=(
+                    _notification_overrides if _section_name == "hooks" else None
+                ),
             )
-            if _live_provider_overrides:
-                _refreshed_providers = _apply_provider_overrides(
-                    merged_config["providers"], _live_provider_overrides
-                )
-                _refreshed_providers = _map_id_to_instance_id(_refreshed_providers)
-                merged_config = {**merged_config, "providers": _refreshed_providers}
-                logger.debug(
-                    "Refreshed credentials for %d provider(s) at resume time",
-                    len(_refreshed_providers),
-                )
+            if _new_section is not _section:
+                _refreshed_config[_section_name] = _new_section
 
-        if merged_config.get("hooks"):
-            # Generalization of the provider refresh above. Re-derive hook
-            # config from the SAME two live sources resolve_bundle_config()
-            # uses to build a fresh session's hooks section:
-            #   1. "overrides.<module>.config" in settings.yaml -- applies to
-            #      ANY module id, hooks included (AppSettings.get_config_overrides()).
-            #   2. Dedicated notification hook overrides
-            #      (AppSettings.get_notification_hook_overrides()).
-            # This is the piece that was previously MISSING: only providers
-            # were refreshed, so a resumed sub-session kept sending
-            # `Bearer [REDACTED]` for any hook/destination api_key.
-            #
-            # DELIBERATE ASYMMETRY with the provider refresh above, which is
-            # narrowed to secrets. Hooks are NOT narrowed, for two reasons:
-            #   1. Nothing in a hook entry carries per-session RESOLUTION
-            #      state. The provider wipe mattered because `config.priority`
-            #      decides which model a leg runs on; a hook has no analogue.
-            #   2. get_notification_hook_overrides() legitimately APPENDS
-            #      hooks that are absent from the persisted plan (see
-            #      _apply_hook_overrides). Narrowing to secrets would append
-            #      those hooks stripped of `enabled`/`topic`/etc, breaking
-            #      notifications on resumed sub-sessions to fix a defect not
-            #      observed here.
-            # The same over-reach IS structurally possible for a hook whose
-            # config an agent overlay customised (settings would re-impose its
-            # own value at resume). No instance has been measured; narrowing
-            # this path needs its own evidence, not a speculative change.
-            _config_overrides = _live_settings.get_config_overrides()
-            _refreshed_hooks = merged_config["hooks"]
-            if _config_overrides:
-                _refreshed_hooks = [
-                    {
-                        **hook,
-                        "config": deep_merge(
-                            hook.get("config", {}) or {},
-                            _config_overrides[hook["module"]],
-                        ),
-                    }
-                    if isinstance(hook, dict)
-                    and hook.get("module") in _config_overrides
-                    else hook
-                    for hook in _refreshed_hooks
-                ]
-            _notification_overrides = _live_settings.get_notification_hook_overrides()
-            if _notification_overrides:
-                _refreshed_hooks = _apply_hook_overrides(
-                    _refreshed_hooks, _notification_overrides
-                )
-            merged_config = {**merged_config, "hooks": _refreshed_hooks}
-            logger.debug(
-                "Refreshed credentials for %d hook(s) at resume time",
-                len(_refreshed_hooks),
-            )
+        _new_agents = _refresh_registered_agent_secrets(
+            merged_config.get("agents"),
+            _config_overrides,
+            _provider_overrides,
+            _notification_overrides,
+        )
+        if _new_agents is not merged_config.get("agents"):
+            _refreshed_config["agents"] = _new_agents
+        merged_config = _refreshed_config
 
-        # Expand any ${VAR} references now that live overrides have been
-        # spliced in -- covers both providers and hooks in one pass.
+        # Live secret values may be ${ENV} placeholders.  Expand after
+        # restoration, once, without importing any module absent from the
+        # persisted plan.
         merged_config = expand_env_vars(merged_config)
 
         # Fail-loud guard: if a secret-bearing field STILL reads the
@@ -1961,16 +2162,21 @@ async def resume_sub_session(
         # gap at no extra cost.
         _redacted_paths = _find_redacted_values(merged_config)
         if _redacted_paths:
+            _active_paths = [
+                path for path in _redacted_paths if not path.startswith(".agents.")
+            ]
+            _dormant_agent_paths = [
+                path for path in _redacted_paths if path.startswith(".agents.")
+            ]
             logger.warning(
-                "Sub-session %s: %d config field(s) still hold the "
-                "redaction sentinel '%s' after credential refresh (no live "
-                "override found to restore them): %s. These fields are "
-                "mounted as-is; the destination/consumer is expected to "
-                "reject them rather than receive a fake credential.",
+                "Sub-session %s: credential refresh left %d active config "
+                "field(s) and %d dormant registered-agent field(s) redacted "
+                "(no matching usable live value): active=%s dormant_agents=%s.",
                 sub_session_id,
-                len(_redacted_paths),
-                _REDACTION_SENTINEL,
-                _redacted_paths,
+                len(_active_paths),
+                len(_dormant_agent_paths),
+                _active_paths,
+                _dormant_agent_paths,
             )
 
     # --- Rebuild the provider promotion --------------------------------------
@@ -1989,12 +2195,17 @@ async def resume_sub_session(
             "model_role": _normalize_model_role(model_role),
         }
 
-    # Precedence: what the caller threaded > the agent overlay as persisted >
-    # the persisted mount plan's own copy. The last two are recovery sources:
-    # they let a caller that still resumes with (session_id, instruction) keep
-    # its promotion, which is what makes this fix reach existing sessions.
+    # Precedence: current caller > persisted caller override > original agent
+    # overlay > legacy saved mount plan.  ``caller_provider_preferences`` is
+    # intentionally separate from the agent overlay so one turn's caller
+    # routing never rewrites the agent definition used by future children.
     _resume_preferences = _coerce_provider_preferences(provider_preferences)
     _preferences_source = "caller"
+    if not _resume_preferences:
+        _resume_preferences = _coerce_provider_preferences(
+            metadata.get("caller_provider_preferences")
+        )
+        _preferences_source = "persisted_caller"
     if not _resume_preferences:
         _resume_preferences = _coerce_provider_preferences(
             _resume_agent_overlay.get("provider_preferences")
@@ -2006,58 +2217,62 @@ async def resume_sub_session(
         )
         _preferences_source = "persisted_config"
 
+    _canonical_resume_preferences = _serialize_provider_preferences(
+        _resume_preferences
+    )
+    if _canonical_resume_preferences:
+        merged_config = {
+            **merged_config,
+            "provider_preferences": _canonical_resume_preferences,
+        }
+    else:
+        merged_config = dict(merged_config)
+        merged_config.pop("provider_preferences", None)
+
+    # An explicit resume override becomes the persisted caller override for
+    # the next cold resume.  Do not replace it with an agent default merely
+    # because this leg happened to use that recovery source.
+    _explicit_resume_preferences = _serialize_provider_preferences(
+        provider_preferences
+    )
+    if _explicit_resume_preferences:
+        metadata["caller_provider_preferences"] = _explicit_resume_preferences
+
     _promotion_fallback: dict | None = None
     if _resume_preferences:
-        from amplifier_foundation import apply_provider_preferences_with_resolution
-
-        # parent_session may be absent (the root-registered resume capability
-        # passes none). apply_provider_preferences_with_resolution only needs a
-        # coordinator to expand GLOB model patterns and already degrades to
-        # "use the pattern as-is" when it cannot query one, so passing None is
-        # safe rather than fatal.
+        # parent_session may be absent for a cold/root resume. Foundation's
+        # result diagnostics distinguish that a mounted provider's model
+        # catalog was unavailable from a provider that was absent entirely.
         _resume_coordinator = (
             parent_session.coordinator if parent_session is not None else None
         )
-        merged_config = await apply_provider_preferences_with_resolution(
+        merged_config, _resolution_diagnostics = await _apply_provider_preferences(
             merged_config, _resume_preferences, _resume_coordinator
         )
 
-        _promoted = _find_promoted_provider(
-            merged_config.get("providers") or [], _resume_preferences
+        _failure = _preference_failure(
+            _resolution_diagnostics,
+            merged_config.get("providers") or [],
+            _resume_preferences,
         )
-        if _promoted is not None:
+        if _failure is None:
             logger.debug(
                 "Sub-session %s: re-applied provider promotion on resume "
-                "(provider=%s, model=%s, preferences from %s)",
+                "(preferences from %s)",
                 sub_session_id,
-                _promoted.get("module"),
-                (_promoted.get("config") or {}).get("default_model"),
                 _preferences_source,
             )
         else:
-            # FAIL LOUD, DO NOT SILENTLY RE-RESOLVE. Silent re-resolution by
-            # settings priority is exactly the defect this fix exists to end;
-            # if the pin genuinely cannot be honoured, say so and name what
-            # the leg actually landed on.
-            _landed = _effective_provider(merged_config.get("providers") or [])
             _promotion_fallback = {
                 "session_id": sub_session_id,
                 "agent_name": agent_name,
-                "reason": "preferred_provider_not_mounted",
-                "requested": [pref.to_dict() for pref in _resume_preferences],
                 "preferences_source": _preferences_source,
-                "provider": (_landed or {}).get("module"),
-                "model": (_landed or {}).get("config", {}).get("default_model"),
+                "requested": [
+                    {"provider": preference.provider, "model": preference.model}
+                    for preference in _resume_preferences
+                ],
+                **_failure,
             }
-            logger.warning(
-                "Sub-session %s: cannot honour provider preference(s) %s on "
-                "resume -- none is mounted in this session's plan. Falling "
-                "back to provider=%s model=%s.",
-                sub_session_id,
-                [pref.provider for pref in _resume_preferences],
-                _promotion_fallback["provider"],
-                _promotion_fallback["model"],
-            )
 
     # Sub-session resume creates fresh UX systems. Parent UX context (approval history,
     # display state) is not preserved across resume. This is acceptable because:
@@ -2281,6 +2496,15 @@ async def resume_sub_session(
         # the distinction the rc0 archive had no way to make.
         if _promotion_fallback:
             await hooks.emit("provider:fallback", _promotion_fallback)
+    if _promotion_fallback:
+        logger.warning(
+            "Sub-session %s: provider preference chain was unresolved "
+            "(reason=%s); selected provider=%s model=%s.",
+            sub_session_id,
+            _promotion_fallback["reason"],
+            _promotion_fallback["provider"],
+            _promotion_fallback["model"],
+        )
 
     # Restore the resolved frozen snapshot first.  Old named children did not
     # persist one, so retain their overlay/config reconstruction fallback.

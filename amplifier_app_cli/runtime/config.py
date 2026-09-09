@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 import re
@@ -25,6 +26,8 @@ if TYPE_CHECKING:
     from amplifier_foundation.bundle import PreparedBundle
 
 logger = logging.getLogger(__name__)
+
+_REDACTION_SENTINEL = "[REDACTED]"
 
 
 async def resolve_bundle_config(
@@ -648,6 +651,53 @@ def _prune_to_secret_keys(value: Any) -> Any | None:
             return value
         return None
     return None
+
+
+def restore_redacted_secret_values(persisted: Any, live: Any) -> Any:
+    """Copy ``persisted``, replacing only matching redacted secret leaves.
+
+    Resuming a child starts with its redacted persisted mount plan, not a new
+    bundle plan.  A normal deep merge is therefore wrong: it lets current
+    settings rewrite unrelated child routing and module settings.  This small
+    inverse of redaction preserves the persisted shape and only restores a
+    value when all of these are true:
+
+    * the persisted value is exactly the session-store redaction sentinel;
+    * its key is in core's authoritative ``SENSITIVE_KEYS`` set; and
+    * the same key exists at the same path in usable live configuration.
+
+    Lists are traversed positionally and never extended or replaced.  That
+    deliberately preserves a child's list order, entries, and any
+    child-specific unredacted credentials.
+    """
+    if isinstance(persisted, dict):
+        result = copy.deepcopy(persisted)
+        live_dict = live if isinstance(live, dict) else {}
+        for key, value in persisted.items():
+            live_value = live_dict.get(key)
+            if (
+                isinstance(key, str)
+                and key.lower() in SENSITIVE_KEYS
+                and value == _REDACTION_SENTINEL
+                and live_value not in (None, "", _REDACTION_SENTINEL)
+            ):
+                result[key] = copy.deepcopy(live_value)
+            elif isinstance(value, (dict, list)) and isinstance(
+                live_value, type(value)
+            ):
+                result[key] = restore_redacted_secret_values(value, live_value)
+        return result
+    if isinstance(persisted, list):
+        result = copy.deepcopy(persisted)
+        if not isinstance(live, list):
+            return result
+        for index, value in enumerate(persisted):
+            if index >= len(live):
+                break
+            if isinstance(value, (dict, list)) and isinstance(live[index], type(value)):
+                result[index] = restore_redacted_secret_values(value, live[index])
+        return result
+    return copy.deepcopy(persisted)
 
 
 def narrow_overrides_to_secrets(

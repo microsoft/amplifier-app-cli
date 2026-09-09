@@ -1194,7 +1194,7 @@ class TestRoutingFallbackFromAgentConfig:
 
         apply_called_with = {}
 
-        async def fake_apply_prefs(config, prefs, coordinator):
+        async def fake_apply_prefs(config, prefs, coordinator, *, diagnostics=None):
             apply_called_with["prefs"] = prefs
             return config  # return unchanged for simplicity
 
@@ -1312,7 +1312,7 @@ class TestRoutingFallbackFromAgentConfig:
 
         apply_called_with = {}
 
-        async def fake_apply_prefs(config, prefs, coordinator):
+        async def fake_apply_prefs(config, prefs, coordinator, *, diagnostics=None):
             apply_called_with["prefs"] = prefs
             return config
 
@@ -1378,11 +1378,18 @@ class TestRoutingFallbackFromAgentConfig:
         }
 
         # Explicit caller pref — should win over agent_config pref
-        explicit_pref = ProviderPreference(provider="openai", model="gpt-5")
+        explicit_pref = ProviderPreference(
+            provider="openai", model="gpt-5", config={"reasoning_effort": "xhigh"}
+        )
+        constructed_config = {}
+
+        def capture_child_session(**kwargs):
+            constructed_config.update(kwargs["config"])
+            return child_session
 
         with patch(
             "amplifier_app_cli.session_spawner.AmplifierSession",
-            return_value=child_session,
+            side_effect=capture_child_session,
         ):
             with patch(
                 "amplifier_app_cli.session_spawner.generate_sub_session_id",
@@ -1410,6 +1417,16 @@ class TestRoutingFallbackFromAgentConfig:
             "Explicit caller prefs must override agent_config routing prefs (Bug A precedence)"
         )
         assert applied[0].model == "gpt-5"
+        assert constructed_config["provider_preferences"] == [
+            {
+                "provider": "openai",
+                "model": "gpt-5",
+                "config": {"reasoning_effort": "xhigh"},
+            }
+        ]
+        assert agent_configs["coder"]["provider_preferences"] == [
+            {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+        ]
 
     async def test_no_prefs_no_agent_config_prefs_skips_apply(
         self, tmp_path, monkeypatch
@@ -1422,7 +1439,7 @@ class TestRoutingFallbackFromAgentConfig:
 
         apply_call_count = {"n": 0}
 
-        async def fake_apply_prefs(config, prefs, coordinator):
+        async def fake_apply_prefs(config, prefs, coordinator, *, diagnostics=None):
             apply_call_count["n"] += 1
             return config
 

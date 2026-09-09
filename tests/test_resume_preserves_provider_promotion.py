@@ -47,7 +47,9 @@ No API calls anywhere in this module.
 
 from __future__ import annotations
 
+import copy
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -199,6 +201,7 @@ async def _run_resume(
     session_id: str,
     *,
     provider_overrides: list[dict] | None = None,
+    config_overrides: dict[str, dict] | None = None,
     **resume_kwargs,
 ) -> tuple[dict, _RecordingHooks]:
     """Drive the real resume_sub_session() and capture the mounted config.
@@ -236,7 +239,9 @@ async def _run_resume(
     mock_settings.get_provider_overrides = MagicMock(
         return_value=provider_overrides if provider_overrides is not None else []
     )
-    mock_settings.get_config_overrides = MagicMock(return_value={})
+    mock_settings.get_config_overrides = MagicMock(
+        return_value=config_overrides if config_overrides is not None else {}
+    )
     mock_settings.get_notification_hook_overrides = MagicMock(return_value=[])
 
     with (
@@ -470,3 +475,295 @@ class TestResumeRebuildsPromotion:
 
         assert config["providers"] == _persisted_child_providers()
         assert not [n for n, _ in hooks.emitted if n == "provider:fallback"]
+
+    async def test_persisted_caller_chain_wins_over_agent_default(
+        self, tmp_path, monkeypatch
+    ):
+        """Cold resume preserves the caller's whole fallback chain."""
+        store = SessionStore()
+        session_id = "test-resume-persisted-caller-chain"
+        caller_chain = [
+            {
+                "provider": "luna",
+                "model": "gpt-5.6-luna",
+                "config": {"reasoning_effort": "xhigh"},
+            },
+            {"provider": "sol", "model": "gpt-5.6-sol"},
+        ]
+        metadata = _base_metadata(
+            session_id,
+            caller_provider_preferences=copy.deepcopy(caller_chain),
+            agent_overlay={
+                "provider_preferences": [
+                    {
+                        "provider": "luna",
+                        "model": "gpt-5.6-luna",
+                        "config": {"reasoning_effort": "medium"},
+                    }
+                ]
+            },
+        )
+        # This is intentionally stale legacy state.  The resumed constructor
+        # must receive caller xhigh, not this medium value.
+        metadata["config"]["provider_preferences"] = metadata["agent_overlay"][
+            "provider_preferences"
+        ]
+        store.save(session_id, [], metadata)
+
+        config, _ = await _run_resume(session_id)
+
+        assert config["provider_preferences"] == caller_chain
+        _, saved = store.load(session_id)
+        assert saved["caller_provider_preferences"] == caller_chain
+        assert saved["agent_overlay"]["provider_preferences"][0]["config"] == {
+            "reasoning_effort": "medium"
+        }
+
+    async def test_explicit_resume_chain_survives_next_cold_resume(
+        self, tmp_path, monkeypatch
+    ):
+        """A later explicit override is not lost after this resumed turn."""
+        store = SessionStore()
+        session_id = "test-resume-updated-caller-chain"
+        metadata = _base_metadata(
+            session_id,
+            caller_provider_preferences=[
+                {"provider": "luna", "model": "gpt-5.6-luna"}
+            ],
+            agent_overlay={
+                "provider_preferences": [
+                    {"provider": "sol", "model": "gpt-5.6-sol"}
+                ]
+            },
+        )
+        store.save(session_id, [], metadata)
+        updated_chain = [{"provider": "sol", "model": "gpt-5.6-sol"}]
+
+        config, _ = await _run_resume(
+            session_id, provider_preferences=updated_chain
+        )
+        assert config["provider_preferences"] == updated_chain
+
+        cold_config, _ = await _run_resume(session_id)
+        assert cold_config["provider_preferences"] == updated_chain
+
+
+class TestResumeNestedCredentialRefresh:
+    """Nested tools and registered agents get secret-only restoration."""
+
+    async def test_restores_nested_tool_credentials_without_rewriting_urls(
+        self, tmp_path, monkeypatch
+    ):
+        store = SessionStore()
+        session_id = "test-resume-nested-tool-secrets"
+        nested_tool = {
+            "module": "tool-graph-fixture",
+            "config": {
+                "sources": {
+                    "source-a": {
+                        "url": "https://persisted-a.invalid",
+                        "api_key": "[REDACTED]",
+                    },
+                    "source-b": {
+                        "url": "https://persisted-b.invalid",
+                        "api_key": "child-b-kept",
+                    },
+                }
+            },
+        }
+        metadata = _base_metadata(
+            session_id,
+            config={
+                "session": {
+                    "orchestrator": "loop-basic",
+                    "context": "context-simple",
+                },
+                "tools": [copy.deepcopy(nested_tool)],
+                "agents": {
+                    "graph-fixture": {"tools": [copy.deepcopy(nested_tool)]}
+                },
+            },
+        )
+        store.save(session_id, [], metadata)
+        live_overrides = {
+            "tool-graph-fixture": {
+                "sources": {
+                    "source-a": {
+                        "url": "https://live-must-not-replace.invalid",
+                        "api_key": "live-a-key",
+                    },
+                    "source-b": {
+                        "url": "https://live-must-not-replace.invalid",
+                        "api_key": "live-b-must-not-replace",
+                    },
+                }
+            }
+        }
+        live_input = copy.deepcopy(live_overrides)
+
+        config, _ = await _run_resume(
+            session_id, config_overrides=live_overrides
+        )
+
+        for tool in (
+            config["tools"][0],
+            config["agents"]["graph-fixture"]["tools"][0],
+        ):
+            sources = tool["config"]["sources"]
+            assert sources["source-a"] == {
+                "url": "https://persisted-a.invalid",
+                "api_key": "live-a-key",
+            }
+            assert sources["source-b"] == {
+                "url": "https://persisted-b.invalid",
+                # SessionStore redacts every secret before this real resume
+                # path loads it, so the matching live leaf is restored too.
+                "api_key": "live-b-must-not-replace",
+            }
+        assert live_overrides == live_input
+
+    async def test_absent_nested_override_reports_one_dormant_diagnostic(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        store = SessionStore()
+        session_id = "test-resume-missing-nested-tool-secret"
+        metadata = _base_metadata(
+            session_id,
+            config={
+                "session": {
+                    "orchestrator": "loop-basic",
+                    "context": "context-simple",
+                },
+                "agents": {
+                    "offline-fixture": {
+                        "tools": [
+                            {
+                                "module": "tool-not-configured",
+                                "config": {"api_key": "[REDACTED]"},
+                            }
+                        ]
+                    }
+                },
+            },
+        )
+        store.save(session_id, [], metadata)
+
+        with caplog.at_level(logging.WARNING):
+            await _run_resume(session_id, config_overrides={})
+
+        refresh_warnings = [
+            record.message
+            for record in caplog.records
+            if "credential refresh left" in record.message
+        ]
+        assert len(refresh_warnings) == 1
+        assert "0 active config field(s) and 1 dormant registered-agent" in (
+            refresh_warnings[0]
+        )
+
+
+class TestResumeResolutionDiagnostics:
+    """The CLI reports Foundation's final resolution outcome once."""
+
+    async def test_terminal_success_suppresses_fallback_diagnostic(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        store = SessionStore()
+        session_id = "test-resume-terminal-resolution-success"
+        metadata = _base_metadata(
+            session_id,
+            agent_overlay={
+                "provider_preferences": [
+                    {"provider": "luna", "model": "gpt-5.6-luna"}
+                ]
+            },
+        )
+        store.save(session_id, [], metadata)
+
+        async def resolved(config, preferences, coordinator, *, diagnostics=None):
+            assert diagnostics is not None
+            diagnostics.append(
+                SimpleNamespace(status="resolved", provider="luna")
+            )
+            return config
+
+        with (
+            patch(
+                "amplifier_foundation.apply_provider_preferences_with_resolution",
+                new=resolved,
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            _, hooks = await _run_resume(session_id)
+
+        assert not [event for event, _ in hooks.emitted if event == "provider:fallback"]
+        assert not [
+            record
+            for record in caplog.records
+            if "provider preference chain was unresolved" in record.message
+        ]
+
+    async def test_catalog_failure_emits_one_truthful_fallback(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        store = SessionStore()
+        session_id = "test-resume-catalog-failure"
+        metadata = _base_metadata(
+            session_id,
+            config={
+                "session": {
+                    "orchestrator": "loop-basic",
+                    "context": "context-simple",
+                },
+                "providers": [
+                    {
+                        "module": "provider-luna",
+                        "config": {
+                            "priority": 0,
+                            "default_model": "gpt-5.6-luna",
+                        },
+                    }
+                ],
+            },
+            agent_overlay={
+                "provider_preferences": [
+                    {"provider": "luna", "model": "gpt-5.6-*"}
+                ]
+            },
+        )
+        store.save(session_id, [], metadata)
+
+        async def catalog_failed(config, preferences, coordinator, *, diagnostics=None):
+            assert diagnostics is not None
+            diagnostics.append(
+                SimpleNamespace(status="catalog_query_failed", provider="luna")
+            )
+            return config
+
+        with (
+            patch(
+                "amplifier_foundation.apply_provider_preferences_with_resolution",
+                new=catalog_failed,
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            _, hooks = await _run_resume(session_id)
+
+        fallbacks = [data for event, data in hooks.emitted if event == "provider:fallback"]
+        assert fallbacks == [
+            {
+                "session_id": session_id,
+                "agent_name": "git-ops",
+                "preferences_source": "agent_overlay",
+                "requested": [{"provider": "luna", "model": "gpt-5.6-*"}],
+                "reason": "catalog_query_failed",
+                "provider": "provider-luna",
+                "model": "gpt-5.6-luna",
+            }
+        ]
+        preference_warnings = [
+            record
+            for record in caplog.records
+            if "provider preference chain was unresolved" in record.message
+        ]
+        assert len(preference_warnings) == 1

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from amplifier_app_cli.runtime.config import _apply_provider_overrides
 from amplifier_app_cli.runtime.config import narrow_overrides_to_secrets
+from amplifier_app_cli.runtime.config import restore_redacted_secret_values
 
 
 # ---------------------------------------------------------------------------
@@ -241,3 +242,45 @@ class TestNarrowOverridesToSecrets:
 
     def test_empty_input_is_empty_output(self):
         assert narrow_overrides_to_secrets([]) == []
+
+
+def test_restore_only_replaces_a_redacted_matching_secret_leaf():
+    """Live settings cannot rewrite a child's URL or unredacted secret."""
+    persisted = {
+        "sources": {
+            "source-a": {
+                "url": "https://child-a.invalid",
+                "api_key": "[REDACTED]",
+            },
+            "source-b": {
+                "url": "https://child-b.invalid",
+                "api_key": "child-b-kept",
+            },
+        }
+    }
+    live = {
+        "sources": {
+            "source-a": {
+                "url": "https://settings-must-not-win.invalid",
+                "api_key": "live-a-key",
+            },
+            "source-b": {
+                "url": "https://settings-must-not-win.invalid",
+                "api_key": "live-b-must-not-replace",
+            },
+        }
+    }
+
+    assert restore_redacted_secret_values(persisted, live) == {
+        "sources": {
+            "source-a": {
+                "url": "https://child-a.invalid",
+                "api_key": "live-a-key",
+            },
+            "source-b": {
+                "url": "https://child-b.invalid",
+                "api_key": "child-b-kept",
+            },
+        }
+    }
+    assert persisted["sources"]["source-a"]["api_key"] == "[REDACTED]"
