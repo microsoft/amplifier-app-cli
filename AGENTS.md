@@ -78,6 +78,10 @@ snapshot is rebuilt only at REPL construction and immediately before each
 normal `prompt_async()` call; prompt-toolkit completion callbacks may read only
 that already-built snapshot.  Do not add discovery, provider, filesystem,
 network, or configurator calls to a keypress path.
+Keep history search enabled: its prompt-toolkit compatibility path uses the
+public buffer insertion hook only for a trailing, whitespace-free leading slash token; arguments stay Tab-only.
+Resolve the slash-popup UI setting once at interactive-session construction,
+outside prompt-toolkit callbacks and the per-prompt refresh loop.
 
 ## Interactive control-flow exits
 
