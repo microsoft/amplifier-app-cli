@@ -276,21 +276,29 @@ amplifier run --<TAB>      # Shows all options
 ## Interactive Slash Completion
 
 Inside an interactive Amplifier session, typing a leading `/` automatically
-opens the top-level command menu; `Tab` completes commands and their currently
-available arguments. The menu includes short descriptions and is based on the
-mounted providers, modes, skills, and live configuration captured before the
-prompt opens.
+opens command menus and known argument-choice menus; `Tab` completes commands
+and their currently available arguments. The menu includes short descriptions
+and is based on the mounted providers, modes, skills, and live configuration
+captured before the prompt opens.
 
-- `Tab` opens the menu and cycles forward; `Shift-Tab` cycles backward.
-- `Up`/`Down` select an open menu item. `Enter` accepts that item; press
-  `Enter` again to run the completed command.
+- `Tab` completes the unambiguous part whether or not a menu is open: one
+  match is accepted with its trailing space; several matches extend their
+  shared prefix and remain unselected. Repeating `Tab` does not cycle choices.
+- `Up`/`Down` and `Shift-Tab` select an open menu item. `Tab`, `Enter`, or
+  `Space` accepts an explicitly selected item without submitting the prompt.
+- `Enter` accepts an exact command name (or one unique command match). For an
+  ambiguous command prefix it keeps the menu open and asks you to type more or
+  choose. An unselected argument menu always submits the exact text you typed.
 - `Esc` cancels an open menu and restores the text from before completion.
-- A unique match is inserted with a trailing space, such as `/pro` + `Tab`
-  becoming `/provider `.
+- For example, with `/product-council`, `/product-council-here`, and
+  `/provider` available, `/p` + `Tab` becomes `/pro`; `/pro` + `Tab` remains
+  `/pro` until you type more or select a choice. `/provider ` + `Tab` opens
+  its known argument choices.
 - `/exit` ends the interactive session; `/quit` is an alias. Neither accepts
   arguments.
 
-Automatic slash menus are on by default. To disable only the automatic popup,
+Automatic slash menus are on by default. To disable all automatic command and
+argument popups,
 add this to `~/.amplifier/settings.yaml`:
 
 ```yaml
@@ -304,8 +312,10 @@ change; restart the interactive session to pick it up.
 
 Completion is available for built-in slash commands, provider and mode
 controls, `/config` verbs/flags, user-invocable skills and their declared
-literal arguments, and `/goal` controls. Free-form prompt text, goal
-conditions, and file/path arguments are intentionally not guessed.
+literal arguments, and `/goal` controls. The catalog is conditional on the
+commands, modes, skills, and providers mounted in the live session. Free-form
+prompt text, goal conditions, and file/path arguments are intentionally not
+guessed.
 
 ## Architecture
 

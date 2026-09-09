@@ -65,6 +65,23 @@ class Candidate:
         return self.value + (" " if self.append_space else "")
 
 
+def longest_common_prefix(candidates: Iterable[Candidate]) -> str:
+    """Return the literal prefix shared by every candidate value."""
+    values = [candidate.value for candidate in candidates]
+    if not values:
+        return ""
+    prefix = values[0]
+    for value in values[1:]:
+        limit = min(len(prefix), len(value))
+        index = 0
+        while index < limit and prefix[index] == value[index]:
+            index += 1
+        prefix = prefix[:index]
+        if not prefix:
+            break
+    return prefix
+
+
 @dataclass
 class CompletionSnapshot:
     """All data allowed to be read while completion is active."""
@@ -381,6 +398,33 @@ class SlashCompleter(Completer):
     def __init__(self, engine: SlashCompletionEngine | None = None):
         self.engine = engine or SlashCompletionEngine()
 
+    @staticmethod
+    def is_automatic_completion_position(text: str, cursor_position: int) -> bool:
+        """Return whether an automatic menu can safely inspect this document.
+
+        Candidate availability remains the engine's responsibility: this only
+        excludes unsafe or stale document positions shared by the input hook
+        and its deferred completion callback.
+        """
+        return (
+            cursor_position == len(text)
+            and text.startswith("/")
+            and "\n" not in text
+            and "\r" not in text
+        )
+
+    @classmethod
+    def is_argument_position(cls, text: str, cursor_position: int) -> bool:
+        """Return whether a safely completable source document is in arguments."""
+        before, after = text[:cursor_position], text[cursor_position:]
+        return (
+            text.startswith("/")
+            and "\n" not in before
+            and "\r" not in before
+            and (not after or after[:1].isspace())
+            and any(character.isspace() for character in text[1:cursor_position])
+        )
+
     def refresh(self, snapshot: CompletionSnapshot) -> None:
         """Replace the in-memory completion snapshot at a safe REPL boundary."""
         self.engine.refresh(snapshot)
@@ -388,18 +432,21 @@ class SlashCompleter(Completer):
     def get_completions(self, document: Document, complete_event: Any):
         text = document.text
         cursor = document.cursor_position
-        if getattr(complete_event, "text_inserted", False) and (
-            cursor != len(text)
-            or not text.startswith("/")
-            or any(character.isspace() for character in text[1:])
+        if getattr(complete_event, "text_inserted", False) and not self.is_automatic_completion_position(
+            text, cursor
         ):
             # The public buffer hook schedules this callback, so it can see a
-            # later document; automatic completion remains top-level only.
+            # later document; automatic completion must re-check it here.
             return
         prefix = text[:cursor].split()[-1] if text[:cursor] and not text[:cursor][-1].isspace() else ""
         for candidate in self.engine.complete(text, cursor):
+            insertion = (
+                candidate.value
+                if text[cursor:] and text[cursor].isspace()
+                else candidate.insertion
+            )
             yield Completion(
-                candidate.insertion,
+                insertion,
                 start_position=-len(prefix),
                 display=candidate.value,
                 display_meta=candidate.description,
