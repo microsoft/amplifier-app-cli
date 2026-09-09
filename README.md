@@ -273,6 +273,27 @@ amplifier bundle use <TAB> # Shows available bundles
 amplifier run --<TAB>      # Shows all options
 ```
 
+## Interactive Slash Completion
+
+Inside an interactive Amplifier session, press `Tab` after a leading `/` to
+complete commands and their currently available arguments. The menu includes
+short descriptions and is based on the mounted providers, modes, skills, and
+live configuration captured before the prompt opens.
+
+- `Tab` opens the menu and cycles forward; `Shift-Tab` cycles backward.
+- `Up`/`Down` select an open menu item. `Enter` accepts that item; press
+  `Enter` again to run the completed command.
+- `Esc` cancels an open menu and restores the text from before completion.
+- A unique match is inserted with a trailing space, such as `/pro` + `Tab`
+  becoming `/provider `.
+- `/exit` ends the interactive session; `/quit` is an alias. Neither accepts
+  arguments.
+
+Completion is available for built-in slash commands, provider and mode
+controls, `/config` verbs/flags, user-invocable skills and their declared
+literal arguments, and `/goal` controls. Free-form prompt text, goal
+conditions, and file/path arguments are intentionally not guessed.
+
 ## Architecture
 
 This CLI is built on top of amplifier-core and provides:

@@ -24,12 +24,17 @@ Within an interactive session, you compose prompts and issue slash commands. Run
 | `/tools` | List tools | Shows loaded capabilities |
 | `/config` | Show configuration | Full mount plan |
 | `/help` | List commands | Quick reference |
-| `/stop` | Interrupt execution | Or use Ctrl+C |
+| `/exit` | Exit this session | No arguments |
+| `/quit` | Exit this session | Alias for `/exit`; no arguments |
+| Ctrl-C | Interrupt execution | During an active turn |
 | `/modes` | List available modes (from `amplifier-bundle-modes`) | |
 | `/mode <name>` | Activate a runtime mode | Mode name or shortcut |
 | `/mode off` | Deactivate the current mode | |
 
-The first eight are app-CLI built-ins. The `/mode*` commands come from `amplifier-bundle-modes` when that bundle is composed into your active configuration (which is the case for every standard amplifier bundle).
+The app-CLI built-ins shown above are available in every interactive session.
+The `/mode*` commands come from `amplifier-bundle-modes` when that bundle is
+composed into your active configuration (which is the case for every standard
+amplifier bundle).
 
 ## Runtime Modes
 
@@ -132,7 +137,7 @@ Mode: off | Messages: 15 | ...
 
 > /save api_migration_plan.json
 ✓ Transcript saved
-> exit
+> /exit
 ```
 
 **Session 2: Resume and Implement**

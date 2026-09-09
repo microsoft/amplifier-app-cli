@@ -70,3 +70,16 @@ only persisted transcript entries marked `ephemeral is True` and
 `persisted is True` whose content is a reminder envelope. Keep the original
 transcript and its source metadata intact so resume context restores the reminders;
 `reminder_placement` controls ordering, not display eligibility.
+
+## Interactive slash completion
+
+Keep completion candidate generation in `ui/completion.py`.  Its live-session
+snapshot is rebuilt only at REPL construction and immediately before each
+normal `prompt_async()` call; prompt-toolkit completion callbacks may read only
+that already-built snapshot.  Do not add discovery, provider, filesystem,
+network, or configurator calls to a keypress path.
+
+## Interactive control-flow exits
+
+REPL exit commands return an action from `CommandProcessor`; only the normal
+REPL loop may terminate so its shared `finally` runs cleanup and closes TTY input once.

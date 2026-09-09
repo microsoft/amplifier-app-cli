@@ -25,9 +25,11 @@ from amplifier_core import (
 from amplifier_core.llm_errors import LLMError
 from amplifier_foundation import sanitize_message
 from prompt_toolkit import PromptSession
+from prompt_toolkit.filters import has_completions
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.shortcuts import CompleteStyle
 from rich.panel import Panel
 
 # Errors that mean the terminal can never satisfy the REPL, so retrying is
@@ -81,6 +83,7 @@ from .ui.dashboard_renderer import _redact_value as _dr_redact_value
 from .ui.error_display import display_llm_error, display_validation_error
 from .ui.item_renderer import ItemRenderer
 from .ui.log_filter import LLMErrorLogFilter
+from .ui.completion import SlashCompleter, build_completion_snapshot
 from .ui.view_policy import resolve_view
 from .utils.error_format import escape_markup
 from .utils.version import get_core_version, get_version
@@ -542,6 +545,8 @@ class CommandProcessor:
             "description": "Clear conversation context",
         },
         "/help": {"action": "show_help", "description": "Show available commands"},
+        "/exit": {"action": "exit", "description": "Exit this session"},
+        "/quit": {"action": "exit", "description": "Alias for /exit"},
         "/config": {
             "action": "show_config",
             "description": "Live session config \u2014 /config [category] [disable|enable name]",
@@ -698,6 +703,11 @@ class CommandProcessor:
         self.session = session
         self.bundle_name = bundle_name
         self.configurator: Any = None
+        # These are session-scoped dispatch snapshots.  The class attributes
+        # remain a backwards-compatible, additive cache for older callers, but
+        # command dispatch must never inherit another session's shortcuts.
+        self._mode_shortcuts: dict[str, str] = {}
+        self._skill_shortcuts: dict[str, dict] = {}
         # Initialize session_state if not present
         if not hasattr(self.session.coordinator, "session_state"):
             self.session.coordinator.session_state = {}
@@ -714,7 +724,12 @@ class CommandProcessor:
         """Populate MODE_SHORTCUTS from mode discovery."""
         discovery = self.session.coordinator.session_state.get("mode_discovery")
         if discovery and hasattr(discovery, "get_shortcuts"):
-            shortcuts = discovery.get_shortcuts()
+            shortcuts = dict(discovery.get_shortcuts())
+            # Direct canonical mode commands must dispatch just like their
+            # aliases.  setdefault preserves an explicit discovery mapping.
+            for canonical in tuple(shortcuts.values()):
+                shortcuts.setdefault(canonical, canonical)
+            self._mode_shortcuts = shortcuts
             # Update class-level shortcuts dict
             CommandProcessor.MODE_SHORTCUTS.update(shortcuts)
 
@@ -731,7 +746,8 @@ class CommandProcessor:
         """
         discovery = self.session.coordinator.get_capability("skills_discovery")
         if discovery and hasattr(discovery, "get_shortcuts"):
-            shortcuts = discovery.get_shortcuts()
+            shortcuts = dict(discovery.get_shortcuts())
+            self._skill_shortcuts = shortcuts
             # Update class-level shortcuts dict
             CommandProcessor.SKILL_SHORTCUTS.update(shortcuts)
 
@@ -759,7 +775,17 @@ class CommandProcessor:
                         data["trailing_prompt"] = trailing
                 elif cmd_info["action"] == "load_skill":
                     skill_parts = args.strip().split(maxsplit=1)
-                    data["skill_name"] = skill_parts[0] if skill_parts else ""
+                    selected_name = skill_parts[0] if skill_parts else ""
+                    # `/skill <alias>` follows the same dispatch rule as a
+                    # direct `/alias`.  Keep the user's command text intact
+                    # in data["command"]; only the internal lookup is
+                    # canonicalized.
+                    shortcut = self._skill_shortcuts.get(selected_name)
+                    data["skill_name"] = (
+                        shortcut.get("name", selected_name)
+                        if isinstance(shortcut, dict)
+                        else selected_name
+                    )
                     data["arguments"] = skill_parts[1] if len(skill_parts) > 1 else ""
                 elif cmd_info["action"] == "handle_goal" and args.strip():
                     # Setting a condition (not a clear alias) runs it as a turn
@@ -782,16 +808,17 @@ class CommandProcessor:
 
             # Check for mode shortcuts (e.g., /plan -> /mode plan)
             shortcut_name = command[1:]  # Remove leading /
-            if shortcut_name in self.MODE_SHORTCUTS:
-                data = {"args": shortcut_name, "command": command}
+            if shortcut_name in self._mode_shortcuts:
+                canonical_name = self._mode_shortcuts[shortcut_name]
+                data = {"args": canonical_name, "command": command}
                 trailing = args.strip()
                 if trailing:
                     if trailing.lower() in ("on", "off"):
                         # Exact "on"/"off" → mode control, not trailing prompt
-                        data["args"] = f"{shortcut_name} {trailing}"
+                        data["args"] = f"{canonical_name} {trailing}"
                     else:
                         # Trailing text → force activation + queue as prompt
-                        data["args"] = f"{shortcut_name} on"
+                        data["args"] = f"{canonical_name} on"
                         data["trailing_prompt"] = trailing
                 return "handle_mode", data
 
@@ -801,7 +828,7 @@ class CommandProcessor:
             # skill's `shortcut:` frontmatter field). Older skills bundles
             # don't populate "name" — fall back to the lookup key.
             def _dispatch_skill_shortcut(name: str) -> tuple[str, dict[str, Any]]:
-                entry = self.SKILL_SHORTCUTS[name]
+                entry = self._skill_shortcuts[name]
                 canonical = (
                     entry.get("name", name) if isinstance(entry, dict) else name
                 )
@@ -814,7 +841,7 @@ class CommandProcessor:
                     },
                 )
 
-            if shortcut_name in self.SKILL_SHORTCUTS:
+            if shortcut_name in self._skill_shortcuts:
                 return _dispatch_skill_shortcut(shortcut_name)
 
             # Defense-in-depth: SKILL_SHORTCUTS is populated once, additively,
@@ -827,7 +854,7 @@ class CommandProcessor:
             # already-resolved capability) and fails soft if the capability
             # is absent, exactly like the initial population.
             self._populate_skill_shortcuts()
-            if shortcut_name in self.SKILL_SHORTCUTS:
+            if shortcut_name in self._skill_shortcuts:
                 return _dispatch_skill_shortcut(shortcut_name)
 
             return "unknown_command", {"command": command}
@@ -2053,7 +2080,11 @@ class CommandProcessor:
         # startup snapshot -- then use SKILL_SHORTCUTS (same source as
         # process_input) for consistency.
         self._populate_skill_shortcuts()
-        shortcuts = self.SKILL_SHORTCUTS
+        # Keep the legacy public class cache visible to callers that populated
+        # it directly before per-session snapshots existed.  Completion and
+        # dispatch deliberately use only _skill_shortcuts, so this compatibility
+        # display path cannot offer a shortcut the dispatcher would reject.
+        shortcuts = self._skill_shortcuts or self.SKILL_SHORTCUTS
         if shortcuts:
             lines.append("")
             lines.append("Skill Commands:")
@@ -3436,6 +3467,7 @@ def _build_prompt_message(
 def _create_prompt_session(
     get_active_mode: Callable | None = None,
     get_pinned_provider: Callable | None = None,
+    completer: SlashCompleter | None = None,
 ) -> PromptSession:
     """Create configured PromptSession for REPL.
 
@@ -3451,6 +3483,7 @@ def _create_prompt_session(
         get_active_mode: Optional callable that returns the current active mode name
         get_pinned_provider: Optional callable that returns the pinned
             conversation provider's mount name (see ``_pinned_provider_name``)
+        completer: Optional snapshot-backed slash completer for the REPL.
 
     Returns:
         Configured PromptSession instance
@@ -3489,8 +3522,64 @@ def _create_prompt_session(
 
     @kb.add("enter")  # Enter submits (even in multiline mode)
     def accept_input(event):
-        """Submit input on Enter."""
+        """Accept a completion menu selection, otherwise submit input."""
+        if event.current_buffer.complete_state:
+            state = event.current_buffer.complete_state
+            completion = state.current_completion
+            if completion is None and state.completions:
+                completion = state.completions[0]
+            if completion is not None:
+                event.current_buffer.apply_completion(completion)
+            else:
+                event.current_buffer.cancel_completion()
+            return
         event.current_buffer.validate_and_handle()
+
+    @kb.add("tab")
+    def complete_next(event):
+        """Open/cycle the explicitly requested slash completion menu."""
+        buffer = event.current_buffer
+        if buffer.complete_state:
+            buffer.complete_next()
+        elif completer is not None:
+            candidates = completer.engine.complete(buffer.text, buffer.cursor_position)
+            if len(candidates) == 1:
+                # Prompt-toolkit's native Completion only replaces text before
+                # the cursor.  Replacing the complete token ourselves avoids
+                # duplicating a suffix when a user invokes Tab in its middle.
+                start = buffer.cursor_position
+                while start and not buffer.text[start - 1].isspace():
+                    start -= 1
+                end = buffer.cursor_position
+                while end < len(buffer.text) and not buffer.text[end].isspace():
+                    end += 1
+                buffer.cursor_position = start
+                buffer.delete(count=end - start)
+                buffer.insert_text(candidates[0].insertion)
+            elif candidates:
+                buffer.start_completion(select_first=False)
+
+    @kb.add("s-tab")
+    def complete_previous(event):
+        """Cycle backwards when the completion menu is open."""
+        if event.current_buffer.complete_state:
+            event.current_buffer.complete_previous()
+
+    @kb.add("escape")
+    def cancel_completion(event):
+        """Cancel completion and restore its original input."""
+        if event.current_buffer.complete_state:
+            event.current_buffer.cancel_completion()
+
+    @kb.add("up", filter=has_completions)
+    def completion_up(event):
+        """Navigate the open completion menu without stealing history keys."""
+        event.current_buffer.complete_previous()
+
+    @kb.add("down", filter=has_completions)
+    def completion_down(event):
+        """Navigate the open completion menu without stealing history keys."""
+        event.current_buffer.complete_next()
 
     # Dynamic prompt that shows [mode] and [pin] indicators when active.
     #
@@ -3509,6 +3598,10 @@ def _create_prompt_session(
         message=get_prompt,  # Callable for dynamic prompt
         history=history,
         key_bindings=kb,
+        completer=completer,
+        complete_while_typing=False,
+        complete_style=CompleteStyle.COLUMN,
+        reserve_space_for_menu=8,
         multiline=True,  # Enable multi-line display
         # Empty continuation prefix -- NOT "  " or "... ". A non-empty prefix
         # is prepended to every wrapped/continuation line by prompt_toolkit,
@@ -3636,6 +3729,11 @@ async def interactive_chat(
     # prompt_toolkit traceback out of this call, never reaching the loop. Unit
     # tests miss it because they mock _create_prompt_session.
     try:
+        slash_completer = SlashCompleter()
+        # Completion data is captured here and refreshed before every normal
+        # prompt.  Keypresses read only this snapshot, never discovery,
+        # configurator, filesystem, network, or mounted providers.
+        slash_completer.refresh(build_completion_snapshot(command_processor))
         prompt_session = _create_prompt_session(
             get_active_mode=lambda: (
                 command_processor.session.coordinator.session_state.get("active_mode")
@@ -3643,6 +3741,7 @@ async def interactive_chat(
             get_pinned_provider=lambda: _pinned_provider_name(
                 command_processor.session
             ),
+            completer=slash_completer,
         )
     except _TERMINAL_UNUSABLE_ERRORS as e:
         _report_terminal_unusable(e, verbose=verbose)
@@ -4018,6 +4117,7 @@ async def interactive_chat(
 
         while True:
             try:
+                slash_completer.refresh(build_completion_snapshot(command_processor))
                 # Get user input with history, editing, and paste support.
                 # patch_stdout here is the thread-offloaded
                 # patch_stdout_offloaded (see stdout_offload.py) -- same
@@ -4032,6 +4132,12 @@ async def interactive_chat(
                 if user_input.strip():
                     # Process input for commands
                     action, data = command_processor.process_input(user_input)
+
+                    if action == "exit":
+                        if data["args"].strip():
+                            console.print(f"[cyan]Usage: {data['command']}[/cyan]")
+                            continue
+                        break
 
                     if action == "prompt":
                         console.print("\n[dim]Processing... (Ctrl+C to cancel)[/dim]")
