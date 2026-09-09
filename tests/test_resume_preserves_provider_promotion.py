@@ -665,6 +665,50 @@ class TestResumeNestedCredentialRefresh:
 class TestResumeResolutionDiagnostics:
     """The CLI reports Foundation's final resolution outcome once."""
 
+    async def test_cold_glob_matching_persisted_model_is_quiet(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """No coordinator must not turn a saved matching concrete model into a fallback."""
+        store = SessionStore()
+        session_id = "test-cold-anthropic-glob-matches-persisted-sonnet"
+        metadata = _base_metadata(
+            session_id,
+            config={
+                "session": {
+                    "orchestrator": "loop-basic",
+                    "context": "context-simple",
+                },
+                "providers": [
+                    {
+                        "module": "provider-anthropic",
+                        "config": {
+                            "priority": 0,
+                            "default_model": "claude-sonnet-4-6",
+                        },
+                    }
+                ],
+            },
+            agent_overlay={
+                "provider_preferences": [
+                    {"provider": "anthropic", "model": "claude-sonnet-*"}
+                ]
+            },
+        )
+        store.save(session_id, [], metadata)
+
+        with caplog.at_level(logging.WARNING):
+            config, hooks = await _run_resume(session_id)
+
+        assert config["providers"][0]["config"]["default_model"] == "claude-sonnet-4-6"
+        assert not [
+            event for event, _ in hooks.emitted if event == "provider:fallback"
+        ]
+        assert not [
+            record
+            for record in caplog.records
+            if "provider preference chain was unresolved" in record.message
+        ]
+
     async def test_terminal_success_suppresses_fallback_diagnostic(
         self, tmp_path, monkeypatch, caplog
     ):
