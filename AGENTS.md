@@ -94,6 +94,9 @@ the exact current line, regardless of the automatic-popup setting.
 Keep ambiguous-completion guidance in the inline right prompt: prompt-toolkit
 hides bottom toolbars when a terminal cannot answer cursor-position requests.
 Verify its visible rendering in a CPR-unsupported PTY, not only its callback text.
+Pipe-input Escape tests must allow both VT-parser (`ttimeoutlen`) and key-binding
+(`timeoutlen`) timeouts. Shorten both on the test application, send one Escape,
+and wait for the restored document and closed menu; a second Escape is not a flush.
 
 ## Interactive control-flow exits
 

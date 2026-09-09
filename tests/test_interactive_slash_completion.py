@@ -850,9 +850,12 @@ async def test_pipe_preview_delimiters_escape_and_accept_without_doubling(
         pipe.send_text("\x1b[B")
         await _wait_until_selected_completion(session, "auto")
         assert session.default_buffer.text == expected_text
-        # A second Escape flushes the first through pipe input's parser.
-        pipe.send_text("\x1b\x1b")
-        await _wait_until_buffer_text(session, original_text)
+        # A single Escape waits for both VT parsing and key-binding ambiguity.
+        # Shorten those test-only timers instead of injecting a second key.
+        session.app.ttimeoutlen = 0.01
+        session.app.timeoutlen = 0.01
+        pipe.send_text("\x1b")
+        await _wait_until_completion_closed(session, original_text)
 
         pipe.send_text("\t")
         await _wait_until_settled_complete_state(
