@@ -1895,7 +1895,19 @@ def _preference_failure(
         # honest CLI diagnostic instead of a false success or absence claim.
         if _legacy_resolution_is_verified(providers, preferences):
             return None
-        reason = "legacy_resolution_unverified"
+        # Absence from the plan is knowable without a model catalog. Only
+        # resolution for a present provider needs the legacy uncertainty label.
+        wanted = {pref.provider for pref in preferences}
+        present = any(
+            _provider_entry_keys(entry) & wanted
+            for entry in providers or []
+            if isinstance(entry, dict)
+        )
+        reason = (
+            "legacy_resolution_unverified"
+            if present
+            else "preferred_provider_not_mounted"
+        )
 
     landed = _effective_provider(providers)
     return {

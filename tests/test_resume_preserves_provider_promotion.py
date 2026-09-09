@@ -421,8 +421,9 @@ class TestResumeRebuildsPromotion:
 
         assert config["model_role"] == ["fast"]
 
+    @pytest.mark.parametrize("legacy_resolver", [False, True])
     async def test_unhonourable_promotion_emits_a_fallback_event(
-        self, tmp_path, monkeypatch, caplog
+        self, tmp_path, monkeypatch, caplog, legacy_resolver
     ):
         """Acceptance criterion: name the cause, do not silently re-resolve.
 
@@ -442,16 +443,26 @@ class TestResumeRebuildsPromotion:
         )
         store.save(session_id, [], metadata)
 
+        if legacy_resolver:
+            async def legacy_apply(config, preferences, coordinator):
+                # No diagnostics API and no matching provider to promote.
+                return config
+
+            monkeypatch.setattr(
+                "amplifier_foundation.apply_provider_preferences_with_resolution",
+                legacy_apply,
+            )
+
         with caplog.at_level(logging.WARNING):
             _, hooks = await _run_resume(session_id)
 
         fallbacks = [d for name, d in hooks.emitted if name == "provider:fallback"]
-        assert fallbacks, (
+        assert len(fallbacks) == 1, (
             "An unhonourable promotion on resume must emit a named fallback "
             "event rather than silently re-resolving by settings priority."
         )
         payload = fallbacks[0]
-        assert payload["reason"] == "legacy_resolution_unverified"
+        assert payload["reason"] == "preferred_provider_not_mounted"
         assert payload["requested"] == [
             {"provider": "nonexistent", "model": "no-such-model"}
         ]
