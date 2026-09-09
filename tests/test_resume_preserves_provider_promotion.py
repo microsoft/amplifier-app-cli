@@ -56,6 +56,8 @@ from unittest.mock import patch
 
 import pytest
 from amplifier_app_cli.session_spawner import resume_sub_session
+from amplifier_app_cli.session_spawner import spawn_sub_session
+from amplifier_app_cli.session_spawner import _coerce_provider_preferences
 from amplifier_app_cli.session_store import SessionStore
 
 pytestmark = pytest.mark.anyio
@@ -449,7 +451,7 @@ class TestResumeRebuildsPromotion:
             "event rather than silently re-resolving by settings priority."
         )
         payload = fallbacks[0]
-        assert payload["reason"] == "preferred_provider_not_mounted"
+        assert payload["reason"] == "legacy_resolution_unverified"
         assert payload["requested"] == [
             {"provider": "nonexistent", "model": "no-such-model"}
         ]
@@ -546,6 +548,122 @@ class TestResumeRebuildsPromotion:
 
         cold_config, _ = await _run_resume(session_id)
         assert cold_config["provider_preferences"] == updated_chain
+
+    async def test_spawn_and_two_cold_resumes_preserve_caller_precedence(
+        self, tmp_path, monkeypatch
+    ):
+        """Exercise disk persistence without pre-seeding caller metadata or save()."""
+        session_id = "test-spawn-cold-resume-caller-precedence"
+        agent_chain = [
+            {
+                "provider": "luna",
+                "model": "gpt-5.6-luna",
+                "config": {"reasoning_effort": "medium"},
+            }
+        ]
+        caller_chain = [
+            {
+                "provider": "luna",
+                "model": "gpt-5.6-luna",
+                "config": {"reasoning_effort": "xhigh"},
+            },
+            {"provider": "sol", "model": "gpt-5.6-sol"},
+        ]
+        latest_caller_chain = [
+            {
+                "provider": "sol",
+                "model": "gpt-5.6-sol",
+                "config": {"reasoning_effort": "high"},
+            }
+        ]
+        agent_configs = {
+            "routing-agent": {"provider_preferences": copy.deepcopy(agent_chain)}
+        }
+        original_agent_configs = copy.deepcopy(agent_configs)
+
+        parent_coordinator = MagicMock()
+        parent_coordinator.config = {}
+        parent_coordinator.get.return_value = None
+        parent_coordinator.get_capability.return_value = None
+        parent_coordinator.display_system = MagicMock()
+        parent_coordinator.approval_system = MagicMock()
+        parent_coordinator.cancellation = MagicMock()
+        parent_session = MagicMock()
+        parent_session.coordinator = parent_coordinator
+        parent_session.config = {
+            "session": {"orchestrator": "loop-basic", "context": "context-simple"},
+            "providers": _persisted_child_providers(),
+        }
+        parent_session.session_id = "parent-cold-resume-test"
+        parent_session.trace_id = "trace-cold-resume-test"
+        parent_session.loader = None
+
+        spawn_context = _FakeContext()
+        spawn_hooks = _RecordingHooks()
+        spawned_coordinator = MagicMock()
+        spawned_coordinator.get.side_effect = lambda name: {
+            "context": spawn_context,
+            "hooks": spawn_hooks,
+        }.get(name)
+        spawned_coordinator.get_capability.return_value = None
+        spawned_coordinator.mount = AsyncMock()
+        spawned_coordinator.collect_contributions = AsyncMock(return_value=[])
+        spawned_coordinator.cancellation = MagicMock()
+        spawned_session = MagicMock()
+        spawned_session.coordinator = spawned_coordinator
+        spawned_session.initialize = AsyncMock()
+        spawned_session.execute = AsyncMock(return_value="response")
+        spawned_session.cleanup = AsyncMock()
+        spawned_session.session_id = session_id
+
+        async def resolved(config, preferences, coordinator):
+            return config, [SimpleNamespace(status="resolved")]
+
+        with (
+            patch(
+                "amplifier_app_cli.session_spawner.AmplifierSession",
+                return_value=spawned_session,
+            ),
+            patch(
+                "amplifier_app_cli.session_spawner._apply_provider_preferences",
+                new=resolved,
+            ),
+            patch("amplifier_app_cli.paths.create_foundation_resolver"),
+        ):
+            await spawn_sub_session(
+                agent_name="routing-agent",
+                instruction="first turn",
+                parent_session=parent_session,
+                agent_configs=agent_configs,
+                sub_session_id=session_id,
+                provider_preferences=caller_chain,
+            )
+
+        _, spawned_metadata = SessionStore().load(session_id)
+        assert spawned_metadata["caller_provider_preferences"] == caller_chain
+        assert spawned_metadata["config"]["provider_preferences"] == caller_chain
+        assert spawned_metadata["agent_overlay"]["provider_preferences"] == agent_chain
+
+        with patch(
+            "amplifier_app_cli.session_spawner._apply_provider_preferences",
+            new=resolved,
+        ):
+            first_cold_config, _ = await _run_resume(session_id)
+            assert first_cold_config["provider_preferences"] == caller_chain
+
+            overridden_config, _ = await _run_resume(
+                session_id, provider_preferences=latest_caller_chain
+            )
+            assert overridden_config["provider_preferences"] == latest_caller_chain
+
+            second_cold_config, _ = await _run_resume(session_id)
+
+        _, final_metadata = SessionStore().load(session_id)
+        assert second_cold_config["provider_preferences"] == latest_caller_chain
+        assert final_metadata["caller_provider_preferences"] == latest_caller_chain
+        assert final_metadata["config"]["provider_preferences"] == latest_caller_chain
+        assert final_metadata["agent_overlay"]["provider_preferences"] == agent_chain
+        assert agent_configs == original_agent_configs
 
 
 class TestResumeNestedCredentialRefresh:
@@ -668,7 +786,7 @@ class TestResumeResolutionDiagnostics:
     async def test_cold_glob_matching_persisted_model_is_quiet(
         self, tmp_path, monkeypatch, caplog
     ):
-        """No coordinator must not turn a saved matching concrete model into a fallback."""
+        """The diagnostics-aware Foundation path stays quiet after a glob resolves."""
         store = SessionStore()
         session_id = "test-cold-anthropic-glob-matches-persisted-sonnet"
         metadata = _base_metadata(
@@ -696,7 +814,24 @@ class TestResumeResolutionDiagnostics:
         )
         store.save(session_id, [], metadata)
 
-        with caplog.at_level(logging.WARNING):
+        async def resolved(config, preferences, coordinator, *, diagnostics=None):
+            assert diagnostics == []
+            diagnostics.append(
+                SimpleNamespace(
+                    status="resolved",
+                    provider="anthropic",
+                    model="claude-sonnet-4-6",
+                )
+            )
+            return config
+
+        with (
+            patch(
+                "amplifier_foundation.apply_provider_preferences_with_resolution",
+                new=resolved,
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
             config, hooks = await _run_resume(session_id)
 
         assert config["providers"][0]["config"]["default_model"] == "claude-sonnet-4-6"
@@ -811,3 +946,88 @@ class TestResumeResolutionDiagnostics:
             if "provider preference chain was unresolved" in record.message
         ]
         assert len(preference_warnings) == 1
+
+    async def test_legacy_glob_resolution_is_unverified_without_hiding_failure(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Older Foundation has no outcome contract, so its glob result is not guessed."""
+        store = SessionStore()
+        session_id = "test-legacy-glob-resolution-unverified"
+        metadata = _base_metadata(
+            session_id,
+            agent_overlay={
+                "provider_preferences": [
+                    {"provider": "luna", "model": "gpt-5.6-*"},
+                ]
+            },
+        )
+        store.save(session_id, [], metadata)
+
+        async def legacy_catalog_failure(config, preferences, coordinator):
+            logging.getLogger("foundation-test").warning(
+                "catalog authentication failure remains visible"
+            )
+            return config
+
+        with (
+            patch(
+                "amplifier_foundation.apply_provider_preferences_with_resolution",
+                new=legacy_catalog_failure,
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            _, hooks = await _run_resume(session_id)
+
+        fallbacks = [data for event, data in hooks.emitted if event == "provider:fallback"]
+        assert fallbacks[0]["reason"] == "legacy_resolution_unverified"
+        assert "catalog authentication failure remains visible" in caplog.text
+
+    async def test_legacy_concrete_resolution_is_verified_from_its_outcome(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A legacy exact model match can be checked without guessing a catalog result."""
+        store = SessionStore()
+        session_id = "test-legacy-concrete-resolution-verified"
+        metadata = _base_metadata(
+            session_id,
+            agent_overlay={
+                "provider_preferences": [
+                    {"provider": "luna", "model": "gpt-5.6-luna"},
+                ]
+            },
+        )
+        store.save(session_id, [], metadata)
+
+        async def legacy_resolved(config, preferences, coordinator):
+            return config
+
+        with (
+            patch(
+                "amplifier_foundation.apply_provider_preferences_with_resolution",
+                new=legacy_resolved,
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            _, hooks = await _run_resume(session_id)
+
+        assert not [event for event, _ in hooks.emitted if event == "provider:fallback"]
+        assert "provider preference chain was unresolved" not in caplog.text
+
+
+def test_malformed_provider_preferences_do_not_log_raw_configuration(caplog):
+    secret = "fake-provider-preference-secret"
+
+    with (
+        patch(
+            "amplifier_foundation.spawn_utils.ProviderPreference.from_dict",
+            side_effect=ValueError(f"invalid preference carrying {secret}"),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        assert _coerce_provider_preferences(
+            [{"provider": "luna", "config": {"api_key": secret}}, secret]
+        ) == []
+
+    assert secret not in caplog.text
+    assert "index 0 (type=dict; reason=validation_error)" in caplog.text
+    assert "index 1 (type=str)" in caplog.text

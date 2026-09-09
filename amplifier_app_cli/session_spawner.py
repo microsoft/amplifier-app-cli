@@ -1737,19 +1737,26 @@ def _coerce_provider_preferences(raw: Any) -> list:
     from amplifier_foundation.spawn_utils import ProviderPreference
 
     coerced: list = []
-    for entry in raw:
+    for index, entry in enumerate(raw):
         if isinstance(entry, ProviderPreference):
             coerced.append(entry)
             continue
         if isinstance(entry, dict):
             try:
                 coerced.append(ProviderPreference.from_dict(entry))
-            except ValueError as e:
+            except ValueError:
                 logger.warning(
-                    "Skipping malformed provider preference %r: %s", entry, e
+                    "Skipping malformed provider preference at index %d "
+                    "(type=%s; reason=validation_error).",
+                    index,
+                    type(entry).__name__,
                 )
             continue
-        logger.warning("Skipping unusable provider preference %r", entry)
+        logger.warning(
+            "Skipping unusable provider preference at index %d (type=%s).",
+            index,
+            type(entry).__name__,
+        )
     return coerced
 
 
@@ -1767,22 +1774,35 @@ def _provider_entry_keys(entry: dict) -> set[str]:
     return {k for k in keys if k}
 
 
-def _find_promoted_provider(providers: list, preferences: list) -> dict | None:
-    """Return the provider entry the preferences actually promoted, if any.
+def _legacy_resolution_is_verified(providers: list, preferences: list) -> bool:
+    """Return whether an older Foundation's outcome is independently verifiable.
 
-    Checks the OUTCOME (a preferred provider sitting at priority 0) rather
-    than trusting the return value of the apply call, so this stays honest
-    across foundation versions.
+    Pre-diagnostics Foundation versions cannot distinguish a matching provider
+    from a failed catalog/auth lookup for a glob. Concrete preferences are the
+    sole exception: the mounted provider, model, and priority can be checked
+    directly without inferring why Foundation selected it.
     """
-    wanted = {pref.provider for pref in preferences}
+    if not preferences or any(
+        not isinstance(preference.provider, str)
+        or not isinstance(preference.model, str)
+        or any(character in preference.model for character in "*?[")
+        for preference in preferences
+    ):
+        return False
+
     for entry in providers or []:
         if not isinstance(entry, dict):
             continue
-        if (entry.get("config") or {}).get("priority") != 0:
+        config = entry.get("config") or {}
+        if config.get("priority") != 0:
             continue
-        if _provider_entry_keys(entry) & wanted:
-            return entry
-    return None
+        for preference in preferences:
+            if (
+                preference.provider in _provider_entry_keys(entry)
+                and config.get("default_model") == preference.model
+            ):
+                return True
+    return False
 
 
 def _effective_provider(providers: list) -> dict | None:
@@ -1817,6 +1837,10 @@ async def _apply_provider_preferences(
     CLI releases supported before Foundation's diagnostics sink remain usable.
     The compatibility decision is based on the callable's inspected signature,
     never by swallowing an unrelated ``TypeError`` raised inside Foundation.
+
+    Release gate: retain this legacy branch until Foundation's diagnostics
+    contract has merged and the manager refreshes ``uv.lock``. Do not pin an
+    unmerged Foundation source in this package to bypass that release gate.
     """
     from amplifier_foundation import apply_provider_preferences_with_resolution
 
@@ -1864,12 +1888,14 @@ def _preference_failure(
         else:
             reason = "provider_preferences_unresolved"
     else:
-        # Older Foundation has no truthful resolution result. Retain the
-        # pre-diagnostics compatibility check rather than claiming a result
-        # exists where that Foundation release cannot report one.
-        if _find_promoted_provider(providers, preferences) is not None:
+        # Older Foundation has no result diagnostics. Never infer a glob
+        # resolution from priority alone: it can hide an unavailable catalog or
+        # authentication failure. Exact preferences can be verified from the
+        # resulting provider/model/priority tuple; every other case gets one
+        # honest CLI diagnostic instead of a false success or absence claim.
+        if _legacy_resolution_is_verified(providers, preferences):
             return None
-        reason = "preferred_provider_not_mounted"
+        reason = "legacy_resolution_unverified"
 
     landed = _effective_provider(providers)
     return {
@@ -2156,7 +2182,7 @@ async def resume_sub_session(
         # Scan the ENTIRE merged config, not just hooks. The same silent-
         # sentinel failure mode exists wherever a secret can live: a provider
         # entry with no matching live override keeps its redacted key, tools
-        # are not re-hydrated on resume, and any of these can also appear
+        # are re-hydrated on resume, and any of these can also appear
         # agent-scoped under agents[*]. _find_redacted_values already recurses
         # arbitrary structures, so pointing it at the whole config closes the
         # gap at no extra cost.
@@ -2273,6 +2299,11 @@ async def resume_sub_session(
                 ],
                 **_failure,
             }
+
+    # Persist the reconstructed mount plan, including a current explicit
+    # caller chain and any resolved promotion. Otherwise a later cold resume
+    # sees the previous config chain even though caller metadata was updated.
+    metadata["config"] = merged_config
 
     # Sub-session resume creates fresh UX systems. Parent UX context (approval history,
     # display state) is not preserved across resume. This is acceptable because:

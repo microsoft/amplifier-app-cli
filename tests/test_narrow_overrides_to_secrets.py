@@ -284,3 +284,121 @@ def test_restore_only_replaces_a_redacted_matching_secret_leaf():
         }
     }
     assert persisted["sources"]["source-a"]["api_key"] == "[REDACTED]"
+
+
+def test_restore_keyed_dict_sources_remain_supported():
+    persisted = {
+        "sources": {
+            "source-a": {
+                "url": "https://child-a.invalid",
+                "api_key": "[REDACTED]",
+            }
+        }
+    }
+    live = {
+        "sources": {
+            "source-a": {
+                "url": "https://live-must-not-replace.invalid",
+                "api_key": "fake-key-a",
+            }
+        }
+    }
+
+    restored = restore_redacted_secret_values(persisted, live)
+
+    assert restored == {
+        "sources": {
+            "source-a": {
+                "url": "https://child-a.invalid",
+                "api_key": "fake-key-a",
+            }
+        }
+    }
+
+
+def test_restore_reordered_list_sources_matches_unique_ids():
+    persisted = {
+        "sources": [
+            {"id": "source-a", "url": "https://child-a.invalid", "api_key": "[REDACTED]"},
+            {"id": "source-b", "url": "https://child-b.invalid", "api_key": "[REDACTED]"},
+        ]
+    }
+    live = {
+        "sources": [
+            {"id": "source-b", "url": "https://live-b.invalid", "api_key": "fake-key-b"},
+            {"id": "source-a", "url": "https://live-a.invalid", "api_key": "fake-key-a"},
+        ]
+    }
+
+    restored = restore_redacted_secret_values(persisted, live)
+
+    assert restored["sources"] == [
+        {"id": "source-a", "url": "https://child-a.invalid", "api_key": "fake-key-a"},
+        {"id": "source-b", "url": "https://child-b.invalid", "api_key": "fake-key-b"},
+    ]
+
+
+def test_restore_duplicate_or_absent_list_identity_keeps_redaction(caplog):
+    duplicated = {
+        "sources": [
+            {"id": "source-a", "url": "https://child-a.invalid", "api_key": "[REDACTED]"},
+            {"id": "source-a", "url": "https://child-other.invalid", "api_key": "[REDACTED]"},
+        ]
+    }
+    absent = {
+        "sources": [
+            {"id": "source-a", "url": "https://child-a.invalid", "api_key": "[REDACTED]"}
+        ]
+    }
+
+    duplicated_restored = restore_redacted_secret_values(
+        duplicated,
+        {
+            "sources": [
+                {"id": "source-a", "url": "https://live-a.invalid", "api_key": "fake-key-a"}
+            ]
+        },
+    )
+    absent_restored = restore_redacted_secret_values(
+        absent,
+        {
+            "sources": [
+                {"id": "source-b", "url": "https://child-a.invalid", "api_key": "fake-key-b"}
+            ]
+        },
+    )
+
+    assert duplicated_restored == duplicated
+    assert absent_restored == absent
+    assert "ambiguous id" in caplog.text
+    assert "missing id" in caplog.text
+
+
+def test_restore_identityless_list_requires_unique_nonsecret_match(caplog):
+    persisted = {
+        "sources": [
+            {"url": "https://child-a.invalid", "api_key": "[REDACTED]"},
+            {"url": "https://child-b.invalid", "api_key": "[REDACTED]"},
+        ]
+    }
+    reordered_live = {
+        "sources": [
+            {"url": "https://child-b.invalid", "api_key": "fake-key-b"},
+            {"url": "https://child-a.invalid", "api_key": "fake-key-a"},
+        ]
+    }
+    no_match_live = {
+        "sources": [
+            {"url": "https://other.invalid", "api_key": "fake-key-b"},
+        ]
+    }
+
+    restored = restore_redacted_secret_values(persisted, reordered_live)
+    unmatched = restore_redacted_secret_values(persisted, no_match_live)
+
+    assert [source["api_key"] for source in restored["sources"]] == [
+        "fake-key-a",
+        "fake-key-b",
+    ]
+    assert unmatched == persisted
+    assert "no matching non-secret structure" in caplog.text

@@ -653,6 +653,96 @@ def _prune_to_secret_keys(value: Any) -> Any | None:
     return None
 
 
+def _contains_redacted_secret(value: Any) -> bool:
+    """Return whether a structure contains a persisted redacted secret leaf."""
+    if isinstance(value, dict):
+        return any(
+            (
+                isinstance(key, str)
+                and key.lower() in SENSITIVE_KEYS
+                and child == _REDACTION_SENTINEL
+            )
+            or _contains_redacted_secret(child)
+            for key, child in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_redacted_secret(child) for child in value)
+    return False
+
+
+def _stable_list_identity(entry: Any, key: str) -> str | None:
+    """Return a usable non-secret list-entry identity, if one is present."""
+    if not isinstance(entry, dict):
+        return None
+    value = entry.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _nonsecret_structure(value: Any) -> Any:
+    """Copy a value's non-secret structure for conservative list matching."""
+    if isinstance(value, dict):
+        return {
+            key: _nonsecret_structure(child)
+            for key, child in value.items()
+            if not (isinstance(key, str) and key.lower() in SENSITIVE_KEYS)
+        }
+    if isinstance(value, list):
+        return [_nonsecret_structure(child) for child in value]
+    return value
+
+
+def _matching_live_list_entry(
+    persisted_entry: Any, persisted: list[Any], live: list[Any]
+) -> tuple[Any | None, str | None]:
+    """Find one unambiguous live counterpart without relying on list position."""
+    if not isinstance(persisted_entry, dict):
+        return None, "entry is not a mapping"
+
+    identity_failures: list[str] = []
+    for identity_key in ("id", "name"):
+        identity = _stable_list_identity(persisted_entry, identity_key)
+        if identity is None:
+            continue
+        persisted_count = sum(
+            _stable_list_identity(entry, identity_key) == identity
+            for entry in persisted
+        )
+        matches = [
+            entry
+            for entry in live
+            if _stable_list_identity(entry, identity_key) == identity
+        ]
+        if persisted_count == 1 and len(matches) == 1:
+            return matches[0], None
+        if persisted_count > 1 or len(matches) > 1:
+            identity_failures.append(f"ambiguous {identity_key}")
+        else:
+            identity_failures.append(f"missing {identity_key}")
+
+    # A structural comparison is safe only for an entirely identity-less list:
+    # an id/name mismatch is evidence that these entries are not interchangeable.
+    has_any_identity = any(
+        _stable_list_identity(entry, identity_key) is not None
+        for entry in [*persisted, *live]
+        for identity_key in ("id", "name")
+    )
+    if identity_failures:
+        return None, identity_failures[0]
+    if has_any_identity:
+        return None, "missing stable identity"
+
+    matches = [
+        entry
+        for entry in live
+        if _nonsecret_structure(entry) == _nonsecret_structure(persisted_entry)
+    ]
+    if len(matches) == 1:
+        return matches[0], None
+    if len(matches) > 1:
+        return None, "ambiguous non-secret structure"
+    return None, "no matching non-secret structure"
+
+
 def restore_redacted_secret_values(persisted: Any, live: Any) -> Any:
     """Copy ``persisted``, replacing only matching redacted secret leaves.
 
@@ -666,9 +756,11 @@ def restore_redacted_secret_values(persisted: Any, live: Any) -> Any:
     * its key is in core's authoritative ``SENSITIVE_KEYS`` set; and
     * the same key exists at the same path in usable live configuration.
 
-    Lists are traversed positionally and never extended or replaced.  That
-    deliberately preserves a child's list order, entries, and any
-    child-specific unredacted credentials.
+    Lists are never extended or replaced. Entries are matched by a unique
+    non-secret ``id`` or ``name``; identity-less lists must have exactly one
+    matching non-secret structure. This deliberately preserves a child's list
+    order, entries, and any child-specific unredacted credentials without
+    assigning a credential from a reordered live list to the wrong URL.
     """
     if isinstance(persisted, dict):
         result = copy.deepcopy(persisted)
@@ -692,10 +784,17 @@ def restore_redacted_secret_values(persisted: Any, live: Any) -> Any:
         if not isinstance(live, list):
             return result
         for index, value in enumerate(persisted):
-            if index >= len(live):
-                break
-            if isinstance(value, (dict, list)) and isinstance(live[index], type(value)):
-                result[index] = restore_redacted_secret_values(value, live[index])
+            if not isinstance(value, (dict, list)):
+                continue
+            live_value, reason = _matching_live_list_entry(value, persisted, live)
+            if live_value is not None and isinstance(live_value, type(value)):
+                result[index] = restore_redacted_secret_values(value, live_value)
+            elif _contains_redacted_secret(value):
+                logger.warning(
+                    "Could not restore redacted secret values for list entry %d: %s.",
+                    index,
+                    reason,
+                )
         return result
     return copy.deepcopy(persisted)
 
