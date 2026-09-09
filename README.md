@@ -275,10 +275,11 @@ amplifier run --<TAB>      # Shows all options
 
 ## Interactive Slash Completion
 
-Inside an interactive Amplifier session, press `Tab` after a leading `/` to
-complete commands and their currently available arguments. The menu includes
-short descriptions and is based on the mounted providers, modes, skills, and
-live configuration captured before the prompt opens.
+Inside an interactive Amplifier session, typing a leading `/` automatically
+opens the top-level command menu; `Tab` completes commands and their currently
+available arguments. The menu includes short descriptions and is based on the
+mounted providers, modes, skills, and live configuration captured before the
+prompt opens.
 
 - `Tab` opens the menu and cycles forward; `Shift-Tab` cycles backward.
 - `Up`/`Down` select an open menu item. `Enter` accepts that item; press
@@ -288,6 +289,18 @@ live configuration captured before the prompt opens.
   becoming `/provider `.
 - `/exit` ends the interactive session; `/quit` is an alias. Neither accepts
   arguments.
+
+Automatic slash menus are on by default. To disable only the automatic popup,
+add this to `~/.amplifier/settings.yaml`:
+
+```yaml
+ui: {slash_popup: {enabled: false}}
+```
+
+`Tab` completion, including command arguments and aliases, remains available.
+`enabled` must be the YAML boolean `false`, not the string `"false"`. The
+setting applies to fresh and resumed interactive sessions started after the
+change; restart the interactive session to pick it up.
 
 Completion is available for built-in slash commands, provider and mode
 controls, `/config` verbs/flags, user-invocable skills and their declared

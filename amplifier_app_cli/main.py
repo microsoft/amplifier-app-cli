@@ -25,6 +25,8 @@ from amplifier_core import (
 from amplifier_core.llm_errors import LLMError
 from amplifier_foundation import sanitize_message
 from prompt_toolkit import PromptSession
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.filters import has_completions
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory, InMemoryHistory
@@ -71,6 +73,7 @@ from .console import Markdown, console
 from .dedicated_tty_input import close_dedicated_tty_input, get_dedicated_tty_input
 from .effective_config import get_effective_config_summary
 from .key_manager import KeyManager
+from .lib.settings import AppSettings
 from .provider_diagnostics import DEFAULT_TIMEOUT_S as _PROVIDER_DIAGNOSTIC_TIMEOUT_S
 from .provider_diagnostics import format_model_line
 from .provider_diagnostics import invoke_list_models
@@ -3468,6 +3471,7 @@ def _create_prompt_session(
     get_active_mode: Callable | None = None,
     get_pinned_provider: Callable | None = None,
     completer: SlashCompleter | None = None,
+    auto_popup_enabled: bool = True,
 ) -> PromptSession:
     """Create configured PromptSession for REPL.
 
@@ -3484,6 +3488,8 @@ def _create_prompt_session(
         get_pinned_provider: Optional callable that returns the pinned
             conversation provider's mount name (see ``_pinned_provider_name``)
         completer: Optional snapshot-backed slash completer for the REPL.
+        auto_popup_enabled: Whether typing a leading slash automatically opens
+            the top-level completion menu. Tab completion remains available.
 
     Returns:
         Configured PromptSession instance
@@ -3594,7 +3600,7 @@ def _create_prompt_session(
     def get_prompt():
         return _build_prompt_message(get_active_mode, get_pinned_provider)
 
-    return PromptSession(
+    session = PromptSession(
         message=get_prompt,  # Callable for dynamic prompt
         history=history,
         key_bindings=kb,
@@ -3619,6 +3625,22 @@ def _create_prompt_session(
         # available; see dedicated_tty_input.py for the full mechanism.
         input=get_dedicated_tty_input(),
     )
+    if completer is not None and auto_popup_enabled:
+        # History search disables prompt_toolkit's complete_while_typing; keep
+        # Ctrl-R enabled and scope this public event hook to the leading command token.
+        def start_slash_completion(buffer: Buffer) -> None:
+            if (
+                buffer.cursor_position == len(buffer.text)
+                and buffer.text.startswith("/")
+                and not any(character.isspace() for character in buffer.text[1:])
+            ):
+                buffer.start_completion(
+                    select_first=False, complete_event=CompleteEvent(text_inserted=True)
+                )
+
+        session.default_buffer.on_text_insert += start_slash_completion
+
+    return session
 
 
 async def interactive_chat(
@@ -3734,6 +3756,9 @@ async def interactive_chat(
         # prompt.  Keypresses read only this snapshot, never discovery,
         # configurator, filesystem, network, or mounted providers.
         slash_completer.refresh(build_completion_snapshot(command_processor))
+        # Resolve the client preference once per interactive session, outside
+        # prompt-toolkit callbacks and the per-prompt refresh loop.
+        auto_popup_enabled = AppSettings().get_slash_popup_enabled()
         prompt_session = _create_prompt_session(
             get_active_mode=lambda: (
                 command_processor.session.coordinator.session_state.get("active_mode")
@@ -3742,6 +3767,7 @@ async def interactive_chat(
                 command_processor.session
             ),
             completer=slash_completer,
+            auto_popup_enabled=auto_popup_enabled,
         )
     except _TERMINAL_UNUSABLE_ERRORS as e:
         _report_terminal_unusable(e, verbose=verbose)

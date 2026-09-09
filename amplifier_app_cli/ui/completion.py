@@ -388,6 +388,14 @@ class SlashCompleter(Completer):
     def get_completions(self, document: Document, complete_event: Any):
         text = document.text
         cursor = document.cursor_position
+        if getattr(complete_event, "text_inserted", False) and (
+            cursor != len(text)
+            or not text.startswith("/")
+            or any(character.isspace() for character in text[1:])
+        ):
+            # The public buffer hook schedules this callback, so it can see a
+            # later document; automatic completion remains top-level only.
+            return
         prefix = text[:cursor].split()[-1] if text[:cursor] and not text[:cursor][-1].isspace() else ""
         for candidate in self.engine.complete(text, cursor):
             yield Completion(

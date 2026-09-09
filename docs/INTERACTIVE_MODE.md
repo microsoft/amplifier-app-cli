@@ -36,6 +36,20 @@ The `/mode*` commands come from `amplifier-bundle-modes` when that bundle is
 composed into your active configuration (which is the case for every standard
 amplifier bundle).
 
+## Slash Completion
+
+Typing a leading `/` opens the top-level command menu automatically. `Tab`
+still opens and cycles command and argument completions, including aliases.
+To disable only the automatic popup, add this to `~/.amplifier/settings.yaml`:
+
+```yaml
+ui: {slash_popup: {enabled: false}}
+```
+
+The default is enabled; `enabled` must be the YAML boolean `false`, not the
+string `"false"`. The setting takes effect for fresh and resumed interactive
+sessions started after the change; restart the session to apply it.
+
 ## Runtime Modes
 
 Runtime modes are runtime behavior overlays that modify how the assistant operates — restricting tools, contributing context, agents, or skills, and gating destructive actions. Plan mode is a common built-in:

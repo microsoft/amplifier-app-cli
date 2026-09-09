@@ -136,6 +136,25 @@ class AppSettings:
                     pass  # Skip malformed files
         return result
 
+    # ----- UI settings -----
+
+    def get_slash_popup_enabled(self) -> bool:
+        """Return whether typing a leading slash automatically opens its menu.
+
+        This is a client preference, not bundle runtime configuration. Only a
+        YAML boolean overrides the default so malformed values safely retain
+        the default enabled behavior.
+        """
+        settings = self.get_merged_settings()
+        ui_settings = settings.get("ui")
+        if not isinstance(ui_settings, dict):
+            return True
+        slash_popup_settings = ui_settings.get("slash_popup")
+        if not isinstance(slash_popup_settings, dict):
+            return True
+        enabled = slash_popup_settings.get("enabled")
+        return enabled if isinstance(enabled, bool) else True
+
     # ----- Bundle settings -----
 
     def get_active_bundle(self) -> str | None:
