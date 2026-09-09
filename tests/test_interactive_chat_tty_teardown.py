@@ -34,6 +34,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from prompt_toolkit import PromptSession
+from prompt_toolkit.output import DummyOutput
 
 _MODULE = "amplifier_app_cli.main"
 
@@ -43,11 +45,18 @@ def _use_headless_patch_stdout():
     """Keep mocked REPL tests from opening a real Windows console preflight."""
     # These tests already fake PromptSession and its console. Patch only main's
     # imported alias so a headless CI console cannot mask their startup contract.
+    original_init = PromptSession.__init__
+
+    def _headless_init(self, *args, **kwargs):
+        kwargs["output"] = DummyOutput()
+        return original_init(self, *args, **kwargs)
+
     with patch(
         f"{_MODULE}.patch_stdout",
         new=lambda *_args, **_kwargs: contextlib.nullcontext(),
     ):
-        yield
+        with patch.object(PromptSession, "__init__", new=_headless_init):
+            yield
 
 
 # ---------------------------------------------------------------------------
