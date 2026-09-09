@@ -38,17 +38,39 @@ amplifier bundle).
 
 ## Slash Completion
 
-Typing a leading `/` opens the top-level command menu automatically. `Tab`
-still opens and cycles command and argument completions, including aliases.
+Typing a leading `/` opens command and known argument-choice menus
+automatically. `Tab` has the same prefix behavior whether a menu is already
+open or not: it accepts one match, or extends every matching value's literal
+shared prefix and leaves the menu unselected. It does not cycle an unselected
+menu. Use `Up`/`Down` or `Shift-Tab` to preview a choice; `Tab`, `Enter`, or
+`Space` then accepts that explicit choice without submitting the prompt.
+
+For command names, unselected `Enter` accepts an exact match (case
+insensitively) or one unique match. An ambiguous prefix remains open with a
+short “Type more or choose” hint. For arguments, suggestions are advisory:
+unselected `Enter` always submits the exact current line, including partial,
+custom, quoted, multiword, or trailing-space arguments. This is also true
+after opening an argument menu manually with automatic popups disabled.
+
+For example, if `/product-council`, `/product-council-here`, and `/provider`
+are available, `/p` then `Tab` becomes `/pro`. A second `Tab` leaves `/pro`
+unselected because the names are still ambiguous. A real `/p` alias is an
+exact shorter command and prevents that extension; `Enter` accepts it with a
+space. The available command catalog is conditional on the built-ins and
+currently mounted modes, skills, and providers.
 To disable only the automatic popup, add this to `~/.amplifier/settings.yaml`:
 
 ```yaml
 ui: {slash_popup: {enabled: false}}
 ```
 
-The default is enabled; `enabled` must be the YAML boolean `false`, not the
+The default is enabled; this disables every automatic command and argument
+popup (manual `Tab` remains available). `enabled` must be the YAML boolean `false`, not the
 string `"false"`. The setting takes effect for fresh and resumed interactive
 sessions started after the change; restart the session to apply it.
+
+This experiment opens menus on text insertion, not deletion: `Backspace`
+closes an open menu until you type again or press `Tab`.
 
 ## Runtime Modes
 

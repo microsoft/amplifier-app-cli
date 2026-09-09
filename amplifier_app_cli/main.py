@@ -86,7 +86,12 @@ from .ui.dashboard_renderer import _redact_value as _dr_redact_value
 from .ui.error_display import display_llm_error, display_validation_error
 from .ui.item_renderer import ItemRenderer
 from .ui.log_filter import LLMErrorLogFilter
-from .ui.completion import SlashCompleter, build_completion_snapshot
+from .ui.completion import (
+    Candidate,
+    SlashCompleter,
+    build_completion_snapshot,
+    longest_common_prefix,
+)
 from .ui.view_policy import resolve_view
 from .utils.error_format import escape_markup
 from .utils.version import get_core_version, get_version
@@ -3489,7 +3494,8 @@ def _create_prompt_session(
             conversation provider's mount name (see ``_pinned_provider_name``)
         completer: Optional snapshot-backed slash completer for the REPL.
         auto_popup_enabled: Whether typing a leading slash automatically opens
-            the top-level completion menu. Tab completion remains available.
+            completion menus for command names and known argument choices. Tab
+            completion remains available.
 
     Returns:
         Configured PromptSession instance
@@ -3518,6 +3524,98 @@ def _create_prompt_session(
             f"Could not load history from {history_path}: {e}. Using in-memory history for this session."
         )
 
+    ambiguity_hint = False
+
+    def clear_ambiguity_hint() -> None:
+        nonlocal ambiguity_hint
+        ambiguity_hint = False
+
+    def completion_hint() -> str:
+        """Show a short prompt only while its ambiguous menu remains open."""
+        if ambiguity_hint and session.default_buffer.complete_state is not None:
+            return "Type more or choose"
+        return ""
+
+    def start_slash_completion(buffer: Buffer) -> None:
+        """Open an unselected automatic menu only at a safe current position."""
+        if (
+            auto_popup_enabled
+            and completer is not None
+            and SlashCompleter.is_automatic_completion_position(
+                buffer.text, buffer.cursor_position
+            )
+        ):
+            if (
+                buffer.complete_state is not None
+                and buffer.complete_state.current_completion is None
+            ):
+                # Prompt-toolkit keeps the document from when this menu opened
+                # for Esc/cancel. Renew it after filtering typed input so
+                # cancellation preserves the current prefix.
+                typed_document = buffer.document
+                buffer.cancel_completion()
+                buffer.document = typed_document
+            buffer.start_completion(
+                select_first=False, complete_event=CompleteEvent(text_inserted=True)
+            )
+
+    def restore_unselected_document(buffer: Buffer) -> None:
+        """Close an unselected menu without losing the visible typed document."""
+        typed_document = buffer.document
+        buffer.cancel_completion()
+        buffer.document = typed_document
+
+    def insert_candidate(buffer: Buffer, candidate) -> None:
+        """Replace only the token before the cursor and retain later text."""
+        start = buffer.cursor_position
+        while start and not buffer.text[start - 1].isspace():
+            start -= 1
+        has_delimiter_after = (
+            buffer.cursor_position < len(buffer.text)
+            and buffer.text[buffer.cursor_position].isspace()
+        )
+        buffer.delete_before_cursor(count=buffer.cursor_position - start)
+        insertion = candidate.value
+        if candidate.append_space and not has_delimiter_after:
+            insertion += " "
+        buffer.insert_text(insertion)
+
+    def token_before_cursor(buffer: Buffer) -> str:
+        """Return the complete current token, including its leading slash."""
+        start = buffer.cursor_position
+        while start and not buffer.text[start - 1].isspace():
+            start -= 1
+        return buffer.text[start : buffer.cursor_position]
+
+    def extension_for_prefix(prefix: str, shared: str) -> str:
+        """Extend a case-insensitive match without changing typed case."""
+        shared_prefix = shared[: len(prefix)]
+        if (
+            len(prefix.casefold()) != len(prefix)
+            or len(shared_prefix.casefold()) != len(shared_prefix)
+            or prefix.casefold() != shared_prefix.casefold()
+        ):
+            return ""
+        return shared[len(prefix) :]
+
+    def accept_selected_completion(buffer: Buffer, completion) -> None:
+        """Commit an explicit preview, then offer a known next argument."""
+        state = buffer.complete_state
+        if state is not None:
+            # Complete against the original document so accepting a choice
+            # before an existing delimiter retains that later text intact.
+            original_document = state.original_document
+            buffer.cancel_completion()
+            buffer.document = original_document
+        insert_candidate(
+            buffer,
+            Candidate(
+                completion.display_text,
+                append_space=completion.text.endswith(" "),
+            ),
+        )
+        start_slash_completion(buffer)
+
     # Create key bindings for multi-line support
     kb = KeyBindings()
 
@@ -3529,63 +3627,127 @@ def _create_prompt_session(
     @kb.add("enter")  # Enter submits (even in multiline mode)
     def accept_input(event):
         """Accept a completion menu selection, otherwise submit input."""
-        if event.current_buffer.complete_state:
-            state = event.current_buffer.complete_state
-            completion = state.current_completion
-            if completion is None and state.completions:
-                completion = state.completions[0]
-            if completion is not None:
-                event.current_buffer.apply_completion(completion)
-            else:
-                event.current_buffer.cancel_completion()
-            return
-        event.current_buffer.validate_and_handle()
-
-    @kb.add("tab")
-    def complete_next(event):
-        """Open/cycle the explicitly requested slash completion menu."""
+        nonlocal ambiguity_hint
         buffer = event.current_buffer
         if buffer.complete_state:
-            buffer.complete_next()
-        elif completer is not None:
-            candidates = completer.engine.complete(buffer.text, buffer.cursor_position)
-            if len(candidates) == 1:
-                # Prompt-toolkit's native Completion only replaces text before
-                # the cursor.  Replacing the complete token ourselves avoids
-                # duplicating a suffix when a user invokes Tab in its middle.
-                start = buffer.cursor_position
-                while start and not buffer.text[start - 1].isspace():
-                    start -= 1
-                end = buffer.cursor_position
-                while end < len(buffer.text) and not buffer.text[end].isspace():
-                    end += 1
-                buffer.cursor_position = start
-                buffer.delete(count=end - start)
-                buffer.insert_text(candidates[0].insertion)
-            elif candidates:
-                buffer.start_completion(select_first=False)
+            state = buffer.complete_state
+            completion = state.current_completion
+            if completion is not None:
+                clear_ambiguity_hint()
+                accept_selected_completion(buffer, completion)
+                return
+
+            original = state.original_document
+            if SlashCompleter.is_argument_position(
+                original.text, original.cursor_position
+            ):
+                # Argument candidates are always advisory, including menus
+                # opened manually when automatic popups are disabled.
+                restore_unselected_document(buffer)
+                clear_ambiguity_hint()
+                buffer.validate_and_handle()
+                return
+
+            candidates = (
+                completer.engine.complete(buffer.text, buffer.cursor_position)
+                if completer is not None
+                else []
+            )
+            typed_token = token_before_cursor(buffer)
+            exact = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.value.lower() == typed_token.lower()
+                ),
+                None,
+            )
+            if exact is not None or len(candidates) == 1:
+                restore_unselected_document(buffer)
+                insert_candidate(buffer, exact or candidates[0])
+                clear_ambiguity_hint()
+                start_slash_completion(buffer)
+                return
+            if candidates:
+                ambiguity_hint = True
+                return
+            restore_unselected_document(buffer)
+        clear_ambiguity_hint()
+        buffer.validate_and_handle()
+
+    @kb.add("tab", eager=True)
+    @kb.add("c-i", eager=True)
+    def complete_next(event):
+        """Complete an unselected prefix or accept an explicit preview."""
+        buffer = event.current_buffer
+        clear_ambiguity_hint()
+        if buffer.complete_state and buffer.complete_state.current_completion is not None:
+            accept_selected_completion(buffer, buffer.complete_state.current_completion)
+            return
+        if completer is None:
+            return
+        candidates = completer.engine.complete(buffer.text, buffer.cursor_position)
+        if len(candidates) == 1:
+            if buffer.complete_state:
+                restore_unselected_document(buffer)
+            insert_candidate(buffer, candidates[0])
+            start_slash_completion(buffer)
+            return
+        if len(candidates) < 2:
+            return
+        prefix = token_before_cursor(buffer)
+        extension = extension_for_prefix(prefix, longest_common_prefix(candidates))
+        if extension:
+            if buffer.complete_state:
+                restore_unselected_document(buffer)
+            buffer.insert_text(extension)
+        if buffer.complete_state is None:
+            buffer.start_completion(select_first=False)
 
     @kb.add("s-tab")
     def complete_previous(event):
         """Cycle backwards when the completion menu is open."""
+        clear_ambiguity_hint()
         if event.current_buffer.complete_state:
             event.current_buffer.complete_previous()
 
     @kb.add("escape")
     def cancel_completion(event):
         """Cancel completion and restore its original input."""
+        clear_ambiguity_hint()
         if event.current_buffer.complete_state:
             event.current_buffer.cancel_completion()
 
     @kb.add("up", filter=has_completions)
     def completion_up(event):
         """Navigate the open completion menu without stealing history keys."""
+        clear_ambiguity_hint()
         event.current_buffer.complete_previous()
 
     @kb.add("down", filter=has_completions)
     def completion_down(event):
         """Navigate the open completion menu without stealing history keys."""
+        clear_ambiguity_hint()
         event.current_buffer.complete_next()
+
+    @kb.add(" ")
+    def insert_space(event):
+        """Insert a literal boundary unless committing an explicit preview."""
+        buffer = event.current_buffer
+        clear_ambiguity_hint()
+        state = buffer.complete_state
+        if state is not None and state.current_completion is not None:
+            completion = state.current_completion
+            accept_selected_completion(buffer, completion)
+            if not (
+                buffer.document.char_before_cursor.isspace()
+                or buffer.document.current_char.isspace()
+            ):
+                buffer.insert_text(" ")
+            return
+        if state is not None:
+            restore_unselected_document(buffer)
+        buffer.insert_text(" ")
 
     # Dynamic prompt that shows [mode] and [pin] indicators when active.
     #
@@ -3624,21 +3786,18 @@ def _create_prompt_session(
         # (prompt_toolkit's own default) whenever a dedicated fd isn't
         # available; see dedicated_tty_input.py for the full mechanism.
         input=get_dedicated_tty_input(),
+        # Unlike a bottom toolbar, the inline hint does not require CPR support.
+        rprompt=completion_hint,
     )
-    if completer is not None and auto_popup_enabled:
+    if completer is not None:
         # History search disables prompt_toolkit's complete_while_typing; keep
-        # Ctrl-R enabled and scope this public event hook to the leading command token.
-        def start_slash_completion(buffer: Buffer) -> None:
-            if (
-                buffer.cursor_position == len(buffer.text)
-                and buffer.text.startswith("/")
-                and not any(character.isspace() for character in buffer.text[1:])
-            ):
-                buffer.start_completion(
-                    select_first=False, complete_event=CompleteEvent(text_inserted=True)
-                )
+        # Ctrl-R enabled. Candidate availability is snapshot-only and the
+        # adapter repeats this check when its deferred callback runs.
+        def on_text_insert(buffer: Buffer) -> None:
+            clear_ambiguity_hint()
+            start_slash_completion(buffer)
 
-        session.default_buffer.on_text_insert += start_slash_completion
+        session.default_buffer.on_text_insert += on_text_insert
 
     return session
 

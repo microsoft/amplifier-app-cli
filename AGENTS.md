@@ -79,9 +79,21 @@ normal `prompt_async()` call; prompt-toolkit completion callbacks may read only
 that already-built snapshot.  Do not add discovery, provider, filesystem,
 network, or configurator calls to a keypress path.
 Keep history search enabled: its prompt-toolkit compatibility path uses the
-public buffer insertion hook only for a trailing, whitespace-free leading slash token; arguments stay Tab-only.
-Resolve the slash-popup UI setting once at interactive-session construction,
-outside prompt-toolkit callbacks and the per-prompt refresh loop.
+public buffer insertion hook for safe, end-of-buffer leading-slash documents.
+Known argument candidates may open advisory menus; custom typed arguments must
+remain unchanged on Enter unless the user explicitly selects a candidate.
+Resolve the slash-popup UI setting once at interactive-session construction;
+it gates every automatic command and argument menu, outside prompt-toolkit
+callbacks and the per-prompt refresh loop.
+Unselected `Tab` must only accept a unique candidate or extend the literal
+longest shared candidate prefix; it never cycles choices. `Up`/`Down` and
+`Shift-Tab` create explicit reversible previews, which `Tab`, `Enter`, or
+`Space` may accept without submitting. Unselected command `Enter` accepts
+only an exact or unique command; unselected argument `Enter` always submits
+the exact current line, regardless of the automatic-popup setting.
+Keep ambiguous-completion guidance in the inline right prompt: prompt-toolkit
+hides bottom toolbars when a terminal cannot answer cursor-position requests.
+Verify its visible rendering in a CPR-unsupported PTY, not only its callback text.
 
 ## Interactive control-flow exits
 

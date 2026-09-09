@@ -15,10 +15,12 @@ import pytest
 from amplifier_app_cli.main import CommandProcessor, _create_prompt_session
 from amplifier_app_cli.lib.settings import AppSettings, SettingsPaths
 from amplifier_app_cli.ui.completion import (
+    Candidate,
     CompletionSnapshot,
     SlashCompleter,
     SlashCompletionEngine,
     build_completion_snapshot,
+    longest_common_prefix,
 )
 from prompt_toolkit import PromptSession
 from prompt_toolkit.input.defaults import create_pipe_input
@@ -163,6 +165,39 @@ def test_engine_never_completes_prose_or_unsafe_cursor_suffix() -> None:
     assert _values(engine, "write /pro") == []
     assert _values(engine, "/proXvider", 4) == []
     assert _values(engine, "/provider", 4) == []
+
+
+def test_longest_common_prefix_keeps_literal_candidate_grammar() -> None:
+    assert longest_common_prefix(
+        [
+            Candidate("/product-council"),
+            Candidate("/product-council-here"),
+            Candidate("/provider"),
+        ]
+    ) == "/pro"
+    assert longest_common_prefix([Candidate("Fast"), Candidate("fast")]) == ""
+    assert longest_common_prefix([]) == ""
+
+
+def test_engine_prefix_fixture_distinguishes_aliases_from_longer_matches() -> None:
+    snapshot = CompletionSnapshot(
+        skill_shortcuts={
+            "product-council": {"name": "product-council"},
+            "product-council-here": {"name": "product-council-here"},
+        },
+        commands={"/provider": "Provider"},
+    )
+    engine = SlashCompletionEngine(snapshot)
+
+    assert longest_common_prefix(engine.complete("/p")) == "/pro"
+    assert _values(engine, "/prov") == ["/provider"]
+    assert _values(engine, "/prod") == [
+        "/product-council",
+        "/product-council-here",
+    ]
+
+    snapshot.mode_shortcuts["p"] = "plan"
+    assert longest_common_prefix(engine.complete("/p")) == "/p"
 
 
 def test_completer_reads_only_the_existing_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -315,14 +350,39 @@ async def _wait_until_completion_closed(session, expected_text: str) -> None:
         else:
             stable_checks = 0
         await asyncio.sleep(0.01)
-    raise AssertionError("completion state did not close")
+    raise AssertionError(
+        f"completion state did not close: text={session.default_buffer.text!r}, "
+        f"state={session.default_buffer.complete_state!r}"
+    )
+
+
+async def _wait_until_buffer_text(session, expected_text: str) -> None:
+    """Wait for a pipe-input key binding to update the public buffer text."""
+    for _ in range(100):
+        if session.default_buffer.text == expected_text:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(
+        f"buffer text did not become {expected_text!r}: "
+        f"{session.default_buffer.text!r}"
+    )
+
+
+async def _wait_until_completion_hint(session, expected_text: str) -> None:
+    for _ in range(100):
+        if session.rprompt() == expected_text:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(
+        f"completion hint did not become {expected_text!r}: {session.rprompt()!r}"
+    )
 
 
 async def _wait_until_selected_completion(session, expected_text: str) -> None:
     for _ in range(100):
         state = session.default_buffer.complete_state
         completion = state.current_completion if state else None
-        if completion is not None and completion.text == f"{expected_text} ":
+        if completion is not None and completion.display_text == expected_text:
             return
         await asyncio.sleep(0.01)
     raise AssertionError(f"{expected_text!r} was not selected")
@@ -361,6 +421,30 @@ async def test_pipe_unique_tab_and_ctrl_j(prompt_factory) -> None:
         assert await asyncio.wait_for(task, 1) == "previous prompt"
     finally:
         await _cancel_pending_prompt(task)
+        context.__exit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_pipe_space_inserts_before_existing_whitespace_and_never_guesses(
+    prompt_factory,
+) -> None:
+    session, pipe, context = prompt_factory(
+        CompletionSnapshot(commands={"/clear": "Clear", "/config": "Config"})
+    )
+    task = None
+    try:
+        task = await _start(session)
+        pipe.send_text("a b\x1b[D\x1b[D \r")
+        assert await asyncio.wait_for(task, 1) == "a  b"
+
+        task = await _start(session)
+        pipe.send_text("/c ")
+        await _wait_until_completion_closed(session, "/c ")
+        pipe.send_text("\r")
+        assert await asyncio.wait_for(task, 1) == "/c "
+    finally:
+        if task is not None:
+            await _cancel_pending_prompt(task)
         context.__exit__(None, None, None)
 
 
@@ -489,6 +573,10 @@ async def test_pipe_disabled_auto_popup_keeps_tab_commands_arguments_and_aliases
         pipe.send_text("c\t")
         await _wait_until_settled_complete_state(session, ["/clear", "/config"])
         pipe.send_text("\t")
+        state = await _wait_until_settled_complete_state(session, ["/clear", "/config"])
+        assert state.current_completion is None
+        assert session.default_buffer.text == "/c"
+        pipe.send_text("\x1b[B")
         await _wait_until_selected_completion(session, "/clear")
         pipe.send_text("\r")
         await _wait_until_completion_closed(session, "/clear ")
@@ -501,11 +589,13 @@ async def test_pipe_disabled_auto_popup_keeps_tab_commands_arguments_and_aliases
         assert await asyncio.wait_for(task, 1) == "/quit "
 
         task = await _start(session)
-        pipe.send_text("/provider \t")
+        pipe.send_text("/provider ")
+        await _wait_until_completion_closed(session, "/provider ")
+        pipe.send_text("\t")
         await _wait_until_settled_complete_state(
             session, ["auto", "use", "test", "models"]
         )
-        pipe.send_text("\t")
+        pipe.send_text("\x1b[B")
         await _wait_until_selected_completion(session, "auto")
     finally:
         if task is not None:
@@ -514,7 +604,7 @@ async def test_pipe_disabled_auto_popup_keeps_tab_commands_arguments_and_aliases
 
 
 @pytest.mark.asyncio
-async def test_pipe_enter_accepts_auto_provider_completion_without_opening_arguments(
+async def test_pipe_auto_command_acceptance_opens_unselected_argument_menu(
     prompt_factory,
 ) -> None:
     session, pipe, context = prompt_factory(
@@ -528,11 +618,251 @@ async def test_pipe_enter_accepts_auto_provider_completion_without_opening_argum
         assert state.current_completion is None
 
         pipe.send_text("\r")
-        await _wait_until_completion_closed(session, "/provider ")
+        state = await _wait_until_settled_complete_state(
+            session, ["auto", "use", "test", "models"]
+        )
+        assert state.current_completion is None
+        assert session.default_buffer.text == "/provider "
         assert not task.done(), "first Enter must only accept the menu selection"
 
         pipe.send_text("\r")
         assert await asyncio.wait_for(task, 1) == "/provider "
+    finally:
+        if task is not None:
+            await _cancel_pending_prompt(task)
+        context.__exit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_pipe_tab_extends_shared_prefix_without_selecting_or_cycling(
+    prompt_factory,
+) -> None:
+    snapshot = CompletionSnapshot(
+        commands={"/provider": "Provider"},
+        skill_shortcuts={
+            "product-council": {"name": "product-council"},
+            "product-council-here": {"name": "product-council-here"},
+        },
+    )
+    session, pipe, context = prompt_factory(snapshot)
+    task = None
+    try:
+        task = await _start(session)
+        pipe.send_text("/p")
+        await _wait_until_settled_complete_state(
+            session, ["/product-council", "/product-council-here", "/provider"]
+        )
+        assert session.default_buffer.cursor_position == 2
+        assert longest_common_prefix(
+            session.completer.engine.complete(
+                session.default_buffer.text, session.default_buffer.cursor_position
+            )
+        ) == "/pro"
+        pipe.send_text("\t")
+        await _wait_until_buffer_text(session, "/pro")
+        state = await _wait_until_settled_complete_state(
+            session, ["/product-council", "/product-council-here", "/provider"]
+        )
+        assert state.current_completion is None
+        assert session.default_buffer.text == "/pro"
+
+        pipe.send_text("\t")
+        await _wait_until_buffer_text(session, "/pro")
+        state = await _wait_until_settled_complete_state(
+            session, ["/product-council", "/product-council-here", "/provider"]
+        )
+        assert state.current_completion is None
+        assert session.default_buffer.text == "/pro"
+
+        pipe.send_text("\r")
+        await _wait_until_completion_hint(session, "Type more or choose")
+        assert not task.done()
+        pipe.send_text("\t")
+        await _wait_until_completion_hint(session, "")
+        pipe.send_text("\x1b[B")
+        await _wait_until_selected_completion(session, "/product-council")
+        pipe.send_text("\t")
+        await _wait_until_buffer_text(session, "/product-council ")
+        pipe.send_text("\r")
+        assert await asyncio.wait_for(task, 1) == "/product-council "
+    finally:
+        if task is not None:
+            await _cancel_pending_prompt(task)
+        context.__exit__(None, None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auto_popup_enabled", [False, True])
+async def test_pipe_inline_ambiguity_hint_clears_on_edit(
+    prompt_factory, auto_popup_enabled: bool
+) -> None:
+    session, pipe, context = prompt_factory(
+        CompletionSnapshot(
+            commands={
+                "/product-council": "Product council",
+                "/product-council-here": "Product council here",
+                "/provider": "Provider",
+            }
+        ),
+        auto_popup_enabled=auto_popup_enabled,
+    )
+    task = None
+    try:
+        # Bottom toolbars are hidden when the terminal cannot answer CPR.
+        # Inline right prompts do not require that renderer capability.
+        assert session.bottom_toolbar is None
+        assert callable(session.rprompt)
+        task = await _start(session)
+        pipe.send_text("/pro\t")
+        await _wait_until_settled_complete_state(
+            session, ["/product-council", "/product-council-here", "/provider"]
+        )
+        pipe.send_text("\r")
+        await _wait_until_completion_hint(session, "Type more or choose")
+        assert not task.done()
+        pipe.send_text("v")
+        await _wait_until_buffer_text(session, "/prov")
+        await _wait_until_completion_hint(session, "")
+        assert not task.done()
+    finally:
+        if task is not None:
+            await _cancel_pending_prompt(task)
+        context.__exit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_pipe_exact_short_alias_enter_and_space_do_not_guess(
+    prompt_factory,
+) -> None:
+    aliases = CompletionSnapshot(
+        commands={"/provider": "Provider"},
+        mode_shortcuts={"p": "plan"},
+    )
+    session, pipe, context = prompt_factory(aliases)
+    task = None
+    try:
+        task = await _start(session)
+        pipe.send_text("/p\t")
+        state = await _wait_until_settled_complete_state(session, ["/p", "/provider"])
+        assert state.current_completion is None
+        assert session.default_buffer.text == "/p"
+        pipe.send_text("\r")
+        await _wait_until_buffer_text(session, "/p ")
+        assert not task.done()
+        pipe.send_text("\r")
+        assert await asyncio.wait_for(task, 1) == "/p "
+    finally:
+        if task is not None:
+            await _cancel_pending_prompt(task)
+        context.__exit__(None, None, None)
+
+    ambiguous = CompletionSnapshot(
+        commands={
+            "/provider": "Provider",
+            "/product-council": "Product council",
+            "/product-council-here": "Product council here",
+        }
+    )
+    session, pipe, context = prompt_factory(ambiguous)
+    try:
+        task = await _start(session)
+        pipe.send_text("/pro ")
+        await _wait_until_completion_closed(session, "/pro ")
+        pipe.send_text("\r")
+        assert await asyncio.wait_for(task, 1) == "/pro "
+    finally:
+        if task is not None:
+            await _cancel_pending_prompt(task)
+        context.__exit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_pipe_manual_argument_menu_enter_preserves_current_line_when_disabled(
+    prompt_factory,
+) -> None:
+    session, pipe, context = prompt_factory(
+        CompletionSnapshot(commands={"/provider": "Provider"}),
+        auto_popup_enabled=False,
+    )
+    task = None
+    try:
+        task = await _start(session)
+        pipe.send_text("/provider \t")
+        await _wait_until_settled_complete_state(
+            session, ["auto", "use", "test", "models"]
+        )
+        pipe.send_text('u custom "quoted value"  \r')
+        assert await asyncio.wait_for(task, 1) == '/provider u custom "quoted value"  '
+    finally:
+        if task is not None:
+            await _cancel_pending_prompt(task)
+        context.__exit__(None, None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auto_popup_enabled", [False, True])
+async def test_pipe_midline_manual_argument_menu_submits_original_line(
+    prompt_factory, auto_popup_enabled: bool
+) -> None:
+    session, pipe, context = prompt_factory(
+        CompletionSnapshot(commands={"/provider": "Provider"}),
+        auto_popup_enabled=auto_popup_enabled,
+    )
+    task = None
+    try:
+        task = await _start(session)
+        pipe.send_text("/provider  rest\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\t")
+        await _wait_until_settled_complete_state(
+            session, ["auto", "use", "test", "models"]
+        )
+        assert session.default_buffer.text == "/provider  rest"
+        pipe.send_text("\r")
+        assert await asyncio.wait_for(task, 1) == "/provider  rest"
+    finally:
+        if task is not None:
+            await _cancel_pending_prompt(task)
+        context.__exit__(None, None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auto_popup_enabled", [False, True])
+@pytest.mark.parametrize("selected_key", ["\r", "\t", " "])
+@pytest.mark.parametrize("suffix", ["", " rest"])
+async def test_pipe_preview_delimiters_escape_and_accept_without_doubling(
+    prompt_factory,
+    auto_popup_enabled: bool,
+    selected_key: str,
+    suffix: str,
+) -> None:
+    session, pipe, context = prompt_factory(
+        CompletionSnapshot(commands={"/provider": "Provider"}),
+        auto_popup_enabled=auto_popup_enabled,
+    )
+    task = None
+    original_text = "/provider " + suffix
+    expected_text = "/provider auto" + (suffix or " ")
+    try:
+        task = await _start(session)
+        pipe.send_text(original_text + "\x1b[D" * len(suffix) + "\t")
+        await _wait_until_settled_complete_state(
+            session, ["auto", "use", "test", "models"]
+        )
+        pipe.send_text("\x1b[B")
+        await _wait_until_selected_completion(session, "auto")
+        assert session.default_buffer.text == expected_text
+        # A second Escape flushes the first through pipe input's parser.
+        pipe.send_text("\x1b\x1b")
+        await _wait_until_buffer_text(session, original_text)
+
+        pipe.send_text("\t")
+        await _wait_until_settled_complete_state(
+            session, ["auto", "use", "test", "models"]
+        )
+        pipe.send_text(f"\x1b[B{selected_key}")
+        await _wait_until_buffer_text(session, expected_text)
+        assert not task.done()
+        pipe.send_text("\r")
+        assert await asyncio.wait_for(task, 1) == expected_text
     finally:
         if task is not None:
             await _cancel_pending_prompt(task)
@@ -743,7 +1073,7 @@ async def test_pipe_midtoken_edits_do_not_reopen_and_tab_still_completes_argumen
 
 
 @pytest.mark.asyncio
-async def test_pipe_automatic_completion_does_not_race_into_arguments(
+async def test_pipe_auto_argument_menu_filters_without_changing_typed_text(
     prompt_factory,
 ) -> None:
     session, pipe, context = prompt_factory(
@@ -753,19 +1083,19 @@ async def test_pipe_automatic_completion_does_not_race_into_arguments(
     try:
         task = await _start(session)
         pipe.send_text("/provider ")
-        await _wait_until_completion_closed(session, "/provider ")
-
-        pipe.send_text("\t")
         state = await _wait_until_settled_complete_state(
             session, ["auto", "use", "test", "models"]
         )
         assert state.current_completion is None
-        pipe.send_text("\t")
-        await _wait_until_selected_completion(session, "auto")
-        pipe.send_text("\t")
-        await _wait_until_selected_completion(session, "use")
-        pipe.send_text("\x1b[Z")
-        await _wait_until_selected_completion(session, "auto")
+        assert session.default_buffer.text == "/provider "
+
+        pipe.send_text("u")
+        state = await _wait_until_settled_complete_state(session, ["use"])
+        assert state.current_completion is None
+        assert session.default_buffer.text == "/provider u"
+
+        pipe.send_text("\r")
+        assert await asyncio.wait_for(task, 1) == "/provider u"
     finally:
         if task is not None:
             await _cancel_pending_prompt(task)
@@ -773,7 +1103,85 @@ async def test_pipe_automatic_completion_does_not_race_into_arguments(
 
 
 @pytest.mark.asyncio
-async def test_pipe_rapid_provider_argument_text_does_not_open_a_menu(
+async def test_pipe_argument_enter_preserves_custom_and_skill_values(
+    prompt_factory,
+) -> None:
+    snapshot = CompletionSnapshot(
+        commands={"/provider": "Provider controls"},
+        skill_shortcuts={"rvw": {"name": "review", "description": "Review"}},
+        skills=[
+            {
+                "name": "review",
+                "aliases": ["rvw"],
+                "description": "Review",
+                "argument_hint": None,
+                "arguments": [
+                    {"after": [], "values": ["Fast", "thorough"]},
+                    {"after": ["thorough"], "values": ["security"]},
+                ],
+            }
+        ],
+    )
+    session, pipe, context = prompt_factory(
+        snapshot
+    )
+    task = None
+    try:
+        for typed in (
+            "/provider u",
+            "/rvw th",
+            "/rvw thorough custom-value",
+            '/provider "a quoted multi word value"',
+        ):
+            task = await _start(session)
+            pipe.send_text(f"{typed}\r")
+            assert await asyncio.wait_for(task, 1) == typed
+    finally:
+        if task is not None:
+            await _cancel_pending_prompt(task)
+        context.__exit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_pipe_selected_argument_accepts_only_then_next_menu_is_advisory(
+    prompt_factory,
+) -> None:
+    snapshot = CompletionSnapshot(
+        skill_shortcuts={"rvw": {"name": "review", "description": "Review"}},
+        skills=[
+            {
+                "name": "review",
+                "aliases": ["rvw"],
+                "description": "Review",
+                "argument_hint": None,
+                "arguments": [
+                    {"after": [], "values": ["Fast", "thorough"]},
+                    {"after": ["thorough"], "values": ["security"]},
+                ],
+            }
+        ],
+    )
+    session, pipe, context = prompt_factory(snapshot)
+    task = None
+    try:
+        task = await _start(session)
+        pipe.send_text("/rvw th")
+        await _wait_until_settled_complete_state(session, ["thorough"])
+        pipe.send_text("\x1b[B\r")
+        state = await _wait_until_settled_complete_state(session, ["security"])
+        assert state.current_completion is None
+        assert session.default_buffer.text == "/rvw thorough "
+        assert not task.done(), "Enter must only accept an explicit argument choice"
+        pipe.send_text("\r")
+        assert await asyncio.wait_for(task, 1) == "/rvw thorough "
+    finally:
+        if task is not None:
+            await _cancel_pending_prompt(task)
+        context.__exit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_pipe_escape_and_backspace_restore_selected_argument_prefix(
     prompt_factory,
 ) -> None:
     session, pipe, context = prompt_factory(
@@ -783,11 +1191,31 @@ async def test_pipe_rapid_provider_argument_text_does_not_open_a_menu(
     try:
         task = await _start(session)
         pipe.send_text("/provider u")
-        await _wait_until_completion_closed(session, "/provider u")
+        await _wait_until_settled_complete_state(session, ["use"])
+        pipe.send_text("\x1b[B")
+        await _wait_until_selected_completion(session, "use")
+        # The pipe parser resolves an Escape prefix with the next key. Escape
+        # restores `/provider u`; Backspace then removes its `u`.
+        pipe.send_text("\x1b\x7fcustom\r")
+        assert await asyncio.wait_for(task, 1) == "/provider custom"
     finally:
         if task is not None:
             await _cancel_pending_prompt(task)
         context.__exit__(None, None, None)
+
+
+def test_automatic_completion_position_rejects_unsafe_stale_documents() -> None:
+    completer = SlashCompleter(_engine())
+
+    assert SlashCompleter.is_automatic_completion_position("/provider ", 10)
+    assert not SlashCompleter.is_automatic_completion_position("/provider\n", 10)
+    assert not SlashCompleter.is_automatic_completion_position("/provider\r", 10)
+    assert list(
+        completer.get_completions(
+            __import__("prompt_toolkit").document.Document("/provider\n"),
+            __import__("prompt_toolkit").completion.CompleteEvent(text_inserted=True),
+        )
+    ) == []
 
 
 def test_exit_commands_are_static_and_cannot_be_shadowed() -> None:
