@@ -29,12 +29,25 @@ tests pass.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 _MODULE = "amplifier_app_cli.main"
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _use_headless_patch_stdout():
+    """Keep mocked REPL tests from opening a real Windows console preflight."""
+    # These tests already fake PromptSession and its console. Patch only main's
+    # imported alias so a headless CI console cannot mask their startup contract.
+    with patch(
+        f"{_MODULE}.patch_stdout",
+        new=lambda *_args, **_kwargs: contextlib.nullcontext(),
+    ):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +181,7 @@ class TestInteractiveChatClosesDedicatedTtyOnTeardown:
                 bundle_name="test-bundle",
             )
 
+        mock_ps.prompt_async.assert_awaited_once()
         mock_close.assert_called_once()
 
     @pytest.mark.asyncio
@@ -430,4 +444,5 @@ class TestCloseDedicatedTtyTeardownIsRobust:
 
         # cleanup() (session teardown) still ran despite no dedicated fd
         # having been opened -- the close call didn't short-circuit anything.
+        mock_ps.prompt_async.assert_awaited_once()
         initialized.cleanup.assert_awaited_once()
