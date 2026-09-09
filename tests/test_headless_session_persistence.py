@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from click.testing import CliRunner
 from rich.console import Console
 
 from amplifier_app_cli.session_store import SessionStore
@@ -235,3 +236,167 @@ async def test_headless_json_reports_one_error_when_final_session_save_fails(
     output = json.loads(stdout)
     assert output["status"] == "error"
     assert output["error"] == "session save failed"
+
+
+@pytest.mark.parametrize(
+    ("output_format", "marker_stream"),
+    [("json", "stderr"), ("json-trace", "stderr"), ("text", "stdout")],
+)
+def test_run_routes_preparation_output_away_from_json_payload(
+    split_homes: tuple[Path, Path],
+    output_format: str,
+    marker_stream: str,
+) -> None:
+    """Preparation diagnostics precede execute_single but not JSON stdout."""
+    import click
+
+    from amplifier_app_cli.commands.run import register_run_command
+    from amplifier_app_cli.main import execute_single
+
+    cli = click.Group()
+    initialized = _initialized_session()
+    prepared_bundle = MagicMock()
+    prepared_bundle.mount_plan = {}
+    test_console = Console()
+
+    def _prepare(**_kwargs):
+        print("PREPARATION MARKER")
+        test_console.print("PREPARATION CONSOLE MARKER")
+        return {}, prepared_bundle
+
+    register_run_command(
+        cli,
+        interactive_chat=AsyncMock(),
+        execute_single=execute_single,
+        get_module_search_paths=list,
+        check_first_run=lambda: False,
+        prompt_first_run_init=lambda _console: False,
+    )
+
+    with (
+        patch(
+            "amplifier_app_cli.commands.run._resolve_config_interruptibly",
+            side_effect=_prepare,
+        ),
+        patch(
+            "amplifier_app_cli.commands.run.create_config_manager",
+            return_value=MagicMock(get_merged_settings=dict),
+        ),
+        patch("amplifier_app_cli.commands.run._run_startup_update_check"),
+        patch(
+            f"{_MAIN}.create_initialized_session",
+            new=AsyncMock(return_value=initialized),
+        ),
+        patch("amplifier_app_cli.commands.run.console", new=test_console),
+        patch(f"{_MAIN}.console", new=test_console),
+    ):
+        result = CliRunner().invoke(
+            cli, ["run", "--output-format", output_format, "persist this"]
+        )
+
+    assert result.exit_code == 0, result.output
+    stream = result.stderr if marker_stream == "stderr" else result.stdout
+    assert "PREPARATION MARKER" in stream
+    assert "PREPARATION CONSOLE MARKER" in stream
+
+    if output_format in {"json", "json-trace"}:
+        assert "PREPARATION MARKER" not in result.stdout
+        assert "PREPARATION CONSOLE MARKER" not in result.stdout
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "success"
+        assert payload["session_id"] == _SESSION_ID
+    else:
+        assert "saved response" in result.stdout
+
+    assert SessionStore().load(_SESSION_ID)[1]["session_id"] == _SESSION_ID
+
+
+def test_run_json_preparation_failure_remains_nonzero(
+    split_homes: tuple[Path, Path],
+) -> None:
+    """Redirecting diagnostics must not convert a failed preparation to success."""
+    import click
+
+    from amplifier_app_cli.commands.run import register_run_command
+
+    cli = click.Group()
+    test_console = Console()
+    register_run_command(
+        cli,
+        interactive_chat=AsyncMock(),
+        execute_single=AsyncMock(),
+        get_module_search_paths=list,
+        check_first_run=lambda: False,
+        prompt_first_run_init=lambda _console: False,
+    )
+
+    with (
+        patch(
+            "amplifier_app_cli.commands.run._resolve_config_interruptibly",
+            side_effect=FileNotFoundError("bundle missing"),
+        ),
+        patch(
+            "amplifier_app_cli.commands.run.create_config_manager",
+            return_value=MagicMock(get_merged_settings=dict),
+        ),
+        patch("amplifier_app_cli.commands.run.console", new=test_console),
+    ):
+        result = CliRunner().invoke(
+            cli, ["run", "--output-format", "json", "persist this"]
+        )
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert "bundle missing" in result.stderr
+
+
+@pytest.mark.parametrize("output_format", ["json", "json-trace"])
+def test_run_json_restores_dynamic_console_file_after_execution(
+    split_homes: tuple[Path, Path],
+    tmp_path: Path,
+    output_format: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Headless output must not retain CliRunner's closed stream in the console."""
+    import asyncio
+
+    import click
+
+    from amplifier_app_cli.console import console
+    from amplifier_app_cli.main import execute_single
+
+    monkeypatch.setattr(console, "_file", None)
+    cli = click.Group()
+
+    @cli.command()
+    def run_headless() -> None:
+        asyncio.run(
+            execute_single(
+                prompt="persist this",
+                config={},
+                search_paths=[tmp_path],
+                verbose=False,
+                session_id=_SESSION_ID,
+                bundle_name="test-bundle",
+                output_format=output_format,
+            )
+        )
+
+    @cli.command()
+    def print_again() -> None:
+        console.print("SECOND INVOCATION")
+
+    assert console._file is None
+    with patch(
+        f"{_MAIN}.create_initialized_session",
+        new=AsyncMock(return_value=_initialized_session()),
+    ):
+        first = CliRunner().invoke(cli, ["run-headless"])
+
+    assert first.exit_code == 0, first.output
+    assert json.loads(first.stdout)["status"] == "success"
+    assert console._file is None
+
+    second = CliRunner().invoke(cli, ["print-again"])
+    assert second.exit_code == 0, second.output
+    assert "SECOND INVOCATION" in second.stdout

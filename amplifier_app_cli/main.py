@@ -4352,7 +4352,7 @@ async def execute_single(
     # In JSON mode, redirect all output to stderr so only JSON goes to stdout
     if output_format in ["json", "json-trace"]:
         original_stdout = sys.stdout
-        original_console_file = console.file
+        original_console_file = console._file
         sys.stdout = sys.stderr
         console.file = sys.stderr
     else:
@@ -4732,7 +4732,7 @@ async def execute_single(
             sys.stdout.flush()
         elif original_stdout is not None:
             sys.stdout = original_stdout
-        if original_console_file is not None:
+        if original_stdout is not None:
             console.file = original_console_file
 
 

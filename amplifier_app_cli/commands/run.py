@@ -359,6 +359,12 @@ def register_run_command(
         # GAP-027: wrapped for scoped SIGINT handling + a clean cancellation
         # message instead of a raw traceback landing wherever an interrupt
         # happens to surface (see _resolve_config_interruptibly docstring).
+        diagnostics_to_stderr = output_format in ["json", "json-trace"]
+        original_stdout = sys.stdout
+        original_console_file = console._file
+        if diagnostics_to_stderr:
+            sys.stdout = sys.stderr
+            console.file = sys.stderr
         try:
             config_data, prepared_bundle = _resolve_config_interruptibly(
                 bundle_name=bundle,
@@ -411,6 +417,10 @@ def register_run_command(
                 )
             )
             sys.exit(1)
+        finally:
+            if diagnostics_to_stderr:
+                sys.stdout = original_stdout
+                console.file = original_console_file
 
         search_paths = get_module_search_paths()
 

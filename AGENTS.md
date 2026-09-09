@@ -76,6 +76,8 @@ transcript and its source metadata intact so resume context restores the reminde
 Save paths preserving metadata from an earlier hook must use
 `SessionStore.get_metadata_if_exists()`; strict `get_metadata()` remains for
 user-requested lookups and must still fail for a missing session.
+JSON output paths must restore the console's configured backing stream, not a
+dynamic temporary stdout capture.
 
 ## Interactive slash completion
 
