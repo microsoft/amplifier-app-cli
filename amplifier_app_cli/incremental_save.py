@@ -100,7 +100,7 @@ class IncrementalSaveHook:
 
             # Load existing metadata to preserve fields like name, description
             # that may have been set by other hooks (e.g., session-naming)
-            existing_metadata = self.store.get_metadata(self.session_id) or {}
+            existing_metadata = self.store.get_metadata_if_exists(self.session_id)
 
             # Build metadata, preserving existing fields while updating dynamic ones
             metadata = {

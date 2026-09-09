@@ -355,6 +355,22 @@ class SessionStore:
 
         return self._load_metadata(session_dir)
 
+    def get_metadata_if_exists(self, session_id: str) -> dict:
+        """Return existing metadata, or an empty dict for a new session.
+
+        Save paths use this to preserve metadata written by an earlier hook
+        without treating the first save of a new session as a failed lookup.
+        ``get_metadata()`` remains strict for callers that require a saved
+        session to exist.
+        """
+        if not session_id or not session_id.strip():
+            raise ValueError("session_id cannot be empty")
+        if "/" in session_id or "\\" in session_id or session_id in (".", ".."):
+            raise ValueError(f"Invalid session_id: {session_id}")
+        if not self.exists(session_id):
+            return {}
+        return self.get_metadata(session_id)
+
     def exists(self, session_id: str) -> bool:
         """Check if session exists.
 
