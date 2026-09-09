@@ -29,12 +29,34 @@ tests pass.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from prompt_toolkit import PromptSession
+from prompt_toolkit.output import DummyOutput
 
 _MODULE = "amplifier_app_cli.main"
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _use_headless_patch_stdout():
+    """Keep mocked REPL tests from opening a real Windows console preflight."""
+    # These tests already fake PromptSession and its console. Patch only main's
+    # imported alias so a headless CI console cannot mask their startup contract.
+    original_init = PromptSession.__init__
+
+    def _headless_init(self, *args, **kwargs):
+        kwargs["output"] = DummyOutput()
+        return original_init(self, *args, **kwargs)
+
+    with patch(
+        f"{_MODULE}.patch_stdout",
+        new=lambda *_args, **_kwargs: contextlib.nullcontext(),
+    ):
+        with patch.object(PromptSession, "__init__", new=_headless_init):
+            yield
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +190,146 @@ class TestInteractiveChatClosesDedicatedTtyOnTeardown:
                 bundle_name="test-bundle",
             )
 
+        mock_ps.prompt_async.assert_awaited_once()
+        mock_close.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["/exit", "/exit ", "/quit", "/quit "])
+    async def test_slash_exit_commands_teardown_without_executing_a_turn(
+        self, tmp_path: Path, command: str
+    ):
+        """A slash exit leaves through the REPL's normal cleanup path."""
+        from amplifier_app_cli.main import interactive_chat
+
+        session = _make_mock_session()
+        initialized = _make_initialized(session)
+        mock_ps = MagicMock()
+        mock_ps.prompt_async = AsyncMock(side_effect=[command])
+        mock_close = MagicMock()
+        runtime_mentions = AsyncMock(side_effect=lambda s, t: t)
+
+        with (
+            patch(
+                f"{_MODULE}.create_initialized_session",
+                new=AsyncMock(return_value=initialized),
+            ),
+            patch(f"{_MODULE}._create_prompt_session", return_value=mock_ps),
+            patch("amplifier_app_cli.incremental_save.register_incremental_save"),
+            patch(f"{_MODULE}.SessionStore") as MockStore,
+            patch(f"{_MODULE}.console"),
+            patch(f"{_MODULE}.process_runtime_mentions", new=runtime_mentions),
+            patch(f"{_MODULE}.get_effective_config_summary"),
+            patch(f"{_MODULE}.close_dedicated_tty_input", new=mock_close),
+        ):
+            store_instance = MockStore.return_value
+            store_instance.get_metadata.return_value = {}
+            store_instance.save.return_value = None
+
+            await interactive_chat(
+                config={},
+                search_paths=[tmp_path],
+                verbose=False,
+                bundle_name="test-bundle",
+            )
+
+        mock_ps.prompt_async.assert_awaited_once()
+        session.execute.assert_not_awaited()
+        runtime_mentions.assert_not_awaited()
+        initialized.cleanup.assert_awaited_once()
+        mock_close.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["exit", "quit"])
+    async def test_bare_exit_commands_remain_compatible(
+        self, tmp_path: Path, command: str
+    ):
+        """The pre-existing bare exit aliases continue to leave the REPL."""
+        from amplifier_app_cli.main import interactive_chat
+
+        session = _make_mock_session()
+        initialized = _make_initialized(session)
+        mock_ps = MagicMock()
+        mock_ps.prompt_async = AsyncMock(side_effect=[command])
+        mock_close = MagicMock()
+        runtime_mentions = AsyncMock(side_effect=lambda s, t: t)
+
+        with (
+            patch(
+                f"{_MODULE}.create_initialized_session",
+                new=AsyncMock(return_value=initialized),
+            ),
+            patch(f"{_MODULE}._create_prompt_session", return_value=mock_ps),
+            patch("amplifier_app_cli.incremental_save.register_incremental_save"),
+            patch(f"{_MODULE}.SessionStore") as MockStore,
+            patch(f"{_MODULE}.console"),
+            patch(f"{_MODULE}.process_runtime_mentions", new=runtime_mentions),
+            patch(f"{_MODULE}.get_effective_config_summary"),
+            patch(f"{_MODULE}.close_dedicated_tty_input", new=mock_close),
+        ):
+            store_instance = MockStore.return_value
+            store_instance.get_metadata.return_value = {}
+            store_instance.save.return_value = None
+
+            await interactive_chat(
+                config={},
+                search_paths=[tmp_path],
+                verbose=False,
+                bundle_name="test-bundle",
+            )
+
+        mock_ps.prompt_async.assert_awaited_once()
+        session.execute.assert_not_awaited()
+        runtime_mentions.assert_not_awaited()
+        initialized.cleanup.assert_awaited_once()
+        mock_close.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["/exit later", "/quit later"])
+    async def test_slash_exit_with_arguments_prints_usage_and_keeps_prompting(
+        self, tmp_path: Path, command: str
+    ):
+        """Exit arguments are rejected without sending a model turn."""
+        from amplifier_app_cli.main import interactive_chat
+
+        session = _make_mock_session()
+        initialized = _make_initialized(session)
+        mock_ps = MagicMock()
+        mock_ps.prompt_async = AsyncMock(side_effect=[command, EOFError])
+        mock_close = MagicMock()
+        runtime_mentions = AsyncMock(side_effect=lambda s, t: t)
+        mock_console = MagicMock()
+
+        with (
+            patch(
+                f"{_MODULE}.create_initialized_session",
+                new=AsyncMock(return_value=initialized),
+            ),
+            patch(f"{_MODULE}._create_prompt_session", return_value=mock_ps),
+            patch("amplifier_app_cli.incremental_save.register_incremental_save"),
+            patch(f"{_MODULE}.SessionStore") as MockStore,
+            patch(f"{_MODULE}.console", new=mock_console),
+            patch(f"{_MODULE}.process_runtime_mentions", new=runtime_mentions),
+            patch(f"{_MODULE}.get_effective_config_summary"),
+            patch(f"{_MODULE}.close_dedicated_tty_input", new=mock_close),
+        ):
+            store_instance = MockStore.return_value
+            store_instance.get_metadata.return_value = {}
+            store_instance.save.return_value = None
+
+            await interactive_chat(
+                config={},
+                search_paths=[tmp_path],
+                verbose=False,
+                bundle_name="test-bundle",
+            )
+
+        assert mock_ps.prompt_async.await_count == 2
+        mock_console.print.assert_any_call(
+            f"[cyan]Usage: {command.split()[0]}[/cyan]"
+        )
+        session.execute.assert_not_awaited()
+        runtime_mentions.assert_not_awaited()
+        initialized.cleanup.assert_awaited_once()
         mock_close.assert_called_once()
 
     @pytest.mark.asyncio
@@ -291,4 +453,5 @@ class TestCloseDedicatedTtyTeardownIsRobust:
 
         # cleanup() (session teardown) still ran despite no dedicated fd
         # having been opened -- the close call didn't short-circuit anything.
+        mock_ps.prompt_async.assert_awaited_once()
         initialized.cleanup.assert_awaited_once()
