@@ -786,15 +786,9 @@ def restore_redacted_secret_values(persisted: Any, live: Any) -> Any:
         for index, value in enumerate(persisted):
             if not isinstance(value, (dict, list)):
                 continue
-            live_value, reason = _matching_live_list_entry(value, persisted, live)
+            live_value, _ = _matching_live_list_entry(value, persisted, live)
             if live_value is not None and isinstance(live_value, type(value)):
                 result[index] = restore_redacted_secret_values(value, live_value)
-            elif _contains_redacted_secret(value):
-                logger.warning(
-                    "Could not restore redacted secret values for list entry %d: %s.",
-                    index,
-                    reason,
-                )
         return result
     return copy.deepcopy(persisted)
 

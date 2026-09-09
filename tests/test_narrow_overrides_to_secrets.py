@@ -338,7 +338,7 @@ def test_restore_reordered_list_sources_matches_unique_ids():
     ]
 
 
-def test_restore_duplicate_or_absent_list_identity_keeps_redaction(caplog):
+def test_restore_duplicate_or_absent_list_identity_keeps_redaction():
     duplicated = {
         "sources": [
             {"id": "source-a", "url": "https://child-a.invalid", "api_key": "[REDACTED]"},
@@ -370,11 +370,9 @@ def test_restore_duplicate_or_absent_list_identity_keeps_redaction(caplog):
 
     assert duplicated_restored == duplicated
     assert absent_restored == absent
-    assert "ambiguous id" in caplog.text
-    assert "missing id" in caplog.text
 
 
-def test_restore_identityless_list_requires_unique_nonsecret_match(caplog):
+def test_restore_identityless_list_requires_unique_nonsecret_match():
     persisted = {
         "sources": [
             {"url": "https://child-a.invalid", "api_key": "[REDACTED]"},
@@ -401,4 +399,70 @@ def test_restore_identityless_list_requires_unique_nonsecret_match(caplog):
         "fake-key-b",
     ]
     assert unmatched == persisted
-    assert "no matching non-secret structure" in caplog.text
+
+
+def test_restore_identityless_list_matches_nested_secret_structure():
+    persisted = {
+        "sources": [
+            {
+                "url": "https://child-a.invalid",
+                "connection": {"api_key": "[REDACTED]"},
+            },
+            {
+                "url": "https://child-b.invalid",
+                "connection": {"api_key": "[REDACTED]"},
+            },
+        ]
+    }
+    live = {
+        "sources": [
+            {
+                "url": "https://child-b.invalid",
+                "connection": {"api_key": "fake-key-b"},
+            },
+            {
+                "url": "https://child-a.invalid",
+                "connection": {"api_key": "fake-key-a"},
+            },
+        ]
+    }
+
+    restored = restore_redacted_secret_values(persisted, live)
+
+    assert restored == {
+        "sources": [
+            {
+                "url": "https://child-a.invalid",
+                "connection": {"api_key": "fake-key-a"},
+            },
+            {
+                "url": "https://child-b.invalid",
+                "connection": {"api_key": "fake-key-b"},
+            },
+        ]
+    }
+
+
+def test_restore_identityless_list_keeps_nested_secrets_when_match_is_ambiguous():
+    persisted = {
+        "sources": [
+            {
+                "url": "https://shared.invalid",
+                "connection": {"api_key": "[REDACTED]"},
+            }
+        ]
+    }
+    live = {
+        "sources": [
+            {
+                "url": "https://shared.invalid",
+                "connection": {"api_key": "fake-key-a"},
+            },
+            {
+                "url": "https://shared.invalid",
+                "connection": {"api_key": "fake-key-b"},
+            },
+        ]
+    }
+
+    assert restore_redacted_secret_values(persisted, live) == persisted

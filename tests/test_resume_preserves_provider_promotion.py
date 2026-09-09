@@ -779,14 +779,68 @@ class TestResumeNestedCredentialRefresh:
             refresh_warnings[0]
         )
 
+    async def test_unmatched_list_reports_one_aggregate_diagnostic(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        store = SessionStore()
+        session_id = "test-resume-unmatched-tool-source-list"
+        secret_value = "must-not-appear-in-logs"
+        metadata = _base_metadata(
+            session_id,
+            agent_overlay={"instruction": "fixture prompt"},
+            config={
+                "session": {
+                    "orchestrator": "loop-basic",
+                    "context": "context-simple",
+                },
+                "tools": [
+                    {
+                        "module": "tool-source-fixture",
+                        "config": {
+                            "sources": [
+                                {
+                                    "url": "https://persisted.invalid",
+                                    "api_key": "[REDACTED]",
+                                }
+                            ]
+                        },
+                    }
+                ],
+            },
+        )
+        store.save(session_id, [], metadata)
+
+        with caplog.at_level(logging.WARNING):
+            config, _ = await _run_resume(
+                session_id,
+                config_overrides={
+                    "tool-source-fixture": {
+                        "sources": [
+                            {
+                                "url": "https://live.invalid",
+                                "api_key": secret_value,
+                            }
+                        ]
+                    }
+                },
+            )
+
+        warnings = [
+            record for record in caplog.records if record.levelno == logging.WARNING
+        ]
+        assert len(warnings) == 1
+        assert "credential refresh left 1 active config field(s)" in warnings[0].message
+        assert secret_value not in warnings[0].message
+        assert config["tools"][0]["config"]["sources"][0]["api_key"] == "[REDACTED]"
+
 
 class TestResumeResolutionDiagnostics:
     """The CLI reports Foundation's final resolution outcome once."""
 
-    async def test_cold_glob_matching_persisted_model_is_quiet(
+    async def test_cold_glob_matching_persisted_model_consumes_resolution_diagnostics_quietly(
         self, tmp_path, monkeypatch, caplog
     ):
-        """The diagnostics-aware Foundation path stays quiet after a glob resolves."""
+        """The CLI consumes a mocked resolved diagnostics record without a fallback."""
         store = SessionStore()
         session_id = "test-cold-anthropic-glob-matches-persisted-sonnet"
         metadata = _base_metadata(
