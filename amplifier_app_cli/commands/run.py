@@ -238,11 +238,27 @@ def register_run_command(
     prompt_first_run_init: Callable[[Any], bool],
 ):
     """Register the run command on the root CLI group."""
+    from ..utils.shell_completion import (
+        complete_bundle_names,
+        complete_configured_provider_names,
+        complete_current_project_session_ids,
+    )
 
     @cli.command()
     @click.argument("prompt", required=False)
-    @click.option("--bundle", "-B", help="Bundle to use for this session")
-    @click.option("--provider", "-p", default=None, help="LLM provider to use")
+    @click.option(
+        "--bundle",
+        "-B",
+        help="Bundle to use for this session",
+        shell_complete=complete_bundle_names,
+    )
+    @click.option(
+        "--provider",
+        "-p",
+        default=None,
+        help="LLM provider to use",
+        shell_complete=complete_configured_provider_names,
+    )
     @click.option("--model", "-m", help="Model to use (provider-specific)")
     @click.option("--max-tokens", type=int, help="Maximum output tokens")
     @click.option(
@@ -251,7 +267,11 @@ def register_run_command(
         default="single",
         help="Execution mode",
     )
-    @click.option("--resume", help="Resume specific session with new prompt")
+    @click.option(
+        "--resume",
+        help="Resume specific session with new prompt",
+        shell_complete=complete_current_project_session_ids,
+    )
     @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
     @click.option(
         "--output-format",

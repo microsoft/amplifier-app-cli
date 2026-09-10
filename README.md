@@ -239,7 +239,7 @@ amplifier --install-completion
 **What happens**:
 1. Detects your shell (bash, zsh, or fish) from `$SHELL`
 2. **Automatically appends** the completion line to your shell config:
-   - Bash: `~/.bashrc`
+   - Bash: `~/.bashrc`; an existing profile-only setup keeps `~/.bash_profile`
    - Zsh: `~/.zshrc`
    - Fish: `~/.config/fish/completions/amplifier.fish`
 3. Checks if already installed (safe to run multiple times)
@@ -262,16 +262,36 @@ Detected shell: bash
 ✓ Completion already configured in /home/user/.bashrc
 ```
 
-### Tab Completion Works Everywhere
+### Command and Local Value Completion
 
 Once active, tab completion works throughout the CLI:
 
 ```bash
 amplifier bun<TAB>         # Completes to "bundle"
 amplifier bundle u<TAB>    # Completes to "use"
-amplifier bundle use <TAB> # Shows available bundles
+amplifier bundle use <TAB> # Shows local available bundles
 amplifier run --<TAB>      # Shows all options
 ```
+
+Amplifier supports Bash, Zsh, and Fish, not PowerShell. In addition to command
+names, flags, and fixed choices, it suggests locally known top-level bundle
+names, configured provider instance names, and the newest 100 matching
+top-level sessions for the current project. Lookup is
+read-only and local: it does not fetch bundles, initialize providers, call
+model/provider APIs, or inspect session transcript/event content. Suggestions
+are advisory; unknown bundle, provider, and session values remain valid command
+input where the command normally accepts them.
+
+Your shell controls the completion menu and key behavior. This is separate from
+the interactive `ui.slash_popup.enabled` setting below. Zsh users must enable
+the standard `compinit` setup in `.zshrc`; the installer does not add it.
+Use the printed `source` command for the current terminal. Automatic loading
+in a new Bash terminal depends on that terminal reading the selected startup
+file; login-shell setups may need to source `.bashrc` from their profile.
+Nested bundle names, URIs, and names containing shell-special characters can
+still be entered manually. The installer preserves user-written Fish
+completion files and offers a temporary `| source` command instead of
+overwriting them.
 
 ## Interactive Slash Completion
 

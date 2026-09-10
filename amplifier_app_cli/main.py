@@ -5,6 +5,7 @@ import html
 import json
 import logging
 import os
+import shlex
 import signal
 import sys
 from collections.abc import Callable
@@ -94,6 +95,15 @@ from .ui.completion import (
 )
 from .ui.view_policy import resolve_view
 from .utils.error_format import escape_markup
+from .utils.shell_completion import (
+    can_safely_modify as _completion_can_safely_modify,
+    detect_shell as _completion_detect_shell,
+    get_shell_config_file as _completion_config_file,
+    install_completion_to_config as _install_completion,
+    is_click_completion_instruction,
+    is_completion_installed as _completion_is_installed,
+    manual_installation_instruction,
+)
 from .utils.version import get_core_version, get_version
 
 
@@ -278,7 +288,8 @@ def _attach_llm_error_filter() -> None:
 
 # Load API keys from ~/.amplifier/keys.env on startup
 # This allows keys saved by 'amplifier init' or 'amplifier provider use' to be available
-KeyManager()
+if not os.environ.get("_AMPLIFIER_COMPLETE"):
+    KeyManager()
 
 
 # Placeholder for the run command; assigned after registration below
@@ -291,21 +302,7 @@ def _detect_shell() -> str | None:
     Returns:
         Shell name ('bash', 'zsh', or 'fish') or None if detection fails
     """
-    shell_path = os.environ.get("SHELL", "")
-    if not shell_path:
-        return None
-
-    shell_name = Path(shell_path).name.lower()
-
-    # Check for known shells
-    if "bash" in shell_name:
-        return "bash"
-    if "zsh" in shell_name:
-        return "zsh"
-    if "fish" in shell_name:
-        return "fish"
-
-    return None
+    return _completion_detect_shell()
 
 
 def _get_shell_config_file(shell: str) -> Path:
@@ -317,24 +314,7 @@ def _get_shell_config_file(shell: str) -> Path:
     Returns:
         Path to shell config file
     """
-    home = Path.home()
-
-    if shell == "bash":
-        # Prefer .bashrc on Linux, .bash_profile on macOS
-        bashrc = home / ".bashrc"
-        bash_profile = home / ".bash_profile"
-        if bashrc.exists():
-            return bashrc
-        return bash_profile
-
-    if shell == "zsh":
-        return home / ".zshrc"
-
-    if shell == "fish":
-        # For fish, we create a completion file directly
-        return home / ".config" / "fish" / "completions" / "amplifier.fish"
-
-    return home / f".{shell}rc"  # Fallback
+    return _completion_config_file(shell)
 
 
 def _completion_already_installed(config_file: Path, shell: str) -> bool:
@@ -347,18 +327,10 @@ def _completion_already_installed(config_file: Path, shell: str) -> bool:
     Returns:
         True if completion marker found in file
     """
-    if not config_file.exists():
-        return False
-
-    try:
-        content = config_file.read_text(encoding="utf-8")
-        completion_marker = f"_AMPLIFIER_COMPLETE={shell}_source"
-        return completion_marker in content
-    except OSError:
-        return False
+    return _completion_is_installed(config_file, shell)
 
 
-def _can_safely_modify(config_file: Path) -> bool:
+def _can_safely_modify(config_file: Path, shell: str = "bash") -> bool:
     """Check if it's safe to modify the config file.
 
     Args:
@@ -367,21 +339,7 @@ def _can_safely_modify(config_file: Path) -> bool:
     Returns:
         True if safe to append to file
     """
-    # If file exists, must be writable
-    if config_file.exists():
-        return os.access(config_file, os.W_OK)
-
-    # If file doesn't exist, parent directory must be writable
-    parent = config_file.parent
-    if not parent.exists():
-        # Need to create parent directories - check if we can
-        try:
-            parent.mkdir(parents=True, exist_ok=True)
-            return True
-        except OSError:
-            return False
-
-    return os.access(parent, os.W_OK)
+    return _completion_can_safely_modify(config_file, shell)
 
 
 def _install_completion_to_config(config_file: Path, shell: str) -> bool:
@@ -394,35 +352,7 @@ def _install_completion_to_config(config_file: Path, shell: str) -> bool:
     Returns:
         True if successful
     """
-    try:
-        # Ensure parent directory exists
-        config_file.parent.mkdir(parents=True, exist_ok=True)
-
-        # For fish, write the actual completion script
-        if shell == "fish":
-            # Fish uses a different approach - we need to invoke Click's completion
-            import subprocess
-
-            result = subprocess.run(
-                ["amplifier"],
-                env={**os.environ, "_AMPLIFIER_COMPLETE": "fish_source"},
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                config_file.write_text(result.stdout, encoding="utf-8")
-                return True
-            return False
-
-        # For bash/zsh, append eval line
-        with open(config_file, "a", encoding="utf-8") as f:
-            f.write("\n# Amplifier shell completion\n")
-            f.write(f'eval "$(_AMPLIFIER_COMPLETE={shell}_source amplifier)"\n')
-
-        return True
-
-    except OSError:
-        return False
+    return _install_completion(config_file, shell, cli)
 
 
 def _show_manual_instructions(shell: str, config_file: Path):
@@ -432,18 +362,18 @@ def _show_manual_instructions(shell: str, config_file: Path):
         shell: Shell name
         config_file: Suggested config file path
     """
-    console.print(f"\n[yellow]Add this line to {config_file}:[/yellow]")
-
-    if shell == "fish":
-        console.print(
-            f"  [cyan]_AMPLIFIER_COMPLETE=fish_source amplifier > {config_file}[/cyan]"
-        )
-    else:
-        console.print(
-            f'  [cyan]eval "$(_AMPLIFIER_COMPLETE={shell}_source amplifier)"[/cyan]'
-        )
-
-    console.print("\n[dim]Then reload your shell or start a new terminal.[/dim]")
+    console.print("\n[yellow]Activate completion in the current shell:[/yellow]")
+    console.print(
+        f"  {manual_installation_instruction(shell, config_file)}",
+        markup=False,
+        soft_wrap=True,
+    )
+    console.print(
+        f"\nFor persistence, merge the completion setup into {config_file}; "
+        "the existing file was not changed.",
+        markup=False,
+        soft_wrap=True,
+    )
 
 
 def _parse_config_flags(
@@ -3264,10 +3194,10 @@ def get_module_search_paths() -> list[Path]:
 )
 @click.option(
     "--install-completion",
-    is_flag=False,
+    is_flag=True,
     flag_value="auto",
     default=None,
-    help="Install shell completion for the specified shell (bash, zsh, or fish)",
+    help="Install completion for the shell detected from $SHELL (bash, zsh, or fish)",
 )
 @click.pass_context
 def cli(ctx, install_completion):
@@ -3288,7 +3218,7 @@ def cli(ctx, install_completion):
                 '  [cyan]Zsh:   eval "$(_AMPLIFIER_COMPLETE=zsh_source amplifier)"[/cyan]'
             )
             console.print(
-                "  [cyan]Fish:  _AMPLIFIER_COMPLETE=fish_source amplifier > ~/.config/fish/completions/amplifier.fish[/cyan]"
+                "  [cyan]Fish:  _AMPLIFIER_COMPLETE=fish_source amplifier | source[/cyan]"
             )
             ctx.exit(1)
 
@@ -3305,22 +3235,23 @@ def cli(ctx, install_completion):
                 f"[green]✓ Completion already configured in {config_file}[/green]\n"
             )
             console.print("[dim]To use in this terminal:[/dim]")
-            if shell == "fish":
-                console.print(f"  [cyan]source {config_file}[/cyan]")
-            else:
-                console.print(f"  [cyan]source {config_file}[/cyan]")
+            console.print(
+                f"  source {shlex.quote(str(config_file))}", markup=False, soft_wrap=True
+            )
             console.print("\n[dim]Already active in new terminals.[/dim]")
             ctx.exit(0)
 
         # Check if safe to auto-install
-        if _can_safely_modify(config_file):
+        if _can_safely_modify(config_file, shell):
             # Auto-install!
             success = _install_completion_to_config(config_file, shell)
 
             if success:
                 console.print(f"[green]✓ Added completion to {config_file}[/green]\n")
                 console.print("[dim]To activate:[/dim]")
-                console.print(f"  [cyan]source {config_file}[/cyan]")
+                console.print(
+                    f"  source {shlex.quote(str(config_file))}", markup=False, soft_wrap=True
+                )
                 console.print("\n[dim]Or start a new terminal.[/dim]")
                 ctx.exit(0)
 
@@ -4985,6 +4916,13 @@ def _activate_home_env() -> None:
 
 def main():
     """Main entry point."""
+    completion_instruction = os.environ.get("_AMPLIFIER_COMPLETE")
+    if completion_instruction:
+        if not is_click_completion_instruction(completion_instruction):
+            click.echo("Error: Unsupported shell completion instruction.", err=True)
+            raise click.exceptions.Exit(2)
+        cli()
+        return
     _ensure_utf8_output()
     _configure_console_logging()
     _attach_llm_error_filter()
