@@ -905,6 +905,21 @@ def _ensure_default_skills_dirs(tools: list[dict[str, Any]]) -> list[dict[str, A
     configure explicit remote skill sources, the module's get_default_skills_dirs()
     fallback is bypassed and workspace skills become invisible.
 
+    The same two scopes are also scanned under .agents/skills/, the
+    cross-tool location other agent CLIs install user- and project-scoped
+    skills into. Which directories a CLI session scans is app-layer policy,
+    so it is decided here rather than in the tool-skills module. Within each
+    scope the .amplifier/ path is listed first: discovery is
+    first-match-wins, so on a name collision the Amplifier-native skill wins.
+
+    AMPLIFIER_SKILLS_DIR, when set, is prepended ahead of every configured
+    source. The module's get_default_skills_dirs() treats it as the
+    highest-priority override, but that function is only reached when
+    config.skills is empty -- which never happens under this CLI, because the
+    skills behavior always configures a curated source and this function
+    always appends to it. Honouring the variable here is what makes the
+    documented override behave as documented.
+
     Also appends the CLI's own packaged skills directory
     (amplifier_app_cli/data/skills/), resolved from the installed package's
     location on disk -- never a git URI. This keeps packaged skills
@@ -916,14 +931,18 @@ def _ensure_default_skills_dirs(tools: list[dict[str, Any]]) -> list[dict[str, A
         tools: List of tool configurations
 
     Returns:
-        Tools with workspace, user, and packaged skill dirs in tool-skills's config.skills
+        Tools with override, workspace, user, and packaged skill dirs in
+        tool-skills's config.skills
     """
     packaged_skills_dir = Path(__file__).parent.parent / "data" / "skills"
     default_paths = [
         ".amplifier/skills",
+        ".agents/skills",
         "~/.amplifier/skills",
+        "~/.agents/skills",
         str(packaged_skills_dir),
     ]
+    override_dir = os.environ.get("AMPLIFIER_SKILLS_DIR")
 
     result = []
     for tool in tools:
@@ -931,6 +950,8 @@ def _ensure_default_skills_dirs(tools: list[dict[str, Any]]) -> list[dict[str, A
             tool = tool.copy()
             config = (tool.get("config") or {}).copy()
             skills = list(config.get("skills", []))
+            if override_dir and override_dir not in skills:
+                skills.insert(0, override_dir)
             for path in default_paths:
                 if path not in skills:
                     skills.append(path)
