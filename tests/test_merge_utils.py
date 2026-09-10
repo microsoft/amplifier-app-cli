@@ -305,6 +305,8 @@ class TestEnsureDefaultSkillsDirs:
         assert "git+https://example.com/skills" in skills
         assert ".amplifier/skills" in skills
         assert "~/.amplifier/skills" in skills
+        assert ".agents/skills" in skills
+        assert "~/.agents/skills" in skills
 
     def test_preserves_existing_paths(self):
         """Default paths should not be duplicated if already present."""
@@ -316,6 +318,8 @@ class TestEnsureDefaultSkillsDirs:
                         "git+https://example.com/skills",
                         ".amplifier/skills",
                         "~/.amplifier/skills",
+                        ".agents/skills",
+                        "~/.agents/skills",
                     ]
                 },
             }
@@ -324,6 +328,8 @@ class TestEnsureDefaultSkillsDirs:
         skills = result[0]["config"]["skills"]
         assert skills.count(".amplifier/skills") == 1
         assert skills.count("~/.amplifier/skills") == 1
+        assert skills.count(".agents/skills") == 1
+        assert skills.count("~/.agents/skills") == 1
 
     def test_handles_empty_config(self):
         """Should handle tool-skills with no config."""
@@ -364,7 +370,13 @@ class TestEnsureDefaultSkillsDirs:
         assert original_skills == ["git+https://example.com/skills"]
 
     def test_default_paths_appended_after_configured(self):
-        """Default paths should come after explicitly configured sources."""
+        """Default paths should come after explicitly configured sources.
+
+        Scope order is project-then-user, and within each scope the
+        .amplifier/ path precedes the cross-tool .agents/ path: discovery is
+        first-match-wins, so an Amplifier-native skill wins a name collision
+        against a skill of the same name installed by another agent CLI.
+        """
         tools = [
             {
                 "module": "tool-skills",
@@ -380,9 +392,66 @@ class TestEnsureDefaultSkillsDirs:
             "url1",
             "url2",
             ".amplifier/skills",
+            ".agents/skills",
             "~/.amplifier/skills",
+            "~/.agents/skills",
             packaged_skills_dir,
         ]
+
+    def test_agents_skills_dirs_are_injected(self, monkeypatch):
+        """.agents/skills at both scopes must be scanned.
+
+        This is the cross-tool location other agent CLIs install skills into.
+        Regression guard: before this was CLI policy, the only implementation
+        lived in the tool-skills module's get_default_skills_dirs(), which is
+        unreachable under this CLI because config.skills is never empty here.
+        """
+        monkeypatch.delenv("AMPLIFIER_SKILLS_DIR", raising=False)
+        tools = [
+            {
+                "module": "tool-skills",
+                "config": {"skills": ["git+https://example.com/skills"]},
+            }
+        ]
+        result = _ensure_default_skills_dirs(tools)
+        skills = result[0]["config"]["skills"]
+        assert ".agents/skills" in skills
+        assert "~/.agents/skills" in skills
+
+    def test_env_override_is_prepended_ahead_of_configured_sources(
+        self, monkeypatch, tmp_path
+    ):
+        """AMPLIFIER_SKILLS_DIR must outrank every other source.
+
+        It is documented as the highest-priority override. Appending it would
+        leave the curated source ahead of it and silently invert that.
+        """
+        monkeypatch.setenv("AMPLIFIER_SKILLS_DIR", str(tmp_path))
+        tools = [
+            {
+                "module": "tool-skills",
+                "config": {"skills": ["git+https://example.com/skills"]},
+            }
+        ]
+        result = _ensure_default_skills_dirs(tools)
+        skills = result[0]["config"]["skills"]
+        assert skills[0] == str(tmp_path)
+        assert "git+https://example.com/skills" in skills
+        assert ".amplifier/skills" in skills
+
+    def test_env_override_absent_leaves_order_unchanged(self, monkeypatch):
+        """No AMPLIFIER_SKILLS_DIR means no extra entry."""
+        monkeypatch.delenv("AMPLIFIER_SKILLS_DIR", raising=False)
+        tools = [{"module": "tool-skills", "config": {"skills": ["url1"]}}]
+        result = _ensure_default_skills_dirs(tools)
+        assert result[0]["config"]["skills"][0] == "url1"
+
+    def test_env_override_not_duplicated(self, monkeypatch, tmp_path):
+        """An override already configured explicitly must not be added twice."""
+        monkeypatch.setenv("AMPLIFIER_SKILLS_DIR", str(tmp_path))
+        tools = [{"module": "tool-skills", "config": {"skills": [str(tmp_path)]}}]
+        result = _ensure_default_skills_dirs(tools)
+        assert result[0]["config"]["skills"].count(str(tmp_path)) == 1
 
     def test_packaged_skills_dir_is_package_relative(self):
         """Packaged skills dir must resolve from the installed package location,
