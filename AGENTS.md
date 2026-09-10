@@ -98,6 +98,18 @@ Pipe-input Escape tests must allow both VT-parser (`ttimeoutlen`) and key-bindin
 (`timeoutlen`) timeouts. Shorten both on the test application, send one Escape,
 and wait for the restored document and closed menu; a second Escape is not a flush.
 
+## Shell completion
+
+Click shell-completion callbacks may use only read-only local settings,
+registry metadata, and directory names/stats. They must not initialize keys or
+providers, migrate registries, construct `SessionStore`, read session content,
+or emit anything except Click's native completion protocol records.
+Keep lock-library imports at locking operations, not read-only module import:
+dependencies can run temporary-file capability probes when imported.
+Seed byte-preservation installer tests with explicit LF and CRLF bytes, not
+text-mode writes that translate newlines. Assert the original prefix survives
+the first install and the entire file is identical after a repeat install.
+
 ## Interactive control-flow exits
 
 REPL exit commands return an action from `CommandProcessor`; only the normal

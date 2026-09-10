@@ -27,6 +27,7 @@ from ..ui.item_renderer import ItemRenderer
 from ..ui.view_policy import resolve_view
 from ..ui.view_policy import view_flags
 from ..utils.error_format import escape_markup
+from ..utils.shell_completion import complete_bundle_names
 from ..runtime.config import inject_user_providers
 
 logger = logging.getLogger(__name__)
@@ -499,7 +500,12 @@ def tool(ctx: click.Context):
 
 
 @tool.command(name="list")
-@click.option("--bundle", "-b", help="Bundle to use (default: active bundle)")
+@click.option(
+    "--bundle",
+    "-b",
+    help="Bundle to use (default: active bundle)",
+    shell_complete=complete_bundle_names,
+)
 @click.option(
     "--modules", "-m", is_flag=True, help="Show module names instead of mounted tools"
 )
@@ -576,7 +582,12 @@ def tool_list(
 
 @tool.command(name="info")
 @click.argument("tool_name")
-@click.option("--bundle", "-b", help="Bundle to use (default: active bundle)")
+@click.option(
+    "--bundle",
+    "-b",
+    help="Bundle to use (default: active bundle)",
+    shell_complete=complete_bundle_names,
+)
 @click.option(
     "--module",
     "-m",
@@ -665,7 +676,12 @@ def tool_info(
 @tool.command(name="invoke")
 @click.argument("tool_name")
 @click.argument("args", nargs=-1)
-@click.option("--bundle", "-b", help="Bundle to use (default: auto-detect)")
+@click.option(
+    "--bundle",
+    "-b",
+    help="Bundle to use (default: auto-detect)",
+    shell_complete=complete_bundle_names,
+)
 @click.option(
     "--output",
     "-o",

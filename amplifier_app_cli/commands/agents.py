@@ -9,6 +9,7 @@ import click
 from ..console import console
 from ..ui.item_renderer import ItemRenderer
 from ..ui.view_policy import resolve_view, view_flags
+from ..utils.shell_completion import complete_bundle_names
 
 
 @click.group(invoke_without_command=True)
@@ -21,7 +22,13 @@ def agents(ctx: click.Context):
 
 
 @agents.command("list")
-@click.option("--bundle", "-b", default=None, help="Bundle to list agents from")
+@click.option(
+    "--bundle",
+    "-b",
+    default=None,
+    help="Bundle to list agents from",
+    shell_complete=complete_bundle_names,
+)
 @view_flags
 def list_agents(bundle: str | None, compact: bool, detailed: bool, fmt: str):
     """List available agents from bundles.

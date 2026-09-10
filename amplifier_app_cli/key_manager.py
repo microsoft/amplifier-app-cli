@@ -3,8 +3,6 @@
 import os
 import platform
 
-from filelock import FileLock
-
 from amplifier_foundation.paths.resolution import get_amplifier_home
 from .utils.atomic_write import atomic_write_text
 
@@ -13,6 +11,8 @@ class KeyManager:
     """Manage API keys in ~/.amplifier/keys.env file."""
 
     def __init__(self):
+        from filelock import FileLock
+
         self.keys_file = get_amplifier_home() / "keys.env"
         # Advisory lock guarding the read-modify-write critical section in
         # save_key()/has_stored_key() -- two ordinary concurrent CLI

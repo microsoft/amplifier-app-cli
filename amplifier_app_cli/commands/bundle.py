@@ -29,6 +29,10 @@ from ..utils.display import create_sha_text
 from ..utils.display import create_status_symbol
 from ..utils.display import print_legend
 from ..utils.error_format import escape_markup
+from ..utils.shell_completion import (
+    complete_bundle_names,
+    complete_removable_bundle_names,
+)
 
 if TYPE_CHECKING:
     from amplifier_foundation import BundleStatus
@@ -445,7 +449,7 @@ def _extract_bundle_name_from_uri(uri: str) -> str:
 
 
 @bundle.command(name="show")
-@click.argument("name")
+@click.argument("name", shell_complete=complete_bundle_names)
 @view_flags
 def bundle_show(name: str, compact: bool, detailed: bool, fmt: str):
     """Show details of a specific bundle.
@@ -665,7 +669,7 @@ def _render_bundle_show_text(
 
 
 @bundle.command(name="use")
-@click.argument("name")
+@click.argument("name", shell_complete=complete_bundle_names)
 @click.option(
     "--local", "scope_flag", flag_value="local", help="Set locally (just you)"
 )
@@ -1023,7 +1027,7 @@ def bundle_add(uri: str, name_override: str | None, app: bool):
 
 
 @bundle.command(name="remove")
-@click.argument("name")
+@click.argument("name", shell_complete=complete_removable_bundle_names)
 @click.option(
     "--app",
     is_flag=True,
@@ -1158,7 +1162,7 @@ def bundle_remove(name: str, app: bool):
 
 
 @bundle.command(name="update")
-@click.argument("name", required=False)
+@click.argument("name", required=False, shell_complete=complete_bundle_names)
 @click.option("--all", "update_all", is_flag=True, help="Update all discovered bundles")
 @click.option(
     "--check", "check_only", is_flag=True, help="Only check for updates, don't apply"

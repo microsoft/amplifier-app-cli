@@ -26,6 +26,10 @@ from ..console import console
 from ..ui.item_renderer import ItemRenderer
 from ..ui.view_policy import resolve_view, view_flags
 from ..utils.error_format import escape_markup
+from ..utils.shell_completion import (
+    complete_bundle_names,
+    complete_current_project_session_ids,
+)
 from ..lib.settings import AppSettings
 from ..project_utils import get_project_slug
 from ..runtime.config import resolve_config
@@ -391,6 +395,7 @@ def register_session_commands(
         "-B",
         help="[Experimental] Force a different bundle for this session. "
         "May cause instability if the bundle differs significantly from the original.",
+        shell_complete=complete_bundle_names,
     )
     @click.option(
         "--no-history", is_flag=True, help="Skip displaying conversation history"
@@ -541,7 +546,11 @@ def register_session_commands(
         "--project", type=click.Path(), help="Show sessions for specific project path"
     )
     @click.option(
-        "--tree", "-t", "tree_session", help="Show lineage tree for a session"
+        "--tree",
+        "-t",
+        "tree_session",
+        help="Show lineage tree for a session",
+        shell_complete=complete_current_project_session_ids,
     )
     @view_flags
     def sessions_list(
@@ -747,7 +756,7 @@ def register_session_commands(
         )
 
     @session.command(name="show")
-    @click.argument("session_id")
+    @click.argument("session_id", shell_complete=complete_current_project_session_ids)
     @click.option(
         "--with-transcript",
         "-T",
@@ -804,7 +813,7 @@ def register_session_commands(
                 console.print(json.dumps(turn, indent=2))
 
     @session.command(name="fork")
-    @click.argument("session_id")
+    @click.argument("session_id", shell_complete=complete_current_project_session_ids)
     @click.option(
         "--at-turn",
         "-t",
@@ -992,7 +1001,7 @@ def register_session_commands(
             sys.exit(1)
 
     @session.command(name="delete")
-    @click.argument("session_id")
+    @click.argument("session_id", shell_complete=complete_current_project_session_ids)
     @click.option("--force", "-f", is_flag=True, help="Skip confirmation")
     def sessions_delete(session_id: str, force: bool):
         """Delete a stored session."""
@@ -1024,12 +1033,13 @@ def register_session_commands(
             sys.exit(1)
 
     @session.command(name="resume")
-    @click.argument("session_id")
+    @click.argument("session_id", shell_complete=complete_current_project_session_ids)
     @click.option(
         "--force-bundle",
         "-B",
         help="[Experimental] Force a different bundle for this session. "
         "May cause instability if the bundle differs significantly from the original.",
+        shell_complete=complete_bundle_names,
     )
     @click.option(
         "--no-history", is_flag=True, help="Skip displaying conversation history"
@@ -1151,7 +1161,12 @@ def register_session_commands(
 
     # Register interactive resume on root CLI (not session subgroup)
     @cli.command(name="resume")
-    @click.argument("session_id", required=False, default=None)
+    @click.argument(
+        "session_id",
+        required=False,
+        default=None,
+        shell_complete=complete_current_project_session_ids,
+    )
     @click.option(
         "--limit", "-n", default=10, type=int, help="Number of sessions per page"
     )
@@ -1160,6 +1175,7 @@ def register_session_commands(
         "-B",
         help="[Experimental] Force a different bundle for this session. "
         "May cause instability if the bundle differs significantly from the original.",
+        shell_complete=complete_bundle_names,
     )
     @click.pass_context
     def interactive_resume(

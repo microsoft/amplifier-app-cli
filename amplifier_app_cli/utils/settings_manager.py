@@ -23,13 +23,16 @@ host, and this module's only writer -- the update-check timestamp -- fires at
    uses for the global scope (``settings.yaml.lock``).
 """
 
+from __future__ import annotations
+
 import logging
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import yaml
-from filelock import BaseFileLock
-from filelock import FileLock
-from filelock import Timeout
+
+if TYPE_CHECKING:
+    from filelock import BaseFileLock
 
 from amplifier_foundation.paths.resolution import get_amplifier_home
 from .atomic_write import atomic_write_yaml
@@ -58,6 +61,8 @@ def _settings_lock() -> BaseFileLock:
     just the write -- locking only the write does not close the lost-update
     race. Same lock file as ``lib/settings.py``'s global scope.
     """
+    from filelock import FileLock
+
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     return FileLock(str(SETTINGS_FILE) + ".lock", timeout=LOCK_TIMEOUT_SECONDS)
 
@@ -87,6 +92,8 @@ def load_settings() -> dict:
     Creates the file with defaults if it doesn't exist.
     """
     if not SETTINGS_FILE.exists():
+        from filelock import Timeout
+
         try:
             with _settings_lock():
                 # Re-check under the lock: another process may have created it
@@ -144,6 +151,8 @@ def save_update_last_check(timestamp: datetime):
     Read and write happen under one lock, so this cannot clobber a bundle
     registration written by another process in between.
     """
+    from filelock import Timeout
+
     try:
         with _settings_lock():
             settings, trustworthy = _read_settings_file()

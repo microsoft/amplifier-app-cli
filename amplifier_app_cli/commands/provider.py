@@ -44,6 +44,7 @@ from ..ui.scope import (
 )
 from ..ui.view_policy import resolve_view, view_flags
 from ..utils.error_format import escape_markup
+from ..utils.shell_completion import complete_configured_provider_names
 
 console = Console()
 
@@ -831,7 +832,7 @@ def provider_list(scope: str | None, compact: bool, detailed: bool, fmt: str) ->
 
 
 @provider.command("remove")
-@click.argument("name")
+@click.argument("name", shell_complete=complete_configured_provider_names)
 def provider_remove(name: str) -> None:
     """Remove a configured provider.
 
@@ -895,7 +896,7 @@ def provider_remove(name: str) -> None:
 
 
 @provider.command("edit")
-@click.argument("name")
+@click.argument("name", shell_complete=complete_configured_provider_names)
 @click.option(
     "--scope",
     default="global",
@@ -1029,7 +1030,7 @@ def provider_edit(name: str, scope: str) -> None:
 
 
 @provider.command("test")
-@click.argument("name", required=False)
+@click.argument("name", required=False, shell_complete=complete_configured_provider_names)
 def provider_test(name: str | None) -> None:
     """Test provider connectivity.
 
@@ -1104,7 +1105,9 @@ def provider_test(name: str | None) -> None:
 
 
 @provider.command("models")
-@click.argument("provider_id", required=False)
+@click.argument(
+    "provider_id", required=False, shell_complete=complete_configured_provider_names
+)
 @click.pass_context
 def provider_models(ctx: click.Context, provider_id: str | None) -> None:
     """List available models for a provider.

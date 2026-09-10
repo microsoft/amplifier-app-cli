@@ -9,10 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from typing import Literal
+from typing import TYPE_CHECKING
 
 import yaml
-from filelock import BaseFileLock
-from filelock import FileLock
+
+if TYPE_CHECKING:
+    from filelock import BaseFileLock
 
 from amplifier_foundation.paths.resolution import get_amplifier_home
 from ..utils.atomic_write import atomic_write_yaml
@@ -1271,6 +1273,8 @@ class AppSettings:
         and not the read that precedes it does not close the race. See
         docs/designs/provider-instance-credentials.md §5.5.
         """
+        from filelock import FileLock
+
         path = self._get_scope_path(scope)
         path.parent.mkdir(parents=True, exist_ok=True)
         return FileLock(str(path) + ".lock", timeout=10)
