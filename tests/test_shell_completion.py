@@ -536,15 +536,24 @@ def test_invalid_completion_instruction_does_not_execute_cli_or_bypass_guard(
     assert calls == []
 
 
-@pytest.mark.parametrize("shell", ["bash", "zsh", "fish"])
+@pytest.mark.parametrize(
+    ("shell", "original"),
+    [
+        ("bash", b"# preserve user configuration\n"),
+        ("bash", b"# preserve user configuration\r\n"),
+        ("zsh", b"# preserve user configuration\n"),
+        ("zsh", b"# preserve user configuration\r\n"),
+        ("fish", b""),
+    ],
+)
 def test_install_flag_repeats_without_modifying_other_content(
-    shell, isolated_completion_state, monkeypatch
+    shell, original, isolated_completion_state, monkeypatch
 ):
     home, _ = isolated_completion_state
     monkeypatch.setenv("SHELL", f"/bin/{shell}")
     config = completion.get_shell_config_file(shell)
     if shell != "fish":
-        config.write_text("# preserve user configuration\n", encoding="utf-8")
+        config.write_bytes(original)
     runner = CliRunner()
     first = runner.invoke(main_module.cli, ["--install-completion"])
     assert first.exit_code == 0, first.output
@@ -555,7 +564,7 @@ def test_install_flag_repeats_without_modifying_other_content(
     assert "already configured" in second.output
     assert config.read_bytes() == first_bytes
     if shell != "fish":
-        assert first_bytes.startswith(b"# preserve user configuration\n")
+        assert first_bytes.startswith(original)
     assert home.is_dir()
 
 

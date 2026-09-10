@@ -106,6 +106,9 @@ providers, migrate registries, construct `SessionStore`, read session content,
 or emit anything except Click's native completion protocol records.
 Keep lock-library imports at locking operations, not read-only module import:
 dependencies can run temporary-file capability probes when imported.
+Seed byte-preservation installer tests with explicit LF and CRLF bytes, not
+text-mode writes that translate newlines. Assert the original prefix survives
+the first install and the entire file is identical after a repeat install.
 
 ## Interactive control-flow exits
 
