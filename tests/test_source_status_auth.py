@@ -18,20 +18,15 @@ class TestGetGithubCommitShaUsesAuthProactively:
         """Auth headers should be sent on the first request, not only after a 404."""
         from amplifier_app_cli.utils.source_status import _get_github_commit_sha
 
-        atom_content = """<?xml version="1.0"?>
-<feed>
-  <entry>
-    <id>tag:github.com,2008:Grit::Commit/abcdef1234567890abcdef1234567890abcdef12</id>
-  </entry>
-</feed>"""
-
         captured_requests = []
 
         async def mock_get(url, **kwargs):
             captured_requests.append({"url": url, "headers": kwargs.get("headers", {})})
             response = MagicMock(spec=httpx.Response)
             response.status_code = 200
-            response.text = atom_content
+            response.json = MagicMock(
+                return_value={"sha": "abcdef1234567890abcdef1234567890abcdef12"}
+            )
             response.raise_for_status = MagicMock()
             return response
 
@@ -63,17 +58,12 @@ class TestGetGithubCommitShaUsesAuthProactively:
         """Requests without auth should still work when no token is configured."""
         from amplifier_app_cli.utils.source_status import _get_github_commit_sha
 
-        atom_content = """<?xml version="1.0"?>
-<feed>
-  <entry>
-    <id>tag:github.com,2008:Grit::Commit/deadbeefdeadbeefdeadbeefdeadbeefdeadbeef</id>
-  </entry>
-</feed>"""
-
         async def mock_get(url, **kwargs):
             response = MagicMock(spec=httpx.Response)
             response.status_code = 200
-            response.text = atom_content
+            response.json = MagicMock(
+                return_value={"sha": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}
+            )
             response.raise_for_status = MagicMock()
             return response
 
@@ -172,3 +162,86 @@ class TestErrorMessageDistinguishesRateLimitFromPrivateRepo:
             "Docstring falsely claims 'no rate limits' — GitHub Atom feeds "
             "DO have rate limits for unauthenticated requests"
         )
+
+
+class TestUsesRestApiNotAtomFeed:
+    """Regression: must use the REST API, not the web atom feed.
+
+    The web atom feed (github.com/.../commits/{ref}.atom) does not accept
+    Bearer auth — for SAML-protected private repos GitHub silently returns
+    HTTP 200 with an empty body, causing SHA extraction to fail with an
+    opaque ValueError. The REST API honors PAT auth and returns proper
+    401/403/404 status codes for unauthorized requests.
+    """
+
+    @pytest.mark.asyncio
+    async def test_calls_rest_api_endpoint(self):
+        """The function must call api.github.com, not github.com/.../*.atom."""
+        from amplifier_app_cli.utils.source_status import _get_github_commit_sha
+
+        captured_urls = []
+
+        async def mock_get(url, **kwargs):
+            captured_urls.append(url)
+            response = MagicMock(spec=httpx.Response)
+            response.status_code = 200
+            response.json = MagicMock(return_value={"sha": "a" * 40})
+            response.raise_for_status = MagicMock()
+            return response
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(side_effect=mock_get)
+
+        with patch(
+            "amplifier_app_cli.utils.source_status._get_github_auth_headers",
+            return_value={"Authorization": "Bearer test-token"},
+        ):
+            await _get_github_commit_sha(
+                mock_client,
+                "https://github.com/microsoft/amplifier",
+                "main",
+            )
+
+        assert len(captured_urls) == 1
+        assert captured_urls[0].startswith("https://api.github.com/"), (
+            f"Must use REST API, got: {captured_urls[0]}. "
+            "The web atom feed does not accept Bearer auth and silently "
+            "returns HTTP 200 with empty body for SAML-protected private repos."
+        )
+        assert ".atom" not in captured_urls[0]
+
+    @pytest.mark.asyncio
+    async def test_403_surfaces_as_http_status_error(self):
+        """A 403 from the API must raise HTTPStatusError, not ValueError.
+
+        This is the contract the _check_all_cached_modules error handler
+        relies on to print "private repo or rate limited" instead of
+        "Unexpected error".
+        """
+        from amplifier_app_cli.utils.source_status import _get_github_commit_sha
+
+        async def mock_get(url, **kwargs):
+            response = MagicMock(spec=httpx.Response)
+            response.status_code = 403
+            request = MagicMock()
+            response.raise_for_status = MagicMock(
+                side_effect=httpx.HTTPStatusError(
+                    "403 Forbidden", request=request, response=response
+                )
+            )
+            return response
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(side_effect=mock_get)
+
+        with patch(
+            "amplifier_app_cli.utils.source_status._get_github_auth_headers",
+            return_value={"Authorization": "Bearer test-token"},
+        ):
+            with pytest.raises(httpx.HTTPStatusError):
+                await _get_github_commit_sha(
+                    mock_client,
+                    "https://github.com/Aleph-Alpha/private-repo",
+                    "main",
+                )
+
