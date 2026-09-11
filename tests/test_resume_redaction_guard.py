@@ -7,8 +7,8 @@ _find_redacted_values so it is logged loudly instead of being silently
 mounted (which would surface downstream as a misleading 401).
 
 The guard scans the ENTIRE merged config, not just hooks: a provider entry
-with no matching live override keeps its redacted key, tools are not
-re-hydrated on resume, and any of these can also appear agent-scoped under
+with no matching live override keeps its redacted key, tools are re-hydrated
+on resume, and any of these can also appear agent-scoped under
 agents[*].  These tests pin that whole-config coverage.
 """
 
@@ -59,7 +59,7 @@ def test_redacted_hook_is_detected():
 
 
 def test_redacted_tool_is_detected():
-    """Tools are not re-hydrated on resume; the guard must still surface them."""
+    """A tool with no usable live match remains visible to the guard."""
     config = {
         "tools": [
             {"module": "tool-remote", "config": {"token": _REDACTION_SENTINEL}},
