@@ -71,6 +71,16 @@ only persisted transcript entries marked `ephemeral is True` and
 transcript and its source metadata intact so resume context restores the reminders;
 `reminder_placement` controls ordering, not display eligibility.
 
+## Session metadata preservation
+
+Save paths preserving metadata from an earlier hook must use
+`SessionStore.get_metadata_if_exists()`; strict `get_metadata()` remains for
+user-requested lookups and must still fail for a missing session.
+JSON output paths must restore the console's configured backing stream, not a
+dynamic temporary stdout capture.
+Run-command diagnostics before headless execution belong on stderr so JSON
+stdout remains one parseable payload.
+
 ## Interactive slash completion
 
 Keep completion candidate generation in `ui/completion.py`.  Its live-session

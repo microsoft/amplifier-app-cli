@@ -3883,7 +3883,7 @@ async def interactive_chat(
             messages = await context.get_messages()
             # Load existing metadata to preserve fields like name, description
             # that may have been set by other hooks (e.g., session-naming)
-            existing_metadata = store.get_metadata(actual_session_id) or {}
+            existing_metadata = store.get_metadata_if_exists(actual_session_id)
             metadata = {
                 **existing_metadata,  # Preserve name, description, etc.
                 "session_id": actual_session_id,
@@ -4442,7 +4442,7 @@ async def execute_single(
     # In JSON mode, redirect all output to stderr so only JSON goes to stdout
     if output_format in ["json", "json-trace"]:
         original_stdout = sys.stdout
-        original_console_file = console.file
+        original_console_file = console._file
         sys.stdout = sys.stderr
         console.file = sys.stderr
     else:
@@ -4711,7 +4711,7 @@ async def execute_single(
             store = SessionStore()
             # Load existing metadata to preserve fields like name, description
             # that may have been set by other hooks (e.g., session-naming)
-            existing_metadata = store.get_metadata(actual_session_id) or {}
+            existing_metadata = store.get_metadata_if_exists(actual_session_id)
             metadata = {
                 **existing_metadata,  # Preserve name, description, etc.
                 "session_id": actual_session_id,
@@ -4737,6 +4737,7 @@ async def execute_single(
 
     except ModuleValidationError as e:
         if output_format in ["json", "json-trace"]:
+            json_output_data = None
             # Restore stdout before writing error JSON
             if original_stdout is not None:
                 sys.stdout = original_stdout
@@ -4757,6 +4758,7 @@ async def execute_single(
 
     except LLMError as e:
         if output_format in ["json", "json-trace"]:
+            json_output_data = None
             if original_stdout is not None:
                 sys.stdout = original_stdout
             error_output = {
@@ -4773,6 +4775,7 @@ async def execute_single(
 
     except Exception as e:
         if output_format in ["json", "json-trace"]:
+            json_output_data = None
             # Restore stdout before writing error JSON
             if original_stdout is not None:
                 sys.stdout = original_stdout
@@ -4819,7 +4822,7 @@ async def execute_single(
             sys.stdout.flush()
         elif original_stdout is not None:
             sys.stdout = original_stdout
-        if original_console_file is not None:
+        if original_stdout is not None:
             console.file = original_console_file
 
 
