@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import SplitResult, parse_qs, unquote, urlsplit
-from urllib.request import url2pathname
 
 import click
 from rich.console import Console
@@ -168,7 +167,9 @@ def _file_uri_path_value(uri: str, *, windows: bool) -> str | None:
     else:
         return None
 
-    converter = nturl2path.url2pathname if windows else url2pathname
+    # urllib.request.url2pathname follows the host OS. Use percent-decoding
+    # explicitly for POSIX so the requested platform, not the host, wins.
+    converter = nturl2path.url2pathname if windows else unquote
     try:
         path_value = converter(encoded_path)
     except (OSError, ValueError):
