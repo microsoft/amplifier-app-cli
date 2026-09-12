@@ -9,6 +9,8 @@ import importlib
 import importlib.metadata
 import logging
 import os
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
 
@@ -36,7 +38,41 @@ def _get_provider_module_name(provider_id: str) -> str:
     return f"amplifier_module_provider_{provider_id.replace('-', '_')}"
 
 
-def _load_provider_module(provider_id: str) -> Any:
+def _load_provider_module_from_source_path(provider_id: str, source_path: Path) -> Any:
+    """Import a provider from its activated source and verify its origin.
+
+    ``BundleModuleResolver`` activates a module by adding its source root to
+    ``sys.path``.  Import through that normal mechanism, but refuse an already
+    cached package or an import result that belongs to another root.
+    """
+    module_name = _get_provider_module_name(provider_id)
+    expected_file = (source_path / module_name / "__init__.py").resolve()
+    if not expected_file.is_file():
+        raise ImportError(
+            f"Configured source for provider '{provider_id}' does not contain "
+            f"expected package '{module_name}'"
+        )
+
+    cached_module = sys.modules.get(module_name)
+    if cached_module is not None:
+        cached_file = getattr(cached_module, "__file__", None)
+        if cached_file is None or Path(cached_file).resolve() != expected_file:
+            raise ImportError(
+                f"Provider '{provider_id}' is already loaded from a different source"
+            )
+
+    module = importlib.import_module(module_name)
+    loaded_file = getattr(module, "__file__", None)
+    if loaded_file is None or Path(loaded_file).resolve() != expected_file:
+        raise ImportError(
+            f"Provider '{provider_id}' loaded from a different source than configured"
+        )
+    return module
+
+
+def _load_provider_module(
+    provider_id: str, *, source_path: Path | None = None
+) -> Any:
     """Load a provider module.
 
     Tries entry points first, then direct import.
@@ -50,6 +86,9 @@ def _load_provider_module(provider_id: str) -> Any:
     Raises:
         ImportError: If module cannot be loaded
     """
+    if source_path is not None:
+        return _load_provider_module_from_source_path(provider_id, source_path)
+
     # Normalize to full module ID
     module_id = (
         provider_id
@@ -76,7 +115,9 @@ def _load_provider_module(provider_id: str) -> Any:
         raise ImportError(f"Could not load provider module '{provider_id}': {e}") from e
 
 
-def load_provider_class(provider_id: str) -> type | None:
+def load_provider_class(
+    provider_id: str, *, source_path: Path | None = None
+) -> type | None:
     """Load a provider class for configuration purposes.
 
     This is a lightweight load that doesn't require a full coordinator.
@@ -85,12 +126,16 @@ def load_provider_class(provider_id: str) -> type | None:
 
     Args:
         provider_id: Provider ID (e.g., "provider-anthropic" or "anthropic")
+        source_path: Activated source root to load instead of discovery.
 
     Returns:
         Provider class if found, None otherwise
     """
     try:
-        module = _load_provider_module(provider_id)
+        if source_path is None:
+            module = _load_provider_module(provider_id)
+        else:
+            module = _load_provider_module(provider_id, source_path=source_path)
 
         # Look for provider class in module's __all__ or by convention
         # Convention: {Name}Provider (e.g., AnthropicProvider)
@@ -124,6 +169,8 @@ def load_provider_class(provider_id: str) -> type | None:
         return None
 
     except ImportError as e:
+        if source_path is not None:
+            raise
         logger.debug(f"Could not load provider class for '{provider_id}': {e}")
         return None
 
@@ -322,17 +369,24 @@ def _try_instantiate_provider(
     return None
 
 
-def get_provider_info(provider_id: str) -> dict[str, Any] | None:
+def get_provider_info(
+    provider_id: str, *, source_path: Path | None = None
+) -> dict[str, Any] | None:
     """Get provider metadata.
 
     Args:
         provider_id: Provider ID (e.g., "provider-anthropic" or "anthropic")
+        source_path: Activated source root to load instead of entry-point
+            discovery. An explicit source must load from that exact root.
 
     Returns:
         Provider info dict if available, None otherwise
     """
     try:
-        provider_class = load_provider_class(provider_id)
+        if source_path is None:
+            provider_class = load_provider_class(provider_id)
+        else:
+            provider_class = load_provider_class(provider_id, source_path=source_path)
         if not provider_class:
             logger.debug(
                 f"get_provider_info: load_provider_class returned None for '{provider_id}'"
@@ -358,6 +412,8 @@ def get_provider_info(provider_id: str) -> dict[str, Any] | None:
         return info.model_dump() if hasattr(info, "model_dump") else vars(info)
 
     except Exception as e:
+        if source_path is not None:
+            raise
         logger.warning(
             f"get_provider_info failed for '{provider_id}': {type(e).__name__}: {e}"
         )
