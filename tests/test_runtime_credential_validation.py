@@ -525,11 +525,11 @@ async def mount(coordinator, config):
 __amplifier_module_type__ = "context"
 
 class ExampleContext:
-    def add_message(self, message): pass
-    def get_messages_for_request(self): return []
-    def get_messages(self): return []
-    def set_messages(self, messages): pass
-    def clear(self): pass
+    async def add_message(self, message): pass
+    async def get_messages_for_request(self): return []
+    async def get_messages(self): return []
+    async def set_messages(self, messages): pass
+    async def clear(self): pass
 
 async def mount(coordinator, config):
     await coordinator.mount("context", ExampleContext())
