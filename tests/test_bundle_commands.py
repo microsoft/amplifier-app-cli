@@ -273,7 +273,7 @@ async def test_global_update_reports_registry_failure_and_checks_later_bundles(m
     broken = results["broken"]
     assert broken.bundle_name == "broken"
     assert broken.bundle_source == ""
-    assert broken.sources[0].error == "registry unavailable"
+    assert broken.sources[0].error == "status check failed"
     assert results[working_bundle].bundle_source == working_uri
     assert registry.find.call_args_list == [(("broken",),), ((working_bundle,),)]
 
@@ -312,8 +312,8 @@ async def test_global_update_reports_direct_app_check_failure_by_exact_uri(monke
 
     assert set(results) == {failing_uri}
     assert results[failing_uri].bundle_source == failing_uri
-    assert results[failing_uri].sources[0].source_uri == failing_uri
-    assert results[failing_uri].sources[0].error
+    assert results[failing_uri].sources[0].source_uri == ""
+    assert results[failing_uri].sources[0].error == "timeout"
 
 
 def test_global_update_loads_an_app_target_by_source_uri(monkeypatch):
@@ -518,3 +518,83 @@ def test_colliding_app_bundle_labels_distinguish_refs_and_ignore_credentials():
     assert labels[release] == "team (org/amplifier-bundle-team @release)"
     assert all("secret" not in label for label in labels.values())
     assert labels == update_module._bundle_display_names([main, release])
+
+
+def test_bundle_labels_are_globally_unique_without_changing_registry_aliases():
+    """Generated labels yield to literal aliases, then use source-only context."""
+
+    uri = (
+        "git+https://example.invalid/org/amplifier-bundle-team@main"
+        "#subdirectory=behaviors/team.yaml"
+    )
+    keys = ["team", "team (app source)", uri]
+
+    labels = update_module._bundle_display_names(keys)
+
+    assert labels["team"] == "team"
+    assert labels["team (app source)"] == "team (app source)"
+    assert len(set(labels.values())) == len(labels)
+    assert labels == update_module._bundle_display_names(list(reversed(keys)))
+
+
+def test_bundle_labels_distinguish_local_hosts_schemes_and_equivalent_uri_shapes():
+    """Readable parts come first; opaque hashes resolve only safe-part ties."""
+
+    local_one = "file:///work/one/behaviors/team.yaml"
+    local_two = "file:///work/two/behaviors/team.yaml"
+    host_one = (
+        "git+https://one.invalid/org/amplifier-bundle-team@feature/next"
+        "#subdirectory=behaviors/team.yaml"
+    )
+    host_two = (
+        "https://two.invalid/org/amplifier-bundle-team@feature/next"
+        "#subdirectory=behaviors/team.yaml"
+    )
+    exact_one = (
+        "git+https://same.invalid/org/amplifier-bundle-team@main"
+        "?mirror=one#subdirectory=behaviors/team.yaml"
+    )
+    exact_two = (
+        "git+https://same.invalid/org/amplifier-bundle-team@main"
+        "?mirror=two#subdirectory=behaviors/team.yaml"
+    )
+    keys = [local_one, local_two, host_one, host_two, exact_one, exact_two]
+
+    labels = update_module._bundle_display_names(keys)
+
+    assert len(set(labels.values())) == len(labels)
+    assert labels[local_one] != labels[local_two]
+    assert "one.invalid" in labels[host_one]
+    assert "two.invalid" in labels[host_two]
+    assert labels[exact_one].endswith("]")
+    assert labels[exact_two].endswith("]")
+    assert all("mirror=" not in label for label in labels.values())
+    assert labels == update_module._bundle_display_names(list(reversed(keys)))
+
+
+def test_bundle_labels_remain_unique_when_an_alias_matches_a_hash_candidate():
+    """A literal alias also wins over a source label introduced by final hashing."""
+
+    first = (
+        "git+https://same.invalid/org/amplifier-bundle-team@main"
+        "?mirror=one#subdirectory=behaviors/team.yaml"
+    )
+    second = (
+        "git+https://same.invalid/org/amplifier-bundle-team@main"
+        "?mirror=two#subdirectory=behaviors/team.yaml"
+    )
+    generated_alias = update_module._bundle_display_names([first, second])[first]
+
+    labels = update_module._bundle_display_names([generated_alias, first, second])
+
+    assert labels[generated_alias] == generated_alias
+    assert len(set(labels.values())) == len(labels)
+
+
+def test_malformed_uri_never_breaks_or_leaks_through_bundle_labels():
+    malformed = "git+https://user:token@[broken/team"
+
+    labels = update_module._bundle_display_names([malformed])
+
+    assert labels[malformed] == "bundle"
+    assert "token" not in labels[malformed]

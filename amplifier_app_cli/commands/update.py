@@ -3,9 +3,13 @@
 import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
+import hashlib
+import nturl2path
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import SplitResult, parse_qs, unquote, urlsplit
+from urllib.request import url2pathname
 
 import click
 from rich.console import Console
@@ -94,13 +98,80 @@ _REPORT_STATE_LABELS: dict[SourceReportState, str] = {
 }
 
 
+_INVALID_APP_SOURCE_PREFIX = "<invalid-app-source:"
+
+
+def _safe_urlsplit(uri: str) -> SplitResult | None:
+    """Split a configured URI without allowing malformed input to break reporting."""
+
+    try:
+        return urlsplit(uri)
+    except ValueError:
+        return None
+
+
+def _invalid_app_source_key(value: object) -> str:
+    """Create a stable internal identity without rendering malformed settings."""
+
+    digest = hashlib.sha256(repr(value).encode("utf-8", errors="backslashreplace")).hexdigest()
+    return f"{_INVALID_APP_SOURCE_PREFIX}{digest}>"
+
+
+def _is_valid_app_source(uri: str) -> bool:
+    """Accept only location URIs the app-bundle setting can load."""
+
+    if uri.startswith(("git+", "zip+")):
+        parsed = _safe_urlsplit(uri.removeprefix("git+").removeprefix("zip+"))
+        return parsed is not None and bool(parsed.scheme)
+    if not uri.startswith(("file://", "http://", "https://")):
+        return False
+    parsed = _safe_urlsplit(uri)
+    return parsed is not None and parsed.scheme.lower() in {"file", "http", "https"}
+
+
+def _file_uri_path_value(uri: str, *, windows: bool) -> str | None:
+    """Return a local filename from a file URI for the named platform.
+
+    ``Path.as_uri()`` emits ``file:///C:/...`` on Windows, while the legacy
+    CLI interpolation emits ``file://C:\\...``.  Both forms name a local drive
+    there.  A named host is a UNC path only on Windows; on POSIX it is remote
+    and deliberately not reinterpreted as a local path.
+    """
+
+    parsed = _safe_urlsplit(uri)
+    if parsed is None or parsed.scheme.lower() != "file":
+        return None
+
+    netloc = parsed.netloc
+    if not netloc or netloc.lower() == "localhost":
+        encoded_path = parsed.path
+    elif windows and len(netloc) >= 2 and netloc[1] == ":" and netloc[0].isalpha():
+        # Legacy ``file://C:\path`` serialization.  ``nturl2path`` accepts
+        # both backslash and slash separators after the drive.
+        encoded_path = netloc + parsed.path
+    elif windows and "@" not in netloc and ":" not in netloc:
+        # Standard UNC syntax: file://server/share/path -> \\server\share\path.
+        try:
+            hostname = parsed.hostname
+        except ValueError:
+            return None
+        if not hostname or hostname.lower() != netloc.lower():
+            return None
+        encoded_path = f"//{hostname}{parsed.path}"
+    else:
+        return None
+
+    converter = nturl2path.url2pathname if windows else url2pathname
+    return converter(encoded_path)
+
+
 def _file_uri_path(uri: str) -> Path | None:
     """Return the local path represented by a file URI, without its fragment."""
 
-    parsed = urlsplit(uri)
-    if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+    path_value = _file_uri_path_value(uri, windows=os.name == "nt")
+    if path_value is None:
         return None
-    return Path(unquote(parsed.path))
+    return Path(path_value)
 
 
 def _app_cli_packaged_bundle_root() -> Path | None:
@@ -134,6 +205,8 @@ def _check_failure_reason(error: object) -> str:
     """Map arbitrary checker failures to a safe, stable user-facing reason."""
 
     message = str(error).lower()
+    if message == "invalid source":
+        return message
     if isinstance(error, TimeoutError) or "timeout" in message or "timed out" in message:
         return "timeout"
     if "rate limit" in message or "too many requests" in message or " 429" in message:
@@ -516,119 +589,177 @@ def _strip_uri_fragment(uri: str) -> str:
     return uri.split("#", 1)[0]
 
 
-def _legacy_bundle_display_names(bundle_keys: Iterable[str]) -> dict[str, str]:
-    """Map bundle result keys to the label shown to the user.
+def _is_bundle_source_key(key: str) -> bool:
+    """Whether a key represents a source rather than a registry alias."""
 
-    Registry-backed bundles are already keyed by a friendly name. App bundles
-    are keyed by their configured source URI, because that URI *is* the update
-    target's identity and has to survive round-tripping into
-    ``update_bundle``. Printing it as a table row's Name, though, is
-    unreadable and drags the table past any sane terminal width:
-
-        git+https://github.com/org/amplifier-bundle-x@main#subdirectory=behaviors/x.yaml
-
-    So the key stays the URI and only the label changes.
-
-    A derived label that would collide with another row's - two repos both
-    shipping ``behaviors/main.yaml``, or a derived name equal to a registry
-    alias - falls back to the full URI for the colliding rows. Two rows
-    showing the same name is worse than one long name, because it silently
-    misidentifies which one has an update.
-    """
-    labels = {
-        key: (_extract_behavior_name(key) if "://" in key else key)
-        for key in bundle_keys
-    }
-
-    seen: dict[str, int] = {}
-    for label in labels.values():
-        seen[label] = seen.get(label, 0) + 1
-
-    return {
-        key: (label if seen[label] == 1 else key) for key, label in labels.items()
-    }
+    return key.startswith(
+        (_INVALID_APP_SOURCE_PREFIX, "git+", "zip+", "file://", "http://", "https://")
+    )
 
 
-def _bundle_display_base_name(key: str) -> str:
-    """Return a safe friendly name for a bundle key without exposing its URI."""
+def _safe_bundle_display_base_name(key: str) -> str:
+    """Return a readable label without falling back to a raw malformed URI."""
 
+    if key.startswith(_INVALID_APP_SOURCE_PREFIX):
+        return "invalid source"
     if "://" not in key:
         return key
-    file_path = _file_uri_path(key)
-    if file_path is not None:
-        fragment = parse_qs(urlsplit(key).fragment).get("subdirectory", [])
-        candidate = fragment[0] if fragment else file_path.name
-        return Path(candidate).stem or file_path.name or "local bundle"
-
-    derived = _extract_behavior_name(key)
-    # The shared helper deliberately falls back to the raw URI for unfamiliar
-    # hosts. Update output must never turn that fallback into a credential leak.
+    parsed = _safe_urlsplit(key.removeprefix("git+"))
+    if parsed is None:
+        return "bundle"
+    if parsed.scheme.lower() == "file":
+        fragment = parse_qs(parsed.fragment).get("subdirectory", [])
+        candidate = fragment[0] if fragment else unquote(parsed.path).rstrip("/").rsplit("/", 1)[-1]
+        return Path(candidate).stem or candidate or "local bundle"
+    try:
+        derived = _extract_behavior_name(key)
+    except (TypeError, ValueError):
+        derived = key
     if "://" not in derived:
         return derived
-    parsed = urlsplit(key.removeprefix("git+"))
-    return Path(parsed.path).name.split("@", 1)[0].removesuffix(".git") or "bundle"
+    leaf = unquote(parsed.path).rstrip("/").rsplit("/", 1)[-1]
+    return leaf.split("@", 1)[0].removesuffix(".git") or "bundle"
 
 
-def _bundle_uri_label_parts(uri: str) -> tuple[str, str, str]:
-    """Return safe repo/ref/subpath discriminators for an app-source URI."""
+def _bundle_source_label_parts(key: str) -> tuple[str, ...]:
+    """Return progressively more-specific safe source discriminators."""
 
-    parsed = urlsplit(uri.removeprefix("git+"))
-    path_parts = [part for part in parsed.path.split("/") if part]
-    leaf = path_parts[-1] if path_parts else ""
-    repo, marker, ref = leaf.rpartition("@")
+    if key.startswith(_INVALID_APP_SOURCE_PREFIX):
+        return ("invalid source",)
+    parsed = _safe_urlsplit(key.removeprefix("git+"))
+    if parsed is None:
+        return ("app source",)
+    if parsed.scheme.lower() == "file":
+        path_value = _file_uri_path_value(key, windows=os.name == "nt")
+        if not path_value:
+            return ("local source",)
+        components = [
+            component
+            for component in path_value.replace("\\", "/").rstrip("/").split("/")
+            if component
+        ]
+        parents = list(reversed(components[:-1]))
+        return tuple([f"local {parents[0]}", *parents[1:]]) if parents else ("local source",)
+
+    repo_path, marker, ref = unquote(parsed.path).rpartition("@")
     if not marker:
-        repo, ref = leaf, ""
-    repo = repo.removesuffix(".git")
+        repo_path, ref = unquote(parsed.path), ""
+    path_parts = [part for part in repo_path.split("/") if part]
+    repo = path_parts[-1].removesuffix(".git") if path_parts else ""
     owner = path_parts[-2] if len(path_parts) > 1 else ""
     repository = "/".join(part for part in (owner, repo) if part)
     subdirectory = parse_qs(parsed.fragment).get("subdirectory", [""])[0]
-    return repository, f"@{ref}" if ref else "", subdirectory
+    try:
+        host = parsed.hostname or ""
+    except ValueError:
+        host = ""
+    scheme = key.split(":", 1)[0].lower()
+    return tuple(part for part in (repository, f"@{ref}" if ref else "", subdirectory, host, scheme) if part)
 
 
-def _bundle_display_names(
-    bundle_keys: Iterable[str],
-    statuses: dict[str, "BundleStatus"] | None = None,
-) -> dict[str, str]:
-    """Map update keys to compact, unique, credential-safe display labels."""
+def _minimal_unique_qualifiers(keys: list[str]) -> dict[str, str]:
+    """Find the shortest safe qualifier that distinguishes each source."""
 
-    # Identity is carried by the result key today. Retain the optional status
-    # map so every reporting surface can share this function as source-aware
-    # presentation grows without changing its public call shape.
-    del statuses
+    parts = {key: _bundle_source_label_parts(key) for key in keys}
+    for width in range(1, max((len(value) for value in parts.values()), default=0) + 1):
+        candidates = {key: " ".join(value[:width]) for key, value in parts.items()}
+        if all(candidates.values()) and len(set(candidates.values())) == len(candidates):
+            return candidates
+    return {key: " ".join(value) for key, value in parts.items()}
+
+
+def _source_hash_suffixes(keys: list[str]) -> dict[str, str]:
+    """Return full deterministic opaque digests for irreducible source collisions."""
+
+    digests = {
+        key: hashlib.sha256(
+            b"amplifier-update-label\x00"
+            + key.encode("utf-8", errors="surrogatepass")
+        ).hexdigest()
+        for key in keys
+    }
+    return digests
+
+
+def _resolve_remaining_label_collisions(labels: dict[str, str]) -> None:
+    """Append source-derived hashes until every generated label is globally unique."""
+
+    source_bases: dict[str, str] = {}
+    for _ in range(15):
+        groups: dict[str, list[str]] = {}
+        for key, label in labels.items():
+            groups.setdefault(label, []).append(key)
+        conflicting_sources = [
+            key
+            for keys in groups.values()
+            if len(keys) > 1
+            for key in keys
+            if _is_bundle_source_key(key)
+        ]
+        if not conflicting_sources:
+            return
+
+        for key in conflicting_sources:
+            source_bases.setdefault(key, labels[key])
+        fixed_labels = {
+            label
+            for key, label in labels.items()
+            if key not in conflicting_sources
+        }
+        digests = _source_hash_suffixes(conflicting_sources)
+        for length in range(8, 65, 4):
+            candidates = {
+                key: f"{source_bases[key]} [{digests[key][:length]}]"
+                for key in conflicting_sources
+            }
+            if (
+                len(set(candidates.values())) == len(candidates)
+                and not fixed_labels.intersection(candidates.values())
+            ):
+                labels.update(candidates)
+                break
+        else:
+            labels.update(
+                {
+                    key: f"{source_bases[key]} [{digests[key]}]"
+                    for key in conflicting_sources
+                }
+            )
+    raise RuntimeError("could not derive globally unique bundle display labels")
+
+
+def _bundle_display_names(bundle_keys: Iterable[str]) -> dict[str, str]:
+    """Map update keys to globally unique, credential-safe display labels."""
+
     keys = list(bundle_keys)
-    labels = {key: _bundle_display_base_name(key) for key in keys}
+    labels = {key: _safe_bundle_display_base_name(key) for key in keys}
     grouped: dict[str, list[str]] = {}
     for key, label in labels.items():
         grouped.setdefault(label, []).append(key)
 
     for base, colliding in grouped.items():
-        if len(colliding) == 1:
+        source_keys = [key for key in colliding if _is_bundle_source_key(key)]
+        alias_keys = [key for key in colliding if not _is_bundle_source_key(key)]
+        if len(colliding) < 2 or not source_keys:
             continue
-        uri_keys = [key for key in colliding if "://" in key]
-        alias_keys = [key for key in colliding if "://" not in key]
-        # A registry alias is already the user's compact stable handle. A
-        # single colliding app source only needs its role to become distinct.
-        if alias_keys and len(uri_keys) == 1:
-            labels[uri_keys[0]] = f"{base} (app source)"
+        if alias_keys and len(source_keys) == 1:
+            labels[source_keys[0]] = f"{base} (app source)"
             continue
+        qualifiers = _minimal_unique_qualifiers(source_keys)
+        for key in source_keys:
+            labels[key] = f"{base} ({qualifiers[key] or 'app source'})"
 
-        parts = {key: _bundle_uri_label_parts(key) for key in uri_keys}
-        qualifiers = [""] * len(uri_keys)
-        for index in range(3):
-            candidate = {
-                key: " ".join(part for part in parts[key][: index + 1] if part)
-                for key in uri_keys
-            }
-            if all(candidate.values()) and len(set(candidate.values())) == len(candidate):
-                qualifiers = [candidate[key] for key in uri_keys]
-                break
-        for key, qualifier in zip(uri_keys, qualifiers, strict=True):
-            labels[key] = f"{base} ({qualifier or 'app source'})"
-        # Multiple aliases with the same spelling should not normally exist,
-        # but leave their exact user-facing aliases intact rather than invent
-        # an order-dependent suffix.
-        for key in alias_keys:
-            labels[key] = key
+    regrouped: dict[str, list[str]] = {}
+    for key, label in labels.items():
+        regrouped.setdefault(label, []).append(key)
+    for label, colliding in regrouped.items():
+        source_keys = [key for key in colliding if _is_bundle_source_key(key)]
+        if len(colliding) > 1 and source_keys:
+            for key in source_keys:
+                hint = " ".join(_bundle_source_label_parts(key))
+                labels[key] = f"{label} ({hint or 'app source'})"
+
+    _resolve_remaining_label_collisions(labels)
     return labels
 
 
@@ -943,15 +1074,19 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
         """Keep a direct configured source visible when its status check fails."""
 
         uri = source_uri or ""
+        safe_error = _check_failure_reason(error)
         return BundleStatus(
             bundle_name=bundle_name,
             bundle_source=uri,
             sources=[
                 SourceStatus(
-                    source_uri=uri,
+                    # The status has no update action, so keep the exact URI on
+                    # BundleStatus for identity but never render or retain a
+                    # malformed source's potentially private payload here.
+                    source_uri="",
                     is_cached=False,
                     has_update=None,
-                    error=str(error),
+                    error=safe_error,
                 )
             ],
         )
@@ -1036,7 +1171,18 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
     # Scoped to the root URIs deliberately: two app entries that share a repo
     # are both things the user asked for by name, and stay independent.
     root_bases = {_strip_uri_fragment(uri) for uri in checked_uris}
-    for uri in AppSettings().get_app_bundles():
+    for configured_source in AppSettings().get_app_bundles():
+        if (
+            not isinstance(configured_source, str)
+            or not configured_source.strip()
+            or not _is_valid_app_source(configured_source)
+        ):
+            invalid_key = _invalid_app_source_key(configured_source)
+            results[invalid_key] = _failed_bundle_status(
+                invalid_key, None, ValueError("invalid source")
+            )
+            continue
+        uri = configured_source
         if uri in checked_uris or _strip_uri_fragment(uri) in root_bases:
             continue
         checked_uris.add(uri)
@@ -1081,7 +1227,7 @@ async def _check_transitive_bundle_status(
 
     # Seed the walk with the label each direct row already displays, so a
     # transitive row can name a parent the user can actually find in the table.
-    seed_labels = _bundle_display_names(direct_results.keys(), direct_results)
+    seed_labels = _bundle_display_names(direct_results.keys())
     roots = {
         seed_labels.get(key, key): status.bundle_source
         for key, status in direct_results.items()
@@ -1415,7 +1561,7 @@ def _show_concise_report(
         table.add_column("Remote", style="dim", justify="right")
         table.add_column("Status", justify="center")
 
-        display_names = _bundle_display_names(bundle_results.keys(), bundle_results)
+        display_names = _bundle_display_names(bundle_results.keys())
         bundle_plan = bundle_plan or _bundle_report_plan(bundle_results)
 
         for bundle_name in sorted(
@@ -1646,7 +1792,7 @@ def _show_verbose_report(
     # === BUNDLES ===
     if bundle_results:
         active_bundle = _get_active_bundle_name()
-        display_names = _bundle_display_names(bundle_results.keys(), bundle_results)
+        display_names = _bundle_display_names(bundle_results.keys())
         bundle_plan = bundle_plan or _bundle_report_plan(bundle_results)
         for bundle_name in sorted(
             bundle_results.keys(),
@@ -1914,7 +2060,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         console.print("  Checking bundles...")
     bundle_results = asyncio.run(_check_all_bundle_status())
     bundle_plan = _bundle_report_plan(bundle_results)
-    bundle_labels = _bundle_display_names(bundle_results.keys(), bundle_results)
+    bundle_labels = _bundle_display_names(bundle_results.keys())
     has_bundle_updates = (
         any(s.has_updates for s in bundle_results.values()) if bundle_results else False
     )

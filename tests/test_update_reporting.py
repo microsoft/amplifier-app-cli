@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 import io
+from pathlib import PureWindowsPath
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -115,6 +116,51 @@ def test_file_sources_distinguish_local_packaged_missing_and_confirmed_remote(
             remote_commit="b" * 40,
         )
     ) == "update"
+
+
+@pytest.mark.parametrize(
+    ("uri", "windows_path", "posix_path"),
+    [
+        (
+            "file:///C:/Program%20Files/Amplifier",
+            PureWindowsPath("C:/Program Files/Amplifier"),
+            "/C:/Program Files/Amplifier",
+        ),
+        (
+            r"file://C:\Program%20Files\Amplifier",
+            PureWindowsPath(r"C:\Program Files\Amplifier"),
+            None,
+        ),
+        ("file://server/share/Amplifier", PureWindowsPath("//server/share/Amplifier"), None),
+    ],
+)
+def test_file_uri_parser_accepts_standard_legacy_and_unc_windows_forms(
+    uri, windows_path, posix_path
+):
+    """Windows file URI forms stay local only when interpreted as Windows paths."""
+
+    assert PureWindowsPath(update_module._file_uri_path_value(uri, windows=True)) == windows_path
+    assert update_module._file_uri_path_value(uri, windows=False) == posix_path
+
+
+def test_file_uri_parser_accepts_localhost_and_rejects_remote_posix_authority():
+    assert update_module._file_uri_path_value(
+        "file://localhost/tmp/space%20name", windows=False
+    ) == "/tmp/space name"
+    assert update_module._file_uri_path_value(
+        "file://remote-host/tmp/space%20name", windows=False
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "file://user:token@server/share/bundle",
+        "file://server:8443/share/bundle",
+    ],
+)
+def test_file_uri_parser_rejects_windows_authorities_that_are_not_unc_hosts(uri):
+    assert update_module._file_uri_path_value(uri, windows=True) is None
 
 
 @pytest.mark.parametrize(
@@ -409,27 +455,93 @@ def test_all_confirmed_current_sources_keep_the_green_summary():
     assert "No confirmed updates" not in result.output
 
 
-def test_check_only_leaves_registry_settings_and_cache_bytes_unchanged(tmp_path):
-    """The real Click command reports through mocked boundaries without mutating state."""
+def test_check_only_presentation_preserves_existing_registry_settings_and_cache(
+    tmp_path, monkeypatch
+):
+    """The real checker renders configured sources without presentation writes.
 
-    registry = tmp_path / "registry.json"
-    settings = tmp_path / "settings.yaml"
-    cache_sentinel = tmp_path / "cache" / "sentinel.bin"
-    registry.write_bytes(b'{"bundle":"original"}\n')
-    settings.write_bytes(b"bundle:\n  app: []\n")
-    cache_sentinel.parent.mkdir()
-    cache_sentinel.write_bytes(b"\x00unchanged-cache\xff")
-    before = {path: path.read_bytes() for path in (registry, settings, cache_sentinel)}
+    Foundation validates stale registry cache paths while constructing a
+    registry.  This fixture deliberately provides an empty, valid registry,
+    so the assertion covers this CLI's presentation and routing boundary
+    rather than claiming all historical ``--check-only`` paths are write-free.
+    """
 
-    report = UpdateReport(local_file_sources=[], cached_git_sources=[])
-    patches = _command_patches(report, {})
+    home = tmp_path / "amplifier-home"
+    cache = home / "cache"
+    configured_path = tmp_path / "configured bundle"
+    configured_path.mkdir()
+    home.mkdir()
+    cache.mkdir()
+    (home / "registry.json").write_bytes(b'{"bundles": {}}\n')
+    (home / "settings.yaml").write_text(
+        "\n".join(
+            [
+                "bundle:",
+                "  app:",
+                f"    - {configured_path.as_uri()}",
+                "    - 'git+https://token@[broken/source'",
+                "    - 7",
+                "    - {private: value}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (cache / "sentinel.bin").write_bytes(b"\x00unchanged-cache\xff")
+    before = {
+        path.relative_to(home): path.read_bytes()
+        for path in home.rglob("*")
+        if path.is_file()
+    }
+    monkeypatch.setenv("AMPLIFIER_HOME", str(home))
+    monkeypatch.setenv("HOME", str(tmp_path / "decoy-home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "decoy-home"))
+    output = io.StringIO()
+    monkeypatch.setattr(update_module, "console", Console(file=output, width=200))
+
+    async def fake_check_all_sources(**kwargs):
+        return UpdateReport(local_file_sources=[], cached_git_sources=[])
+
+    async def no_transitive_discovery(*args, **kwargs):
+        return {}
+
     with ExitStack() as stack:
-        for boundary in patches:
-            stack.enter_context(boundary)
+        stack.enter_context(
+            patch(
+                "amplifier_app_cli.commands.update.check_all_sources",
+                side_effect=fake_check_all_sources,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "amplifier_app_cli.commands.update._check_transitive_bundle_status",
+                side_effect=no_transitive_discovery,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "amplifier_app_cli.commands.update.AppBundleDiscovery",
+                return_value=SimpleNamespace(list_cached_root_bundles=lambda: []),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "amplifier_app_cli.utils.umbrella_discovery.discover_umbrella_source",
+                return_value=None,
+            )
+        )
         result = CliRunner().invoke(update, ["--check-only"])
 
+    after = {
+        path.relative_to(home): path.read_bytes()
+        for path in home.rglob("*")
+        if path.is_file()
+    }
     assert result.exit_code == 0, result.output
-    assert {path: path.read_bytes() for path in before} == before
+    assert after == before
+    assert "Check failed: invalid source" in output.getvalue()
+    assert "token" not in output.getvalue()
+    assert "private" not in output.getvalue()
 
 
 def test_local_umbrella_dependency_prevents_a_false_all_current_summary():

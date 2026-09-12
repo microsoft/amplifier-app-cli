@@ -60,6 +60,9 @@ Keep report labels separate from update eligibility: a missing mutable cache is
 a download, not a newer revision, and an unchecked source is not current.
 Use the same word-status vocabulary in every `amplifier update` section,
 including verbose output.
+Keep the exact configured URI as the update action identity, but derive only
+credential-safe, globally unique display labels; malformed app entries render
+as a generic failed check and never leak their configured payload.
 Exercise the real Click command in `tests/test_update_reporting.py`; mock only
 status/apply boundaries so tests never touch a user's caches or installation.
 
