@@ -13,6 +13,7 @@ from rich.console import Console
 
 from amplifier_app_cli.commands import update as update_module
 from amplifier_app_cli.commands.update import _classify_source_status
+from amplifier_app_cli.commands.update import _check_failure_reason
 from amplifier_app_cli.commands.update import _revision_report_state
 from amplifier_app_cli.commands.update import TransitiveBundleStatus
 from amplifier_app_cli.commands.update import update
@@ -72,6 +73,64 @@ def test_source_status_current_requires_a_confirmed_equal_comparison(
     )
 
     assert _classify_source_status(source) == expected
+
+
+def test_file_sources_distinguish_local_packaged_missing_and_confirmed_remote(
+    tmp_path, monkeypatch
+):
+    """Filesystem facts are visible without changing successful remote comparisons."""
+
+    local_path = tmp_path / "local"
+    local_path.mkdir()
+    wheel_root = tmp_path / "site-packages" / "amplifier_app_cli" / "_bundle"
+    wheel_root.mkdir(parents=True)
+    packaged_path = wheel_root / "behaviors"
+    packaged_path.mkdir()
+    monkeypatch.setattr(update_module, "_app_cli_packaged_bundle_root", lambda: wheel_root)
+
+    assert _classify_source_status(
+        _source(f"file://{local_path}", is_cached=True, has_update=None)
+    ) == "local"
+    assert _classify_source_status(
+        _source(f"file://{packaged_path}", is_cached=True, has_update=None)
+    ) == "packaged"
+    assert _classify_source_status(
+        _source(f"file://{tmp_path / 'missing'}", is_cached=True, has_update=None)
+    ) == "missing_path"
+    assert _classify_source_status(
+        _source(
+            f"file://{local_path}",
+            is_cached=True,
+            has_update=False,
+            cached_commit="a" * 40,
+            remote_commit="a" * 40,
+        )
+    ) == "current"
+    assert _classify_source_status(
+        _source(
+            f"file://{local_path}",
+            is_cached=True,
+            has_update=True,
+            cached_commit="a" * 40,
+            remote_commit="b" * 40,
+        )
+    ) == "update"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (TimeoutError(), "timeout"),
+        (RuntimeError("HTTP 401 credential rejected"), "authentication"),
+        (RuntimeError("HTTP 403 forbidden"), "permission"),
+        (RuntimeError("HTTP 404 not found"), "not found"),
+        (RuntimeError("HTTP 429 too many requests"), "rate limit"),
+        (RuntimeError("DNS connection failed"), "network"),
+        (RuntimeError("unexpected response"), "status check failed"),
+    ],
+)
+def test_check_failure_reason_uses_only_safe_vocabulary(error, expected):
+    assert _check_failure_reason(error) == expected
 
 
 @pytest.mark.parametrize(
@@ -271,7 +330,7 @@ def test_missing_bundle_caches_are_downloads_not_updates(monkeypatch):
     assert "Available actions:" in checked.output
     assert "Updates available:" not in checked.output
     assert "Download" in checked.output
-    assert "Not checked" in checked.output
+    assert "Missing path" in checked.output
     assert "Current" in checked.output
     assert direct_loads == [direct_uri]
     assert direct_updates == [direct_uri]
@@ -348,6 +407,29 @@ def test_all_confirmed_current_sources_keep_the_green_summary():
     assert result.exit_code == 0, result.output
     assert "All sources up to date" in result.output
     assert "No confirmed updates" not in result.output
+
+
+def test_check_only_leaves_registry_settings_and_cache_bytes_unchanged(tmp_path):
+    """The real Click command reports through mocked boundaries without mutating state."""
+
+    registry = tmp_path / "registry.json"
+    settings = tmp_path / "settings.yaml"
+    cache_sentinel = tmp_path / "cache" / "sentinel.bin"
+    registry.write_bytes(b'{"bundle":"original"}\n')
+    settings.write_bytes(b"bundle:\n  app: []\n")
+    cache_sentinel.parent.mkdir()
+    cache_sentinel.write_bytes(b"\x00unchanged-cache\xff")
+    before = {path: path.read_bytes() for path in (registry, settings, cache_sentinel)}
+
+    report = UpdateReport(local_file_sources=[], cached_git_sources=[])
+    patches = _command_patches(report, {})
+    with ExitStack() as stack:
+        for boundary in patches:
+            stack.enter_context(boundary)
+        result = CliRunner().invoke(update, ["--check-only"])
+
+    assert result.exit_code == 0, result.output
+    assert {path: path.read_bytes() for path in before} == before
 
 
 def test_local_umbrella_dependency_prevents_a_false_all_current_summary():
@@ -694,7 +776,14 @@ def test_mixed_bundle_states_render_the_same_plan_in_both_reports():
     assert concise.exit_code == 0, concise.output
     assert verbose.exit_code == 0, verbose.output
     assert before == after == ["stale", "missing", "unreadable", "dirty", "error"]
-    for label in ("Update", "Download", "Refresh cache", "Not checked", "Local changes", "Pinned"):
+    for label in (
+        "Update",
+        "Download",
+        "Refresh cache",
+        "Missing path",
+        "Pinned",
+        "Check failed: status check failed",
+    ):
         assert label in concise.output
         assert label in verbose.output
     assert "Pinned; not cached" in concise.output
@@ -770,7 +859,7 @@ def test_mixed_actions_process_one_bundle_once_and_report_its_composition():
     assert "Download 1 bundle" not in checked.output
     assert "Update 1 bundle" not in checked.output
     assert accepted.exit_code == 0, accepted.output
-    assert "Not checked" in accepted.output
+    assert "Missing path" in accepted.output
     assert "Processed bundle: mixed" in accepted.output
     assert loads == [uri]
     assert updates == ["called"]
@@ -848,7 +937,7 @@ def test_selected_neutral_bundle_states_are_confirmed_and_processed_once():
     assert result.exit_code == 0, result.output
     assert "Process 1 bundle with downloads and updates" in result.output
     assert "Process 1 bundle with local changes" in result.output
-    assert "Process 1 bundle with unconfirmed sources" in result.output
+    assert "Process 1 bundle with failed checks" in result.output
     assert loads == [mixed_uri, dirty_uri, error_uri]
     assert "Processed bundle: dirty" in result.output
     assert "Processed bundle: error" in result.output
@@ -946,3 +1035,67 @@ def test_mixed_bundle_failure_reports_processing_not_a_successful_action():
     assert result.exit_code == 0, result.output
     assert "Failed to process bundle: mixed-failure: cannot process mixed" in result.output
     assert "Processed bundle: mixed-failure" not in result.output
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+def test_failed_check_is_visible_but_never_prints_credentials(verbose):
+    """A failure reports a classified reason in every renderer, never exception text."""
+
+    secret = "https://person:secret-token@example.invalid/private"
+    failed = _bundle(
+        "failed",
+        _source(
+            "git+https://example.invalid/failed@main",
+            is_cached=True,
+            has_update=False,
+            error=f"authentication failed for {secret}",
+        ),
+    )
+    report = UpdateReport(local_file_sources=[], cached_git_sources=[])
+    patches = _command_patches(report, {"failed": failed})
+    with ExitStack() as stack:
+        for boundary in patches:
+            stack.enter_context(boundary)
+        result = CliRunner().invoke(
+            update, ["--check-only", *(["--verbose"] if verbose else [])]
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "Check failed: authentication" in result.output
+    assert secret not in result.output
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+def test_bundle_update_keeps_a_sibling_check_failure_visible(verbose):
+    """An action stays actionable while an independent failed check stays visible."""
+
+    updating = _source(
+        "git+https://example.invalid/updating@main",
+        is_cached=True,
+        has_update=True,
+        cached_commit="a" * 40,
+        remote_commit="b" * 40,
+    )
+    failed = _source(
+        "git+https://example.invalid/failed@main",
+        is_cached=True,
+        has_update=None,
+        error="network connection refused",
+    )
+    bundle = BundleStatus(
+        bundle_name="mixed-outcome",
+        bundle_source=updating.source_uri,
+        sources=[updating, failed],
+    )
+    report = UpdateReport(local_file_sources=[], cached_git_sources=[])
+    patches = _command_patches(report, {"mixed-outcome": bundle})
+    with ExitStack() as stack:
+        for boundary in patches:
+            stack.enter_context(boundary)
+        result = CliRunner().invoke(
+            update, ["--check-only", *(["--verbose"] if verbose else [])]
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "Update; check failed: network" in result.output
+    assert "Update 1 bundle" in result.output

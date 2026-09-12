@@ -3,7 +3,9 @@
 import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import click
 from rich.console import Console
@@ -68,6 +70,10 @@ SourceReportState = Literal[
     "pinned_missing",
     "local_changes",
     "mixed_actions",
+    "local",
+    "packaged",
+    "missing_path",
+    "check_failed",
 ]
 
 _ACTIONABLE_REPORT_STATES = {"download", "update", "refresh_cache"}
@@ -81,7 +87,84 @@ _REPORT_STATE_LABELS: dict[SourceReportState, str] = {
     "pinned_missing": "Pinned; not cached",
     "local_changes": "Local changes",
     "mixed_actions": "Mixed actions",
+    "local": "Local",
+    "packaged": "Packaged",
+    "missing_path": "Missing path",
+    "check_failed": "Check failed",
 }
+
+
+def _file_uri_path(uri: str) -> Path | None:
+    """Return the local path represented by a file URI, without its fragment."""
+
+    parsed = urlsplit(uri)
+    if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+        return None
+    return Path(unquote(parsed.path))
+
+
+def _app_cli_packaged_bundle_root() -> Path | None:
+    """Return the wheel-only app-cli bundle directory, if this is a wheel install.
+
+    A source checkout deliberately does *not* count: its overlay is at the
+    repository root, whereas a built wheel force-includes it under the Python
+    package's ``_bundle`` directory.
+    """
+
+    import amplifier_app_cli
+
+    candidate = Path(amplifier_app_cli.__file__).resolve().parent / "_bundle"
+    return candidate if candidate.is_dir() else None
+
+
+def _is_packaged_app_cli_bundle(path: Path) -> bool:
+    """Whether *path* is physically inside this installed wheel's overlay."""
+
+    root = _app_cli_packaged_bundle_root()
+    if root is None:
+        return False
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _check_failure_reason(error: object) -> str:
+    """Map arbitrary checker failures to a safe, stable user-facing reason."""
+
+    message = str(error).lower()
+    if isinstance(error, TimeoutError) or "timeout" in message or "timed out" in message:
+        return "timeout"
+    if "rate limit" in message or "too many requests" in message or " 429" in message:
+        return "rate limit"
+    if (
+        "authentication" in message
+        or "unauthorized" in message
+        or "credential" in message
+        or " 401" in message
+    ):
+        return "authentication"
+    if "permission" in message or "forbidden" in message or " 403" in message:
+        return "permission"
+    if "not found" in message or " 404" in message:
+        return "not found"
+    if any(
+        token in message
+        for token in ("network", "connection", "dns", "socket", "connect", "proxy")
+    ):
+        return "network"
+    return "status check failed"
+
+
+def _source_report_state_text(source: Any, state: SourceReportState | None = None) -> Text:
+    """Render one source status, exposing failures without exposing exception text."""
+
+    state = state or _classify_source_status(source)
+    text = _report_state_text(state)
+    if state == "check_failed":
+        text.append(f": {_check_failure_reason(source.error)}", style="dim")
+    return text
 
 
 def _classify_source_status(
@@ -90,7 +173,32 @@ def _classify_source_status(
     """Return a presentation-only status without deriving action eligibility."""
 
     if getattr(source, "error", None):
-        return "not_checked"
+        return "check_failed"
+
+    file_path = _file_uri_path(getattr(source, "source_uri", ""))
+    if file_path is not None:
+        if not file_path.exists():
+            return "missing_path"
+        if getattr(source, "is_pinned", False):
+            return "pinned" if source.is_cached else "pinned_missing"
+        if has_local_changes:
+            return "local_changes"
+        # A file URI is a local artifact first. A well-known editable bundle
+        # retains Current/Update only after a complete remote comparison.
+        has_confirmed_remote_comparison = (
+            source.has_update is True
+            and bool(source.cached_commit and source.remote_commit)
+        ) or (
+            source.has_update is False
+            and bool(source.cached_commit)
+            and source.cached_commit == source.remote_commit
+        )
+        if has_confirmed_remote_comparison:
+            # Continue into the established Current/Update classification.
+            pass
+        else:
+            return "packaged" if _is_packaged_app_cli_bundle(file_path) else "local"
+
     if getattr(source, "is_pinned", False):
         return "pinned" if source.is_cached else "pinned_missing"
     if has_local_changes:
@@ -176,6 +284,14 @@ def _classify_bundle_status(status: "BundleStatus") -> SourceReportState:
         return action_states[0]
     if "local_changes" in states:
         return "local_changes"
+    if "check_failed" in states:
+        return "check_failed"
+    if "missing_path" in states:
+        return "missing_path"
+    if "local" in states:
+        return "local"
+    if "packaged" in states:
+        return "packaged"
     if "not_checked" in states:
         return "not_checked"
     if "pinned_missing" in states:
@@ -216,10 +332,29 @@ def _bundle_report_state_text(
 ) -> Text:
     """Describe a bundle's composite action plan without changing its selection."""
 
-    if state != "mixed_actions":
-        return _report_state_text(state)
-    actions = " + ".join(_REPORT_STATE_LABELS[action].lower() for action in _bundle_action_states(status))
-    return Text(f"Mixed actions ({actions})", style="yellow")
+    if state == "mixed_actions":
+        actions = " + ".join(
+            _REPORT_STATE_LABELS[action].lower()
+            for action in _bundle_action_states(status)
+        )
+        text = Text(f"Mixed actions ({actions})", style="yellow")
+    else:
+        text = _report_state_text(state)
+
+    failure_reasons = sorted(
+        {
+            _check_failure_reason(source.error)
+            for source in status.sources
+            if getattr(source, "error", None)
+        }
+    )
+    if failure_reasons:
+        # An actionable sibling must stay actionable, but a failed check must
+        # never disappear behind its sibling's Update label.
+        if state != "check_failed":
+            text.append("; check failed", style="dim")
+        text.append(f": {', '.join(failure_reasons)}", style="dim")
+    return text
 
 
 def _bundle_action_phrase(status: "BundleStatus") -> str:
@@ -263,10 +398,17 @@ def _bundle_action_lines(
         f"Process {count} bundle{'s' if count != 1 else ''} with {phrase}"
         for phrase, count in mixed.items()
     )
+    neutral_phrases = {
+        "local_changes": "local changes",
+        "local": "local sources",
+        "packaged": "packaged sources",
+        "missing_path": "missing paths",
+        "check_failed": "failed checks",
+        "not_checked": "unconfirmed sources",
+    }
     lines.extend(
-        f"Process {count} bundle{'s' if count != 1 else ''} with "
-        f"{'local changes' if state == 'local_changes' else 'unconfirmed sources'}"
-        for state in ("local_changes", "not_checked")
+        f"Process {count} bundle{'s' if count != 1 else ''} with {phrase}"
+        for state, phrase in neutral_phrases.items()
         if (count := counts.get(state, 0))
     )
     return lines
@@ -310,7 +452,7 @@ def _unconfirmed_source_counts(
             state = _classify_source_status(
                 source, has_local_changes=bool(getattr(source, "_has_local_changes", False))
             )
-            if state == "not_checked":
+            if state in ("not_checked", "check_failed", "missing_path", "local", "packaged"):
                 unchecked.add(key)
             elif state == "local_changes":
                 local_changes.add(key)
@@ -374,7 +516,7 @@ def _strip_uri_fragment(uri: str) -> str:
     return uri.split("#", 1)[0]
 
 
-def _bundle_display_names(bundle_keys: Iterable[str]) -> dict[str, str]:
+def _legacy_bundle_display_names(bundle_keys: Iterable[str]) -> dict[str, str]:
     """Map bundle result keys to the label shown to the user.
 
     Registry-backed bundles are already keyed by a friendly name. App bundles
@@ -405,6 +547,89 @@ def _bundle_display_names(bundle_keys: Iterable[str]) -> dict[str, str]:
     return {
         key: (label if seen[label] == 1 else key) for key, label in labels.items()
     }
+
+
+def _bundle_display_base_name(key: str) -> str:
+    """Return a safe friendly name for a bundle key without exposing its URI."""
+
+    if "://" not in key:
+        return key
+    file_path = _file_uri_path(key)
+    if file_path is not None:
+        fragment = parse_qs(urlsplit(key).fragment).get("subdirectory", [])
+        candidate = fragment[0] if fragment else file_path.name
+        return Path(candidate).stem or file_path.name or "local bundle"
+
+    derived = _extract_behavior_name(key)
+    # The shared helper deliberately falls back to the raw URI for unfamiliar
+    # hosts. Update output must never turn that fallback into a credential leak.
+    if "://" not in derived:
+        return derived
+    parsed = urlsplit(key.removeprefix("git+"))
+    return Path(parsed.path).name.split("@", 1)[0].removesuffix(".git") or "bundle"
+
+
+def _bundle_uri_label_parts(uri: str) -> tuple[str, str, str]:
+    """Return safe repo/ref/subpath discriminators for an app-source URI."""
+
+    parsed = urlsplit(uri.removeprefix("git+"))
+    path_parts = [part for part in parsed.path.split("/") if part]
+    leaf = path_parts[-1] if path_parts else ""
+    repo, marker, ref = leaf.rpartition("@")
+    if not marker:
+        repo, ref = leaf, ""
+    repo = repo.removesuffix(".git")
+    owner = path_parts[-2] if len(path_parts) > 1 else ""
+    repository = "/".join(part for part in (owner, repo) if part)
+    subdirectory = parse_qs(parsed.fragment).get("subdirectory", [""])[0]
+    return repository, f"@{ref}" if ref else "", subdirectory
+
+
+def _bundle_display_names(
+    bundle_keys: Iterable[str],
+    statuses: dict[str, "BundleStatus"] | None = None,
+) -> dict[str, str]:
+    """Map update keys to compact, unique, credential-safe display labels."""
+
+    # Identity is carried by the result key today. Retain the optional status
+    # map so every reporting surface can share this function as source-aware
+    # presentation grows without changing its public call shape.
+    del statuses
+    keys = list(bundle_keys)
+    labels = {key: _bundle_display_base_name(key) for key in keys}
+    grouped: dict[str, list[str]] = {}
+    for key, label in labels.items():
+        grouped.setdefault(label, []).append(key)
+
+    for base, colliding in grouped.items():
+        if len(colliding) == 1:
+            continue
+        uri_keys = [key for key in colliding if "://" in key]
+        alias_keys = [key for key in colliding if "://" not in key]
+        # A registry alias is already the user's compact stable handle. A
+        # single colliding app source only needs its role to become distinct.
+        if alias_keys and len(uri_keys) == 1:
+            labels[uri_keys[0]] = f"{base} (app source)"
+            continue
+
+        parts = {key: _bundle_uri_label_parts(key) for key in uri_keys}
+        qualifiers = [""] * len(uri_keys)
+        for index in range(3):
+            candidate = {
+                key: " ".join(part for part in parts[key][: index + 1] if part)
+                for key in uri_keys
+            }
+            if all(candidate.values()) and len(set(candidate.values())) == len(candidate):
+                qualifiers = [candidate[key] for key in uri_keys]
+                break
+        for key, qualifier in zip(uri_keys, qualifiers, strict=True):
+            labels[key] = f"{base} ({qualifier or 'app source'})"
+        # Multiple aliases with the same spelling should not normally exist,
+        # but leave their exact user-facing aliases intact rather than invent
+        # an order-dependent suffix.
+        for key in alias_keys:
+            labels[key] = key
+    return labels
 
 
 def _bundle_row_sort_key(
@@ -712,6 +937,25 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
     cache_dir = get_amplifier_home() / "cache"
     git_handler = GitSourceHandler()
 
+    def _failed_bundle_status(
+        bundle_name: str, source_uri: str | None, error: Exception
+    ) -> BundleStatus:
+        """Keep a direct configured source visible when its status check fails."""
+
+        uri = source_uri or ""
+        return BundleStatus(
+            bundle_name=bundle_name,
+            bundle_source=uri,
+            sources=[
+                SourceStatus(
+                    source_uri=uri,
+                    is_cached=False,
+                    has_update=None,
+                    error=str(error),
+                )
+            ],
+        )
+
     async def _check_bundle_uri(bundle_name: str, uri: str) -> BundleStatus:
         """Check one configured source without loading it."""
         parsed = parse_uri(uri)
@@ -764,12 +1008,16 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
         try:
             # Get URI without loading (avoids download side effect).
             uri = registry.find(bundle_name)
-            if not uri:
-                continue
-            checked_uris.add(uri)
+        except Exception as exc:
+            results[bundle_name] = _failed_bundle_status(bundle_name, None, exc)
+            continue
+        if not uri:
+            continue
+        checked_uris.add(uri)
+        try:
             results[bundle_name] = await _check_bundle_uri(bundle_name, uri)
-        except Exception:
-            continue  # Skip bundles that fail status check
+        except Exception as exc:
+            results[bundle_name] = _failed_bundle_status(bundle_name, uri, exc)
 
     # App bundles are configured source URIs rather than registry aliases, so
     # the exact URI stays the result key: different refs are genuinely
@@ -794,8 +1042,8 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
         checked_uris.add(uri)
         try:
             results[uri] = await _check_bundle_uri(uri, uri)
-        except Exception:
-            continue  # Skip bundles that fail status check
+        except Exception as exc:
+            results[uri] = _failed_bundle_status(uri, uri, exc)
 
     # Everything above enumerates sources somebody REGISTERED: registry roots
     # and app-bundle settings entries. A bundle that reaches the active
@@ -833,7 +1081,7 @@ async def _check_transitive_bundle_status(
 
     # Seed the walk with the label each direct row already displays, so a
     # transitive row can name a parent the user can actually find in the table.
-    seed_labels = _bundle_display_names(direct_results.keys())
+    seed_labels = _bundle_display_names(direct_results.keys(), direct_results)
     roots = {
         seed_labels.get(key, key): status.bundle_source
         for key, status in direct_results.items()
@@ -932,13 +1180,14 @@ async def _get_file_bundle_status(
 
     # Get remote SHA using the git handler
     remote_sha = None
+    remote_error: Exception | None = None
     try:
         remote_parsed = parse_uri(remote_uri)
         if git_handler.can_handle(remote_parsed):
             remote_status = await git_handler.get_status(remote_parsed, cache_dir)
             remote_sha = remote_status.remote_commit
-    except Exception:
-        pass  # Failed to get remote SHA, will show as unknown
+    except Exception as exc:
+        remote_error = exc
 
     # Determine if there's an update available
     has_update = None
@@ -956,6 +1205,7 @@ async def _get_file_bundle_status(
         cached_commit=local_sha,
         remote_commit=remote_sha,
         summary=summary,
+        error=str(remote_error) if remote_error else None,
     )
     status._has_local_changes = has_local_changes
     return status
@@ -1165,7 +1415,7 @@ def _show_concise_report(
         table.add_column("Remote", style="dim", justify="right")
         table.add_column("Status", justify="center")
 
-        display_names = _bundle_display_names(bundle_results.keys())
+        display_names = _bundle_display_names(bundle_results.keys(), bundle_results)
         bundle_plan = bundle_plan or _bundle_report_plan(bundle_results)
 
         for bundle_name in sorted(
@@ -1396,7 +1646,7 @@ def _show_verbose_report(
     # === BUNDLES ===
     if bundle_results:
         active_bundle = _get_active_bundle_name()
-        display_names = _bundle_display_names(bundle_results.keys())
+        display_names = _bundle_display_names(bundle_results.keys(), bundle_results)
         bundle_plan = bundle_plan or _bundle_report_plan(bundle_results)
         for bundle_name in sorted(
             bundle_results.keys(),
@@ -1437,7 +1687,7 @@ def _show_verbose_report(
                     )
                     _print_verbose_item(
                         name=source_name,
-                        status_symbol=_report_state_text(source_state),
+                        status_symbol=_source_report_state_text(source, source_state),
                         local_sha=source.cached_commit,
                         remote_sha=source.remote_commit,
                         local_path=(
@@ -1664,7 +1914,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         console.print("  Checking bundles...")
     bundle_results = asyncio.run(_check_all_bundle_status())
     bundle_plan = _bundle_report_plan(bundle_results)
-    bundle_labels = _bundle_display_names(bundle_results.keys())
+    bundle_labels = _bundle_display_names(bundle_results.keys(), bundle_results)
     has_bundle_updates = (
         any(s.has_updates for s in bundle_results.values()) if bundle_results else False
     )
@@ -1823,7 +2073,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             ]
             # Progress lines are read by a human; the key stays the URI because
             # bundle_source below has to round-trip into update_bundle.
-            update_labels = _bundle_display_names(bundles_to_update)
+            update_labels = bundle_labels
 
             from amplifier_foundation.paths.resolution import get_amplifier_home
 
