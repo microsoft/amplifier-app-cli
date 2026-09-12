@@ -120,13 +120,18 @@ def _invalid_app_source_key(value: object) -> str:
 def _is_valid_app_source(uri: str) -> bool:
     """Accept only location URIs the app-bundle setting can load."""
 
-    if uri.startswith(("git+", "zip+")):
-        parsed = _safe_urlsplit(uri.removeprefix("git+").removeprefix("zip+"))
-        return parsed is not None and bool(parsed.scheme)
-    if not uri.startswith(("file://", "http://", "https://")):
+    transport_uri = uri.removeprefix("git+").removeprefix("zip+")
+    parsed = _safe_urlsplit(transport_uri)
+    if parsed is None:
         return False
-    parsed = _safe_urlsplit(uri)
-    return parsed is not None and parsed.scheme.lower() in {"file", "http", "https"}
+    if parsed.scheme.lower() == "file":
+        return _file_uri_path_value(transport_uri, windows=os.name == "nt") is not None
+    if parsed.scheme.lower() not in {"http", "https", "ssh", "git"}:
+        return False
+    try:
+        return bool(parsed.hostname)
+    except ValueError:
+        return False
 
 
 def _file_uri_path_value(uri: str, *, windows: bool) -> str | None:
@@ -157,12 +162,18 @@ def _file_uri_path_value(uri: str, *, windows: bool) -> str | None:
             return None
         if not hostname or hostname.lower() != netloc.lower():
             return None
+        if not parsed.path.strip("/"):
+            return None
         encoded_path = f"//{hostname}{parsed.path}"
     else:
         return None
 
     converter = nturl2path.url2pathname if windows else url2pathname
-    return converter(encoded_path)
+    try:
+        path_value = converter(encoded_path)
+    except (OSError, ValueError):
+        return None
+    return path_value if path_value and "\x00" not in path_value else None
 
 
 def _file_uri_path(uri: str) -> Path | None:

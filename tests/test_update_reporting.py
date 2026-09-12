@@ -163,6 +163,28 @@ def test_file_uri_parser_rejects_windows_authorities_that_are_not_unc_hosts(uri)
     assert update_module._file_uri_path_value(uri, windows=True) is None
 
 
+def test_file_uri_parser_rejects_windows_conversion_errors():
+    assert update_module._file_uri_path_value(
+        "file:///work/|malformed", windows=True
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "file://",
+        "http://",
+        "https://",
+        "git+https://",
+        "zip+file://",
+        "file://user:token@server/share/bundle",
+        "file:///tmp/%00invalid",
+    ],
+)
+def test_app_sources_require_usable_locations(uri):
+    assert not update_module._is_valid_app_source(uri)
+
+
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
@@ -482,6 +504,12 @@ def test_check_only_presentation_preserves_existing_registry_settings_and_cache(
                 "    - 'git+https://token@[broken/source'",
                 "    - 7",
                 "    - {private: value}",
+                "    - 'file://'",
+                "    - 'http://'",
+                "    - 'https://'",
+                "    - 'git+https://'",
+                "    - 'zip+file://'",
+                "    - 'file://userinfo:token@server/share/bundle'",
                 "",
             ]
         ),
