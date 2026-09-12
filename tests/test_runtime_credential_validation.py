@@ -569,6 +569,72 @@ async def mount(coordinator, config):
     )
 
 
+@pytest.mark.parametrize("source_on_entry", [False, True])
+def test_banner_summary_does_not_import_provider_implementation(
+    tmp_path, source_on_entry
+):
+    """Display must not materialize an ambient provider before source activation."""
+    source_root = tmp_path / "configured-source"
+    ambient_root = tmp_path / "ambient"
+    ambient_marker = tmp_path / "ambient-marker"
+    _write_standard_provider(source_root, required=False)
+    _write_ambient_entry_point(ambient_root)
+
+    script = r"""
+import json
+import sys
+
+from amplifier_app_cli.effective_config import get_effective_config_summary
+
+sys.path.insert(0, sys.argv[1])
+entry = {
+    "module": "provider-example",
+    "config": {"default_model": "fixture-model"},
+}
+if sys.argv[2] == "entry":
+    entry["source"] = sys.argv[3]
+module_name = "amplifier_module_provider_example"
+assert module_name not in sys.modules
+summary = get_effective_config_summary(
+    {"providers": [entry]}, config_source="bundle:fixture"
+)
+assert module_name not in sys.modules
+print(json.dumps({
+    "provider_name": summary.provider_name,
+    "banner": summary.format_banner_line(),
+}))
+"""
+    project_root = Path(__file__).resolve().parents[1]
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(
+            filter(None, (str(project_root), os.environ.get("PYTHONPATH")))
+        ),
+        "AMBIENT_MARKER": str(ambient_marker),
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(ambient_root),
+            "entry" if source_on_entry else "external",
+            str(source_root),
+        ],
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not ambient_marker.exists()
+    outcome = json.loads(result.stdout)
+    assert outcome["provider_name"] == "Example"
+    assert outcome["banner"] == (
+        "Bundle: fixture | Provider: Example | fixture-model"
+    )
+
+
 @pytest.mark.parametrize(
     ("required", "value", "expect_error"),
     [

@@ -5,11 +5,8 @@ Extracts display-friendly information from resolved configuration.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import Any
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -128,23 +125,16 @@ def _select_provider_by_priority(
 def _get_provider_display_name(provider_module: str) -> str:
     """Get friendly display name for a provider module.
 
+    Banner rendering must not import provider implementations before the
+    session loader selects their configured source.
+
     Args:
         provider_module: Provider module ID (e.g., "provider-azure-openai")
 
     Returns:
         Friendly display name (e.g., "Azure OpenAI")
     """
-    # Try to get from provider's get_info()
-    try:
-        from .provider_loader import get_provider_info
-
-        info = get_provider_info(provider_module)
-        if info and "display_name" in info:
-            return info["display_name"]
-    except Exception as e:
-        logger.debug(f"Could not get provider info for {provider_module}: {e}")
-
-    # Fallback: Convert module ID to friendly name
+    # Convert the module ID without loading a provider for display metadata.
     # "provider-azure-openai" -> "Azure OpenAI"
     name = provider_module.replace("provider-", "")
     # Handle common cases
