@@ -372,7 +372,9 @@ async def resolve_bundle_config(
     raw_providers = bundle_config.get("providers")
     if isinstance(raw_providers, list):
         await _validate_provider_credentials(
-            raw_providers, prepared_resolver=prepared.resolver
+            raw_providers,
+            prepared_resolver=prepared.resolver,
+            configured_sources=combined_sources,
         )
 
     # Expand environment variables
@@ -1218,7 +1220,10 @@ ENV_PATTERN = re.compile(r"\$\{([^}:]+)(?::([^}]*))?}")
 
 
 async def _validate_provider_credentials(
-    providers: list[Any], *, prepared_resolver: Any
+    providers: list[Any],
+    *,
+    prepared_resolver: Any,
+    configured_sources: dict[str, Any] | None = None,
 ) -> None:
     """Fail loudly, before session mount, when a provider instance's
     configured credential placeholder resolves to nothing.
@@ -1248,6 +1253,8 @@ async def _validate_provider_credentials(
     through the prepared bundle's lazy resolver and its metadata must come
     from that exact activated root. That fail-closed boundary prevents an
     ambient installed provider from standing in for the configured source.
+    The effective source mapping passed to bundle preparation is also honored,
+    so module and override source configuration has the same boundary.
     Without a source, metadata lookup retains the historical fail-soft
     behavior: unavailable metadata skips validation for that entry.
     """
@@ -1269,7 +1276,7 @@ async def _validate_provider_credentials(
         if not has_unset_placeholder:
             continue
 
-        source_hint = entry.get("source")
+        source_hint = (configured_sources or {}).get(module_id) or entry.get("source")
         if source_hint:
             label = entry.get("id") or module_id
             try:

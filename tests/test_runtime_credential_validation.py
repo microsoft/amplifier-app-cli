@@ -278,7 +278,7 @@ class TestValidateProviderCredentials:
         get_info.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_source_with_unset_credential_uses_canonical_metadata(
+    async def test_configured_source_mapping_wins_over_entry_source(
         self, monkeypatch, tmp_path
     ):
         """A configured source is resolved before its required key is checked."""
@@ -291,7 +291,7 @@ class TestValidateProviderCredentials:
             {
                 "module": "provider-example",
                 "id": "example-work",
-                "source": "configured-source",
+                "source": "entry-source",
                 "config": {"api_key": "${EXAMPLE_WORK_API_KEY}"},
             }
         ]
@@ -301,11 +301,13 @@ class TestValidateProviderCredentials:
             return_value=_provider_info(env_var="EXAMPLE_WORK_API_KEY"),
         ) as get_info, pytest.raises(ValueError, match="EXAMPLE_WORK_API_KEY"):
             await _validate_provider_credentials(
-                providers, prepared_resolver=resolver
+                providers,
+                prepared_resolver=resolver,
+                configured_sources={"provider-example": "mapped-source"},
             )
 
         resolver.async_resolve.assert_awaited_once_with(
-            "provider-example", source_hint="configured-source"
+            "provider-example", source_hint="mapped-source"
         )
         get_info.assert_called_once_with("provider-example", source_path=tmp_path)
 
@@ -498,6 +500,42 @@ async def mount(coordinator, config):
 """.lstrip(),
         encoding="utf-8",
     )
+    _write_session_modules(source_root)
+
+
+def _write_session_modules(source_root: Path) -> None:
+    """Write local modules satisfying the real session initialization contracts."""
+    (source_root / "amplifier_module_orchestrator_example").mkdir()
+    (source_root / "amplifier_module_orchestrator_example" / "__init__.py").write_text(
+        """
+__amplifier_module_type__ = "orchestrator"
+
+class ExampleOrchestrator:
+    async def execute(self, prompt, context, providers, tools, hooks):
+        raise AssertionError("No orchestrator execution allowed in this test")
+
+async def mount(coordinator, config):
+    await coordinator.mount("orchestrator", ExampleOrchestrator())
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (source_root / "amplifier_module_context_example").mkdir()
+    (source_root / "amplifier_module_context_example" / "__init__.py").write_text(
+        """
+__amplifier_module_type__ = "context"
+
+class ExampleContext:
+    def add_message(self, message): pass
+    def get_messages_for_request(self): return []
+    def get_messages(self): return []
+    def set_messages(self, messages): pass
+    def clear(self): pass
+
+async def mount(coordinator, config):
+    await coordinator.mount("context", ExampleContext())
+""".lstrip(),
+        encoding="utf-8",
+    )
 
 
 def _write_ambient_entry_point(ambient_root: Path) -> None:
@@ -540,8 +578,13 @@ async def mount(coordinator, config):
     ],
     ids=["set-credential", "optional-unset", "required-unset"],
 )
+@pytest.mark.parametrize(
+    "source_location",
+    ["entry", "modules", "override"],
+    ids=["entry", "modules", "override"],
+)
 def test_fresh_process_source_preflight_uses_configured_provider_root(
-    tmp_path, required, value, expect_error
+    tmp_path, required, value, expect_error, source_location
 ):
     """Exercise CLI preflight, Foundation resolver, and core's real module path.
 
@@ -578,6 +621,7 @@ from amplifier_app_cli.runtime.config import resolve_bundle_config
 source_root = Path(sys.argv[1])
 ambient_root = Path(sys.argv[2])
 value = sys.argv[3]
+source_location = sys.argv[4]
 sys.path.insert(0, str(ambient_root))
 # This mirrors Foundation's activator contract: selected roots are already
 # active ahead of installed packages when the prepared resolver is used.
@@ -586,16 +630,33 @@ sys.path.insert(0, str(source_root))
 entry = {
     "module": "provider-example",
     "id": "example-work",
-    "source": str(source_root),
     "config": {"api_key": value},
 }
+if source_location == "entry":
+    entry["source"] = str(source_root)
 prepared = PreparedBundle(
-    mount_plan={"providers": [entry]},
-    resolver=BundleModuleResolver({"provider-example": source_root}),
+    mount_plan={
+        "session": {
+            "orchestrator": "orchestrator-example",
+            "context": "context-example",
+        },
+        "providers": [entry],
+    },
+    resolver=BundleModuleResolver({
+        "provider-example": source_root,
+        "orchestrator-example": source_root,
+        "context-example": source_root,
+    }),
     bundle=Bundle(name="test", base_path=source_root),
 )
 
 async def fake_load_and_prepare_bundle(*args, **kwargs):
+    expected_sources = (
+        {} if source_location == "entry" else {"provider-example": str(source_root)}
+    )
+    assert kwargs.get("source_overrides") == expected_sources or (
+        expected_sources == {} and kwargs.get("source_overrides") is None
+    )
     return prepared
 
 prepare.load_and_prepare_bundle = fake_load_and_prepare_bundle
@@ -604,8 +665,10 @@ paths.get_bundle_search_paths = lambda: []
 
 class Settings:
     def get_app_bundles(self): return []
-    def get_source_overrides(self): return {}
-    def get_module_sources(self): return {}
+    def get_source_overrides(self):
+        return {"provider-example": str(source_root)} if source_location == "override" else {}
+    def get_module_sources(self):
+        return {"provider-example": str(source_root)} if source_location == "modules" else {}
     def get_bundle_sources(self): return {}
     def get_provider_overrides(self): return []
     def get_config_overrides(self): return {}
@@ -623,7 +686,7 @@ async def main():
         return
     session = await configured.create_session()
     try:
-        provider = session.coordinator.get("providers")["example"]
+        provider = session.coordinator.get("providers")["example-work"]
         module = importlib.import_module("amplifier_module_provider_example")
         print(json.dumps({
             "origin": str(Path(module.__file__).resolve()),
@@ -645,12 +708,23 @@ asyncio.run(main())
         "EXAMPLE_WORK_API_KEY": "",
     }
     result = subprocess.run(
-        [sys.executable, "-c", script, str(source_root), str(ambient_root), value],
-        check=True,
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(source_root),
+            str(ambient_root),
+            value,
+            source_location,
+        ],
+        check=False,
         text=True,
         capture_output=True,
         env=env,
         timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"child failed ({result.returncode})\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     outcome = json.loads(result.stdout)
 
