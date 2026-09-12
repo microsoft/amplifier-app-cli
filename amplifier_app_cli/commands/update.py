@@ -3,7 +3,12 @@
 import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
+import hashlib
+import nturl2path
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import SplitResult, parse_qs, unquote, urlsplit
 
 import click
 from rich.console import Console
@@ -68,6 +73,10 @@ SourceReportState = Literal[
     "pinned_missing",
     "local_changes",
     "mixed_actions",
+    "local",
+    "packaged",
+    "missing_path",
+    "check_failed",
 ]
 
 _ACTIONABLE_REPORT_STATES = {"download", "update", "refresh_cache"}
@@ -81,7 +90,166 @@ _REPORT_STATE_LABELS: dict[SourceReportState, str] = {
     "pinned_missing": "Pinned; not cached",
     "local_changes": "Local changes",
     "mixed_actions": "Mixed actions",
+    "local": "Local",
+    "packaged": "Packaged",
+    "missing_path": "Missing path",
+    "check_failed": "Check failed",
 }
+
+
+_INVALID_APP_SOURCE_PREFIX = "<invalid-app-source:"
+
+
+def _safe_urlsplit(uri: str) -> SplitResult | None:
+    """Split a configured URI without allowing malformed input to break reporting."""
+
+    try:
+        return urlsplit(uri)
+    except ValueError:
+        return None
+
+
+def _invalid_app_source_key(value: object) -> str:
+    """Create a stable internal identity without rendering malformed settings."""
+
+    digest = hashlib.sha256(repr(value).encode("utf-8", errors="backslashreplace")).hexdigest()
+    return f"{_INVALID_APP_SOURCE_PREFIX}{digest}>"
+
+
+def _is_valid_app_source(uri: str) -> bool:
+    """Accept only location URIs the app-bundle setting can load."""
+
+    transport_uri = uri.removeprefix("git+").removeprefix("zip+")
+    parsed = _safe_urlsplit(transport_uri)
+    if parsed is None:
+        return False
+    if parsed.scheme.lower() == "file":
+        return _file_uri_path_value(transport_uri, windows=os.name == "nt") is not None
+    if parsed.scheme.lower() not in {"http", "https", "ssh", "git"}:
+        return False
+    try:
+        return bool(parsed.hostname)
+    except ValueError:
+        return False
+
+
+def _file_uri_path_value(uri: str, *, windows: bool) -> str | None:
+    """Return a local filename from a file URI for the named platform.
+
+    ``Path.as_uri()`` emits ``file:///C:/...`` on Windows, while the legacy
+    CLI interpolation emits ``file://C:\\...``.  Both forms name a local drive
+    there.  A named host is a UNC path only on Windows; on POSIX it is remote
+    and deliberately not reinterpreted as a local path.
+    """
+
+    parsed = _safe_urlsplit(uri)
+    if parsed is None or parsed.scheme.lower() != "file":
+        return None
+
+    netloc = parsed.netloc
+    if not netloc or netloc.lower() == "localhost":
+        encoded_path = parsed.path
+    elif windows and len(netloc) >= 2 and netloc[1] == ":" and netloc[0].isalpha():
+        # Legacy ``file://C:\path`` serialization.  ``nturl2path`` accepts
+        # both backslash and slash separators after the drive.
+        encoded_path = netloc + parsed.path
+    elif windows and "@" not in netloc and ":" not in netloc:
+        # Standard UNC syntax: file://server/share/path -> \\server\share\path.
+        try:
+            hostname = parsed.hostname
+        except ValueError:
+            return None
+        if not hostname or hostname.lower() != netloc.lower():
+            return None
+        if not parsed.path.strip("/"):
+            return None
+        encoded_path = f"//{hostname}{parsed.path}"
+    else:
+        return None
+
+    # urllib.request.url2pathname follows the host OS. Use percent-decoding
+    # explicitly for POSIX so the requested platform, not the host, wins.
+    converter = nturl2path.url2pathname if windows else unquote
+    try:
+        path_value = converter(encoded_path)
+    except (OSError, ValueError):
+        return None
+    return path_value if path_value and "\x00" not in path_value else None
+
+
+def _file_uri_path(uri: str) -> Path | None:
+    """Return the local path represented by a file URI, without its fragment."""
+
+    path_value = _file_uri_path_value(uri, windows=os.name == "nt")
+    if path_value is None:
+        return None
+    return Path(path_value)
+
+
+def _app_cli_packaged_bundle_root() -> Path | None:
+    """Return the wheel-only app-cli bundle directory, if this is a wheel install.
+
+    A source checkout deliberately does *not* count: its overlay is at the
+    repository root, whereas a built wheel force-includes it under the Python
+    package's ``_bundle`` directory.
+    """
+
+    import amplifier_app_cli
+
+    candidate = Path(amplifier_app_cli.__file__).resolve().parent / "_bundle"
+    return candidate if candidate.is_dir() else None
+
+
+def _is_packaged_app_cli_bundle(path: Path) -> bool:
+    """Whether *path* is physically inside this installed wheel's overlay."""
+
+    root = _app_cli_packaged_bundle_root()
+    if root is None:
+        return False
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _check_failure_reason(error: object) -> str:
+    """Map arbitrary checker failures to a safe, stable user-facing reason."""
+
+    message = str(error).lower()
+    if message == "invalid source":
+        return message
+    if isinstance(error, TimeoutError) or "timeout" in message or "timed out" in message:
+        return "timeout"
+    if "rate limit" in message or "too many requests" in message or " 429" in message:
+        return "rate limit"
+    if (
+        "authentication" in message
+        or "unauthorized" in message
+        or "credential" in message
+        or " 401" in message
+    ):
+        return "authentication"
+    if "permission" in message or "forbidden" in message or " 403" in message:
+        return "permission"
+    if "not found" in message or " 404" in message:
+        return "not found"
+    if any(
+        token in message
+        for token in ("network", "connection", "dns", "socket", "connect", "proxy")
+    ):
+        return "network"
+    return "status check failed"
+
+
+def _source_report_state_text(source: Any, state: SourceReportState | None = None) -> Text:
+    """Render one source status, exposing failures without exposing exception text."""
+
+    state = state or _classify_source_status(source)
+    text = _report_state_text(state)
+    if state == "check_failed":
+        text.append(f": {_check_failure_reason(source.error)}", style="dim")
+    return text
 
 
 def _classify_source_status(
@@ -90,7 +258,32 @@ def _classify_source_status(
     """Return a presentation-only status without deriving action eligibility."""
 
     if getattr(source, "error", None):
-        return "not_checked"
+        return "check_failed"
+
+    file_path = _file_uri_path(getattr(source, "source_uri", ""))
+    if file_path is not None:
+        if not file_path.exists():
+            return "missing_path"
+        if getattr(source, "is_pinned", False):
+            return "pinned" if source.is_cached else "pinned_missing"
+        if has_local_changes:
+            return "local_changes"
+        # A file URI is a local artifact first. A well-known editable bundle
+        # retains Current/Update only after a complete remote comparison.
+        has_confirmed_remote_comparison = (
+            source.has_update is True
+            and bool(source.cached_commit and source.remote_commit)
+        ) or (
+            source.has_update is False
+            and bool(source.cached_commit)
+            and source.cached_commit == source.remote_commit
+        )
+        if has_confirmed_remote_comparison:
+            # Continue into the established Current/Update classification.
+            pass
+        else:
+            return "packaged" if _is_packaged_app_cli_bundle(file_path) else "local"
+
     if getattr(source, "is_pinned", False):
         return "pinned" if source.is_cached else "pinned_missing"
     if has_local_changes:
@@ -176,6 +369,14 @@ def _classify_bundle_status(status: "BundleStatus") -> SourceReportState:
         return action_states[0]
     if "local_changes" in states:
         return "local_changes"
+    if "check_failed" in states:
+        return "check_failed"
+    if "missing_path" in states:
+        return "missing_path"
+    if "local" in states:
+        return "local"
+    if "packaged" in states:
+        return "packaged"
     if "not_checked" in states:
         return "not_checked"
     if "pinned_missing" in states:
@@ -216,10 +417,29 @@ def _bundle_report_state_text(
 ) -> Text:
     """Describe a bundle's composite action plan without changing its selection."""
 
-    if state != "mixed_actions":
-        return _report_state_text(state)
-    actions = " + ".join(_REPORT_STATE_LABELS[action].lower() for action in _bundle_action_states(status))
-    return Text(f"Mixed actions ({actions})", style="yellow")
+    if state == "mixed_actions":
+        actions = " + ".join(
+            _REPORT_STATE_LABELS[action].lower()
+            for action in _bundle_action_states(status)
+        )
+        text = Text(f"Mixed actions ({actions})", style="yellow")
+    else:
+        text = _report_state_text(state)
+
+    failure_reasons = sorted(
+        {
+            _check_failure_reason(source.error)
+            for source in status.sources
+            if getattr(source, "error", None)
+        }
+    )
+    if failure_reasons:
+        # An actionable sibling must stay actionable, but a failed check must
+        # never disappear behind its sibling's Update label.
+        if state != "check_failed":
+            text.append("; check failed", style="dim")
+        text.append(f": {', '.join(failure_reasons)}", style="dim")
+    return text
 
 
 def _bundle_action_phrase(status: "BundleStatus") -> str:
@@ -263,10 +483,17 @@ def _bundle_action_lines(
         f"Process {count} bundle{'s' if count != 1 else ''} with {phrase}"
         for phrase, count in mixed.items()
     )
+    neutral_phrases = {
+        "local_changes": "local changes",
+        "local": "local sources",
+        "packaged": "packaged sources",
+        "missing_path": "missing paths",
+        "check_failed": "failed checks",
+        "not_checked": "unconfirmed sources",
+    }
     lines.extend(
-        f"Process {count} bundle{'s' if count != 1 else ''} with "
-        f"{'local changes' if state == 'local_changes' else 'unconfirmed sources'}"
-        for state in ("local_changes", "not_checked")
+        f"Process {count} bundle{'s' if count != 1 else ''} with {phrase}"
+        for state, phrase in neutral_phrases.items()
         if (count := counts.get(state, 0))
     )
     return lines
@@ -310,7 +537,7 @@ def _unconfirmed_source_counts(
             state = _classify_source_status(
                 source, has_local_changes=bool(getattr(source, "_has_local_changes", False))
             )
-            if state == "not_checked":
+            if state in ("not_checked", "check_failed", "missing_path", "local", "packaged"):
                 unchecked.add(key)
             elif state == "local_changes":
                 local_changes.add(key)
@@ -374,37 +601,178 @@ def _strip_uri_fragment(uri: str) -> str:
     return uri.split("#", 1)[0]
 
 
+def _is_bundle_source_key(key: str) -> bool:
+    """Whether a key represents a source rather than a registry alias."""
+
+    return key.startswith(
+        (_INVALID_APP_SOURCE_PREFIX, "git+", "zip+", "file://", "http://", "https://")
+    )
+
+
+def _safe_bundle_display_base_name(key: str) -> str:
+    """Return a readable label without falling back to a raw malformed URI."""
+
+    if key.startswith(_INVALID_APP_SOURCE_PREFIX):
+        return "invalid source"
+    if "://" not in key:
+        return key
+    parsed = _safe_urlsplit(key.removeprefix("git+"))
+    if parsed is None:
+        return "bundle"
+    if parsed.scheme.lower() == "file":
+        fragment = parse_qs(parsed.fragment).get("subdirectory", [])
+        candidate = fragment[0] if fragment else unquote(parsed.path).rstrip("/").rsplit("/", 1)[-1]
+        return Path(candidate).stem or candidate or "local bundle"
+    try:
+        derived = _extract_behavior_name(key)
+    except (TypeError, ValueError):
+        derived = key
+    if "://" not in derived:
+        return derived
+    leaf = unquote(parsed.path).rstrip("/").rsplit("/", 1)[-1]
+    return leaf.split("@", 1)[0].removesuffix(".git") or "bundle"
+
+
+def _bundle_source_label_parts(key: str) -> tuple[str, ...]:
+    """Return progressively more-specific safe source discriminators."""
+
+    if key.startswith(_INVALID_APP_SOURCE_PREFIX):
+        return ("invalid source",)
+    parsed = _safe_urlsplit(key.removeprefix("git+"))
+    if parsed is None:
+        return ("app source",)
+    if parsed.scheme.lower() == "file":
+        path_value = _file_uri_path_value(key, windows=os.name == "nt")
+        if not path_value:
+            return ("local source",)
+        components = [
+            component
+            for component in path_value.replace("\\", "/").rstrip("/").split("/")
+            if component
+        ]
+        parents = list(reversed(components[:-1]))
+        return tuple([f"local {parents[0]}", *parents[1:]]) if parents else ("local source",)
+
+    repo_path, marker, ref = unquote(parsed.path).rpartition("@")
+    if not marker:
+        repo_path, ref = unquote(parsed.path), ""
+    path_parts = [part for part in repo_path.split("/") if part]
+    repo = path_parts[-1].removesuffix(".git") if path_parts else ""
+    owner = path_parts[-2] if len(path_parts) > 1 else ""
+    repository = "/".join(part for part in (owner, repo) if part)
+    subdirectory = parse_qs(parsed.fragment).get("subdirectory", [""])[0]
+    try:
+        host = parsed.hostname or ""
+    except ValueError:
+        host = ""
+    scheme = key.split(":", 1)[0].lower()
+    return tuple(part for part in (repository, f"@{ref}" if ref else "", subdirectory, host, scheme) if part)
+
+
+def _minimal_unique_qualifiers(keys: list[str]) -> dict[str, str]:
+    """Find the shortest safe qualifier that distinguishes each source."""
+
+    parts = {key: _bundle_source_label_parts(key) for key in keys}
+    for width in range(1, max((len(value) for value in parts.values()), default=0) + 1):
+        candidates = {key: " ".join(value[:width]) for key, value in parts.items()}
+        if all(candidates.values()) and len(set(candidates.values())) == len(candidates):
+            return candidates
+    return {key: " ".join(value) for key, value in parts.items()}
+
+
+def _source_hash_suffixes(keys: list[str]) -> dict[str, str]:
+    """Return full deterministic opaque digests for irreducible source collisions."""
+
+    digests = {
+        key: hashlib.sha256(
+            b"amplifier-update-label\x00"
+            + key.encode("utf-8", errors="surrogatepass")
+        ).hexdigest()
+        for key in keys
+    }
+    return digests
+
+
+def _resolve_remaining_label_collisions(labels: dict[str, str]) -> None:
+    """Append source-derived hashes until every generated label is globally unique."""
+
+    source_bases: dict[str, str] = {}
+    for _ in range(15):
+        groups: dict[str, list[str]] = {}
+        for key, label in labels.items():
+            groups.setdefault(label, []).append(key)
+        conflicting_sources = [
+            key
+            for keys in groups.values()
+            if len(keys) > 1
+            for key in keys
+            if _is_bundle_source_key(key)
+        ]
+        if not conflicting_sources:
+            return
+
+        for key in conflicting_sources:
+            source_bases.setdefault(key, labels[key])
+        fixed_labels = {
+            label
+            for key, label in labels.items()
+            if key not in conflicting_sources
+        }
+        digests = _source_hash_suffixes(conflicting_sources)
+        for length in range(8, 65, 4):
+            candidates = {
+                key: f"{source_bases[key]} [{digests[key][:length]}]"
+                for key in conflicting_sources
+            }
+            if (
+                len(set(candidates.values())) == len(candidates)
+                and not fixed_labels.intersection(candidates.values())
+            ):
+                labels.update(candidates)
+                break
+        else:
+            labels.update(
+                {
+                    key: f"{source_bases[key]} [{digests[key]}]"
+                    for key in conflicting_sources
+                }
+            )
+    raise RuntimeError("could not derive globally unique bundle display labels")
+
+
 def _bundle_display_names(bundle_keys: Iterable[str]) -> dict[str, str]:
-    """Map bundle result keys to the label shown to the user.
+    """Map update keys to globally unique, credential-safe display labels."""
 
-    Registry-backed bundles are already keyed by a friendly name. App bundles
-    are keyed by their configured source URI, because that URI *is* the update
-    target's identity and has to survive round-tripping into
-    ``update_bundle``. Printing it as a table row's Name, though, is
-    unreadable and drags the table past any sane terminal width:
+    keys = list(bundle_keys)
+    labels = {key: _safe_bundle_display_base_name(key) for key in keys}
+    grouped: dict[str, list[str]] = {}
+    for key, label in labels.items():
+        grouped.setdefault(label, []).append(key)
 
-        git+https://github.com/org/amplifier-bundle-x@main#subdirectory=behaviors/x.yaml
+    for base, colliding in grouped.items():
+        source_keys = [key for key in colliding if _is_bundle_source_key(key)]
+        alias_keys = [key for key in colliding if not _is_bundle_source_key(key)]
+        if len(colliding) < 2 or not source_keys:
+            continue
+        if alias_keys and len(source_keys) == 1:
+            labels[source_keys[0]] = f"{base} (app source)"
+            continue
+        qualifiers = _minimal_unique_qualifiers(source_keys)
+        for key in source_keys:
+            labels[key] = f"{base} ({qualifiers[key] or 'app source'})"
 
-    So the key stays the URI and only the label changes.
+    regrouped: dict[str, list[str]] = {}
+    for key, label in labels.items():
+        regrouped.setdefault(label, []).append(key)
+    for label, colliding in regrouped.items():
+        source_keys = [key for key in colliding if _is_bundle_source_key(key)]
+        if len(colliding) > 1 and source_keys:
+            for key in source_keys:
+                hint = " ".join(_bundle_source_label_parts(key))
+                labels[key] = f"{label} ({hint or 'app source'})"
 
-    A derived label that would collide with another row's - two repos both
-    shipping ``behaviors/main.yaml``, or a derived name equal to a registry
-    alias - falls back to the full URI for the colliding rows. Two rows
-    showing the same name is worse than one long name, because it silently
-    misidentifies which one has an update.
-    """
-    labels = {
-        key: (_extract_behavior_name(key) if "://" in key else key)
-        for key in bundle_keys
-    }
-
-    seen: dict[str, int] = {}
-    for label in labels.values():
-        seen[label] = seen.get(label, 0) + 1
-
-    return {
-        key: (label if seen[label] == 1 else key) for key, label in labels.items()
-    }
+    _resolve_remaining_label_collisions(labels)
+    return labels
 
 
 def _bundle_row_sort_key(
@@ -712,6 +1080,29 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
     cache_dir = get_amplifier_home() / "cache"
     git_handler = GitSourceHandler()
 
+    def _failed_bundle_status(
+        bundle_name: str, source_uri: str | None, error: Exception
+    ) -> BundleStatus:
+        """Keep a direct configured source visible when its status check fails."""
+
+        uri = source_uri or ""
+        safe_error = _check_failure_reason(error)
+        return BundleStatus(
+            bundle_name=bundle_name,
+            bundle_source=uri,
+            sources=[
+                SourceStatus(
+                    # The status has no update action, so keep the exact URI on
+                    # BundleStatus for identity but never render or retain a
+                    # malformed source's potentially private payload here.
+                    source_uri="",
+                    is_cached=False,
+                    has_update=None,
+                    error=safe_error,
+                )
+            ],
+        )
+
     async def _check_bundle_uri(bundle_name: str, uri: str) -> BundleStatus:
         """Check one configured source without loading it."""
         parsed = parse_uri(uri)
@@ -764,12 +1155,16 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
         try:
             # Get URI without loading (avoids download side effect).
             uri = registry.find(bundle_name)
-            if not uri:
-                continue
-            checked_uris.add(uri)
+        except Exception as exc:
+            results[bundle_name] = _failed_bundle_status(bundle_name, None, exc)
+            continue
+        if not uri:
+            continue
+        checked_uris.add(uri)
+        try:
             results[bundle_name] = await _check_bundle_uri(bundle_name, uri)
-        except Exception:
-            continue  # Skip bundles that fail status check
+        except Exception as exc:
+            results[bundle_name] = _failed_bundle_status(bundle_name, uri, exc)
 
     # App bundles are configured source URIs rather than registry aliases, so
     # the exact URI stays the result key: different refs are genuinely
@@ -788,14 +1183,25 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
     # Scoped to the root URIs deliberately: two app entries that share a repo
     # are both things the user asked for by name, and stay independent.
     root_bases = {_strip_uri_fragment(uri) for uri in checked_uris}
-    for uri in AppSettings().get_app_bundles():
+    for configured_source in AppSettings().get_app_bundles():
+        if (
+            not isinstance(configured_source, str)
+            or not configured_source.strip()
+            or not _is_valid_app_source(configured_source)
+        ):
+            invalid_key = _invalid_app_source_key(configured_source)
+            results[invalid_key] = _failed_bundle_status(
+                invalid_key, None, ValueError("invalid source")
+            )
+            continue
+        uri = configured_source
         if uri in checked_uris or _strip_uri_fragment(uri) in root_bases:
             continue
         checked_uris.add(uri)
         try:
             results[uri] = await _check_bundle_uri(uri, uri)
-        except Exception:
-            continue  # Skip bundles that fail status check
+        except Exception as exc:
+            results[uri] = _failed_bundle_status(uri, uri, exc)
 
     # Everything above enumerates sources somebody REGISTERED: registry roots
     # and app-bundle settings entries. A bundle that reaches the active
@@ -932,13 +1338,14 @@ async def _get_file_bundle_status(
 
     # Get remote SHA using the git handler
     remote_sha = None
+    remote_error: Exception | None = None
     try:
         remote_parsed = parse_uri(remote_uri)
         if git_handler.can_handle(remote_parsed):
             remote_status = await git_handler.get_status(remote_parsed, cache_dir)
             remote_sha = remote_status.remote_commit
-    except Exception:
-        pass  # Failed to get remote SHA, will show as unknown
+    except Exception as exc:
+        remote_error = exc
 
     # Determine if there's an update available
     has_update = None
@@ -956,6 +1363,7 @@ async def _get_file_bundle_status(
         cached_commit=local_sha,
         remote_commit=remote_sha,
         summary=summary,
+        error=str(remote_error) if remote_error else None,
     )
     status._has_local_changes = has_local_changes
     return status
@@ -1437,7 +1845,7 @@ def _show_verbose_report(
                     )
                     _print_verbose_item(
                         name=source_name,
-                        status_symbol=_report_state_text(source_state),
+                        status_symbol=_source_report_state_text(source, source_state),
                         local_sha=source.cached_commit,
                         remote_sha=source.remote_commit,
                         local_path=(
@@ -1823,7 +2231,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             ]
             # Progress lines are read by a human; the key stays the URI because
             # bundle_source below has to round-trip into update_bundle.
-            update_labels = _bundle_display_names(bundles_to_update)
+            update_labels = bundle_labels
 
             from amplifier_foundation.paths.resolution import get_amplifier_home
 

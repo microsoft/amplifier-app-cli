@@ -233,8 +233,8 @@ async def test_global_update_checks_app_only_sources_by_exact_uri(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_global_update_skips_bundle_when_registry_lookup_fails(monkeypatch):
-    """A failed registry lookup must not prevent later bundles from being checked."""
+async def test_global_update_reports_registry_failure_and_checks_later_bundles(monkeypatch):
+    """A failed registry lookup remains visible and does not stop later checks."""
     from amplifier_foundation.sources.git import GitSourceHandler
 
     working_bundle = "working"
@@ -269,9 +269,51 @@ async def test_global_update_skips_bundle_when_registry_lookup_fails(monkeypatch
 
     results = await update_module._check_all_bundle_status()
 
-    assert set(results) == {working_bundle}
+    assert set(results) == {"broken", working_bundle}
+    broken = results["broken"]
+    assert broken.bundle_name == "broken"
+    assert broken.bundle_source == ""
+    assert broken.sources[0].error == "status check failed"
     assert results[working_bundle].bundle_source == working_uri
     assert registry.find.call_args_list == [(("broken",),), ((working_bundle,),)]
+
+
+@pytest.mark.asyncio
+async def test_global_update_reports_direct_app_check_failure_by_exact_uri(monkeypatch):
+    """A configured app URI remains a row when its direct status request fails."""
+
+    from amplifier_foundation.sources.git import GitSourceHandler
+
+    failing_uri = (
+        "git+https://person:secret@example.invalid/org/amplifier-bundle-failing@main"
+    )
+    monkeypatch.setattr(
+        update_module,
+        "AppBundleDiscovery",
+        lambda: SimpleNamespace(list_cached_root_bundles=lambda: []),
+    )
+    monkeypatch.setattr(update_module, "create_bundle_registry", MagicMock())
+    monkeypatch.setattr(
+        update_module,
+        "AppSettings",
+        lambda: SimpleNamespace(get_app_bundles=lambda: [failing_uri]),
+    )
+
+    async def failing_get_status(self, parsed, cache_dir):
+        raise TimeoutError("token in https://person:secret@example.invalid")
+
+    async def no_transitives(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(GitSourceHandler, "get_status", failing_get_status)
+    monkeypatch.setattr(update_module, "_check_transitive_bundle_status", no_transitives)
+
+    results = await update_module._check_all_bundle_status()
+
+    assert set(results) == {failing_uri}
+    assert results[failing_uri].bundle_source == failing_uri
+    assert results[failing_uri].sources[0].source_uri == ""
+    assert results[failing_uri].sources[0].error == "timeout"
 
 
 def test_global_update_loads_an_app_target_by_source_uri(monkeypatch):
@@ -435,15 +477,15 @@ def test_app_bundle_rows_display_a_friendly_name():
     assert labels[_FRAGMENT_URI] == "team"
 
 
-def test_colliding_app_bundle_labels_fall_back_to_the_full_uri():
-    """Two rows showing the same name would misidentify which one updates."""
+def test_colliding_app_bundle_labels_use_compact_repo_qualifiers():
+    """Colliding app rows remain identifiable without exposing raw URIs."""
     first = "git+https://github.com/a/repo-one@main#subdirectory=behaviors/main.yaml"
     second = "git+https://github.com/b/repo-two@main#subdirectory=behaviors/main.yaml"
 
     labels = update_module._bundle_display_names([first, second])
 
-    assert labels[first] == first
-    assert labels[second] == second
+    assert labels[first] == "main (a/repo-one)"
+    assert labels[second] == "main (b/repo-two)"
 
 
 def test_an_app_bundle_label_never_shadows_a_registry_alias():
@@ -455,4 +497,104 @@ def test_an_app_bundle_label_never_shadows_a_registry_alias():
     labels = update_module._bundle_display_names(["modes", collides])
 
     assert labels["modes"] == "modes", "the registry alias keeps its name"
-    assert labels[collides] == collides
+    assert labels[collides] == "modes (app source)"
+
+
+def test_colliding_app_bundle_labels_distinguish_refs_and_ignore_credentials():
+    """Ref is added only when needed, and userinfo/query never reach the table."""
+
+    main = (
+        "git+https://user:secret@example.invalid/org/amplifier-bundle-team@main"
+        "#subdirectory=behaviors/team.yaml"
+    )
+    release = (
+        "git+https://user:secret@example.invalid/org/amplifier-bundle-team@release"
+        "#subdirectory=behaviors/team.yaml"
+    )
+
+    labels = update_module._bundle_display_names([release, main])
+
+    assert labels[main] == "team (org/amplifier-bundle-team @main)"
+    assert labels[release] == "team (org/amplifier-bundle-team @release)"
+    assert all("secret" not in label for label in labels.values())
+    assert labels == update_module._bundle_display_names([main, release])
+
+
+def test_bundle_labels_are_globally_unique_without_changing_registry_aliases():
+    """Generated labels yield to literal aliases, then use source-only context."""
+
+    uri = (
+        "git+https://example.invalid/org/amplifier-bundle-team@main"
+        "#subdirectory=behaviors/team.yaml"
+    )
+    keys = ["team", "team (app source)", uri]
+
+    labels = update_module._bundle_display_names(keys)
+
+    assert labels["team"] == "team"
+    assert labels["team (app source)"] == "team (app source)"
+    assert len(set(labels.values())) == len(labels)
+    assert labels == update_module._bundle_display_names(list(reversed(keys)))
+
+
+def test_bundle_labels_distinguish_local_hosts_schemes_and_equivalent_uri_shapes():
+    """Readable parts come first; opaque hashes resolve only safe-part ties."""
+
+    local_one = "file:///work/one/behaviors/team.yaml"
+    local_two = "file:///work/two/behaviors/team.yaml"
+    host_one = (
+        "git+https://one.invalid/org/amplifier-bundle-team@feature/next"
+        "#subdirectory=behaviors/team.yaml"
+    )
+    host_two = (
+        "https://two.invalid/org/amplifier-bundle-team@feature/next"
+        "#subdirectory=behaviors/team.yaml"
+    )
+    exact_one = (
+        "git+https://same.invalid/org/amplifier-bundle-team@main"
+        "?mirror=one#subdirectory=behaviors/team.yaml"
+    )
+    exact_two = (
+        "git+https://same.invalid/org/amplifier-bundle-team@main"
+        "?mirror=two#subdirectory=behaviors/team.yaml"
+    )
+    keys = [local_one, local_two, host_one, host_two, exact_one, exact_two]
+
+    labels = update_module._bundle_display_names(keys)
+
+    assert len(set(labels.values())) == len(labels)
+    assert labels[local_one] != labels[local_two]
+    assert "one.invalid" in labels[host_one]
+    assert "two.invalid" in labels[host_two]
+    assert labels[exact_one].endswith("]")
+    assert labels[exact_two].endswith("]")
+    assert all("mirror=" not in label for label in labels.values())
+    assert labels == update_module._bundle_display_names(list(reversed(keys)))
+
+
+def test_bundle_labels_remain_unique_when_an_alias_matches_a_hash_candidate():
+    """A literal alias also wins over a source label introduced by final hashing."""
+
+    first = (
+        "git+https://same.invalid/org/amplifier-bundle-team@main"
+        "?mirror=one#subdirectory=behaviors/team.yaml"
+    )
+    second = (
+        "git+https://same.invalid/org/amplifier-bundle-team@main"
+        "?mirror=two#subdirectory=behaviors/team.yaml"
+    )
+    generated_alias = update_module._bundle_display_names([first, second])[first]
+
+    labels = update_module._bundle_display_names([generated_alias, first, second])
+
+    assert labels[generated_alias] == generated_alias
+    assert len(set(labels.values())) == len(labels)
+
+
+def test_malformed_uri_never_breaks_or_leaks_through_bundle_labels():
+    malformed = "git+https://user:token@[broken/team"
+
+    labels = update_module._bundle_display_names([malformed])
+
+    assert labels[malformed] == "bundle"
+    assert "token" not in labels[malformed]
