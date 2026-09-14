@@ -27,6 +27,16 @@ logger = logging.getLogger(__name__)
 
 # Prefix used to identify bundle-based sessions in metadata
 BUNDLE_PREFIX = "bundle:"
+INSTRUCTION_METADATA_KEY = "amplifier:instruction"
+
+
+def _is_structural_instruction_record(message: dict) -> bool:
+    """Return whether this is a trusted context assembly record worth retaining."""
+    return (
+        message.get("role") == "system"
+        and isinstance(message.get("metadata"), dict)
+        and INSTRUCTION_METADATA_KEY in message["metadata"]
+    )
 
 
 def is_top_level_session(session_id: str) -> bool:
@@ -141,12 +151,17 @@ class SessionStore:
         # Build JSONL content
         lines = []
         for message in transcript:
-            # Skip system and developer role messages from transcript
+            # Skip ordinary system and developer messages from transcript.
+            # Context assembly records are durable host checkpoints and are
+            # validated by context's trusted restore path on resume.
             # Keep only user/assistant conversation (the actual interaction)
             # - system: Internal instructions merged by providers
             # - developer: Context files merged by providers
             msg_dict = message if isinstance(message, dict) else message.model_dump()
-            if msg_dict.get("role") in ("system", "developer"):
+            if (
+                msg_dict.get("role") in ("system", "developer")
+                and not _is_structural_instruction_record(msg_dict)
+            ):
                 continue
 
             # Sanitize message to ensure it's JSON-serializable

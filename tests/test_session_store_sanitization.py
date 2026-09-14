@@ -183,6 +183,58 @@ def test_sanitize_with_thinking_text():
         assert "thinking_block" not in loaded_transcript[0]
 
 
+def test_store_retains_only_marked_system_instruction_records() -> None:
+    """Retained v1 structural records round-trip in their placement order."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = SessionStore(Path(temp_dir))
+        structural = [
+            {
+                "role": "system",
+                "content": "head",
+                "metadata": {
+                    "amplifier:instruction": {
+                        "version": 1,
+                        "placement": "head",
+                        "authority": "authoritative",
+                    }
+                },
+            },
+            {
+                "role": "system",
+                "content": "before human",
+                "metadata": {
+                    "amplifier:instruction": {
+                        "version": 1,
+                        "placement": "before_human",
+                        "authority": "advisory",
+                    }
+                },
+            },
+            {
+                "role": "system",
+                "content": "tail",
+                "metadata": {
+                    "amplifier:instruction": {
+                        "version": 1,
+                        "placement": "tail",
+                        "authority": "authoritative",
+                    }
+                },
+            },
+        ]
+        transcript = [
+            {"role": "system", "content": "ordinary system"},
+            {"role": "developer", "content": "ordinary developer"},
+            *structural,
+            {"role": "user", "content": "human"},
+        ]
+
+        store.save("test-session", transcript, {})
+        loaded, _ = store.load("test-session")
+
+        assert loaded == [*structural, {"role": "user", "content": "human"}]
+
+
 def test_metadata_secrets_redacted_on_save():
     """Test that secrets in metadata are redacted before writing to disk."""
     with tempfile.TemporaryDirectory() as temp_dir:

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import copy
+import importlib
+import os
+import sys
 from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,6 +16,23 @@ from amplifier_app_cli.instruction_binding import bind_execution_input
 from amplifier_app_cli.session_runner import SessionConfig
 from amplifier_app_cli.session_runner import _mark_host_checkpoint
 from amplifier_app_cli.session_runner import create_initialized_session
+from amplifier_app_cli.session_store import SessionStore
+
+
+def _load_context_simple():
+    """Load the DTU-provided real context implementation when explicitly enabled."""
+    source = os.environ.get("AMPLIFIER_CONTEXT_SIMPLE_TEST_SOURCE")
+    if not source:
+        pytest.skip("AMPLIFIER_CONTEXT_SIMPLE_TEST_SOURCE is not configured")
+    sys.path.insert(0, source)
+    try:
+        context_module = importlib.import_module("amplifier_module_context_simple")
+        instructions = importlib.import_module(
+            "amplifier_module_context_simple.instructions"
+        )
+    finally:
+        sys.path.remove(source)
+    return context_module.SimpleContextManager, instructions.InstructionAssembly
 
 
 class _CapabilityCoordinator:
@@ -336,3 +357,164 @@ async def test_host_checkpoint_uses_trusted_restore_but_plain_history_stays_gene
     assert trusted.checkpoints == [transcript]
     assert generic.checkpoints == []
     assert generic.messages == transcript
+
+
+@pytest.mark.anyio
+async def test_host_checkpoint_does_not_bypass_trusted_instruction_validation(
+    monkeypatch,
+) -> None:
+    """Malformed retained records reach context's trusted restore unchanged."""
+    monkeypatch.setattr(
+        "amplifier_app_cli.session_runner.check_first_run", lambda: False, raising=False
+    )
+
+    class RejectingContext(_Context):
+        def __init__(self) -> None:
+            super().__init__(checkpoint_restore=True)
+
+        async def restore_host_checkpoint(self, messages: list[dict]) -> None:
+            assert messages[0]["metadata"]["amplifier:instruction"]["placement"] == "invalid"
+            raise ValueError("invalid trusted instruction record")
+
+    context = RejectingContext()
+    coordinator = _CapabilityCoordinator(context)
+    session = _session(coordinator)
+    config = SessionConfig(
+        config={},
+        search_paths=[],
+        verbose=False,
+        session_id="restored-session",
+        initial_transcript=_mark_host_checkpoint(
+            [
+                {
+                    "role": "system",
+                    "content": "malformed",
+                    "metadata": {
+                        "amplifier:instruction": {
+                            "version": 1,
+                            "placement": "invalid",
+                        }
+                    },
+                }
+            ]
+        ),
+    )
+
+    with (
+        patch(
+            "amplifier_app_cli.session_runner._create_bundle_session",
+            new=AsyncMock(return_value=session),
+        ),
+        patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
+        patch(
+            "amplifier_app_cli.project_utils.get_project_slug",
+            return_value="test-project",
+        ),
+        patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+        patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+        pytest.raises(ValueError, match="invalid trusted instruction record"),
+    ):
+        await create_initialized_session(config, MagicMock())
+
+
+@pytest.mark.asyncio
+async def test_real_context_checkpoint_round_trip_retains_valid_fixed_records(tmp_path) -> None:
+    """SessionStore preserves valid lease records for context's trusted restore."""
+    SimpleContextManager, InstructionAssembly = _load_context_simple()
+    coordinator = _CapabilityCoordinator()
+    context = SimpleContextManager(compaction_notice_enabled=False)
+    assembly = InstructionAssembly(context, coordinator, session_id="logical-session")
+    context._instruction_assembly = assembly
+    lease = assembly.register("checkpoint-producer", stable_order=0)
+
+    await context.add_message({"role": "system", "content": "ordinary base system"})
+    await context.add_message({"role": "developer", "content": "ordinary base developer"})
+    lease.publish(
+        "head",
+        "retained head",
+        target={"session_id": "logical-session", "kind": "conversation_head"},
+        retain_history=True,
+    )
+    with assembly.input_scope("human", "human-1"):
+        await context.add_message({"role": "user", "content": "human input"})
+    human_anchor = context.messages[-1]["metadata"]["amplifier:input"]
+    lease.publish(
+        "before",
+        "retained before human",
+        target=human_anchor,
+        retain_history=True,
+        authority="advisory",
+    )
+    await context.add_message(
+        {"role": "assistant", "content": "completed work", "message_id": "assistant-1"}
+    )
+    lease.publish(
+        "tail",
+        "retained tail",
+        target={"after_message_id": "assistant-1"},
+        retain_history=True,
+    )
+
+    store = SessionStore(tmp_path)
+    store.save("checkpoint", await context.get_messages(), {})
+    persisted, _ = store.load("checkpoint")
+
+    assert "ordinary base system" not in [message["content"] for message in persisted]
+    assert "ordinary base developer" not in [message["content"] for message in persisted]
+    assert [message["content"] for message in persisted] == [
+        "retained head",
+        "human input",
+        "retained before human",
+        "completed work",
+        "retained tail",
+    ]
+
+    restored = SimpleContextManager(compaction_notice_enabled=False)
+    restored_assembly = InstructionAssembly(
+        restored, _CapabilityCoordinator(), session_id="logical-session"
+    )
+    restored._instruction_assembly = restored_assembly
+    await restored.restore_host_checkpoint(persisted)
+    restored_records = {
+        message["content"]: message["metadata"]["amplifier:instruction"]
+        for message in await restored.get_messages()
+        if "amplifier:instruction" in message.get("metadata", {})
+    }
+
+    assert {
+        content: (
+            descriptor["placement"],
+            descriptor["target"],
+            descriptor["disposition"],
+            descriptor["authority"],
+        )
+        for content, descriptor in restored_records.items()
+    } == {
+        "retained head": (
+            "head",
+            {"session_id": "logical-session", "kind": "conversation_head"},
+            "pending",
+            "authoritative",
+        ),
+        "retained before human": (
+            "before_human",
+            human_anchor,
+            "pending",
+            "advisory",
+        ),
+        "retained tail": (
+            "tail",
+            {"after_message_id": "assistant-1"},
+            "pending",
+            "authoritative",
+        ),
+    }
+
+    before_failed_restore = copy.deepcopy(await restored.get_messages())
+    malformed = copy.deepcopy(persisted)
+    malformed[0]["metadata"]["amplifier:instruction"]["placement"] = "invalid"
+    store.save("malformed-checkpoint", malformed, {})
+    malformed_persisted, _ = store.load("malformed-checkpoint")
+    with pytest.raises(RuntimeError, match="invalid"):
+        await restored.restore_host_checkpoint(malformed_persisted)
+    assert await restored.get_messages() == before_failed_restore
