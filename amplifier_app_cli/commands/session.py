@@ -33,6 +33,7 @@ from ..utils.shell_completion import (
 from ..lib.settings import AppSettings
 from ..project_utils import get_project_slug
 from ..runtime.config import resolve_config
+from ..session_runner import _mark_host_checkpoint
 from ..session_store import SessionStore, extract_session_mode
 from ..types import (
     ExecuteSingleProtocol,
@@ -116,6 +117,7 @@ def _prepare_resume_context(
     """
     store = SessionStore()
     transcript, metadata = store.load(session_id)
+    transcript = _mark_host_checkpoint(transcript)
 
     # Extract bundle from saved session metadata
     saved_bundle, _ = extract_session_mode(metadata)

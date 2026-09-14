@@ -51,6 +51,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class _HostCheckpoint(list[dict[str, Any]]):
+    """Opaque marker for a transcript loaded by this application's SessionStore."""
+
+
+def _mark_host_checkpoint(transcript: list[dict]) -> list[dict]:
+    """Carry the host-owned checkpoint boundary without exposing a trust flag."""
+    return _HostCheckpoint(transcript)
+
+
+def _is_host_checkpoint(transcript: list[dict] | None) -> bool:
+    return isinstance(transcript, _HostCheckpoint)
+
+
 @dataclass
 class SessionConfig:
     """All parameters needed to create and initialize a session.
@@ -242,7 +255,13 @@ async def create_initialized_session(
         transcript_to_restore = config.initial_transcript
 
         context = session.coordinator.get("context")
-        if context and hasattr(context, "set_messages"):
+        restore_host_checkpoint = getattr(context, "restore_host_checkpoint", None)
+        if _is_host_checkpoint(transcript_to_restore) and callable(restore_host_checkpoint):
+            await restore_host_checkpoint(transcript_to_restore)
+            logger.info(
+                "Restored %d messages from host checkpoint", len(transcript_to_restore)
+            )
+        elif context and hasattr(context, "set_messages"):
             # NOTE ON WHY ROOT RESUME IS SAFE FROM SYSTEM-PROMPT LOSS:
             # create_session() (PreparedBundle, called before this function runs)
             # already registered a system-prompt FACTORY via

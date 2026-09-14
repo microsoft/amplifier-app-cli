@@ -22,6 +22,7 @@ from ..effective_config import get_effective_config_summary
 from ..lib.settings import AppSettings
 from ..paths import create_config_manager
 from ..runtime.config import resolve_config
+from ..session_runner import _mark_host_checkpoint
 from ..session_store import extract_session_mode
 from ..types import (
     ExecuteSingleProtocol,
@@ -325,6 +326,7 @@ def register_run_command(
 
             try:
                 transcript, metadata = store.load(resume)
+                transcript = _mark_host_checkpoint(transcript)
                 console.print(f"[green]✓[/green] Resuming session: {resume}")
                 console.print(f"  Messages: {len(transcript)}")
 

@@ -19,6 +19,7 @@ from amplifier_foundation import bridge_child_cost
 from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
 
 from .agent_config import merge_configs
+from .instruction_binding import bind_execution_input
 
 logger = logging.getLogger(__name__)
 
@@ -1619,6 +1620,7 @@ async def spawn_sub_session(
     # the top of this module -- the consumer often reads before this runs).
     try:
         try:
+            bind_execution_input(child_session.coordinator, origin="delegation")
             response = await child_session.execute(instruction)
         except BaseException:
             # Timed out or cancelled: the post-run block below never runs, so
@@ -2595,8 +2597,13 @@ async def resume_sub_session(
             agent_name,
         )
 
-    # Restore transcript to context
-    if context and hasattr(context, "add_message"):
+    # A sub-session transcript came from this host's SessionStore, so a v1
+    # context may restore its trusted instruction records after mount. Older
+    # contexts retain the historic add_message fallback.
+    restore_host_checkpoint = getattr(context, "restore_host_checkpoint", None)
+    if callable(restore_host_checkpoint):
+        await restore_host_checkpoint(transcript)
+    elif context and hasattr(context, "add_message"):
         for message in transcript:
             await context.add_message(message)
     else:
@@ -2661,6 +2668,7 @@ async def resume_sub_session(
     # spawn path's note. The cancellation path must stay free of any await.
     try:
         try:
+            bind_execution_input(child_session.coordinator, origin="delegation")
             response = await child_session.execute(instruction)
         except BaseException:
             # Timed out or cancelled: the agent's own partial text stays

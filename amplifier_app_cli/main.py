@@ -73,6 +73,7 @@ from .commands.version import version as version_cmd
 from .console import Markdown, console
 from .dedicated_tty_input import close_dedicated_tty_input, get_dedicated_tty_input
 from .effective_config import get_effective_config_summary
+from .instruction_binding import bind_execution_input
 from .key_manager import KeyManager
 from .lib.settings import AppSettings
 from .provider_diagnostics import DEFAULT_TIMEOUT_S as _PROVIDER_DIAGNOSTIC_TIMEOUT_S
@@ -4081,6 +4082,7 @@ async def interactive_chat(
                 _reader_task = asyncio.create_task(_manager.run())
 
                 try:
+                    bind_execution_input(session.coordinator, origin="human")
                     execute_task = asyncio.create_task(session.execute(prompt_text))
 
                     # Poll task while checking for cancellation
@@ -4640,6 +4642,7 @@ async def execute_single(
 
         _original_sigint_handler = signal.signal(signal.SIGINT, _goal_sigint_handler)
         try:
+            bind_execution_input(session.coordinator, origin="human")
             response = await session.execute(prompt)
         finally:
             signal.signal(signal.SIGINT, _original_sigint_handler)
