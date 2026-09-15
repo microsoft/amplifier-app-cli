@@ -222,6 +222,23 @@ async def resolve_bundle_config(
                         agent_section, config_overrides
                     )
 
+        # `session.context` and `session.orchestrator` are single module
+        # entries, not lists, which is the ONLY reason they were missed by the
+        # list walk above -- a mount-location accident, exactly what the
+        # "keyed by module identity, not mount location" rule exists to rule
+        # out. Until this, no context-manager or orchestrator setting could be
+        # overridden from settings.yaml at all: `overrides.context-simple.config`
+        # was silently ignored.
+        session_section = bundle_config.get("session")
+        if isinstance(session_section, dict):
+            for session_key in ("context", "orchestrator"):
+                entry = session_section.get(session_key)
+                if not entry:
+                    continue
+                session_section[session_key] = _apply_config_overrides_to_entry(
+                    entry, config_overrides
+                )
+
     # Apply provider overrides
     provider_overrides = app_settings.get_provider_overrides()
     if provider_overrides:
@@ -522,6 +539,23 @@ def _map_id_to_instance_id(
             provider = {**provider, "instance_id": provider["id"]}
         result.append(provider)
     return result
+
+
+def _apply_config_overrides_to_entry(
+    entry: Any, config_overrides: dict[str, Any]
+) -> Any:
+    """Apply `overrides.<module-id>.config` to ONE module entry.
+
+    The single-entry sibling of :func:`_apply_config_overrides_to_section`, for
+    mount points that hold one module rather than a list -- `session.context`
+    and `session.orchestrator`.
+
+    Delegates to the list version so both paths share one definition of what an
+    override means (normalize, match by module id, deep-merge with the override
+    winning, preserve every other key, return the original object untouched
+    when nothing matches).
+    """
+    return _apply_config_overrides_to_section([entry], config_overrides)[0]
 
 
 def _apply_config_overrides_to_section(
