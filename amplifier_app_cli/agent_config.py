@@ -115,16 +115,10 @@ def merge_configs(parent: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
         parent_agents = parent.get("agents", {})
         result["agents"] = {k: v for k, v in parent_agents.items() if k in agent_filter}
 
-    # Deep-copy the agents dict to prevent cross-session mutation.
-    # Placed AFTER agent filtering so the copy covers the final filtered set only.
-    # The routing hook's on_session_start mutates agent_cfg dicts in-place when it
-    # resolves model_role -> provider_preferences. Without deepcopy, a child session's
-    # routing hook silently corrupts the parent's agent configs — a race condition
-    # with parallel spawns.
-    if result.get("agents"):
-        result["agents"] = copy.deepcopy(result["agents"])
-
-    return result
+    # The merge preserves references to untouched nested values. Copy the final
+    # config, after filtering, so child budget/metadata updates and routing hooks
+    # cannot mutate the parent, sibling sessions, or the reusable agent overlay.
+    return copy.deepcopy(result)
 
 
 def validate_agent_config(config: dict[str, Any]) -> bool:
