@@ -3,7 +3,61 @@
 Covers merge_configs() correctness including isolation guarantees.
 """
 
+import copy
+
+import pytest
+
 from amplifier_app_cli.agent_config import merge_configs
+
+
+@pytest.mark.parametrize("overlay", [{}, {"session": {"metadata": {"agent": "child"}}}])
+def test_session_config_isolated_from_parent_and_sibling(overlay):
+    """A child-only budget/metadata update must never become a sibling default."""
+    parent = {
+        "session": {
+            "orchestrator": {"config": {"extended_thinking": True}},
+            "context": {"config": {"tags": ["parent"]}},
+        }
+    }
+    original = copy.deepcopy(parent)
+    child = merge_configs(parent, overlay)
+    child["session"]["orchestrator"]["config"]["max_iterations"] = 2
+    child["session"]["context"]["config"]["tags"].append("child")
+    child["session"]["metadata"] = {"agent": "child"}
+
+    sibling = merge_configs(parent, {})
+    assert parent == original
+    assert sibling == original
+    assert child["session"] is not parent["session"]
+
+
+def test_merged_config_owns_mutable_values_from_both_inputs():
+    """Even untouched module configs and newly supplied overlay values are owned."""
+    parent = {
+        "tools": [{"module": "tool-bash", "config": {"allowed": ["original"]}}],
+        "hooks": [{"module": "hook", "config": {"events": ["start"]}}],
+    }
+    overlay = {
+        "session": {"orchestrator": {"config": {"max_iterations": 7}}},
+        "tools": [{"module": "tool-extra", "config": {"nested": ["overlay"]}}],
+    }
+    original_parent, original_overlay = copy.deepcopy((parent, overlay))
+    child = merge_configs(parent, overlay)
+    child["tools"][0]["config"]["allowed"].append("child")
+    child["tools"][1]["config"]["nested"].clear()
+    child["hooks"][0]["config"]["events"].clear()
+    child["session"]["orchestrator"]["config"]["max_iterations"] = 2
+
+    assert parent == original_parent
+    assert overlay == original_overlay
+
+
+def test_explicit_parent_limit_is_preserved_without_child_override():
+    """Isolation does not silently disable an operator-configured limit."""
+    parent = {"session": {"orchestrator": {"config": {"max_iterations": 11}}}}
+    child = merge_configs(parent, {})
+    assert child == parent
+    assert child["session"] is not parent["session"]
 
 
 class TestMergeConfigsIsolation:

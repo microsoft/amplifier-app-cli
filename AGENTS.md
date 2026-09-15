@@ -37,6 +37,14 @@ before adding, not after.
 
 ## In-process self-child prompts
 
+Child configuration ownership: `agent_config.merge_configs()` returns a fully
+independent mutable mount plan, including untouched inherited values. Preserve
+merge/filter precedence, but never share nested session or module configuration
+with the parent or the agent overlay. The spawner applies budget and metadata
+updates in place; aliasing makes one child's limit become a sibling's default.
+Run `tests/test_agent_config.py` and `tests/test_spawn_config_isolation.py` when
+changing this boundary.
+
 For `agent_name: self`, `session_spawner` must build a new foundation prompt
 factory for the target child from the root prepared bundle, render it once, and
 install only that frozen result. Never copy or await a parent's installed
