@@ -24,6 +24,8 @@ SCRIPTS = (
 READINESS = SCRIPTS / "highway_readiness.sh"
 STATUS = SCRIPTS / "highway_status.sh"
 WATCHDOG = SCRIPTS / "highway_watchdog.sh"
+SKILL = SCRIPTS.parent / "SKILL.md"
+FIRST_RUN = SCRIPTS.parent / "examples/first-run.md"
 
 
 def make_batch(tmp_path: Path, lanes: tuple[str, ...] = ()) -> Path:
@@ -53,6 +55,14 @@ last="${@: -1}"
 last="${last#=}"
 for arg in "$@"; do
   if [ "$arg" = has-session ]; then
+    if [ -n "${TMUX_LIVE_CALLS:-}" ]; then
+      calls=0
+      [ -f "$TMUX_CALLS" ] && calls=$(cat "$TMUX_CALLS")
+      calls=$((calls + 1))
+      printf '%s\n' "$calls" > "$TMUX_CALLS"
+      [ "$calls" -le "$TMUX_LIVE_CALLS" ] && exit 0
+      exit 1
+    fi
     case " ${LIVE_SESSIONS:-} " in *" $last "*) exit 0 ;; *) exit 1 ;; esac
   fi
 done
@@ -80,6 +90,7 @@ def env_for(tmp_path: Path, bindir: Path, *, live: str = "") -> dict[str, str]:
         "EXPECTED_SOCKET": f"readiness-test-{tmp_path.name}",
         "HIGHWAY_TMUX_SOCKET": f"readiness-test-{tmp_path.name}",
         "LIVE_SESSIONS": live,
+        "TMUX_CALLS": str(tmp_path / "tmux-calls"),
         "AMPLIFIER_CALLS": str(calls),
         "HIGHWAY_HB_GRACE": "0",
         "HIGHWAY_ACTIVE_WINDOW": "0",
@@ -98,7 +109,9 @@ def publish(batch: Path, runnable: int, env: dict[str, str]) -> None:
     assert result.returncode == 0, result.stderr
 
 
-def run_watchdog(batch: Path, env: dict[str, str], polls: int) -> subprocess.CompletedProcess[str]:
+def run_watchdog(
+    batch: Path, env: dict[str, str], polls: int
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(WATCHDOG), str(batch), "10", "manager-session", "0", "1"],
         capture_output=True,
@@ -127,7 +140,9 @@ def test_drained_batch_does_not_wake_or_escalate(tmp_path: Path) -> None:
     assert not (batch / "escalation-needed").exists()
 
 
-def test_refilled_work_wakes_and_status_reports_shared_readiness(tmp_path: Path) -> None:
+def test_refilled_work_records_advisory_and_status_reports_shared_readiness(
+    tmp_path: Path,
+) -> None:
     batch = make_batch(tmp_path)
     env = env_for(tmp_path, make_fakes(tmp_path))
     publish(batch, 0, env)
@@ -144,30 +159,40 @@ def test_refilled_work_wakes_and_status_reports_shared_readiness(tmp_path: Path)
     )
 
     assert result.returncode == 0, result.stderr
-    assert call_count(env) == 1
+    assert call_count(env) == 0
+    assert "under width with runnable work" in (batch / "wake-needed").read_text(
+        encoding="utf-8"
+    )
+    assert "WAKEDEFERRED" in (batch / "watchdog.log").read_text(encoding="utf-8")
     report = json.loads(status.stdout)
     assert report["readiness"] == "runnable"
     assert report["ready"] == 1
     assert report["deficit"] == 1
 
 
-def test_persisting_runnable_work_escalates_after_launch_failure(tmp_path: Path) -> None:
+def test_persisting_runnable_work_escalates_after_launch_failure(
+    tmp_path: Path,
+) -> None:
     batch = make_batch(tmp_path)
     env = env_for(tmp_path, make_fakes(tmp_path))
     publish(batch, 1, env)
 
-    result = run_watchdog(
-        batch, {**env, "HIGHWAY_ESCALATE_AFTER": "3"}, polls=4
-    )
+    result = run_watchdog(batch, {**env, "HIGHWAY_ESCALATE_AFTER": "3"}, polls=4)
 
     assert result.returncode == 0, result.stderr
-    assert call_count(env) == 4
+    assert call_count(env) == 0
     assert (batch / "escalation-needed").exists()
-    assert "ESCALATION WAKE" in (batch / "watchdog.log").read_text(encoding="utf-8")
+    watchdog_log = (batch / "watchdog.log").read_text(encoding="utf-8")
+    assert "ESCALATIONDEFERRED" in watchdog_log
+    assert "under width with runnable work" in (batch / "wake-needed").read_text(
+        encoding="utf-8"
+    )
 
 
 @pytest.mark.parametrize("kind", ("missing", "stale", "malformed", "extra-field"))
-def test_unknown_or_stale_readiness_is_explicit_not_zero(tmp_path: Path, kind: str) -> None:
+def test_unknown_or_stale_readiness_is_explicit_not_zero(
+    tmp_path: Path, kind: str
+) -> None:
     batch = make_batch(tmp_path)
     env = env_for(tmp_path, make_fakes(tmp_path))
     if kind == "stale":
@@ -186,9 +211,7 @@ def test_unknown_or_stale_readiness_is_explicit_not_zero(tmp_path: Path, kind: s
         env={**env, "HIGHWAY_JSON": "1", "HIGHWAY_READINESS_MAX": "60"},
         check=False,
     )
-    result = run_watchdog(
-        batch, {**env, "HIGHWAY_READINESS_MAX": "60"}, polls=3
-    )
+    result = run_watchdog(batch, {**env, "HIGHWAY_READINESS_MAX": "60"}, polls=3)
 
     assert status.returncode == 0, status.stderr
     report = json.loads(status.stdout)
@@ -196,11 +219,14 @@ def test_unknown_or_stale_readiness_is_explicit_not_zero(tmp_path: Path, kind: s
     assert report["ready"] is None
     assert report["deficit"] is None
     assert result.returncode == 0, result.stderr
-    assert call_count(env) == 1
+    assert call_count(env) == 0
+    assert f"readiness {report['readiness']}" in (batch / "wake-needed").read_text(
+        encoding="utf-8"
+    )
     assert not (batch / "escalation-needed").exists()
 
 
-def test_ended_lane_wakes_even_when_batch_is_drained(tmp_path: Path) -> None:
+def test_ended_lane_records_advisory_even_when_batch_is_drained(tmp_path: Path) -> None:
     batch = make_batch(tmp_path, ("ended",))
     env = env_for(tmp_path, make_fakes(tmp_path))
     publish(batch, 0, env)
@@ -208,15 +234,15 @@ def test_ended_lane_wakes_even_when_batch_is_drained(tmp_path: Path) -> None:
     result = run_watchdog(batch, env, polls=1)
 
     assert result.returncode == 0, result.stderr
-    assert call_count(env) == 1
+    assert call_count(env) == 0
     assert "lane(s) ended: ended" in (batch / "wake-needed").read_text(encoding="utf-8")
 
 
-def test_stale_heartbeat_wakes_while_a_drained_batch_has_live_lanes(tmp_path: Path) -> None:
+def test_stale_heartbeat_records_advisory_while_a_drained_batch_has_live_lanes(
+    tmp_path: Path,
+) -> None:
     batch = make_batch(tmp_path, ("live",))
-    env = env_for(
-        tmp_path, make_fakes(tmp_path), live="hw__batch__live"
-    )
+    env = env_for(tmp_path, make_fakes(tmp_path), live="hw__batch__live")
     publish(batch, 0, env)
     heartbeat = batch / ".manager-heartbeat"
     heartbeat.touch()
@@ -226,5 +252,105 @@ def test_stale_heartbeat_wakes_while_a_drained_batch_has_live_lanes(tmp_path: Pa
     result = run_watchdog(batch, env, polls=1)
 
     assert result.returncode == 0, result.stderr
-    assert call_count(env) == 1
+    assert call_count(env) == 0
     assert "heartbeat stale" in (batch / "wake-needed").read_text(encoding="utf-8")
+
+
+def test_watchdog_preserves_pending_advisories_and_records_duplicates(
+    tmp_path: Path,
+) -> None:
+    batch = make_batch(tmp_path)
+    env = env_for(tmp_path, make_fakes(tmp_path))
+    (batch / "wake-needed").write_text(
+        "earlier manager observation\n", encoding="utf-8"
+    )
+    publish(batch, 1, env)
+
+    result = run_watchdog(batch, {**env, "HIGHWAY_WAKE_GAP": "3600"}, polls=2)
+
+    assert result.returncode == 0, result.stderr
+    assert call_count(env) == 0
+    pending = (batch / "wake-needed").read_text(encoding="utf-8").splitlines()
+    assert pending[0] == "earlier manager observation"
+    assert len(pending) == 3
+    assert "under width with runnable work" in pending[1]
+    assert "under width with runnable work" in pending[2]
+    watchdog_log = (batch / "watchdog.log").read_text(encoding="utf-8")
+    assert watchdog_log.count("WAKEDEFERRED") == 1
+
+
+def test_watchdog_records_ended_lane_within_gap_after_under_width(
+    tmp_path: Path,
+) -> None:
+    batch = make_batch(tmp_path, ("ended",))
+    env = env_for(tmp_path, make_fakes(tmp_path))
+    publish(batch, 1, env)
+
+    result = run_watchdog(
+        batch,
+        {
+            **env,
+            "HIGHWAY_WAKE_GAP": "3600",
+            "TMUX_LIVE_CALLS": "3",
+        },
+        polls=2,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert call_count(env) == 0
+    pending = (batch / "wake-needed").read_text(encoding="utf-8")
+    assert "under width with runnable work" in pending
+    assert "lane(s) ended: ended" in pending
+
+
+def test_watchdog_uses_default_per_batch_socket_with_fake_tmux(tmp_path: Path) -> None:
+    batch = make_batch(tmp_path, ("ended",))
+    env = env_for(tmp_path, make_fakes(tmp_path))
+    env.pop("HIGHWAY_TMUX_SOCKET")
+    env["EXPECTED_SOCKET"] = "hw-batch"
+    publish(batch, 0, env)
+
+    result = run_watchdog(batch, env, polls=1)
+
+    assert result.returncode == 0, result.stderr
+    assert call_count(env) == 0
+    assert "lane(s) ended: ended" in (batch / "wake-needed").read_text(encoding="utf-8")
+
+
+def test_watchdog_max_polls_exits_when_manifest_is_missing(tmp_path: Path) -> None:
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    env = env_for(tmp_path, make_fakes(tmp_path))
+
+    result = run_watchdog(batch, env, polls=1)
+
+    assert result.returncode == 0, result.stderr
+    assert call_count(env) == 0
+    assert "exit: max polls (1) reached" in (batch / "watchdog.log").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_watchdog_advisories_remain_append_only_across_runs(tmp_path: Path) -> None:
+    batch = make_batch(tmp_path)
+    env = env_for(tmp_path, make_fakes(tmp_path))
+    publish(batch, 1, env)
+
+    assert run_watchdog(batch, env, polls=1).returncode == 0
+    first = (batch / "wake-needed").read_text(encoding="utf-8")
+    assert run_watchdog(batch, env, polls=1).returncode == 0
+    second = (batch / "wake-needed").read_text(encoding="utf-8")
+
+    assert call_count(env) == 0
+    assert second.startswith(first)
+    assert len(second.splitlines()) == 2
+
+
+def test_highway_docs_forbid_clearing_wake_needed_while_watchdog_runs() -> None:
+    docs = (
+        f"{SKILL.read_text(encoding='utf-8')}\n{FIRST_RUN.read_text(encoding='utf-8')}"
+    )
+
+    assert ": > <BATCH_DIR>/wake-needed" not in docs
+    assert "clear wake-needed" not in docs
+    assert "append-only" in docs

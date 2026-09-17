@@ -2,7 +2,7 @@
 name: ten-lane-highway
 description: >
   Become the Highway Manager: drive many parallel /goal lanes continuously
-  toward a defined outcome, refilling lanes on every wake so none sit idle.
+  toward a defined outcome, refilling lanes on every manager cycle so none sit idle.
   Use when the user wants continuous parallel throughput toward an outcome:
   "run the highway", "/highway", "10-lane highway", "keep N lanes full",
   "keep re-feeding lanes as they drain", "drive this for me in parallel", "do
@@ -28,7 +28,8 @@ visibility:
 
 Run continuous parallel agent lanes toward a defined outcome. Success is not
 "lanes ran": it is the outcome reached (or honestly blocked with named
-reasons), every landed lane merged with the suite green after each merge, the
+reasons), every landed lane merged, retained as a verified PR, or honestly
+dispositioned by its authorized owner under the captured completion intent, the
 Operating Picture current, and the scaffolding torn down.
 
 The predecessor pattern (goal-batch) launches a set and drains it. The highway
@@ -42,7 +43,7 @@ scheduling than to a task list.
 New to the highway? Do a throwaway run first — a scratch repo you can break,
 **width 2**. Invoke `/highway` with a small outcome + that repo + "width 2";
 approve at the Phase 3 gate (nothing launches before you say go); then watch
-**gate → 2 lanes → watchdog → merges**, refilling until the queue drains. Stop
+**gate → 2 lanes → watchdog → authorized landings**, refilling until the queue drains. Stop
 everything through the batch's explicit `HIGHWAY_TMUX_SOCKET` (default
 `hw-<sanitized-batch>`), then delete `BATCH_DIR`. Full command sequence and
 expected output: `examples/first-run.md`.
@@ -89,7 +90,7 @@ repo** (a real run left `.amplifier/bin/` behind as untracked pollution).
 | `highway_status.sh BATCH_DIR WIDTH [RUNNABLE]` | ONE call reports every lane + watchdog liveness and **computes DEFICIT by code** from shared readiness | "Keep lanes full" stopped being prose the day a run sat at 1 lane with work for 10 |
 | `launch_lane.sh BATCH_DIR LANE REPO GOAL [BASE_REF]` | Worktree + branch + tmux + `/goal` session, idempotent; the ONLY writer of `manifest.tsv` | Hand-written manifests diverged on column count and broke a real batch |
 | `verify_lane.sh BATCH_DIR LANE` | Git-facts probe for one landed lane (DONE.json, ahead-count, three-dot diffstat, uncommitted work) | "Ground truth from git and the filesystem, not from what any session said about itself" |
-| `highway_watchdog.sh BATCH_DIR WIDTH SESSION_ID [INTERVAL] [MAX_HOURS]` | Detached tmux loop that re-wakes THIS session (`amplifier run --resume`) on lane-end / under-width / stale heartbeat | The highway once froze overnight because the manager stopped monitoring the moment it reported status |
+| `highway_watchdog.sh BATCH_DIR WIDTH SESSION_ID [INTERVAL] [MAX_HOURS]` | Detached tmux loop that appends rate-limited `wake-needed` advisories for lane-end / under-width / stale heartbeat; `SESSION_ID` remains a required compatibility record | The highway once froze overnight because the manager stopped monitoring the moment it reported status |
 | `infra_ledger.sh BATCH_DIR add TYPE ID DESTROY_CMD...` / `infra_ledger.sh BATCH_DIR sweep --all-owners` | Records any infrastructure a lane OR the manager stands up (DTU, gitea instance, container, service, background process) into `infra.tsv` at creation, each with its teardown command; `sweep` runs those commands and exits non-zero until nothing is left standing | A run closed with a DTU and a gitea container still live — nothing the highway stands up should outlive it (Rule 14) |
 | `lane_teardown.sh BATCH_DIR LANE claim ID...` / `lane_teardown.sh BATCH_DIR LANE teardown\|reconcile\|list\|audit` | **A LANE's** teardown: destroys only the rows that lane claimed, verifies each container is actually gone before flipping its row, and never runs another lane's destroy command. Dry-run by default; `--yes` to act | The emergency recovery path used to live in another repo, untracked — the skill named a tool it did not ship, and an operator mid-incident followed that path to nothing |
 
@@ -142,7 +143,8 @@ State lives in `BATCH_DIR` (create one per highway, e.g. `~/dev/hw-<name>`):
 goal files), `lanes/` (worktrees), `.width` (authoritative width), `infra.tsv`
 (the infra ledger), `infra.owners.tsv` (which lane claimed which row),
 `.manager-heartbeat`, `.runnable-work` (an atomic batch-runnable snapshot),
-`wake-needed`, `watchdog.log`.
+`wake-needed` (append-only watchdog advisories retained while the watchdog
+runs), `watchdog.log`.
 
 ## Phase 1 — Intake
 
@@ -163,6 +165,8 @@ actually asked):
   backlog until time is up.
 - *Achieve-and-close:* no live clock; when the outcome is verified and nothing
   is pending, close.
+- *Run-to-PR:* prepare and verify the requested PRs, then hand them to their
+  authorized repository owner; do not merge without separate authority.
 Record the captured intent in `HIGHWAY.md` as the engagement's completion
 policy, and honor it with judgment at close (Phase 7).
 
@@ -227,8 +231,9 @@ pre-composed in `BATCH_DIR/goals/` — no goalify here:
 Then start the watchdog. **`<BATCH_DIR>`, `<WIDTH>`, `<SESSION_ID>` below are
 documentation placeholders — substitute literal values; they do not exist as
 shell variables.** Your session ID is shown in your environment context
-(`Session ID: ...`). Persist it to disk FIRST so a later watchdog restart does
-not depend on context:
+(`Session ID: ...`). Persist it to disk FIRST because the compatibility
+watchdog interface still requires it, although the watchdog records it only
+and never re-enters that session:
 
 ```bash
 printf '%s\n' "<SESSION_ID>" > <BATCH_DIR>/.session-id
@@ -238,9 +243,8 @@ printf '%s\n' "<WIDTH>" > <BATCH_DIR>/.width   # authoritative width — the sin
 # decide whether unused capacity needs attention. This is not raw tracker-ready:
 # exclude conflicts, dependencies, and work without a pre-composed goal.
 <skill_directory>/scripts/highway_readiness.sh publish <BATCH_DIR> <RUNNABLE>
-touch <BATCH_DIR>/.manager-heartbeat   # BEFORE the watchdog starts, so it never
-                                        # sees an absent heartbeat and wakes a
-                                        # concurrent instance mid-saturation
+touch <BATCH_DIR>/.manager-heartbeat   # BEFORE the watchdog starts, to provide
+                                        # initial timing context for its log
 BATCH=$(printf '%s' "$(basename <BATCH_DIR>)" | tr -c 'A-Za-z0-9_-' '_')   # same sanitization the scripts use
 HIGHWAY_TMUX_SOCKET="${HIGHWAY_TMUX_SOCKET:-hw-${BATCH}}"
 export HIGHWAY_TMUX_SOCKET
@@ -248,8 +252,9 @@ tmux -L "$HIGHWAY_TMUX_SOCKET" new-session -d -s "hw-watchdog__${BATCH}" \
   "<skill_directory>/scripts/highway_watchdog.sh <BATCH_DIR> <WIDTH> <SESSION_ID> 300 12 2>&1 | tee -a <BATCH_DIR>/watchdog.log"
 ```
 Then touch `<BATCH_DIR>/.manager-heartbeat` again at the start of every Phase 5
-cycle (step 1) and after each merge, so the watchdog defers while your turn is
-active and only takes over once you have genuinely gone idle.
+cycle (step 1) and after each merge. It is advisory timing context only: a
+heartbeat cannot prove that a manager is idle or busy, and does not suppress a
+`wake-needed` record.
 
 **Width, readiness, the tmux socket, and escalation.** `<BATCH_DIR>/.width` is the single
 source of truth for the target lane count (the scripts read it there); changing
@@ -259,8 +264,9 @@ per-batch socket `HIGHWAY_TMUX_SOCKET` (default `hw-<sanitized-batch>`) — henc
 the explicit `-L "$HIGHWAY_TMUX_SOCKET"` above and on the Phase 7 kill. The
 manager publishes its current batch-runnable count through `highway_readiness.sh`;
 `drained` means zero fresh runnable work, while `unknown` or `stale` readiness is
-never a zero and must be investigated. A wake whose prompt begins `HIGHWAY ESCALATION` means go straight
-to Phase 6 and lead with `NEEDS YOU:`; the watchdog stays alive throughout.
+never a zero and must be investigated. An `escalation-needed` marker or
+`ESCALATIONDEFERRED` log entry means investigate the persistent deficit; it is
+an advisory, not consent to merge or an automatic session re-entry.
 
 Verify launch: run `highway_status.sh` once — every lane LIVE past its first
 LLM call (log growing), watchdog LIVE. Then build the **todo lane board** (see
@@ -271,8 +277,9 @@ launched lanes LIVE, watchdog LIVE, DEFICIT=0.
 
 ## Phase 5 — Steady-state cycle (the loop)
 
-Run this on EVERY wake — a delegated watcher returning, a watchdog wake
-(`HIGHWAY WAKE:` prompt), or a user message while lanes run:
+Run this whenever control returns — a delegated watcher returning, a watchdog
+advisory found in `wake-needed`, or a user message while lanes run. The watchdog
+does not re-enter the session or promise a notification.
 
 **The invariant: while backlog exists, live lanes == width, continuously.** A
 drained lane is refilled the INSTANT it drains — one lane ending is one refill,
@@ -295,11 +302,13 @@ invariant exists to prevent.)
    is a bare launch, never a compose-then-launch. Under-width with ready work is
    allowed only with an explicit one-line justification in the transcript that
    cycle.
-5. **Width first, then merge — never the reverse.** Step 4 (restore width)
+5. **Width first, then resolve landed lanes — never the reverse.** Step 4 (restore width)
    always precedes this. For each ENDED lane: `verify_lane.sh`, then YOUR own
-   artifact check, then `merge --no-ff` from the main checkout, resolve the item
-   with a user-readable reason, tear down (worktree remove, branch delete, tmux
-   kill). **Do NOT serialize a full-suite rerun after every single merge** —
+   artifact check, then the authorized repository owner or batch authority may
+   `merge --no-ff` from the main checkout or retain a verified PR when the
+   captured completion intent allows; otherwise record the disposition and seek
+   that authority. Resolve the item with a user-readable reason, tear down
+   (worktree remove, branch delete, tmux kill). **Do NOT serialize a full-suite rerun after every single merge** —
    that is what idled capacity for minutes in the battery. Instead: run the
    merged lane's OWN tests immediately (fast proof it landed), and run the FULL
    suite on a cadence and at close (a periodic + final full sweep catches
@@ -320,9 +329,11 @@ invariant exists to prevent.)
 7. Update the **todo lane board** and rewrite `HIGHWAY.md`. Regenerate its
    Landed section from git ground truth — `scripts/landed_from_git.sh <repo>
    [base]` — so the Operating Picture can never drift from what actually merged
-   (proof-run 01: it read "Landed: none" while 10 lanes had merged). Then clear
-   the processed wake signals: `: > <BATCH_DIR>/wake-needed` (advisory file —
-   truncating it is the whole mechanism).
+   (proof-run 01: it read "Landed: none" while 10 lanes had merged). After a
+   bounded `wake-needed` snapshot is processed, record its last processed line
+   in `HIGHWAY.md`. The watchdog never consumes this append-only file; never
+   truncate or unlink it while the watchdog runs. Archive it at close, after the
+   watchdog has stopped.
 8. Continue. The first time you reach this step, `load_skill("monitor")` for
    the polling discipline. Then delegate the watch — `delegate(agent="self",
    context_depth="none", model_role="fast")` — with an instruction that
@@ -355,7 +366,9 @@ cycle.
 ## Phase 6 — Talking to the human without freezing the highway
 
 The documented failure: the manager reported status and the highway froze
-until morning. Before ANY turn-ending message while lanes run:
+until morning. The watchdog preserves observations for the next manager cycle;
+it cannot keep a paused session from remaining paused. Before ANY turn-ending
+message while lanes run:
 
 1. `highway_status.sh` must show `watchdog=LIVE` — if DEAD, start it (Phase 4
    command; the session ID is in `<BATCH_DIR>/.session-id`) and re-check.
@@ -365,9 +378,10 @@ until morning. Before ANY turn-ending message while lanes run:
    `DONE:` / `NEEDS YOU:` / `PAUSED:` / or a one-line highway status — because
    the notification renders from those characters.
 
-The watchdog will re-wake you on lane-end, fresh runnable work under width, or
-stale heartbeat with live lanes; each wake runs Phase 5.
-each wake runs Phase 5.
+The watchdog records `wake-needed` advisories for lane-end, fresh runnable work
+under width, or stale heartbeat with live lanes. It does not wake or re-enter
+this session, and automatic delivery is outside this MVP; when the manager runs
+another cycle and observes an advisory, run Phase 5.
 
 ## Phase 7 — Close the highway
 
@@ -383,10 +397,12 @@ watchdog and lanes the moment current acceptance passes is the documented
 min before the deadline and missed four injected items). **Enter the teardown
 below ONLY when the captured intent's end condition is actually met** — the
 deadline reached, the user's release given, or (for *achieve-and-close*) the
-outcome verified with nothing pending.
+outcome verified with nothing pending; for *run-to-PR*, the requested PRs
+verified and handed to their authorized repository owner.
 
-When you close: final Phase 5 pass; merge
-or honestly disposition every open lane; then **run `infra_ledger.sh BATCH_DIR
+When you close: final Phase 5 pass; the authorized repository owner or batch
+authority merges, retains a verified PR when the captured intent allows, or
+honestly dispositions every open lane; then **run `infra_ledger.sh BATCH_DIR
 sweep --all-owners` and do not treat the highway as closed until it exits
 clean** — it tears
 down every DTU, gitea instance, container, service, and background process the
@@ -440,8 +456,9 @@ still standing), final report matches git facts.
 10. **The script owns the manifest. Never hand-write it.**
 11. **Speculative lanes only after the critical path is saturated, and label
     them.** Spare capacity is an investment budget, not a reason to pad.
-12. **Lanes never merge to main; the orchestrator merges.** One repo per lane;
-    live shared services are read-only to lanes.
+12. **Lanes never merge to main; only the authorized repository owner or batch
+    authority merges.** One repo per lane; live shared services are read-only
+    to lanes. A watchdog advisory is not merge consent.
 13. **If `$ARGUMENTS` is empty, ask** — do not invent an outcome. (The fork
     sibling of this failure killed a real goal-batch invocation silently.)
 14. **Infrastructure is ledgered at creation and swept at close — nothing the
@@ -473,7 +490,7 @@ still standing), final report matches git facts.
 - A hook that injects `highway_status.sh` output into every turn (the way the
   todo reminder does) would make drift structurally impossible to ignore —
   requires bundle work.
-- `amplifier run --resume` wakes are best-effort against a session mid-turn;
-  the `wake-needed` file is the durable fallback signal.
+- An atomic CLI session-idleness handoff is not implemented. Until that exists,
+  the watchdog deliberately records durable advisories only.
 - Deeper work-tracker integration (auto-READY counts) would remove the one
   hand-carried number in the status call.
