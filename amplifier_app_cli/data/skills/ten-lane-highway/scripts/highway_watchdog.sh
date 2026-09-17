@@ -10,9 +10,10 @@
 #     "<skill_dir>/scripts/highway_watchdog.sh BATCH_DIR WIDTH SESSION_ID [INTERVAL] [MAX_HOURS]"
 #
 # Advisory triggers: a lane ended | fresh runnable work below WIDTH | stale live
-# manager. The watchdog appends each rate-eligible reason to `wake-needed`.
-# The orchestrator touches BATCH_DIR/.manager-heartbeat every cycle and deletes
-# wake-needed entries it has processed.
+# manager. The watchdog appends every observed trigger to `wake-needed`;
+# only log verbosity is rate-limited. The orchestrator touches
+# BATCH_DIR/.manager-heartbeat and records its last processed line in HIGHWAY.md.
+# Never truncate or unlink `wake-needed` while the watchdog is running.
 set -uo pipefail   # deliberately NOT -e: the watch loop must survive transient failures
 
 BATCH_DIR=${1:?BATCH_DIR required}
