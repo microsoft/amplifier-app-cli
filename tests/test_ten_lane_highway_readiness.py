@@ -348,9 +348,15 @@ def test_watchdog_advisories_remain_append_only_across_runs(tmp_path: Path) -> N
 
 def test_highway_docs_forbid_clearing_wake_needed_while_watchdog_runs() -> None:
     docs = (
-        f"{SKILL.read_text(encoding='utf-8')}\n{FIRST_RUN.read_text(encoding='utf-8')}"
+        f"{SKILL.read_text(encoding='utf-8')}\n"
+        f"{FIRST_RUN.read_text(encoding='utf-8')}\n"
+        f"{WATCHDOG.read_text(encoding='utf-8')}"
     )
 
     assert ": > <BATCH_DIR>/wake-needed" not in docs
     assert "clear wake-needed" not in docs
+    assert "wake-needed entries it has processed" not in docs
     assert "append-only" in docs
+    assert (
+        "Never truncate or unlink `wake-needed` while the watchdog is running." in docs
+    )
