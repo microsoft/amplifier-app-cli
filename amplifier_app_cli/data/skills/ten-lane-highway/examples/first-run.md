@@ -1,7 +1,7 @@
 # First run — a 15-minute throwaway highway
 
 The point of a first run is to see the whole loop — **gate → lanes → watchdog →
-merges → refill → close** — on work you do not care about, at width 2, before
+authorized landings → refill → close** — on work you do not care about, at width 2, before
 you trust it with something real. Nothing here is special to width 2; it is just
 small enough to watch every moving part.
 
@@ -37,13 +37,16 @@ small enough to watch every moving part.
 4. **Saturate (Phase 4).** Two lanes come up — each a worktree + branch + tmux
    session running `/goal` — then the **watchdog** starts on its isolated batch
    tmux
-   socket. Confirm with the status instrument: both lanes LIVE, watchdog LIVE,
-   `DEFICIT=0`.
+   socket. It records durable `wake-needed` advisories but never re-enters the
+   manager session. Confirm with the status instrument: both lanes LIVE,
+   watchdog LIVE, `DEFICIT=0`.
 
 5. **Watch it run (Phase 5).** As a lane finishes, the manager verifies it from
-   git facts, merges `--no-ff`, tears the lane down, and **refills the instant a
-   slot opens** from the pre-composed queue — a bare `launch_lane.sh` call, no
-   re-goalify. The todo lane board is your live dashboard.
+   git facts; the authorized repository owner or batch authority may merge
+   `--no-ff` or retain a verified PR when the captured intent allows, then tears
+   the lane down and **refills the instant a slot opens** from the pre-composed
+   queue — a bare `launch_lane.sh` call, no re-goalify. The todo lane board is
+   your live dashboard.
 
 6. **Close (Phase 7).** With `achieve-and-close` and nothing pending, the
    manager does a final full-suite sweep, runs the infra-ledger sweep
@@ -59,6 +62,10 @@ small enough to watch every moving part.
 - Every merge is proven by the merged lane's **own tests**, with the full suite
   on a cadence and at close — never a lane's self-report.
 - `HIGHWAY.md` and the todo board agree at the end of every cycle.
+- The watchdog's `wake-needed` file is an append-only advisory record, not a
+  notification or authorization. After a bounded snapshot, the manager records
+  its last processed line in `HIGHWAY.md`; it never truncates or unlinks the
+  file while the watchdog runs, and archives it after the watchdog stops.
 
 ## Stop everything (panic button)
 

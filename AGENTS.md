@@ -135,3 +135,10 @@ the first install and the entire file is identical after a repeat install.
 
 REPL exit commands return an action from `CommandProcessor`; only the normal
 REPL loop may terminate so its shared `finally` runs cleanup and closes TTY input once.
+
+## Highway watchdog regression
+
+The Highway watchdog records append-only `wake-needed` advisories only: it must
+not invoke Amplifier or consume markers, including triggers within its log
+verbosity gap. Keep its bounded fake-command tests proving each trigger records
+without starting host tmux or an Amplifier session.
