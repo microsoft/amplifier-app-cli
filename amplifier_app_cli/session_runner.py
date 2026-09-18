@@ -189,24 +189,18 @@ async def create_initialized_session(
         and config.root_state is None
         and inherited_root_id in (None, session_id)
     ):
-        from .shared_root_state import (
-            SharedRootSession,
-            SharedRootStateUnavailableError,
-        )
+        from .shared_root_state import SharedRootSession
 
+        config.root_state = SharedRootSession.acquire(session_id)
         try:
-            config.root_state = SharedRootSession.acquire(session_id)
-        except SharedRootStateUnavailableError:
-            # This source branch deliberately has no Foundation dependency pin.
-            # Keep ordinary native CLI persistence working until the frozen
-            # shared-state API lands; we never substitute a CLI-made lock or
-            # checkpoint implementation for Foundation's API.
-            logger.debug("Foundation shared root state is not available yet.")
-        else:
             shared_resume = config.root_state.read()
             if shared_resume is not None:
                 config.initial_transcript, shared_metadata = shared_resume
                 config.config.setdefault("shared_root_metadata", shared_metadata)
+        except BaseException:
+            config.root_state.release()
+            config.root_state = None
+            raise
 
     # Set root session metadata once — propagates to all child sessions via config deep-merge.
     # Guards ensure values are only stamped on first creation (root session); child sessions

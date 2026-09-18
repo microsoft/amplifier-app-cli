@@ -294,12 +294,12 @@ def _current_project_session_ids(incomplete: str) -> list[str]:
         from ..shared_root_state import list_shared_root_ids
 
         names = {name for name, _mtime in entries}
-        names.update(
-            session_id
+        entries.extend(
+            (session_id, 0.0)
             for session_id in list_shared_root_ids()
-            if _is_safe_candidate(session_id) and session_id.startswith(incomplete)
+            if session_id not in names
+            and _is_safe_candidate(session_id) and session_id.startswith(incomplete)
         )
-        return sorted(names)[:100]
     except Exception:
         # Completion is advisory; root execution itself fails loudly before it
         # builds context if the required Foundation API is unavailable.

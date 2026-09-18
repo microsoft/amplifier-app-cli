@@ -224,6 +224,27 @@ async def test_initializer_acquires_before_context_and_restores_common_root(
 
 
 @pytest.mark.asyncio
+async def test_missing_shared_backend_blocks_initializer_before_context(monkeypatch):
+    from amplifier_app_cli import session_runner
+    from amplifier_app_cli.shared_root_state import SharedRootStateUnavailableError
+
+    create = AsyncMock()
+    acquire = MagicMock(side_effect=SharedRootStateUnavailableError("missing backend"))
+    monkeypatch.setattr(session_runner, "_create_bundle_session", create)
+    monkeypatch.setattr(
+        "amplifier_app_cli.shared_root_state.SharedRootSession.acquire", acquire
+    )
+    config = session_runner.SessionConfig(
+        config={}, search_paths=[], verbose=False, shared_root=True,
+        session_id="missing-backend",
+    )
+    with patch("amplifier_app_cli.commands.init.check_first_run", return_value=False):
+        with pytest.raises(SharedRootStateUnavailableError, match="missing backend"):
+            await session_runner.create_initialized_session(config, MagicMock())
+    create.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_initializer_does_not_create_shared_writer_for_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
