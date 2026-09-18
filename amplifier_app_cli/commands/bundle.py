@@ -892,33 +892,26 @@ def _get_bundle_source_scope(app_settings: AppSettings) -> str:
     help="Add as app bundle (automatically composed with all sessions)",
 )
 def bundle_add(uri: str, name_override: str | None, app: bool):
-    """Add a bundle to the registry for discovery.
+    """Add a behavior or root bundle.
 
     URI is the location of the bundle (git+https://, file://, etc.).
     The bundle name is automatically extracted from the bundle's metadata.
     Use --name to specify a custom alias instead.
 
-    Use --app to add as an "app bundle" that is automatically composed onto
-    every session, regardless of which primary bundle is used. This is useful
-    for team-wide behaviors, support bundles, or personal preferences.
+    Use --app for a behavior that is automatically composed onto every session,
+    regardless of the selected root bundle. Omit --app to register a selectable
+    root, then activate it with `amplifier bundle use <name>`.
 
     Examples:
 
         \b
-        # Auto-derives name from bundle metadata
-        amplifier bundle add git+https://github.com/microsoft/amplifier-bundle-recipes@main
+        # Add a behavior to the existing host
+        amplifier bundle add git+https://github.com/org/my-bundle@main#subdirectory=behaviors/my-capability.yaml --app
 
         \b
-        # Use custom alias
-        amplifier bundle add git+https://github.com/microsoft/amplifier-bundle-recipes@main --name my-recipes
-
-        \b
-        # Local bundle
-        amplifier bundle add file:///path/to/bundle
-
-        \b
-        # Add as app bundle (always active)
-        amplifier bundle add git+https://github.com/org/team-bundle@main --app
+        # Register a complete root (the --name alias is optional)
+        amplifier bundle add git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md --name anchors
+        amplifier bundle use anchors
     """
     from amplifier_foundation import load_bundle
 
