@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,6 +13,7 @@ from amplifier_app_cli.incremental_save import IncrementalSaveHook
 from amplifier_app_cli.session_store import SessionStore
 from amplifier_app_cli.shared_root_state import (
     SharedRootSession,
+    SharedRootStateUnavailableError,
     load_root_resume,
     resolve_root_session_id,
 )
@@ -93,7 +96,7 @@ def test_root_checkpoint_writes_common_authority_before_native_projection(
 
     assert shared_api["web-root"]["bundle"] == "portable-bundle"
     assert shared_api["web-root"]["messages"] == messages
-    assert shared_api["web-root"]["metadata"]["api_key"] != "secret"
+    assert "api_key" not in shared_api["web-root"]["metadata"]
     assert native.load("web-root")[0] == messages
     root.release()
     assert _SharedStore.acquired[0].released is True
@@ -226,7 +229,6 @@ async def test_initializer_acquires_before_context_and_restores_common_root(
 @pytest.mark.asyncio
 async def test_missing_shared_backend_blocks_initializer_before_context(monkeypatch):
     from amplifier_app_cli import session_runner
-    from amplifier_app_cli.shared_root_state import SharedRootStateUnavailableError
 
     create = AsyncMock()
     acquire = MagicMock(side_effect=SharedRootStateUnavailableError("missing backend"))
@@ -242,6 +244,160 @@ async def test_missing_shared_backend_blocks_initializer_before_context(monkeypa
         with pytest.raises(SharedRootStateUnavailableError, match="missing backend"):
             await session_runner.create_initialized_session(config, MagicMock())
     create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_windows_runtime_uses_native_persistence_once_without_acquiring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Simulate Windows through sys.platform, never by replacing os.name."""
+
+    from amplifier_app_cli import session_runner, shared_root_state
+
+    monkeypatch.setattr(shared_root_state.sys, "platform", "win32")
+    monkeypatch.setattr(shared_root_state, "_WINDOWS_NATIVE_NOTICE_EMITTED", False)
+    acquire = MagicMock()
+    session = MagicMock()
+    session.config = {}
+    session.coordinator.get.return_value = None
+    monkeypatch.setattr(
+        "amplifier_app_cli.shared_root_state.SharedRootSession.acquire", acquire
+    )
+    monkeypatch.setattr(
+        session_runner, "_create_bundle_session", AsyncMock(return_value=session)
+    )
+    config = session_runner.SessionConfig(
+        config={}, search_paths=[], verbose=False, session_id="windows-root", shared_root=True
+    )
+    with (
+        patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
+        patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+        patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+    ):
+        initialized = await session_runner.create_initialized_session(config, MagicMock())
+
+    assert initialized.root_state is None
+    assert config.shared_root is False
+    acquire.assert_not_called()
+
+
+def test_windows_notice_is_stderr_only_and_emitted_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from amplifier_app_cli import shared_root_state
+
+    monkeypatch.setattr(shared_root_state.sys, "platform", "win32")
+    monkeypatch.setattr(shared_root_state, "_WINDOWS_NATIVE_NOTICE_EMITTED", False)
+    stderr = io.StringIO()
+    with contextlib.redirect_stderr(stderr):
+        shared_root_state.warn_windows_native_persistence()
+        shared_root_state.warn_windows_native_persistence()
+
+    assert stderr.getvalue().count("unavailable on Windows") == 1
+
+
+def test_missing_delete_helper_fails_loudly_on_posix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partial Foundation API is never treated as a native unlocked fallback."""
+
+    import amplifier_foundation.session.shared_state as foundation_shared_state
+    from amplifier_app_cli import shared_root_state
+
+    monkeypatch.setattr(shared_root_state.sys, "platform", "linux")
+    monkeypatch.setattr(foundation_shared_state, "HeldSession", type("HeldSession", (), {}))
+
+    with pytest.raises(SharedRootStateUnavailableError, match="delete_checkpoint"):
+        shared_root_state._shared_api()
+
+
+@pytest.mark.asyncio
+async def test_legacy_native_session_id_skips_shared_lock_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Existing underscore IDs remain resumable through native persistence."""
+
+    from amplifier_app_cli import session_runner
+
+    session = MagicMock()
+    session.config = {}
+    session.coordinator.get.return_value = None
+    acquire = MagicMock()
+    monkeypatch.setattr(
+        "amplifier_app_cli.shared_root_state.SharedRootSession.acquire", acquire
+    )
+    monkeypatch.setattr(
+        session_runner, "_create_bundle_session", AsyncMock(return_value=session)
+    )
+    config = session_runner.SessionConfig(
+        config={},
+        search_paths=[],
+        verbose=False,
+        session_id="legacy_native_name",
+        shared_root=True,
+    )
+    with (
+        patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
+        patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+        patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+    ):
+        initialized = await session_runner.create_initialized_session(config, MagicMock())
+
+    assert initialized.root_state is None
+    assert config.shared_root is False
+    acquire.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_leading_hyphen_legacy_id_skips_shared_lock_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The compatibility predicate exactly matches Foundation's first character rule."""
+
+    from amplifier_app_cli import session_runner
+
+    session = MagicMock()
+    session.config = {}
+    session.coordinator.get.return_value = None
+    acquire = MagicMock()
+    monkeypatch.setattr(
+        "amplifier_app_cli.shared_root_state.SharedRootSession.acquire", acquire
+    )
+    monkeypatch.setattr(
+        session_runner, "_create_bundle_session", AsyncMock(return_value=session)
+    )
+    config = session_runner.SessionConfig(
+        config={},
+        search_paths=[],
+        verbose=False,
+        session_id="-legacy",
+        shared_root=True,
+    )
+    with (
+        patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
+        patch("amplifier_app_cli.ui.CLIApprovalSystem"),
+        patch("amplifier_app_cli.ui.CLIDisplaySystem"),
+    ):
+        initialized = await session_runner.create_initialized_session(config, MagicMock())
+
+    assert initialized.root_state is None
+    assert config.shared_root is False
+    acquire.assert_not_called()
+
+
+def test_busy_diagnostics_remove_terminal_control_sequences() -> None:
+    from amplifier_app_cli.shared_root_state import SharedRootSessionBusyError
+
+    message = str(
+        SharedRootSessionBusyError(
+            {"app": "bad\x1b[31mowner", "pid": 12, "tty": "\x07tty"},
+            "/state/\x1b[2Jroot",
+        )
+    )
+
+    assert "\x1b" not in message
+    assert "\x07" not in message
+    assert "bad [31mowner" in message
 
 
 @pytest.mark.asyncio

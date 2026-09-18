@@ -189,18 +189,34 @@ async def create_initialized_session(
         and config.root_state is None
         and inherited_root_id in (None, session_id)
     ):
-        from .shared_root_state import SharedRootSession
+        from .shared_root_state import (
+            SharedRootSession,
+            _shared_root_platform_supported,
+            shared_root_id_supported,
+            warn_windows_native_persistence,
+        )
 
-        config.root_state = SharedRootSession.acquire(session_id)
-        try:
-            shared_resume = config.root_state.read()
-            if shared_resume is not None:
-                config.initial_transcript, shared_metadata = shared_resume
-                config.config.setdefault("shared_root_metadata", shared_metadata)
-        except BaseException:
-            config.root_state.release()
-            config.root_state = None
-            raise
+        if not _shared_root_platform_supported():
+            # Windows keeps its established local persistence.  It must not
+            # attempt a POSIX lock or present a native writer as shared.
+            warn_windows_native_persistence()
+            config.shared_root = False
+        elif not shared_root_id_supported(session_id):
+            # Native sessions historically allowed a wider ID vocabulary.
+            # Continue those old sessions locally rather than making an
+            # otherwise resumable transcript fail Foundation validation.
+            config.shared_root = False
+        else:
+            config.root_state = SharedRootSession.acquire(session_id)
+            try:
+                shared_resume = config.root_state.read()
+                if shared_resume is not None:
+                    config.initial_transcript, shared_metadata = shared_resume
+                    config.config.setdefault("shared_root_metadata", shared_metadata)
+            except BaseException:
+                config.root_state.release()
+                config.root_state = None
+                raise
 
     # Set root session metadata once — propagates to all child sessions via config deep-merge.
     # Guards ensure values are only stamped on first creation (root session); child sessions

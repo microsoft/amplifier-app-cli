@@ -8,6 +8,7 @@ import os
 import shlex
 import signal
 import sys
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1901,6 +1902,7 @@ class CommandProcessor:
             from amplifier_foundation.session import (
                 count_turns,
                 fork_session,
+                fork_session_in_memory,
                 get_turn_summary,
             )
         except ImportError:
@@ -1909,8 +1911,9 @@ class CommandProcessor:
         store = SessionStore()
         session_id = self.session.coordinator.session_id
         session_dir = store.base_dir / session_id
+        root_state = self.session.coordinator.get_capability("cli.shared_root_state")
 
-        if not session_dir.exists():
+        if root_state is None and not session_dir.exists():
             return f"Error: Session directory not found: {session_dir}"
 
         # Get current messages to count turns
@@ -1938,6 +1941,19 @@ class CommandProcessor:
 
         if len(parts) >= 2:
             custom_name = parts[1]
+
+        if custom_name:
+            from .shared_root_state import list_shared_root_ids
+
+            try:
+                if (
+                    custom_name == session_id
+                    or store.exists(custom_name)
+                    or custom_name in list_shared_root_ids()
+                ):
+                    return f"Error: Fork target '{custom_name}' already exists."
+            except Exception as exc:
+                return f"Error checking fork target: {exc}"
 
         # If no turn specified, show turn previews (most recent first)
         if turn is None:
@@ -1976,12 +1992,45 @@ class CommandProcessor:
 
         # Perform the fork
         try:
-            result = fork_session(
-                session_dir,
-                turn=turn,
-                new_session_id=custom_name,
-                include_events=True,
-            )
+            if root_state is not None:
+                # This root already owns Foundation's lock.  Fork from its
+                # live context rather than reacquiring the same lock or
+                # reading the native compatibility projection.
+                result = fork_session_in_memory(
+                    messages, turn=turn, parent_id=session_id
+                )
+                child_id = custom_name or result.session_id
+                now = datetime.now(UTC).isoformat()
+                shared_parent = root_state.read()
+                parent_metadata = (
+                    shared_parent[1]
+                    if shared_parent is not None
+                    else store.get_metadata_if_exists(session_id)
+                )
+                store.save_new(
+                    child_id,
+                    result.messages or [],
+                    {
+                        "session_id": child_id,
+                        "parent_id": session_id,
+                        "forked_from_turn": result.forked_from_turn,
+                        "forked_at": now,
+                        "created": now,
+                        "turn_count": count_turns(result.messages or []),
+                        "bundle": parent_metadata.get("bundle", self.bundle_name),
+                        "model": parent_metadata.get("model"),
+                    },
+                )
+                result.session_id = child_id
+            else:
+                child_id = custom_name or str(uuid.uuid4())
+                store.reserve_session(child_id)
+                result = fork_session(
+                    session_dir,
+                    turn=turn,
+                    new_session_id=child_id,
+                    include_events=True,
+                )
 
             lines = [
                 f"✓ Forked session created: {result.session_id}",
@@ -3794,8 +3843,17 @@ async def interactive_chat(
         shared_root=True,
     )
 
-    # Create fully initialized session (handles all setup including resume)
-    initialized = await create_initialized_session(session_config, console)
+    # Create fully initialized session (handles all setup including resume).
+    # The Foundation lock is acquired here, before any provider or REPL work.
+    # Render contention as an actionable CLI error rather than letting
+    # asyncio surface a raw traceback.
+    from .shared_root_state import SharedRootSessionBusyError
+
+    try:
+        initialized = await create_initialized_session(session_config, console)
+    except SharedRootSessionBusyError as exc:
+        console.print(f"[red]Error:[/red] {escape_markup(exc)}")
+        raise SystemExit(1) from None
     session = initialized.session
     actual_session_id = initialized.session_id
 
@@ -4506,8 +4564,34 @@ async def execute_single(
         shared_root=True,
     )
 
-    # Create fully initialized session (handles all setup including resume)
-    initialized = await create_initialized_session(session_config, console)
+    # Session startup is outside the execution try/finally, so contention
+    # needs its own boundary.  JSON diagnostics stay on stderr while stdout
+    # receives exactly one parseable error object.
+    from .shared_root_state import SharedRootSessionBusyError
+
+    try:
+        initialized = await create_initialized_session(session_config, console)
+    except SharedRootSessionBusyError as exc:
+        if output_format in ["json", "json-trace"] and original_stdout is not None:
+            sys.stdout = original_stdout
+            print(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                        "session_id": session_id,
+                        "timestamp": datetime.now(UTC).isoformat(),
+                    },
+                    indent=2,
+                )
+            )
+            sys.stdout.flush()
+            print(str(exc), file=sys.stderr)
+            console.file = original_console_file
+        else:
+            console.print(f"[red]Error:[/red] {escape_markup(exc)}")
+        raise SystemExit(1) from None
     session = initialized.session
     actual_session_id = initialized.session_id
 
