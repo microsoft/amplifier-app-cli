@@ -68,7 +68,18 @@ class _SharedStore:
 
 
 @pytest.fixture
-def shared_api(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, dict]:
+def posix_shared_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise the shared-policy branch with fake locking on every CI OS."""
+    from amplifier_app_cli import shared_root_state
+
+    monkeypatch.setattr(shared_root_state, "_shared_root_platform_supported", lambda: True)
+    monkeypatch.setattr(shared_root_state, "_require_shared_root_platform", lambda: None)
+
+
+@pytest.fixture
+def shared_api(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, posix_shared_policy
+) -> dict[str, dict]:
     from amplifier_app_cli import shared_root_state
 
     _SharedStore.records = {}
@@ -171,6 +182,7 @@ async def test_incremental_root_save_uses_live_held_state_not_native_store() -> 
 @pytest.mark.asyncio
 async def test_initializer_acquires_before_context_and_restores_common_root(
     monkeypatch: pytest.MonkeyPatch,
+    posix_shared_policy,
 ) -> None:
     """Exercise the real initializer boundary with a deterministic core fixture."""
 
@@ -187,6 +199,7 @@ async def test_initializer_acquires_before_context_and_restores_common_root(
     context.get_messages = AsyncMock(return_value=[])
     session = MagicMock()
     session.config = {}
+    session.coordinator.get_capability.return_value = None
     session.coordinator.get.side_effect = lambda key: context if key == "context" else None
 
     def acquire(session_id: str):
@@ -227,7 +240,9 @@ async def test_initializer_acquires_before_context_and_restores_common_root(
 
 
 @pytest.mark.asyncio
-async def test_missing_shared_backend_blocks_initializer_before_context(monkeypatch):
+async def test_missing_shared_backend_blocks_initializer_before_context(
+    monkeypatch, posix_shared_policy
+):
     from amplifier_app_cli import session_runner
 
     create = AsyncMock()

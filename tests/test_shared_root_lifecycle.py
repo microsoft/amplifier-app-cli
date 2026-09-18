@@ -341,6 +341,7 @@ def test_busy_shared_root_is_a_click_error_with_parseable_json_stdout(
     payload = __import__("json").loads(result.stdout)
     assert payload["error_type"] == "SharedRootSessionBusyError"
     assert "finish/exit that owner then retry" in payload["error"].lower()
-    assert "process=" in payload["error"]
+    # Process-start identity is best effort (/proc on Linux); PID is portable.
+    assert f"pid={holder.pid}" in payload["error"]
     assert str(tmp_path / "shared-state") in payload["error"]
     assert "Shared root session is busy" in result.stderr
