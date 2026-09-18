@@ -433,7 +433,7 @@ class SessionStore:
         return matches[0]
 
     def list_sessions(self, *, top_level_only: bool = True) -> list[str]:
-        """List session IDs.
+        """List saved session IDs, excluding log-only startup/cleanup directories.
 
         Args:
             top_level_only: If True (default), return only top-level sessions,
@@ -452,6 +452,12 @@ class SessionStore:
 
                 # Filter to top-level sessions if requested
                 if top_level_only and not is_top_level_session(session_name):
+                    continue
+
+                # Logging can create a directory before any conversation is saved.
+                # Keep those diagnostics on disk, but do not offer them as resumable
+                # sessions. An empty saved transcript is still a valid session.
+                if not (session_dir / "transcript.jsonl").is_file():
                     continue
 
                 # Include session with its modification time for sorting

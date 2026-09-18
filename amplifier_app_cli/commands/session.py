@@ -1291,14 +1291,14 @@ def _get_session_display_info(store: SessionStore, session_id: str) -> dict:
         session_id: Session ID to get info for
 
     Returns:
-        Dict with keys: session_id, name, bundle, turn_count, time_ago, mtime
+        Dict with keys: session_id, name, bundle, message_count, time_ago, mtime
     """
     session_path = store.base_dir / session_id
     info = {
         "session_id": session_id,
         "name": "",
         "bundle": "unknown",
-        "turn_count": "?",
+        "message_count": "?",
         "time_ago": "unknown",
         "mtime": 0,
     }
@@ -1317,7 +1317,7 @@ def _get_session_display_info(store: SessionStore, session_id: str) -> dict:
     if transcript_file.exists():
         try:
             with open(transcript_file, encoding="utf-8") as f:
-                info["turn_count"] = str(sum(1 for _ in f))
+                info["message_count"] = str(sum(1 for line in f if line.strip()))
         except Exception:
             pass
 
@@ -1417,7 +1417,7 @@ def _interactive_resume_impl(
             console.print(
                 f"  [cyan][{idx}][/cyan] {name_display}{short_id} | "
                 f"[magenta]{bundle}[/magenta] | "
-                f"{info['turn_count']} turns | "
+                f"{info['message_count']} messages | "
                 f"[dim]{info['time_ago']}[/dim]",
                 highlight=False,
             )
