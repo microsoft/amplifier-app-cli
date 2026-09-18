@@ -44,6 +44,7 @@ class IncrementalSaveHook:
         session_id: str,
         bundle_name: str,
         config: dict[str, Any],
+        root_state: Any = None,
     ):
         """Initialize incremental save hook.
 
@@ -59,6 +60,7 @@ class IncrementalSaveHook:
         self.session_id = session_id
         self.bundle_name = bundle_name
         self.config = config
+        self.root_state = root_state
         self._last_message_count = 0
 
     async def on_tool_post(self, event: str, data: dict[str, Any]):
@@ -117,8 +119,14 @@ class IncrementalSaveHook:
                 "working_dir": str(Path.cwd().resolve()),
             }
 
-            # Save via SessionStore (atomic writes)
-            self.store.save(self.session_id, messages, metadata)
+            # Root checkpoints must go through the live Foundation writer
+            # handle.  Child sessions retain their independent native storage.
+            if self.root_state is not None:
+                self.root_state.checkpoint(
+                    self.store, messages, bundle=self.bundle_name, metadata=metadata
+                )
+            else:
+                self.store.save(self.session_id, messages, metadata)
 
             tool_name = data.get("tool_name", "unknown")
             logger.debug(
@@ -154,6 +162,7 @@ def register_incremental_save(
     session_id: str,
     bundle_name: str,
     config: dict[str, Any],
+    root_state: Any = None,
 ) -> IncrementalSaveHook | None:
     """Register incremental save hook on session.
 
@@ -175,7 +184,9 @@ def register_incremental_save(
         logger.debug("Hooks not available, skipping incremental save registration")
         return None
 
-    hook = IncrementalSaveHook(session, store, session_id, bundle_name, config)
+    hook = IncrementalSaveHook(
+        session, store, session_id, bundle_name, config, root_state=root_state
+    )
 
     # Register with priority 900 (high, but below trace collector at 1000)
     # This ensures tracing completes before we save

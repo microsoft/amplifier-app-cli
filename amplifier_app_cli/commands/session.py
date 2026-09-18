@@ -34,6 +34,12 @@ from ..lib.settings import AppSettings
 from ..project_utils import get_project_slug
 from ..runtime.config import resolve_config
 from ..session_store import SessionStore, extract_session_mode
+from ..shared_root_state import (
+    is_shared_root,
+    list_shared_root_ids,
+    load_root_resume,
+    resolve_root_session_id,
+)
 from ..types import (
     ExecuteSingleProtocol,
     InteractiveChatProtocol,
@@ -115,7 +121,7 @@ def _prepare_resume_context(
             - active_bundle: str (display name like "bundle:foundation")
     """
     store = SessionStore()
-    transcript, metadata = store.load(session_id)
+    transcript, metadata = load_root_resume(store, session_id)
 
     # Extract bundle from saved session metadata
     saved_bundle, _ = extract_session_mode(metadata)
@@ -433,7 +439,11 @@ def register_session_commands(
         store = SessionStore()
 
         # Get most recent session
-        session_ids = store.list_sessions()
+        try:
+            shared_ids = list_shared_root_ids()
+        except Exception:
+            shared_ids = []
+        session_ids = list(dict.fromkeys([*store.list_sessions(), *shared_ids]))
         if not session_ids:
             console.print("[yellow]No sessions found to resume.[/yellow]")
             console.print("\nStart a new session with: [cyan]amplifier[/cyan]")
@@ -771,7 +781,7 @@ def register_session_commands(
         store = SessionStore()
 
         try:
-            session_id = store.find_session(session_id)
+            session_id = resolve_root_session_id(store, session_id)
         except FileNotFoundError:
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
@@ -780,7 +790,7 @@ def register_session_commands(
             sys.exit(1)
 
         try:
-            transcript, metadata = store.load(session_id)
+            transcript, metadata = load_root_resume(store, session_id)
         except Exception as exc:
             console.print(f"[red]Error loading session:[/red] {escape_markup(exc)}")
             sys.exit(1)
@@ -859,12 +869,19 @@ def register_session_commands(
 
         # Find the session
         try:
-            session_id = store.find_session(session_id)
+            session_id = resolve_root_session_id(store, session_id)
         except FileNotFoundError:
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
         except ValueError as e:
             console.print(f"[red]Error:[/red] {escape_markup(e)}")
+            sys.exit(1)
+
+        if is_shared_root(session_id):
+            console.print(
+                "[red]Refusing to fork shared session history.[/red] "
+                "Shared-root destructive history operations are not supported."
+            )
             sys.exit(1)
 
         session_dir = store.base_dir / session_id
@@ -1008,7 +1025,7 @@ def register_session_commands(
         store = SessionStore()
 
         try:
-            session_id = store.find_session(session_id)
+            session_id = resolve_root_session_id(store, session_id)
         except FileNotFoundError:
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
@@ -1021,6 +1038,13 @@ def register_session_commands(
             if confirm.lower() != "y":
                 console.print("[yellow]Cancelled[/yellow]")
                 return
+
+        if is_shared_root(session_id):
+            console.print(
+                "[red]Refusing to delete shared session history.[/red] "
+                "Shared-root deletion is not supported by the WARM contract."
+            )
+            sys.exit(1)
 
         try:
             import shutil
@@ -1073,7 +1097,7 @@ def register_session_commands(
         store = SessionStore()
 
         try:
-            session_id = store.find_session(session_id)
+            session_id = resolve_root_session_id(store, session_id)
         except FileNotFoundError:
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
@@ -1145,6 +1169,16 @@ def register_session_commands(
     def sessions_cleanup(days: int, force: bool):
         """Delete sessions older than N days."""
         store = SessionStore()
+        try:
+            shared_ids = list_shared_root_ids()
+        except Exception:
+            shared_ids = []
+        if shared_ids:
+            console.print(
+                "[red]Refusing shared-session cleanup.[/red] "
+                "Shared-root destructive history operations are not supported."
+            )
+            sys.exit(1)
 
         if not force:
             confirm = console.input(f"Delete sessions older than {days} days? [y/N]: ")
@@ -1192,7 +1226,7 @@ def register_session_commands(
             # Direct resume with partial ID
             store = SessionStore()
             try:
-                full_id = store.find_session(session_id)
+                full_id = resolve_root_session_id(store, session_id)
             except FileNotFoundError:
                 console.print(
                     f"[red]Error:[/red] No session found matching '{session_id}'"
@@ -1318,7 +1352,11 @@ def _interactive_resume_impl(
     """
     store = SessionStore()
     # list_sessions() defaults to top_level_only=True, filtering out spawned sub-sessions
-    all_session_ids = store.list_sessions()
+    try:
+        shared_ids = list_shared_root_ids()
+    except Exception:
+        shared_ids = []
+    all_session_ids = list(dict.fromkeys([*store.list_sessions(), *shared_ids]))
 
     if not all_session_ids:
         console.print("[yellow]No sessions found to resume.[/yellow]")
@@ -1466,7 +1504,13 @@ def _display_project_sessions(
     view: str = "compact",
     fmt: str = "text",
 ) -> None:
-    session_ids = store.list_sessions()[:limit]
+    try:
+        shared_ids = list_shared_root_ids()
+    except Exception:
+        shared_ids = []
+    session_ids = list(dict.fromkeys([*store.list_sessions(), *shared_ids]))[
+        :limit
+    ]
 
     if not session_ids:
         console.print("[yellow]No sessions found.[/yellow]")
@@ -1482,8 +1526,12 @@ def _display_project_sessions(
             modified = "unknown"
 
         session_name = ""
+        shared_transcript: list[dict] | None = None
         try:
-            metadata = store.get_metadata(session_id)
+            if session_path.exists():
+                metadata = store.get_metadata(session_id)
+            else:
+                shared_transcript, metadata = load_root_resume(store, session_id)
             session_name = metadata.get("name", "")
         except Exception:
             pass
@@ -1496,6 +1544,8 @@ def _display_project_sessions(
                     message_count = str(sum(1 for _ in f))
             except Exception:
                 pass
+        elif shared_transcript is not None:
+            message_count = str(len(shared_transcript))
 
         short_id = session_id[:8] + "..."
         items.append(

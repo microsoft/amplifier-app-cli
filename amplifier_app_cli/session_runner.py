@@ -91,6 +91,15 @@ class SessionConfig:
     # as "single".  None => recorded as "unknown", never guessed.
     invocation_mode: str | None = None
 
+    # Only public CLI root entry points opt in.  Lower-level callers (notably
+    # child-spawn plumbing) retain their existing independent storage policy.
+    shared_root: bool = False
+
+    # A top-level CLI session obtains this through Foundation before its context
+    # is built.  Spawned children inherit a different root_session_id and never
+    # receive a shared writer handle.
+    root_state: Any = None
+
     @property
     def is_resume(self) -> bool:
         """True if this is resuming an existing session."""
@@ -106,10 +115,13 @@ class InitializedSession:
     config: SessionConfig
     store: SessionStore = field(default_factory=SessionStore)
     configurator: Any = None
+    root_state: Any = None
 
     async def cleanup(self):
         """Clean up session resources."""
         await self.session.cleanup()
+        if self.root_state is not None:
+            self.root_state.release()
 
 
 async def create_initialized_session(
@@ -168,6 +180,34 @@ async def create_initialized_session(
     # Step 2: Generate session ID if not provided
     session_id = config.session_id or str(uuid.uuid4())
 
+    # Acquire the one Foundation-owned writer capability before constructing
+    # provider context.  A child has an inherited, different root ID and is
+    # deliberately excluded.
+    inherited_root_id = config.config.get("root_session_id")
+    if (
+        config.shared_root
+        and config.root_state is None
+        and inherited_root_id in (None, session_id)
+    ):
+        from .shared_root_state import (
+            SharedRootSession,
+            SharedRootStateUnavailableError,
+        )
+
+        try:
+            config.root_state = SharedRootSession.acquire(session_id)
+        except SharedRootStateUnavailableError:
+            # This source branch deliberately has no Foundation dependency pin.
+            # Keep ordinary native CLI persistence working until the frozen
+            # shared-state API lands; we never substitute a CLI-made lock or
+            # checkpoint implementation for Foundation's API.
+            logger.debug("Foundation shared root state is not available yet.")
+        else:
+            shared_resume = config.root_state.read()
+            if shared_resume is not None:
+                config.initial_transcript, shared_metadata = shared_resume
+                config.config.setdefault("shared_root_metadata", shared_metadata)
+
     # Set root session metadata once — propagates to all child sessions via config deep-merge.
     # Guards ensure values are only stamped on first creation (root session); child sessions
     # inherit parent values via config deep-merge and the guards prevent overwriting them.
@@ -199,13 +239,24 @@ async def create_initialized_session(
     display_system = CLIDisplaySystem()
 
     # Step 4: Create session (bundle mode only)
-    session = await _create_bundle_session(
-        config=config,
-        session_id=session_id,
-        approval_system=approval_system,
-        display_system=display_system,
-        console=console,
-    )
+    try:
+        session = await _create_bundle_session(
+            config=config,
+            session_id=session_id,
+            approval_system=approval_system,
+            display_system=display_system,
+            console=console,
+        )
+    except BaseException:
+        # No context was created successfully, so no checkpoint is possible;
+        # release the just-acquired writer rather than leave a dead lock.
+        if config.root_state is not None:
+            config.root_state.release()
+            config.root_state = None
+        raise
+
+    if config.root_state is not None:
+        session.coordinator.register_capability("cli.shared_root_state", config.root_state)
 
     # Belt-and-suspenders: ensure session.config (== coordinator.config) carries the same
     # root-level metadata that was written into config.config above.  This matters because
@@ -355,7 +406,9 @@ async def create_initialized_session(
         session=session,
         session_id=session_id,
         config=config,
+        store=SessionStore(),
         configurator=configurator,
+        root_state=config.root_state,
     )
 
 

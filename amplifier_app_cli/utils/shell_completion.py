@@ -274,7 +274,7 @@ def complete_configured_provider_names(
 
 
 def _current_project_session_ids(incomplete: str) -> list[str]:
-    """List at most 100 matching top-level sessions without constructing SessionStore."""
+    """List at most 100 matching root sessions without constructing SessionStore."""
     sessions_dir = get_amplifier_home() / "projects" / get_project_slug() / "sessions"
     try:
         entries = [
@@ -287,7 +287,23 @@ def _current_project_session_ids(incomplete: str) -> list[str]:
             and entry.name.startswith(incomplete)
         ]
     except OSError:
-        return []
+        entries = []
+    # The shared store's list_ids API is metadata-only and does not mount a
+    # session or read transcript data, so it is safe on Click's completion path.
+    try:
+        from ..shared_root_state import list_shared_root_ids
+
+        names = {name for name, _mtime in entries}
+        names.update(
+            session_id
+            for session_id in list_shared_root_ids()
+            if _is_safe_candidate(session_id) and session_id.startswith(incomplete)
+        )
+        return sorted(names)[:100]
+    except Exception:
+        # Completion is advisory; root execution itself fails loudly before it
+        # builds context if the required Foundation API is unavailable.
+        pass
     entries.sort(key=lambda entry: (-entry[1], entry[0]))
     return [name for name, _mtime in entries[:100]]
 
