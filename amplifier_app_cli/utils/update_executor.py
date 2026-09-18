@@ -18,6 +18,7 @@ from .atomic_write import atomic_write_json
 from .source_status import CachedGitStatus
 from .source_status import UpdateReport
 from .umbrella_discovery import UmbrellaInfo
+from .uv_utils import CleanupStep
 from .uv_utils import UvStep
 from .uv_utils import defer_uv_tool_swap
 from .uv_utils import remove_stale_uv_lock
@@ -537,7 +538,20 @@ def _invalidate_modules_with_missing_deps() -> tuple[int, int]:
     return (modules_checked, len(modules_to_invalidate))
 
 
-def _defer_self_update(url: str) -> ExecutionResult:
+def _force_cleanup_steps() -> list[CleanupStep]:
+    """Return the regenerable state a forced Windows update clears post-exit."""
+    from amplifier_foundation.paths.resolution import get_amplifier_home
+
+    amplifier_home = get_amplifier_home()
+    return [
+        CleanupStep(amplifier_home / "cache", "Clearing Amplifier cache..."),
+        CleanupStep(amplifier_home / "registry.json", "Removing bundle registry..."),
+    ]
+
+
+def _defer_self_update(
+    url: str, cleanup_steps: list[CleanupStep] | None = None
+) -> ExecutionResult:
     """Hand the self-update to a script that runs after this process exits.
 
     Windows-only. ``uv tool install --reinstall`` rewrites the very tool
@@ -578,6 +592,7 @@ def _defer_self_update(url: str) -> ExecutionResult:
         ],
         success_message="Amplifier updated. Start it again with: amplifier",
         recovery_commands=[command],
+        cleanup_steps=cleanup_steps or (),
     )
 
     if not launched:
@@ -598,6 +613,33 @@ def _defer_self_update(url: str) -> ExecutionResult:
         success=True,
         staged=["amplifier"],
         messages=["Amplifier update will finish in the new window after this exits"],
+    )
+
+
+def _defer_forced_cache_cleanup() -> ExecutionResult:
+    """Clear force-update state after exit when no self-update is available."""
+    launched = defer_uv_tool_swap(
+        [],
+        operation="update",
+        intro_lines=[
+            "Amplifier force update",
+            "Clearing the regenerable cache now that the main window has exited.",
+        ],
+        success_message="Amplifier cache cleared. Start it again with: amplifier",
+        recovery_commands=[],
+        cleanup_steps=_force_cleanup_steps(),
+    )
+    if not launched:
+        return ExecutionResult(
+            success=False,
+            failed=["cache"],
+            errors={"cache": "Could not launch the deferred cache cleanup"},
+            messages=["Could not stage the Windows force-update cache cleanup"],
+        )
+    return ExecutionResult(
+        success=True,
+        staged=["cache"],
+        messages=["Amplifier cache cleanup will finish in the new window after this exits"],
     )
 
 
@@ -691,7 +733,9 @@ async def execute_self_update(
         # tool environment fails with "Access is denied (os error 5)". Hand the
         # install to a script that starts after we exit. See defer_uv_tool_swap.
         if os.name == "nt":
-            return _defer_self_update(url)
+            return _defer_self_update(
+                url, cleanup_steps=_force_cleanup_steps() if force else None
+            )
 
         # Use Popen to stream uv output for progress visibility.
         # Previously used subprocess.run(capture_output=True) which silenced
@@ -833,6 +877,15 @@ async def execute_updates(
         all_errors.update(result.errors)
         all_staged.extend(result.staged)
 
+        if not result.success:
+            overall_success = False
+    elif force and os.name == "nt":
+        result = _defer_forced_cache_cleanup()
+        all_updated.extend(result.updated)
+        all_failed.extend(result.failed)
+        all_messages.extend(result.messages)
+        all_errors.update(result.errors)
+        all_staged.extend(result.staged)
         if not result.success:
             overall_success = False
 
