@@ -92,6 +92,11 @@ dynamic temporary stdout capture.
 Run-command diagnostics before headless execution belong on stderr so JSON
 stdout remains one parseable payload.
 
+Tests must use the Foundation dependency installed in their test environment.
+Do not prepend a neighboring checkout to `sys.path`: that silently bypasses the
+published dependency and lockfile. Install an explicit local override in the
+test virtualenv when cross-repository development requires one.
+
 ## Interactive slash completion
 
 Keep completion candidate generation in `ui/completion.py`.  Its live-session

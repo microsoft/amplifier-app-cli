@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import uuid
 from collections.abc import Callable
 from datetime import UTC
 from datetime import datetime
@@ -34,6 +35,16 @@ from ..lib.settings import AppSettings
 from ..project_utils import get_project_slug
 from ..runtime.config import resolve_config
 from ..session_store import SessionStore, extract_session_mode
+from ..shared_root_state import (
+    SharedRootSession,
+    SharedRootSessionBusyError,
+    _shared_root_platform_supported,
+    is_shared_root,
+    list_shared_root_ids,
+    load_root_resume,
+    resolve_root_session_id,
+    shared_root_id_supported,
+)
 from ..types import (
     ExecuteSingleProtocol,
     InteractiveChatProtocol,
@@ -44,6 +55,7 @@ from ..types import (
 try:
     from amplifier_foundation.session import (
         fork_session,
+        fork_session_in_memory,
         get_fork_preview,
         get_session_lineage,
         get_turn_summary,
@@ -115,7 +127,7 @@ def _prepare_resume_context(
             - active_bundle: str (display name like "bundle:foundation")
     """
     store = SessionStore()
-    transcript, metadata = store.load(session_id)
+    transcript, metadata = load_root_resume(store, session_id)
 
     # Extract bundle from saved session metadata
     saved_bundle, _ = extract_session_mode(metadata)
@@ -433,7 +445,11 @@ def register_session_commands(
         store = SessionStore()
 
         # Get most recent session
-        session_ids = store.list_sessions()
+        try:
+            shared_ids = list_shared_root_ids()
+        except Exception:
+            shared_ids = []
+        session_ids = list(dict.fromkeys([*store.list_sessions(), *shared_ids]))
         if not session_ids:
             console.print("[yellow]No sessions found to resume.[/yellow]")
             console.print("\nStart a new session with: [cyan]amplifier[/cyan]")
@@ -771,7 +787,7 @@ def register_session_commands(
         store = SessionStore()
 
         try:
-            session_id = store.find_session(session_id)
+            session_id = resolve_root_session_id(store, session_id)
         except FileNotFoundError:
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
@@ -780,7 +796,7 @@ def register_session_commands(
             sys.exit(1)
 
         try:
-            transcript, metadata = store.load(session_id)
+            transcript, metadata = load_root_resume(store, session_id)
         except Exception as exc:
             console.print(f"[red]Error loading session:[/red] {escape_markup(exc)}")
             sys.exit(1)
@@ -859,7 +875,7 @@ def register_session_commands(
 
         # Find the session
         try:
-            session_id = store.find_session(session_id)
+            session_id = resolve_root_session_id(store, session_id)
         except FileNotFoundError:
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
@@ -867,25 +883,70 @@ def register_session_commands(
             console.print(f"[red]Error:[/red] {escape_markup(e)}")
             sys.exit(1)
 
+        if new_name:
+            try:
+                target_ids = {session_id, *list_shared_root_ids()}
+            except Exception as exc:
+                console.print(
+                    f"[red]Cannot safely inspect fork target:[/red] {escape_markup(exc)}"
+                )
+                sys.exit(1)
+            if store.exists(new_name) or new_name in target_ids:
+                console.print(
+                    f"[red]Error:[/red] Fork target '{escape_markup(new_name)}' already exists."
+                )
+                sys.exit(1)
+
+        try:
+            shared_root = is_shared_root(session_id)
+        except Exception as exc:
+            console.print(
+                f"[red]Cannot safely inspect shared session:[/red] {escape_markup(exc)}"
+            )
+            sys.exit(1)
+
+        shared_messages: list[dict] | None = None
+        if shared_root:
+            try:
+                root = SharedRootSession.acquire(session_id)
+                try:
+                    shared_checkpoint = root.read()
+                    if shared_checkpoint is None:
+                        raise RuntimeError("Shared checkpoint disappeared before it could be forked.")
+                    shared_messages, _ = shared_checkpoint
+                finally:
+                    root.release()
+            except SharedRootSessionBusyError as exc:
+                console.print(f"[red]Error:[/red] {escape_markup(exc)}")
+                sys.exit(1)
+            except Exception as exc:
+                console.print(
+                    f"[red]Cannot safely fork shared session:[/red] {escape_markup(exc)}"
+                )
+                sys.exit(1)
+
         session_dir = store.base_dir / session_id
 
         # If no turn specified, show interactive selection or use latest
         if turn is None:
-            # Load transcript to count turns
-            transcript_path = session_dir / "transcript.jsonl"
-            if not transcript_path.exists():
-                console.print("[red]Error:[/red] No transcript found for session")
-                sys.exit(1)
+            if shared_messages is not None:
+                messages = shared_messages
+            else:
+                # Load native transcript to count turns.
+                transcript_path = session_dir / "transcript.jsonl"
+                if not transcript_path.exists():
+                    console.print("[red]Error:[/red] No transcript found for session")
+                    sys.exit(1)
 
-            messages = []
-            with open(transcript_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            messages.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            continue
+                messages = []
+                with open(transcript_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            try:
+                                messages.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                continue
 
             max_turns = count_turns(messages)
             if max_turns == 0:
@@ -940,9 +1001,23 @@ def register_session_commands(
                 console.print("[yellow]Cancelled[/yellow]")
                 return
 
-        # Show preview before forking
+        # Show preview before forking.  Shared roots are sliced from the held
+        # authority; their stale native projection is never read.
+        shared_result = None
         try:
-            preview = get_fork_preview(session_dir, turn)
+            if shared_messages is not None:
+                shared_result = fork_session_in_memory(
+                    shared_messages, turn=turn, parent_id=session_id
+                )
+                preview = {
+                    "parent_id": session_id,
+                    "max_turns": count_turns(shared_messages),
+                    "message_count": shared_result.message_count,
+                    "has_orphaned_tools": False,
+                    "orphaned_tool_count": 0,
+                }
+            else:
+                preview = get_fork_preview(session_dir, turn)
             console.print()
             console.print("[bold]Fork Preview:[/bold]")
             console.print(f"  Parent: {preview['parent_id'][:8]}...")
@@ -959,12 +1034,59 @@ def register_session_commands(
 
         # Perform the fork
         try:
-            result = fork_session(
-                session_dir,
-                turn=turn,
-                new_session_id=new_name,
-                include_events=not no_events,
-            )
+            if _shared_root_platform_supported() and shared_root_id_supported(session_id):
+                # Re-acquire immediately before mutation. A checkpoint might
+                # have appeared or advanced after the display-only preview;
+                # never use that stale projection as the fork source.
+                action_root = SharedRootSession.acquire(session_id)
+                try:
+                    action_checkpoint = action_root.read()
+                    if action_checkpoint is not None:
+                        action_messages, action_metadata = action_checkpoint
+                        result = fork_session_in_memory(
+                            action_messages, turn=turn, parent_id=session_id
+                        )
+                        child_id = new_name or result.session_id
+                        now = datetime.now(UTC).isoformat()
+                        store.save_new(
+                            child_id,
+                            result.messages or [],
+                            {
+                                "session_id": child_id,
+                                "parent_id": session_id,
+                                "forked_from_turn": result.forked_from_turn,
+                                "forked_at": now,
+                                "created": now,
+                                "turn_count": count_turns(result.messages or []),
+                                "bundle": action_metadata.get("bundle"),
+                                "model": action_metadata.get("model"),
+                            },
+                        )
+                        result.session_id = child_id
+                    elif shared_result is not None:
+                        raise RuntimeError(
+                            "Shared checkpoint disappeared before the fork could be saved."
+                        )
+                    else:
+                        child_id = new_name or str(uuid.uuid4())
+                        store.reserve_session(child_id)
+                        result = fork_session(
+                            session_dir,
+                            turn=turn,
+                            new_session_id=child_id,
+                            include_events=not no_events,
+                        )
+                finally:
+                    action_root.release()
+            else:
+                child_id = new_name or str(uuid.uuid4())
+                store.reserve_session(child_id)
+                result = fork_session(
+                    session_dir,
+                    turn=turn,
+                    new_session_id=child_id,
+                    include_events=not no_events,
+                )
 
             console.print(
                 f"[green]✓[/green] Forked session created: {result.session_id}"
@@ -1008,7 +1130,7 @@ def register_session_commands(
         store = SessionStore()
 
         try:
-            session_id = store.find_session(session_id)
+            session_id = resolve_root_session_id(store, session_id)
         except FileNotFoundError:
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
@@ -1026,8 +1148,26 @@ def register_session_commands(
             import shutil
 
             session_path = store.base_dir / session_id
-            shutil.rmtree(session_path)
+            if _shared_root_platform_supported() and shared_root_id_supported(session_id):
+                # Serialize the shared/native decision with Foundation's
+                # writer. The held capability alone may remove common
+                # authority; it preserves session.lock and its directory.
+                root = SharedRootSession.acquire(session_id)
+                try:
+                    if root.read() is not None:
+                        if session_path.exists():
+                            shutil.rmtree(session_path)
+                        root.delete_checkpoint()
+                    else:
+                        shutil.rmtree(session_path)
+                finally:
+                    root.release()
+            else:
+                shutil.rmtree(session_path)
             console.print(f"[green]✓[/green] Deleted session: {session_id}")
+        except SharedRootSessionBusyError as exc:
+            console.print(f"[red]Error:[/red] {escape_markup(exc)}")
+            sys.exit(1)
         except Exception as exc:
             console.print(f"[red]Error deleting session:[/red] {escape_markup(exc)}")
             sys.exit(1)
@@ -1073,7 +1213,7 @@ def register_session_commands(
         store = SessionStore()
 
         try:
-            session_id = store.find_session(session_id)
+            session_id = resolve_root_session_id(store, session_id)
         except FileNotFoundError:
             console.print(f"[red]Error:[/red] No session found matching '{session_id}'")
             sys.exit(1)
@@ -1145,6 +1285,13 @@ def register_session_commands(
     def sessions_cleanup(days: int, force: bool):
         """Delete sessions older than N days."""
         store = SessionStore()
+        try:
+            shared_ids = list_shared_root_ids()
+        except Exception as exc:
+            console.print(
+                f"[red]Cannot safely inspect shared sessions:[/red] {escape_markup(exc)}"
+            )
+            sys.exit(1)
 
         if not force:
             confirm = console.input(f"Delete sessions older than {days} days? [y/N]: ")
@@ -1153,11 +1300,59 @@ def register_session_commands(
                 return
 
         cutoff = datetime.now(UTC) - timedelta(days=days)
-        removed = store.cleanup_old_sessions(days=days)
+        shared_skipped = set(shared_ids)
+        busy_skipped: set[str] = set()
+
+        def remove_safely(session_path: Path) -> bool:
+            """Retain a Foundation lock through a native projection deletion."""
+
+            if (
+                not _shared_root_platform_supported()
+                or not shared_root_id_supported(session_path.name)
+            ):
+                import shutil
+
+                shutil.rmtree(session_path)
+                return True
+            try:
+                root = SharedRootSession.acquire(session_path.name)
+            except SharedRootSessionBusyError:
+                busy_skipped.add(session_path.name)
+                return False
+            try:
+                if root.read() is not None:
+                    shared_skipped.add(session_path.name)
+                    return False
+                import shutil
+
+                shutil.rmtree(session_path)
+                return True
+            finally:
+                root.release()
+
+        try:
+            removed = store.cleanup_old_sessions(
+                days=days,
+                protected_ids=set(shared_ids),
+                remove_session=remove_safely,
+            )
+        except Exception as exc:
+            console.print(f"[red]Error cleaning sessions:[/red] {escape_markup(exc)}")
+            sys.exit(1)
 
         console.print(
             f"[green]✓[/green] Removed {removed} sessions older than {cutoff:%Y-%m-%d}"
         )
+        if shared_skipped:
+            console.print(
+                f"[dim]Skipped {len(shared_skipped)} shared-root session(s): "
+                "cleanup never removes common authority.[/dim]"
+            )
+        if busy_skipped:
+            console.print(
+                f"[dim]Skipped {len(busy_skipped)} busy session(s): "
+                "finish/exit that owner before cleanup.[/dim]"
+            )
 
     # Register interactive resume on root CLI (not session subgroup)
     @cli.command(name="resume")
@@ -1192,7 +1387,7 @@ def register_session_commands(
             # Direct resume with partial ID
             store = SessionStore()
             try:
-                full_id = store.find_session(session_id)
+                full_id = resolve_root_session_id(store, session_id)
             except FileNotFoundError:
                 console.print(
                     f"[red]Error:[/red] No session found matching '{session_id}'"
@@ -1318,7 +1513,11 @@ def _interactive_resume_impl(
     """
     store = SessionStore()
     # list_sessions() defaults to top_level_only=True, filtering out spawned sub-sessions
-    all_session_ids = store.list_sessions()
+    try:
+        shared_ids = list_shared_root_ids()
+    except Exception:
+        shared_ids = []
+    all_session_ids = list(dict.fromkeys([*store.list_sessions(), *shared_ids]))
 
     if not all_session_ids:
         console.print("[yellow]No sessions found to resume.[/yellow]")
@@ -1466,7 +1665,13 @@ def _display_project_sessions(
     view: str = "compact",
     fmt: str = "text",
 ) -> None:
-    session_ids = store.list_sessions()[:limit]
+    try:
+        shared_ids = list_shared_root_ids()
+    except Exception:
+        shared_ids = []
+    session_ids = list(dict.fromkeys([*store.list_sessions(), *shared_ids]))[
+        :limit
+    ]
 
     if not session_ids:
         console.print("[yellow]No sessions found.[/yellow]")
@@ -1482,8 +1687,12 @@ def _display_project_sessions(
             modified = "unknown"
 
         session_name = ""
+        shared_transcript: list[dict] | None = None
         try:
-            metadata = store.get_metadata(session_id)
+            if session_path.exists():
+                metadata = store.get_metadata(session_id)
+            else:
+                shared_transcript, metadata = load_root_resume(store, session_id)
             session_name = metadata.get("name", "")
         except Exception:
             pass
@@ -1496,6 +1705,8 @@ def _display_project_sessions(
                     message_count = str(sum(1 for _ in f))
             except Exception:
                 pass
+        elif shared_transcript is not None:
+            message_count = str(len(shared_transcript))
 
         short_id = session_id[:8] + "..."
         items.append(

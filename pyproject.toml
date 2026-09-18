@@ -12,10 +12,13 @@ dependencies = [
     "pygments>=2.13.0",
     "pydantic>=2.0.0",
     "amplifier-core>=1.5.3",
-    "amplifier-foundation",
+    # Tool installs consume published metadata, not this repository's uv.lock.
+    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@efd1e26f948bbaef5459d4e5f4321a240ee86b79",
     "pyyaml>=6.0.3",
     "prompt-toolkit>=3.0.52",
     "httpx[socks]>=0.28.1",
+    # The TLS concurrency shim runs at CLI import, before provider activation.
+    "truststore>=0.10",
     "packaging>=24.0",
     "filelock>=3.29.6",
 ]
@@ -64,7 +67,7 @@ build-backend = "hatchling.build"
 dev = ["pytest>=9.0.3", "pytest-asyncio>=0.24.0"]
 
 [tool.uv.sources]
-amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", branch = "main" }
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "efd1e26f948bbaef5459d4e5f4321a240ee86b79" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
