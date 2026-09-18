@@ -63,6 +63,11 @@ The Foundation library also publishes namespace resources such as:
 For a new complete host, include Anchors and preserve its system instruction
 before adding your own body:
 ```markdown
+# my-host/bundle.md
+---
+bundle:
+  name: my-host
+
 includes:
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
 
@@ -71,6 +76,8 @@ includes:
 @anchors:context/system.md
 @foundation:context/shared/common-agent-base.md
 @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
+
+You are a helpful domain-specific development assistant.
 ```
 
 **→ [Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md)** for complete bundle documentation.

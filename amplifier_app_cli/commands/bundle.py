@@ -909,9 +909,13 @@ def bundle_add(uri: str, name_override: str | None, app: bool):
         amplifier bundle add git+https://github.com/org/my-bundle@main#subdirectory=behaviors/my-capability.yaml --app
 
         \b
-        # Register a complete root (the --name alias is optional)
-        amplifier bundle add git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md --name anchors
-        amplifier bundle use anchors
+        # Register a user-owned complete root under an alias
+        amplifier bundle add git+https://github.com/org/my-host@main#subdirectory=bundle.md --name my-host
+        amplifier bundle use my-host
+
+    Anchors is built in and the default root, so it does not need to be added.
+    Run `amplifier bundle use anchors` only to select it explicitly. When
+    authoring a new root, use Anchors as its canonical base.
     """
     from amplifier_foundation import load_bundle
 

@@ -54,13 +54,17 @@ is composed into every session without replacing the selected root bundle:
 amplifier bundle add 'git+https://github.com/microsoft/amplifier-bundle-recipes@main#subdirectory=behaviors/recipes.yaml' --app
 ```
 
-Register and select a complete root separately. The name is read from bundle
-metadata unless you supply an optional `--name` alias:
+Register and select a user-owned complete root separately. The name is read
+from bundle metadata unless you supply an optional `--name` alias:
 
 ```bash
-amplifier bundle add 'git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md' --name anchors
-amplifier bundle use anchors
+amplifier bundle add 'git+https://github.com/org/my-host@main#subdirectory=bundle.md' --name my-host
+amplifier bundle use my-host
 ```
+
+Anchors is built in and the default root, so it does not need to be added.
+`amplifier bundle use anchors` is sufficient when you want to select it
+explicitly. When authoring a new root, use Anchors as its canonical base.
 
 ## Commands
 
