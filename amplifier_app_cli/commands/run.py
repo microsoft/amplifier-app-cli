@@ -18,6 +18,7 @@ from amplifier_foundation.modules import ModuleActivationError
 from rich.panel import Panel
 
 from ..console import console
+from ..session_handoff import takeover_options
 from ..effective_config import get_effective_config_summary
 from ..lib.settings import AppSettings
 from ..paths import create_config_manager
@@ -279,6 +280,7 @@ def register_run_command(
         default="text",
         help="Output format: text (markdown), json (response only), json-trace (full execution detail)",
     )
+    @takeover_options
     def run(
         prompt: str | None,
         bundle: str | None,
