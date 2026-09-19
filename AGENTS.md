@@ -62,6 +62,14 @@ root instruction truthy and changes its existing behavior-body inheritance.
 Keep the injection non-mutating because the foundation registry caches bundles;
 foundation's prompt factory resolves these optional files freshly per request.
 
+## Bundle guidance ownership
+
+Document reusable capabilities as behavior bundles added with `--app` to the
+existing host. Document selectable roots separately; new-host examples use
+Anchors and preserve `@anchors:context/system.md` when their root has a body.
+This is documentation/help guidance only: do not change composition defaults or
+existing root selections to enforce it.
+
 ## Update reporting
 
 Keep report labels separate from update eligibility: a missing mutable cache is

@@ -45,6 +45,27 @@ amplifier run --bundle my-bundle "Your prompt"
 
 **Environment variables**: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, `GOOGLE_API_KEY` detected automatically during `amplifier init`.
 
+## Add a Capability Behavior
+
+Add a reusable capability to the CLI's existing host with `--app`. The behavior
+is composed into every session without replacing the selected root bundle:
+
+```bash
+amplifier bundle add 'git+https://github.com/microsoft/amplifier-bundle-recipes@main#subdirectory=behaviors/recipes.yaml' --app
+```
+
+Register and select a user-owned complete root separately. The name is read
+from bundle metadata unless you supply an optional `--name` alias:
+
+```bash
+amplifier bundle add 'git+https://github.com/org/my-host@main#subdirectory=bundle.md' --name my-host
+amplifier bundle use my-host
+```
+
+Anchors is built in and the default root, so it does not need to be added.
+`amplifier bundle use anchors` is sufficient when you want to select it
+explicitly. When authoring a new root, use Anchors as its canonical base.
+
 ## Commands
 
 ### Configuration Commands
@@ -55,7 +76,8 @@ amplifier bundle current                              # Show active bundle
 amplifier bundle use <name> [--local|--project|--global]  # Set active bundle
 amplifier bundle list                                 # List available bundles
 amplifier bundle show <name>                          # Show bundle details
-amplifier bundle add <git-url> [--name alias]         # Register a bundle (name auto-derived)
+amplifier bundle add <behavior-url> --app             # Add behavior to every session
+amplifier bundle add <root-url> [--name alias]        # Register selectable root (name auto-derived)
 amplifier bundle remove <name>                        # Unregister a bundle
 amplifier bundle clear                                # Reset to default (anchors)
 

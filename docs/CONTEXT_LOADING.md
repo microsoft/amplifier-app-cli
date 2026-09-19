@@ -11,7 +11,12 @@
 ---
 bundle:
   name: my-bundle
+
+includes:
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
 ---
+
+@anchors:context/system.md
 
 You are a helpful Python development assistant.
 
@@ -27,7 +32,12 @@ The markdown body becomes the system instruction.
 ---
 bundle:
   name: dev-bundle
+
+includes:
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
 ---
+
+@anchors:context/system.md
 
 You are an Amplifier development assistant.
 
@@ -45,15 +55,29 @@ The @mentioned files load automatically and are added as context.
 
 **Bundles** provide organized, shareable packages of context files. Most shared context is now organized in bundles rather than standalone files.
 
-**Foundation bundle** provides:
+The Foundation library also publishes namespace resources such as:
 - `@foundation:context/IMPLEMENTATION_PHILOSOPHY.md`
 - `@foundation:context/MODULAR_DESIGN_PHILOSOPHY.md`
 - `@foundation:context/shared/common-agent-base.md`
 
-**Usage in bundles**:
+For a new complete host, include Anchors and preserve its system instruction
+before adding your own body:
 ```markdown
+# my-host/bundle.md
+---
+bundle:
+  name: my-host
+
+includes:
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
+
+---
+
+@anchors:context/system.md
 @foundation:context/shared/common-agent-base.md
 @foundation:context/IMPLEMENTATION_PHILOSOPHY.md
+
+You are a helpful domain-specific development assistant.
 ```
 
 **→ [Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md)** for complete bundle documentation.
@@ -207,10 +231,12 @@ Quality guidelines...
 ---
 bundle:
   name: specialized
-  extends: foundation  # YAML config inheritance
+
+includes:
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
 ---
 
-@foundation:context/shared/common-base.md
+@anchors:context/system.md
 
 Additionally, you specialize in database architecture.
 
@@ -225,9 +251,11 @@ Context:
 - **Explicit** - Clear what's being included
 - **Flexible** - Can compose multiple shared files
 
-### Note on Bundle Inheritance
+### Note on Bundle Composition
 
-The `extends:` field in YAML frontmatter inherits configuration (modules, settings) but NOT markdown body. Use @mentions to share markdown content across bundles.
+The `includes:` list composes bundle configuration. A root bundle that supplies
+its own markdown body should explicitly include `@anchors:context/system.md`;
+use @mentions to share additional instruction files across bundles.
 
 ## Provider-Specific Handling
 
@@ -359,7 +387,12 @@ All context inline in bundle markdown:
 ---
 bundle:
   name: simple
+
+includes:
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
 ---
+
+@anchors:context/system.md
 
 You are a helpful assistant.
 
@@ -377,10 +410,12 @@ References shared context:
 ---
 bundle:
   name: dev
-  extends: foundation  # YAML config inheritance
+
+includes:
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
 ---
 
-@foundation:context/shared/common-base.md
+@anchors:context/system.md
 
 Development-specific context:
 - @AGENTS.md
@@ -462,7 +497,12 @@ If files reference each other in a loop, cycle detection prevents infinite recur
 ---
 bundle:
   name: researcher
+
+includes:
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
 ---
+
+@anchors:context/system.md
 
 You are a research specialist.
 
@@ -479,10 +519,12 @@ Gather information systematically and cite sources.
 ---
 bundle:
   name: team-standard
-  extends: foundation  # YAML config inheritance
+
+includes:
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
 ---
 
-@foundation:context/shared/common-base.md
+@anchors:context/system.md
 
 Team-specific context:
 - @project:context/team-conventions.md
