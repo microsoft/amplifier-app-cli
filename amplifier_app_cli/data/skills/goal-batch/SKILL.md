@@ -1,11 +1,11 @@
 ---
 name: goal-batch
 description: >
-  Batch independent work into isolated /goal lanes when tasks can run
-  independently. Show the lane plan and get explicit user approval before
-  launch; verify every result before landing it. Not for bounded per-PR mass
-  changes (use mass-change) or continuous refill-on-drain work (use
-  ten-lane-highway).
+  Batch independent work into isolated /goal lanes. Triggers: "run these in
+  parallel", "goal-batch", "launch lanes for these", "work these N tasks
+  simultaneously", "batch these as goals". Show the plan; require explicit
+  user approval before launch; verify results before landing. Not for bounded
+  per-PR edits (mass-change) or continuous refill-on-drain work (ten-lane-highway).
 version: 2.0.0
 user-invocable: true
 argument-hint: "<the work to batch, or where it is enumerated>"

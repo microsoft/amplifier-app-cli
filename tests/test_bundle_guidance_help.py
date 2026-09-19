@@ -48,6 +48,11 @@ def test_goal_batch_description_is_bounded_and_keeps_routing_and_safety_guards()
             "ten-lane-highway",
             "bounded",
             "continuous",
+            "run these in parallel",
+            "goal-batch",
+            "launch lanes for these",
+            "work these n tasks simultaneously",
+            "batch these as goals",
         )
     )
     assert all(
