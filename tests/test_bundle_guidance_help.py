@@ -19,7 +19,41 @@ BEHAVIOR_URI = (
     "#subdirectory=behaviors/recipes.yaml"
 )
 REPO_ROOT = Path(__file__).resolve().parent.parent
+GOAL_BATCH_SKILL = (
+    REPO_ROOT / "amplifier_app_cli" / "data" / "skills" / "goal-batch" / "SKILL.md"
+)
 bundle_module = importlib.import_module("amplifier_app_cli.commands.bundle")
+
+
+def test_goal_batch_description_is_bounded_and_keeps_routing_and_safety_guards():
+    """The compact discovery description preserves the skill's routing contract."""
+    _, frontmatter, body = GOAL_BATCH_SKILL.read_text(encoding="utf-8").split(
+        "---", 2
+    )
+    description = yaml.safe_load(frontmatter)["description"]
+    description_lower = description.lower()
+    body_lower = body.lower()
+
+    assert len(description) <= 400
+    assert all(
+        term in description_lower
+        for term in (
+            "independent",
+            "lane",
+            "approval",
+            "launch",
+            "verify",
+            "landing",
+            "mass-change",
+            "ten-lane-highway",
+            "bounded",
+            "continuous",
+        )
+    )
+    assert all(
+        term in body_lower
+        for term in ("approval", "nothing launches", "never infer", "re-verify")
+    )
 
 
 def test_bundle_add_help_leads_with_behavior_then_root_registration():

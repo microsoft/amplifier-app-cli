@@ -1,18 +1,11 @@
 ---
 name: goal-batch
 description: >
-  Batch independent work into isolated /goal lanes — one worktree, branch, and
-  tmux session each — get your approval, then verify and merge every lane
-  yourself. Use when work decomposes into pieces that can run at the same
-  time: "run these in parallel", "goal-batch", "launch lanes for these",
-  "work these N tasks simultaneously", "batch these as goals". Nothing
-  launches until you've seen the lane split and said go, and this is NOT
-  fire-and-forget: the orchestrating session re-runs the full suite after
-  every merge and never accepts a lane's own claim that it finished. NOT for
-  bounded edits that each end in their own PR — use mass-change for that. For
-  continuous refill-on-drain parallel work toward an outcome, use
-  ten-lane-highway instead. Requires git, tmux, the amplifier CLI on PATH,
-  and the goalify and monitor skills.
+  Batch independent work into isolated /goal lanes when tasks can run
+  independently. Show the lane plan and get explicit user approval before
+  launch; verify every result before landing it. Not for bounded per-PR mass
+  changes (use mass-change) or continuous refill-on-drain work (use
+  ten-lane-highway).
 version: 2.0.0
 user-invocable: true
 argument-hint: "<the work to batch, or where it is enumerated>"
