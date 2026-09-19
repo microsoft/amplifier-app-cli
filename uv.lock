@@ -30,7 +30,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "amplifier-core", specifier = ">=1.5.3" },
-    { name = "amplifier-foundation", git = "https://github.com/microsoft/amplifier-foundation?rev=b6116a6ef79a1803742c1ba73df944e59cd6c95d" },
+    { name = "amplifier-foundation", git = "https://github.com/microsoft/amplifier-foundation?rev=695f875c0908f45f8dc78b1fcde80ecddebffd7c" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "filelock", specifier = ">=3.29.6" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
@@ -72,7 +72,7 @@ wheels = [
 [[package]]
 name = "amplifier-foundation"
 version = "1.0.0"
-source = { git = "https://github.com/microsoft/amplifier-foundation?rev=b6116a6ef79a1803742c1ba73df944e59cd6c95d#b6116a6ef79a1803742c1ba73df944e59cd6c95d" }
+source = { git = "https://github.com/microsoft/amplifier-foundation?rev=695f875c0908f45f8dc78b1fcde80ecddebffd7c#695f875c0908f45f8dc78b1fcde80ecddebffd7c" }
 dependencies = [
     { name = "amplifier-core" },
     { name = "pyyaml" },
