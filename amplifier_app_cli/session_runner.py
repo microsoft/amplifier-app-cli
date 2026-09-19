@@ -258,7 +258,7 @@ async def create_initialized_session(
             console=console,
         )
     except BaseException:
-        # No context was created successfully, so no checkpoint is possible;
+        # No context was created successfully, so no session save is possible;
         # release the just-acquired writer rather than leave a dead lock.
         if config.root_state is not None:
             config.root_state.release()
@@ -365,15 +365,15 @@ async def create_initialized_session(
     # Provider cost accumulators live in each provider's mount() closure and are
     # zeroed on resume, so the running session-cost total would otherwise restart
     # from zero. Re-seed the "session.cost" channel from the persisted
-    # events.jsonl (sibling of transcript.jsonl in the session directory) by
+    # Context Intelligence events (or the old CLI log when absent) by
     # registering a synthetic historical contributor on this session's own
     # coordinator. Best-effort: never blocks startup.
     if config.is_resume:
-        from .cost_history import restore_session_cost
+        from .cost_history import restore_session_cost, session_events_path
 
         try:
-            events_path = SessionStore().base_dir / session_id / "events.jsonl"
-            restore_session_cost(session.coordinator, session_id, events_path)
+            session_dir = SessionStore().base_dir / session_id
+            restore_session_cost(session.coordinator, session_id, session_events_path(session_dir))
         except Exception:
             logger.debug("Prior session cost restore skipped", exc_info=True)
 

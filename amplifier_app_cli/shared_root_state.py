@@ -1,9 +1,8 @@
-"""CLI policy around Foundation's shared root-session checkpoint.
+"""CLI policy for shared locks around Foundation's native session history.
 
-Foundation owns the lock, checkpoint format, identity validation, and durable
-I/O.  This module intentionally contains no compatibility implementation of
-those mechanisms: when the required Foundation API is absent, opening a root
-fails loudly instead of silently falling back to an unlocked writer.
+The transcript and metadata are authoritative for both old and updated hosts.
+Foundation's shared-state API supplies only writer ownership; checkpoint reads
+remain a compatibility fallback for historical checkpoint-only sessions.
 """
 
 from __future__ import annotations
@@ -14,8 +13,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-
-from amplifier_core.utils.truncate import redact_secrets
 
 from .session_store import BUNDLE_PREFIX
 
@@ -44,20 +41,6 @@ class SharedRootSessionBusyError(RuntimeError):
 
 _WINDOWS_NATIVE_NOTICE_EMITTED = False
 _SHARED_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,127}$")
-_FOUNDATION_FORBIDDEN_METADATA_KEYS = frozenset(
-    {
-        "credential",
-        "credentials",
-        "secret",
-        "secrets",
-        "token",
-        "password",
-        "api_key",
-        "apikey",
-        "env",
-        "environment",
-    }
-)
 
 
 def _shared_root_platform_supported() -> bool:
@@ -158,6 +141,11 @@ def _shared_api() -> tuple[type[Any], type[Any]]:
             "Root session sharing requires amplifier-foundation "
             "session.shared_state; install the compatible Foundation release."
         ) from exc
+    if not callable(getattr(HeldSession, "check", None)):
+        raise SharedRootStateUnavailableError(
+            "Root session sharing requires amplifier-foundation "
+            "HeldSession.check(); install the compatible Foundation release."
+        )
     if not callable(getattr(HeldSession, "delete_checkpoint", None)):
         raise SharedRootStateUnavailableError(
             "Root session sharing requires amplifier-foundation "
@@ -186,12 +174,6 @@ def _workspace() -> Path:
     return workspace
 
 
-def _portable_bundle(bundle: str) -> str:
-    """Convert CLI's legacy display prefix into the portable checkpoint value."""
-
-    return bundle.removeprefix(BUNDLE_PREFIX)
-
-
 def _checkpoint_resume(checkpoint: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Translate one validated Foundation checkpoint to CLI resume inputs."""
 
@@ -202,28 +184,10 @@ def _checkpoint_resume(checkpoint: dict[str, Any]) -> tuple[list[dict[str, Any]]
         raise RuntimeError("Shared root checkpoint has invalid messages.")
     if not isinstance(metadata, dict) or not isinstance(bundle, str) or not bundle:
         raise RuntimeError("Shared root checkpoint has invalid metadata or bundle.")
-    # Native projections retain their historic prefix.  The shared format does
+    # Native metadata retains its historic prefix.  The shared format does
     # not; keeping that distinction here avoids leaking a CLI convention into
     # Foundation's portable data.
     return list(messages), {**metadata, "bundle": f"{BUNDLE_PREFIX}{bundle}"}
-
-
-def _shared_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    """Remove metadata Foundation refuses rather than persisting redacted keys."""
-
-    def scrub(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {
-                key: scrub(nested)
-                for key, nested in value.items()
-                if isinstance(key, str)
-                and key.lower() not in _FOUNDATION_FORBIDDEN_METADATA_KEYS
-            }
-        if isinstance(value, list):
-            return [scrub(item) for item in value]
-        return value
-
-    return scrub(redact_secrets(metadata))
 
 
 @dataclass
@@ -236,7 +200,7 @@ class SharedRootSession:
 
     @classmethod
     def acquire(cls, session_id: str) -> "SharedRootSession":
-        """Acquire before constructing provider context or writing a projection."""
+        """Acquire before constructing provider context or saving native history."""
 
         _require_shared_root_platform()
         if not shared_root_id_supported(session_id):
@@ -257,9 +221,16 @@ class SharedRootSession:
             raise
         return cls(session_id=session_id, workspace=workspace, held=held)
 
-    def read(self) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
-        """Read the authoritative checkpoint through the live held capability."""
+    def read(
+        self, native_store: "SessionStore | None" = None
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+        """Refresh native history under the held lock, then try legacy-only data."""
+        from .session_store import SessionStore
 
+        self.held.check()
+        store = native_store if native_store is not None else SessionStore()
+        if store.has_transcript(self.session_id):
+            return store.load(self.session_id)
         checkpoint = self.held.read()
         return _checkpoint_resume(checkpoint) if checkpoint is not None else None
 
@@ -271,30 +242,31 @@ class SharedRootSession:
         bundle: str,
         metadata: dict[str, Any],
     ) -> None:
-        """Commit authority first, then update the CLI-native compatibility view."""
+        """Save native history under the shared lock without a second checkpoint.
 
-        self.held.write(
-            messages,
-            bundle=_portable_bundle(bundle),
-            metadata=_shared_metadata(metadata),
-        )
-        # Projections never feed back into authority.  The Foundation write
-        # above either succeeded completely or this native write is not reached.
+        The method name is retained for existing CLI save-hook callers. The
+        bundle argument is a host convention; metadata remains the native shape.
+        """
+        self.held.check()
         native_store.save(self.session_id, messages, metadata)
 
     def delete_checkpoint(self) -> None:
-        """Delete authority through Foundation's held capability only."""
+        """Remove a historical checkpoint on an explicit session deletion."""
 
         self.held.delete_checkpoint()
 
     def release(self) -> None:
-        """Release only after the caller's final checkpoint and cleanup."""
+        """Release only after the caller's final native save and cleanup."""
 
         self.held.release()
 
 
 def read_shared_root(session_id: str) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
-    """Read a root without taking a writer lock (history/resume discovery only)."""
+    """Read legacy checkpoint-only storage for discovery, never for precedence.
+
+    Normal resume and held reads prefer native transcript/metadata. This helper
+    only discovers historical checkpoints so list/delete can retain them.
+    """
 
     if not _shared_root_platform_supported():
         return None
@@ -317,9 +289,9 @@ def list_shared_root_ids() -> list[str]:
 
 
 def is_shared_root(session_id: str) -> bool:
-    """Return whether the exact root has common authority without taking it."""
+    """Return whether a historical shared checkpoint exists without taking it."""
 
-    return read_shared_root(session_id) is not None
+    return session_id in list_shared_root_ids()
 
 
 def resolve_root_session_id(native_store: "SessionStore", partial_id: str) -> str:
@@ -346,8 +318,10 @@ def resolve_root_session_id(native_store: "SessionStore", partial_id: str) -> st
 def load_root_resume(
     native_store: "SessionStore", session_id: str
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Prefer common authority; native data remains only a compatibility fallback."""
+    """Prefer native history, including writes made by older CLI versions."""
 
+    if native_store.has_transcript(session_id):
+        return native_store.load(session_id)
     if not _shared_root_platform_supported() or not shared_root_id_supported(session_id):
         return native_store.load(session_id)
     shared = read_shared_root(session_id)
@@ -359,14 +333,14 @@ def load_root_resume(
 def update_root_metadata(
     native_store: "SessionStore", session_id: str, updates: dict[str, Any]
 ) -> dict[str, Any]:
-    """Update root metadata through a fresh held writer, never its projection alone."""
+    """Update native metadata through a fresh held writer."""
 
     if not _shared_root_platform_supported() or not shared_root_id_supported(session_id):
         native_store.update_metadata(session_id, updates)
         return native_store.get_metadata(session_id)
     root = SharedRootSession.acquire(session_id)
     try:
-        current = root.read()
+        current = root.read(native_store)
         if current is None:
             messages, metadata = native_store.load(session_id)
         else:

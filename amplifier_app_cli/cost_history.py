@@ -27,12 +27,14 @@ Design notes:
 
 from __future__ import annotations
 
-import json
 import logging
+import os
 from decimal import Decimal
 from decimal import InvalidOperation
 from pathlib import Path
 from typing import Any
+
+from amplifier_foundation.session.history import SessionHistoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -41,52 +43,50 @@ SESSION_COST_CHANNEL = "session.cost"
 _LLM_RESPONSE_EVENT = "llm:response"
 
 
-def sum_prior_cost_usd(events_path: Path) -> Decimal | None:
-    """Sum ``cost_usd`` across every ``llm:response`` event in ``events_path``.
+def session_events_path(session_dir: Path) -> Path:
+    """Resolve CI's reader-visible relocation before the old CLI log fallback.
 
-    Returns the cumulative cost as a ``Decimal``, or ``None`` when the file is
-    missing/unreadable or contains no cost data. Never raises.
-
-    The file is read one line at a time to stay memory-safe: ``llm:response``
-    lines can be very large (they may carry full request payloads), so parsed
-    events are never all held in memory at once. A cheap substring pre-filter
-    skips JSON-parsing unrelated lines entirely.
+    Foundation deliberately does not choose process environment policy. The CI
+    base path is a projects root; preserve the native project slug/session ID.
+    Like CI, empty, unexpanded, or relative values are not relocation roots.
     """
-    if not events_path.is_file():
-        return None
+    raw_root = os.environ.get("AMPLIFIER_CONTEXT_INTELLIGENCE_BASE_PATH", "").strip()
+    root = Path(raw_root).expanduser() if raw_root and "${" not in raw_root else None
+    events_path = SessionHistoryStore(session_dir).events_path
+    if root is not None and root.is_absolute():
+        project_slug = session_dir.parent.parent.name
+        capture_dir = root / project_slug / "sessions" / session_dir.name
+        events_path = SessionHistoryStore(capture_dir).events_path
+    # Never combine both captures: that can count the same model call twice.
+    return events_path if events_path.exists() else session_dir / "events.jsonl"
 
+
+def sum_prior_cost_usd(events_path: Path, *, session_id: str | None = None) -> Decimal | None:
+    """Read cost from the shared event reader without constructing a message cache.
+
+    The path is explicit so old CLI root event logs remain supported when the
+    host chooses that fallback. CI records are normalized/scoped by Foundation.
+    Malformed events and invalid costs never prevent session startup.
+    """
+    session_dir = events_path.parent
+    if session_dir.name == "context-intelligence":
+        session_dir = session_dir.parent
+    history = SessionHistoryStore(session_dir, events_path=events_path, session_id=session_id)
     total: Decimal | None = None
-    try:
-        with events_path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if _LLM_RESPONSE_EVENT not in line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if not isinstance(event, dict):
-                    continue
-                if event.get("event") != _LLM_RESPONSE_EVENT:
-                    continue
-
-                data = event.get("data")
-                usage = data.get("usage") if isinstance(data, dict) else None
-                cost = usage.get("cost_usd") if isinstance(usage, dict) else None
-                if cost is None:
-                    continue
-                try:
-                    total = (total or Decimal("0")) + Decimal(str(cost))
-                except (InvalidOperation, ValueError):
-                    continue
-    except OSError:
-        logger.debug(
-            "Could not read events for prior session cost: %s",
-            events_path,
-            exc_info=True,
-        )
-        return None
-
+    for event in history.iter_events():
+        if event.get("event") != _LLM_RESPONSE_EVENT:
+            continue
+        usage = event["data"].get("usage")
+        cost = usage.get("cost_usd") if isinstance(usage, dict) else None
+        if cost is None:
+            continue
+        try:
+            amount = Decimal(str(cost))
+            if not amount.is_finite() or amount < 0:
+                continue
+            total = (total or Decimal("0")) + amount
+        except (InvalidOperation, ValueError):
+            continue
     return total
 
 
@@ -105,7 +105,7 @@ def restore_session_cost(
     Returns the restored total (a ``Decimal``), or ``None`` when there was no
     prior cost to restore or registration failed. Never raises.
     """
-    prior_total = sum_prior_cost_usd(events_path)
+    prior_total = sum_prior_cost_usd(events_path, session_id=session_id)
     if prior_total is None or prior_total <= 0:
         return None
 
