@@ -292,6 +292,7 @@ def register_run_command(
     ):
         """Execute a prompt or start an interactive session."""
         from ..session_store import SessionStore
+        from ..shared_root_state import load_root_resume, resolve_root_session_id
 
         diagnostics_to_stderr = output_format in ["json", "json-trace"]
         original_stdout = sys.stdout
@@ -311,7 +312,7 @@ def register_run_command(
         if resume:
             store = SessionStore()
             try:
-                resume = store.find_session(resume)
+                resume = resolve_root_session_id(store, resume)
             except FileNotFoundError:
                 console.print(f"[red]Error:[/red] No session found matching '{resume}'")
                 sys.exit(1)
@@ -324,7 +325,7 @@ def register_run_command(
                 sys.exit(1)
 
             try:
-                transcript, metadata = store.load(resume)
+                transcript, metadata = load_root_resume(store, resume)
                 console.print(f"[green]✓[/green] Resuming session: {resume}")
                 console.print(f"  Messages: {len(transcript)}")
 

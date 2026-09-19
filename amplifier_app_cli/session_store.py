@@ -12,6 +12,7 @@ Uses amplifier_foundation utilities for:
 import json
 import logging
 import shutil
+from collections.abc import Callable
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
@@ -128,6 +129,35 @@ class SessionStore:
         self._save_metadata(session_dir, metadata)
 
         logger.debug(f"Session {session_id} saved successfully")
+
+    def reserve_session(self, session_id: str) -> Path:
+        """Atomically reserve a new native session directory.
+
+        Forks use this before delegating transcript construction so a custom
+        target can never replace an existing independent conversation.
+        """
+
+        if not session_id or not session_id.strip():
+            raise ValueError("session_id cannot be empty")
+        if "/" in session_id or "\\" in session_id or session_id in (".", ".."):
+            raise ValueError(f"Invalid session_id: {session_id}")
+        session_dir = self.base_dir / session_id
+        session_dir.mkdir(parents=True, exist_ok=False)
+        return session_dir
+
+    def save_new(self, session_id: str, transcript: list, metadata: dict) -> None:
+        """Save a new session without allowing an existing directory to change."""
+
+        session_dir = self.reserve_session(session_id)
+        try:
+            self._save_transcript(session_dir, transcript)
+            self._save_metadata(session_dir, metadata)
+        except BaseException:
+            # We created this directory exclusively, so removing a partial
+            # write cannot delete another session's data.
+            shutil.rmtree(session_dir, ignore_errors=True)
+            raise
+        logger.debug(f"New session {session_id} saved successfully")
 
     def _save_transcript(self, session_dir: Path, transcript: list) -> None:
         """Save transcript with atomic write and backup.
@@ -506,7 +536,13 @@ class SessionStore:
 
         logger.debug(f"Config saved for session {session_id}")
 
-    def cleanup_old_sessions(self, days: int = 30) -> int:
+    def cleanup_old_sessions(
+        self,
+        days: int = 30,
+        *,
+        protected_ids: set[str] | None = None,
+        remove_session: Callable[[Path], bool] | None = None,
+    ) -> int:
         """Remove sessions older than specified days.
 
         Args:
@@ -521,6 +557,7 @@ class SessionStore:
         if not self.base_dir.exists():
             return 0
 
+        protected_ids = protected_ids or set()
         from datetime import timedelta
 
         cutoff_time = datetime.now(UTC) - timedelta(days=days)
@@ -530,17 +567,32 @@ class SessionStore:
         for session_dir in self.base_dir.iterdir():
             if not session_dir.is_dir() or session_dir.name.startswith("."):
                 continue
+            if session_dir.name in protected_ids:
+                continue
 
             try:
-                # Check modification time
+                # Check modification time.
                 mtime = session_dir.stat().st_mtime
-                if mtime < cutoff_timestamp:
-                    # Remove old session
-                    shutil.rmtree(session_dir)
+            except Exception as e:
+                logger.error(f"Failed to inspect session {session_dir.name}: {e}")
+                continue
+            if mtime < cutoff_timestamp:
+                # A policy-owned remover can retain an external lock through
+                # deletion. Its failures must reach the command boundary,
+                # never turn into a native fallback.
+                if remove_session is not None:
+                    deleted = remove_session(session_dir)
+                    if deleted:
+                        logger.info(f"Removed old session: {session_dir.name}")
+                        removed += 1
+                    continue
+                try:
+                    if remove_session is None:
+                        shutil.rmtree(session_dir)
                     logger.info(f"Removed old session: {session_dir.name}")
                     removed += 1
-            except Exception as e:
-                logger.error(f"Failed to remove session {session_dir.name}: {e}")
+                except Exception as e:
+                    logger.error(f"Failed to remove session {session_dir.name}: {e}")
 
         if removed > 0:
             logger.info(f"Cleaned up {removed} old sessions")
