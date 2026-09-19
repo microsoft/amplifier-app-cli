@@ -27,7 +27,8 @@ class SharedRootStateUnavailableError(RuntimeError):
 class SharedRootSessionBusyError(RuntimeError):
     """A shared root is held by another process, with bounded owner advice."""
 
-    def __init__(self, owner: object, state_root: object) -> None:
+    def __init__(self, owner: object, state_root: object, *, store=None) -> None:
+        self.store = store
         self.owner = owner if isinstance(owner, dict) else None
         self.state_root = _bounded_value(state_root, limit=240)
         details = _format_owner_details(self.owner)
@@ -216,7 +217,7 @@ class SharedRootSession:
             busy_type = _session_busy_type()
             if busy_type is not None and isinstance(exc, busy_type):
                 raise SharedRootSessionBusyError(
-                    getattr(exc, "owner", None), getattr(store, "root", None)
+                    getattr(exc, "owner", None), getattr(store, "root", None), store=store
                 ) from None
             raise
         return cls(session_id=session_id, workspace=workspace, held=held)

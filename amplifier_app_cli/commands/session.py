@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 from amplifier_foundation.paths.resolution import get_amplifier_home
 from ..console import console
+from ..session_handoff import takeover_options
 from ..ui.item_renderer import ItemRenderer
 from ..ui.view_policy import resolve_view, view_flags
 from ..utils.error_format import escape_markup
@@ -466,6 +467,7 @@ def register_session_commands(
     @click.option(
         "--show-thinking", is_flag=True, help="Show thinking blocks in history"
     )
+    @takeover_options
     def continue_session(
         prompt: str | None,
         force_bundle: str | None,
@@ -1169,6 +1171,7 @@ def register_session_commands(
     @click.option(
         "--show-thinking", is_flag=True, help="Show thinking blocks in history"
     )
+    @takeover_options
     def sessions_resume(
         session_id: str,
         force_bundle: str | None,

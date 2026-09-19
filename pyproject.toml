@@ -13,7 +13,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "amplifier-core>=1.5.3",
     # Tool installs consume published metadata, not this repository's uv.lock.
-    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@b3bdab2adcc2a8fe477aca64c20b77528a95e1df",
+    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@b6116a6ef79a1803742c1ba73df944e59cd6c95d",
     "pyyaml>=6.0.3",
     "prompt-toolkit>=3.0.52",
     "httpx[socks]>=0.28.1",
@@ -67,7 +67,7 @@ build-backend = "hatchling.build"
 dev = ["pytest>=9.0.3", "pytest-asyncio>=0.24.0"]
 
 [tool.uv.sources]
-amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "b3bdab2adcc2a8fe477aca64c20b77528a95e1df" }
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "b6116a6ef79a1803742c1ba73df944e59cd6c95d" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

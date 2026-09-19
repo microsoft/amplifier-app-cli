@@ -94,6 +94,8 @@ class SessionConfig:
     # Only public CLI root entry points opt in.  Lower-level callers (notably
     # child-spawn plumbing) retain their existing independent storage policy.
     shared_root: bool = False
+    takeover: bool = False
+    handoff_timeout: float = 30.0
 
     # A top-level CLI session obtains this through Foundation before its context
     # is built.  Spawned children inherit a different root_session_id and never
@@ -117,10 +119,10 @@ class InitializedSession:
     configurator: Any = None
     root_state: Any = None
 
-    async def cleanup(self):
+    async def cleanup(self, *, release_ownership: bool = True):
         """Clean up session resources."""
         await self.session.cleanup()
-        if self.root_state is not None:
+        if self.root_state is not None and release_ownership:
             self.root_state.release()
 
 
@@ -190,7 +192,6 @@ async def create_initialized_session(
         and inherited_root_id in (None, session_id)
     ):
         from .shared_root_state import (
-            SharedRootSession,
             _shared_root_platform_supported,
             shared_root_id_supported,
             warn_windows_native_persistence,
@@ -207,7 +208,9 @@ async def create_initialized_session(
             # otherwise resumable transcript fail Foundation validation.
             config.shared_root = False
         else:
-            config.root_state = SharedRootSession.acquire(session_id)
+            from .session_handoff import acquire_root
+            config.session_id = session_id
+            config.root_state = await acquire_root(config, console)
             try:
                 shared_resume = config.root_state.read()
                 if shared_resume is not None:

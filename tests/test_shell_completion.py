@@ -319,6 +319,8 @@ def test_actual_cli_protocol_emits_native_dynamic_records(
             {
                 "plain,--bundle",
                 "plain,--help",
+                "plain,--handoff-timeout",
+                "plain,--takeover",
                 "plain,--max-tokens",
                 "plain,--mode",
                 "plain,--model",

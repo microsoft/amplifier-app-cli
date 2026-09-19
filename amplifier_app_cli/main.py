@@ -3856,6 +3856,9 @@ async def interactive_chat(
         raise SystemExit(1) from None
     session = initialized.session
     actual_session_id = initialized.session_id
+    from .session_handoff import CLIHandoff
+
+    handoff = CLIHandoff(initialized, console)
 
     # Create command processor
     command_processor = CommandProcessor(session, bundle_name)
@@ -3961,6 +3964,8 @@ async def interactive_chat(
     # Helper to save session after each turn
     async def _save_session():
         context = session.coordinator.get("context")
+        if handoff.requested.is_set() and (context is None or not hasattr(context, "get_messages")):
+            raise RuntimeError("Cannot save a session without its context")
         if context and hasattr(context, "get_messages"):
             messages = await context.get_messages()
             # Load existing metadata to preserve fields like name, description
@@ -4047,6 +4052,8 @@ async def interactive_chat(
         # ordering violations, or incomplete turns before the next LLM call.
         await _repair_transcript_if_needed()
 
+        if handoff.requested.is_set():
+            return False
         # Reset cancellation state for new execution
         session.coordinator.cancellation.reset()
 
@@ -4093,6 +4100,7 @@ async def interactive_chat(
         from .steering_input import SteeringInputManager
 
         _stop_event = asyncio.Event()
+        handoff.steering = _stop_event
         _manager = SteeringInputManager(
             steer_cap=session.coordinator.get_capability("session.steer"),
             arbiter=session.coordinator.get_capability("cli.stdin_arbiter"),
@@ -4253,6 +4261,7 @@ async def interactive_chat(
                     # context: signal it to stop, then wait for it to finish so
                     # it cannot consume the next REPL prompt's input.
                     _stop_event.set()
+                    handoff.steering = None
                     _reader_task.cancel()
                     try:
                         await _reader_task
@@ -4284,6 +4293,7 @@ async def interactive_chat(
     # and closes the dedicated tty fd -- leaking those was a real bug caught
     # by test_interactive_chat_teardown_does_not_raise_when_fd_never_opened.
     try:
+        await handoff.start()
         # An interactive session needs a terminal prompt_toolkit can actually
         # drive. Check ONCE, here, before any turn runs -- both the initial-prompt
         # path below and the REPL loop wrap their work in `patch_stdout()`, and on
@@ -4319,7 +4329,7 @@ async def interactive_chat(
             # docs/GOAL_COMMAND.md.
             await _execute_with_interrupt(initial_prompt)
 
-        while True:
+        while not handoff.requested.is_set():
             try:
                 slash_completer.refresh(build_completion_snapshot(command_processor))
                 # Get user input with history, editing, and paste support.
@@ -4328,7 +4338,7 @@ async def interactive_chat(
                 # freeze risk applies to any background Rich writes that
                 # land while the user is composing input.
                 with patch_stdout():
-                    user_input = await prompt_session.prompt_async()
+                    user_input = await handoff.prompt(prompt_session.prompt_async)
 
                 if user_input.lower() in ["exit", "quit"]:
                     break
@@ -4476,16 +4486,19 @@ async def interactive_chat(
 
         # session:end is emitted by session.cleanup() (the canonical kernel path).
         # Do NOT emit it here — that would duplicate the event.
-        await initialized.cleanup()
+        async def after_cleanup():
+            if hooks:
+                await hooks.emit(CLEANUP_FINALLY_END, {"session_id": actual_session_id})
+
+        try:
+            await handoff.finish(_save_session, after_cleanup)
+        finally:
+            close_dedicated_tty_input()
         # Close the dedicated terminal-input fd (see dedicated_tty_input.py) --
         # this is the REPL path that actually opens it (via
         # _create_prompt_session() and each turn's SteeringInputManager
         # prompt), so it must be the path that closes it too. Idempotent and
         # safe even if the fd was never opened.
-        close_dedicated_tty_input()
-        # --- cleanup:finally_end (after cleanup so its duration is visible) ---
-        if hooks:
-            await hooks.emit(CLEANUP_FINALLY_END, {"session_id": actual_session_id})
         console.print(
             "\n[yellow]Session exited - resume anytime with these commands:[/yellow]"
         )
@@ -4594,8 +4607,12 @@ async def execute_single(
         raise SystemExit(1) from None
     session = initialized.session
     actual_session_id = initialized.session_id
+    from .session_handoff import CLIHandoff
+
+    handoff = CLIHandoff(initialized, console)
 
     try:
+        await handoff.start()
         # Register trace collector hooks if in json-trace mode
         if trace_collector:
             hooks = session.coordinator.get("hooks")
@@ -4739,6 +4756,8 @@ async def execute_single(
         # untouched; this is a second, independent install for the headless
         # single-shot path, which has no per-turn wrapper to piggyback on.
         session.coordinator.cancellation.reset()
+        if handoff.requested.is_set():
+            return
 
         def _goal_sigint_handler(signum, frame):
             """First Ctrl-C: graceful (stop after current turn). Second: immediate."""
@@ -4923,14 +4942,33 @@ async def execute_single(
             await hooks.emit(CLEANUP_FINALLY_BEGIN, {"session_id": actual_session_id})
         # session:end is emitted by session.cleanup() (the canonical kernel path).
         # Do NOT emit it explicitly here — that would duplicate the event.
-        await initialized.cleanup()
+        async def save_for_handoff():
+            if not handoff.requested.is_set() or handoff.root is None:
+                return
+            context = session.coordinator.get("context")
+            if context is None:
+                raise RuntimeError("Cannot save a session without its context")
+            messages = await context.get_messages()
+            store = SessionStore()
+            metadata = {
+                **store.get_metadata_if_exists(actual_session_id),
+                "session_id": actual_session_id,
+                "bundle": bundle_name,
+                "working_dir": str(Path.cwd().resolve()),
+            }
+            handoff.root.checkpoint(store, messages, bundle=bundle_name, metadata=metadata)
+
+        async def after_cleanup():
+            if hooks:
+                await hooks.emit(CLEANUP_FINALLY_END, {"session_id": actual_session_id})
+
+        try:
+            await handoff.finish(save_for_handoff, after_cleanup)
+        finally:
+            close_dedicated_tty_input()
         # Close the dedicated terminal-input fd (see dedicated_tty_input.py)
         # opened for this session's PromptSessions -- no fd leak past this
         # session's teardown.
-        close_dedicated_tty_input()
-        # --- cleanup:finally_end (after cleanup so its duration is visible) ---
-        if hooks:
-            await hooks.emit(CLEANUP_FINALLY_END, {"session_id": actual_session_id})
         # Allow async tasks to complete before output
         if output_format in ["json", "json-trace"]:
             await asyncio.sleep(0.1)  # Brief pause for any deferred hook output
