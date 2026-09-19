@@ -53,12 +53,10 @@ def _write_shared_checkpoint(
 ) -> None:
     root = SharedRootSession.acquire(session_id)
     try:
-        root.checkpoint(
-            native,
-            messages,
-            bundle="bundle:anchors",
-            metadata={"session_id": session_id, "bundle": "bundle:anchors"},
-        )
+        # Fixture for a checkpoint left by the preceding release. Production
+        # save paths no longer call HeldSession.write().
+        root.held.write(messages, bundle="anchors", metadata={"session_id": session_id})
+        native.save(session_id, messages, {"session_id": session_id, "bundle": "bundle:anchors"})
     finally:
         root.release()
 
@@ -69,7 +67,7 @@ def _isolate_state(tmp_path: Path, monkeypatch) -> SessionStore:
     return SessionStore(base_dir=tmp_path / "native-state")
 
 
-def test_session_fork_reads_shared_authority_not_stale_projection(
+def test_session_fork_reads_latest_native_history_over_legacy_checkpoint(
     tmp_path: Path, monkeypatch
 ) -> None:
     native = _isolate_state(tmp_path, monkeypatch)
@@ -87,12 +85,13 @@ def test_session_fork_reads_shared_authority_not_stale_projection(
 
     assert result.exit_code == 0, result.output
     transcript, metadata = native.load("forked")
-    assert transcript[0]["content"] == "authoritative"
+    assert transcript[0]["content"] == "stale projection"
+    assert metadata["bundle"] == "bundle:stale"
     assert metadata["parent_id"] == "shared-root"
     assert metadata["forked_from_turn"] == 1
 
 
-def test_real_foundation_checkpoint_strips_forbidden_metadata(
+def test_real_foundation_lock_writes_native_metadata_without_checkpoint(
     tmp_path: Path, monkeypatch
 ) -> None:
     native = _isolate_state(tmp_path, monkeypatch)
@@ -111,9 +110,12 @@ def test_real_foundation_checkpoint_strips_forbidden_metadata(
     finally:
         root.release()
 
-    _messages_after, metadata = read_shared_root("shared-root") or ([], {})
-    assert "api_key" not in metadata
-    assert "token" not in metadata.get("nested", {})
+    _messages_after, metadata = native.load("shared-root")
+    assert metadata["api_key"] == "[REDACTED]"
+    assert metadata["nested"]["token"] == "[REDACTED]"
+    assert read_shared_root("shared-root") is None
+    from amplifier_foundation.session.shared_state import SharedSessionStore
+    assert not SharedSessionStore(tmp_path, "shared-root").checkpoint_path.exists()
 
 
 def test_session_fork_rejects_existing_shared_target_id(
@@ -269,7 +271,7 @@ async def test_live_fork_uses_current_context_without_reacquiring_shared_lock(
     assert transcript[0]["content"] == "live authority"
     assert metadata["parent_id"] == "shared-root"
     assert metadata["bundle"] == "bundle:held"
-    root_handle.read.assert_called_once_with()
+    root_handle.read.assert_called_once_with(native)
 
     native.save(
         "shared-root_worker",
@@ -314,6 +316,16 @@ def test_busy_shared_root_is_a_click_error_with_parseable_json_stdout(
 
     try:
         main_module = import_module("amplifier_app_cli.main")
+        from amplifier_app_cli.commands.run import register_run_command
+        run_cli = click.Group()
+        register_run_command(
+            run_cli,
+            interactive_chat=AsyncMock(),
+            execute_single=main_module.execute_single,
+            get_module_search_paths=list,
+            check_first_run=lambda: False,
+            prompt_first_run_init=lambda _console: None,
+        )
         prepared_bundle = type("PreparedBundle", (), {"mount_plan": {}})()
         with (
             patch(
@@ -328,7 +340,7 @@ def test_busy_shared_root_is_a_click_error_with_parseable_json_stdout(
             patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
         ):
             result = CliRunner().invoke(
-                main_module.cli,
+                run_cli,
                 ["run", "--output-format", "json", "--resume", "busy-root", "blocked"],
             )
     finally:
@@ -345,3 +357,71 @@ def test_busy_shared_root_is_a_click_error_with_parseable_json_stdout(
     assert f"pid={holder.pid}" in payload["error"]
     assert str(tmp_path / "shared-state") in payload["error"]
     assert "Shared root session is busy" in result.stderr
+
+@pytest.mark.parametrize("skip_events", [False, True])
+def test_native_fork_preserves_legacy_log_option_without_copying_ci(tmp_path, monkeypatch, skip_events):
+    import json
+
+    native = _isolate_state(tmp_path, monkeypatch)
+    messages = [
+        {"role": "user", "content": "first", "timestamp": "2026-01-01T00:00:00Z"},
+        {"role": "assistant", "content": "answer", "timestamp": "2026-01-01T00:00:01Z"},
+        {"role": "user", "content": "second", "timestamp": "2026-01-01T00:00:02Z"},
+    ]
+    native.save("root", messages, {"bundle": "bundle:anchors"})
+    parent = native.base_dir / "root"
+    legacy = parent / "events.jsonl"
+    legacy.write_text(json.dumps({"event": "prompt:submit", "session_id": "root", "ts": "2026-01-01T00:00:00Z", "data": {}}) + "\n")
+    capture = parent / "context-intelligence"
+    capture.mkdir()
+    (capture / "events.jsonl").write_text('{"event":"prompt:submit","data":{"session_id":"root"}}\n')
+    before = (capture / "events.jsonl").read_bytes()
+    args = ["session", "fork", "root", "--at-turn", "1", "--name", "forked"]
+    if skip_events:
+        args.append("--no-events")
+    result = CliRunner().invoke(_session_cli(native, monkeypatch), args)
+    assert result.exit_code == 0, result.output
+    child = native.base_dir / "forked"
+    assert native.load("forked")[0] == messages[:2]
+    assert not (child / "context-intelligence").exists()
+    assert (capture / "events.jsonl").read_bytes() == before
+    assert (child / "events.jsonl").exists() is not skip_events
+    if not skip_events:
+        copied = json.loads((child / "events.jsonl").read_text())
+        assert copied["session_id"] == "forked"
+        assert copied["parent_session_id"] == "root"
+
+
+@pytest.mark.parametrize("primary", ["missing", "corrupt"])
+@pytest.mark.parametrize("explicit_turn", [False, True])
+@pytest.mark.parametrize("shared_lock", [False, True])
+def test_fork_previews_and_saves_recovered_native_history(
+    tmp_path, monkeypatch, primary, explicit_turn, shared_lock
+):
+    native = _isolate_state(tmp_path, monkeypatch)
+    expected = _messages("first") + _messages("second")
+    native.save("root", expected, {"bundle": "bundle:anchors"})
+    native.save("root", expected, {"bundle": "bundle:anchors"})
+    transcript = native.base_dir / "root" / "transcript.jsonl"
+    if primary == "missing":
+        transcript.unlink()
+    else:
+        # A syntactically valid first row followed by damage used to produce a
+        # silently shortened preview, even though resume recovered all rows.
+        transcript.write_text('{"role":"user","content":"partial"}\n{broken')
+    monkeypatch.setattr(session_commands, "_shared_root_platform_supported", lambda: shared_lock)
+    args = ["session", "fork", "root", "--name", "forked", "--no-events"]
+    if explicit_turn:
+        args += ["--at-turn", "2"]
+    result = CliRunner().invoke(_session_cli(native, monkeypatch), args, input="\n")
+    assert result.exit_code == 0, result.output
+    assert "Fork at turn: 2 of 2" in result.output
+    if not explicit_turn:
+        assert "(2 turns)" in result.output
+    assert native.load("forked")[0] == expected
+    assert native.load("forked")[1]["forked_from_turn"] == 2
+    # Recovery is read-only for the parent's damaged/missing primary file.
+    if primary == "missing":
+        assert not transcript.exists()
+    else:
+        assert transcript.read_text().endswith("{broken")

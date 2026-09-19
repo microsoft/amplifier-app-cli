@@ -1862,7 +1862,7 @@ class CommandProcessor:
             root_state = self.session.coordinator.get_capability("cli.shared_root_state")
             if root_state is not None:
                 # The active root already owns the lock.  Preserve complete
-                # provider context and advance common authority first.
+                # provider context while retaining the shared writer lock.
                 context = self.session.coordinator.get("context")
                 if context is None or not hasattr(context, "get_messages"):
                     return "Cannot rename: root context is unavailable."
@@ -1877,7 +1877,7 @@ class CommandProcessor:
                     store, messages, bundle=self.bundle_name, metadata=metadata
                 )
             elif self.session.config.get("root_session_id", session_id) != session_id:
-                # Spawned children never participate in the root checkpoint.
+                # Spawned children never participate in the root writer lock.
                 store.update_metadata(session_id, updates)
             else:
                 update_root_metadata(store, session_id, updates)
@@ -1995,13 +1995,13 @@ class CommandProcessor:
             if root_state is not None:
                 # This root already owns Foundation's lock.  Fork from its
                 # live context rather than reacquiring the same lock or
-                # reading the native compatibility projection.
+                # reading a potentially older on-disk history.
                 result = fork_session_in_memory(
                     messages, turn=turn, parent_id=session_id
                 )
                 child_id = custom_name or result.session_id
                 now = datetime.now(UTC).isoformat()
-                shared_parent = root_state.read()
+                shared_parent = root_state.read(store)
                 parent_metadata = (
                     shared_parent[1]
                     if shared_parent is not None

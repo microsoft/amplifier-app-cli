@@ -119,7 +119,7 @@ class IncrementalSaveHook:
                 "working_dir": str(Path.cwd().resolve()),
             }
 
-            # Root checkpoints must go through the live Foundation writer
+            # Root saves must go through the live Foundation writer
             # handle.  Child sessions retain their independent native storage.
             if self.root_state is not None:
                 self.root_state.checkpoint(

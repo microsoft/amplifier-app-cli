@@ -258,8 +258,8 @@ class TestResumeErrorHandling:
         with open(metadata_file, "w", encoding="utf-8") as f:
             f.write("{ corrupt json")
 
-        # Try to resume - SessionStore recovers but we detect missing config
-        with pytest.raises(RuntimeError, match="Corrupted session metadata"):
+        # Neither primary nor backup can supply valid metadata: fail closed.
+        with pytest.raises(RuntimeError, match="Cannot read valid session metadata"):
             await resume_sub_session(session_id, "Follow-up")
 
 

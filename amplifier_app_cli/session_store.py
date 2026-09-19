@@ -6,10 +6,10 @@ backup mechanism, and corruption recovery.
 
 Uses amplifier_foundation utilities for:
 - sanitize_message, sanitize_for_json: JSON sanitization for LLM responses
-- write_with_backup: Atomic writes with backup pattern
+- SessionHistoryStore: CLI-compatible transcript/metadata I/O and CI event reads
+- write_with_backup: Config snapshot writes with backup pattern
 """
 
-import json
 import logging
 import shutil
 from collections.abc import Callable
@@ -20,6 +20,7 @@ from pathlib import Path
 from amplifier_core.utils.truncate import redact_secrets
 from amplifier_foundation import sanitize_message
 from amplifier_foundation import write_with_backup
+from amplifier_foundation.session.history import SessionHistoryStore
 
 from amplifier_app_cli.project_utils import get_project_slug
 from amplifier_foundation.paths.resolution import get_amplifier_home
@@ -122,11 +123,10 @@ class SessionStore:
         session_dir = self.base_dir / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save transcript with atomic write
-        self._save_transcript(session_dir, transcript)
-
-        # Save metadata with atomic write
-        self._save_metadata(session_dir, metadata)
+        # Foundation validates both payloads before writing either native file.
+        SessionHistoryStore(session_dir).save(
+            transcript, redact_secrets(metadata), sanitizer=sanitize_message
+        )
 
         logger.debug(f"Session {session_id} saved successfully")
 
@@ -150,8 +150,9 @@ class SessionStore:
 
         session_dir = self.reserve_session(session_id)
         try:
-            self._save_transcript(session_dir, transcript)
-            self._save_metadata(session_dir, metadata)
+            SessionHistoryStore(session_dir).save(
+                transcript, redact_secrets(metadata), sanitizer=sanitize_message
+            )
         except BaseException:
             # We created this directory exclusively, so removing a partial
             # write cannot delete another session's data.
@@ -166,38 +167,13 @@ class SessionStore:
             session_dir: Directory for this session
             transcript: List of message objects
         """
-        transcript_file = session_dir / "transcript.jsonl"
-
-        # Build JSONL content
-        lines = []
-        for message in transcript:
-            # Skip system and developer role messages from transcript
-            # Keep only user/assistant conversation (the actual interaction)
-            # - system: Internal instructions merged by providers
-            # - developer: Context files merged by providers
-            msg_dict = message if isinstance(message, dict) else message.model_dump()
-            if msg_dict.get("role") in ("system", "developer"):
-                continue
-
-            # Sanitize message to ensure it's JSON-serializable
-            sanitized_msg = sanitize_message(message)
-            # Timestamps are added by context module at creation time (metadata.timestamp)
-            # No fallback needed - replay handles missing timestamps via content-based timing
-            lines.append(json.dumps(sanitized_msg, ensure_ascii=False))
-
-        content = "\n".join(lines) + "\n" if lines else ""
-        write_with_backup(transcript_file, content)
+        SessionHistoryStore(session_dir).save_messages(
+            transcript, sanitizer=sanitize_message
+        )
 
     def _save_metadata(self, session_dir: Path, metadata: dict) -> None:
-        """Save metadata with atomic write and backup.
-
-        Args:
-            session_dir: Directory for this session
-            metadata: Metadata dictionary
-        """
-        metadata_file = session_dir / "metadata.json"
-        content = json.dumps(redact_secrets(metadata), indent=2, ensure_ascii=False)
-        write_with_backup(metadata_file, content)
+        """Save native metadata with the CLI's existing credential redaction."""
+        SessionHistoryStore(session_dir).save_metadata(redact_secrets(metadata))
 
     def load(self, session_id: str) -> tuple[list, dict]:
         """Load session state with corruption recovery.
@@ -234,93 +210,22 @@ class SessionStore:
         return transcript, metadata
 
     def _load_transcript(self, session_dir: Path) -> list:
-        """Load transcript with corruption recovery.
-
-        Args:
-            session_dir: Directory for this session
-
-        Returns:
-            List of message objects (empty list if no transcript exists yet)
-        """
-        transcript_file = session_dir / "transcript.jsonl"
-        backup_file = session_dir / "transcript.jsonl.backup"
-
-        # If neither file exists, this is a new/empty session - return empty list silently
-        if not transcript_file.exists() and not backup_file.exists():
-            return []
-
-        # Try main file first
-        if transcript_file.exists():
-            try:
-                transcript = []
-                with open(transcript_file, encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:  # Skip empty lines
-                            transcript.append(json.loads(line))
-                return transcript
-            except (OSError, json.JSONDecodeError) as e:
-                logger.warning(f"Failed to load transcript, trying backup: {e}")
-
-        # Try backup if main file failed or missing
-        if backup_file.exists():
-            try:
-                transcript = []
-                with open(backup_file, encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:  # Skip empty lines
-                            transcript.append(json.loads(line))
-                logger.info("Loaded transcript from backup")
-                return transcript
-            except (OSError, json.JSONDecodeError) as e:
-                logger.error(f"Backup also corrupted: {e}")
-
-        # Return empty transcript if both failed
-        logger.warning("Both transcript files corrupted, returning empty transcript")
-        return []
+        """Load canonical messages, recovering backups without hiding corruption."""
+        return SessionHistoryStore(session_dir).load_messages()
 
     def _load_metadata(self, session_dir: Path) -> dict:
-        """Load metadata with corruption recovery.
+        """Load native metadata through the same shared recovery mechanism."""
+        return SessionHistoryStore(session_dir).load_metadata()
 
-        Args:
-            session_dir: Directory for this session
-
-        Returns:
-            Metadata dictionary (empty dict if no metadata exists yet)
-        """
-        metadata_file = session_dir / "metadata.json"
-        backup_file = session_dir / "metadata.json.backup"
-
-        # If neither file exists, this is a new session - return empty dict silently
-        if not metadata_file.exists() and not backup_file.exists():
-            return {}
-
-        # Try main file first
-        if metadata_file.exists():
-            try:
-                with open(metadata_file, encoding="utf-8") as f:
-                    return json.load(f)
-            except (OSError, json.JSONDecodeError) as e:
-                logger.warning(f"Failed to load metadata, trying backup: {e}")
-
-        # Try backup if main file failed or missing
-        if backup_file.exists():
-            try:
-                with open(backup_file, encoding="utf-8") as f:
-                    metadata = json.load(f)
-                logger.info("Loaded metadata from backup")
-                return metadata
-            except (OSError, json.JSONDecodeError) as e:
-                logger.error(f"Backup also corrupted: {e}")
-
-        # Return minimal metadata if both failed
-        logger.warning("Both metadata files corrupted, returning minimal metadata")
-        return {
-            "session_id": session_dir.name,
-            "recovered": True,
-            "recovery_time": datetime.now(UTC).isoformat(),
-        }
+    def has_transcript(self, session_id: str) -> bool:
+        """Distinguish a native history (including backup) from log-only folders."""
+        if not self.exists(session_id):
+            return False
+        session_dir = self.base_dir / session_id
+        return any(
+            (session_dir / name).exists()
+            for name in ("transcript.jsonl", "transcript.jsonl.backup")
+        )
 
     def update_metadata(self, session_id: str, updates: dict) -> dict:
         """Update specific fields in session metadata.
@@ -487,7 +392,7 @@ class SessionStore:
                 # Logging can create a directory before any conversation is saved.
                 # Keep those diagnostics on disk, but do not offer them as resumable
                 # sessions. An empty saved transcript is still a valid session.
-                if not (session_dir / "transcript.jsonl").is_file():
+                if not self.has_transcript(session_name):
                     continue
 
                 # Include session with its modification time for sorting

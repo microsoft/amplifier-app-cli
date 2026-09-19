@@ -1,4 +1,4 @@
-"""Focused WARM contract coverage for CLI's Foundation shared-state adapter."""
+"""Shared lock and native-history precedence coverage for CLI sessions."""
 
 from __future__ import annotations
 
@@ -26,7 +26,12 @@ class _Held:
         self.released = False
         self.writes: list[dict] = []
 
+    def check(self) -> None:
+        if self.released:
+            raise RuntimeError("released writer")
+
     def read(self) -> dict | None:
+        self.check()
         return self.records.get(self.session_id)
 
     def write(self, messages, *, bundle, metadata) -> None:
@@ -89,7 +94,7 @@ def shared_api(
     return _SharedStore.records
 
 
-def test_root_checkpoint_writes_common_authority_before_native_projection(
+def test_root_save_writes_only_native_files_under_held_lock(
     shared_api: dict[str, dict], tmp_path: Path
 ) -> None:
     native = SessionStore(base_dir=tmp_path / "native")
@@ -105,15 +110,16 @@ def test_root_checkpoint_writes_common_authority_before_native_projection(
         metadata={"session_id": "web-root", "api_key": "secret"},
     )
 
-    assert shared_api["web-root"]["bundle"] == "portable-bundle"
-    assert shared_api["web-root"]["messages"] == messages
-    assert "api_key" not in shared_api["web-root"]["metadata"]
-    assert native.load("web-root")[0] == messages
+    assert "web-root" not in shared_api
+    assert _SharedStore.acquired[0].writes == []
+    saved, metadata = native.load("web-root")
+    assert saved == messages
+    assert metadata["api_key"] == "[REDACTED]"
     root.release()
     assert _SharedStore.acquired[0].released is True
 
 
-def test_common_checkpoint_wins_over_stale_native_and_shared_only_id_resolves(
+def test_native_history_wins_over_legacy_checkpoint_and_shared_only_id_resolves(
     shared_api: dict[str, dict], tmp_path: Path
 ) -> None:
     native = SessionStore(base_dir=tmp_path / "native")
@@ -134,15 +140,15 @@ def test_common_checkpoint_wins_over_stale_native_and_shared_only_id_resolves(
     }
 
     transcript, metadata = load_root_resume(native, "web-root")
-    assert transcript[0]["content"] == "authoritative"
-    assert metadata["bundle"] == "bundle:portable-bundle"
+    assert transcript[0]["content"] == "stale"
+    assert metadata["bundle"] == "bundle:stale"
     assert resolve_root_session_id(native, "web-o") == "web-only"
 
 
-def test_invalid_common_checkpoint_is_not_replaced_by_native_projection(
+def test_invalid_legacy_checkpoint_cannot_override_native_history(
     shared_api: dict[str, dict], tmp_path: Path
 ) -> None:
-    """A damaged authority is an error, never permission to use stale native data."""
+    """Checkpoint damage is irrelevant when native history exists."""
 
     native = SessionStore(base_dir=tmp_path / "native")
     native.save(
@@ -156,8 +162,9 @@ def test_invalid_common_checkpoint_is_not_replaced_by_native_projection(
         "bundle": "portable-bundle",
     }
 
-    with pytest.raises(RuntimeError, match="invalid messages"):
-        load_root_resume(native, "root")
+    transcript, metadata = load_root_resume(native, "root")
+    assert transcript[0]["content"] == "stale"
+    assert metadata["bundle"] == "bundle:stale"
 
 
 @pytest.mark.asyncio
@@ -320,7 +327,7 @@ def test_missing_delete_helper_fails_loudly_on_posix(
     from amplifier_app_cli import shared_root_state
 
     monkeypatch.setattr(shared_root_state.sys, "platform", "linux")
-    monkeypatch.setattr(foundation_shared_state, "HeldSession", type("HeldSession", (), {}))
+    monkeypatch.setattr(foundation_shared_state, "HeldSession", type("HeldSession", (), {"check": lambda self: None}))
 
     with pytest.raises(SharedRootStateUnavailableError, match="delete_checkpoint"):
         shared_root_state._shared_api()
@@ -493,3 +500,61 @@ async def test_failed_runtime_cleanup_retains_shared_handle() -> None:
     with pytest.raises(RuntimeError, match="cleanup failed"):
         await initialized.cleanup()
     root.release.assert_not_called()
+
+
+def test_held_read_refreshes_older_cli_native_writes(shared_api, tmp_path):
+    native = SessionStore(base_dir=tmp_path / "native")
+    native.save("root", [{"role": "user", "content": "first"}], {"name": "first"})
+    root = SharedRootSession.acquire("root")
+    try:
+        assert root.read(native)[0][0]["content"] == "first"
+        # Simulate a transcript-compatible host writing through the shared layer.
+        native.save("root", [{"role": "user", "content": "second"}], {"name": "renamed"})
+        messages, metadata = root.read(native)
+        assert messages[0]["content"] == "second"
+        assert metadata["name"] == "renamed"
+        assert not shared_api
+    finally:
+        root.release()
+    with pytest.raises(RuntimeError, match="released writer"):
+        root.checkpoint(native, [], bundle="anchors", metadata={})
+    assert native.load("root")[0][0]["content"] == "second"
+
+
+def test_corrupt_native_history_cannot_fall_back_to_checkpoint(shared_api, tmp_path):
+    from amplifier_foundation.session.history import SessionHistoryError
+
+    native = SessionStore(base_dir=tmp_path / "native")
+    native.save("root", [{"role": "user", "content": "native"}], {})
+    (native.base_dir / "root" / "transcript.jsonl").write_text("{truncated")
+    shared_api["root"] = {
+        "messages": [{"role": "user", "content": "legacy"}],
+        "metadata": {"session_id": "root"},
+        "bundle": "anchors",
+    }
+    with pytest.raises(SessionHistoryError):
+        load_root_resume(native, "root")
+    root = SharedRootSession.acquire("root")
+    try:
+        with pytest.raises(SessionHistoryError):
+            root.read(native)
+    finally:
+        root.release()
+
+
+def test_checkpoint_only_session_remains_readable_until_next_native_save(shared_api, tmp_path):
+    native = SessionStore(base_dir=tmp_path / "native")
+    legacy = {"messages": [{"role": "user", "content": "legacy"}],
+              "metadata": {"name": "saved name"}, "bundle": "anchors"}
+    shared_api["root"] = legacy
+    assert load_root_resume(native, "root")[0] == legacy["messages"]
+    root = SharedRootSession.acquire("root")
+    try:
+        messages, metadata = root.read(native)
+        messages.append({"role": "assistant", "content": "continued"})
+        root.checkpoint(native, messages, bundle="anchors", metadata=metadata)
+        assert len(root.read(native)[0]) == 2
+        assert shared_api["root"] is legacy
+        assert len(legacy["messages"]) == 1
+    finally:
+        root.release()

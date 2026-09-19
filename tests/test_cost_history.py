@@ -166,3 +166,48 @@ def test_restore_and_fresh_provider_sum_without_double_count(tmp_path):
     # every registered contributor is summed (str or Decimal payloads accepted).
     total = sum(Decimal(str(cb()["cost_usd"])) for cb in contributors)
     assert total == Decimal("0.22")
+
+
+def test_ci_cost_scopes_parent_and_skips_non_finite_values(tmp_path):
+    events = tmp_path / "events.jsonl"
+    _write_events(events, [
+        {"event": "llm:response", "data": {"session_id": "root", "usage": {"cost_usd": "0.12"}}},
+        {"event": "llm:response", "data": {"session_id": "child", "usage": {"cost_usd": "4.00"}}},
+        _llm_response("NaN"), _llm_response("Infinity"), _llm_response("-2"),
+    ])
+    coordinator = MagicMock()
+    assert restore_session_cost(coordinator, "root", events) == Decimal("0.12")
+
+
+def test_ci_relocation_takes_precedence_over_local_and_legacy_cost_logs(tmp_path, monkeypatch):
+    from amplifier_app_cli.cost_history import session_events_path
+
+    session_dir = tmp_path / "projects" / "workspace-slug" / "sessions" / "root"
+    session_dir.mkdir(parents=True)
+    _write_events(session_dir / "events.jsonl", [_llm_response("9")])
+    local = session_dir / "context-intelligence"
+    local.mkdir()
+    _write_events(local / "events.jsonl", [_llm_response("5")])
+    relocated_root = tmp_path / "ci-captures"
+    relocated = relocated_root / "workspace-slug" / "sessions" / "root" / "context-intelligence"
+    relocated.mkdir(parents=True)
+    _write_events(relocated / "events.jsonl", [_llm_response("0.25")])
+    monkeypatch.setenv("AMPLIFIER_CONTEXT_INTELLIGENCE_BASE_PATH", str(relocated_root))
+    selected = session_events_path(session_dir)
+    assert selected == relocated / "events.jsonl"
+    assert restore_session_cost(MagicMock(), "root", selected) == Decimal("0.25")
+    monkeypatch.delenv("AMPLIFIER_CONTEXT_INTELLIGENCE_BASE_PATH")
+    assert session_events_path(session_dir) == local / "events.jsonl"
+    (local / "events.jsonl").unlink()
+    assert session_events_path(session_dir) == session_dir / "events.jsonl"
+
+
+def test_ci_cost_helper_infers_session_id_above_capture_subdirectory(tmp_path):
+    capture = tmp_path / "root" / "context-intelligence"
+    capture.mkdir(parents=True)
+    events = capture / "events.jsonl"
+    _write_events(events, [
+        {"event": "llm:response", "data": {"session_id": "root", "usage": {"cost_usd": "0.17"}}},
+        {"event": "llm:response", "data": {"session_id": "other", "usage": {"cost_usd": "9"}}},
+    ])
+    assert sum_prior_cost_usd(events) == Decimal("0.17")

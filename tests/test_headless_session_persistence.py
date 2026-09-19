@@ -152,9 +152,9 @@ def test_session_store_default_home_fallback_and_explicit_base_precedence(
     corrupt_dir = configured_store.base_dir / "corrupt-session"
     corrupt_dir.mkdir()
     (corrupt_dir / "metadata.json").write_text("{not json", encoding="utf-8")
-    assert (
-        configured_store.get_metadata_if_exists("corrupt-session")["recovered"] is True
-    )
+    from amplifier_foundation.session.history import SessionHistoryError
+    with pytest.raises(SessionHistoryError, match="metadata"):
+        configured_store.get_metadata_if_exists("corrupt-session")
 
     explicit_store = SessionStore(base_dir=explicit_base)
     explicit_store.save("explicit-session", [], {"source": "explicit"})

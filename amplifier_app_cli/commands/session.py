@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-import uuid
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
@@ -39,7 +39,6 @@ from ..shared_root_state import (
     SharedRootSession,
     SharedRootSessionBusyError,
     _shared_root_platform_supported,
-    is_shared_root,
     list_shared_root_ids,
     load_root_resume,
     resolve_root_session_id,
@@ -54,9 +53,9 @@ from ..types import (
 # Import session fork utilities from foundation
 try:
     from amplifier_foundation.session import (
-        fork_session,
         fork_session_in_memory,
-        get_fork_preview,
+        find_orphaned_tool_calls,
+        get_turn_boundaries,
         get_session_lineage,
         get_turn_summary,
         count_turns,
@@ -65,6 +64,45 @@ try:
     HAS_SESSION_FORK = True
 except ImportError:
     HAS_SESSION_FORK = False
+
+
+@contextmanager
+def _fork_source(store: SessionStore, session_id: str):
+    """Read recovered native history while retaining supported writer ownership."""
+    if _shared_root_platform_supported() and shared_root_id_supported(session_id):
+        root = SharedRootSession.acquire(session_id)
+        try:
+            history = root.read(store)
+            if history is None:
+                raise FileNotFoundError("Saved history disappeared before it could be forked.")
+            yield history
+        finally:
+            root.release()
+    else:
+        yield load_root_resume(store, session_id)
+
+
+def _copy_legacy_fork_events(parent_dir: Path, child_dir: Path, turn: int, child_id: str, parent_id: str) -> int:
+    """Preserve the CLI's optional legacy log copy, never copy CI evidence.
+
+    Context Intelligence captures stay owned by their original session. Fork
+    lineage links to them; the child's logger records only subsequent activity.
+    """
+    from amplifier_foundation.session.events import slice_events_for_fork
+
+    source = parent_dir / "events.jsonl"
+    if not source.is_file():
+        return 0
+    destination = child_dir / "events.jsonl"
+    try:
+        return slice_events_for_fork(
+            source, parent_dir / "transcript.jsonl", turn, destination,
+            new_session_id=child_id, parent_session_id=parent_id,
+        )
+    except Exception:
+        # Audit copying is best-effort and cannot change recovered messages.
+        destination.write_text("", encoding="utf-8")
+        return 0
 
 
 def _record_bundle_override(
@@ -845,7 +883,7 @@ def register_session_commands(
         is_flag=True,
         help="Resume forked session immediately",
     )
-    @click.option("--no-events", is_flag=True, help="Skip copying events.jsonl")
+    @click.option("--no-events", is_flag=True, help="Skip copying the legacy root events.jsonl (CI activity stays with its parent)")
     def sessions_fork(
         session_id: str,
         turn: int | None,
@@ -898,56 +936,16 @@ def register_session_commands(
                 sys.exit(1)
 
         try:
-            shared_root = is_shared_root(session_id)
+            with _fork_source(store, session_id) as (messages, _metadata):
+                pass
         except Exception as exc:
-            console.print(
-                f"[red]Cannot safely inspect shared session:[/red] {escape_markup(exc)}"
-            )
+            console.print(f"[red]Cannot safely fork session:[/red] {escape_markup(exc)}")
             sys.exit(1)
-
-        shared_messages: list[dict] | None = None
-        if shared_root:
-            try:
-                root = SharedRootSession.acquire(session_id)
-                try:
-                    shared_checkpoint = root.read()
-                    if shared_checkpoint is None:
-                        raise RuntimeError("Shared checkpoint disappeared before it could be forked.")
-                    shared_messages, _ = shared_checkpoint
-                finally:
-                    root.release()
-            except SharedRootSessionBusyError as exc:
-                console.print(f"[red]Error:[/red] {escape_markup(exc)}")
-                sys.exit(1)
-            except Exception as exc:
-                console.print(
-                    f"[red]Cannot safely fork shared session:[/red] {escape_markup(exc)}"
-                )
-                sys.exit(1)
 
         session_dir = store.base_dir / session_id
 
-        # If no turn specified, show interactive selection or use latest
+        # Select and preview the exact recovered messages used by resume.
         if turn is None:
-            if shared_messages is not None:
-                messages = shared_messages
-            else:
-                # Load native transcript to count turns.
-                transcript_path = session_dir / "transcript.jsonl"
-                if not transcript_path.exists():
-                    console.print("[red]Error:[/red] No transcript found for session")
-                    sys.exit(1)
-
-                messages = []
-                with open(transcript_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            try:
-                                messages.append(json.loads(line))
-                            except json.JSONDecodeError:
-                                continue
-
             max_turns = count_turns(messages)
             if max_turns == 0:
                 console.print(
@@ -1001,23 +999,23 @@ def register_session_commands(
                 console.print("[yellow]Cancelled[/yellow]")
                 return
 
-        # Show preview before forking.  Shared roots are sliced from the held
-        # authority; their stale native projection is never read.
-        shared_result = None
+        # Use Foundation's pure message operations instead of reopening a raw
+        # primary transcript, which may be absent or have a readable backup.
         try:
-            if shared_messages is not None:
-                shared_result = fork_session_in_memory(
-                    shared_messages, turn=turn, parent_id=session_id
-                )
-                preview = {
-                    "parent_id": session_id,
-                    "max_turns": count_turns(shared_messages),
-                    "message_count": shared_result.message_count,
-                    "has_orphaned_tools": False,
-                    "orphaned_tool_count": 0,
-                }
-            else:
-                preview = get_fork_preview(session_dir, turn)
+            max_turns = count_turns(messages)
+            if turn < 1 or turn > max_turns:
+                raise ValueError(f"Turn {turn} out of range (1-{max_turns})")
+            boundaries = get_turn_boundaries(messages)
+            end_index = boundaries[turn] if turn < max_turns else len(messages)
+            sliced = messages[:end_index]
+            orphaned = find_orphaned_tool_calls(sliced)
+            preview = {
+                "parent_id": session_id,
+                "max_turns": max_turns,
+                "message_count": len(sliced),
+                "has_orphaned_tools": bool(orphaned),
+                "orphaned_tool_count": len(orphaned),
+            }
             console.print()
             console.print("[bold]Fork Preview:[/bold]")
             console.print(f"  Parent: {preview['parent_id'][:8]}...")
@@ -1032,61 +1030,35 @@ def register_session_commands(
             console.print(f"[red]Error:[/red] {escape_markup(e)}")
             sys.exit(1)
 
-        # Perform the fork
+        # Re-read immediately before mutation under the supported writer lock:
+        # another host may have saved since the display-only preview.
         try:
-            if _shared_root_platform_supported() and shared_root_id_supported(session_id):
-                # Re-acquire immediately before mutation. A checkpoint might
-                # have appeared or advanced after the display-only preview;
-                # never use that stale projection as the fork source.
-                action_root = SharedRootSession.acquire(session_id)
-                try:
-                    action_checkpoint = action_root.read()
-                    if action_checkpoint is not None:
-                        action_messages, action_metadata = action_checkpoint
-                        result = fork_session_in_memory(
-                            action_messages, turn=turn, parent_id=session_id
-                        )
-                        child_id = new_name or result.session_id
-                        now = datetime.now(UTC).isoformat()
-                        store.save_new(
-                            child_id,
-                            result.messages or [],
-                            {
-                                "session_id": child_id,
-                                "parent_id": session_id,
-                                "forked_from_turn": result.forked_from_turn,
-                                "forked_at": now,
-                                "created": now,
-                                "turn_count": count_turns(result.messages or []),
-                                "bundle": action_metadata.get("bundle"),
-                                "model": action_metadata.get("model"),
-                            },
-                        )
-                        result.session_id = child_id
-                    elif shared_result is not None:
-                        raise RuntimeError(
-                            "Shared checkpoint disappeared before the fork could be saved."
-                        )
-                    else:
-                        child_id = new_name or str(uuid.uuid4())
-                        store.reserve_session(child_id)
-                        result = fork_session(
-                            session_dir,
-                            turn=turn,
-                            new_session_id=child_id,
-                            include_events=not no_events,
-                        )
-                finally:
-                    action_root.release()
-            else:
-                child_id = new_name or str(uuid.uuid4())
-                store.reserve_session(child_id)
-                result = fork_session(
-                    session_dir,
-                    turn=turn,
-                    new_session_id=child_id,
-                    include_events=not no_events,
+            with _fork_source(store, session_id) as (action_messages, action_metadata):
+                result = fork_session_in_memory(
+                    action_messages, turn=turn, parent_id=session_id
                 )
+                child_id = new_name or result.session_id
+                now = datetime.now(UTC).isoformat()
+                store.save_new(
+                    child_id,
+                    result.messages or [],
+                    {
+                        "session_id": child_id,
+                        "parent_id": session_id,
+                        "forked_from_turn": result.forked_from_turn,
+                        "forked_at": now,
+                        "created": now,
+                        "turn_count": count_turns(result.messages or []),
+                        "bundle": action_metadata.get("bundle"),
+                        "model": action_metadata.get("model"),
+                    },
+                )
+                result.session_id = child_id
+                result.session_dir = store.base_dir / child_id
+                if not no_events:
+                    result.events_count = _copy_legacy_fork_events(
+                        session_dir, result.session_dir, turn, child_id, session_id
+                    )
 
             console.print(
                 f"[green]✓[/green] Forked session created: {result.session_id}"
@@ -1149,17 +1121,14 @@ def register_session_commands(
 
             session_path = store.base_dir / session_id
             if _shared_root_platform_supported() and shared_root_id_supported(session_id):
-                # Serialize the shared/native decision with Foundation's
-                # writer. The held capability alone may remove common
-                # authority; it preserves session.lock and its directory.
+                # Serialize deletion with Foundation's writer and retain its
+                # stable session.lock directory for other hosts.
                 root = SharedRootSession.acquire(session_id)
                 try:
-                    if root.read() is not None:
-                        if session_path.exists():
-                            shutil.rmtree(session_path)
-                        root.delete_checkpoint()
-                    else:
+                    root.held.check()
+                    if session_path.exists():
                         shutil.rmtree(session_path)
+                    root.delete_checkpoint()
                 finally:
                     root.release()
             else:
@@ -1304,7 +1273,7 @@ def register_session_commands(
         busy_skipped: set[str] = set()
 
         def remove_safely(session_path: Path) -> bool:
-            """Retain a Foundation lock through a native projection deletion."""
+            """Retain a Foundation lock through native history deletion."""
 
             if (
                 not _shared_root_platform_supported()
@@ -1320,7 +1289,7 @@ def register_session_commands(
                 busy_skipped.add(session_path.name)
                 return False
             try:
-                if root.read() is not None:
+                if root.held.read() is not None:
                     shared_skipped.add(session_path.name)
                     return False
                 import shutil
@@ -1346,7 +1315,7 @@ def register_session_commands(
         if shared_skipped:
             console.print(
                 f"[dim]Skipped {len(shared_skipped)} shared-root session(s): "
-                "cleanup never removes common authority.[/dim]"
+                "cleanup preserves historical checkpoints.[/dim]"
             )
         if busy_skipped:
             console.print(
