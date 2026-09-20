@@ -4649,6 +4649,48 @@ async def execute_single(
 
     handoff = CLIHandoff(initialized, console)
 
+    # Preserve failed turns before cleanup, without retrying a failed save.
+    execution_started = False
+    session_save_attempted = False
+
+    def _resolve_model_name() -> str:
+        providers = session.coordinator.get("providers") or {}
+        for prov_name, prov in providers.items():
+            if hasattr(prov, "model"):
+                return f"{prov_name}/{prov.model}"
+            if hasattr(prov, "default_model"):
+                return f"{prov_name}/{prov.default_model}"
+        return "unknown"
+
+    async def _persist_session() -> int:
+        """Write transcript + metadata. Returns the message count saved (0 = nothing)."""
+        nonlocal session_save_attempted
+        session_save_attempted = True
+        context = session.coordinator.get("context")
+        messages = await context.get_messages() if context else []
+        if not messages:
+            return 0
+        store = SessionStore()
+        # Load existing metadata to preserve fields like name, description
+        # that may have been set by other hooks (e.g., session-naming)
+        existing_metadata = store.get_metadata_if_exists(actual_session_id)
+        metadata = {
+            **existing_metadata,  # Preserve name, description, etc.
+            "session_id": actual_session_id,
+            "created": existing_metadata.get("created", datetime.now(UTC).isoformat()),
+            "bundle": bundle_name,
+            "model": _resolve_model_name(),
+            "turn_count": len([m for m in messages if m.get("role") == "user"]),
+            # Store working_dir for session sync between CLI and web
+            "working_dir": str(Path.cwd().resolve()),
+        }
+        root_state = vars(initialized).get("root_state")
+        if root_state is not None:
+            root_state.checkpoint(store, messages, bundle=bundle_name, metadata=metadata)
+        else:
+            store.save(actual_session_id, messages, metadata)
+        return len(messages)
+
     try:
         await handoff.start()
         # Register trace collector hooks if in json-trace mode
@@ -4812,21 +4854,14 @@ async def execute_single(
 
         _original_sigint_handler = signal.signal(signal.SIGINT, _goal_sigint_handler)
         try:
+            execution_started = True
             response = await session.execute(prompt)
         finally:
             signal.signal(signal.SIGINT, _original_sigint_handler)
 
         # Get metadata for output
         actual_session_id = session.session_id
-        providers = session.coordinator.get("providers") or {}
-        model_name = "unknown"
-        for prov_name, prov in providers.items():
-            if hasattr(prov, "model"):
-                model_name = f"{prov_name}/{prov.model}"
-                break
-            if hasattr(prov, "default_model"):
-                model_name = f"{prov_name}/{prov.default_model}"
-                break
+        model_name = _resolve_model_name()
 
         # Emit prompt:complete (canonical kernel event) BEFORE formatting output
         # This ensures hook output goes to stderr in JSON mode
@@ -4877,40 +4912,15 @@ async def execute_single(
             await hooks.emit(CLEANUP_STORE_BEGIN, {"session_id": actual_session_id})
 
         # Always save session (for debugging/archival)
-        context = session.coordinator.get("context")
-        messages = await context.get_messages() if context else []
-        if messages:
-            store = SessionStore()
-            # Load existing metadata to preserve fields like name, description
-            # that may have been set by other hooks (e.g., session-naming)
-            existing_metadata = store.get_metadata_if_exists(actual_session_id)
-            metadata = {
-                **existing_metadata,  # Preserve name, description, etc.
-                "session_id": actual_session_id,
-                "created": existing_metadata.get(
-                    "created", datetime.now(UTC).isoformat()
-                ),
-                "bundle": bundle_name,
-                "model": model_name,
-                "turn_count": len([m for m in messages if m.get("role") == "user"]),
-                # Store working_dir for session sync between CLI and web
-                "working_dir": str(Path.cwd().resolve()),
-            }
-            root_state = vars(initialized).get("root_state")
-            if root_state is not None:
-                root_state.checkpoint(
-                    store, messages, bundle=bundle_name, metadata=metadata
-                )
-            else:
-                store.save(actual_session_id, messages, metadata)
-            if verbose and output_format == "text":
-                console.print(f"[dim]Session {actual_session_id[:8]}... saved[/dim]")
+        saved_count = await _persist_session()
+        if saved_count and verbose and output_format == "text":
+            console.print(f"[dim]Session {actual_session_id[:8]}... saved[/dim]")
 
         # --- cleanup:store_end ---
         if hooks:
             await hooks.emit(
                 CLEANUP_STORE_END,
-                {"session_id": actual_session_id, "message_count": len(messages)},
+                {"session_id": actual_session_id, "message_count": saved_count},
             )
 
     except ModuleValidationError as e:
@@ -4976,6 +4986,17 @@ async def execute_single(
 
     finally:
         hooks = session.coordinator.get("hooks")
+        if execution_started and not session_save_attempted:
+            # Do not gate this recovery write on observability hooks: a hook
+            # failure must not prevent saving the turn before cleanup.
+            try:
+                await _persist_session()
+            except Exception as save_exc:  # noqa: BLE001 -- preserve the execution error
+                logger.warning(
+                    "Session %s: transcript save after failed turn did not complete: %s",
+                    actual_session_id[:8],
+                    save_exc,
+                )
         if hooks:
             await hooks.emit(CLEANUP_FINALLY_BEGIN, {"session_id": actual_session_id})
         # session:end is emitted by session.cleanup() (the canonical kernel path).
