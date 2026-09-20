@@ -391,7 +391,7 @@ async def create_initialized_session(
                 if result.incomplete:
                     console.print(
                         "[yellow]Warning:[/yellow] cumulative fork cost history is incomplete; "
-                        "only verified CI lineage segments were restored."
+                        "only verified available CI cost segments were restored."
                     )
                     logger.warning(
                         "Incomplete fork cost history for %s: %s",

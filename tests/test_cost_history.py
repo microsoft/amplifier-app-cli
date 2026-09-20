@@ -156,7 +156,7 @@ def test_boundary_fingerprint_matches_session_store_sanitization(tmp_path: Path)
     result = restore_fork_lineage_cost(MagicMock(session_state={}), session_id="child", session_dir=child)
 
     assert boundary["status"] == "verified"
-    assert result == type(result)(Decimal("0.10"), ())
+    assert result == type(result)(Decimal("0.10"), ("missing_ci_capture:child",))
 
 
 def test_historical_boundary_excludes_later_parent_turn_cost(tmp_path: Path) -> None:
@@ -231,6 +231,46 @@ def test_nested_boundary_survives_parent_rewrite_and_removed_ancestors(tmp_path:
     after = restore_fork_lineage_cost(MagicMock(session_state={}), session_id="c", session_dir=c)
 
     assert before == after == type(before)(Decimal("0.80"), ())
+
+
+def test_resume_uses_snapshot_after_child_rewrite_but_new_fork_is_unavailable(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    parent_messages = _messages("parent")
+    parent = _save(store, "parent", parent_messages, {})
+    _write_events(
+        parent / "context-intelligence" / "events.jsonl",
+        [_submit("parent", "parent"), _response("parent", "0.10")],
+    )
+    child, boundary = _fork(store, "parent", "child", parent_messages, {}, 1)
+    child_messages = _messages("parent", "child")
+    child_metadata = store.get_metadata("child")
+    store.save("child", child_messages, child_metadata)
+    _write_events(
+        child / "context-intelligence" / "events.jsonl",
+        [_submit("child", "child"), _response("child", "0.20")],
+    )
+
+    before_rewrite = restore_fork_lineage_cost(
+        MagicMock(session_state={}), session_id="child", session_dir=child
+    )
+    rewritten_messages = _messages("rewritten")
+    store.save("child", rewritten_messages, child_metadata)
+    after_rewrite = restore_fork_lineage_cost(
+        MagicMock(session_state={}), session_id="child", session_dir=child
+    )
+    _, new_boundary = _fork(
+        store,
+        "child",
+        "new-child",
+        rewritten_messages,
+        store.get_metadata("child"),
+        1,
+    )
+
+    assert boundary["status"] == "verified"
+    assert before_rewrite == after_rewrite == type(before_rewrite)(Decimal("0.30"), ())
+    assert new_boundary["status"] == "unavailable"
+    assert "fork_prefix_changed" in new_boundary["reasons"]
 
 
 def test_old_fork_without_boundary_is_incomplete_not_guessed(tmp_path: Path) -> None:
@@ -404,3 +444,28 @@ def test_boundary_uses_selected_relocated_capture_only(tmp_path: Path, monkeypat
 
     assert boundary["status"] == "verified"
     assert boundary["cumulative_cost_usd_by_turn"] == ["0.10"]
+
+
+def test_missing_selected_child_capture_keeps_verified_snapshot_and_is_incomplete(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = SessionStore(tmp_path / "projects" / "slug" / "sessions")
+    parent_messages = _messages("parent")
+    parent = _save(store, "parent", parent_messages, {})
+    relocated = tmp_path / "relocated" / "slug" / "sessions"
+    _write_events(
+        relocated / "parent" / "context-intelligence" / "events.jsonl",
+        [_submit("parent", "parent"), _response("parent", "0.10")],
+    )
+    monkeypatch.setenv("AMPLIFIER_CONTEXT_INTELLIGENCE_BASE_PATH", str(tmp_path / "relocated"))
+    child, boundary = _fork(store, "parent", "child", parent_messages, {}, 1)
+    _write_events(
+        child / "context-intelligence" / "events.jsonl",
+        [_response("child", "9.99")],
+    )
+
+    result = restore_fork_lineage_cost(MagicMock(session_state={}), session_id="child", session_dir=child)
+
+    assert boundary["status"] == "verified"
+    assert result.total == Decimal("0.10")
+    assert result.diagnostics == ("missing_ci_capture:child",)

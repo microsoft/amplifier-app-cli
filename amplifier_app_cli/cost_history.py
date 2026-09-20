@@ -311,10 +311,8 @@ def _unavailable_boundary(owner: str, *reasons: str) -> dict[str, Any]:
     }
 
 
-def _verified_boundary(
-    metadata: dict[str, Any], messages: list[dict[str, Any]]
-) -> tuple[list[Decimal] | None, int, tuple[str, ...]]:
-    """Validate an immutable projection before reusing it for another fork."""
+def _verified_boundary(metadata: dict[str, Any]) -> tuple[list[Decimal] | None, int, tuple[str, ...]]:
+    """Validate the persisted schema of an immutable cost projection."""
     raw = metadata.get(_BOUNDARY_KEY)
     if not isinstance(raw, dict):
         return None, 0, ("missing_fork_cost_boundary",)
@@ -351,7 +349,18 @@ def _verified_boundary(
             return None, 0, ("invalid_fork_cost_boundary",)
         totals.append(amount)
         prior = amount
-    if _prefix_fingerprint(messages, turns) != fingerprint:
+    return totals, turns, ()
+
+
+def _verified_boundary_prefix(
+    metadata: dict[str, Any], messages: list[dict[str, Any]]
+) -> tuple[list[Decimal] | None, int, tuple[str, ...]]:
+    """Validate a boundary before projecting it into a new fork."""
+    totals, turns, errors = _verified_boundary(metadata)
+    if errors or totals is None:
+        return totals, turns, errors
+    raw = metadata[_BOUNDARY_KEY]
+    if _prefix_fingerprint(messages, turns) != raw["prefix_fingerprint"]:
         return None, 0, ("fork_prefix_changed",)
     return totals, turns, ()
 
@@ -379,7 +388,7 @@ def build_fork_cost_boundary(
     inherited: list[Decimal] = []
     parent_inherited_turns = 0
     if "forked_from_turn" in parent_metadata:
-        inherited, parent_inherited_turns, errors = _verified_boundary(
+        inherited, parent_inherited_turns, errors = _verified_boundary_prefix(
             parent_metadata, canonical_parent
         )
         if errors or inherited is None:
@@ -429,7 +438,7 @@ def _sum_owner_ci_cost(session_dir: Path, owner: str) -> tuple[Decimal, tuple[st
     events_path = ci_events_path(session_dir)
     diagnostics: set[str] = set()
     if not events_path.is_file():
-        return Decimal("0"), ()
+        return Decimal("0"), (f"missing_ci_capture:{owner}",)
     before = _capture_stamp(events_path)
     history = SessionHistoryStore(session_dir, events_path=events_path, session_id=owner)
     total = Decimal("0")
@@ -477,12 +486,11 @@ def restore_fork_lineage_cost(
     diagnostics: set[str] = set()
     try:
         history = SessionHistoryStore(session_dir)
-        messages = history.load_messages()
         metadata = history.load_metadata()
     except Exception:
-        messages, metadata = [], {}
+        metadata = {}
         _add(diagnostics, "unreadable_fork_metadata")
-    inherited, _, errors = _verified_boundary(metadata, messages)
+    inherited, _, errors = _verified_boundary(metadata)
     diagnostics.update(errors)
     inherited_total = inherited[-1] if inherited else Decimal("0")
     own_total, own_diagnostics = _sum_owner_ci_cost(session_dir, session_id)

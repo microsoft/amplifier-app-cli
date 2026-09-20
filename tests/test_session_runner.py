@@ -96,6 +96,42 @@ async def test_resume_uses_lineage_cost_only_for_native_transcript_forks(
     assert restore_ordinary.called is not expects_lineage
 
 
+@pytest.mark.anyio
+async def test_resume_warns_when_a_fork_cost_segment_is_incomplete(tmp_path) -> None:
+    from contextlib import ExitStack
+
+    session_id = "fork"
+    session_dir = tmp_path / session_id
+    session_dir.mkdir()
+    (session_dir / "metadata.json").write_text(
+        json.dumps({"session_id": session_id, "parent_id": "root", "forked_from_turn": 1}),
+        encoding="utf-8",
+    )
+    mock_session = _make_mock_session()
+    cfg = _make_session_config(
+        session_id=session_id, initial_transcript=[{"role": "user", "content": "resume"}]
+    )
+    store = MagicMock(base_dir=tmp_path)
+    console = MagicMock()
+
+    with ExitStack() as stack:
+        for patcher in _configurator_patches(mock_session):
+            stack.enter_context(patcher)
+        stack.enter_context(patch(f"{_MODULE}.SessionStore", return_value=store))
+        stack.enter_context(
+            patch(
+                "amplifier_app_cli.cost_history.restore_fork_lineage_cost",
+                return_value=ForkLineageCost(Decimal("0.10"), ("missing_ci_capture:fork",)),
+            )
+        )
+        await create_initialized_session(cfg, console)
+
+    console.print.assert_called_once_with(
+        "[yellow]Warning:[/yellow] cumulative fork cost history is incomplete; "
+        "only verified available CI cost segments were restored."
+    )
+
+
 # ---------------------------------------------------------------------------
 # SessionConfig tests
 # ---------------------------------------------------------------------------
