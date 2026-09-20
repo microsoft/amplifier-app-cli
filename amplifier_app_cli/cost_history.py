@@ -358,6 +358,20 @@ def _non_anchor_has_assistant_output(
     return any(message.get("role") == "assistant" for message in messages[turn.message_index + 1 : next_index])
 
 
+def _has_unprovable_intra_prompt_cutoff(
+    messages: list[dict[str, Any]], native: list[_NativeTurn], fork_turn: int
+) -> bool:
+    """Reject a cut that excludes injected output before the next real prompt."""
+    for turn in native:
+        if turn.number <= fork_turn:
+            continue
+        if turn.prompt is not None or turn.unsupported:
+            return False
+        if _non_anchor_has_assistant_output(messages, turn, native):
+            return True
+    return False
+
+
 def _unavailable_boundary(owner: str, *reasons: str) -> dict[str, Any]:
     return {
         "version": _BOUNDARY_VERSION,
@@ -443,6 +457,10 @@ def build_fork_cost_boundary(
         return _unavailable_boundary(parent_id, "invalid_fork_turn")
     if fork_turn > _MAX_BOUNDARY_TURNS:
         return _unavailable_boundary(parent_id, "fork_cost_boundary_too_large")
+    if _has_unprovable_intra_prompt_cutoff(
+        canonical_parent, _native_turns(canonical_parent), fork_turn
+    ):
+        return _unavailable_boundary(parent_id, "unprovable_intra_prompt_cutoff")
 
     inherited: list[Decimal] = []
     parent_inherited_turns = 0

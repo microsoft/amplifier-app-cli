@@ -521,6 +521,141 @@ def test_native_reminder_turn_carries_cost_and_hashes_foundation_prefix(tmp_path
     assert boundary["warnings"] == ["unmapped_non_anchor_output:parent:2"]
 
 
+def test_fork_rejects_intra_prompt_cutoff_but_accepts_full_reminder_prefix(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    messages = [
+        {"role": "user", "content": "human one"},
+        {"role": "assistant", "content": "answer one"},
+        {
+            "role": "user",
+            "content": "<system-reminder source=\"hook\">remember</system-reminder>",
+            "metadata": {"ephemeral": True, "persisted": True},
+        },
+        {"role": "assistant", "content": "hook output"},
+        {"role": "user", "content": "human two"},
+        {"role": "assistant", "content": "answer two"},
+    ]
+    parent = _save(store, "parent", messages, {})
+    _write_events(
+        parent / "context-intelligence" / "events.jsonl",
+        [
+            _submit("parent", "human one"),
+            _response("parent", "0.10"),
+            _response("parent", "0.20"),
+            _submit("parent", "human two"),
+            _response("parent", "0.30"),
+        ],
+    )
+
+    cutoff = build_fork_cost_boundary(
+        parent_dir=parent,
+        parent_id="parent",
+        parent_messages=messages,
+        parent_metadata={},
+        fork_turn=1,
+        child_messages=slice_to_turn(messages, 1, handle_orphaned_tools="complete"),
+    )
+    through_reminder = build_fork_cost_boundary(
+        parent_dir=parent,
+        parent_id="parent",
+        parent_messages=messages,
+        parent_metadata={},
+        fork_turn=2,
+        child_messages=slice_to_turn(messages, 2, handle_orphaned_tools="complete"),
+    )
+
+    assert cutoff["status"] == "unavailable"
+    assert cutoff["reasons"] == ["unprovable_intra_prompt_cutoff"]
+    assert through_reminder["status"] == "verified"
+    assert through_reminder["cumulative_cost_usd_by_turn"] == ["0.30", "0.30"]
+
+
+def test_trailing_reminder_without_assistant_output_does_not_block_fork(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    messages = [
+        {"role": "user", "content": "human"},
+        {"role": "assistant", "content": "answer"},
+        {
+            "role": "user",
+            "content": "<system-reminder source=\"hook\">remember</system-reminder>",
+            "metadata": {"ephemeral": True, "persisted": True},
+        },
+    ]
+    parent = _save(store, "parent", messages, {})
+    _write_events(
+        parent / "context-intelligence" / "events.jsonl",
+        [_submit("parent", "human"), _response("parent", "0.10")],
+    )
+
+    boundary = build_fork_cost_boundary(
+        parent_dir=parent,
+        parent_id="parent",
+        parent_messages=messages,
+        parent_metadata={},
+        fork_turn=1,
+        child_messages=slice_to_turn(messages, 1, handle_orphaned_tools="complete"),
+    )
+
+    assert boundary["status"] == "verified"
+    assert boundary["cumulative_cost_usd_by_turn"] == ["0.10"]
+
+
+def test_nested_fork_rejects_earlier_inherited_intra_prompt_cutoff(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    a_messages = [
+        {"role": "user", "content": "a one"},
+        {"role": "assistant", "content": "a answer"},
+        {
+            "role": "user",
+            "content": "<system-reminder source=\"hook\">remember</system-reminder>",
+            "metadata": {"ephemeral": True, "persisted": True},
+        },
+        {"role": "assistant", "content": "hook output"},
+        {"role": "user", "content": "a two"},
+        {"role": "assistant", "content": "a second answer"},
+    ]
+    a = _save(store, "a", a_messages, {})
+    _write_events(
+        a / "context-intelligence" / "events.jsonl",
+        [
+            _submit("a", "a one"),
+            _response("a", "0.10"),
+            _response("a", "0.20"),
+            _submit("a", "a two"),
+            _response("a", "0.30"),
+        ],
+    )
+    b_messages = slice_to_turn(a_messages, 2, handle_orphaned_tools="complete")
+    b_boundary = build_fork_cost_boundary(
+        parent_dir=a,
+        parent_id="a",
+        parent_messages=a_messages,
+        parent_metadata={},
+        fork_turn=2,
+        child_messages=b_messages,
+    )
+    b_messages.extend(({"role": "user", "content": "b"}, {"role": "assistant", "content": "b answer"}))
+    b = _save(
+        store,
+        "b",
+        b_messages,
+        {"parent_id": "a", "forked_from_turn": 2, "fork_cost_boundary": b_boundary},
+    )
+
+    boundary = build_fork_cost_boundary(
+        parent_dir=b,
+        parent_id="b",
+        parent_messages=b_messages,
+        parent_metadata=store.get_metadata("b"),
+        fork_turn=1,
+        child_messages=slice_to_turn(b_messages, 1, handle_orphaned_tools="complete"),
+    )
+
+    assert b_boundary["status"] == "verified"
+    assert boundary["status"] == "unavailable"
+    assert boundary["reasons"] == ["unprovable_intra_prompt_cutoff"]
+
+
 def test_nested_fork_preserves_an_inherited_reminder_snapshot_and_fingerprint(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions")
     a_messages = [

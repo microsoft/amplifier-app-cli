@@ -102,9 +102,10 @@ stdout remains one parseable payload.
 
 ## Fork event ownership and cumulative cost
 
-Forks retain native transcript lineage but never read or copy a parent root
-`events.jsonl`, CI capture, or lifecycle metadata. `--no-events` remains an
-accepted compatibility option only; event activity stays owned by its emitter.
+Forks NEVER COPY parent root events, CI capture, or lifecycle metadata; parent
+CI is read only to build the boundary, and resume never reads ancestors.
+`--no-events` remains an accepted compatibility option only; event activity
+stays owned by its emitter.
 For a resumed transcript fork (identified by `forked_from_turn`, never
 `parent_id` alone), the child saves a versioned immutable
 `fork_cost_boundary`: inherited-turn cumulative Decimal totals, a canonical
