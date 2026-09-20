@@ -3852,7 +3852,8 @@ async def interactive_chat(
     try:
         initialized = await create_initialized_session(session_config, console)
     except SharedRootSessionBusyError as exc:
-        console.print(f"[red]Error:[/red] {escape_markup(exc)}")
+        if not exc.displayed:
+            console.print(f"[red]Error:[/red] {escape_markup(exc)}")
         raise SystemExit(1) from None
     session = initialized.session
     actual_session_id = initialized.session_id

@@ -5,13 +5,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from rich.console import Console
-
 from amplifier_foundation.session import (
-    SharedSessionStore,
     SessionBusyError,
+    SharedSessionStore,
     request_release,
 )
+from rich.console import Console
+
 from amplifier_app_cli.session_handoff import CLIHandoff, acquire_root
 from amplifier_app_cli.session_runner import SessionConfig
 from amplifier_app_cli.shared_root_state import (
@@ -111,7 +111,7 @@ async def test_save_failure_reports_failure_and_retains_ownership(
 async def test_single_mode_does_not_request_without_explicit_intent(
     tmp_path, monkeypatch
 ):
-    root, initialized, control, output = fixture(tmp_path, monkeypatch)
+    _root, _initialized, control, _output = fixture(tmp_path, monkeypatch)
     await control.start()
     config = SessionConfig(
         {}, [], False, session_id="test-session", invocation_mode="single"
@@ -123,7 +123,7 @@ async def test_single_mode_does_not_request_without_explicit_intent(
 
 
 async def test_explicit_cli_takeover_acquires_before_returning(tmp_path, monkeypatch):
-    root, initialized, control, output = fixture(tmp_path, monkeypatch)
+    root, _initialized, control, _output = fixture(tmp_path, monkeypatch)
     await control.start()
     config = SessionConfig(
         {},
@@ -146,10 +146,10 @@ async def test_explicit_cli_takeover_acquires_before_returning(tmp_path, monkeyp
 async def test_interactive_busy_session_prompts_before_requesting(
     tmp_path, monkeypatch, accept
 ):
-    root, initialized, control, output = fixture(tmp_path, monkeypatch)
+    root, _initialized, control, output = fixture(tmp_path, monkeypatch)
     await control.start()
     confirm = Mock(return_value=accept)
-    monkeypatch.setattr("click.confirm", confirm)
+    monkeypatch.setattr("amplifier_app_cli.session_handoff.Confirm.ask", confirm)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     config = SessionConfig(
         {}, [], False, session_id="test-session", invocation_mode="chat"
@@ -161,10 +161,35 @@ async def test_interactive_busy_session_prompts_before_requesting(
         successor = await asyncio.wait_for(acquisition, 2)
         successor.release()
     else:
-        with pytest.raises(SharedRootSessionBusyError):
+        with pytest.raises(SharedRootSessionBusyError) as error:
             await asyncio.wait_for(acquisition, 2)
+        assert error.value.displayed
         assert not control.requested.is_set()
         assert root.held.active
         await control.finish()
-    confirm.assert_called_once_with("Request takeover?", default=False)
-    assert root.held.owner["app"] in output.getvalue()
+    confirm.assert_called_once()
+    assert confirm.call_args.kwargs == {"console": control.console, "default": False}
+    assert "Amplifier CLI" in output.getvalue()
+
+
+async def test_interactive_unsupported_takeover_keeps_owner_and_reports_failure(
+    tmp_path, monkeypatch
+):
+    root, _initialized, control, output = fixture(tmp_path, monkeypatch)
+    # A real lock without a registered handoff handler represents an older app.
+    monkeypatch.setattr(
+        "amplifier_app_cli.session_handoff.Confirm.ask", lambda *a, **k: True
+    )
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    config = SessionConfig(
+        {}, [], False, session_id="test-session", invocation_mode="chat"
+    )
+    try:
+        with pytest.raises(SharedRootSessionBusyError) as error:
+            await acquire_root(config, control.console)
+        assert error.value.displayed  # The startup boundary must not print it again.
+        assert root.held.active
+        assert "does not support takeover" in output.getvalue()
+        assert "Session acquired" not in output.getvalue()
+    finally:
+        root.release()

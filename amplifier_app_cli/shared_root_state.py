@@ -28,6 +28,7 @@ class SharedRootSessionBusyError(RuntimeError):
     """A shared root is held by another process, with bounded owner advice."""
 
     def __init__(self, owner: object, state_root: object, *, store=None) -> None:
+        self.displayed = False
         self.store = store
         self.owner = owner if isinstance(owner, dict) else None
         self.state_root = _bounded_value(state_root, limit=240)
