@@ -509,7 +509,10 @@ def test_held_read_refreshes_older_cli_native_writes(shared_api, tmp_path):
     try:
         assert root.read(native)[0][0]["content"] == "first"
         # Simulate a transcript-compatible host writing through the shared layer.
-        native.save("root", [{"role": "user", "content": "second"}], {"name": "renamed"})
+        from amplifier_foundation.session.history import SessionHistoryStore
+        SessionHistoryStore(native.base_dir / "root").save(
+            [{"role": "user", "content": "second"}], {"name": "renamed"}
+        )
         messages, metadata = root.read(native)
         assert messages[0]["content"] == "second"
         assert metadata["name"] == "renamed"

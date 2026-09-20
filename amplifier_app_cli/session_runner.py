@@ -425,7 +425,9 @@ async def create_initialized_session(
             from amplifier_foundation.configurator import SessionConfigurator
 
             configurator = SessionConfigurator(session, config.prepared_bundle)
-            app_settings = AppSettings()
+            from .project_utils import get_project_slug
+
+            app_settings = AppSettings().with_session(session_id, get_project_slug())
             merged = app_settings.get_merged_settings()
             configurator_settings = merged.get("configurator") or {}
             await configurator.apply_saved_settings(configurator_settings)

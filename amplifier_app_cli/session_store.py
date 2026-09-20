@@ -21,6 +21,7 @@ from amplifier_core.utils.truncate import redact_secrets
 from amplifier_foundation import sanitize_message
 from amplifier_foundation import write_with_backup
 from amplifier_foundation.session.history import SessionHistoryStore
+from amplifier_foundation.session.metadata import SessionMetadataStore
 
 from amplifier_app_cli.project_utils import get_project_slug
 from amplifier_foundation.paths.resolution import get_amplifier_home
@@ -125,7 +126,7 @@ class SessionStore:
 
         # Foundation validates both payloads before writing either native file.
         SessionHistoryStore(session_dir).save(
-            transcript, redact_secrets(metadata), sanitizer=sanitize_message
+            transcript, redact_secrets(metadata), sanitizer=sanitize_message, merge_metadata=True
         )
 
         logger.debug(f"Session {session_id} saved successfully")
@@ -151,7 +152,7 @@ class SessionStore:
         session_dir = self.reserve_session(session_id)
         try:
             SessionHistoryStore(session_dir).save(
-                transcript, redact_secrets(metadata), sanitizer=sanitize_message
+                transcript, redact_secrets(metadata), sanitizer=sanitize_message, merge_metadata=True
             )
         except BaseException:
             # We created this directory exclusively, so removing a partial
@@ -173,7 +174,7 @@ class SessionStore:
 
     def _save_metadata(self, session_dir: Path, metadata: dict) -> None:
         """Save native metadata with the CLI's existing credential redaction."""
-        SessionHistoryStore(session_dir).save_metadata(redact_secrets(metadata))
+        SessionHistoryStore(session_dir).save_metadata(redact_secrets(metadata), merge_metadata=True)
 
     def load(self, session_id: str) -> tuple[list, dict]:
         """Load session state with corruption recovery.
@@ -252,17 +253,15 @@ class SessionStore:
         if not session_dir.exists():
             raise FileNotFoundError(f"Session '{session_id}' not found")
 
-        # Load current metadata
-        metadata = self._load_metadata(session_dir)
-
-        # Apply updates
-        metadata.update(updates)
-
-        # Save updated metadata
-        self._save_metadata(session_dir, metadata)
+        metadata = SessionMetadataStore(session_dir).update(redact_secrets(updates))
 
         logger.debug(f"Session {session_id} metadata updated: {list(updates.keys())}")
         return metadata
+
+    def rename(self, session_id: str, name: str) -> dict:
+        """Rename through Foundation without replacing transcript/runtime state."""
+        self.get_metadata(session_id)  # Keep strict identity/existence validation.
+        return SessionMetadataStore(self.base_dir / session_id).set_name(name)
 
     def get_metadata(self, session_id: str) -> dict:
         """Get session metadata without loading transcript.

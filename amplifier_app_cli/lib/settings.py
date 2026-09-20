@@ -118,25 +118,10 @@ class AppSettings:
 
     def get_merged_settings(self) -> dict[str, Any]:
         """Load and merge settings from all scopes."""
-        result: dict[str, Any] = {}
-        # Order: global -> project -> local -> session (most specific wins)
-        paths_to_check = [
-            self.paths.global_settings,
-            self.paths.project_settings,
-            self.paths.local_settings,
-        ]
-        if self.paths.session_settings:
-            paths_to_check.append(self.paths.session_settings)
+        from amplifier_foundation.settings import read_settings
 
-        for path in paths_to_check:
-            if path.exists():
-                try:
-                    with open(path, encoding="utf-8") as f:
-                        content = yaml.safe_load(f) or {}
-                    result = self._deep_merge(result, content)
-                except Exception:
-                    pass  # Skip malformed files
-        return result
+        return read_settings((self.paths.global_settings, self.paths.project_settings,
+                              self.paths.local_settings, self.paths.session_settings))
 
     # ----- UI settings -----
 
@@ -382,32 +367,7 @@ class AppSettings:
         More-specific scopes override less-specific: global < project < local < session.
         Providers not present in higher scopes pass through from lower scopes.
         """
-        from .merge_utils import _provider_key, merge_module_items  # noqa: F401
-
-        result: list[dict[str, Any]] = []
-
-        # Scope priority order: global (lowest) → project → local → session (highest)
-        paths_to_check: list[Path | None] = [
-            self.paths.global_settings,
-            self.paths.project_settings,
-            self.paths.local_settings,
-            self.paths.session_settings,
-        ]
-
-        for path in paths_to_check:
-            if path is None or not path.exists():
-                continue
-            try:
-                with open(path, encoding="utf-8") as f:
-                    content = yaml.safe_load(f) or {}
-                scope_providers = content.get("config", {}).get("providers", [])
-                if not isinstance(scope_providers, list) or not scope_providers:
-                    continue
-                result = self._merge_provider_lists(result, scope_providers)
-            except Exception:
-                pass
-
-        return result
+        return self.get_merged_settings().get("config", {}).get("providers", [])
 
     def _merge_provider_lists(
         self,
