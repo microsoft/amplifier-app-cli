@@ -43,9 +43,15 @@ checkpoint sessions, reporting the reason rather than leaving stale legacy data
 that could resurrect a deleted session.
 
 
-`session fork --no-events` controls only the older root `events.jsonl` copy.
-Context Intelligence captures are not copied or assigned a new owner during a
-fork: parent lineage identifies the original activity and the child logger
-captures new work. Cost restoration prefers the CI capture, honors the
-`AMPLIFIER_CONTEXT_INTELLIGENCE_BASE_PATH` projects-root relocation, and falls
-back to the legacy root log only when that CI capture is absent.
+Forks never copy a root `events.jsonl` or a Context Intelligence capture.
+`session fork --no-events` remains accepted only for command-line compatibility;
+it has no effect because native transcript lineage is always preserved and event
+activity remains with its original owner. At fork creation, the child metadata
+stores a compact, versioned `fork_cost_boundary`: cumulative inherited-turn
+costs, a canonical inherited-prefix fingerprint, and owner/fence provenance.
+Resume verifies that local immutable projection and adds only the child-owned
+CI capture; it never reads an ancestor. It honors
+`AMPLIFIER_CONTEXT_INTELLIGENCE_BASE_PATH` relocation and reports unavailable
+or pre-boundary history rather than falling back to a native root log, which
+can contain rewritten inherited activity. Ordinary non-fork resume retains its
+CI-then-legacy-root compatibility fallback.

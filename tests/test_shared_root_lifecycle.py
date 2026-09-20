@@ -20,6 +20,7 @@ from amplifier_app_cli.shared_root_state import (
     SharedRootSession,
     read_shared_root,
 )
+from amplifier_foundation.session import slice_to_turn
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
@@ -77,6 +78,13 @@ def test_session_fork_reads_latest_native_history_over_legacy_checkpoint(
         _messages("stale projection"),
         {"session_id": "shared-root", "bundle": "bundle:stale"},
     )
+    parent_capture = native.base_dir / "shared-root" / "context-intelligence" / "events.jsonl"
+    parent_capture.parent.mkdir()
+    parent_capture.write_text(
+        '{"event":"prompt:submit","data":{"session_id":"shared-root","prompt":"stale projection"}}\n'
+        '{"event":"llm:response","data":{"session_id":"shared-root","usage":{"cost_usd":"0.10"}}}\n',
+        encoding="utf-8",
+    )
 
     result = CliRunner().invoke(
         _session_cli(native, monkeypatch),
@@ -89,6 +97,46 @@ def test_session_fork_reads_latest_native_history_over_legacy_checkpoint(
     assert metadata["bundle"] == "bundle:stale"
     assert metadata["parent_id"] == "shared-root"
     assert metadata["forked_from_turn"] == 1
+    assert metadata["fork_cost_boundary"]["status"] == "verified"
+    assert metadata["fork_cost_boundary"]["cumulative_cost_usd_by_turn"] == ["0.10"]
+
+
+def test_session_fork_uses_native_reminder_turns_for_verified_cost_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    native = _isolate_state(tmp_path, monkeypatch)
+    messages = [
+        {"role": "user", "content": "human one"},
+        {"role": "assistant", "content": "answer one"},
+        {
+            "role": "user",
+            "content": "<system-reminder source=\"hook\">remember</system-reminder>",
+            "metadata": {"ephemeral": True, "persisted": True},
+        },
+        {"role": "assistant", "content": "hook output"},
+        {"role": "user", "content": "human two"},
+        {"role": "assistant", "content": "answer two"},
+    ]
+    native.save("mixed-root", messages, {"session_id": "mixed-root"})
+    capture = native.base_dir / "mixed-root" / "context-intelligence" / "events.jsonl"
+    capture.parent.mkdir()
+    capture.write_text(
+        '{"event":"prompt:submit","data":{"session_id":"mixed-root","prompt":"human one"}}\n'
+        '{"event":"llm:response","data":{"session_id":"mixed-root","usage":{"cost_usd":"0.10"}}}\n',
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        _session_cli(native, monkeypatch),
+        ["session", "fork", "mixed-root", "--at-turn", "2", "--name", "mixed-child"],
+    )
+
+    assert result.exit_code == 0, result.output
+    transcript, metadata = native.load("mixed-child")
+    assert transcript == slice_to_turn(messages, 2, handle_orphaned_tools="complete")
+    assert metadata["forked_from_turn"] == 2
+    assert metadata["fork_cost_boundary"]["status"] == "verified"
+    assert metadata["fork_cost_boundary"]["cumulative_cost_usd_by_turn"] == ["0.10", "0.10"]
 
 
 def test_real_foundation_lock_writes_native_metadata_without_checkpoint(
@@ -271,6 +319,7 @@ async def test_live_fork_uses_current_context_without_reacquiring_shared_lock(
     assert transcript[0]["content"] == "live authority"
     assert metadata["parent_id"] == "shared-root"
     assert metadata["bundle"] == "bundle:held"
+    assert metadata["fork_cost_boundary"]["status"] == "unavailable"
     root_handle.read.assert_called_once_with(native)
 
     native.save(
@@ -280,6 +329,95 @@ async def test_live_fork_uses_current_context_without_reacquiring_shared_lock(
     )
     assert (await processor._fork_session("1 shared-root")).startswith("Error:")
     assert (await processor._fork_session("1 shared-root_worker")).startswith("Error:")
+
+
+@pytest.mark.asyncio
+async def test_interactive_fork_persists_verified_boundary_from_live_context(
+    tmp_path: Path, monkeypatch
+) -> None:
+    native = _isolate_state(tmp_path, monkeypatch)
+    messages = _messages("interactive cost")
+    native.save("interactive-root", messages, {"session_id": "interactive-root"})
+    capture = native.base_dir / "interactive-root" / "context-intelligence" / "events.jsonl"
+    capture.parent.mkdir()
+    capture.write_text(
+        '{"event":"prompt:submit","data":{"session_id":"interactive-root","prompt":"interactive cost"}}\n'
+        '{"event":"llm:response","data":{"session_id":"interactive-root","usage":{"cost_usd":"0.10"}}}\n',
+        encoding="utf-8",
+    )
+    context = type("Context", (), {"get_messages": AsyncMock(return_value=messages)})()
+    root_handle = MagicMock()
+    root_handle.read.return_value = (messages, {"session_id": "interactive-root"})
+    session = type("Session", (), {})()
+    session.coordinator = type(
+        "Coordinator",
+        (),
+        {
+            "session_id": "interactive-root",
+            "session_state": {},
+            "get": staticmethod(lambda name: context if name == "context" else None),
+            "get_capability": staticmethod(
+                lambda name: root_handle if name == "cli.shared_root_state" else None
+            ),
+        },
+    )()
+    main_module = import_module("amplifier_app_cli.main")
+    store_module = import_module("amplifier_app_cli.session_store")
+    monkeypatch.setattr(store_module, "SessionStore", lambda: native)
+
+    result = await main_module.CommandProcessor(session, "bundle:anchors")._fork_session(
+        "1 interactive-child"
+    )
+
+    assert not result.startswith("Error"), result
+    boundary = native.get_metadata("interactive-child")["fork_cost_boundary"]
+    assert boundary["status"] == "verified"
+    assert boundary["cumulative_cost_usd_by_turn"] == ["0.10"]
+
+
+@pytest.mark.asyncio
+async def test_interactive_legacy_fork_never_includes_parent_event_logs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The non-shared `/fork` branch writes boundary metadata without copying logs."""
+    native = _isolate_state(tmp_path, monkeypatch)
+    messages = _messages("legacy authority")
+    native.save("legacy-root", messages, {"session_id": "legacy-root"})
+    parent = native.base_dir / "legacy-root"
+    (parent / "events.jsonl").write_text('{"event":"llm:response"}\n', encoding="utf-8")
+    capture = parent / "context-intelligence"
+    capture.mkdir()
+    capture_events = capture / "events.jsonl"
+    capture_events.write_text('{"event":"llm:response"}\n', encoding="utf-8")
+    before = (parent / "events.jsonl").read_bytes(), capture_events.read_bytes()
+
+    context = type("Context", (), {"get_messages": AsyncMock(return_value=messages)})()
+    session = type("Session", (), {})()
+    session.coordinator = type(
+        "Coordinator",
+        (),
+        {
+            "session_id": "legacy-root",
+            "session_state": {},
+            "get": staticmethod(lambda name: context if name == "context" else None),
+            "get_capability": staticmethod(lambda _name: None),
+        },
+    )()
+    main_module = import_module("amplifier_app_cli.main")
+    store_module = import_module("amplifier_app_cli.session_store")
+    monkeypatch.setattr(store_module, "SessionStore", lambda: native)
+    result = await main_module.CommandProcessor(session, "bundle:anchors")._fork_session(
+        "1 legacy-child"
+    )
+
+    assert not result.startswith("Error"), result
+    child = native.base_dir / "legacy-child"
+    assert not (child / "events.jsonl").exists()
+    assert not (child / "context-intelligence").exists()
+    assert (parent / "events.jsonl").read_bytes() == before[0]
+    assert capture_events.read_bytes() == before[1]
+    assert native.get_metadata("legacy-child")["fork_cost_boundary"]["status"] == "unavailable"
+    assert "Event history remains with its original owners." in result
 
 
 def test_busy_shared_root_is_a_click_error_with_parseable_json_stdout(
@@ -359,9 +497,10 @@ def test_busy_shared_root_is_a_click_error_with_parseable_json_stdout(
     assert "Shared root session is busy" in result.stderr
 
 @pytest.mark.parametrize("skip_events", [False, True])
-def test_native_fork_preserves_legacy_log_option_without_copying_ci(tmp_path, monkeypatch, skip_events):
-    import json
-
+@pytest.mark.parametrize("shared_lock", [False, True])
+def test_native_fork_leaves_all_event_logs_with_original_owners(
+    tmp_path, monkeypatch, skip_events, shared_lock
+):
     native = _isolate_state(tmp_path, monkeypatch)
     messages = [
         {"role": "user", "content": "first", "timestamp": "2026-01-01T00:00:00Z"},
@@ -371,7 +510,9 @@ def test_native_fork_preserves_legacy_log_option_without_copying_ci(tmp_path, mo
     native.save("root", messages, {"bundle": "bundle:anchors"})
     parent = native.base_dir / "root"
     legacy = parent / "events.jsonl"
-    legacy.write_text(json.dumps({"event": "prompt:submit", "session_id": "root", "ts": "2026-01-01T00:00:00Z", "data": {}}) + "\n")
+    legacy.write_text(
+        '{"event":"prompt:submit","session_id":"root","ts":"2026-01-01T00:00:00Z","data":{}}\n'
+    )
     capture = parent / "context-intelligence"
     capture.mkdir()
     (capture / "events.jsonl").write_text('{"event":"prompt:submit","data":{"session_id":"root"}}\n')
@@ -379,17 +520,20 @@ def test_native_fork_preserves_legacy_log_option_without_copying_ci(tmp_path, mo
     args = ["session", "fork", "root", "--at-turn", "1", "--name", "forked"]
     if skip_events:
         args.append("--no-events")
+    monkeypatch.setattr(
+        session_commands, "_shared_root_platform_supported", lambda: shared_lock
+    )
     result = CliRunner().invoke(_session_cli(native, monkeypatch), args)
     assert result.exit_code == 0, result.output
     child = native.base_dir / "forked"
     assert native.load("forked")[0] == messages[:2]
+    assert native.load("forked")[1]["fork_cost_boundary"]["status"] == "unavailable"
     assert not (child / "context-intelligence").exists()
     assert (capture / "events.jsonl").read_bytes() == before
-    assert (child / "events.jsonl").exists() is not skip_events
-    if not skip_events:
-        copied = json.loads((child / "events.jsonl").read_text())
-        assert copied["session_id"] == "forked"
-        assert copied["parent_session_id"] == "root"
+    assert not (child / "events.jsonl").exists()
+    assert "Event history remains with its original owners." in result.output
+    if skip_events:
+        assert "--no-events accepted for compatibility" in result.output
 
 
 @pytest.mark.parametrize("primary", ["missing", "corrupt"])

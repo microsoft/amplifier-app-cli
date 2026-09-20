@@ -100,6 +100,21 @@ dynamic temporary stdout capture.
 Run-command diagnostics before headless execution belong on stderr so JSON
 stdout remains one parseable payload.
 
+## Fork event ownership and cumulative cost
+
+Forks NEVER COPY parent root events, CI capture, or lifecycle metadata; parent
+CI is read only to build the boundary, and resume never reads ancestors.
+`--no-events` remains an accepted compatibility option only; event activity
+stays owned by its emitter.
+For a resumed transcript fork (identified by `forked_from_turn`, never
+`parent_id` alone), the child saves a versioned immutable
+`fork_cost_boundary`: inherited-turn cumulative Decimal totals, a canonical
+prefix fingerprint, and owner/fence provenance. Resume reads that verified
+boundary plus child-owned CI cost only; it never reconstructs ancestors.
+Honor configured CI relocation without falling back from a missing selected
+capture. An unavailable or pre-boundary fork is explicitly incomplete, never
+verified zero. Keep ordinary non-fork resume's CI-then-native fallback.
+
 Tests must use the Foundation dependency installed in their test environment.
 Do not prepend a neighboring checkout to `sys.path`: that silently bypasses the
 published dependency and lockfile. Install an explicit local override in the

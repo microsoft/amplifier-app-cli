@@ -83,29 +83,6 @@ def _fork_source(store: SessionStore, session_id: str):
         yield load_root_resume(store, session_id)
 
 
-def _copy_legacy_fork_events(parent_dir: Path, child_dir: Path, turn: int, child_id: str, parent_id: str) -> int:
-    """Preserve the CLI's optional legacy log copy, never copy CI evidence.
-
-    Context Intelligence captures stay owned by their original session. Fork
-    lineage links to them; the child's logger records only subsequent activity.
-    """
-    from amplifier_foundation.session.events import slice_events_for_fork
-
-    source = parent_dir / "events.jsonl"
-    if not source.is_file():
-        return 0
-    destination = child_dir / "events.jsonl"
-    try:
-        return slice_events_for_fork(
-            source, parent_dir / "transcript.jsonl", turn, destination,
-            new_session_id=child_id, parent_session_id=parent_id,
-        )
-    except Exception:
-        # Audit copying is best-effort and cannot change recovered messages.
-        destination.write_text("", encoding="utf-8")
-        return 0
-
-
 def _record_bundle_override(
     metadata: dict, new_bundle: str, original_config: str
 ) -> None:
@@ -885,7 +862,11 @@ def register_session_commands(
         is_flag=True,
         help="Resume forked session immediately",
     )
-    @click.option("--no-events", is_flag=True, help="Skip copying the legacy root events.jsonl (CI activity stays with its parent)")
+    @click.option(
+        "--no-events",
+        is_flag=True,
+        help="Compatibility option; forks never copy event logs.",
+    )
     def sessions_fork(
         session_id: str,
         turn: int | None,
@@ -1040,27 +1021,34 @@ def register_session_commands(
                     action_messages, turn=turn, parent_id=session_id
                 )
                 child_id = new_name or result.session_id
+                child_messages = result.messages or []
+                from ..cost_history import build_fork_cost_boundary
+
+                boundary = build_fork_cost_boundary(
+                    parent_dir=session_dir,
+                    parent_id=session_id,
+                    parent_messages=action_messages,
+                    parent_metadata=action_metadata,
+                    fork_turn=result.forked_from_turn,
+                    child_messages=child_messages,
+                )
                 now = datetime.now(UTC).isoformat()
                 store.save_new(
                     child_id,
-                    result.messages or [],
+                    child_messages,
                     {
                         "session_id": child_id,
                         "parent_id": session_id,
                         "forked_from_turn": result.forked_from_turn,
+                        "fork_cost_boundary": boundary,
                         "forked_at": now,
                         "created": now,
-                        "turn_count": count_turns(result.messages or []),
+                        "turn_count": count_turns(child_messages),
                         "bundle": action_metadata.get("bundle"),
                         "model": action_metadata.get("model"),
                     },
                 )
                 result.session_id = child_id
-                result.session_dir = store.base_dir / child_id
-                if not no_events:
-                    result.events_count = _copy_legacy_fork_events(
-                        session_dir, result.session_dir, turn, child_id, session_id
-                    )
 
             console.print(
                 f"[green]✓[/green] Forked session created: {result.session_id}"
@@ -1068,8 +1056,9 @@ def register_session_commands(
             console.print(f"  Messages: {result.message_count}")
             console.print(f"  Parent: {result.parent_id[:8]}...")
             console.print(f"  Forked at turn: {result.forked_from_turn}")
-            if result.events_count > 0:
-                console.print(f"  Events copied: {result.events_count}")
+            console.print("  Event history remains with its original owners.")
+            if no_events:
+                console.print("  --no-events accepted for compatibility (no event logs are copied).")
             console.print()
             console.print(
                 f"Resume with: [cyan]amplifier session resume {result.session_id[:8]}[/cyan]"
