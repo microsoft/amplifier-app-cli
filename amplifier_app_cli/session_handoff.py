@@ -6,8 +6,62 @@ import asyncio
 import sys
 import time
 import uuid
+from contextlib import nullcontext
 
 import click
+from rich.panel import Panel
+from rich.prompt import Confirm
+from rich.text import Text
+
+
+def _app_label(value):
+    from .shared_root_state import _bounded_value
+
+    label = _bounded_value(value)
+    return {
+        "amplifier-cli": "Amplifier CLI",
+        "amplifier-unified": "Amplifier Unified",
+    }.get(label, label or "another app")
+
+
+def _notice(console, title, content, style="cyan"):
+    console.print()
+    console.print(
+        Panel(
+            content,
+            title=Text(title, style=f"bold {style}"),
+            border_style=style,
+            padding=(1, 2),
+        )
+    )
+    console.print()
+
+
+def _show_owner(console, owner):
+    from .shared_root_state import _bounded_value
+
+    owner = owner or {}
+    content = Text("This session is open in ")
+    content.append(_app_label(owner.get("app")), style="bold cyan")
+    host = _bounded_value(owner.get("hostname"))
+    if host:
+        content.append(f" on {host}", style="dim")
+    content.append(
+        ".\n\nRequest takeover to ask that app to save and close this session, "
+    )
+    content.append("then continue here in the CLI.")
+    _notice(console, "Session already open", content)
+
+
+def _show_takeover_failure(console, status, same_owner):
+    message = {
+        "unsupported": "That app does not support takeover requests. Close the session there, then try again.",
+        "timed_out": "The other app has not finished releasing the session. It may still finish; try again shortly.",
+        "cannot_release": "The other app could not finish saving and closing this session. Check that app, then try again.",
+    }.get(status, "The session is still in use. Check the other app, then try again.")
+    if not same_owner:
+        message = "The session owner changed while waiting. Try again to request takeover from the current app."
+    _notice(console, "Could not take over", Text(message), "yellow")
 
 
 def _takeover_option(ctx, param, value):
@@ -44,42 +98,75 @@ async def acquire_root(config, console):
         options = context.meta if context else {}
         requested = config.takeover or options.get("takeover", False)
         timeout = options.get("handoff_timeout", config.handoff_timeout)
-        if not requested and config.invocation_mode == "chat" and sys.stdin.isatty():
-            console.print(str(busy), markup=False)
+        interactive = config.invocation_mode == "chat" and sys.stdin.isatty()
+        if not requested and interactive:
+            _show_owner(console, busy.owner)
             requested = await asyncio.to_thread(
-                click.confirm, "Request takeover?", default=False
+                Confirm.ask,
+                "[bold cyan]Request takeover?[/bold cyan]",
+                console=console,
+                default=False,
             )
+            if not requested:
+                console.print("[dim]Session left open in the other app.[/dim]")
+                busy.displayed = True
         if not requested or busy.store is None:
             raise
         from amplifier_foundation.session import request_release
 
         deadline = time.monotonic() + timeout
-        result = await request_release(
-            busy.store,
-            expected_owner=busy.owner,
-            request_id=uuid.uuid4().hex,
-            requester_app="Amplifier CLI",
-            timeout=timeout,
+        status = (
+            console.status("[cyan]Requesting takeover…[/cyan]", spinner="dots")
+            if interactive
+            else nullcontext()
         )
-        # The reply may be lost after release. Try the real lock, but never send
-        # a second request to a newly observed owner.
-        while True:
-            try:
-                return SharedRootSession.acquire(config.session_id)
-            except SharedRootSessionBusyError as current:
-                same = (current.owner or {}).get("acquisition_id") == (
-                    busy.owner or {}
-                ).get("acquisition_id")
-                if (
-                    not same
-                    or result.status not in {"released", "unreachable"}
-                    or time.monotonic() >= deadline
-                ):
-                    current.args = (
-                        f"Takeover did not complete ({result.status}). {result.message} {current}",
-                    )
-                    raise current from None
-                await asyncio.sleep(min(0.05, max(0, deadline - time.monotonic())))
+        with status as progress:
+
+            def on_progress(stage):
+                message = {
+                    "accepted": "Takeover accepted. Waiting for the other app…",
+                    "draining": "Waiting for active work to stop safely…",
+                    "persisting": "Saving session history…",
+                }.get(stage, "Waiting for the other app to release the session…")
+                progress.update(Text(message, style="cyan"))
+
+            result = await request_release(
+                busy.store,
+                expected_owner=busy.owner,
+                request_id=uuid.uuid4().hex,
+                requester_app="Amplifier CLI",
+                timeout=timeout,
+                on_progress=on_progress if interactive else None,
+            )
+            # The reply may be lost after release. Try the real lock, but never
+            # send a second request to a newly observed owner.
+            while True:
+                try:
+                    root = SharedRootSession.acquire(config.session_id)
+                    break
+                except SharedRootSessionBusyError as current:
+                    same = (current.owner or {}).get("acquisition_id") == (
+                        busy.owner or {}
+                    ).get("acquisition_id")
+                    if (
+                        not same
+                        or result.status not in {"released", "unreachable"}
+                        or time.monotonic() >= deadline
+                    ):
+                        current.args = (
+                            f"Takeover did not complete ({result.status}). {result.message} {current}",
+                        )
+                        if interactive:
+                            progress.stop()
+                            _show_takeover_failure(console, result.status, same)
+                            current.displayed = True
+                        raise current from None
+                    await asyncio.sleep(min(0.05, max(0, deadline - time.monotonic())))
+        if interactive:
+            console.print(
+                "[green]✓[/green] [bold]Session acquired.[/bold] [dim]Continuing here in the CLI.[/dim]"
+            )
+        return root
 
 
 class CLIHandoff:
@@ -134,7 +221,7 @@ class CLIHandoff:
 
     async def finish(self, save=None, after_cleanup=None):
         """Complete all persistence before either normal release or handoff."""
-        from amplifier_foundation.session import ReadyToRelease, CannotRelease
+        from amplifier_foundation.session import CannotRelease, ReadyToRelease
 
         if not self.requested.is_set() and self.registration:
             await self.registration.close()
@@ -162,11 +249,12 @@ class CLIHandoff:
             self.prepared.set_result(ReadyToRelease())
             await asyncio.shield(self.registration.pending)
             if not self.root.held.active:
-                self.console.print(
-                    f"CLI session closed at the request of {self.source}. "
-                    "Session history saved. Execution ownership released.",
-                    markup=False,
+                content = Text("This CLI session closed at the request of ")
+                content.append(_app_label(self.source), style="bold cyan")
+                content.append(
+                    ".\n\nSession history saved. Execution ownership released."
                 )
+                _notice(self.console, "Session handed off", content, "green")
         elif self.root is not None:
             # Closing first prevents a new callback from entering after cleanup.
             if self.registration:
