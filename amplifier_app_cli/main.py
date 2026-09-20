@@ -1901,7 +1901,6 @@ class CommandProcessor:
         try:
             from amplifier_foundation.session import (
                 count_turns,
-                fork_session,
                 fork_session_in_memory,
                 get_turn_summary,
             )
@@ -2002,21 +2001,34 @@ class CommandProcessor:
                 child_id = custom_name or result.session_id
                 now = datetime.now(UTC).isoformat()
                 shared_parent = root_state.read(store)
+                parent_messages = messages
                 parent_metadata = (
                     shared_parent[1]
                     if shared_parent is not None
                     else store.get_metadata_if_exists(session_id)
                 )
+                child_messages = result.messages or []
+                from .cost_history import build_fork_cost_boundary
+
+                boundary = build_fork_cost_boundary(
+                    parent_dir=session_dir,
+                    parent_id=session_id,
+                    parent_messages=parent_messages,
+                    parent_metadata=parent_metadata,
+                    fork_turn=result.forked_from_turn,
+                    child_messages=child_messages,
+                )
                 store.save_new(
                     child_id,
-                    result.messages or [],
+                    child_messages,
                     {
                         "session_id": child_id,
                         "parent_id": session_id,
                         "forked_from_turn": result.forked_from_turn,
+                        "fork_cost_boundary": boundary,
                         "forked_at": now,
                         "created": now,
-                        "turn_count": count_turns(result.messages or []),
+                        "turn_count": count_turns(child_messages),
                         "bundle": parent_metadata.get("bundle", self.bundle_name),
                         "model": parent_metadata.get("model"),
                     },
@@ -2024,21 +2036,46 @@ class CommandProcessor:
                 result.session_id = child_id
             else:
                 child_id = custom_name or str(uuid.uuid4())
-                store.reserve_session(child_id)
-                result = fork_session(
-                    session_dir,
-                    turn=turn,
-                    new_session_id=child_id,
-                    include_events=True,
+                from .cost_history import build_fork_cost_boundary
+                from .shared_root_state import load_root_resume
+
+                parent_messages, parent_metadata = load_root_resume(store, session_id)
+                result = fork_session_in_memory(
+                    parent_messages, turn=turn, parent_id=session_id
                 )
+                child_messages = result.messages or []
+                boundary = build_fork_cost_boundary(
+                    parent_dir=session_dir,
+                    parent_id=session_id,
+                    parent_messages=parent_messages,
+                    parent_metadata=parent_metadata,
+                    fork_turn=result.forked_from_turn,
+                    child_messages=child_messages,
+                )
+                now = datetime.now(UTC).isoformat()
+                store.save_new(
+                    child_id,
+                    child_messages,
+                    {
+                        "session_id": child_id,
+                        "parent_id": session_id,
+                        "forked_from_turn": result.forked_from_turn,
+                        "fork_cost_boundary": boundary,
+                        "forked_at": now,
+                        "created": now,
+                        "turn_count": count_turns(child_messages),
+                        "bundle": parent_metadata.get("bundle", self.bundle_name),
+                        "model": parent_metadata.get("model"),
+                    },
+                )
+                result.session_id = child_id
 
             lines = [
                 f"✓ Forked session created: {result.session_id}",
                 f"  Messages: {result.message_count}",
                 f"  Forked at turn: {result.forked_from_turn} of {max_turns}",
             ]
-            if result.events_count > 0:
-                lines.append(f"  Events copied: {result.events_count}")
+            lines.append("  Event history remains with its original owners.")
             lines.append("")
             lines.append(
                 f"Resume with: amplifier session resume {result.session_id[:8]}"

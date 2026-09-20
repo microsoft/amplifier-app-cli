@@ -364,19 +364,44 @@ async def create_initialized_session(
                 "Context module lacks set_messages - transcript NOT restored"
             )
 
-    # Step 7.5: Restore cumulative session cost (resume only) - issue #284
-    # Provider cost accumulators live in each provider's mount() closure and are
-    # zeroed on resume, so the running session-cost total would otherwise restart
-    # from zero. Re-seed the "session.cost" channel from the persisted
-    # Context Intelligence events (or the old CLI log when absent) by
-    # registering a synthetic historical contributor on this session's own
-    # coordinator. Best-effort: never blocks startup.
+    # Step 7.5: Restore cumulative session cost (resume only) - issue #284.
+    # Forks must be identified by their native fork turn, not parent_id alone:
+    # agent children have parents too, but never inherit root conversation cost.
+    # A fork's native root log may contain rewritten inherited activity, so it
+    # restores CI segments from their original owners only; ordinary resumes
+    # retain the old CI-then-native fallback for compatibility.
     if config.is_resume:
-        from .cost_history import restore_session_cost, session_events_path
+        from .cost_history import (
+            restore_fork_lineage_cost,
+            restore_session_cost,
+            session_events_path,
+        )
 
         try:
             session_dir = SessionStore().base_dir / session_id
-            restore_session_cost(session.coordinator, session_id, session_events_path(session_dir))
+            from amplifier_foundation.session.history import SessionHistoryStore
+
+            metadata = SessionHistoryStore(session_dir).load_metadata()
+            if "forked_from_turn" in metadata:
+                result = restore_fork_lineage_cost(
+                    session.coordinator,
+                    session_id=session_id,
+                    session_dir=session_dir,
+                )
+                if result.incomplete:
+                    console.print(
+                        "[yellow]Warning:[/yellow] cumulative fork cost history is incomplete; "
+                        "only verified CI lineage segments were restored."
+                    )
+                    logger.warning(
+                        "Incomplete fork cost history for %s: %s",
+                        session_id,
+                        ", ".join(result.diagnostics),
+                    )
+            else:
+                restore_session_cost(
+                    session.coordinator, session_id, session_events_path(session_dir)
+                )
         except Exception:
             logger.debug("Prior session cost restore skipped", exc_info=True)
 

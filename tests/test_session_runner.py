@@ -1,7 +1,9 @@
 """Tests for session_runner module - unified session initialization."""
 
 import logging
+import json
 import sys as _sys
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,6 +16,7 @@ from amplifier_app_cli.session_runner import (
     create_initialized_session,
     register_session_spawning,
 )
+from amplifier_app_cli.cost_history import ForkLineageCost
 
 # ---------------------------------------------------------------------------
 # Helpers shared across tests
@@ -47,6 +50,50 @@ def _make_mock_session(initial_session_config=None):
     mock_sess.coordinator.register_capability = MagicMock()
     mock_sess.coordinator.get.return_value = None
     return mock_sess
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("metadata", "expects_lineage"),
+    [
+        ({"session_id": "fork", "parent_id": "root", "forked_from_turn": 1}, True),
+        ({"session_id": "agent-child", "parent_id": "root"}, False),
+    ],
+)
+async def test_resume_uses_lineage_cost_only_for_native_transcript_forks(
+    tmp_path, metadata, expects_lineage
+):
+    """A parent alone identifies an agent child, not a conversation fork."""
+    from contextlib import ExitStack
+
+    session_id = metadata["session_id"]
+    session_dir = tmp_path / session_id
+    session_dir.mkdir()
+    (session_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    mock_session = _make_mock_session()
+    cfg = _make_session_config(
+        session_id=session_id, initial_transcript=[{"role": "user", "content": "resume"}]
+    )
+    store = MagicMock(base_dir=tmp_path)
+    lineage_result = ForkLineageCost(Decimal("0.10"), ())
+
+    with ExitStack() as stack:
+        for patcher in _configurator_patches(mock_session):
+            stack.enter_context(patcher)
+        stack.enter_context(patch(f"{_MODULE}.SessionStore", return_value=store))
+        restore_lineage = stack.enter_context(
+            patch(
+                "amplifier_app_cli.cost_history.restore_fork_lineage_cost",
+                return_value=lineage_result,
+            )
+        )
+        restore_ordinary = stack.enter_context(
+            patch("amplifier_app_cli.cost_history.restore_session_cost")
+        )
+        await create_initialized_session(cfg, MagicMock())
+
+    assert restore_lineage.called is expects_lineage
+    assert restore_ordinary.called is not expects_lineage
 
 
 # ---------------------------------------------------------------------------
