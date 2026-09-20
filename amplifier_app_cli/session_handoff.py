@@ -25,7 +25,8 @@ def _app_label(value):
 
 
 def _notice(console, title, content, style="cyan"):
-    banner = Text(title, style=f"bold {style}")
+    banner = Text()
+    banner.append(title, style=f"bold {style}")
     banner.append("\n")
     banner.append_text(content)
     console.print()
