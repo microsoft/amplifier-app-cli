@@ -763,6 +763,8 @@ class TestSessionConfiguratorWiring:
         saved_settings = {"key": "value"}
         merged = {"configurator": saved_settings, "other": "stuff"}
         fake_module = self._make_fake_configurator_module(mock_configurator_cls)
+        settings = MagicMock(get_merged_settings=MagicMock(return_value=merged))
+        settings.with_session.return_value = settings
 
         with ExitStack() as stack:
             for p in _configurator_patches(mock_sess):
@@ -776,13 +778,12 @@ class TestSessionConfiguratorWiring:
             stack.enter_context(
                 patch(
                     f"{_MODULE}.AppSettings",
-                    return_value=MagicMock(
-                        get_merged_settings=MagicMock(return_value=merged)
-                    ),
+                    return_value=settings,
                 )
             )
-            await create_initialized_session(cfg, console)
+            initialized = await create_initialized_session(cfg, console)
 
+        assert settings.with_session.call_args.args[0] == initialized.session_id
         mock_configurator.apply_saved_settings.assert_called_once_with(saved_settings)
 
     @pytest.mark.anyio

@@ -174,6 +174,7 @@ def _prepare_resume_context(
 
     # Get project slug for session-scoped settings
     project_slug = get_project_slug()
+    app_settings = app_settings.with_session(session_id, project_slug)
 
     # Resolve configuration using unified function (single source of truth)
     config_data, prepared_bundle = resolve_config(
@@ -1117,8 +1118,10 @@ def register_session_commands(
                 root = SharedRootSession.acquire(session_id)
                 try:
                     root.held.check()
-                    if session_path.exists():
-                        shutil.rmtree(session_path)
+                    from amplifier_foundation.session.metadata import metadata_lock
+                    with metadata_lock(session_path):
+                        if session_path.exists():
+                            shutil.rmtree(session_path)
                     root.delete_checkpoint()
                 finally:
                     root.release()

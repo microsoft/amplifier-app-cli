@@ -1849,40 +1849,11 @@ class CommandProcessor:
         session_id = self.session.coordinator.session_id
 
         try:
-            from datetime import UTC, datetime
-
             from .session_store import SessionStore
-            from .shared_root_state import update_root_metadata
 
             store = SessionStore()
-            updates = {
-                "name": new_name[:50],  # Limit name length
-                "name_generated_at": datetime.now(UTC).isoformat(),
-            }
-            root_state = self.session.coordinator.get_capability("cli.shared_root_state")
-            if root_state is not None:
-                # The active root already owns the lock.  Preserve complete
-                # provider context while retaining the shared writer lock.
-                context = self.session.coordinator.get("context")
-                if context is None or not hasattr(context, "get_messages"):
-                    return "Cannot rename: root context is unavailable."
-                messages = await context.get_messages()
-                metadata = {
-                    **store.get_metadata_if_exists(session_id),
-                    **updates,
-                    "session_id": session_id,
-                    "bundle": self.bundle_name,
-                }
-                root_state.checkpoint(
-                    store, messages, bundle=self.bundle_name, metadata=metadata
-                )
-            elif self.session.config.get("root_session_id", session_id) != session_id:
-                # Spawned children never participate in the root writer lock.
-                store.update_metadata(session_id, updates)
-            else:
-                update_root_metadata(store, session_id, updates)
-
-            return f"✓ Session renamed to: {new_name[:50]}"
+            metadata = store.rename(session_id, new_name)
+            return f"✓ Session renamed to: {metadata['name']}"
 
         except Exception as e:
             return f"Failed to rename session: {e}"
