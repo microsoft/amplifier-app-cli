@@ -13,7 +13,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "amplifier-core>=1.5.3",
     # Tool installs consume published metadata, not this repository's uv.lock.
-    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@695f875c0908f45f8dc78b1fcde80ecddebffd7c",
+    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@2c0063a187181173dfe2438ce031079e8723f894",
     "pyyaml>=6.0.3",
     "prompt-toolkit>=3.0.52",
     "httpx[socks]>=0.28.1",
@@ -67,7 +67,7 @@ build-backend = "hatchling.build"
 dev = ["pytest>=9.0.3", "pytest-asyncio>=0.24.0"]
 
 [tool.uv.sources]
-amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "695f875c0908f45f8dc78b1fcde80ecddebffd7c" }
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "2c0063a187181173dfe2438ce031079e8723f894" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -76,4 +76,3 @@ asyncio_mode = "strict"
 markers = [
     "integration: marks tests that fork a real pty child process and probe real termios state (deselected by default; run with '-m integration')",
 ]
-
