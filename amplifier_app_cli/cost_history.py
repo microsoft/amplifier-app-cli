@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from amplifier_foundation import sanitize_message
+from amplifier_foundation.session import count_turns, get_turn_boundaries, slice_to_turn
 from amplifier_foundation.session.history import SessionHistoryStore
 from amplifier_foundation.session.messages import is_real_user_message
 
@@ -46,6 +47,7 @@ class _CaptureCosts:
     by_turn: dict[int, Decimal]
     diagnostics: tuple[str, ...]
     final_fence_line: int | None
+    warnings: tuple[str, ...] = ()
 
 
 def ci_events_path(session_dir: Path) -> Path:
@@ -102,17 +104,67 @@ def _capture_stamp(path: Path) -> tuple[int, int, int] | None:
     return stat.st_ino, stat.st_size, stat.st_mtime_ns
 
 
-def _human_turns(messages: list[dict[str, Any]]) -> list[tuple[int, str]]:
-    """Return Foundation-equivalent transcript prompt anchors."""
-    turns: list[tuple[int, str]] = []
-    for message in messages:
+@dataclass(frozen=True)
+class _NativeTurn:
+    """One Foundation turn and its optional CI-prompt anchor."""
+
+    number: int
+    message_index: int
+    prompt: str | None
+    unsupported: bool
+
+
+def _result_ids(message: dict[str, Any]) -> set[str]:
+    """Match Foundation history's persisted tool-result identity rules."""
+    found: set[str] = set()
+    if isinstance(message.get("tool_call_id"), str):
+        found.add(message["tool_call_id"])
+    content = message.get("content")
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") not in (
+                "tool_result",
+                "function_call_output",
+            ):
+                continue
+            identity = (
+                block.get("tool_use_id")
+                or block.get("tool_call_id")
+                or block.get("call_id")
+                or block.get("id")
+            )
+            if isinstance(identity, str):
+                found.add(identity)
+    return found
+
+
+def _prompt_text(message: dict[str, Any]) -> str | None:
+    """Extract exactly the prompt text emitted by supported live prompt builders."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    return text
+    return None
+
+
+def _native_turns(messages: list[dict[str, Any]]) -> list[_NativeTurn]:
+    """Project every Foundation user turn onto optional real-human prompt anchors."""
+    turns: list[_NativeTurn] = []
+    for number, message_index in enumerate(get_turn_boundaries(messages), start=1):
+        message = messages[message_index]
         metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
-        if (
+        is_anchor = (
             is_real_user_message(message)
             and not metadata.get("ephemeral")
-            and isinstance(message.get("content"), str)
-        ):
-            turns.append((len(turns) + 1, message["content"]))
+            and not _result_ids(message)
+        )
+        prompt = _prompt_text(message) if is_anchor else None
+        turns.append(_NativeTurn(number, message_index, prompt, is_anchor and prompt is None))
     return turns
 
 
@@ -132,33 +184,16 @@ def _canonical_saved_messages(messages: list[dict[str, Any]]) -> list[dict[str, 
 
 
 def _prefix_fingerprint(messages: list[dict[str, Any]], turns: int) -> str | None:
-    """Hash the canonical saved prefix without preserving a transcript copy."""
-    human = _human_turns(messages)
-    if turns < 0 or turns > len(human):
+    """Hash Foundation's canonical native-turn prefix without retaining it."""
+    canonical = _canonical_saved_messages(messages)
+    if canonical is None or turns < 0 or turns > count_turns(canonical):
         return None
-    if turns == 0:
-        prefix: list[dict[str, Any]] = []
-    elif turns == len(human):
-        prefix = messages
-    else:
-        next_turn = human[turns][0]
-        seen_turns = 0
-        for index, message in enumerate(messages):
-            if (
-                is_real_user_message(message)
-                and isinstance(message.get("content"), str)
-                and not (
-                    isinstance(message.get("metadata"), dict)
-                    and message["metadata"].get("ephemeral")
-                )
-            ):
-                seen_turns += 1
-                if seen_turns == next_turn:
-                    prefix = messages[:index]
-                    break
-        else:
-            return None
     try:
+        prefix = (
+            []
+            if turns == 0
+            else slice_to_turn(canonical, turns, handle_orphaned_tools="complete")
+        )
         encoded = json.dumps(
             prefix, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
         ).encode("utf-8")
@@ -201,81 +236,92 @@ def _scan_owner_turn_costs(
     owner: str,
     messages: list[dict[str, Any]],
     required_turns: range,
+    *,
+    inherited_native_turn_count: int,
 ) -> _CaptureCosts:
-    """Associate owner costs with submits using two bounded streaming passes.
+    """Associate owner costs with real prompt anchors in native turn space.
 
-    The pinned Foundation API's rule is retained: a complete prompt sequence
-    must match exactly, otherwise only globally unique prompt text may match.
-    A subsequent prompt is the exclusive historical fence; an unchanged capture
-    end fences the final completed turn.
+    Foundation defines every ``role=user`` row as a turn. Only non-ephemeral,
+    non-tool-result human rows can be CI prompt anchors. Injected rows consume a
+    native turn but carry the preceding anchored cost rather than inventing a
+    submit, response, or fence of their own.
     """
     events_path = ci_events_path(session_dir)
     diagnostics: set[str] = set()
-    if not events_path.is_file():
-        return _CaptureCosts({}, (f"missing_ci_capture:{owner}",), None)
-
-    human = _human_turns(messages)
+    native = _native_turns(messages)
     required = set(required_turns)
     if not required:
         return _CaptureCosts({}, (), None)
-    if not human or max(required) > len(human):
+    if max(required) > len(native) or inherited_native_turn_count < 0:
         return _CaptureCosts({}, (f"invalid_fork_turn:{owner}",), None)
 
+    native_by_number = {turn.number: turn for turn in native}
+    warnings: set[str] = set()
+    for turn in required:
+        item = native_by_number[turn]
+        if item.unsupported:
+            _add(diagnostics, f"unsupported_prompt_anchor:{owner}:{turn}")
+        if item.prompt is None and _non_anchor_has_assistant_output(messages, item, native):
+            warnings.add(f"unmapped_non_anchor_output:{owner}:{turn}")
+    if diagnostics:
+        return _CaptureCosts({}, tuple(sorted(diagnostics)), None, tuple(sorted(warnings)))
+    if not events_path.is_file():
+        return _CaptureCosts({}, (f"missing_ci_capture:{owner}",), None, tuple(sorted(warnings)))
+
+    owner_anchors = [
+        turn for turn in native if turn.number > inherited_native_turn_count and turn.prompt is not None
+    ]
+    expected = [turn.prompt for turn in owner_anchors]
+    target_anchors = [
+        turn for turn in owner_anchors if turn.number in required
+    ]
     before = _capture_stamp(events_path)
-    expected = [prompt for _, prompt in human]
-    target_prompts = {human[turn - 1][1] for turn in required}
-    transcript_counts = Counter(expected)
-    event_counts: Counter[str] = Counter()
-    sequence_index = 0
-    exact_sequence = True
+    event_prompts: list[str] = []
     first = SessionHistoryStore(session_dir, events_path=events_path, session_id=owner)
     for event in first.iter_events():
-        if event.get("session_id") != owner:
+        if event.get("session_id") != owner or event.get("event") != _PROMPT_SUBMIT_EVENT:
             continue
-        if event.get("event") != _PROMPT_SUBMIT_EVENT:
-            continue
-        prompt = event["data"].get("prompt")
+        data = event.get("data")
+        prompt = data.get("prompt") if isinstance(data, dict) else None
         if not isinstance(prompt, str):
             _add(diagnostics, f"invalid_prompt_submit:{owner}")
-            exact_sequence = False
             continue
-        if sequence_index >= len(expected) or prompt != expected[sequence_index]:
-            exact_sequence = False
-        sequence_index += 1
-        if prompt in target_prompts:
-            event_counts[prompt] += 1
+        event_prompts.append(prompt)
     diagnostics.update(_history_diagnostics(first, owner))
-    if sequence_index != len(expected):
-        exact_sequence = False
-
+    exact_sequence = not diagnostics and event_prompts == expected
+    transcript_counts = Counter(expected)
+    event_counts = Counter(event_prompts)
     unique_turn_by_prompt = {
-        prompt: turn
-        for turn, prompt in human
-        if turn in required and transcript_counts[prompt] == 1 and event_counts[prompt] == 1
+        turn.prompt: turn.number
+        for turn in target_anchors
+        if transcript_counts[turn.prompt] == 1 and event_counts[turn.prompt] == 1
     }
+
     costs = {turn: Decimal("0") for turn in required}
     submits: set[int] = set()
     responses: set[int] = set()
     current_turn: int | None = None
-    second_sequence_index = 0
+    sequence_index = 0
     final_fence_line: int | None = None
     second = SessionHistoryStore(session_dir, events_path=events_path, session_id=owner)
     for event in second.iter_events():
         if event.get("session_id") != owner:
             continue
         if event.get("event") == _PROMPT_SUBMIT_EVENT:
-            prompt = event["data"].get("prompt")
-            if exact_sequence and second_sequence_index < len(human):
-                current_turn = human[second_sequence_index][0]
+            data = event.get("data")
+            prompt = data.get("prompt") if isinstance(data, dict) else None
+            if exact_sequence and sequence_index < len(owner_anchors):
+                current_turn = owner_anchors[sequence_index].number
             else:
                 current_turn = unique_turn_by_prompt.get(prompt) if isinstance(prompt, str) else None
-            second_sequence_index += 1
+            sequence_index += 1
             if current_turn in required:
                 submits.add(current_turn)
             continue
         if event.get("event") != _LLM_RESPONSE_EVENT or current_turn not in required:
             continue
-        usage = event["data"].get("usage")
+        data = event.get("data")
+        usage = data.get("usage") if isinstance(data, dict) else None
         if not isinstance(usage, dict) or "cost_usd" not in usage:
             _add(diagnostics, f"missing_cost:{owner}")
             continue
@@ -292,11 +338,24 @@ def _scan_owner_turn_costs(
     if before != _capture_stamp(events_path):
         _add(diagnostics, f"unstable_ci_capture:{owner}")
     for turn in required:
+        if native_by_number[turn].prompt is None:
+            continue
         if turn not in submits:
             _add(diagnostics, f"missing_prompt_fence:{owner}:{turn}")
         elif turn not in responses:
             _add(diagnostics, f"missing_response_cost:{owner}:{turn}")
-    return _CaptureCosts(costs, tuple(sorted(diagnostics)), final_fence_line)
+    return _CaptureCosts(costs, tuple(sorted(diagnostics)), final_fence_line, tuple(sorted(warnings)))
+
+
+def _non_anchor_has_assistant_output(
+    messages: list[dict[str, Any]], turn: _NativeTurn, native: list[_NativeTurn]
+) -> bool:
+    """Identify output after an injected turn that cannot prove a CI mapping."""
+    next_index = next(
+        (item.message_index for item in native if item.number == turn.number + 1),
+        len(messages),
+    )
+    return any(message.get("role") == "assistant" for message in messages[turn.message_index + 1 : next_index])
 
 
 def _unavailable_boundary(owner: str, *reasons: str) -> dict[str, Any]:
@@ -379,7 +438,7 @@ def build_fork_cost_boundary(
     canonical_child = _canonical_saved_messages(child_messages)
     if canonical_parent is None or canonical_child is None:
         return _unavailable_boundary(parent_id, "invalid_inherited_prefix")
-    child_turns = len(_human_turns(canonical_child))
+    child_turns = count_turns(canonical_child)
     if fork_turn < 1 or fork_turn != child_turns:
         return _unavailable_boundary(parent_id, "invalid_fork_turn")
     if fork_turn > _MAX_BOUNDARY_TURNS:
@@ -387,6 +446,7 @@ def build_fork_cost_boundary(
 
     inherited: list[Decimal] = []
     parent_inherited_turns = 0
+    warnings: tuple[str, ...] = ()
     if "forked_from_turn" in parent_metadata:
         inherited, parent_inherited_turns, errors = _verified_boundary_prefix(
             parent_metadata, canonical_parent
@@ -403,9 +463,11 @@ def build_fork_cost_boundary(
             parent_id,
             canonical_parent,
             range(parent_inherited_turns + 1, fork_turn + 1),
+            inherited_native_turn_count=parent_inherited_turns,
         )
         if observation.diagnostics:
             return _unavailable_boundary(parent_id, *observation.diagnostics)
+        warnings = observation.warnings
         totals = list(inherited)
         running = totals[-1] if totals else Decimal("0")
         for turn in range(parent_inherited_turns + 1, fork_turn + 1):
@@ -427,6 +489,7 @@ def build_fork_cost_boundary(
         "cumulative_cost_usd_by_turn": [str(value) for value in totals],
         "prefix_fingerprint": fingerprint,
         "provenance": {"owner": parent_id, "fence": fence},
+        **({"warnings": list(warnings)} if warnings else {}),
     }
     if len(json.dumps(boundary, ensure_ascii=False).encode("utf-8")) > _MAX_BOUNDARY_BYTES:
         return _unavailable_boundary(parent_id, "fork_cost_boundary_too_large")

@@ -20,6 +20,7 @@ from amplifier_app_cli.shared_root_state import (
     SharedRootSession,
     read_shared_root,
 )
+from amplifier_foundation.session import slice_to_turn
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
@@ -98,6 +99,44 @@ def test_session_fork_reads_latest_native_history_over_legacy_checkpoint(
     assert metadata["forked_from_turn"] == 1
     assert metadata["fork_cost_boundary"]["status"] == "verified"
     assert metadata["fork_cost_boundary"]["cumulative_cost_usd_by_turn"] == ["0.10"]
+
+
+def test_session_fork_uses_native_reminder_turns_for_verified_cost_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    native = _isolate_state(tmp_path, monkeypatch)
+    messages = [
+        {"role": "user", "content": "human one"},
+        {"role": "assistant", "content": "answer one"},
+        {
+            "role": "user",
+            "content": "<system-reminder source=\"hook\">remember</system-reminder>",
+            "metadata": {"ephemeral": True, "persisted": True},
+        },
+        {"role": "assistant", "content": "hook output"},
+        {"role": "user", "content": "human two"},
+        {"role": "assistant", "content": "answer two"},
+    ]
+    native.save("mixed-root", messages, {"session_id": "mixed-root"})
+    capture = native.base_dir / "mixed-root" / "context-intelligence" / "events.jsonl"
+    capture.parent.mkdir()
+    capture.write_text(
+        '{"event":"prompt:submit","data":{"session_id":"mixed-root","prompt":"human one"}}\n'
+        '{"event":"llm:response","data":{"session_id":"mixed-root","usage":{"cost_usd":"0.10"}}}\n',
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        _session_cli(native, monkeypatch),
+        ["session", "fork", "mixed-root", "--at-turn", "2", "--name", "mixed-child"],
+    )
+
+    assert result.exit_code == 0, result.output
+    transcript, metadata = native.load("mixed-child")
+    assert transcript == slice_to_turn(messages, 2, handle_orphaned_tools="complete")
+    assert metadata["forked_from_turn"] == 2
+    assert metadata["fork_cost_boundary"]["status"] == "verified"
+    assert metadata["fork_cost_boundary"]["cumulative_cost_usd_by_turn"] == ["0.10", "0.10"]
 
 
 def test_real_foundation_lock_writes_native_metadata_without_checkpoint(

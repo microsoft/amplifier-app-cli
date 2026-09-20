@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from decimal import Decimal
@@ -16,6 +17,8 @@ from amplifier_app_cli.cost_history import (
     sum_prior_cost_usd,
 )
 from amplifier_app_cli.session_store import SessionStore
+from amplifier_foundation import sanitize_message
+from amplifier_foundation.session import slice_to_turn
 
 
 def _write_events(path: Path, events: list[dict]) -> None:
@@ -469,3 +472,211 @@ def test_missing_selected_child_capture_keeps_verified_snapshot_and_is_incomplet
     assert boundary["status"] == "verified"
     assert result.total == Decimal("0.10")
     assert result.diagnostics == ("missing_ci_capture:child",)
+
+
+def test_native_reminder_turn_carries_cost_and_hashes_foundation_prefix(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    messages = [
+        {"role": "user", "content": "human one"},
+        {"role": "assistant", "content": "answer one"},
+        {
+            "role": "user",
+            "content": "<system-reminder source=\"hook\">remember</system-reminder>",
+            "metadata": {"ephemeral": True, "persisted": True},
+        },
+        {"role": "assistant", "content": "hook output"},
+        {"role": "user", "content": "human two"},
+        {"role": "assistant", "content": "answer two"},
+    ]
+    parent = _save(store, "parent", messages, {})
+    _write_events(
+        parent / "context-intelligence" / "events.jsonl",
+        [_submit("parent", "human one"), _response("parent", "0.10")],
+    )
+    child_messages = slice_to_turn(messages, 2, handle_orphaned_tools="complete")
+
+    boundary = build_fork_cost_boundary(
+        parent_dir=parent,
+        parent_id="parent",
+        parent_messages=messages,
+        parent_metadata={},
+        fork_turn=2,
+        child_messages=child_messages,
+    )
+
+    canonical = [sanitize_message(message) for message in child_messages]
+    expected_prefix = slice_to_turn(canonical, 2, handle_orphaned_tools="complete")
+    expected_fingerprint = hashlib.sha256(
+        json.dumps(
+            expected_prefix,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    assert boundary["status"] == "verified"
+    assert boundary["cumulative_cost_usd_by_turn"] == ["0.10", "0.10"]
+    assert boundary["prefix_fingerprint"] == expected_fingerprint
+    assert boundary["warnings"] == ["unmapped_non_anchor_output:parent:2"]
+
+
+def test_nested_fork_preserves_an_inherited_reminder_snapshot_and_fingerprint(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    a_messages = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "a answer"},
+        {
+            "role": "user",
+            "content": "<system-reminder source=\"hook\">remember</system-reminder>",
+            "metadata": {"ephemeral": True, "persisted": True},
+        },
+        {"role": "assistant", "content": "hook output"},
+    ]
+    a = _save(store, "a", a_messages, {})
+    _write_events(
+        a / "context-intelligence" / "events.jsonl",
+        [_submit("a", "a"), _response("a", "0.10")],
+    )
+    b_messages = slice_to_turn(a_messages, 2, handle_orphaned_tools="complete")
+    b_boundary = build_fork_cost_boundary(
+        parent_dir=a,
+        parent_id="a",
+        parent_messages=a_messages,
+        parent_metadata={},
+        fork_turn=2,
+        child_messages=b_messages,
+    )
+    b = _save(
+        store,
+        "b",
+        b_messages,
+        {
+            "parent_id": "a",
+            "forked_from_turn": 2,
+            "fork_cost_boundary": b_boundary,
+        },
+    )
+    b_messages = [*b_messages, {"role": "user", "content": "b"}, {"role": "assistant", "content": "b answer"}]
+    store.save("b", b_messages, store.get_metadata("b"))
+    _write_events(
+        b / "context-intelligence" / "events.jsonl",
+        [_submit("b", "b"), _response("b", "0.20")],
+    )
+    c_messages = slice_to_turn(b_messages, 3, handle_orphaned_tools="complete")
+
+    c_boundary = build_fork_cost_boundary(
+        parent_dir=b,
+        parent_id="b",
+        parent_messages=b_messages,
+        parent_metadata=store.get_metadata("b"),
+        fork_turn=3,
+        child_messages=c_messages,
+    )
+
+    assert b_boundary["status"] == "verified"
+    assert b_boundary["cumulative_cost_usd_by_turn"] == ["0.10", "0.10"]
+    assert c_boundary["status"] == "verified"
+    assert c_boundary["cumulative_cost_usd_by_turn"] == ["0.10", "0.10", "0.30"]
+    assert c_boundary["prefix_fingerprint"] == _prefix_fingerprint(c_messages, 3)
+
+
+def test_multimodal_prompt_uses_only_first_text_block_and_unsupported_anchor_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    supported = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "caption"},
+                {"type": "image", "source": {"type": "base64", "data": "..."}},
+                {"type": "text", "text": "trailing text is not submitted"},
+            ],
+        },
+        {"role": "assistant", "content": "answer"},
+    ]
+    parent = _save(store, "supported", supported, {})
+    _write_events(
+        parent / "context-intelligence" / "events.jsonl",
+        [_submit("supported", "caption"), _response("supported", "0.10")],
+    )
+    verified = build_fork_cost_boundary(
+        parent_dir=parent,
+        parent_id="supported",
+        parent_messages=supported,
+        parent_metadata={},
+        fork_turn=1,
+        child_messages=slice_to_turn(supported, 1, handle_orphaned_tools="complete"),
+    )
+    assert verified["status"] == "verified"
+    assert verified["cumulative_cost_usd_by_turn"] == ["0.10"]
+
+    unsupported = [
+        {"role": "user", "content": [{"type": "image", "source": {"type": "base64"}}]},
+        {"role": "assistant", "content": "answer"},
+    ]
+    unsupported_parent = _save(store, "unsupported", unsupported, {})
+    unavailable = build_fork_cost_boundary(
+        parent_dir=unsupported_parent,
+        parent_id="unsupported",
+        parent_messages=unsupported,
+        parent_metadata={},
+        fork_turn=1,
+        child_messages=slice_to_turn(unsupported, 1, handle_orphaned_tools="complete"),
+    )
+    assert unavailable["status"] == "unavailable"
+    assert "unsupported_prompt_anchor:unsupported:1" in unavailable["reasons"]
+
+
+def test_nested_owner_suffix_ignores_inherited_yes_and_accepts_exact_repeats(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    a_messages = _messages("yes")
+    a = _save(store, "a", a_messages, {})
+    _write_events(
+        a / "context-intelligence" / "events.jsonl",
+        [_submit("a", "yes"), _response("a", "0.10")],
+    )
+    b, b_boundary = _fork(store, "a", "b", a_messages, {}, 1)
+    assert b_boundary["status"] == "verified"
+
+    one_owned = _messages("yes", "yes")
+    store.save(
+        "b",
+        one_owned,
+        {
+            "session_id": "b",
+            "parent_id": "a",
+            "forked_from_turn": 1,
+            "fork_cost_boundary": b_boundary,
+        },
+    )
+    _write_events(
+        b / "context-intelligence" / "events.jsonl",
+        [_submit("b", "yes"), _response("b", "0.20")],
+    )
+    _c, c_boundary = _fork(store, "b", "c", one_owned, store.get_metadata("b"), 2)
+    assert c_boundary["status"] == "verified"
+    assert c_boundary["cumulative_cost_usd_by_turn"] == ["0.10", "0.30"]
+
+    repeated_owned = _messages("yes", "yes", "yes")
+    store.save(
+        "b",
+        repeated_owned,
+        {
+            "session_id": "b",
+            "parent_id": "a",
+            "forked_from_turn": 1,
+            "fork_cost_boundary": b_boundary,
+        },
+    )
+    _write_events(
+        b / "context-intelligence" / "events.jsonl",
+        [
+            _submit("b", "yes"), _response("b", "0.20"),
+            _submit("b", "yes"), _response("b", "0.30"),
+        ],
+    )
+    _d, d_boundary = _fork(store, "b", "d", repeated_owned, store.get_metadata("b"), 3)
+    assert d_boundary["status"] == "verified"
+    assert d_boundary["cumulative_cost_usd_by_turn"] == ["0.10", "0.30", "0.60"]
