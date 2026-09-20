@@ -25,15 +25,11 @@ def _app_label(value):
 
 
 def _notice(console, title, content, style="cyan"):
+    banner = Text(title, style=f"bold {style}")
+    banner.append("\n")
+    banner.append_text(content)
     console.print()
-    console.print(
-        Panel(
-            content,
-            title=Text(title, style=f"bold {style}"),
-            border_style=style,
-            padding=(1, 2),
-        )
-    )
+    console.print(Panel.fit(banner, border_style="cyan"))
     console.print()
 
 
@@ -41,15 +37,13 @@ def _show_owner(console, owner):
     from .shared_root_state import _bounded_value
 
     owner = owner or {}
-    content = Text("This session is open in ")
-    content.append(_app_label(owner.get("app")), style="bold cyan")
+    content = Text("App: ", style="dim")
+    content.append(_app_label(owner.get("app")), style="dim bright_yellow")
     host = _bounded_value(owner.get("hostname"))
     if host:
-        content.append(f" on {host}", style="dim")
-    content.append(
-        ".\n\nRequest takeover to ask that app to save and close this session, "
-    )
-    content.append("then continue here in the CLI.")
+        content.append(f" | Host: {host}", style="dim")
+    content.append("\nRequest takeover to save and close it there,\n", style="not dim")
+    content.append("then continue here in the CLI.", style="not dim")
     _notice(console, "Session already open", content)
 
 
@@ -249,10 +243,11 @@ class CLIHandoff:
             self.prepared.set_result(ReadyToRelease())
             await asyncio.shield(self.registration.pending)
             if not self.root.held.active:
-                content = Text("This CLI session closed at the request of ")
-                content.append(_app_label(self.source), style="bold cyan")
+                content = Text("Closed at the request of: ", style="dim")
+                content.append(_app_label(self.source), style="dim bright_yellow")
                 content.append(
-                    ".\n\nSession history saved. Execution ownership released."
+                    "\nSession history saved. Execution ownership released.",
+                    style="not dim",
                 )
                 _notice(self.console, "Session handed off", content, "green")
         elif self.root is not None:
