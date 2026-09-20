@@ -153,6 +153,7 @@ def test_session_store_default_home_fallback_and_explicit_base_precedence(
     corrupt_dir.mkdir()
     (corrupt_dir / "metadata.json").write_text("{not json", encoding="utf-8")
     from amplifier_foundation.session.history import SessionHistoryError
+
     with pytest.raises(SessionHistoryError, match="metadata"):
         configured_store.get_metadata_if_exists("corrupt-session")
 
@@ -199,6 +200,316 @@ async def test_headless_json_trace_still_exits_nonzero_for_execution_failure(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("output_format", ["text", "json", "json-trace"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(RuntimeError("context length exceeded"), id="generic"),
+        pytest.param("llm", id="context-length-error"),
+    ],
+)
+async def test_headless_failed_turn_still_persists_transcript(
+    split_homes: tuple[Path, Path],
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    output_format: str,
+    failure: object,
+) -> None:
+    """Persist canonical tool results before cleanup, even after an overflow."""
+    from amplifier_app_cli.main import execute_single
+
+    if failure == "llm":
+        from amplifier_core.llm_errors import ContextLengthError
+
+        failure = ContextLengthError("prompt is too long")
+
+    # Context holds the user turn plus two tool round-trips at raise time --
+    # the shape a resumed session must be able to see.
+    accumulated = [
+        {"role": "user", "content": "read the four big files"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "t1",
+                    "name": "read_file",
+                    "arguments": {"file_path": "first.txt"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "t1", "content": "x" * 5000},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "t2",
+                    "name": "read_file",
+                    "arguments": {"file_path": "second.txt"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "t2", "content": "y" * 5000},
+    ]
+    initialized = _initialized_session()
+    initialized.session.execute = AsyncMock(side_effect=failure)
+    initialized.session.coordinator.get("context").get_messages = AsyncMock(
+        return_value=accumulated
+    )
+
+    async def cleanup():
+        # Prove durability BEFORE teardown, not merely after execute_single returns.
+        assert SessionStore().load(_SESSION_ID)[0] == accumulated
+
+    initialized.cleanup.side_effect = cleanup
+
+    with (
+        patch(
+            f"{_MAIN}.create_initialized_session",
+            new=AsyncMock(return_value=initialized),
+        ),
+        patch(f"{_MAIN}.console", new=_private_console()),
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        await execute_single(
+            prompt="read the four big files",
+            config={},
+            search_paths=[tmp_path],
+            verbose=False,
+            session_id=_SESSION_ID,
+            bundle_name="test-bundle",
+            output_format=output_format,
+        )
+
+    # Still fails loud -- persistence must not turn an error into a success.
+    assert exit_info.value.code == 1
+    if output_format in ("json", "json-trace"):
+        assert json.loads(capfd.readouterr().out)["status"] == "error"
+
+    # The whole accumulated turn is on disk, tool results included.
+    transcript, metadata = SessionStore().load(_SESSION_ID)
+    assert transcript == accumulated
+    assert metadata["session_id"] == _SESSION_ID
+    assert metadata["turn_count"] == 1
+
+    # cleanup still ran exactly once after the save.
+    initialized.cleanup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("output_format", ["json", "json-trace"])
+async def test_headless_failed_turn_save_failure_does_not_mask_original_error(
+    split_homes: tuple[Path, Path],
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+    output_format: str,
+) -> None:
+    """If the fallback save itself blows up, the user still sees the turn's error."""
+    from amplifier_app_cli.main import execute_single
+
+    initialized = _initialized_session()
+    initialized.session.execute = AsyncMock(
+        side_effect=RuntimeError("the real failure")
+    )
+
+    with (
+        patch(
+            f"{_MAIN}.create_initialized_session",
+            new=AsyncMock(return_value=initialized),
+        ),
+        patch(f"{_MAIN}.console", new=_private_console()),
+        patch(f"{_MAIN}.SessionStore") as store_cls,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        store_cls.return_value.get_metadata_if_exists.return_value = {}
+        store_cls.return_value.save.side_effect = OSError("disk full")
+        await execute_single(
+            prompt="persist this",
+            config={},
+            search_paths=[tmp_path],
+            verbose=False,
+            session_id=_SESSION_ID,
+            bundle_name="test-bundle",
+            output_format=output_format,
+        )
+
+    assert exit_info.value.code == 1
+    output = json.loads(capfd.readouterr().out)
+    assert output["status"] == "error"
+    assert output["error"] == "the real failure"  # not "disk full"
+    assert "transcript save after failed turn did not complete" in caplog.text
+    store_cls.return_value.save.assert_called_once()
+    initialized.cleanup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("checkpoint_fails", [False, True])
+async def test_failed_turn_keeps_root_writer_ownership(
+    split_homes: tuple[Path, Path],
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    checkpoint_fails: bool,
+) -> None:
+    """The failure save must use the root writer, never bypass its refusal."""
+    from amplifier_app_cli.main import execute_single
+    from amplifier_app_cli.session_handoff import CLIHandoff
+
+    store = SessionStore()
+    store.save(_SESSION_ID, [], {"name": "existing name", "description": "keep me"})
+    initialized = _initialized_session()
+    initialized.session.execute.side_effect = RuntimeError("execution failed")
+    root = MagicMock()
+    initialized.root_state = root
+
+    def checkpoint(target_store, messages, *, bundle, metadata):
+        assert metadata["name"] == "existing name"
+        assert metadata["description"] == "keep me"
+        assert bundle == "test-bundle"
+        if checkpoint_fails:
+            raise RuntimeError("writer refused")
+        target_store.save(_SESSION_ID, messages, metadata)
+
+    root.checkpoint.side_effect = checkpoint
+
+    async def cleanup(**kwargs):
+        assert root.checkpoint.call_count == 1
+        assert kwargs == {"release_ownership": False}
+        transcript, _ = store.load(_SESSION_ID)
+        assert len(transcript) == (0 if checkpoint_fails else 2)
+
+    initialized.cleanup.side_effect = cleanup
+    with (
+        patch(
+            f"{_MAIN}.create_initialized_session",
+            new=AsyncMock(return_value=initialized),
+        ),
+        patch(f"{_MAIN}.console", new=_private_console()),
+        # No takeover transport is needed to exercise the existing writer path.
+        patch.object(CLIHandoff, "start", new=AsyncMock()),
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        await execute_single(
+            "persist this",
+            {},
+            [tmp_path],
+            False,
+            session_id=_SESSION_ID,
+            bundle_name="test-bundle",
+            output_format="json",
+        )
+
+    assert exit_info.value.code == 1
+    assert json.loads(capfd.readouterr().out)["error"] == "execution failed"
+    root.checkpoint.assert_called_once()
+    root.release.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_headless_cancellation_saves_before_cleanup(
+    split_homes: tuple[Path, Path],
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    import asyncio
+
+    from amplifier_app_cli.main import execute_single
+
+    initialized = _initialized_session()
+    initialized.session.execute.side_effect = asyncio.CancelledError()
+
+    async def cleanup():
+        assert SessionStore().load(_SESSION_ID)[0][0]["content"] == "persist this"
+
+    initialized.cleanup.side_effect = cleanup
+    with (
+        patch(
+            f"{_MAIN}.create_initialized_session",
+            new=AsyncMock(return_value=initialized),
+        ),
+        patch(f"{_MAIN}.console", new=_private_console()),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await execute_single(
+            "persist this",
+            {},
+            [tmp_path],
+            False,
+            session_id=_SESSION_ID,
+            output_format="json",
+        )
+    assert capfd.readouterr().out == ""
+    initialized.cleanup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_save_is_not_gated_on_store_hooks(
+    split_homes: tuple[Path, Path],
+    tmp_path: Path,
+) -> None:
+    from amplifier_app_cli.main import execute_single
+
+    initialized = _initialized_session()
+    initialized.session.execute.side_effect = RuntimeError("execution failed")
+    original_get = initialized.session.coordinator.get
+    hooks = MagicMock()
+
+    async def emit(event, data):
+        if event.startswith("cleanup:store_"):
+            raise RuntimeError("store observer failed")
+        if event == "cleanup:finally_begin":
+            assert SessionStore().load(_SESSION_ID)[0]
+
+    hooks.emit = AsyncMock(side_effect=emit)
+    initialized.session.coordinator.get = lambda key: (
+        hooks if key == "hooks" else original_get(key)
+    )
+    with (
+        patch(
+            f"{_MAIN}.create_initialized_session",
+            new=AsyncMock(return_value=initialized),
+        ),
+        patch(f"{_MAIN}.console", new=_private_console()),
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        await execute_single(
+            "persist this", {}, [tmp_path], False, session_id=_SESSION_ID
+        )
+    assert exit_info.value.code == 1
+    assert SessionStore().load(_SESSION_ID)[0]
+
+
+@pytest.mark.asyncio
+async def test_failure_before_execution_does_not_save(
+    split_homes: tuple[Path, Path],
+    tmp_path: Path,
+) -> None:
+    from amplifier_app_cli.main import execute_single
+
+    initialized = _initialized_session()
+    with (
+        patch(
+            f"{_MAIN}.create_initialized_session",
+            new=AsyncMock(return_value=initialized),
+        ),
+        patch(f"{_MAIN}.console", new=_private_console()),
+        patch(
+            f"{_MAIN}.process_runtime_mentions",
+            new=AsyncMock(side_effect=ValueError("bad mention")),
+        ),
+        patch.object(SessionStore, "save") as save,
+        pytest.raises(SystemExit),
+    ):
+        await execute_single(
+            "bad mention", {}, [tmp_path], False, session_id=_SESSION_ID
+        )
+    initialized.session.execute.assert_not_awaited()
+    save.assert_not_called()
+    initialized.cleanup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("output_format", ["json", "json-trace"])
 async def test_headless_json_reports_one_error_when_final_session_save_fails(
     split_homes: tuple[Path, Path],
@@ -217,7 +528,9 @@ async def test_headless_json_reports_one_error_when_final_session_save_fails(
             new=AsyncMock(return_value=initialized),
         ),
         patch(f"{_MAIN}.console", new=_private_console()),
-        patch.object(SessionStore, "save", side_effect=OSError("session save failed")),
+        patch.object(
+            SessionStore, "save", side_effect=OSError("session save failed")
+        ) as save,
         pytest.raises(SystemExit) as exit_info,
     ):
         await execute_single(
@@ -236,6 +549,7 @@ async def test_headless_json_reports_one_error_when_final_session_save_fails(
     output = json.loads(stdout)
     assert output["status"] == "error"
     assert output["error"] == "session save failed"
+    save.assert_called_once()
 
 
 @pytest.mark.parametrize(
