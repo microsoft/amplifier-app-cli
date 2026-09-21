@@ -371,7 +371,11 @@ async def resolve_bundle_config(
     # for the reuse-or-separate multi-instance flow.
     raw_providers = bundle_config.get("providers")
     if isinstance(raw_providers, list):
-        _validate_provider_credentials(raw_providers)
+        await _validate_provider_credentials(
+            raw_providers,
+            prepared_resolver=prepared.resolver,
+            configured_sources=combined_sources,
+        )
 
     # Expand environment variables
     # IMPORTANT: Must expand BEFORE syncing to mount_plan, so ${ANTHROPIC_API_KEY} etc. become actual values
@@ -1215,7 +1219,12 @@ def _merge_module_lists(
 ENV_PATTERN = re.compile(r"\$\{([^}:]+)(?::([^}]*))?}")
 
 
-def _validate_provider_credentials(providers: list[Any]) -> None:
+async def _validate_provider_credentials(
+    providers: list[Any],
+    *,
+    prepared_resolver: Any,
+    configured_sources: dict[str, Any] | None = None,
+) -> None:
     """Fail loudly, before session mount, when a provider instance's
     configured credential placeholder resolves to nothing.
 
@@ -1238,11 +1247,16 @@ def _validate_provider_credentials(providers: list[Any]) -> None:
     ``${VAR:-default}`` default is also left alone (the default already
     covers "unset").
 
-    App-CLI policy only -- no core, provider-contract, or settings-schema
-    changes. When provider metadata can't be loaded (custom/removed
-    provider, import error, etc.), validation is skipped for that entry --
-    consistent with how the rest of this module already treats a missing
-    ``get_provider_info()`` result.
+    Metadata is loaded only after a configured value is found to be a bare,
+    unset placeholder, so normal literal/set/default/empty configurations do
+    not eagerly import providers. An explicit provider source is resolved
+    through the prepared bundle's lazy resolver and its metadata must come
+    from that exact activated root. That fail-closed boundary prevents an
+    ambient installed provider from standing in for the configured source.
+    The effective source mapping passed to bundle preparation is also honored,
+    so module and override source configuration has the same boundary.
+    Without a source, metadata lookup retains the historical fail-soft
+    behavior: unavailable metadata skips validation for that entry.
     """
     for entry in providers:
         if not isinstance(entry, dict):
@@ -1252,7 +1266,34 @@ def _validate_provider_credentials(providers: list[Any]) -> None:
         if not isinstance(module_id, str) or not isinstance(config, dict):
             continue
 
-        info = get_provider_info(module_id)
+        has_unset_placeholder = any(
+            isinstance(value, str)
+            and (match := ENV_PATTERN.fullmatch(value)) is not None
+            and match.group(2) is None
+            and not os.environ.get(match.group(1))
+            for value in config.values()
+        )
+        if not has_unset_placeholder:
+            continue
+
+        source_hint = (configured_sources or {}).get(module_id) or entry.get("source")
+        if source_hint:
+            label = entry.get("id") or module_id
+            try:
+                source = await prepared_resolver.async_resolve(
+                    module_id, source_hint=source_hint
+                )
+                info = get_provider_info(module_id, source_path=source.resolve())
+                if not info:
+                    raise RuntimeError("provider metadata is unavailable")
+            except Exception as exc:
+                raise ValueError(
+                    f"Could not load configured provider source for '{label}' "
+                    "while validating credentials. Check the configured module "
+                    "source before starting the session."
+                ) from exc
+        else:
+            info = get_provider_info(module_id)
         if not info:
             continue
 
