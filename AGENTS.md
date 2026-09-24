@@ -81,6 +81,9 @@ credential-safe, globally unique display labels; malformed app entries render
 as a generic failed check and never leak their configured payload.
 Exercise the real Click command in `tests/test_update_reporting.py`; mock only
 status/apply boundaries so tests never touch a user's caches or installation.
+Module cache force-refresh identity is Foundation's exact URL + ref cache key,
+never a semantic bundle name or module entry-point ID. Verify it with
+`uv run pytest tests/test_module_cache.py`.
 
 ## Persisted reminder display
 
