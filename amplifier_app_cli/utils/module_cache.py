@@ -471,10 +471,11 @@ async def update_module(
     ref: str,
     progress_callback: Callable[[str, str], None] | None = None,
 ) -> Path:
-    """Clear cache and immediately re-download a module.
+    """Force-refresh a module cache entry through Foundation.
 
-    Single source of truth for update (clear + re-download).
-    Uses foundation's SimpleSourceResolver (proper git clone, not uv pip install).
+    Foundation identifies git cache entries by source URL and ref. Its supported
+    ``GitSourceHandler.update()`` operation refreshes that exact entry under its
+    lock, without selecting cache entries from a semantic module or bundle name.
 
     Args:
         url: Git repository URL
@@ -482,14 +483,14 @@ async def update_module(
         progress_callback: Optional callback(module_id, status) for progress
 
     Returns:
-        Path to the newly downloaded module
+        Path to the refreshed module
     """
-    from amplifier_foundation.sources import SimpleSourceResolver
+    from amplifier_foundation.paths.resolution import parse_uri
+    from amplifier_foundation.sources.git import GitSourceHandler
 
     repo_name = _extract_repo_name(url)
-    # Normalize to match how scan_cached_modules() derives module_id from
-    # pyproject.toml entry points (e.g., "provider-anthropic" not
-    # "amplifier-module-provider-anthropic")
+    # The display label remains backward-compatible progress presentation only.
+    # It is not used to select a cache entry for refresh.
     if repo_name.startswith("amplifier-module-"):
         module_id = repo_name[len("amplifier-module-") :]
     else:
@@ -499,20 +500,15 @@ async def update_module(
     if progress_callback:
         progress_callback(module_id, "clearing")
 
-    # Clear existing cache for this module
-    clear_module_cache(module_id=module_id)
-
     # Report progress: downloading
     if progress_callback:
         progress_callback(module_id, "downloading")
 
-    # Build git URI in foundation format (git+url@ref)
-    uri = f"git+{url}@{ref}"
-
-    # Use foundation's resolver (creates proper .git directory via git clone)
     cache_dir = get_cache_dir()
-    resolver = SimpleSourceResolver(cache_dir=cache_dir)
-    result = await resolver.resolve(uri)
+    result = await GitSourceHandler().update(
+        parse_uri(f"git+{url}@{ref}"),
+        cache_dir,
+    )
 
     logger.debug(f"Updated {module_id}@{ref} to {result.active_path}")
 
