@@ -62,6 +62,25 @@ def test_resolver_relative_to(temp_context_dirs):
     assert path.read_text() == "relative content"
 
 
+@pytest.mark.asyncio
+async def test_installed_foundation_expands_nested_references_with_app_policy(tmp_path, monkeypatch):
+    """Exercise the installed dependency, not only the resolver adapter method."""
+    from amplifier_foundation.mentions import ContentDeduplicator, load_mentions
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "rules").mkdir()
+    (tmp_path / "rules/AGENTS.md").write_text("Follow @./tasks.md and @workspace.md")
+    (tmp_path / "rules/tasks.md").write_text("NESTED TASKS")
+    (tmp_path / "tasks.md").write_text("WRONG WORKSPACE TASKS")
+    (tmp_path / "workspace.md").write_text("WORKSPACE RULE")
+    dedup = ContentDeduplicator()
+    await load_mentions("@rules/AGENTS.md", AppMentionResolver(), dedup)
+    contents = {entry.content for entry in dedup.get_unique_files()}
+    assert "NESTED TASKS" in contents
+    assert "WORKSPACE RULE" in contents
+    assert "WRONG WORKSPACE TASKS" not in contents
+
+
 def test_per_call_relative_scope_preserves_shortcuts_and_policy(tmp_path, monkeypatch):
     workspace, nested, user, bundle = (tmp_path / name for name in ("workspace", "nested", "user", "bundle"))
     for path in (workspace / ".amplifier", nested, user, bundle):
