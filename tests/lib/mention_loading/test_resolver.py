@@ -62,6 +62,23 @@ def test_resolver_relative_to(temp_context_dirs):
     assert path.read_text() == "relative content"
 
 
+def test_per_call_relative_scope_preserves_shortcuts_and_policy(tmp_path, monkeypatch):
+    workspace, nested, user, bundle = (tmp_path / name for name in ("workspace", "nested", "user", "bundle"))
+    for path in (workspace / ".amplifier", nested, user, bundle):
+        path.mkdir(parents=True)
+        (path / "rules.md").write_text(str(path))
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("AMPLIFIER_HOME", str(user))
+    resolver = AppMentionResolver(bundle_mappings={"bundle": bundle})
+    assert resolver.resolve_relative("@./rules.md", nested) == nested / "rules.md"
+    assert resolver.resolve_relative("@project:rules.md", nested) == workspace / ".amplifier/rules.md"
+    assert resolver.resolve_relative("@user:rules.md", nested) == user / "rules.md"
+    assert resolver.resolve_relative("@bundle:rules.md", nested) == bundle / "rules.md"
+    assert resolver.resolve_relative("@../rules.md", nested) is None
+    assert resolver.relative_to is None
+    assert resolver.resolve("@./rules.md") is None
+
+
 def test_resolver_relative_path_syntax(temp_context_dirs, monkeypatch):
     """Test ./relative.md syntax with relative_to."""
     base_dir = temp_context_dirs["bundled"]

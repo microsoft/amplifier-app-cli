@@ -10,6 +10,7 @@ Per KERNEL_PHILOSOPHY: Foundation provides mechanism, app provides policy.
 from __future__ import annotations
 
 import logging
+from copy import copy
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Protocol
@@ -125,6 +126,12 @@ class AppMentionResolver:
 
         # === RELATIVE PATHS ===
         return self._resolve_relative(mention)
+
+    def resolve_relative(self, mention: str, relative_to: Path) -> Path | None:
+        """Scope local paths for one load without changing shortcut roots/state."""
+        scoped = copy(self)
+        scoped.relative_to = relative_to
+        return scoped.resolve(mention)
 
     def _resolve_user(self, mention: str) -> Path | None:
         """Resolve @user:path → ~/.amplifier/{path}."""
