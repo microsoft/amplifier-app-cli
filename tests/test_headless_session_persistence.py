@@ -54,6 +54,7 @@ def _initialized_session(*, response: str = "saved response") -> MagicMock:
     session.coordinator.cancellation.is_cancelled = False
 
     initialized = MagicMock()
+    initialized.creation_metadata = {"session_visibility": "internal", "session_purpose": "memory.suggestion"}
     initialized.session = session
     initialized.session_id = _SESSION_ID
     initialized.cleanup = AsyncMock()
@@ -117,6 +118,8 @@ async def test_headless_json_output_creates_and_loads_new_session_from_amplifier
     transcript, metadata = SessionStore().load(_SESSION_ID)
     assert transcript[0]["content"] == "persist this"
     assert metadata["session_id"] == _SESSION_ID
+    assert metadata["session_visibility"] == "internal"
+    assert metadata["session_purpose"] == "memory.suggestion"
     assert SessionStore().base_dir.is_relative_to(isolated_home)
     assert not (default_home / ".amplifier").exists()
 
@@ -291,6 +294,8 @@ async def test_headless_failed_turn_still_persists_transcript(
     transcript, metadata = SessionStore().load(_SESSION_ID)
     assert transcript == accumulated
     assert metadata["session_id"] == _SESSION_ID
+    assert metadata["session_visibility"] == "internal"
+    assert metadata["session_purpose"] == "memory.suggestion"
     assert metadata["turn_count"] == 1
 
     # cleanup still ran exactly once after the save.
