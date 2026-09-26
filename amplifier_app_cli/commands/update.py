@@ -2015,17 +2015,25 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
     # Check for updates with status messages
     if force:
         console.print("Force update mode...")
-        # Clear regenerable cache so everything is fetched fresh
-        from ..utils.cache_management import clear_all_regenerable
-
-        console.print("  Clearing cache...")
-        count, success = clear_all_regenerable(dry_run=False)
-        if success:
-            console.print(f"  [green]✓[/green] Cleared {count} cached items")
+        if os.name == "nt" and check_only:
+            console.print("  Cache cleanup is skipped by --check-only.")
+        elif os.name == "nt":
+            # The post-exit self-update finisher clears this after all update
+            # work completes. Removing it in the live process is vulnerable to
+            # Windows' directory-not-empty deletion race.
+            console.print("  Cache cleanup will finish after this exits.")
         else:
-            console.print(
-                "  [yellow]Warning:[/yellow] Some cache items could not be cleared"
-            )
+            # Clear regenerable cache so everything is fetched fresh.
+            from ..utils.cache_management import clear_all_regenerable
+
+            console.print("  Clearing cache...")
+            count, success = clear_all_regenerable(dry_run=False)
+            if success:
+                console.print(f"  [green]✓[/green] Cleared {count} cached items")
+            else:
+                console.print(
+                    "  [yellow]Warning:[/yellow] Some cache items could not be cleared"
+                )
     else:
         console.print("Checking for updates...")
 
@@ -2211,7 +2219,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         result = asyncio.run(
             execute_updates(
                 report,
-                umbrella_info=umbrella_info if has_umbrella_updates else None,
+                umbrella_info=umbrella_info if has_umbrella_updates or force else None,
                 progress_callback=_on_update_progress,
                 force=force,
             )
