@@ -1223,8 +1223,32 @@ def provider_login(ctx: click.Context, provider_id: str) -> None:
     Examples:
       amplifier provider login openai-chatgpt
     """
-    module_id = _normalize_module_id(provider_id)
-    display = _display_name(module_id)
+    # Resolve an exact saved instance before treating the argument as a module
+    # name. Login can replace credentials, so a module-only match must never
+    # choose among several accounts by priority or list order.
+    settings = _get_settings()
+    providers = settings.get_provider_overrides()
+    matches = [
+        entry
+        for entry in providers
+        if entry.get("id")
+        and _normalize_id(entry["id"]) == _normalize_id(provider_id)
+    ]
+    if not matches:
+        requested_module = _normalize_module_id(provider_id)
+        matches = [
+            entry for entry in providers
+            if _normalize_module_id(entry.get("module", "")) == requested_module
+        ]
+    if len(matches) > 1:
+        raise click.ClickException(
+            "More than one configured provider matches this module. "
+            "Choose an exact instance ID from `amplifier provider list`."
+        )
+    entry = matches[0] if matches else None
+    module_id = _normalize_module_id(entry["module"] if entry else provider_id)
+    display = entry.get("id") if entry else None
+    display = display or _display_name(module_id)
 
     if not is_provider_module_installed(module_id):
         console.print(f"[red]Provider '{display}' is not installed.[/red]")
@@ -1255,8 +1279,6 @@ def provider_login(ctx: click.Context, provider_id: str) -> None:
     # exists, so login uses the same connection values the wizard/runtime
     # would -- empty dict (not an error) when the provider has never been
     # configured yet.
-    settings = _get_settings()
-    entry = _find_provider_entry(settings.get_provider_overrides(), provider_id)
     stored_config = entry.get("config", {}) if entry else {}
 
     provider_instance = _try_instantiate_provider(provider_class, stored_config)

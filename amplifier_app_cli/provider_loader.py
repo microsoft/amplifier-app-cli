@@ -7,12 +7,13 @@ without requiring a full session/coordinator setup.
 import asyncio
 import importlib
 import importlib.metadata
+import inspect
 import logging
 import os
 import sys
+from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .provider_diagnostics import invoke_list_models
 
@@ -70,9 +71,7 @@ def _load_provider_module_from_source_path(provider_id: str, source_path: Path) 
     return module
 
 
-def _load_provider_module(
-    provider_id: str, *, source_path: Path | None = None
-) -> Any:
+def _load_provider_module(provider_id: str, *, source_path: Path | None = None) -> Any:
     """Load a provider module.
 
     Tries entry points first, then direct import.
@@ -295,7 +294,7 @@ def _try_instantiate_provider(
     provider_class: type,
     collected_config: dict[str, Any] | None = None,
 ) -> Any | None:
-    """Try to instantiate a provider class with various constructor signatures.
+    """Instantiate a provider using its declared constructor signature.
 
     Different providers have different constructor requirements:
     - Standard: (api_key, config) - Anthropic, OpenAI
@@ -308,7 +307,8 @@ def _try_instantiate_provider(
         collected_config: Optional config values collected from user (base_url, host, etc.)
 
     Returns:
-        Provider instance or None if all attempts fail
+        Provider instance, or None when its signature cannot accept the config.
+        Provider constructor validation/runtime errors propagate unchanged.
     """
     collected_config = collected_config or {}
 
@@ -324,49 +324,47 @@ def _try_instantiate_provider(
     host = _resolve_env_placeholder(raw_host) or "http://localhost:11434"
     api_key = _resolve_env_placeholder(raw_api_key) or ""
 
-    # Common exceptions to catch during instantiation attempts:
-    # - TypeError: wrong argument signature
-    # - ValueError: invalid argument values
-    # - RuntimeError: some providers raise this for missing dependencies (e.g., old azure-openai)
-    instantiation_errors = (TypeError, ValueError, RuntimeError)
-
-    # Approach 1: Standard (api_key, config) - Anthropic, OpenAI
+    # Bind before construction: a TypeError *inside* a valid constructor is
+    # a provider failure, not permission to retry with different/default
+    # settings. In particular, an invalid account path or auth mode must
+    # never fall through to a no-argument constructor for another account.
     try:
-        return provider_class(api_key=api_key, config={})
-    except instantiation_errors:
-        pass
+        signature = inspect.signature(provider_class)
+    except (TypeError, ValueError):
+        logger.debug("Provider constructor signature is unavailable")
+        return None
 
-    # Approach 2: Azure-style (keyword-only base_url with api_key)
+    parameters = signature.parameters
+    accepts_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    kwargs: dict[str, Any] = {}
+    if "config" in parameters or accepts_kwargs:
+        # Some constructors normalize nested config in place. Discovery and
+        # login must not mutate the caller's saved configuration or the
+        # values the wizard later persists.
+        kwargs["config"] = deepcopy(collected_config)
+    elif collected_config:
+        # Metadata-only, no-argument facades remain usable for get_info(),
+        # but cannot act as a configured provider for login/model discovery.
+        return None
+
+    # Include optional connection arguments as well as required ones. Trying
+    # api_key+config first used to skip an optional host/base_url, silently
+    # selecting a local/default server even after the user chose another.
+    for name, value in (("api_key", api_key), ("base_url", base_url), ("host", host)):
+        if name in parameters:
+            kwargs[name] = value
+
     try:
-        return provider_class(base_url=base_url, api_key=api_key, config={})
-    except instantiation_errors:
-        pass
-
-    # Approach 3: VLLM-style (base_url without api_key)
-    try:
-        return provider_class(base_url=base_url, config={})
-    except instantiation_errors:
-        pass
-
-    # Approach 4: Ollama-style (host, config)
-    try:
-        return provider_class(host=host, config={})
-    except instantiation_errors:
-        pass
-
-    # Approach 5: Just config
-    try:
-        return provider_class(config={})
-    except instantiation_errors:
-        pass
-
-    # Approach 6: No args
-    try:
-        return provider_class()
-    except instantiation_errors:
-        pass
-
-    return None
+        signature.bind(**kwargs)
+    except TypeError:
+        # A required coordinator or unknown constructor argument cannot be
+        # supplied by lightweight discovery. Let the caller report that the
+        # provider cannot be instantiated without a mounted session.
+        return None
+    return provider_class(**kwargs)
 
 
 def get_provider_info(
