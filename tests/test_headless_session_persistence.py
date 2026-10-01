@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,7 +29,7 @@ def _private_console() -> Console:
     return Console(file=io.StringIO())
 
 
-def _initialized_session(*, response: str = "saved response") -> MagicMock:
+def _initialized_session(*, response: str = "saved response", providers=None) -> MagicMock:
     """Return the smallest session double that exercises the final save path."""
     context = MagicMock()
     context.get_messages = AsyncMock(
@@ -42,7 +43,7 @@ def _initialized_session(*, response: str = "saved response") -> MagicMock:
         if name == "context":
             return context
         if name == "providers":
-            return {}
+            return providers or {}
         return None
 
     session = MagicMock()
@@ -727,3 +728,122 @@ def test_run_json_restores_dynamic_console_file_after_execution(
     second = CliRunner().invoke(cli, ["print-again"])
     assert second.exit_code == 0, second.output
     assert "SECOND INVOCATION" in second.stdout
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("output_format", ["json", "json-trace"])
+@pytest.mark.parametrize("model", ["gpt-6.1-sol", "gpt-6-astra"])
+async def test_headless_reports_nonfirst_selected_model_in_output_and_saved_metadata(
+    split_homes, tmp_path, capfd, output_format, model
+):
+    from amplifier_app_cli.main import execute_single
+
+    providers = {
+        "vllm": SimpleNamespace(default_model="openai/gpt-oss-120b", priority=10),
+        "selected-openai": SimpleNamespace(
+            default_model=model, priority=0,
+            get_info=lambda: SimpleNamespace(defaults={"model": model}),
+        ),
+    }
+    initialized = _initialized_session(providers=providers)
+    with (
+        patch(f"{_MAIN}.create_initialized_session", new=AsyncMock(return_value=initialized)),
+        patch(f"{_MAIN}.console", new=_private_console()),
+    ):
+        await execute_single(
+            prompt="persist this", config={}, search_paths=[tmp_path], verbose=False,
+            session_id=_SESSION_ID, bundle_name="test-bundle", output_format=output_format,
+        )
+    output = json.loads(capfd.readouterr().out)
+    _, metadata = SessionStore().load(_SESSION_ID)
+    assert output["model"] == metadata["model"] == f"selected-openai/{model}"
+    assert output["model_source"] == metadata["model_source"] == "configured_default"
+    assert list(providers) == ["vllm", "selected-openai"]
+    assert providers["vllm"].priority == 10
+    assert providers["selected-openai"].priority == 0
+
+
+@pytest.mark.parametrize(
+    "providers,expected",
+    [
+        ({}, "unknown"),
+        ({"first": SimpleNamespace(default_model="gpt-6-astra"),
+          "second": SimpleNamespace(default_model="gpt-6.1-sol")}, "first/gpt-6-astra"),
+        ({"first": SimpleNamespace(default_model="gpt-6-astra", config={"priority": 10}),
+          "second": SimpleNamespace(default_model="gpt-6.1-sol", config={"priority": 0})},
+         "second/gpt-6.1-sol"),
+        ({"first": SimpleNamespace(default_model="gpt-6-astra", priority=5, config={"priority": 0}),
+          "second": SimpleNamespace(default_model="gpt-6.1-sol", priority=1)}, "second/gpt-6.1-sol"),
+        ({"selected": SimpleNamespace(priority=0),
+          "other": SimpleNamespace(default_model="gpt-6.1-sol", priority=10)}, "unknown"),
+        ({"selected": SimpleNamespace(priority=0, default_model=None)}, "unknown"),
+    ],
+)
+def test_configured_model_reporting_priority_and_unknown(providers, expected):
+    from amplifier_app_cli.main import _configured_model_for_reporting
+
+    coordinator = SimpleNamespace(
+        get=lambda name: providers, get_capability=lambda name: None,
+    )
+    label, source = _configured_model_for_reporting(SimpleNamespace(coordinator=coordinator))
+    assert label == expected
+    assert source == ("unknown" if expected == "unknown" else "configured_default")
+
+
+@pytest.mark.parametrize("pinned,expected", [
+    ("second", "second/gpt-6.1-sol"), ("unmounted", "unknown"),
+])
+def test_configured_model_reporting_honors_pin_without_silent_fallback(pinned, expected):
+    from amplifier_app_cli.main import _configured_model_for_reporting
+
+    providers = {
+        "first": SimpleNamespace(default_model="gpt-6-astra", priority=0),
+        "second": SimpleNamespace(default_model="gpt-6.1-sol", priority=100),
+    }
+    coordinator = SimpleNamespace(
+        get=lambda name: providers,
+        get_capability=lambda name: SimpleNamespace(current=lambda: pinned),
+    )
+    label, source = _configured_model_for_reporting(SimpleNamespace(coordinator=coordinator))
+    assert label == expected
+    assert source == ("unknown" if expected == "unknown" else "configured_default")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lookup_failure", ["pin", "model"])
+async def test_headless_reporting_lookup_failure_preserves_response_and_cleanup(
+    split_homes, tmp_path, capfd, lookup_failure
+):
+    from amplifier_app_cli.main import execute_single
+
+    class BrokenModel:
+        priority = 0
+
+        @property
+        def model(self):
+            raise OSError("Model display unavailable")
+
+    def broken_pin():
+        raise KeyError("Pin display unavailable")
+
+    providers = {"selected": BrokenModel() if lookup_failure == "model" else
+                 SimpleNamespace(default_model="gpt-6.1-sol", priority=0)}
+    initialized = _initialized_session(providers=providers)
+    initialized.session.coordinator.get_capability = lambda name: (
+        SimpleNamespace(current=broken_pin) if lookup_failure == "pin" else None
+    )
+    with (
+        patch(f"{_MAIN}.create_initialized_session", new=AsyncMock(return_value=initialized)),
+        patch(f"{_MAIN}.console", new=_private_console()),
+    ):
+        await execute_single(
+            prompt="persist this", config={}, search_paths=[tmp_path], verbose=False,
+            session_id=_SESSION_ID, bundle_name="test-bundle", output_format="json",
+        )
+    output = json.loads(capfd.readouterr().out)
+    _, metadata = SessionStore().load(_SESSION_ID)
+    assert output["status"] == "success"
+    assert output["response"] == "saved response"
+    assert output["model"] == metadata["model"] == "unknown"
+    assert output["model_source"] == metadata["model_source"] == "unknown"
+    initialized.cleanup.assert_awaited_once()

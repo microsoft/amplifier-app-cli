@@ -4518,6 +4518,38 @@ async def interactive_chat(
         console.print()
 
 
+def _configured_model_for_reporting(session: Any) -> tuple[str, str]:
+    """Display-only configured conversation model, not proof of actual routing.
+
+    Honor the conversation pin and streaming-loop priority ordering, retaining
+    insertion order for ties. Never borrow a model from an unselected mount.
+    """
+    try:
+        providers = session.coordinator.get("providers") or {}
+        if not providers:
+            return "unknown", "unknown"
+        pinned = _pinned_provider_name(session)
+        if pinned is not None:
+            name = pinned
+            provider = providers.get(name)
+            if provider is None:
+                return "unknown", "unknown"
+        else:
+            name, provider = min(
+                providers.items(),
+                key=lambda item: CommandProcessor._provider_priority_for_display(item[1]),
+            )
+        model = CommandProcessor._provider_model_for_display(provider)
+        if not model:
+            model = getattr(provider, "model", None) or getattr(provider, "default_model", None)
+        if not isinstance(model, str) or not model.strip():
+            return "unknown", "unknown"
+        return f"{name}/{model}", "configured_default"
+    except Exception:
+        # Reporting must not turn a successful response into a failed session.
+        return "unknown", "unknown"
+
+
 async def execute_single(
     prompt: str,
     config: dict,
@@ -4624,14 +4656,7 @@ async def execute_single(
     execution_started = False
     session_save_attempted = False
 
-    def _resolve_model_name() -> str:
-        providers = session.coordinator.get("providers") or {}
-        for prov_name, prov in providers.items():
-            if hasattr(prov, "model"):
-                return f"{prov_name}/{prov.model}"
-            if hasattr(prov, "default_model"):
-                return f"{prov_name}/{prov.default_model}"
-        return "unknown"
+    model_name, model_source = "unknown", "unknown"
 
     async def _persist_session() -> int:
         """Write transcript + metadata. Returns the message count saved (0 = nothing)."""
@@ -4650,7 +4675,8 @@ async def execute_single(
             "session_id": actual_session_id,
             "created": existing_metadata.get("created", datetime.now(UTC).isoformat()),
             "bundle": bundle_name,
-            "model": _resolve_model_name(),
+            "model": model_name,
+            "model_source": model_source,
             "turn_count": len([m for m in messages if m.get("role") == "user"]),
             # Store working_dir for session sync between CLI and web
             "working_dir": str(Path.cwd().resolve()),
@@ -4663,6 +4689,9 @@ async def execute_single(
         return len(messages)
 
     try:
+        # Freeze the configured label under the cleanup boundary, before any
+        # execution hooks. It is not observed provider-side call telemetry.
+        model_name, model_source = _configured_model_for_reporting(session)
         await handoff.start()
         # Register trace collector hooks if in json-trace mode
         if trace_collector:
@@ -4832,7 +4861,6 @@ async def execute_single(
 
         # Get metadata for output
         actual_session_id = session.session_id
-        model_name = _resolve_model_name()
 
         # Emit prompt:complete (canonical kernel event) BEFORE formatting output
         # This ensures hook output goes to stderr in JSON mode
@@ -4862,6 +4890,7 @@ async def execute_single(
                 "session_id": actual_session_id,
                 "bundle": bundle_name,
                 "model": model_name,
+                "model_source": model_source,
                 "timestamp": datetime.now(UTC).isoformat(),
             }
             # Add trace data if collecting
