@@ -129,6 +129,10 @@ responsibility to maintain by hand in `settings.yaml`; config tooling
 across reconfigures but never prompts for it, displays it in the wizard, or
 validates its contents.
 
+Optional settings-only `auto_continue` overrides for truncated responses are
+also preserved verbatim across reconfiguration, including `false`. If absent,
+the CLI leaves the key unset so the provider's runtime default applies.
+
 ### Session Commands
 
 ```bash

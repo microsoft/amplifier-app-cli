@@ -30,17 +30,19 @@ from .provider_loader import load_provider_class
 console = Console()
 logger = logging.getLogger(__name__)
 
-# Reserved, user-owned provider-config keys. Provider modules are adopting
-# ``extra_request_params`` as an owner-beware dict merged verbatim into every
-# API request, for parameters the module itself doesn't wrap -- users
-# maintain it by hand in settings.yaml. It is deliberately never declared as
-# a ConfigField (never a wizard prompt, never displayed, never validated),
-# so every config-rewrite path that rebuilds a provider's config purely from
-# wizard-collected fields must round-trip it verbatim via
-# ``_preserve_reserved_keys()`` below rather than silently dropping it. Keep
-# this tuple as the single, deliberately narrow allow-list for that
-# passthrough convention -- do not widen it to cover arbitrary unknown keys.
-RESERVED_PROVIDER_CONFIG_KEYS: tuple[str, ...] = ("extra_request_params",)
+# Reserved, user-owned settings-only provider-config keys. Users maintain
+# ``extra_request_params`` (an owner-beware dict of raw API request options)
+# and ``auto_continue`` (an optional truncation-continuation override) by hand
+# in settings.yaml, outside the wizard's ConfigFields. Every config-rewrite
+# path that rebuilds a provider's config purely from wizard-collected fields
+# must round-trip these keys verbatim via ``_preserve_reserved_keys()`` below,
+# rather than silently dropping them. Keep this tuple as the single,
+# deliberately narrow allow-list -- do not retain arbitrary unknown keys or
+# inject defaults for absent keys.
+RESERVED_PROVIDER_CONFIG_KEYS: tuple[str, ...] = (
+    "extra_request_params",
+    "auto_continue",
+)
 
 
 def _preserve_reserved_keys(
@@ -51,9 +53,10 @@ def _preserve_reserved_keys(
 
     Called wherever a config-rewrite path replaces an EXISTING provider
     instance's config with a freshly wizard-collected one. Only keys in
-    ``RESERVED_PROVIDER_CONFIG_KEYS`` (today, just ``extra_request_params``)
-    are preserved -- any other non-schema key in ``old_config`` is dropped,
-    exactly as before this function existed. If ``new_config`` already
+    ``RESERVED_PROVIDER_CONFIG_KEYS`` (settings-only keys such as
+    ``extra_request_params`` and ``auto_continue``) are preserved -- any
+    other non-schema key in ``old_config`` is dropped, exactly as before
+    this function existed. If ``new_config`` already
     carries the key (e.g. a module surfaces it deliberately in the future),
     the old value is not used -- the freshly collected value wins.
 
