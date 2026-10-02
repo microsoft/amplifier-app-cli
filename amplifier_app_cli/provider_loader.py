@@ -15,6 +15,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .lib.env_vars import expand_env_vars
 from .provider_diagnostics import invoke_list_models
 
 if TYPE_CHECKING:
@@ -310,19 +311,21 @@ def _try_instantiate_provider(
         Provider instance, or None when its signature cannot accept the config.
         Provider constructor validation/runtime errors propagate unchanged.
     """
-    collected_config = collected_config or {}
+    # Match session expansion before either constructor handoff. Expand once:
+    # values returned by the environment may themselves contain literal ${...}.
+    # Deepcopy also isolates mutable values the expander does not traverse.
+    collected_config = expand_env_vars(deepcopy(collected_config or {}))
 
-    # Extract connection values from collected config
-    # Resolve ${VAR} placeholders to actual environment values
+    # Derive standalone arguments from the same expanded configuration.
     raw_base_url = collected_config.get("base_url") or collected_config.get(
         "azure_endpoint"
     )
     raw_host = collected_config.get("host")
     raw_api_key = collected_config.get("api_key")
 
-    base_url = _resolve_env_placeholder(raw_base_url) or "http://placeholder"
-    host = _resolve_env_placeholder(raw_host) or "http://localhost:11434"
-    api_key = _resolve_env_placeholder(raw_api_key) or ""
+    base_url = raw_base_url or "http://placeholder"
+    host = raw_host or "http://localhost:11434"
+    api_key = raw_api_key or ""
 
     # Bind before construction: a TypeError *inside* a valid constructor is
     # a provider failure, not permission to retry with different/default
@@ -344,7 +347,7 @@ def _try_instantiate_provider(
         # Some constructors normalize nested config in place. Discovery and
         # login must not mutate the caller's saved configuration or the
         # values the wizard later persists.
-        kwargs["config"] = deepcopy(collected_config)
+        kwargs["config"] = collected_config
     elif collected_config:
         # Metadata-only, no-argument facades remain usable for get_info(),
         # but cannot act as a configured provider for login/model discovery.

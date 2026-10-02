@@ -1,5 +1,6 @@
 """Configured discovery must use the same settings as login and runtime."""
 
+import os
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import ClassVar
@@ -11,6 +12,7 @@ from click.testing import CliRunner
 from amplifier_app_cli import provider_config_utils as wizard
 from amplifier_app_cli import provider_loader as loader
 from amplifier_app_cli.lib.settings import AppSettings, SettingsPaths
+from amplifier_app_cli.runtime.config import expand_env_vars
 
 
 @pytest.fixture(autouse=True)
@@ -47,25 +49,141 @@ def test_config_reaches_each_constructor_and_is_independent(
     provider_class, monkeypatch
 ):
     monkeypatch.setenv("FIXTURE_KEY", "fixture-key")
+    monkeypatch.setenv("FIXTURE_ENDPOINT", "https://example.invalid/v1")
+    monkeypatch.setenv("FIXTURE_HOST", "https://host.example.invalid")
+    monkeypatch.setenv("FIXTURE_OPTION", "selected-option")
     config = {
         "auth_mode": "alternate",
         "api_key": "${FIXTURE_KEY}",
-        "base_url": "https://endpoint.invalid/v1",
-        "host": "https://host.invalid",
+        "base_url": "${FIXTURE_ENDPOINT}",
+        "host": "${FIXTURE_HOST}",
         "token_file_path": "/fixture/account.json",
-        "options": {"values": [1]},
+        "options": {"values": [1, "${FIXTURE_OPTION}"]},
     }
     original = deepcopy(config)
+    expected = expand_env_vars(deepcopy(original))
     provider = loader._try_instantiate_provider(provider_class, config)
-    assert provider.config == config
+    assert provider.config == expected
     if hasattr(provider, "api_key"):
         assert provider.api_key == "fixture-key"
     if hasattr(provider, "base_url"):
-        assert provider.base_url == config["base_url"]
+        assert provider.base_url == expected["base_url"]
     if hasattr(provider, "host"):
-        assert provider.host == config["host"]
+        assert provider.host == expected["host"]
     provider.config["options"]["values"].append(2)
     assert config == original
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    ["${FIXTURE_ENDPOINT}", "https://${FIXTURE_HOST}/v1"],
+    ids=["whole-reference", "interpolated"],
+)
+def test_openai_shaped_constructor_expands_config_and_preserves_mutable_values(
+    monkeypatch, endpoint
+):
+    monkeypatch.setenv("FIXTURE_KEY", "fixture-key")
+    monkeypatch.setenv("FIXTURE_ENDPOINT", "https://example.invalid/v1")
+    monkeypatch.setenv("FIXTURE_HOST", "example.invalid")
+    monkeypatch.setenv("FIXTURE_OPTION", "selected-option")
+    config = {
+        "api_key": "${FIXTURE_KEY}",
+        "base_url": endpoint,
+        "interpolated_endpoint": "https://${FIXTURE_HOST}/models",
+        "options": {
+            "values": ["${FIXTURE_OPTION}", {"endpoint": "${FIXTURE_ENDPOINT}"}]
+        },
+        # Expansion intentionally does not walk tuples; deepcopy must still
+        # protect the mutable list contained in this unsupported container.
+        "opaque": (["${FIXTURE_OPTION}"],),
+    }
+    original = deepcopy(config)
+    expected = expand_env_vars(deepcopy(original))
+    attempts = []
+
+    class OpenAIShapedProvider:
+        def __init__(self, api_key=None, config=None):
+            self.api_key = api_key
+            self.base_url = config["base_url"]
+            self.received = deepcopy(config)
+            attempts.append(self.received)
+            config["options"]["values"].append("constructor-added")
+            config["options"]["values"][1]["endpoint"] = "constructor-changed"
+            config["opaque"][0].append("constructor-added")
+
+    provider = loader._try_instantiate_provider(OpenAIShapedProvider, config)
+    assert config == original
+    assert len(attempts) == 1
+    assert provider.base_url == "https://example.invalid/v1"
+    assert provider.api_key == "fixture-key"
+    assert provider.received == expected
+    assert provider.received["opaque"] == (["${FIXTURE_OPTION}"],)
+
+
+@pytest.mark.parametrize("provider_class", [EndpointProvider, HostProvider])
+def test_connection_arguments_and_config_share_single_pass_expansion(
+    provider_class, monkeypatch
+):
+    monkeypatch.setenv("FIXTURE_ENDPOINT", "https://example.invalid/${SECOND}")
+    monkeypatch.setenv("FIXTURE_HOST", "https://host.example.invalid/${SECOND}")
+    # An entire placeholder returned by getenv catches the legacy standalone
+    # resolver being applied a second time after shared config expansion.
+    monkeypatch.setenv("FIXTURE_KEY", "${SECOND}")
+    monkeypatch.setenv("SECOND", "must-not-be-substituted-again")
+    monkeypatch.delenv("FIXTURE_MISSING", raising=False)
+    monkeypatch.setenv("FIXTURE_EMPTY", "")
+    config = {
+        "base_url": "${FIXTURE_ENDPOINT}",
+        "host": "${FIXTURE_HOST}",
+        "api_key": "${FIXTURE_KEY}",
+        "options": {
+            "missing": "${FIXTURE_MISSING}",
+            "default": "${FIXTURE_MISSING:default}",
+            "empty": "${FIXTURE_EMPTY:default}",
+        },
+    }
+    original = deepcopy(config)
+    expected = expand_env_vars(deepcopy(original))
+    provider = loader._try_instantiate_provider(provider_class, config)
+    assert config == original
+    if hasattr(provider, "base_url"):
+        assert provider.base_url == "https://example.invalid/${SECOND}"
+        assert provider.base_url == expected["base_url"]
+    if hasattr(provider, "host"):
+        assert provider.host == "https://host.example.invalid/${SECOND}"
+        assert provider.host == expected["host"]
+    assert provider.api_key == "${SECOND}"
+    assert provider.api_key == expected["api_key"]
+    assert provider.config == expected
+    assert provider.config["options"] == {
+        "missing": "",
+        "default": "default",
+        "empty": "",
+    }
+
+
+def test_configured_environment_bindings_win_over_ambient_sdk_defaults(monkeypatch):
+    monkeypatch.setenv("FIXTURE_ENDPOINT", "https://selected.example.invalid/v1")
+    monkeypatch.setenv("FIXTURE_KEY", "selected-fixture-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://ambient.example.invalid/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-fixture-key")
+    config = {"base_url": "${FIXTURE_ENDPOINT}", "api_key": "${FIXTURE_KEY}"}
+    original = deepcopy(config)
+    attempts = []
+
+    class SDKShapedProvider:
+        def __init__(self, api_key=None, config=None):
+            self.config = config
+            self.base_url = config.get("base_url") or os.environ["OPENAI_BASE_URL"]
+            self.api_key = api_key or os.environ["OPENAI_API_KEY"]
+            attempts.append(deepcopy(config))
+
+    provider = loader._try_instantiate_provider(SDKShapedProvider, config)
+    assert config == original
+    assert len(attempts) == 1
+    assert provider.base_url == "https://selected.example.invalid/v1"
+    assert provider.api_key == "selected-fixture-key"
+    assert provider.config == expand_env_vars(deepcopy(original))
 
 
 @pytest.mark.parametrize("error_type", [ValueError, RuntimeError, TypeError])
@@ -120,15 +238,27 @@ def test_kwargs_provider_receives_config():
 
 
 def test_catalog_uses_the_supplied_config(monkeypatch):
+    monkeypatch.setenv("FIXTURE_CATALOG", "selected-catalog")
+    events = []
+
     class CatalogProvider(ConfigProvider):
         async def list_models(self):
+            events.append(("models", deepcopy(self.config)))
             return [SimpleNamespace(id=self.config["catalog"])]
 
+        async def close(self):
+            events.append(("close", deepcopy(self.config)))
+
     monkeypatch.setattr(loader, "load_provider_class", lambda _: CatalogProvider)
-    models = loader.get_provider_models(
-        "fixture", collected_config={"catalog": "selected-catalog"}
-    )
+    config = {"catalog": "${FIXTURE_CATALOG}"}
+    original = deepcopy(config)
+    models = loader.get_provider_models("fixture", collected_config=config)
+    assert config == original
     assert [m.id for m in models] == ["selected-catalog"]
+    assert events == [
+        ("models", {"catalog": "selected-catalog"}),
+        ("close", {"catalog": "selected-catalog"}),
+    ]
 
 
 def test_azure_endpoint_alias_is_resolved(monkeypatch):
@@ -137,6 +267,42 @@ def test_azure_endpoint_alias_is_resolved(monkeypatch):
         EndpointProvider, {"azure_endpoint": "${FIXTURE_ENDPOINT}"}
     )
     assert provider.base_url == "https://azure.invalid"
+
+
+@pytest.mark.parametrize("env_value", [None, ""])
+def test_absent_connection_bindings_follow_runtime_expansion(monkeypatch, env_value):
+    for name in ("FIXTURE_KEY", "FIXTURE_ENDPOINT", "FIXTURE_HOST"):
+        monkeypatch.delenv(name, raising=False)
+        if env_value is not None:
+            monkeypatch.setenv(name, env_value)
+    config = {
+        "api_key": "${FIXTURE_KEY}",
+        "base_url": "${FIXTURE_ENDPOINT}",
+        "host": "${FIXTURE_HOST}",
+    }
+    original = deepcopy(config)
+    provider = loader._try_instantiate_provider(EndpointProvider, config)
+    assert provider.config == expand_env_vars(original)
+    assert provider.config == {"api_key": "", "base_url": "", "host": ""}
+    assert provider.api_key == ""
+    assert provider.base_url == "http://placeholder"
+    assert config == original
+    # This pins normalization only. Session credential validation and a
+    # provider/SDK's treatment of empty credentials remain separate boundaries.
+
+
+def test_expanded_empty_primary_endpoint_uses_supplied_azure_alias(monkeypatch):
+    monkeypatch.delenv("FIXTURE_PRIMARY", raising=False)
+    monkeypatch.setenv("FIXTURE_ALIAS", "https://azure.example.invalid")
+    config = {
+        "base_url": "${FIXTURE_PRIMARY}",
+        "azure_endpoint": "${FIXTURE_ALIAS}",
+    }
+    original = deepcopy(config)
+    provider = loader._try_instantiate_provider(EndpointProvider, config)
+    assert provider.base_url == "https://azure.example.invalid"
+    assert provider.config == expand_env_vars(original)
+    assert config == original
 
 
 class OAuthProvider(ConfigProvider):
@@ -248,6 +414,8 @@ def test_login_uses_named_instance_even_when_module_has_multiple_accounts(
             local_settings=tmp_path / "local.yaml",
         )
     )
+    monkeypatch.setenv("FIXTURE_ACCOUNT_PATH", str(tmp_path / f"{name}.json"))
+    monkeypatch.setenv("FIXTURE_OTHER_ACCOUNT_PATH", str(tmp_path / "other.json"))
     monkeypatch.setattr(loader, "load_provider_class", lambda _: OAuthProvider)
     settings._write_scope(
         "global",
@@ -257,13 +425,24 @@ def test_login_uses_named_instance_even_when_module_has_multiple_accounts(
                     {
                         "id": account,
                         "module": "provider-fixture",
-                        "config": {"account": account},
+                        "config": {
+                            "account": account,
+                            "token_file_path": (
+                                "${FIXTURE_ACCOUNT_PATH}"
+                                if account == name
+                                else "${FIXTURE_OTHER_ACCOUNT_PATH}"
+                            ),
+                        },
                     }
                     for account in ("first-account", "second-account")
                 ]
             }
         },
     )
+    original = deepcopy(settings.get_provider_overrides())
+    original_bytes = settings.paths.global_settings.read_bytes()
+    selected_config = next(entry["config"] for entry in original if entry["id"] == name)
+    expected = expand_env_vars(deepcopy(selected_config))
     OAuthProvider.events = []
     with (
         patch(
@@ -282,8 +461,114 @@ def test_login_uses_named_instance_even_when_module_has_multiple_accounts(
     assert result.exit_code == 0, result.output
     installed.assert_called_once_with("provider-fixture")
     load.assert_called_once_with("provider-fixture")
-    assert ("login", {"account": name}) in OAuthProvider.events
-    assert all(config == {"account": name} for _, config in OAuthProvider.events)
+    assert settings.paths.global_settings.read_bytes() == original_bytes
+    assert settings.get_provider_overrides() == original
+    assert selected_config["token_file_path"] == "${FIXTURE_ACCOUNT_PATH}"
+    assert OAuthProvider.events == [
+        ("status", expected),
+        ("login", expected),
+        ("status", expected),
+    ]
+
+
+def test_models_command_uses_exact_instance_and_expanded_config_through_real_loader(
+    tmp_path, monkeypatch
+):
+    from amplifier_app_cli.commands.provider import provider
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("FIXTURE_ENDPOINT", "https://selected.example.invalid/v1")
+    monkeypatch.setenv("FIXTURE_KEY", "selected-fixture-key")
+    monkeypatch.setenv("FIXTURE_CATALOG", "selected-model")
+    monkeypatch.setenv("FIXTURE_OTHER_KEY", "other-fixture-key")
+    events = []
+    loaded_modules = []
+
+    class OpenAIShapedProvider:
+        def __init__(self, api_key=None, config=None):
+            self.api_key = api_key
+            self.config = config
+            self.base_url = config.get("base_url")
+            events.append(("construct", api_key, self.base_url, deepcopy(config)))
+
+        def get_info(self):
+            return SimpleNamespace(display_name="Fixture OpenAI", config_fields=[])
+
+        async def list_models(self):
+            events.append(
+                ("models", self.api_key, self.base_url, deepcopy(self.config))
+            )
+            return [
+                SimpleNamespace(
+                    id=self.config["catalog"],
+                    display_name="Fixture model",
+                    context_window=1024,
+                    max_output_tokens=128,
+                    capabilities=[],
+                )
+            ]
+
+        async def close(self):
+            events.append(
+                ("close", self.api_key, self.base_url, deepcopy(self.config))
+            )
+
+    def load_provider_class(module_id):
+        loaded_modules.append(module_id)
+        return OpenAIShapedProvider
+
+    monkeypatch.setattr(loader, "load_provider_class", load_provider_class)
+    settings = AppSettings()
+    selected_config = {
+        "base_url": "${FIXTURE_ENDPOINT}",
+        "api_key": "${FIXTURE_KEY}",
+        "catalog": "${FIXTURE_CATALOG}",
+        "priority": 99,
+    }
+    entries = [
+        {
+            "id": "other-openai",
+            "module": "provider-openai",
+            "config": {
+                "base_url": "https://other.example.invalid/v1",
+                "api_key": "${FIXTURE_OTHER_KEY}",
+                "catalog": "other-model",
+                "priority": 1,
+            },
+        },
+        {
+            "id": "selected-openai",
+            "module": "provider-openai",
+            "config": selected_config,
+        },
+    ]
+    original = deepcopy(entries)
+    settings._write_scope("global", {"config": {"providers": entries}})
+    original_bytes = settings.paths.global_settings.read_bytes()
+    expected = expand_env_vars(deepcopy(selected_config))
+    events.clear()
+    loaded_modules.clear()
+
+    # Keep settings resolution, routing and get_provider_models real; suppress
+    # only first-run installation. Click exports a provider group, so patch the
+    # module boundary rather than traversing package attributes.
+    with patch(
+        "amplifier_app_cli.commands.provider._ensure_providers_ready", lambda: None
+    ):
+        result = CliRunner().invoke(provider, ["models", "selected-openai"])
+
+    assert result.exit_code == 0, result.output
+    assert loaded_modules == ["provider-openai"]
+    assert entries == original
+    assert settings.get_provider_overrides() == original
+    assert settings.paths.global_settings.read_bytes() == original_bytes
+    assert events == [
+        (action, "selected-fixture-key", "https://selected.example.invalid/v1", expected)
+        for action in ("construct", "models", "close")
+    ]
+    assert "Models for selected-openai" in result.output
+    assert "selected-model" in result.output
+    assert "other-model" not in result.output
 
 
 @pytest.mark.parametrize("name", ["fixture", "provider-fixture"])
