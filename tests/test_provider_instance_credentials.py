@@ -2355,8 +2355,9 @@ def test_no_kernel_level_env_var_rederivation():
     docs/designs/provider-instance-credentials.md §3.
 
     Scoped to the specific runtime-resolution functions §3 identified
-    (``expand_env_vars`` in runtime/config.py, ``_resolve_env_placeholder``
-    in provider_loader.py) rather than a whole-file grep: provider_loader.py
+    (the shared ``expand_env_vars`` helper and provider construction, plus the
+    legacy ``_resolve_env_placeholder`` compatibility helper) rather than a
+    whole-file grep: provider_loader.py
     legitimately *defines* and uses ``get_provider_info`` elsewhere in the
     file for wizard/prompt-time field derivation (§3: "type-level
     declarations consumed at authoring/prompt time only") -- a whole-file
@@ -2364,11 +2365,14 @@ def test_no_kernel_level_env_var_rederivation():
     """
     import inspect
 
-    from amplifier_app_cli.provider_loader import _resolve_env_placeholder
+    from amplifier_app_cli.provider_loader import (
+        _resolve_env_placeholder,
+        _try_instantiate_provider,
+    )
     from amplifier_app_cli.runtime.config import expand_env_vars
 
     forbidden = ("get_provider_info", "ConfigField", "credential_env_vars")
-    for fn in (expand_env_vars, _resolve_env_placeholder):
+    for fn in (expand_env_vars, _try_instantiate_provider, _resolve_env_placeholder):
         source = inspect.getsource(fn)
         for name in forbidden:
             assert name not in source, (

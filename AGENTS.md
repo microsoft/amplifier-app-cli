@@ -162,6 +162,15 @@ Seed byte-preservation installer tests with explicit LF and CRLF bytes, not
 text-mode writes that translate newlines. Assert the original prefix survives
 the first install and the entire file is identical after a repeat install.
 
+## Lightweight provider configuration
+
+Model discovery and login must expand an independent full configuration copy
+once with `lib.env_vars.expand_env_vars`, before deriving constructor arguments.
+Do not discard saved account settings or expand returned environment values a
+second time. Keep the helper lightweight; importing `runtime.config` from the
+provider loader creates a cycle. Run `tests/test_provider_loader_configuration.py`
+and `tests/test_env_vars.py` for this boundary.
+
 ## Interactive control-flow exits
 
 REPL exit commands return an action from `CommandProcessor`; only the normal

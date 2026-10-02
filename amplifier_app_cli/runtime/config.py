@@ -6,7 +6,6 @@ import asyncio
 import copy
 import logging
 import os
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
@@ -15,6 +14,7 @@ from amplifier_core.utils.truncate import SENSITIVE_KEYS
 from rich.console import Console
 
 from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
+from ..lib.env_vars import ENV_PATTERN, expand_env_vars
 from ..lib.settings import AppSettings, NotificationFlags, get_custom_routing_dir
 from ..lib.merge_utils import merge_module_items
 from ..lib.merge_utils import merge_tool_configs
@@ -1216,9 +1216,6 @@ def _merge_module_lists(
     return result
 
 
-ENV_PATTERN = re.compile(r"\$\{([^}:]+)(?::([^}]*))?}")
-
-
 async def _validate_provider_credentials(
     providers: list[Any],
     *,
@@ -1228,7 +1225,7 @@ async def _validate_provider_credentials(
     """Fail loudly, before session mount, when a provider instance's
     configured credential placeholder resolves to nothing.
 
-    Why this exists: ``expand_env_vars`` (below) treats an unset ``${VAR}``
+    Why this exists: ``expand_env_vars`` treats an unset ``${VAR}``
     as an empty string. Several provider modules treat an empty/absent
     ``api_key`` config value as "not configured" and fall back to their own
     canonical ambient env var (e.g. ``OPENAI_API_KEY``). For a *separate*
@@ -1327,26 +1324,6 @@ async def _validate_provider_credentials(
                 f"session; Amplifier will not fall back to another "
                 f"provider's credential."
             )
-
-
-def expand_env_vars(config: dict[str, Any]) -> dict[str, Any]:
-    """Expand ${VAR} references within configuration values."""
-
-    def replace_value(value: Any) -> Any:
-        if isinstance(value, str):
-            return ENV_PATTERN.sub(_replace_match, value)
-        if isinstance(value, dict):
-            return {k: replace_value(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [replace_value(item) for item in value]
-        return value
-
-    def _replace_match(match: re.Match[str]) -> str:
-        var_name = match.group(1)
-        default = match.group(2)
-        return os.environ.get(var_name, default if default is not None else "")
-
-    return replace_value(config)
 
 
 def inject_user_providers(config: dict, prepared_bundle: "PreparedBundle") -> None:
