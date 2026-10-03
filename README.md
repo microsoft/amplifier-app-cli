@@ -444,6 +444,7 @@ toolkit/               # Standalone scenario tool utilities (at repo root)
 - [Agent Delegation](docs/AGENT_DELEGATION_IMPLEMENTATION.md) - Sub-session spawning and resumption
 - [Context Loading](docs/CONTEXT_LOADING.md) - @mention system implementation
 - [Interactive Mode](docs/INTERACTIVE_MODE.md) - REPL and slash commands
+- [Optional Session Catalog Discovery](docs/session-catalog-discovery.md) - Opt-in location-only notices after native saves, without a catalog dependency
 - [Architectural Decisions](docs/decisions/) - ADRs for major design choices
 
 **Authoritative Guides** (external, maintained in library repos):
