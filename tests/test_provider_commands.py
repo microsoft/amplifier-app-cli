@@ -6,6 +6,7 @@ Tests provider add, list, remove, edit, test commands and first-run detection.
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import click
 from click.testing import CliRunner
 
 from amplifier_app_cli.lib.settings import AppSettings, SettingsPaths
@@ -1635,14 +1636,13 @@ class TestFirstRunDetection:
 # ============================================================
 
 
-def _make_run_cli_p_flag(captured: list) -> "click.Group":
+def _make_run_cli_p_flag(captured: list, captured_mount_plan: list) -> "click.Group":
     """Create a minimal Click CLI with the run command registered.
 
     ``captured`` is cleared and replaced with the providers list that
     ``execute_single`` receives, i.e. after the provider selection logic has
     run and the selected provider has been promoted to priority 0.
     """
-    import click
     from amplifier_app_cli.commands.run import register_run_command
     from unittest.mock import AsyncMock
 
@@ -1650,6 +1650,7 @@ def _make_run_cli_p_flag(captured: list) -> "click.Group":
 
     async def _execute_single(prompt, config_data, *args, **kwargs):
         captured[:] = list(config_data.get("providers", []))
+        captured_mount_plan[:] = list(kwargs["prepared_bundle"].mount_plan["providers"])
 
     register_run_command(
         cli,
@@ -1662,23 +1663,30 @@ def _make_run_cli_p_flag(captured: list) -> "click.Group":
     return cli
 
 
-def _invoke_run_p_flag(providers_list: list, p_flag: str):
+def _invoke_run_p_flag(
+    providers_list: list,
+    p_flag: str | None,
+    provider_overrides: list | None = None,
+):
     """Run ``amplifier run -p <p_flag> --output-format json hello`` via CliRunner.
 
     Mocks ``resolve_config`` to inject *providers_list* and suppresses the
     update-check coroutine.  Returns ``(CliResult, captured_providers)`` where
-    *captured_providers* contains the providers as passed to ``execute_single``
-    — the selected provider will have ``config["priority"] == 0``.
+    *captured_providers* and *captured_mount_plan* respectively contain the
+    providers passed to ``execute_single`` and installed on its prepared bundle.
     """
     from click.testing import CliRunner
     from unittest.mock import AsyncMock, MagicMock, patch
 
     captured: list = []
-    cli = _make_run_cli_p_flag(captured)
+    captured_mount_plan: list = []
+    cli = _make_run_cli_p_flag(captured, captured_mount_plan)
 
     fake_config: dict = {"providers": list(providers_list)}
     fake_bundle = MagicMock()
     fake_bundle.mount_plan = {"providers": list(providers_list)}
+    app_settings = MagicMock()
+    app_settings.get_provider_overrides.return_value = provider_overrides or []
 
     with (
         patch(
@@ -1690,24 +1698,33 @@ def _invoke_run_p_flag(providers_list: list, p_flag: str):
             return_value=(fake_config, fake_bundle),
         ),
         patch(
+            "amplifier_app_cli.commands.run.AppSettings",
+            return_value=app_settings,
+        ),
+        patch(
             "amplifier_app_cli.utils.startup_checker.check_and_notify",
             new_callable=AsyncMock,
         ),
     ):
         runner = CliRunner()
+        command = ["run"]
+        if p_flag is not None:
+            command.extend(["-p", p_flag])
+        command.extend(["--output-format", "json", "hello"])
         result = runner.invoke(
-            cli, ["run", "-p", p_flag, "--output-format", "json", "hello"]
+            cli, command
         )
 
-    return result, captured
+    return result, captured, captured_mount_plan
 
 
 class TestRunPFlag:
     """Tests for -p/--provider flag matching provider instance id/mount name.
 
-    Validates Fix 4 from UPSTREAM-FIXES.md: ``-p`` now does a two-pass search —
-    Pass 1 matches on ``id`` or ``instance_id``; Pass 2 falls back to module type
-    (``provider-{name}``) for backward compatibility.
+    Validates ``-p`` selection precedence: an exact mounted ``id`` or
+    ``instance_id`` wins; an explicitly selected saved named provider may apply
+    to one matching unnamed mount; module-type fallback (``provider-{name}``)
+    preserves backward compatibility.
     """
 
     def test_run_p_flag_matches_instance_id(self):
@@ -1724,7 +1741,7 @@ class TestRunPFlag:
                 "config": {"priority": 3},
             },
         ]
-        result, captured = _invoke_run_p_flag(providers, "spark2-gemma")
+        result, captured, _ = _invoke_run_p_flag(providers, "spark2-gemma")
 
         assert result.exit_code == 0, (
             f"Expected success, got exit {result.exit_code}: {result.output}"
@@ -1754,7 +1771,7 @@ class TestRunPFlag:
                 "config": {"priority": 3},
             },
         ]
-        result, captured = _invoke_run_p_flag(providers, "r11-gemma")
+        result, captured, _ = _invoke_run_p_flag(providers, "r11-gemma")
 
         assert result.exit_code == 0, (
             f"Expected success, got exit {result.exit_code}: {result.output}"
@@ -1775,7 +1792,7 @@ class TestRunPFlag:
         providers = [
             {"module": "provider-anthropic", "config": {"priority": 1}},
         ]
-        result, captured = _invoke_run_p_flag(providers, "anthropic")
+        result, captured, _ = _invoke_run_p_flag(providers, "anthropic")
 
         assert result.exit_code == 0, (
             f"Regression: -p anthropic no longer works via module-type fallback: "
@@ -1814,7 +1831,7 @@ class TestRunPFlag:
         assert resolved[0].get("id") == "r11-gemma"
         assert resolved[0].get("instance_id") == "r11-gemma"
 
-        result, captured = _invoke_run_p_flag(resolved, "r11-gemma")
+        result, captured, _ = _invoke_run_p_flag(resolved, "r11-gemma")
 
         assert result.exit_code == 0, (
             f"Expected success, got exit {result.exit_code}: {result.output}"
@@ -1829,6 +1846,109 @@ class TestRunPFlag:
             f"spark2-gemma should keep original priority 2, "
             f"got {spark2['config']['priority']}"
         )
+
+    def test_run_p_flag_applies_selected_named_provider_to_unnamed_mount(self):
+        """A selected named provider replaces its matching unnamed mount."""
+        root_provider = {
+            "module": "provider-anthropic",
+            "config": {
+                "default_model": "claude-sonnet-5-5",
+                "priority": 5,
+                "use_streaming": True,
+            },
+        }
+        saved_provider = {
+            "id": "anthropic",
+            "module": "provider-anthropic",
+            "source": "git+https://example.invalid/anthropic@selected",
+            "config": {
+                "default_model": "claude-sonnet-5",
+                "use_streaming": False,
+            },
+        }
+
+        result, captured, mount_plan = _invoke_run_p_flag(
+            [root_provider], "anthropic", [saved_provider]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert len(captured) == len(mount_plan) == 1
+        assert captured == mount_plan
+        selected = captured[0]
+        assert selected["id"] == selected["instance_id"] == "anthropic"
+        assert selected["source"] == saved_provider["source"]
+        assert selected["config"] == {
+            "default_model": "claude-sonnet-5",
+            "priority": 0,
+            "use_streaming": False,
+        }
+
+    def test_run_p_flag_rejects_ambiguous_unnamed_mounts_for_selected_provider(self):
+        """Selected saved choices never silently choose between unnamed mounts."""
+        providers = [
+            {"module": "provider-anthropic", "config": {"priority": 1}},
+            {"module": "provider-anthropic", "config": {"priority": 2}},
+        ]
+        saved_provider = {
+            "id": "anthropic",
+            "module": "provider-anthropic",
+            "config": {"default_model": "claude-sonnet-5"},
+        }
+
+        result, captured, mount_plan = _invoke_run_p_flag(
+            providers, "anthropic", [saved_provider]
+        )
+
+        assert result.exit_code == 1
+        assert "2 unnamed" in result.output
+        assert "'provider-anthropic' mounts are ambiguous" in result.output
+        assert captured == mount_plan == []
+
+    def test_unselected_named_provider_does_not_leak_into_unnamed_mount(self):
+        """Saved named choices remain omitted until explicitly selected."""
+        root_provider = {
+            "module": "provider-anthropic",
+            "config": {"default_model": "claude-sonnet-5-5", "priority": 5},
+        }
+        saved_provider = {
+            "id": "anthropic",
+            "module": "provider-anthropic",
+            "config": {"default_model": "claude-sonnet-5"},
+        }
+
+        result, captured, mount_plan = _invoke_run_p_flag(
+            [root_provider], None, [saved_provider]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert captured == mount_plan == [root_provider]
+
+    def test_run_p_flag_exact_mounted_id_wins_over_saved_provider(self):
+        """An already-mounted matching id remains authoritative."""
+        mounted_provider = {
+            "id": "anthropic",
+            "instance_id": "anthropic",
+            "module": "provider-anthropic",
+            "config": {"default_model": "mounted-model", "priority": 5},
+        }
+        saved_provider = {
+            "id": "anthropic",
+            "module": "provider-anthropic",
+            "source": "git+https://example.invalid/anthropic@saved",
+            "config": {"default_model": "saved-model"},
+        }
+
+        result, captured, mount_plan = _invoke_run_p_flag(
+            [mounted_provider], "anthropic", [saved_provider]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert captured == mount_plan
+        assert captured[0]["config"] == {
+            "default_model": "mounted-model",
+            "priority": 0,
+        }
+        assert "source" not in captured[0]
 
 
 class TestFindProviderEntryPrioritySelection:

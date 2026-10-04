@@ -160,6 +160,12 @@ amplifier session delete <id>             # Delete session
 amplifier session cleanup [--days N]      # Clean up old sessions
 ```
 
+When a saved instance uses its provider type as its ID (for example,
+`id: anthropic` with `module: provider-anthropic`), `run --provider anthropic`
+applies that saved choice to a single unnamed mount of the same module instead
+of adding a duplicate. Existing mounted IDs still take precedence. If several
+unnamed mounts match, give the mounts unique IDs and select one explicitly.
+
 ### Conversational Single-Shot Workflows
 
 **Build context across multiple commands:**

@@ -20,6 +20,7 @@ from rich.panel import Panel
 from ..console import console
 from ..session_handoff import takeover_options
 from ..effective_config import get_effective_config_summary
+from ..lib.merge_utils import merge_module_items
 from ..lib.settings import AppSettings
 from ..paths import create_config_manager
 from ..runtime.config import resolve_config
@@ -467,10 +468,9 @@ def register_run_command(
             )
             providers_list = config_data.get("providers", [])
 
-            # Find the target provider — two-pass search:
-            # Pass 1: exact match on instance id/mount name.
-            # _map_id_to_instance_id copies id → instance_id without stripping id,
-            # so both fields co-exist on resolved entries; either leg can match.
+            # Find the target provider in priority order. First use an exact
+            # mounted instance id/mount name. _map_id_to_instance_id copies
+            # id → instance_id without stripping id, so either leg can match.
             target_idx = None
             for i, entry in enumerate(providers_list):
                 if isinstance(entry, dict) and (
@@ -478,6 +478,48 @@ def register_run_command(
                 ):
                     target_idx = i
                     break
+
+            if target_idx is None:
+                # A named saved provider is deliberately omitted from the
+                # bundle mount plan unless selected.  When it is selected,
+                # apply it to the one unnamed mount for the same module
+                # instead of adding a second provider.
+                selected_saved_provider = next(
+                    (
+                        entry
+                        for entry in app_settings.get_provider_overrides()
+                        if isinstance(entry, dict)
+                        and entry.get("id") == provider
+                        and entry.get("module") == provider_module
+                    ),
+                    None,
+                )
+                if selected_saved_provider is not None:
+                    unnamed_matches = [
+                        i
+                        for i, entry in enumerate(providers_list)
+                        if isinstance(entry, dict)
+                        and entry.get("module") == provider_module
+                        and not entry.get("id")
+                        and not entry.get("instance_id")
+                    ]
+                    if len(unnamed_matches) > 1:
+                        console.print(
+                            f"[red]Error:[/red] Provider '{provider}' matches a saved "
+                            f"configuration but {len(unnamed_matches)} unnamed "
+                            f"'{provider_module}' mounts are ambiguous. "
+                            "Select a mounted provider by id."
+                        )
+                        sys.exit(1)
+                    if len(unnamed_matches) == 1:
+                        target_idx = unnamed_matches[0]
+                        providers_list = list(providers_list)
+                        selected_provider = merge_module_items(
+                            providers_list[target_idx], selected_saved_provider
+                        )
+                        selected_provider["id"] = provider
+                        selected_provider["instance_id"] = provider
+                        providers_list[target_idx] = selected_provider
 
             if target_idx is None:
                 # Pass 2: fallback — module-type match (original behavior).
