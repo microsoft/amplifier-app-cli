@@ -35,6 +35,7 @@ from ..utils.shell_completion import (
 from ..lib.settings import AppSettings
 from ..project_utils import get_project_slug
 from ..runtime.config import resolve_config
+from ..catalog_notices import capture_session_removal, announce_removed_session
 from ..session_store import SessionStore, extract_session_mode
 from ..shared_root_state import (
     SharedRootSession,
@@ -1120,13 +1121,17 @@ def register_session_commands(
                     root.held.check()
                     from amplifier_foundation.session.metadata import metadata_lock
                     with metadata_lock(session_path):
+                        location = capture_session_removal(session_path)
                         if session_path.exists():
                             shutil.rmtree(session_path)
                     root.delete_checkpoint()
+                    announce_removed_session(location)
                 finally:
                     root.release()
             else:
+                location = capture_session_removal(session_path)
                 shutil.rmtree(session_path)
+                announce_removed_session(location)
             console.print(f"[green]✓[/green] Deleted session: {session_id}")
         except SharedRootSessionBusyError as exc:
             console.print(f"[red]Error:[/red] {escape_markup(exc)}")

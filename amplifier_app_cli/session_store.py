@@ -23,7 +23,9 @@ from amplifier_foundation import write_with_backup
 from amplifier_foundation.session.history import SessionHistoryStore
 from amplifier_foundation.session.metadata import SessionMetadataStore
 
-from amplifier_app_cli.catalog_notices import announce_saved_session
+from amplifier_app_cli.catalog_notices import (
+    announce_saved_session, capture_session_removal, announce_removed_session,
+)
 from amplifier_app_cli.project_utils import get_project_slug
 from amplifier_foundation.paths.resolution import get_amplifier_home
 
@@ -489,18 +491,21 @@ class SessionStore:
                 logger.error(f"Failed to inspect session {session_dir.name}: {e}")
                 continue
             if mtime < cutoff_timestamp:
+                location = capture_session_removal(session_dir)
                 # A policy-owned remover can retain an external lock through
                 # deletion. Its failures must reach the command boundary,
                 # never turn into a native fallback.
                 if remove_session is not None:
                     deleted = remove_session(session_dir)
                     if deleted:
+                        announce_removed_session(location)
                         logger.info(f"Removed old session: {session_dir.name}")
                         removed += 1
                     continue
                 try:
                     if remove_session is None:
                         shutil.rmtree(session_dir)
+                    announce_removed_session(location)
                     logger.info(f"Removed old session: {session_dir.name}")
                     removed += 1
                 except Exception as e:
