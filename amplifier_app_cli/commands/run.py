@@ -20,6 +20,7 @@ from rich.panel import Panel
 from ..console import console
 from ..session_handoff import takeover_options
 from ..effective_config import get_effective_config_summary
+from ..lib.bundle_loader.discovery import DEFAULT_BUNDLE
 from ..lib.settings import AppSettings
 from ..paths import create_config_manager
 from ..runtime.config import resolve_config
@@ -369,9 +370,9 @@ def register_run_command(
             if isinstance(bundle_settings, dict):
                 bundle = bundle_settings.get("active")
 
-        # Default to anchors bundle when no explicit bundle is configured
+        # Apply CLI policy only when no explicit or saved bundle is configured
         if not bundle:
-            bundle = "anchors"
+            bundle = DEFAULT_BUNDLE
 
         # Check if first run init is needed
         # This runs unconditionally - --provider just selects from configured providers,

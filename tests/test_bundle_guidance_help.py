@@ -5,9 +5,14 @@ import re
 from pathlib import Path
 
 from click.testing import CliRunner
+import pytest
 import yaml
 
-from amplifier_app_cli.lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
+from amplifier_app_cli.lib.bundle_loader.discovery import (
+    DEFAULT_BUNDLE,
+    WELL_KNOWN_BUNDLES,
+)
+from amplifier_app_cli.lib.settings import AppSettings
 
 
 ANCHORS_CANONICAL_BASE = (
@@ -75,7 +80,8 @@ def test_bundle_add_help_leads_with_behavior_then_root_registration():
         in help_text
     )
     assert "amplifier bundle use my-host" in help_text
-    assert "Anchors is built in and the default root" in help_text
+    assert f"{DEFAULT_BUNDLE} is the default root" in help_text
+    assert "Anchors and anchors-amp-dev are built in" in help_text
     assert "amplifier bundle use anchors" in help_text
     assert "use Anchors as its canonical base" in help_text
     assert "--name anchors" not in help_text
@@ -84,15 +90,16 @@ def test_bundle_add_help_leads_with_behavior_then_root_registration():
     )
 
 
-def test_anchors_is_builtin_and_cannot_be_removed(monkeypatch):
-    """The documented built-in/default status matches the current CLI behavior."""
+@pytest.mark.parametrize("name", ["anchors", "anchors-amp-dev"])
+def test_anchors_roots_are_builtin_and_cannot_be_removed(name, monkeypatch):
+    """Both visible roots remain built into the CLI."""
     monkeypatch.setattr(bundle_module, "AppSettings", lambda: object())
 
-    result = CliRunner().invoke(bundle_module.bundle, ["remove", "anchors"])
+    result = CliRunner().invoke(bundle_module.bundle, ["remove", name])
 
-    assert "anchors" in WELL_KNOWN_BUNDLES
+    assert name in WELL_KNOWN_BUNDLES
     assert result.exit_code == 1, result.output
-    assert "Cannot remove well-known bundle 'anchors'" in result.output
+    assert f"Cannot remove well-known bundle '{name}'" in result.output
     assert "built into amplifier" in result.output
 
 
@@ -110,7 +117,8 @@ def test_cli_docs_use_behavior_first_and_distinguish_user_roots_from_anchors():
         in readme
     )
     assert "amplifier bundle use my-host" in readme
-    assert "Anchors is built in and the default root" in readme
+    assert f"`{DEFAULT_BUNDLE}` is the default root" in readme
+    assert "two visible built-in roots are `anchors` and `anchors-amp-dev`" in readme
     assert "`amplifier bundle use anchors` is sufficient" in readme
     assert "use Anchors as its canonical base" in readme
     assert "--name anchors" not in readme
@@ -141,6 +149,9 @@ def test_context_loading_root_examples_are_complete_anchors_compositions():
     )
     examples = list(_complete_root_examples(context_loading))
 
+    assert ANCHORS_CANONICAL_BASE == WELL_KNOWN_BUNDLES["anchors"]["remote"]
+    assert context_loading.count(ANCHORS_CANONICAL_BASE) == 8
+    assert "bundles/anchors.md" not in context_loading
     assert examples
     for frontmatter, body in examples:
         assert frontmatter["bundle"]["name"]
@@ -158,3 +169,63 @@ def test_context_loading_root_examples_are_complete_anchors_compositions():
     _, body = authoring_example
     assert "@foundation:context/shared/common-agent-base.md" in body
     assert "@foundation:context/IMPLEMENTATION_PHILOSOPHY.md" in body
+
+
+@pytest.fixture
+def bundle_settings(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("AMPLIFIER_HOME", str(home / ".amplifier"))
+    monkeypatch.chdir(project)
+    return AppSettings()
+
+
+def test_current_unset_reports_policy_default_without_saving_it(bundle_settings):
+    result = CliRunner().invoke(bundle_module.bundle, ["current"])
+    assert result.exit_code == 0, result.output
+    assert f"Active bundle: {DEFAULT_BUNDLE} (default)" in result.output
+    assert bundle_settings.get_active_bundle() is None
+    assert not bundle_settings.paths.global_settings.exists()
+
+
+def test_use_and_current_preserve_legacy_selection_and_report_new_reset_default(
+    bundle_settings,
+):
+    runner = CliRunner()
+    result = runner.invoke(bundle_module.bundle, ["use", "foundation", "--global"])
+    assert result.exit_code == 0, result.output
+    assert f"default ({DEFAULT_BUNDLE} bundle)" in " ".join(result.output.split())
+    assert bundle_settings.get_active_bundle() == "foundation"
+    result = runner.invoke(bundle_module.bundle, ["current"])
+    assert result.exit_code == 0, result.output
+    assert "Active bundle: foundation" in result.output
+    assert f"default ({DEFAULT_BUNDLE} bundle)" in " ".join(result.output.split())
+
+
+@pytest.mark.parametrize("args", [[], ["--global"], ["--all"]])
+def test_clear_reports_new_default_and_preserves_added_and_app_bundles(
+    args, bundle_settings
+):
+    bundle_settings.set_active_bundle("foundation")
+    bundle_settings.add_bundle("user-root", "file:///user-root")
+    bundle_settings.add_app_bundle(BEHAVIOR_URI)
+    result = CliRunner().invoke(bundle_module.bundle, ["clear", *args])
+    assert result.exit_code == 0, result.output
+    assert f"Now using default: {DEFAULT_BUNDLE} bundle" in result.output
+    assert bundle_settings.get_active_bundle() is None
+    assert bundle_settings.get_added_bundles() == {"user-root": "file:///user-root"}
+    assert bundle_settings.get_app_bundles() == [BEHAVIOR_URI]
+
+
+def test_clear_unset_and_help_report_new_default(bundle_settings):
+    runner = CliRunner()
+    result = runner.invoke(bundle_module.bundle, ["clear"])
+    assert result.exit_code == 0, result.output
+    assert f"Already using default: {DEFAULT_BUNDLE} bundle" in result.output
+    result = runner.invoke(bundle_module.bundle, ["clear", "--help"])
+    assert result.exit_code == 0, result.output
+    assert f"default {DEFAULT_BUNDLE} bundle" in " ".join(result.output.split())

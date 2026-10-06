@@ -17,6 +17,7 @@ from rich.text import Text
 
 from ..console import console
 from ..lib.bundle_loader import AppBundleDiscovery
+from ..lib.bundle_loader.discovery import DEFAULT_BUNDLE
 from ..lib.settings import AppSettings
 from ..paths import ScopeNotAvailableError
 from ..paths import ScopeType
@@ -84,7 +85,7 @@ def bundle_list(show_all: bool, compact: bool, detailed: bool, fmt: str):
     """List available bundles.
 
     By default, shows bundles intended for user selection:
-    - Well-known bundles (foundation, recipes, etc.)
+    - Visible built-in bundles (anchors and anchors-amp-dev)
     - User-added bundles (via bundle add)
     - Local bundles (in .amplifier/bundles/)
 
@@ -723,7 +724,7 @@ def bundle_use(name: str, scope_flag: str | None):
         console.print("  File: ~/.amplifier/settings.yaml")
 
     console.print(
-        "\n[dim]Tip: Use 'amplifier bundle clear' to revert to default (anchors bundle)[/dim]"
+        f"\n[dim]Tip: Use 'amplifier bundle clear' to revert to default ({DEFAULT_BUNDLE} bundle)[/dim]"
     )
 
 
@@ -737,7 +738,7 @@ def bundle_use(name: str, scope_flag: str | None):
 )
 @click.option("--all", "clear_all", is_flag=True, help="Clear settings from all scopes")
 def bundle_clear(scope_flag: str | None, clear_all: bool):
-    """Clear bundle settings (reverts to default anchors bundle).
+    """Clear bundle settings (reverts to default anchors-amp-dev bundle).
 
     Without scope flags, auto-detects and clears from wherever settings are found.
     Use --all to clear from all scopes.
@@ -763,14 +764,14 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
         else:
             console.print("[yellow]No bundle settings found to clear[/yellow]")
 
-        console.print("[green]Now using default: anchors bundle[/green]")
+        console.print(f"[green]Now using default: {DEFAULT_BUNDLE} bundle[/green]")
         return
 
     if scope_flag is None:
         detected_scope = _find_bundle_scope(app_settings)
         if detected_scope is None:
             console.print("[yellow]No bundle settings found in any scope[/yellow]")
-            console.print("[dim]Already using default: anchors bundle[/dim]")
+            console.print(f"[dim]Already using default: {DEFAULT_BUNDLE} bundle[/dim]")
             return
         scope = detected_scope
         console.print(f"[dim]Auto-detected settings in {scope} scope[/dim]")
@@ -805,7 +806,7 @@ def bundle_clear(scope_flag: str | None, clear_all: bool):
         )
         console.print("[dim]Use --all to clear from all scopes[/dim]")
     else:
-        console.print("[green]Now using default: anchors bundle[/green]")
+        console.print(f"[green]Now using default: {DEFAULT_BUNDLE} bundle[/green]")
 
 
 @bundle.command(name="current")
@@ -828,11 +829,11 @@ def bundle_current():
             console.print(f"[bold]Location:[/bold] {_format_location(uri)}")
 
         console.print(
-            "\n[dim]Use 'amplifier bundle clear' to revert to default (anchors bundle)[/dim]"
+            f"\n[dim]Use 'amplifier bundle clear' to revert to default ({DEFAULT_BUNDLE} bundle)[/dim]"
         )
     else:
         console.print("[bold]Mode:[/bold] Bundle (default)")
-        console.print("[bold]Active bundle:[/bold] anchors (default)")
+        console.print(f"[bold]Active bundle:[/bold] {DEFAULT_BUNDLE} (default)")
         console.print(
             "\n[dim]Use 'amplifier bundle use <name>' to switch to a different bundle[/dim]"
         )
@@ -913,9 +914,9 @@ def bundle_add(uri: str, name_override: str | None, app: bool):
         amplifier bundle add git+https://github.com/org/my-host@main#subdirectory=bundle.md --name my-host
         amplifier bundle use my-host
 
-    Anchors is built in and the default root, so it does not need to be added.
-    Run `amplifier bundle use anchors` only to select it explicitly. When
-    authoring a new root, use Anchors as its canonical base.
+    Anchors and anchors-amp-dev are built in; anchors-amp-dev is the default root.
+    Neither needs to be added. Run `amplifier bundle use anchors` to select Anchors.
+    When authoring a new root, use Anchors as its canonical base.
     """
     from amplifier_foundation import load_bundle
 

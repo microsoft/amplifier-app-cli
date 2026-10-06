@@ -59,6 +59,35 @@ def _custom_callback(command, name):
     return _parameter(command, name)._custom_shell_complete
 
 
+def test_fresh_bundle_completion_has_exactly_two_visible_builtins():
+    assert _values(completion.complete_bundle_names(_context(), None, "")) == [
+        "anchors", "anchors-amp-dev"
+    ]
+
+
+def test_hidden_builtins_remain_candidates_when_requested_or_added(
+    isolated_completion_state, monkeypatch
+):
+    home, _ = isolated_completion_state
+    monkeypatch.setattr(
+        completion,
+        "AppSettings",
+        lambda: _Settings(
+            {"bundle": {"added": {"amplifier-dev": "file:///custom-dev"}}}
+        ),
+    )
+    (home / "registry.json").write_text(
+        json.dumps({"bundles": {
+            "foundation": {"uri": "file:///foundation", "explicitly_requested": True},
+            "exp-delegation": {"uri": "file:///exp", "explicitly_requested": False},
+        }}),
+        encoding="utf-8",
+    )
+    assert _values(completion.complete_bundle_names(_context(), None, "")) == [
+        "amplifier-dev", "anchors", "anchors-amp-dev", "foundation"
+    ]
+
+
 def test_bundle_callback_uses_only_safe_local_sources_without_migration(
     isolated_completion_state, monkeypatch
 ):

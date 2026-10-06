@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 # ===========================================================================
 # WELL-KNOWN BUNDLES (APP-LAYER POLICY)
 # ===========================================================================
+DEFAULT_BUNDLE = "anchors-amp-dev"
+
 # Following the foundation-first pattern (see AGENTS.md "Foundation-First
 # Development Strategy"), these are bundles the CLI knows about by default.
 #
@@ -42,15 +44,15 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str | bool]] = {
     "foundation": {
         "package": "amplifier_foundation",
         "remote": "git+https://github.com/microsoft/amplifier-foundation@main",
-        "show_in_list": True,
+        "show_in_list": False,  # Namespace resolution and legacy selections
     },
-    # Lean principle-driven bundle (foundation/bundles/anchors). CLI default for
-    # new sessions when no bundle is explicitly configured.
+    # Lean principle-driven bundle, the canonical base for authoring new roots.
     "anchors": {
         "package": "",  # No Python package - bundle-only
         "remote": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md",
         "show_in_list": True,
     },
+    # CLI default when no bundle is explicitly configured.
     "anchors-amp-dev": {
         "package": "",  # No Python package - bundle-only
         "remote": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors-amp-dev/bundle.md",
@@ -70,13 +72,13 @@ WELL_KNOWN_BUNDLES: dict[str, dict[str, str | bool]] = {
     "exp-delegation": {
         "package": "",  # Experimental bundle in foundation/experiments/
         "remote": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=experiments/delegation-only",
-        "show_in_list": True,
+        "show_in_list": False,  # Retained for legacy selections
     },
     # Amplifier ecosystem development bundle - multi-repo workflows, shadow environments
     "amplifier-dev": {
         "package": "",  # Bundle in foundation/bundles/
         "remote": "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/amplifier-dev.yaml",
-        "show_in_list": True,
+        "show_in_list": False,  # Retained for legacy selections
     },
     # Notification hooks - loaded dynamically via config.notifications settings
     # but registered here so `amplifier update` can track it
