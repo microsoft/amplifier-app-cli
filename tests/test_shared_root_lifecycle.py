@@ -76,7 +76,8 @@ def test_session_fork_reads_latest_native_history_over_legacy_checkpoint(
     native.save(
         "shared-root",
         _messages("stale projection"),
-        {"session_id": "shared-root", "bundle": "bundle:stale"},
+        {"session_id": "shared-root", "bundle": "bundle:stale",
+         "session_visibility": "internal", "session_purpose": "memory.suggestion"},
     )
     parent_capture = native.base_dir / "shared-root" / "context-intelligence" / "events.jsonl"
     parent_capture.parent.mkdir()
@@ -97,6 +98,8 @@ def test_session_fork_reads_latest_native_history_over_legacy_checkpoint(
     assert metadata["bundle"] == "bundle:stale"
     assert metadata["parent_id"] == "shared-root"
     assert metadata["forked_from_turn"] == 1
+    assert metadata["session_visibility"] == "chat"
+    assert "session_purpose" not in metadata
     assert metadata["fork_cost_boundary"]["status"] == "verified"
     assert metadata["fork_cost_boundary"]["cumulative_cost_usd_by_turn"] == ["0.10"]
 
@@ -286,7 +289,8 @@ async def test_live_fork_uses_current_context_without_reacquiring_shared_lock(
     root_handle = MagicMock()
     root_handle.read.return_value = (
         _messages("held metadata authority"),
-        {"bundle": "bundle:held", "model": "held-model"},
+        {"bundle": "bundle:held", "model": "held-model",
+         "session_visibility": "internal", "session_purpose": "memory.suggestion"},
     )
 
     def get_capability(name: str):
@@ -319,6 +323,8 @@ async def test_live_fork_uses_current_context_without_reacquiring_shared_lock(
     assert transcript[0]["content"] == "live authority"
     assert metadata["parent_id"] == "shared-root"
     assert metadata["bundle"] == "bundle:held"
+    assert metadata["session_visibility"] == "chat"
+    assert "session_purpose" not in metadata
     assert metadata["fork_cost_boundary"]["status"] == "unavailable"
     root_handle.read.assert_called_once_with(native)
 
