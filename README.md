@@ -479,3 +479,16 @@ trademarks or logos is subject to and must follow
 [Microsoft's Trademark & Brand Guidelines](https://www.microsoft.com/legal/intellectualproperty/trademarks/usage/general).
 Use of Microsoft trademarks or logos in modified versions of this project must not cause confusion or imply Microsoft sponsorship.
 Any use of third-party trademarks or logos are subject to those third-party's policies.
+
+### Optional incremental session discovery
+
+Set `AMPLIFIER_SESSION_CATALOG_HINT_DIRECTORY` to an existing canonical absolute,
+same-user private POSIX inbox to publish location-only notices after successful
+session saves or renames. The CLI emits no transcript/event contents and does not
+start a catalog, agent or history watcher. Repeated updates coalesce atomically;
+notice failures do not prevent canonical saves. The independent catalog consumer
+must be configured explicitly for the same inbox and native roots. Older installed
+CLI versions do not gain this behavior from setting the variable alone.
+
+See [CLI location notices v1](docs/contracts/catalog-location-notices.v1.md) for
+bounds, ownership, qualification and the separately unresolved physical-delete seam.
