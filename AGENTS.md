@@ -192,3 +192,13 @@ The Highway watchdog records append-only `wake-needed` advisories only: it must
 not invoke Amplifier or consume markers, including triggers within its log
 verbosity gap. Keep its bounded fake-command tests proving each trigger records
 without starting host tmux or an Amplifier session.
+
+## Optional catalog discovery notices
+
+`catalog_hints.notify_session_saved()` runs only after a successful native save or
+metadata update. Keep it location-only, bounded, opt-in, and best effort; unavailable
+catalog state must never fail native persistence. Do not scan history, spawn a
+catalog, or write notices before the Foundation save succeeds. The catalog owns
+validation/indexing; native transcript, metadata, event and fork authority remain
+unchanged. Run `tests/test_catalog_hints.py` with session-store/metadata preservation
+tests when changing these seams.
