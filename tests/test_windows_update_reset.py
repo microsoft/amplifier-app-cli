@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import importlib
+import re
 import subprocess
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -15,8 +18,9 @@ from amplifier_app_cli.utils.source_status import UpdateReport
 from amplifier_app_cli.utils.umbrella_discovery import UmbrellaInfo
 from amplifier_app_cli.utils.update_executor import ExecutionResult
 from amplifier_app_cli.utils.update_executor import _defer_self_update
+from amplifier_app_cli.utils.update_executor import execute_self_update
 from amplifier_app_cli.utils.update_executor import execute_updates
-from amplifier_app_cli.utils.uv_utils import UvStep, defer_uv_tool_swap
+from amplifier_app_cli.utils.uv_utils import CleanupStep, UvStep, defer_uv_tool_swap
 
 
 reset_module = importlib.import_module("amplifier_app_cli.commands.reset")
@@ -32,7 +36,9 @@ def _console_text(console: MagicMock) -> str:
     return "\n".join(str(call.args[0]) for call in console.print.call_args_list)
 
 
-def _invoke_update_with_result(monkeypatch, execution_result: ExecutionResult):
+def _invoke_update_with_result(
+    monkeypatch, execution_result: ExecutionResult, args: list[str] | None = None
+):
     update_module = importlib.import_module("amplifier_app_cli.commands.update")
 
     async def fake_check_all_sources(**kwargs):
@@ -71,7 +77,7 @@ def _invoke_update_with_result(monkeypatch, execution_result: ExecutionResult):
     monkeypatch.setattr(update_module, "_refresh_skills_cache", lambda console: None)
     monkeypatch.setattr(update_module, "save_update_last_check", lambda value: None)
 
-    return CliRunner().invoke(update_module.update, ["--yes"])
+    return CliRunner().invoke(update_module.update, args or ["--yes"])
 
 
 def test_remove_amplifier_dir_reports_cache_failure_and_continues(
@@ -161,7 +167,7 @@ def test_remove_amplifier_dir_reports_registry_failure(tmp_path, monkeypatch):
     assert "registry.json" in output
 
 
-def test_windows_reset_does_not_stage_after_incomplete_cleanup(monkeypatch):
+def test_windows_reset_defers_cleanup_instead_of_failing_before_staging(monkeypatch):
     defer = MagicMock(return_value=True)
     monkeypatch.setattr(reset_module, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(reset_module, "_show_plan", MagicMock())
@@ -173,10 +179,10 @@ def test_windows_reset_does_not_stage_after_incomplete_cleanup(monkeypatch):
 
     result = CliRunner().invoke(reset_module.reset, ["--yes"])
 
-    assert result.exit_code == 1
-    defer.assert_not_called()
-    assert "cleanup was incomplete" in result.output
-    assert "no reinstall was staged" in result.output
+    assert result.exit_code == 0
+    reset_module._remove_amplifier_dir.assert_not_called()
+    deferred_steps = defer.call_args.args[1]
+    assert [step.path.name for step in deferred_steps] == ["cache", "registry.json"]
 
 
 def test_windows_reset_returns_failure_when_finisher_cannot_launch(monkeypatch):
@@ -374,6 +380,25 @@ def test_windows_no_install_stages_nothing_when_no_distribution_is_registered(
     defer.assert_not_called()
 
 
+def test_windows_no_install_stages_cleanup_without_a_registered_distribution(
+    tmp_path, monkeypatch
+):
+    defer = MagicMock(return_value=True)
+    monkeypatch.setattr(reset_module, "_installed_uv_tool_packages", lambda: ())
+    monkeypatch.setattr(reset_module, "defer_uv_tool_swap", defer)
+    monkeypatch.setattr(reset_module, "console", MagicMock())
+
+    assert reset_module._windows_defer_tool_swap(
+        no_install=True,
+        cleanup_steps=[CleanupStep(tmp_path / "cache", "Removing cache...")],
+    )
+
+    assert [step.path.name for step in defer.call_args.kwargs["cleanup_steps"]] == [
+        "cache"
+    ]
+    assert defer.call_args.args[0] == []
+
+
 @pytest.mark.parametrize("no_install", [True, False])
 def test_windows_swap_covers_every_distribution_when_uv_cannot_be_read(
     monkeypatch, no_install
@@ -542,6 +567,146 @@ def test_deferred_script_qualifies_windows_utilities(tmp_path, monkeypatch):
     ping_lines = [line for line in script.splitlines() if "ping" in line]
     assert len(ping_lines) == 4
     assert all('"%SystemRoot%\\System32\\ping.exe"' in line for line in ping_lines)
+
+
+def test_deferred_script_encodes_cleanup_paths_and_runs_them_before_uv(
+    tmp_path, monkeypatch
+):
+    real_mkstemp = tempfile.mkstemp
+
+    def temp_script(*, prefix, suffix):
+        return real_mkstemp(prefix=prefix, suffix=suffix, dir=tmp_path)
+
+    popen = MagicMock()
+    monkeypatch.setattr(tempfile, "mkstemp", temp_script)
+    monkeypatch.setattr(
+        "amplifier_app_cli.utils.uv_utils.subprocess.Popen",
+        popen,
+    )
+    monkeypatch.setattr(
+        "amplifier_app_cli.utils.uv_utils.console",
+        MagicMock(),
+    )
+
+    target = tmp_path / "cache%literal!name"
+    assert defer_uv_tool_swap(
+        [UvStep(command="uv tool install amplifier", label="Installing...")],
+        operation="reset",
+        intro_lines=["Reset"],
+        success_message="Done",
+        recovery_commands=["uv tool install amplifier"],
+        cleanup_steps=[CleanupStep(target, "Removing cache...")],
+    )
+
+    script_path = popen.call_args.args[0][2]
+    batch = tmp_path.joinpath(script_path).read_text(encoding="ascii")
+    encoded = re.search(r"-EncodedCommand ([A-Za-z0-9+/=]+)", batch)
+    assert encoded is not None
+    cleanup = base64.b64decode(encoded.group(1)).decode("utf-16le")
+    assert f"$target = '{target}'" in cleanup
+    assert "[IO.FileAttributes]::ReparsePoint" in cleanup
+    assert "[IO.Directory]::Delete($path, $true)" in cleanup
+    assert "[IO.File]::Delete($path)" in cleanup
+    assert "Get-ChildItem -LiteralPath $path -Force" in cleanup
+    assert "Get-ChildItem -LiteralPath $path -Recurse" not in cleanup
+    assert batch.index("Removing cache...") < batch.index("Installing...")
+
+
+@pytest.mark.asyncio
+async def test_windows_forced_update_defers_regenerable_cleanup(monkeypatch):
+    captured = {}
+
+    def defer(steps, **kwargs):
+        captured["steps"] = steps
+        captured["cleanup_steps"] = kwargs["cleanup_steps"]
+        return True
+
+    monkeypatch.setattr(
+        "amplifier_app_cli.utils.update_executor.os",
+        SimpleNamespace(name="nt"),
+    )
+    monkeypatch.setattr(
+        "amplifier_app_cli.utils.update_executor.defer_uv_tool_swap", defer
+    )
+    monkeypatch.setattr(
+        "amplifier_app_cli.utils.update_executor.remove_stale_uv_lock", lambda: None
+    )
+    monkeypatch.setattr(
+        "amplifier_app_cli.utils.update_executor.subprocess.run", MagicMock()
+    )
+    monkeypatch.setattr(
+        "amplifier_app_cli.paths.get_install_state_path",
+        lambda: Path("/tmp/missing-install-state.json"),
+    )
+
+    result = await execute_self_update(_FAKE_UMBRELLA, force=True)
+
+    assert result.success
+    assert [step.path.name for step in captured["cleanup_steps"]] == [
+        "cache",
+        "registry.json",
+    ]
+    assert captured["cleanup_steps"][0].label == "Clearing Amplifier cache..."
+    assert captured["steps"][0].command.startswith("uv tool install --upgrade")
+
+
+def test_windows_force_update_leaves_app_cache_for_the_finisher(monkeypatch):
+    update_module = importlib.import_module("amplifier_app_cli.commands.update")
+    monkeypatch.setattr(update_module, "os", SimpleNamespace(name="nt"))
+
+    result = _invoke_update_with_result(
+        monkeypatch,
+        ExecutionResult(success=True, staged=["amplifier"]),
+        args=["--yes", "--force"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Cache cleanup will finish after this exits" in result.output
+    assert "Cleared" not in result.output
+
+
+def test_windows_force_check_only_does_not_claim_cleanup_was_staged(monkeypatch):
+    update_module = importlib.import_module("amplifier_app_cli.commands.update")
+    monkeypatch.setattr(update_module, "os", SimpleNamespace(name="nt"))
+
+    result = _invoke_update_with_result(
+        monkeypatch,
+        ExecutionResult(success=True, staged=["amplifier"]),
+        args=["--yes", "--force", "--check-only"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Cache cleanup is skipped by --check-only" in result.output
+    assert "Cache cleanup will finish after this exits" not in result.output
+
+
+@pytest.mark.asyncio
+async def test_windows_force_stages_cleanup_without_an_umbrella_update(monkeypatch):
+    staged_cleanup = MagicMock(
+        return_value=ExecutionResult(
+            success=True,
+            staged=["cache"],
+            messages=["cache cleanup will finish after this exits"],
+        )
+    )
+    monkeypatch.setattr(
+        "amplifier_app_cli.utils.update_executor.os",
+        SimpleNamespace(name="nt"),
+    )
+    monkeypatch.setattr(
+        "amplifier_app_cli.utils.update_executor._defer_forced_cache_cleanup",
+        staged_cleanup,
+    )
+
+    result = await execute_updates(
+        UpdateReport(local_file_sources=[], cached_git_sources=[]),
+        umbrella_info=None,
+        force=True,
+    )
+
+    staged_cleanup.assert_called_once_with()
+    assert result.success
+    assert result.staged == ["cache"]
 
 
 @pytest.mark.parametrize("launched", [True, False])
