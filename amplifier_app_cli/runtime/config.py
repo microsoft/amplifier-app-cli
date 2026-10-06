@@ -13,7 +13,7 @@ from typing import Any
 from amplifier_core.utils.truncate import SENSITIVE_KEYS
 from rich.console import Console
 
-from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
+from ..lib.bundle_loader.discovery import DEFAULT_BUNDLE, WELL_KNOWN_BUNDLES
 from ..lib.env_vars import ENV_PATTERN, expand_env_vars
 from ..lib.settings import AppSettings, NotificationFlags, get_custom_routing_dir
 from ..lib.merge_utils import merge_module_items
@@ -1649,7 +1649,7 @@ async def resolve_config_async(
     Use resolve_config() for synchronous contexts (e.g., click commands).
 
     Args:
-        bundle_name: Bundle to load (defaults to 'foundation' if not specified)
+        bundle_name: Bundle to load (defaults to 'anchors-amp-dev' if not specified)
         app_settings: Application settings
         console: Optional console for output
         session_id: Optional session ID for session-scoped tool overrides
@@ -1672,7 +1672,7 @@ async def resolve_config_async(
         )
         return config_data, prepared_bundle
     else:
-        default_bundle = "anchors"
+        default_bundle = DEFAULT_BUNDLE
         if console:
             console.print(
                 f"[dim]No bundle specified, using default: {default_bundle}[/dim]"
@@ -1701,7 +1701,7 @@ def resolve_config(
     For async contexts, use resolve_config_async() directly.
 
     Args:
-        bundle_name: Bundle to load (defaults to 'foundation' if not specified)
+        bundle_name: Bundle to load (defaults to 'anchors-amp-dev' if not specified)
         app_settings: Application settings
         console: Optional console for output
         session_id: Optional session ID for session-scoped tool overrides

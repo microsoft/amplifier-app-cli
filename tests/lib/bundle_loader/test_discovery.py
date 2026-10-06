@@ -11,11 +11,19 @@ The old exemption was "user-added bundles are NEVER filtered."
 The new rule is "filter only when the root repo IS already tracked."
 """
 
+import importlib
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from amplifier_app_cli.lib.bundle_loader.discovery import AppBundleDiscovery
+import pytest
+from click.testing import CliRunner
+
+from amplifier_app_cli.lib.bundle_loader.discovery import (
+    AppBundleDiscovery,
+    WELL_KNOWN_BUNDLES,
+)
+from amplifier_app_cli.lib.settings import AppSettings
 
 
 # ---------------------------------------------------------------------------
@@ -48,8 +56,102 @@ def _write_registry(tmp_path: Path, bundles: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def fresh_bundle_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("AMPLIFIER_HOME", str(home / ".amplifier"))
+    monkeypatch.chdir(project)
+    return home, project
+
+
+def test_fresh_discovery_has_two_visible_nested_roots_and_keeps_all_aliases(
+    fresh_bundle_home,
+):
+    discovery = AppBundleDiscovery()
+    assert discovery.list_bundles() == ["anchors", "anchors-amp-dev"]
+    for name in ("anchors", "anchors-amp-dev"):
+        assert discovery.find(name) == (
+            "git+https://github.com/microsoft/amplifier-foundation@main"
+            f"#subdirectory=bundles/{name}/bundle.md"
+        )
+    assert set(WELL_KNOWN_BUNDLES) <= set(discovery.list_bundles(show_all=True))
+    for name, info in WELL_KNOWN_BUNDLES.items():
+        assert discovery.find(name)
+        if not info["package"]:
+            assert discovery.find(name) == info["remote"]
+
+
+def test_hidden_aliases_requested_by_user_and_added_overrides_stay_visible(
+    fresh_bundle_home,
+):
+    home, _ = fresh_bundle_home
+    settings = AppSettings()
+    settings.add_bundle("amplifier-dev", "file:///custom-amplifier-dev")
+    settings.add_bundle("user-root", "file:///user-root")
+    settings.set_active_bundle("foundation")
+    before_settings = settings.paths.global_settings.read_bytes()
+    discovery = AppBundleDiscovery()
+    _write_registry(
+        home,
+        {
+            "foundation": {
+                "uri": WELL_KNOWN_BUNDLES["foundation"]["remote"],
+                "explicitly_requested": True,
+                "is_root": True,
+            },
+            "transitive-root": {
+                "uri": "file:///dependency",
+                "explicitly_requested": False,
+                "is_root": True,
+            },
+            "namespace/behavior": {"uri": "file:///behavior", "is_root": False},
+        },
+    )
+    before_registry = (home / ".amplifier" / "registry.json").read_bytes()
+    assert discovery.list_bundles() == [
+        "amplifier-dev", "anchors", "anchors-amp-dev", "foundation", "user-root"
+    ]
+    assert discovery.find("amplifier-dev") == "file:///custom-amplifier-dev"
+    assert discovery.find("user-root") == "file:///user-root"
+    assert {"transitive-root", "namespace/behavior"} <= set(
+        discovery.list_bundles(show_all=True)
+    )
+    assert settings.get_active_bundle() == "foundation"
+    assert settings.paths.global_settings.read_bytes() == before_settings
+    assert (home / ".amplifier" / "registry.json").read_bytes() == before_registry
+
+
+def test_real_bundle_list_default_and_all_views_without_fetching(fresh_bundle_home):
+    bundle_cmd = importlib.import_module("amplifier_app_cli.commands.bundle")
+    runner = CliRunner()
+    result = runner.invoke(bundle_cmd.bundle, ["list", "--format", "json"])
+    assert result.exit_code == 0, result.output
+    items = json.loads(result.output)
+    assert [item["name"] for item in items] == ["anchors", "anchors-amp-dev"]
+    for item in items:
+        assert item["source_uri"] == WELL_KNOWN_BUNDLES[item["name"]]["remote"]
+    result = runner.invoke(bundle_cmd.bundle, ["list", "--all", "--format", "json"])
+    assert result.exit_code == 0, result.output
+    assert {item["name"] for item in json.loads(result.output)} == set(
+        WELL_KNOWN_BUNDLES
+    )
+
+
 class TestListCachedRootBundlesSubdirectoryFilter:
     """User-added subdirectory bundles must not be filtered out."""
+
+    @pytest.fixture(autouse=True)
+    def isolated_registry_home(self, tmp_path, monkeypatch):
+        """Inherited AMPLIFIER_HOME must not bypass these scratch registries."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.setenv("AMPLIFIER_HOME", str(tmp_path / ".amplifier"))
+        monkeypatch.chdir(tmp_path)
 
     def test_user_added_subdirectory_bundle_is_included(self, tmp_path: Path):
         """A bundle in bundle.added whose URI has #subdirectory= must appear in the result.

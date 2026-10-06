@@ -30,7 +30,7 @@ amplifier init
 # Install shell completion (optional, one-time setup)
 amplifier --install-completion
 
-# Single command (uses anchors bundle by default)
+# Single command (uses anchors-amp-dev bundle by default)
 amplifier run "Create a Python function to calculate fibonacci numbers"
 
 # Single command via stdin (useful for scripts/pipelines)
@@ -62,9 +62,12 @@ amplifier bundle add 'git+https://github.com/org/my-host@main#subdirectory=bundl
 amplifier bundle use my-host
 ```
 
-Anchors is built in and the default root, so it does not need to be added.
+The two visible built-in roots are `anchors` and `anchors-amp-dev`; neither
+needs to be added. `anchors-amp-dev` is the default root when no bundle is selected.
 `amplifier bundle use anchors` is sufficient when you want to select it
 explicitly. When authoring a new root, use Anchors as its canonical base.
+Other built-in aliases remain available by name and with `bundle list --all`;
+saved selections and user-added bundles are unchanged.
 
 ## Commands
 
@@ -79,7 +82,7 @@ amplifier bundle show <name>                          # Show bundle details
 amplifier bundle add <behavior-url> --app             # Add behavior to every session
 amplifier bundle add <root-url> [--name alias]        # Register selectable root (name auto-derived)
 amplifier bundle remove <name>                        # Unregister a bundle
-amplifier bundle clear                                # Reset to default (anchors)
+amplifier bundle clear                                # Reset to default (anchors-amp-dev)
 
 # Provider management
 amplifier provider add <name> [--local|--project|--global]  # Add/configure a provider

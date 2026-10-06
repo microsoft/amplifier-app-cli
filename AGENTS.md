@@ -70,6 +70,16 @@ Anchors and preserve `@anchors:context/system.md` when their root has a body.
 This is documentation/help guidance only: do not change composition defaults or
 existing root selections to enforce it.
 
+## Built-in bundle policy
+
+`lib/bundle_loader/discovery.py` owns `DEFAULT_BUNDLE` (`anchors-amp-dev`).
+Only `anchors` and `anchors-amp-dev` are visible built-ins, using Foundation's
+canonical nested `bundles/anchors/bundle.md` and
+`bundles/anchors-amp-dev/bundle.md` URIs. Keep hidden aliases registered for
+namespace/internal/legacy resolution. Apply the default
+only as a fallback: never migrate saved selections or change resume precedence.
+`AppSettings.get_active_bundle()` must still return `None` when unset.
+
 ## Update reporting
 
 Keep report labels separate from update eligibility: a missing mutable cache is
