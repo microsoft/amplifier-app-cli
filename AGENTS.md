@@ -82,6 +82,14 @@ only as a fallback: never migrate saved selections or change resume precedence.
 
 ## Update reporting
 
+Keep `AMPLIFIER_SKIP_STARTUP_UPDATE_CHECK=1` scoped to the automatic startup
+checker, before any update-settings read (which can create settings and locks).
+Only the exact value `1` opts out; default frequency policy and explicit
+`amplifier update` remain unchanged. Run `tests/test_startup_checker.py` and
+`tests/test_update_reporting.py` when changing this boundary. A source checkout
+or tested wheel does not establish support in an already-installed CLI; verify
+the actual selected runtime before a launcher consumes the control.
+
 Keep report labels separate from update eligibility: a missing mutable cache is
 a download, not a newer revision, and an unchecked source is not current.
 Use the same word-status vocabulary in every `amplifier update` section,

@@ -255,6 +255,18 @@ amplifier --help                                   # Show help
 - `-y, --yes`: Skip confirmation prompts
 - `--verbose`: Show detailed multi-line output per source (default: concise one-line format)
 
+To skip the automatic startup update check for one process:
+
+```bash
+AMPLIFIER_SKIP_STARTUP_UPDATE_CHECK=1 amplifier run "your prompt"
+```
+
+Only the exact value `1` enables this opt-out. The startup checker returns before
+reading update settings, contacting update sources or writing the last-check
+timestamp. It does not modify saved settings or disable explicit
+`amplifier update` commands. Other startup activity is unchanged; this is not a
+general read-only or installation-isolation mode.
+
 ## Shell Completion
 
 Enable tab completion with one command. Amplifier automatically installs completion for standard shell setups.
