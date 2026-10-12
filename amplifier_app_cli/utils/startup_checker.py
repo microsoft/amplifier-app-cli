@@ -4,6 +4,7 @@ Philosophy: Simple, non-blocking, user-controllable.
 """
 
 import logging
+import os
 from datetime import datetime
 
 import httpx
@@ -19,11 +20,14 @@ console = Console()
 
 
 def should_check_on_startup() -> bool:
-    """Decide if we should check based on frequency settings.
+    """Honor the process-local opt-out before reading frequency settings.
 
     Returns:
         True if we should check now, False otherwise
     """
+    if os.environ.get("AMPLIFIER_SKIP_STARTUP_UPDATE_CHECK") == "1":
+        return False
+
     settings = get_update_settings()
 
     # Check if auto_prompt is enabled
