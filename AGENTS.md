@@ -85,7 +85,9 @@ only as a fallback: never migrate saved selections or change resume precedence.
 Keep `AMPLIFIER_SKIP_STARTUP_UPDATE_CHECK=1` scoped to the automatic startup
 checker, before any update-settings read (which can create settings and locks).
 Only the exact value `1` opts out; default frequency policy and explicit
-`amplifier update` remain unchanged. Run `tests/test_startup_checker.py` and
+`amplifier update` remain unchanged. Retain a regression through the real
+`_run_startup_update_check` wrapper, mocking only its settings/network/write
+boundaries. Run `tests/test_startup_checker.py` and
 `tests/test_update_reporting.py` when changing this boundary. A source checkout
 or tested wheel does not establish support in an already-installed CLI; verify
 the actual selected runtime before a launcher consumes the control.

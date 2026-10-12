@@ -36,6 +36,25 @@ async def test_opt_out_avoids_network_and_timestamp_write():
         save.assert_not_called()
 
 
+def test_opt_out_avoids_side_effects_through_startup_wrapper():
+    from amplifier_app_cli.commands.run import _run_startup_update_check
+
+    with (
+        patch.dict("os.environ", {"AMPLIFIER_SKIP_STARTUP_UPDATE_CHECK": "1"}),
+        patch.object(
+            startup_checker, "get_update_settings", side_effect=AssertionError("settings read")
+        ) as settings,
+        patch.object(startup_checker.httpx, "AsyncClient") as client,
+        patch.object(startup_checker, "check_all_sources", new_callable=AsyncMock) as check,
+        patch.object(startup_checker, "save_update_last_check") as save,
+    ):
+        _run_startup_update_check()
+        settings.assert_not_called()
+        client.assert_not_called()
+        check.assert_not_awaited()
+        save.assert_not_called()
+
+
 @pytest.mark.parametrize("value", [None, "", "0", "true", "yes", "1 ", " 1"])
 def test_only_exact_one_skips_startup(value):
     with (
@@ -112,6 +131,7 @@ async def test_default_check_still_runs_and_saves_timestamp(has_updates):
 
 @pytest.mark.asyncio
 async def test_default_failure_still_saves_timestamp():
+    """Characterize network failure handling, not timestamp-save failure handling."""
     with (
         patch.dict("os.environ", {}, clear=True),
         patch.object(startup_checker, "get_update_settings", return_value={}),
