@@ -1,4 +1,4 @@
-"""Narrow image permissions at the CLI's fresh-child boundary.
+"""Narrow image permissions at the CLI's fresh-session and child boundaries.
 
 This is host policy, not image routing or a portable tool implementation. The
 already-resolved mount plans remain authoritative for every non-policy setting.
@@ -43,8 +43,26 @@ def _policies(rows: Any, *, overlay: bool = False) -> list[dict[str, Any]]:
         # in a partial agent overlay means inherit rather than disable.
         if module == "tool-image" and (not overlay or "allow_paid" in config):
             policy["allow_paid"] = config.get("allow_paid") is True
+        if module == "tool-image" and config.get("routing_blocked"):
+            policy["routing_blocked"] = True
         policies.append(policy)
     return policies
+
+
+def image_tool_restrictions(
+    *declarations: list[Any], working_dir: str | Path | None = None
+) -> dict[str, Any]:
+    """Intersect explicit settings restrictions without changing account pins.
+
+    Fresh-session settings are partial overlays: an omitted paid flag inherits
+    the composed behavior, but any explicit nonliteral grant denies payment.
+    Call with the unmerged declarations, before normal tool merging unions
+    permission lists or replaces a denial. No input is mutated.
+    """
+    return _intersect_policies(
+        [policy for rows in declarations for policy in _policies(rows, overlay=True)],
+        working_dir=working_dir,
+    )
 
 
 def _read_mounts(coordinator: Any) -> Any:
@@ -129,6 +147,18 @@ def restrict_child_images(
                 _policies([{"module": "tool-image", "config": mounted_config}])
             )
 
+    restrictions = _intersect_policies(policies, working_dir=working_dir)
+    for index, row in enumerate(rows):
+        if _module(row) == "tool-image":
+            if isinstance(row, str):
+                row = rows[index] = {"module": row}
+            row.setdefault("config", {}).update(deepcopy(restrictions))
+    return result
+
+
+def _intersect_policies(
+    policies: list[dict[str, Any]], *, working_dir: str | Path | None
+) -> dict[str, Any]:
     root = Path(working_dir or Path.cwd()).expanduser().resolve()
 
     def paths(values: Any) -> list[Path]:
@@ -170,10 +200,6 @@ def restrict_child_images(
             )
     if any(policy.get("allow_paid") is False for policy in policies):
         restrictions["allow_paid"] = False
-
-    for index, row in enumerate(rows):
-        if _module(row) == "tool-image":
-            if isinstance(row, str):
-                row = rows[index] = {"module": row}
-            row.setdefault("config", {}).update(deepcopy(restrictions))
-    return result
+    if any(policy.get("routing_blocked") for policy in policies):
+        restrictions["routing_blocked"] = True
+    return restrictions

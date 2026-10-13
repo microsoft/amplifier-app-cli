@@ -13,6 +13,7 @@ from typing import Any
 from amplifier_core.utils.truncate import SENSITIVE_KEYS
 from rich.console import Console
 
+from ..image_policy import image_tool_restrictions
 from ..lib.bundle_loader.discovery import DEFAULT_BUNDLE, WELL_KNOWN_BUNDLES
 from ..lib.env_vars import ENV_PATTERN, expand_env_vars
 from ..lib.settings import AppSettings, NotificationFlags, get_custom_routing_dir
@@ -193,6 +194,39 @@ async def resolve_bundle_config(
         if status:
             status.stop()
 
+    tool_overrides = app_settings.get_tool_overrides(
+        session_id=session_id, project_slug=project_slug
+    )
+    image_settings = None
+    image_policy_sources = [copy.deepcopy(bundle_config.get("tools", []))]
+    if any(
+        isinstance(row, dict) and row.get("module") == "tool-image"
+        for row in [*bundle_config.get("tools", []), *tool_overrides]
+    ):
+        image_settings, settings_policies = _image_settings_policy(
+            app_settings, session_id=session_id, project_slug=project_slug
+        )
+        image_policy_sources.extend(settings_policies)
+        if not any(
+            isinstance(row, dict) and row.get("module") == "tool-image"
+            for row in bundle_config.get("tools", [])
+        ):
+            # A modules.tools declaration may introduce the tool even when
+            # its default behavior was unavailable. Give shared config a base
+            # to overlay; the explicit module still supplies its source/config.
+            bundle_config["tools"] = [
+                *bundle_config.get("tools", []), {"module": "tool-image"}
+            ]
+        # Shared config.tools fills in the default behavior before the CLI's
+        # ordinary general/modules/session overrides. Only image config is
+        # consumed here; this is not a second tool installation path.
+        for row in image_settings.get("config", {}).get("tools", []):
+            if isinstance(row, dict) and row.get("module") == "tool-image":
+                bundle_config["tools"] = _apply_config_overrides_to_section(
+                    bundle_config.get("tools", []),
+                    {"tool-image": row.get("config", {})},
+                )
+
     # ── General config overrides ──────────────────────────────────────────
     # The overrides.<id>.config section in settings.yaml provides a single
     # consistent path for overriding ANY module's config — providers, tools,
@@ -209,6 +243,13 @@ async def resolve_bundle_config(
     # receives its override and silently falls back to module defaults / env
     # vars.
     config_overrides = app_settings.get_config_overrides()
+    image_policy_sources.append(
+        [
+            {"module": module, "config": config}
+            for module, config in config_overrides.items()
+            if module in {"tool-image", "tool-filesystem"}
+        ]
+    )
     if config_overrides:
         for section_key in ("providers", "tools", "hooks"):
             section = bundle_config.get(section_key)
@@ -271,9 +312,7 @@ async def resolve_bundle_config(
 
     # Apply tool overrides from settings (e.g., allowed_write_paths for tool-filesystem)
     # Include session-scoped settings if session context provided
-    tool_overrides = app_settings.get_tool_overrides(
-        session_id=session_id, project_slug=project_slug
-    )
+    image_policy_sources.append(copy.deepcopy(tool_overrides))
     if tool_overrides:
         if bundle_config.get("tools"):
             # Bundle has tools - merge overrides with existing
@@ -390,6 +429,20 @@ async def resolve_bundle_config(
     # IMPORTANT: Must expand BEFORE syncing to mount_plan, so ${ANTHROPIC_API_KEY} etc. become actual values
     bundle_config = expand_env_vars(bundle_config)
 
+    if image_settings is not None:
+        # Normal tool merges union allow lists and replace scalar flags. Images
+        # must instead retain every denial, including pre-merge root policy and
+        # raw session restrictions. Expand paths before binding them to cwd.
+        restrictions = image_tool_restrictions(
+            *expand_env_vars({"declarations": image_policy_sources})["declarations"],
+            bundle_config.get("tools", []),
+            working_dir=Path.cwd(),
+        )
+        for row in bundle_config.get("tools", []):
+            if isinstance(row, dict) and row.get("module") == "tool-image":
+                row.setdefault("config", {}).update(copy.deepcopy(restrictions))
+        _retain_legacy_image_intent(bundle_config, image_settings)
+
     # CRITICAL: Sync providers, tools, and hooks to prepared.mount_plan so create_session() uses them
     # prepared.mount_plan is what create_session() uses, not bundle_config
     # This must happen AFTER env var expansion so API keys are actual values, not "${VAR}" literals
@@ -424,6 +477,138 @@ async def resolve_bundle_config(
     # The behavior bundles handle root-session-only logic internally via parent_id check.
 
     return bundle_config, prepared
+
+
+def _image_settings_policy(
+    app_settings: AppSettings,
+    *,
+    session_id: str | None,
+    project_slug: str | None,
+) -> tuple[dict[str, Any], list[list[Any]]]:
+    """Read shared settings without rewriting them or weakening old denials."""
+    from amplifier_foundation.settings import read_yaml
+
+    from ..paths import get_amplifier_home
+
+    paths = copy.copy(app_settings.paths)
+    effective = app_settings
+    if session_id and project_slug:
+        paths.session_settings = (
+            get_amplifier_home()
+            / "projects"
+            / project_slug
+            / "sessions"
+            / session_id
+            / "settings.yaml"
+        )
+        effective = AppSettings(paths=paths)
+    settings = effective.get_merged_settings()
+    # Scope precedence still chooses ordinary pins. Restrictions also retain
+    # their original declarations: a later allow must not erase an earlier
+    # denial or turn an intersecting path limit into a union.
+    layers = [
+        settings,
+        *(
+            read_yaml(path)
+            for path in (
+                paths.global_settings,
+                paths.project_settings,
+                paths.local_settings,
+                paths.session_settings,
+            )
+            if path is not None
+        ),
+    ]
+    declarations: list[list[Any]] = []
+    for layer in layers:
+        declarations.extend(
+            layer.get(section, {}).get("tools", [])
+            for section in ("config", "modules")
+        )
+        declarations.append(
+            [
+                {"module": module, "config": row.get("config", {})}
+                for module, row in layer.get("overrides", {}).items()
+                if module in {"tool-image", "tool-filesystem"}
+                and isinstance(row, dict)
+            ]
+        )
+        legacy = layer.get("image_generation")
+        if isinstance(legacy, dict) and legacy.get("mode") == "off":
+            declarations.append(
+                [{"module": "tool-image", "config": {"allow_paid": False}}]
+            )
+    return settings, declarations
+
+
+def _retain_legacy_image_intent(
+    plan: dict[str, Any], settings: dict[str, Any]
+) -> None:
+    """Keep a saved backend on its account; never select a replacement account.
+
+    Only the new mount plan changes. Registered legacy backends own their
+    existing model/transport/credential binding; no provider is added or edited.
+    Unresolved/deselected intent remains visible to capabilities and diagnostics.
+    """
+    source = settings.get("image_generation", {})
+    mode = source.get("mode") if isinstance(source, dict) else None
+    providers = [
+        (row, True) for row in plan.get("providers", []) if isinstance(row, dict)
+    ]
+    mounted = {
+        row.get("instance_id") or row.get("id") or row.get("module")
+        for row, _present in providers
+    }
+    # Ordinary provider merging may omit a saved instance absent from a root
+    # with its own provider list. That is unavailability, not consent to route
+    # to a different account.
+    providers.extend(
+        (row, False)
+        for row in settings.get("config", {}).get("providers", [])
+        if isinstance(row, dict)
+        and (row.get("instance_id") or row.get("id") or row.get("module"))
+        not in mounted
+    )
+    legacy = []
+    for row, present in providers:
+        image = row.get("config", {}).get("image_generation")
+        if isinstance(image, dict) and "enabled" in image:
+            legacy.append((row, image, present))
+    selected = [
+        (row, image, present)
+        for row, image, present in legacy
+        if image.get("enabled") is True
+    ]
+    for tool in plan.get("tools", []):
+        if not isinstance(tool, dict) or tool.get("module") != "tool-image":
+            continue
+        config = tool.setdefault("config", {})
+        if mode == "off":
+            config["allow_paid"] = False
+            continue
+        if config.get("routing_blocked") or config.get("backend"):
+            continue
+        reason = None
+        if mode not in (None, "automatic", "selected"):
+            reason = "unsupported legacy image mode"
+        elif len(selected) == 1:
+            row, image, present = selected[0]
+            backend = image.get(
+                "id", str(row.get("module", "")).removeprefix("provider-")
+            )
+            if not present or row.get("enabled") is False:
+                reason = "the saved image provider is unavailable"
+            elif not isinstance(backend, str) or not backend or len(backend) > 100:
+                reason = "the saved image backend identifier is invalid"
+            else:
+                config["backend"] = backend
+        elif legacy or mode == "selected":
+            reason = "ambiguous or deselected legacy image providers"
+        if reason:
+            config["routing_blocked"] = True
+            logger.warning(
+                "Image routing blocked: %s; review the saved configuration.", reason
+            )
 
 
 def _sync_overrides_to_bundle(

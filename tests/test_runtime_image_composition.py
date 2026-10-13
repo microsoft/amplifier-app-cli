@@ -197,7 +197,7 @@ async def test_unavailable_default_is_reported_and_does_not_replace_chat(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("section", ["overrides", "modules"])
+@pytest.mark.parametrize("section", ["overrides", "modules", "config"])
 async def test_ordinary_tool_settings_preserve_backend_and_paid_denial(
     composition, tmp_path, section
 ):
@@ -205,7 +205,7 @@ async def test_ordinary_tool_settings_preserve_backend_and_paid_denial(
     body = (
         {"overrides": {"tool-image": {"config": config}}}
         if section == "overrides"
-        else {"modules": {"tools": [{"module": "tool-image", "config": config}]}}
+        else {section: {"tools": [{"module": "tool-image", "config": config}]}}
     )
     plan, prepared = await runtime_config.resolve_bundle_config(
         "chosen-root", _settings(tmp_path, body)
@@ -214,6 +214,419 @@ async def test_ordinary_tool_settings_preserve_backend_and_paid_denial(
     assert prepared.mount_plan["tools"] == plan["tools"]
     # Foundation children inherit the same effective tool settings.
     assert prepared.bundle.tools == plan["tools"]
+
+
+@pytest.mark.asyncio
+async def test_module_introduced_image_still_inherits_shared_pins_and_denial(
+    composition, tmp_path
+):
+    composition.declarations[IMAGE_BEHAVIOR] = Bundle(name="empty-image-fixture")
+    shared = {
+        "backend": "saved-backend",
+        "provider_preferences": [{"provider": "saved-account", "model": "saved-model"}],
+        "allow_paid": False,
+    }
+    settings = _settings(
+        tmp_path,
+        {
+            "config": {"tools": [{"module": "tool-image", "config": shared}]},
+            "modules": {"tools": [_image_tool(allow_paid=True)]},
+        },
+    )
+    plan, prepared = await runtime_config.resolve_bundle_config("chosen-root", settings)
+    assert plan["tools"] == [_image_tool(**shared)]
+    assert prepared.bundle.tools == plan["tools"]
+    assert composition.root.tools == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["global", "project", "local"])
+@pytest.mark.parametrize("session_override", [False, True])
+async def test_shared_legacy_off_survives_every_later_paid_grant(
+    composition, tmp_path, scope, session_override
+):
+    settings = _settings(tmp_path)
+    off_path = getattr(settings.paths, f"{scope}_settings")
+    off_path.write_text(
+        yaml.safe_dump({"image_generation": {"mode": "off"}}), encoding="utf-8"
+    )
+    session_path = (
+        tmp_path / "amplifier-home" / "projects" / "fixture-project"
+        / "sessions" / "fixture-session" / "settings.yaml"
+    )
+    session_path.parent.mkdir(parents=True)
+    session_path.write_text(
+        yaml.safe_dump(
+            {
+                "image_generation": {"mode": "automatic"},
+                "config": {"tools": [_image_tool(allow_paid=True)]},
+                "overrides": {"tool-image": {"config": {"allow_paid": True}}},
+                "modules": {"tools": [_image_tool(allow_paid=True)]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = (off_path.read_bytes(), session_path.read_bytes())
+    kwargs = (
+        {"session_id": "fixture-session", "project_slug": "fixture-project"}
+        if session_override
+        else {}
+    )
+    plan, prepared = await runtime_config.resolve_bundle_config(
+        "chosen-root", settings, **kwargs
+    )
+    assert plan["tools"][0]["config"]["allow_paid"] is False
+    assert prepared.mount_plan["tools"] == plan["tools"]
+    assert prepared.bundle.tools == plan["tools"]
+    assert (off_path.read_bytes(), session_path.read_bytes()) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("grant", [False, None, "true", 1])
+async def test_shared_tool_denial_cannot_be_overridden_by_modules(
+    composition, tmp_path, grant
+):
+    settings = _settings(
+        tmp_path,
+        {
+            "config": {"tools": [_image_tool(allow_paid=grant)]},
+            "modules": {"tools": [_image_tool(allow_paid=True)]},
+        },
+    )
+    before = settings.paths.global_settings.read_bytes()
+    plan, prepared = await runtime_config.resolve_bundle_config("chosen-root", settings)
+    assert plan["tools"][0]["config"]["allow_paid"] is False
+    assert prepared.bundle.tools == plan["tools"]
+    assert settings.paths.global_settings.read_bytes() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("section", ["overrides", "modules", "config"])
+async def test_root_paid_denial_survives_settings_allow(
+    composition, tmp_path, section
+):
+    composition.root.tools = [_image_tool(allow_paid=False, backend="root-pin")]
+    original = deepcopy(composition.root.tools)
+    body = (
+        {"overrides": {"tool-image": {"config": {"allow_paid": True}}}}
+        if section == "overrides"
+        else {section: {"tools": [_image_tool(allow_paid=True)]}}
+    )
+    plan, prepared = await runtime_config.resolve_bundle_config(
+        "chosen-root", _settings(tmp_path, body)
+    )
+    assert plan["tools"][0]["config"]["allow_paid"] is False
+    assert plan["tools"][0]["config"]["backend"] == "root-pin"
+    assert prepared.bundle.tools == plan["tools"]
+    assert composition.root.tools == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_backend", [False, True])
+async def test_partial_shared_pins_inherit_default_grant_without_mutating_settings(
+    composition, tmp_path, monkeypatch, explicit_backend
+):
+    pins = {
+        "model_role": "image-quality",
+        "provider_preferences": [{"provider": "account-blue", "model": "pinned-model"}],
+    }
+    if explicit_backend:
+        pins["backend"] = "account-blue-image"
+    body = {"config": {"tools": [{"module": "tool-image", "config": pins}]}}
+    settings = _settings(tmp_path, body)
+    # Also detect in-memory aliasing, not only rewritten settings files.
+    monkeypatch.setattr(settings, "get_merged_settings", lambda: body)
+    before = deepcopy(body)
+    before_bytes = settings.paths.global_settings.read_bytes()
+    image_before = deepcopy(composition.declarations[IMAGE_BEHAVIOR].tools)
+    plan, prepared = await runtime_config.resolve_bundle_config("chosen-root", settings)
+    assert plan["tools"][0]["config"] == {"allow_paid": True, **pins}
+    assert prepared.bundle.tools == plan["tools"]
+    plan["tools"][0]["config"]["provider_preferences"][0]["model"] = "changed-result"
+    assert body == before
+    assert settings.paths.global_settings.read_bytes() == before_bytes
+    assert composition.declarations[IMAGE_BEHAVIOR].tools == image_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_override", [False, True])
+async def test_cli_pins_override_shared_pins_but_not_shared_denials(
+    composition, tmp_path, session_override
+):
+    def pinned(label, allow_paid):
+        return _image_tool(
+            backend=f"{label}-backend",
+            model_role=f"{label}-role",
+            provider_preferences=[
+                {"provider": f"{label}-account", "model": f"{label}-model"}
+            ],
+            allow_paid=allow_paid,
+        )
+
+    settings = _settings(
+        tmp_path,
+        {
+            "config": {"tools": [pinned("shared", False)]},
+            "overrides": {"tool-image": {"config": pinned("general", True)["config"]}},
+            "modules": {"tools": [pinned("module", True)]},
+        },
+    )
+    kwargs = {}
+    if session_override:
+        session_path = (
+            tmp_path / "amplifier-home" / "projects" / "fixture-project"
+            / "sessions" / "fixture-session" / "settings.yaml"
+        )
+        session_path.parent.mkdir(parents=True)
+        session_path.write_text(
+            yaml.safe_dump({"modules": {"tools": [pinned("session", True)]}}),
+            encoding="utf-8",
+        )
+        kwargs = {"session_id": "fixture-session", "project_slug": "fixture-project"}
+    plan, prepared = await runtime_config.resolve_bundle_config(
+        "chosen-root", settings, **kwargs
+    )
+    expected = pinned("session" if session_override else "module", False)["config"]
+    assert plan["tools"][0]["config"] == expected
+    assert prepared.mount_plan["tools"] == plan["tools"]
+    assert prepared.bundle.tools == plan["tools"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["read", "write"])
+async def test_fresh_image_paths_intersect_and_denials_union_before_normal_merges(
+    composition, tmp_path, kind
+):
+    allowed, denied = f"allowed_{kind}_paths", f"denied_{kind}_paths"
+
+    def limits(path, label, *, module="tool-image"):
+        return {
+            "module": module,
+            "config": {allowed: [path], denied: [f"assets/{label}"]},
+        }
+
+    composition.root.tools = [
+        _image_tool(**{allowed: ["assets"], denied: ["assets/root"]}),
+        limits("assets", "root-fs", module="tool-filesystem"),
+    ]
+    original = deepcopy(composition.root.tools)
+    settings = _settings(
+        tmp_path,
+        {
+            "config": {
+                "tools": [
+                    limits("assets/shared", "shared"),
+                    limits("assets/shared", "shared-fs", module="tool-filesystem"),
+                ]
+            },
+            "overrides": {
+                "tool-image": {
+                    "config": limits("assets/shared/general", "general")["config"]
+                }
+            },
+            "modules": {"tools": [limits("assets/shared/general/module", "module")]},
+        },
+    )
+    session_path = (
+        tmp_path / "amplifier-home" / "projects" / "fixture-project"
+        / "sessions" / "fixture-session" / "settings.yaml"
+    )
+    session_path.parent.mkdir(parents=True)
+    session_path.write_text(
+        yaml.safe_dump(
+            {
+                "modules": {
+                    "tools": [limits("assets/shared/general/module/session", "session")]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = (settings.paths.global_settings.read_bytes(), session_path.read_bytes())
+    plan, prepared = await runtime_config.resolve_bundle_config(
+        "chosen-root", settings,
+        session_id="fixture-session", project_slug="fixture-project",
+    )
+    policy = next(
+        row["config"] for row in plan["tools"] if row["module"] == "tool-image"
+    )
+    assert policy[allowed] == [str(tmp_path / "assets/shared/general/module/session")]
+    assert set(policy[denied]) == {
+        str(tmp_path / f"assets/{label}")
+        for label in (
+            "root", "root-fs", "shared", "shared-fs", "general", "module", "session"
+        )
+    }
+    assert policy["allow_paid"] is True
+    assert prepared.bundle.tools == plan["tools"]
+    assert composition.root.tools == original
+    assert (
+        settings.paths.global_settings.read_bytes(), session_path.read_bytes()
+    ) == before
+    # This image-only policy must not rewrite the ordinary filesystem settings.
+    filesystem = next(
+        row["config"] for row in plan["tools"] if row["module"] == "tool-filesystem"
+    )
+    assert filesystem[denied] == ["assets/root-fs"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shared_paths", [[], ["artist"]])
+async def test_empty_or_disjoint_image_allow_lists_never_become_a_union(
+    composition, tmp_path, shared_paths
+):
+    composition.root.tools = [_image_tool(allowed_read_paths=["art"])]
+    settings = _settings(
+        tmp_path,
+        {
+            "config": {"tools": [_image_tool(allowed_read_paths=shared_paths)]},
+            "modules": {"tools": [_image_tool(allowed_read_paths=["."])]},
+        },
+    )
+    plan, _prepared = await runtime_config.resolve_bundle_config("chosen-root", settings)
+    assert plan["tools"][0]["config"]["allowed_read_paths"] == []
+
+
+@pytest.mark.asyncio
+async def test_session_allow_cannot_erase_module_denial_or_routing_block(
+    composition, tmp_path
+):
+    settings = _settings(
+        tmp_path,
+        {"modules": {"tools": [_image_tool(allow_paid=False, routing_blocked=True)]}},
+    )
+    session_path = (
+        tmp_path / "amplifier-home" / "projects" / "fixture-project"
+        / "sessions" / "fixture-session" / "settings.yaml"
+    )
+    session_path.parent.mkdir(parents=True)
+    session_path.write_text(
+        yaml.safe_dump(
+            {
+                "modules": {
+                    "tools": [_image_tool(allow_paid=True, routing_blocked=False)]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    plan, _prepared = await runtime_config.resolve_bundle_config(
+        "chosen-root", settings,
+        session_id="fixture-session", project_slug="fixture-project",
+    )
+    assert plan["tools"][0]["config"]["allow_paid"] is False
+    assert plan["tools"][0]["config"]["routing_blocked"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("module", ["openai", "gemini"])
+@pytest.mark.parametrize("backend_id", [None, "saved-image-account"])
+@pytest.mark.parametrize("mode", [None, "automatic", "selected"])
+async def test_one_saved_image_selection_keeps_its_backend_account_and_model(
+    composition, tmp_path, module, backend_id, mode
+):
+    composition.root.providers = []
+    image = {
+        "enabled": True,
+        "model": "saved-image-model",
+        "transport": "saved-transport",
+    }
+    if backend_id is not None:
+        image["id"] = backend_id
+    provider = {
+        "module": f"provider-{module}",
+        "id": "account-blue",
+        "config": {
+            "api_key": "fixture-only-not-a-real-key",
+            "base_url": "https://account-blue.invalid",
+            "default_model": "chat-model",
+            "image_generation": image,
+        },
+    }
+    body = {"config": {"providers": [provider]}}
+    if mode is not None:
+        body["image_generation"] = {"mode": mode}
+    original = deepcopy(body)
+    settings = _settings(tmp_path, body)
+    before = settings.paths.global_settings.read_bytes()
+    plan, prepared = await runtime_config.resolve_bundle_config("chosen-root", settings)
+    assert plan["tools"][0]["config"]["backend"] == (backend_id or module)
+    assert not plan["tools"][0]["config"].get("routing_blocked")
+    assert plan["providers"] == [
+        {
+            **provider,
+            "instance_id": "account-blue",
+            "config": {**provider["config"], "raw": True},
+        }
+    ]
+    assert prepared.bundle.tools == plan["tools"]
+    assert body == original
+    assert settings.paths.global_settings.read_bytes() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    [
+        "multiple", "deselected", "invalid-grant", "unavailable",
+        "unmounted", "missing", "invalid-id", "unknown-mode",
+    ],
+)
+async def test_ambiguous_legacy_intent_blocks_visibly_without_a_new_account(
+    composition, tmp_path, caplog, case
+):
+    provider = {
+        "module": "provider-openai",
+        "id": "saved-account",
+        "config": {
+            "api_key": "fixture-only-not-a-real-key",
+            "image_generation": {
+                "enabled": True, "id": "saved-backend", "model": "pinned"
+            },
+        },
+    }
+    providers = [provider]
+    mode = "selected"
+    if case == "multiple":
+        mode = "automatic"
+        providers.append(
+            {
+                "module": "provider-gemini",
+                "config": {"image_generation": {"enabled": True, "id": "other"}},
+            }
+        )
+    elif case in {"deselected", "invalid-grant"}:
+        provider["config"]["image_generation"]["enabled"] = (
+            False if case == "deselected" else "true"
+        )
+        mode = "automatic"
+    elif case == "unavailable":
+        provider["enabled"] = False
+    elif case == "missing":
+        providers = []
+    elif case == "invalid-id":
+        provider["config"]["image_generation"]["id"] = ""
+    elif case == "unknown-mode":
+        mode = "unrecognized"
+    if case != "unmounted":
+        composition.root.providers = []
+    settings = _settings(
+        tmp_path,
+        {"image_generation": {"mode": mode}, "config": {"providers": providers}},
+    )
+    before = settings.paths.global_settings.read_bytes()
+    plan, prepared = await runtime_config.resolve_bundle_config("chosen-root", settings)
+    config = plan["tools"][0]["config"]
+    assert config["routing_blocked"] is True
+    assert "backend" not in config
+    assert "Image routing blocked:" in caplog.text
+    assert "fixture-only-not-a-real-key" not in caplog.text
+    assert prepared.bundle.tools == plan["tools"]
+    assert settings.paths.global_settings.read_bytes() == before
+    if case == "unmounted":
+        assert plan["providers"] == composition.root.providers
+    else:
+        assert len(plan.get("providers", [])) == len(providers)
 
 
 @pytest.mark.asyncio
