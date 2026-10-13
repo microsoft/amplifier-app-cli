@@ -2,6 +2,10 @@
 
 Command-line interface for the Amplifier AI-powered modular development platform.
 
+The [draft image-capability host contract](contracts/image-capability-host.v1.md)
+records proposed shared-image composition and host obligations. It does not
+change current configuration, runtime behavior or supported image backends.
+
 > **Note**: This is a **reference implementation** of an Amplifier CLI. It works with [amplifier-core](https://github.com/microsoft/amplifier-core) and demonstrates how to build a CLI around the kernel. You can use this as-is, fork it, or build your own CLI using the core.
 
 ## Installation
