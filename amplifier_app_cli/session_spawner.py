@@ -19,6 +19,7 @@ from amplifier_foundation import bridge_child_cost
 from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
 
 from .agent_config import merge_configs
+from .image_policy import restrict_child_images
 
 logger = logging.getLogger(__name__)
 
@@ -1142,6 +1143,21 @@ async def spawn_sub_session(
             session_metadata,
         )
 
+    # Permissions are boundaries, not overlay preferences. Bind relative image
+    # paths to the same working directory the child will receive, and apply the
+    # policy before BOTH subprocess dispatch and in-process Core construction.
+    _child_working_dir = parent_session.coordinator.get_capability(
+        "session.working_dir"
+    ) or str(Path.cwd().resolve())
+    merged_config = restrict_child_images(
+        parent_session.config,
+        merged_config,
+        overlay=agent_config,
+        working_dir=_child_working_dir,
+        parent_coordinator=parent_coord,
+        tool_inheritance=tool_inheritance,
+    )
+
     # Generate child session ID using W3C Trace Context span_id pattern
     # Use 16 hex chars (8 bytes) for fixed-length, filesystem-safe IDs
     if not sub_session_id:
@@ -1163,10 +1179,7 @@ async def spawn_sub_session(
                 "system prompt; preserving legacy subprocess dispatch.",
                 sub_session_id,
             )
-        project_path = str(
-            parent_session.coordinator.get_capability("session.working_dir")
-            or Path.cwd()
-        )
+        project_path = str(_child_working_dir)
         child_config = {k: v for k, v in merged_config.items() if k != "spawn_mode"}
 
         # Extract bundle context to propagate to subprocess child.
@@ -1309,9 +1322,6 @@ async def spawn_sub_session(
     # module sees it as absent). This affects ANY module, not just hooks.
     # Fall back to cwd so the value is never empty even when the parent
     # session was created without an explicit working_dir capability.
-    _child_working_dir = parent_session.coordinator.get_capability(
-        "session.working_dir"
-    ) or str(Path.cwd().resolve())
     child_session.coordinator.register_capability(
         "session.working_dir", _child_working_dir
     )

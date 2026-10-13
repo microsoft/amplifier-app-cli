@@ -87,6 +87,15 @@ async def resolve_bundle_config(
         # These are app-level policies: compose behavior bundles before prepare()
         # so modules get properly downloaded and installed via normal bundle machinery
         compose_behaviors: list[str] = []
+        app_bundles = app_settings.get_app_bundles()
+
+        # Shared image capability is a default, not a replacement host. Keep
+        # an explicit root's tool configuration (including allow_paid: false)
+        # above it, and leave explicitly added copies at their app-bundle
+        # position instead of composing the same behavior twice.
+        compose_defaults = [
+            uri for uri in _build_imagegen_behaviors() if uri not in app_bundles
+        ]
 
         # Modes system (runtime behavior overlays like /mode plan, /mode review)
         # Always available - users choose to use /mode commands or not
@@ -131,7 +140,6 @@ async def resolve_bundle_config(
 
         # Add app bundles (user-configured bundles that are always composed)
         # App bundles are explicit user configuration, composed AFTER notification behaviors
-        app_bundles = app_settings.get_app_bundles()
         if app_bundles:
             compose_behaviors = compose_behaviors + app_bundles
 
@@ -169,6 +177,7 @@ async def resolve_bundle_config(
             bundle_name,
             discovery,
             compose_behaviors=compose_behaviors if compose_behaviors else None,
+            compose_defaults=compose_defaults or None,
             source_overrides=combined_sources if combined_sources else None,
             bundle_source_overrides=bundle_sources if bundle_sources else None,
             progress_callback=_on_progress if status else None,
@@ -1367,6 +1376,19 @@ def _format_progress(action: str, detail: str) -> str:
         "installing": f"Installing {detail}",
     }
     return labels.get(action, f"{action}: {detail}")
+
+
+def _build_imagegen_behaviors() -> list[str]:
+    """Return the portable image behavior, never its selectable root.
+
+    Provider selection, paid-call policy and image lifecycle stay in the
+    external capability. Ordinary tool overrides and SessionConfigurator's
+    saved disable controls remain authoritative; no image-only settings UI
+    or snapshot/resume injection belongs here.
+    """
+    return [
+        "git+https://github.com/microsoft/amplifier-bundle-imagegen@main#subdirectory=behaviors/imagegen.yaml",
+    ]
 
 
 def _build_modes_behaviors() -> list[str]:
