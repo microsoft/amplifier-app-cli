@@ -23,7 +23,11 @@ from amplifier_app_cli.commands import update as updater
 from amplifier_app_cli.lib.bundle_loader import discovery as discovery_module
 from amplifier_app_cli.lib.settings import AppSettings
 from amplifier_app_cli.paths import create_bundle_registry
-from amplifier_app_cli.utils.include_graph import collect_declared_module_sources
+from amplifier_app_cli.utils.file_uri import file_uri_path_value
+from amplifier_app_cli.utils.include_graph import (
+    _local_path_for,
+    collect_declared_module_sources,
+)
 from amplifier_app_cli.utils.source_status import CachedGitStatus, UpdateReport
 from amplifier_app_cli.utils.update_executor import ExecutionResult
 
@@ -317,8 +321,11 @@ def test_module_override_precedence_and_local_source_never_refresh_original(
     assert TOOL not in scenario.checked and HOOK not in scenario.checked
 
 
-def test_bundle_include_overrides_use_runtime_resolver_and_aliases(scenario, tmp_path):
-    local = tmp_path / "override.yaml"
+@pytest.mark.parametrize("filename", ["override.yaml", "override space %20.yaml"])
+def test_bundle_include_overrides_use_runtime_resolver_and_aliases(
+    scenario, tmp_path, filename
+):
+    local = tmp_path / filename
     local.write_text(
         yaml.safe_dump(
             {
@@ -655,3 +662,57 @@ def test_unknown_missing_module_is_not_current_or_an_update_action(
     assert "could not be checked" in output
     assert "All sources up to date" not in output
     scenario.apply.assert_not_called()
+
+
+def test_cached_bundle_include_file_uri_round_trip_decodes_once(scenario, tmp_path):
+    local = tmp_path / "manifest space %20.yaml"
+    extra = MODULES + "#subdirectory=extra"
+    local.write_text(
+        yaml.safe_dump(
+            {
+                "bundle": {"name": "local-manifest"},
+                "tools": [{"module": "tool-extra", "source": extra}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    uri = local.as_uri()
+    assert _local_path_for(uri, scenario.cache) == local
+    scenario.write_bundle(CHILD, {"includes": [{"bundle": uri}]})
+
+    found, failures = asyncio.run(
+        collect_declared_module_sources(
+            {"root": ROOT},
+            registry=scenario.registry,
+            cache_dir=scenario.cache,
+        )
+    )
+    assert not failures
+    assert set(found) == {extra}
+    assert found[extra].declared_by == "local-manifest"
+    scenario.forbidden.assert_not_called()
+
+
+def test_ordinary_manifest_path_preserves_literal_percent_escape(tmp_path):
+    local = tmp_path / "manifest space %20.yaml"
+    local.write_text("bundle: {name: literal-path}\n", encoding="utf-8")
+
+    assert _local_path_for(str(local), tmp_path / "cache") == local
+
+
+@pytest.mark.parametrize(
+    ("uri", "expected"),
+    [
+        (
+            "file:///C:/space%20name/manifest.yaml",
+            r"C:\space name\manifest.yaml",
+        ),
+        (
+            "file://localhost/C:/space%20name/manifest.yaml",
+            r"C:\space name\manifest.yaml",
+        ),
+        ("file://server/share/space%20name", r"\\server\share\space name"),
+    ],
+)
+def test_shared_file_uri_conversion_uses_explicit_windows_platform(uri, expected):
+    assert file_uri_path_value(uri, windows=True) == expected

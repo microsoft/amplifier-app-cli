@@ -39,12 +39,15 @@ exact side effect ``_check_all_bundle_status`` was written to avoid.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Mapping
+
+from .file_uri import file_uri_path_value
 
 if TYPE_CHECKING:
     from amplifier_foundation import Bundle, BundleRegistry
@@ -145,7 +148,13 @@ def _local_path_for(uri: str, cache_dir: Path) -> Path | None:
         return active if active.exists() else None
 
     if parsed.is_file:
-        path = Path(parsed.path)
+        if uri.lower().startswith("file:"):
+            native = file_uri_path_value(uri, windows=os.name == "nt")
+            if native is None:
+                return None
+            path = Path(native)
+        else:
+            path = Path(parsed.path)
         if parsed.subpath:
             path = path / parsed.subpath
         return path if path.exists() else None

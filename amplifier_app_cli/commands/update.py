@@ -5,7 +5,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from dataclasses import replace
 import hashlib
-import nturl2path
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -31,6 +30,7 @@ from ..paths import create_config_manager
 from ..utils.atomic_write import atomic_write_json
 from ..utils.display import create_sha_text
 from ..utils.error_format import escape_markup
+from ..utils.file_uri import file_uri_path_value as _file_uri_path_value
 from ..utils.settings_manager import save_update_last_check
 from ..utils.source_status import check_all_sources
 from ..utils.update_executor import execute_updates
@@ -147,50 +147,6 @@ def _is_valid_app_source(uri: str) -> bool:
         return bool(parsed.hostname)
     except ValueError:
         return False
-
-
-def _file_uri_path_value(uri: str, *, windows: bool) -> str | None:
-    """Return a local filename from a file URI for the named platform.
-
-    ``Path.as_uri()`` emits ``file:///C:/...`` on Windows, while the legacy
-    CLI interpolation emits ``file://C:\\...``.  Both forms name a local drive
-    there.  A named host is a UNC path only on Windows; on POSIX it is remote
-    and deliberately not reinterpreted as a local path.
-    """
-
-    parsed = _safe_urlsplit(uri)
-    if parsed is None or parsed.scheme.lower() != "file":
-        return None
-
-    netloc = parsed.netloc
-    if not netloc or netloc.lower() == "localhost":
-        encoded_path = parsed.path
-    elif windows and len(netloc) >= 2 and netloc[1] == ":" and netloc[0].isalpha():
-        # Legacy ``file://C:\path`` serialization.  ``nturl2path`` accepts
-        # both backslash and slash separators after the drive.
-        encoded_path = netloc + parsed.path
-    elif windows and "@" not in netloc and ":" not in netloc:
-        # Standard UNC syntax: file://server/share/path -> \\server\share\path.
-        try:
-            hostname = parsed.hostname
-        except ValueError:
-            return None
-        if not hostname or hostname.lower() != netloc.lower():
-            return None
-        if not parsed.path.strip("/"):
-            return None
-        encoded_path = f"//{hostname}{parsed.path}"
-    else:
-        return None
-
-    # urllib.request.url2pathname follows the host OS. Use percent-decoding
-    # explicitly for POSIX so the requested platform, not the host, wins.
-    converter = nturl2path.url2pathname if windows else unquote
-    try:
-        path_value = converter(encoded_path)
-    except (OSError, ValueError):
-        return None
-    return path_value if path_value and "\x00" not in path_value else None
 
 
 def _file_uri_path(uri: str) -> Path | None:
