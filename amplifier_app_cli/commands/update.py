@@ -3,8 +3,8 @@
 import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
+from dataclasses import replace
 import hashlib
-import nturl2path
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -30,6 +30,7 @@ from ..paths import create_config_manager
 from ..utils.atomic_write import atomic_write_json
 from ..utils.display import create_sha_text
 from ..utils.error_format import escape_markup
+from ..utils.file_uri import file_uri_path_value as _file_uri_path_value
 from ..utils.settings_manager import save_update_last_check
 from ..utils.source_status import check_all_sources
 from ..utils.update_executor import execute_updates
@@ -61,6 +62,21 @@ class TransitiveBundleStatus(_BundleStatus):
 
     is_pinned: bool = False
     """Ref is a commit SHA or version tag: reported, never refreshed."""
+
+
+@dataclass
+class DeclaredModuleStatus(TransitiveBundleStatus):
+    """An exact module source, not a bundle URI to load or compose."""
+
+    module_id: str = ""
+    overridden_sources: tuple[str, ...] = ()
+
+    @property
+    def has_updates(self) -> bool:
+        return any(
+            source.has_update is True and not source.is_pinned and not source.error
+            for source in self.sources
+        )
 
 
 SourceReportState = Literal[
@@ -133,50 +149,6 @@ def _is_valid_app_source(uri: str) -> bool:
         return False
 
 
-def _file_uri_path_value(uri: str, *, windows: bool) -> str | None:
-    """Return a local filename from a file URI for the named platform.
-
-    ``Path.as_uri()`` emits ``file:///C:/...`` on Windows, while the legacy
-    CLI interpolation emits ``file://C:\\...``.  Both forms name a local drive
-    there.  A named host is a UNC path only on Windows; on POSIX it is remote
-    and deliberately not reinterpreted as a local path.
-    """
-
-    parsed = _safe_urlsplit(uri)
-    if parsed is None or parsed.scheme.lower() != "file":
-        return None
-
-    netloc = parsed.netloc
-    if not netloc or netloc.lower() == "localhost":
-        encoded_path = parsed.path
-    elif windows and len(netloc) >= 2 and netloc[1] == ":" and netloc[0].isalpha():
-        # Legacy ``file://C:\path`` serialization.  ``nturl2path`` accepts
-        # both backslash and slash separators after the drive.
-        encoded_path = netloc + parsed.path
-    elif windows and "@" not in netloc and ":" not in netloc:
-        # Standard UNC syntax: file://server/share/path -> \\server\share\path.
-        try:
-            hostname = parsed.hostname
-        except ValueError:
-            return None
-        if not hostname or hostname.lower() != netloc.lower():
-            return None
-        if not parsed.path.strip("/"):
-            return None
-        encoded_path = f"//{hostname}{parsed.path}"
-    else:
-        return None
-
-    # urllib.request.url2pathname follows the host OS. Use percent-decoding
-    # explicitly for POSIX so the requested platform, not the host, wins.
-    converter = nturl2path.url2pathname if windows else unquote
-    try:
-        path_value = converter(encoded_path)
-    except (OSError, ValueError):
-        return None
-    return path_value if path_value and "\x00" not in path_value else None
-
-
 def _file_uri_path(uri: str) -> Path | None:
     """Return the local path represented by a file URI, without its fragment."""
 
@@ -219,6 +191,8 @@ def _check_failure_reason(error: object) -> str:
     message = str(error).lower()
     if message == "invalid source":
         return message
+    if message == "incomplete cached module discovery":
+        return "incomplete module discovery"
     if isinstance(error, TimeoutError) or "timeout" in message or "timed out" in message:
         return "timeout"
     if "rate limit" in message or "too many requests" in message or " 429" in message:
@@ -465,23 +439,29 @@ def _bundle_action_lines(
 ) -> list[str]:
     """Group selected bundle targets by their existing, presentation-only plan."""
 
-    counts: dict[SourceReportState, int] = {}
-    mixed: dict[str, int] = {}
+    counts: dict[tuple[SourceReportState, str], int] = {}
+    mixed: dict[tuple[str, str], int] = {}
     for name in bundle_names:
+        kind = (
+            "module"
+            if isinstance(bundle_results[name], DeclaredModuleStatus)
+            else "bundle"
+        )
         state = plan.get(name, "not_checked")
         if state == "mixed_actions":
             phrase = _bundle_action_phrase(bundle_results[name])
-            mixed[phrase] = mixed.get(phrase, 0) + 1
+            mixed[phrase, kind] = mixed.get((phrase, kind), 0) + 1
         else:
-            counts[state] = counts.get(state, 0) + 1
+            counts[state, kind] = counts.get((state, kind), 0) + 1
     lines = [
-        f"{_REPORT_STATE_LABELS[state]} {count} bundle{'s' if count != 1 else ''}"
+        f"{_REPORT_STATE_LABELS[state]} {count} {kind}{'s' if count != 1 else ''}"
+        for kind in ("bundle", "module")
         for state in ("download", "refresh_cache", "update")
-        if (count := counts.get(state, 0))
+        if (count := counts.get((state, kind), 0))
     ]
     lines.extend(
-        f"Process {count} bundle{'s' if count != 1 else ''} with {phrase}"
-        for phrase, count in mixed.items()
+        f"Process {count} {kind}{'s' if count != 1 else ''} with {phrase}"
+        for (phrase, kind), count in mixed.items()
     )
     neutral_phrases = {
         "local_changes": "local changes",
@@ -492,9 +472,10 @@ def _bundle_action_lines(
         "not_checked": "unconfirmed sources",
     }
     lines.extend(
-        f"Process {count} bundle{'s' if count != 1 else ''} with {phrase}"
+        f"Process {count} {kind}{'s' if count != 1 else ''} with {phrase}"
+        for kind in ("bundle", "module")
         for state, phrase in neutral_phrases.items()
-        if (count := counts.get(state, 0))
+        if (count := counts.get((state, kind), 0))
     )
     return lines
 
@@ -1077,6 +1058,14 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
 
     discovery = AppBundleDiscovery()
     registry = create_bundle_registry()
+    settings = AppSettings()
+    bundle_overrides = settings.get_bundle_sources()
+    if bundle_overrides:
+        from ..lib.bundle_loader.prepare import _build_include_source_resolver
+
+        registry.set_include_source_resolver(
+            _build_include_source_resolver(bundle_overrides)
+        )
     cache_dir = get_amplifier_home() / "cache"
     git_handler = GitSourceHandler()
 
@@ -1150,6 +1139,19 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
     bundle_names = discovery.list_cached_root_bundles()
     results: dict[str, BundleStatus] = {}
     checked_uris: set[str] = set()
+    seeds: dict[str, str] = {}
+    root_discovery_failed = False
+
+    # list_cached_root_bundles() deliberately collapses repository report rows.
+    # Walk every registered root manifest separately, before that filtering;
+    # non-roots remain reachable only through includes or explicit app seeds.
+    try:
+        for name in registry.list_registered():
+            state = registry.get_state(name)
+            if state is not None and state.is_root is True and state.uri:
+                seeds[name] = state.uri
+    except Exception:  # noqa: BLE001 - unreadable root metadata must not sink the report
+        root_discovery_failed = True
 
     for bundle_name in bundle_names:
         try:
@@ -1160,6 +1162,7 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
             continue
         if not uri:
             continue
+        seeds[bundle_name] = uri
         checked_uris.add(uri)
         try:
             results[bundle_name] = await _check_bundle_uri(bundle_name, uri)
@@ -1183,7 +1186,7 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
     # Scoped to the root URIs deliberately: two app entries that share a repo
     # are both things the user asked for by name, and stay independent.
     root_bases = {_strip_uri_fragment(uri) for uri in checked_uris}
-    for configured_source in AppSettings().get_app_bundles():
+    for configured_source in settings.get_app_bundles():
         if (
             not isinstance(configured_source, str)
             or not configured_source.strip()
@@ -1195,6 +1198,9 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
             )
             continue
         uri = configured_source
+        # A behavior in a root's repository can declare different modules even
+        # when its repository status row is redundant.
+        seeds.setdefault(uri, uri)
         if uri in checked_uris or _strip_uri_fragment(uri) in root_bases:
             continue
         checked_uris.add(uri)
@@ -1211,7 +1217,81 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
     # sources/git.py:697-709), the only thing that would ever move it is this
     # command. Skipping it here is what let a transitively-included @main
     # bundle sit indefinitely behind a green "All sources up to date".
-    results.update(await _check_transitive_bundle_status(checked_uris, results))
+    results.update(await _check_transitive_bundle_status(set(seeds.values()), results))
+
+    from ..utils.include_graph import collect_declared_module_sources
+
+    # Match runtime/config.py: general sources < module override < providers.
+    provider_sources = {
+        provider["module"]: provider["source"]
+        for provider in settings.get_provider_overrides()
+        if isinstance(provider, dict) and "module" in provider and "source" in provider
+    }
+    overrides = {
+        **settings.get_module_sources(),
+        **settings.get_source_overrides(),
+        **provider_sources,
+    }
+    labels = _bundle_display_names(seeds)
+    roots = {labels[key]: uri for key, uri in seeds.items()}
+    try:
+        declared, failures = await collect_declared_module_sources(
+            roots, registry=registry, cache_dir=cache_dir, overrides=overrides
+        )
+    except Exception:  # noqa: BLE001 - unreadable declarations must not sink the report
+        declared = {}
+        failures = {label: "Incomplete cached module discovery" for label in roots}
+    if root_discovery_failed:
+        failures.update({label: "Incomplete cached module discovery" for label in roots})
+
+    for uri, declaration in declared.items():
+        try:
+            parsed = parse_uri(uri)
+            if git_handler.can_handle(parsed):
+                source_status = await git_handler.get_status(parsed, cache_dir)
+            else:
+                source_status = SourceStatus(
+                    source_uri=uri, is_cached=True, has_update=None
+                )
+        except Exception as exc:  # noqa: BLE001 - one bad source must not sink the report
+            source_status = SourceStatus(
+                source_uri=uri,
+                is_cached=False,
+                has_update=None,
+                error=_check_failure_reason(exc),
+            )
+        # Exact source identity, including ref, .git and subdirectory. A module
+        # row wins over a cache-only include row for the same exact source.
+        results[uri] = DeclaredModuleStatus(
+            bundle_name=declaration.module_id,
+            bundle_source=uri,
+            sources=[source_status],
+            module_id=declaration.module_id,
+            overridden_sources=declaration.overridden_sources,
+            included_by=declaration.declared_by,
+            included_under=declaration.root,
+            is_pinned=source_status.is_pinned,
+        )
+
+    for root, error in failures.items():
+        root_uri = roots[root]
+        owner = next(
+            (
+                status
+                for status in results.values()
+                if not isinstance(status, DeclaredModuleStatus)
+                and status.bundle_source
+                and _strip_uri_fragment(status.bundle_source)
+                == _strip_uri_fragment(root_uri)
+            ),
+            None,
+        )
+        if owner is not None:
+            owner.sources.append(
+                SourceStatus(
+                    source_uri="", is_cached=False, has_update=None, error=error
+                )
+            )
 
     return results
 
@@ -1236,15 +1316,26 @@ async def _check_transitive_bundle_status(
 
     cache_dir = get_amplifier_home() / "cache"
     registry = create_bundle_registry()
+    bundle_overrides = AppSettings().get_bundle_sources()
+    if bundle_overrides:
+        from ..lib.bundle_loader.prepare import _build_include_source_resolver
+
+        registry.set_include_source_resolver(
+            _build_include_source_resolver(bundle_overrides)
+        )
 
     # Seed the walk with the label each direct row already displays, so a
     # transitive row can name a parent the user can actually find in the table.
-    seed_labels = _bundle_display_names(direct_results.keys())
-    roots = {
-        seed_labels.get(key, key): status.bundle_source
+    seeds = {
+        key: status.bundle_source
         for key, status in direct_results.items()
         if status.bundle_source
     }
+
+    # Include seeds whose direct report row was deduplicated against a root.
+    seeds.update({uri: uri for uri in checked_uris if uri not in seeds.values()})
+    seed_labels = _bundle_display_names(seeds)
+    roots = {seed_labels[key]: uri for key, uri in seeds.items()}
 
     known = {_strip_uri_fragment(uri) for uri in checked_uris}
     known.update(
@@ -1567,7 +1658,15 @@ def _show_concise_report(
     if bundle_results:
         console.print()
         active_bundle = _get_active_bundle_name()
-        table = Table(title="Bundles", show_header=True, header_style="bold cyan")
+        title = (
+            "Bundles and Modules"
+            if any(
+                isinstance(status, DeclaredModuleStatus)
+                for status in bundle_results.values()
+            )
+            else "Bundles"
+        )
+        table = Table(title=title, show_header=True, header_style="bold cyan")
         table.add_column("Name", style="green")
         table.add_column("Cached", style="dim", justify="right")
         table.add_column("Remote", style="dim", justify="right")
@@ -1598,6 +1697,8 @@ def _show_concise_report(
 
             # Add "(active)" marker if this is the active bundle
             display_name = display_names[bundle_name]
+            if isinstance(bundle_status, DeclaredModuleStatus):
+                display_name = f"{bundle_status.module_id} ({display_name})"
             if active_bundle and bundle_name == active_bundle:
                 display_name = f"{display_name} [green](active)[/green]"
 
@@ -1817,8 +1918,14 @@ def _show_verbose_report(
                 included_by = getattr(status, "included_by", "")
                 if included_by:
                     title_suffix += f" (via {included_by})"
+                heading = (
+                    "Module" if isinstance(status, DeclaredModuleStatus) else "Bundle"
+                )
+                display_name = display_names[bundle_name]
+                if isinstance(status, DeclaredModuleStatus):
+                    display_name = f"{status.module_id} ({display_name})"
                 console.print(
-                    f"[bold cyan]Bundle: {display_names[bundle_name]}"
+                    f"[bold cyan]{heading}: {display_name}"
                     f"{title_suffix}[/bold cyan]"
                 )
                 console.print(
@@ -1837,6 +1944,8 @@ def _show_verbose_report(
                         elif "@" in source_name:
                             source_name = source_name.split("@")[0]
 
+                    if isinstance(status, DeclaredModuleStatus):
+                        source_name = status.module_id
                     source_state = _classify_source_status(
                         source,
                         has_local_changes=bool(
@@ -1851,11 +1960,13 @@ def _show_verbose_report(
                         local_path=(
                             source.source_uri
                             if source.source_uri.startswith("file://")
+                            and not isinstance(status, DeclaredModuleStatus)
                             else None
                         ),
                         remote_url=(
                             None
                             if source.source_uri.startswith("file://")
+                            or isinstance(status, DeclaredModuleStatus)
                             else source.source_uri
                         ),
                     )
@@ -2000,6 +2111,79 @@ def _refresh_skills_cache(console: Console) -> None:
         console.print(f"  Skills: {refreshed} cache(s) refreshed")
 
 
+def _deduplicate_declared_module_caches(
+    report, bundle_results: dict[str, _BundleStatus]
+) -> None:
+    """Let exact declared module actions own their legacy repository refresh.
+
+    Cache identity comes from Foundation's URL + ref key, never the displayed
+    module name. Legacy root-only entries cannot describe subdirectory installs.
+    """
+    from amplifier_foundation.paths.resolution import parse_uri
+    from amplifier_foundation.sources.git import GitSourceHandler
+
+    handler = GitSourceHandler()
+    cache_dir = get_amplifier_home() / "cache"
+    selected: dict[Path, set[str]] = {}
+    overridden: dict[Path, set[str]] = {}
+    effective_caches: set[Path] = set()
+
+    def cache_key(uri: str) -> Path | None:
+        try:
+            parsed = parse_uri(uri)
+            if handler.can_handle(parsed):
+                return handler._get_cache_path(parsed, cache_dir)
+        except (ValueError, TypeError, OSError):
+            # Failed checks remain visible; they are not legacy targets.
+            return None
+        return None
+
+    for status in bundle_results.values():
+        if not isinstance(status, DeclaredModuleStatus):
+            continue
+        for original in status.overridden_sources:
+            key = cache_key(original)
+            if key is not None:
+                overridden.setdefault(key, set()).add(original)
+        uri = status.bundle_source
+        if not uri:
+            continue
+        key = cache_key(uri)
+        if key is not None:
+            effective_caches.add(key)
+            if status.has_updates:
+                selected.setdefault(key, set()).add(uri)
+
+    # A replaced source is not an active module target. Do not let an old
+    # root-only cache scan refresh it behind a local (or different remote)
+    # override, unless another declaration still uses that cache.
+    for key, uris in overridden.items():
+        if key not in effective_caches:
+            selected.setdefault(key, set()).update(uris)
+
+    remaining = []
+    for status in report.cached_git_sources:
+        if not status.url:
+            remaining.append(status)
+            continue
+        try:
+            uri = status.url
+            if not uri.startswith(("git+", "git://")):
+                uri = f"git+{uri}"
+            parsed = parse_uri(uri)
+            if status.ref:
+                parsed = replace(parsed, ref=status.ref)
+            matches = selected.get(handler._get_cache_path(parsed, cache_dir), set())
+            if matches and (not parsed.subpath or uri in matches):
+                continue
+        except (ValueError, TypeError, OSError):
+            # An unrecognized legacy source is not ours to discard.
+            remaining.append(status)
+            continue
+        remaining.append(status)
+    report.cached_git_sources = remaining
+
+
 @click.command()
 @click.option("--check-only", is_flag=True, help="Check for updates without installing")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmations")
@@ -2013,7 +2197,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
     Checks all sources (local files and cached git) and executes updates.
     """
     # Check for updates with status messages
-    if force:
+    if force and not check_only:
         console.print("Force update mode...")
         # Clear regenerable cache so everything is fetched fresh
         from ..utils.cache_management import clear_all_regenerable
@@ -2071,8 +2255,12 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
     if not force:
         console.print("  Checking bundles...")
     bundle_results = asyncio.run(_check_all_bundle_status())
+    _deduplicate_declared_module_caches(report, bundle_results)
     bundle_plan = _bundle_report_plan(bundle_results)
     bundle_labels = _bundle_display_names(bundle_results.keys())
+    for name, status in bundle_results.items():
+        if isinstance(status, DeclaredModuleStatus):
+            bundle_labels[name] = f"{status.module_id} ({bundle_labels[name]})"
     has_bundle_updates = (
         any(s.has_updates for s in bundle_results.values()) if bundle_results else False
     )
@@ -2221,6 +2409,17 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         bundle_updated: list[str] = []
         bundle_failed: list[str] = []
         bundle_errors: dict[str, str] = {}
+        for name, status in bundle_results.items():
+            if not isinstance(status, DeclaredModuleStatus):
+                continue
+            errors = {
+                _check_failure_reason(source.error)
+                for source in status.sources
+                if source.error
+            }
+            if errors:
+                bundle_failed.append(name)
+                bundle_errors[name] = ", ".join(sorted(errors))
 
         if has_bundle_updates:
             from amplifier_foundation import load_bundle
@@ -2241,9 +2440,37 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
 
             for bundle_name in bundles_to_update:
                 try:
-                    _on_update_progress(update_labels[bundle_name], "updating_bundle")
                     bundle_status_obj = bundle_results[bundle_name]
+                    _on_update_progress(
+                        update_labels[bundle_name],
+                        "updating"
+                        if isinstance(bundle_status_obj, DeclaredModuleStatus)
+                        else "updating_bundle",
+                    )
                     source_uri = bundle_status_obj.bundle_source
+
+                    if isinstance(bundle_status_obj, DeclaredModuleStatus):
+                        from amplifier_foundation import Bundle
+
+                        source_only = Bundle(
+                            name=bundle_status_obj.module_id,
+                            tools=[
+                                {
+                                    "module": bundle_status_obj.module_id,
+                                    "source": source_uri,
+                                }
+                            ],
+                        )
+                        asyncio.run(
+                            update_bundle(
+                                source_only,
+                                cache_dir=transitive_cache_dir,
+                                selective=[source_uri],
+                                install_deps=True,
+                            )
+                        )
+                        bundle_updated.append(bundle_name)
+                        continue
 
                     # A transitive source is a cache, not a bundle we compose
                     # here: load_bundle() would resolve and re-register a
@@ -2270,10 +2497,14 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
 
                     # Refresh bundle sources
                     _on_update_progress(update_labels[bundle_name], "refreshing_bundle")
-                    asyncio.run(update_bundle(bundle_obj))
+                    asyncio.run(update_bundle(bundle_obj, selective=[source_uri]))
                     bundle_updated.append(bundle_name)
                 except Exception as exc:
-                    bundle_errors[bundle_name] = str(exc)
+                    bundle_errors[bundle_name] = (
+                        _check_failure_reason(exc)
+                        if isinstance(bundle_results[bundle_name], DeclaredModuleStatus)
+                        else str(exc)
+                    )
                     bundle_failed.append(bundle_name)
 
         # Refresh any stale skills caches
@@ -2296,9 +2527,14 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         for item in result.staged:
             console.print(f"  [yellow]→[/yellow] {item} [dim](staged)[/dim]")
         for bundle_name in bundle_updated:
+            kind = (
+                "module"
+                if isinstance(bundle_results[bundle_name], DeclaredModuleStatus)
+                else "bundle"
+            )
             console.print(
                 f"  [green]✓[/green] "
-                f"{_bundle_completion_verb(bundle_plan.get(bundle_name))} bundle: "
+                f"{_bundle_completion_verb(bundle_plan.get(bundle_name))} {kind}: "
                 f"{escape_markup(bundle_labels[bundle_name])}"
             )
         for msg in result.messages:
@@ -2313,9 +2549,14 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
         for item in result.staged:
             console.print(f"  [yellow]→[/yellow] {item} [dim](staged)[/dim]")
         for bundle_name in bundle_updated:
+            kind = (
+                "module"
+                if isinstance(bundle_results[bundle_name], DeclaredModuleStatus)
+                else "bundle"
+            )
             console.print(
                 f"  [green]✓[/green] "
-                f"{_bundle_completion_verb(bundle_plan.get(bundle_name))} bundle: "
+                f"{_bundle_completion_verb(bundle_plan.get(bundle_name))} {kind}: "
                 f"{escape_markup(bundle_labels[bundle_name])}"
             )
         for item in result.failed:
@@ -2323,9 +2564,14 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
             console.print(f"  [red]✗[/red] {item}: {escape_markup(error)}")
         for bundle_name in bundle_failed:
             error = bundle_errors.get(bundle_name, "Unknown error")
+            kind = (
+                "module"
+                if isinstance(bundle_results[bundle_name], DeclaredModuleStatus)
+                else "bundle"
+            )
             console.print(
                 f"  [red]✗[/red] "
-                f"{_bundle_failure_verb(bundle_plan.get(bundle_name))} bundle: "
+                f"{_bundle_failure_verb(bundle_plan.get(bundle_name))} {kind}: "
                 f"{escape_markup(bundle_labels[bundle_name])}: {escape_markup(error)}"
             )
         for msg in result.messages:

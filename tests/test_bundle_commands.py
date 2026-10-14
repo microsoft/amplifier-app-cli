@@ -218,7 +218,13 @@ async def test_global_update_checks_app_only_sources_by_exact_uri(monkeypatch):
     monkeypatch.setattr(
         update_module,
         "AppSettings",
-        lambda: SimpleNamespace(get_app_bundles=lambda: app_uris),
+        lambda: SimpleNamespace(
+            get_app_bundles=lambda: app_uris,
+            get_bundle_sources=dict,
+            get_module_sources=dict,
+            get_source_overrides=dict,
+            get_provider_overrides=list,
+        ),
     )
 
     async def fake_get_status(self, parsed, cache_dir):
@@ -259,7 +265,13 @@ async def test_global_update_reports_registry_failure_and_checks_later_bundles(m
     monkeypatch.setattr(
         update_module,
         "AppSettings",
-        lambda: SimpleNamespace(get_app_bundles=lambda: []),
+        lambda: SimpleNamespace(
+            get_app_bundles=list,
+            get_bundle_sources=dict,
+            get_module_sources=dict,
+            get_source_overrides=dict,
+            get_provider_overrides=list,
+        ),
     )
 
     async def fake_get_status(self, parsed, cache_dir):
@@ -296,7 +308,13 @@ async def test_global_update_reports_direct_app_check_failure_by_exact_uri(monke
     monkeypatch.setattr(
         update_module,
         "AppSettings",
-        lambda: SimpleNamespace(get_app_bundles=lambda: [failing_uri]),
+        lambda: SimpleNamespace(
+            get_app_bundles=lambda: [failing_uri],
+            get_bundle_sources=dict,
+            get_module_sources=dict,
+            get_source_overrides=dict,
+            get_provider_overrides=list,
+        ),
     )
 
     async def failing_get_status(self, parsed, cache_dir):
@@ -349,7 +367,8 @@ def test_global_update_loads_an_app_target_by_source_uri(monkeypatch):
         loaded_uris.append(uri)
         return SimpleNamespace()
 
-    async def fake_update_bundle(bundle):
+    async def fake_update_bundle(bundle, *, selective):
+        assert selective == [_FRAGMENT_URI]
         updated_bundles.append(bundle)
 
     monkeypatch.setattr(update_module, "check_all_sources", fake_check_all_sources)
@@ -409,7 +428,13 @@ async def test_global_update_collapses_an_app_subdirectory_into_its_root_bundle(
     monkeypatch.setattr(
         update_module,
         "AppSettings",
-        lambda: SimpleNamespace(get_app_bundles=lambda: [_FRAGMENT_URI]),
+        lambda: SimpleNamespace(
+            get_app_bundles=lambda: [_FRAGMENT_URI],
+            get_bundle_sources=dict,
+            get_module_sources=dict,
+            get_source_overrides=dict,
+            get_provider_overrides=list,
+        ),
     )
 
     async def fake_get_status(self, parsed, cache_dir):
@@ -445,7 +470,13 @@ async def test_global_update_keeps_an_app_subdirectory_on_a_different_ref(monkey
     monkeypatch.setattr(
         update_module,
         "AppSettings",
-        lambda: SimpleNamespace(get_app_bundles=lambda: [other_ref_uri]),
+        lambda: SimpleNamespace(
+            get_app_bundles=lambda: [other_ref_uri],
+            get_bundle_sources=dict,
+            get_module_sources=dict,
+            get_source_overrides=dict,
+            get_provider_overrides=list,
+        ),
     )
 
     async def fake_get_status(self, parsed, cache_dir):

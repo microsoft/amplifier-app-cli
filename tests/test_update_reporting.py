@@ -362,7 +362,8 @@ def test_missing_bundle_caches_are_downloads_not_updates(monkeypatch):
         direct_loads.append(uri)
         return SimpleNamespace(uri=uri)
 
-    async def fake_update_bundle(bundle):
+    async def fake_update_bundle(bundle, *, selective):
+        assert selective == [bundle.uri]
         direct_updates.append(bundle.uri)
 
     async def fake_refresh(uri, *, cache_dir):
@@ -977,7 +978,8 @@ def test_mixed_actions_process_one_bundle_once_and_report_its_composition():
         loads.append(source_uri)
         return SimpleNamespace()
 
-    async def fake_update_bundle(bundle):
+    async def fake_update_bundle(bundle, *, selective):
+        assert selective == [uri]
         updates.append("called")
 
     patches = _command_patches(report, {"mixed": mixed})
@@ -1059,7 +1061,8 @@ def test_selected_neutral_bundle_states_are_confirmed_and_processed_once():
         loads.append(uri)
         return SimpleNamespace()
 
-    async def fake_update_bundle(bundle):
+    async def fake_update_bundle(bundle, *, selective):
+        assert len(selective) == 1
         return None
 
     patches = _command_patches(report, bundle_results)
@@ -1113,7 +1116,8 @@ def test_bundle_completion_reports_failed_operation_without_a_success_verb():
             raise RuntimeError("cannot load update")
         return SimpleNamespace(uri=uri)
 
-    async def fake_update_bundle(bundle):
+    async def fake_update_bundle(bundle, *, selective):
+        assert len(selective) == 1
         return None
 
     patches = _command_patches(report, bundle_results)
