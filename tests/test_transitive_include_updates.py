@@ -646,7 +646,15 @@ async def test_check_all_bundle_status_includes_transitive_sources(
         lambda *a, **k: SimpleNamespace(list_cached_root_bundles=lambda: ["b"]),
     )
     monkeypatch.setattr(
-        update_module, "AppSettings", lambda: SimpleNamespace(get_app_bundles=list)
+        update_module,
+        "AppSettings",
+        lambda: SimpleNamespace(
+            get_app_bundles=list,
+            get_bundle_sources=dict,
+            get_module_sources=dict,
+            get_source_overrides=dict,
+            get_provider_overrides=list,
+        ),
     )
 
     results = await update_module._check_all_bundle_status()
