@@ -22,10 +22,12 @@ from rich.console import Console
 from amplifier_app_cli.commands import update as updater
 from amplifier_app_cli.lib.bundle_loader import discovery as discovery_module
 from amplifier_app_cli.lib.settings import AppSettings
+from amplifier_app_cli.utils import module_cache, source_status, update_executor
 from amplifier_app_cli.utils.file_uri import file_uri_path_value
 from amplifier_app_cli.utils.include_graph import (
     _cached_source_for,
     collect_declared_module_sources,
+    local_source_path,
 )
 from amplifier_app_cli.utils.source_status import CachedGitStatus, UpdateReport
 from amplifier_app_cli.utils.update_executor import ExecutionResult
@@ -663,7 +665,10 @@ def test_unknown_missing_module_is_not_current_or_an_update_action(
     scenario.apply.assert_not_called()
 
 
-def test_cached_bundle_include_file_uri_round_trip_decodes_once(scenario, tmp_path):
+@pytest.mark.parametrize("fragment", [False, True])
+def test_cached_bundle_include_file_uri_round_trip_decodes_once(
+    scenario, tmp_path, fragment
+):
     local = tmp_path / "manifest space %20.yaml"
     extra = MODULES + "#subdirectory=extra"
     local.write_text(
@@ -675,7 +680,10 @@ def test_cached_bundle_include_file_uri_round_trip_decodes_once(scenario, tmp_pa
         ),
         encoding="utf-8",
     )
-    uri = local.as_uri()
+    uri = (
+        tmp_path.as_uri() + f"#subdirectory={local.name}"
+        if fragment else local.as_uri()
+    )
     assert _cached_source_for(uri, scenario.cache, scenario.registry).active_path == local
     scenario.write_bundle(CHILD, {"includes": [{"bundle": uri}]})
 
@@ -723,6 +731,35 @@ def test_relative_embedded_module_is_covered_by_exact_owner(scenario):
     assert "All sources up to date" in output
 
 
+@pytest.mark.parametrize("source_form", ["native", "file", "file_fragment"])
+def test_local_module_effective_path_preserves_literal_percent_and_hash(
+    scenario, source_form
+):
+    root = scenario.active_path(ROOT)
+    local = root / "module space %20#literal"
+    local.mkdir()
+    source = {
+        "native": str(local),
+        "file": local.as_uri(),
+        "file_fragment": root.as_uri() + f"#subdirectory={local.name}",
+    }[source_form]
+    assert local_source_path(source) == local
+    assert updater._classify_source_status(
+        SourceStatus(source_uri=source, is_cached=True, has_update=None)
+    ) == "local"
+    scenario.write_bundle(
+        APP, {"tools": [{"module": "tool-embedded", "source": source}]}
+    )
+    found, failures = asyncio.run(
+        collect_declared_module_sources(
+            {"app": APP}, registry=scenario.registry, cache_dir=scenario.cache
+        )
+    )
+    assert not failures
+    assert found[source].embedded_in == ROOT
+    assert source not in asyncio.run(updater._check_all_bundle_status())
+
+
 @pytest.mark.parametrize("as_file_uri", [False, True])
 def test_explicit_local_override_inside_cache_stays_visible(scenario, as_file_uri):
     local = scenario.active_path(ROOT) / "modules" / "literal %20"
@@ -749,7 +786,8 @@ def test_explicit_local_override_inside_cache_stays_visible(scenario, as_file_ur
 
 
 @pytest.mark.parametrize("kind", ["missing", "sibling", "escape", "symlink"])
-def test_unproven_local_ownership_is_not_hidden(scenario, kind):
+@pytest.mark.parametrize("file_fragment", [False, True])
+def test_unproven_local_ownership_is_not_hidden(scenario, kind, file_fragment):
     root = scenario.active_path(ROOT)
     sibling = scenario.active_path(CHILD) / "module"
     sibling.mkdir()
@@ -762,6 +800,14 @@ def test_unproven_local_ownership_is_not_hidden(scenario, kind):
     else:
         (root / "linked").symlink_to(sibling, target_is_directory=True)
         source = str(root / "linked")
+    expected_path = local_source_path(source)
+    assert expected_path is not None
+    if file_fragment:
+        subpath = (
+            str(sibling) if kind == "sibling" else str(expected_path.relative_to(root))
+        )
+        source = root.as_uri() + f"#subdirectory={subpath}"
+    assert local_source_path(source) == expected_path
     scenario.write_bundle(APP, {"tools": [{"module": "tool-local", "source": source}]})
     found, _ = asyncio.run(
         collect_declared_module_sources(
@@ -769,6 +815,11 @@ def test_unproven_local_ownership_is_not_hidden(scenario, kind):
         )
     )
     assert found[source].embedded_in is None
+    statuses = asyncio.run(updater._check_all_bundle_status())
+    assert statuses[source].bundle_source == source
+    assert updater._classify_source_status(statuses[source].sources[0]) == (
+        "missing_path" if kind == "missing" else "local"
+    )
     output = scenario.invoke("--check-only")
     assert "tool-local (local)" in output
     assert ("Missing path" if kind == "missing" else "Local") in output
@@ -1065,6 +1116,126 @@ def test_exact_git_module_install_survives_embedded_owner_recovery(
     scenario.installs.assert_awaited_once_with(installable)
     if diagnostic:
         assert "incomplete module discovery" in output
+
+
+@pytest.mark.parametrize("install_source", ["none", "root", "subdirectory"])
+def test_hybrid_owner_coalesces_real_legacy_refresh_without_losing_module_install(
+    scenario, monkeypatch, install_source
+):
+    owner = ROOT.replace("@main", "@next")
+    manifest = owner + "#subdirectory=behaviors/hybrid.yaml"
+    controls = [
+        owner.replace("@next", "@other"),
+        owner.replace(".git@", "@"),
+        owner.replace("/team/", "/other/"),
+    ]
+
+    def seed_module_cache(uri, module_id):
+        path = scenario.active_path(uri)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "pyproject.toml").write_text(
+            f'[project]\nname = "{module_id}"\nversion = "1.0.0"\n'
+            '[project.entry-points."amplifier.modules"]\n'
+            f'"{module_id}" = "fixture:mount"\n',
+            encoding="utf-8",
+        )
+        parsed = parse_uri(uri)
+        (path / ".amplifier_cache_meta.json").write_text(
+            json.dumps({
+                "git_url": f"https://{parsed.host}{parsed.path}",
+                "ref": parsed.ref,
+                "commit": "a" * 40,
+            }),
+            encoding="utf-8",
+        )
+        return path
+
+    owner_path = seed_module_cache(owner, "tool-hybrid")
+    for index, uri in enumerate(controls):
+        seed_module_cache(uri, f"tool-control-{index}")
+    (owner_path / "embedded").mkdir()
+    rows = [{"module": "tool-embedded", "source": "../embedded"}]
+    explicit = owner
+    if install_source != "none":
+        if install_source == "subdirectory":
+            explicit += "#subdirectory=installable"
+            installable = scenario.active_path(explicit)
+            installable.mkdir()
+            (installable / "pyproject.toml").write_text(
+                '[project]\nname = "fixture-installable"\nversion = "1.0.0"\n',
+                encoding="utf-8",
+            )
+        rows.append({"module": "tool-independent", "source": explicit})
+    scenario.write_bundle(ROOT, {})
+    scenario.write_bundle(manifest, {"tools": rows})
+    assert not (owner_path / "bundle.md").exists()
+    assert not (owner_path / "bundle.yaml").exists()
+    scenario.registry.register({"hybrid": manifest})
+    scenario.registry.save()
+    scenario.settings.get_app_bundles.return_value = []
+    scenario.behind.clear()
+    scenario.behind.update({owner, explicit})
+
+    # Use real discovery, legacy scanner, Click, executor and cache refresher.
+    # Only settings, remote status/update and dependency installation are faked.
+    monkeypatch.setattr(discovery_module, "WELL_KNOWN_BUNDLES", {})
+    monkeypatch.setattr(
+        "amplifier_app_cli.lib.settings.AppSettings", lambda: scenario.settings
+    )
+    monkeypatch.setattr(updater, "AppBundleDiscovery", discovery_module.AppBundleDiscovery)
+    monkeypatch.setattr(updater, "BundleRegistry", BundleRegistry)
+    monkeypatch.setattr(
+        source_status, "_get_github_commit_sha", AsyncMock(return_value="b" * 40)
+    )
+    check = AsyncMock(wraps=source_status.check_all_sources)
+    execute = AsyncMock(wraps=update_executor.execute_updates)
+    refresh = AsyncMock(wraps=module_cache.update_module)
+    monkeypatch.setattr(updater, "check_all_sources", check)
+    monkeypatch.setattr(updater, "execute_updates", execute)
+    monkeypatch.setattr(module_cache, "update_module", refresh)
+
+    assert discovery_module.AppBundleDiscovery().list_cached_root_bundles() == ["root"]
+    cached = module_cache.scan_cached_modules()
+    assert len(cached) == 4
+    assert next(m for m in cached if m.cache_path == owner_path).module_type == "tool"
+    statuses = asyncio.run(updater._check_all_bundle_status())
+    selected = explicit if install_source != "none" else owner
+    if install_source == "none":
+        assert isinstance(statuses[owner], updater.TransitiveBundleStatus)
+        assert not isinstance(statuses[owner], updater.DeclaredModuleStatus)
+    else:
+        assert isinstance(statuses[explicit], updater.DeclaredModuleStatus)
+    assert str(owner_path / "embedded") not in statuses
+
+    scenario.invoke("--check-only")
+    assert not scenario.refreshed
+    execute.assert_not_called()
+    refresh.assert_not_called()
+    output = scenario.invoke("--yes")
+    assert "Update complete" in output
+    assert len(scenario.refreshed) == 4
+    assert scenario.refreshed.count(selected) == 1
+    assert set(scenario.refreshed) == {*controls, selected}
+    execute.assert_awaited_once()
+    assert {
+        (s.url, s.ref) for s in execute.await_args.args[0].cached_git_sources
+    } == {
+        (f"https://{parse_uri(uri).host}{parse_uri(uri).path}", parse_uri(uri).ref)
+        for uri in controls
+    }
+    assert refresh.await_count == 3  # Only the distinct legacy cache identities.
+    if install_source == "none":
+        scenario.apply.assert_not_called()
+        scenario.installs.assert_not_called()
+    else:
+        scenario.apply.assert_awaited_once()
+        assert scenario.apply.await_args.kwargs == {
+            "cache_dir": scenario.cache,
+            "selective": [explicit],
+            "install_deps": True,
+        }
+        scenario.installs.assert_awaited_once_with(scenario.active_path(explicit))
+    scenario.forbidden.assert_not_called()
 
 
 @pytest.mark.parametrize(

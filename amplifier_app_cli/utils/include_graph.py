@@ -125,10 +125,17 @@ class TransitiveStatus:
 
 
 def local_source_path(uri: str) -> Path | None:
-    """Decode explicit file URIs once; don't mistake registry aliases for paths."""
+    """Return the effective local path, decoding only explicit file URI bases once."""
     if uri.lower().startswith("file:"):
+        from amplifier_foundation.paths.resolution import parse_uri
+
         native = file_uri_path_value(uri, windows=os.name == "nt")
-        return Path(native) if native is not None else None
+        if native is None:
+            return None
+        # Normalize the prefix for Foundation's fragment parser, not the filename.
+        subpath = parse_uri("file://" + uri.partition(":")[2]).subpath
+        path = Path(native)
+        return path / subpath if subpath else path
     if Path(uri).is_absolute() or uri.startswith(("./", "../", ".\\", "..\\")):
         return Path(uri)
     return None
@@ -152,7 +159,10 @@ def _cached_source_for(
         path = source_root / parsed.subpath if parsed.subpath else source_root
         path = registry._find_resource_path(path)
     else:
-        path = local_source_path(uri)
+        # Keep the base separate: local_source_path otherwise includes the fragment.
+        path = local_source_path(
+            strip_uri_fragment(uri) if uri.lower().startswith("file:") else uri
+        )
         if path is None:
             return None
         base = path.resolve()

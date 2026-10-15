@@ -2162,7 +2162,7 @@ def _refresh_skills_cache(console: Console) -> None:
 def _deduplicate_declared_module_caches(
     report, bundle_results: dict[str, _BundleStatus]
 ) -> None:
-    """Let exact declared module actions own their legacy repository refresh.
+    """Let declared module and recovered owner actions own legacy refreshes.
 
     Cache identity comes from Foundation's URL + ref key, never the displayed
     module name. Legacy root-only entries cannot describe subdirectory installs.
@@ -2187,12 +2187,13 @@ def _deduplicate_declared_module_caches(
         return None
 
     for status in bundle_results.values():
-        if not isinstance(status, DeclaredModuleStatus):
+        if not isinstance(status, TransitiveBundleStatus):
             continue
-        for original in status.overridden_sources:
-            key = cache_key(original)
-            if key is not None:
-                overridden.setdefault(key, set()).add(original)
+        if isinstance(status, DeclaredModuleStatus):
+            for original in status.overridden_sources:
+                key = cache_key(original)
+                if key is not None:
+                    overridden.setdefault(key, set()).add(original)
         uri = status.bundle_source
         if not uri:
             continue
