@@ -26,9 +26,10 @@ small enough to watch every moving part.
    In a headless one-shot, name the skill in prose instead of the bare slash
    token: `amplifier run "Use the ten-lane-highway skill and drive: <outcome>"`.
 
-2. **Intake + strategize (Phases 1–2).** The manager writes `BATCH_DIR`
-   (e.g. `~/dev/hw-firstrun`), a `HIGHWAY.md`, pins `BATCH_DIR/.width` to `2`,
-   and **pre-composes a goal file per queued item** into `BATCH_DIR/goals/`.
+2. **Intake + strategize (Phases 1–2).** Establish a workspace-contained `BATCH_DIR`
+   following the caller's workspace conventions; the caller chooses where it
+   lives. Write `HIGHWAY.md` there, pin `BATCH_DIR/.width` to `2`,
+   and **pre-compose a goal file per queued item** into `BATCH_DIR/goals/`.
 
 3. **Approve at the gate (Phase 3).** You will see one screen: outcome, width 2,
    the first wave (lane → repo → item), the priority rationale, watch cadence.
