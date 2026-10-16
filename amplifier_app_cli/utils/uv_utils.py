@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import os
 import subprocess
 from collections.abc import Sequence
@@ -105,6 +106,19 @@ class UvStep(NamedTuple):
     required: bool = True
 
 
+class CleanupStep(NamedTuple):
+    """One selected Amplifier data path to remove after the parent exits.
+
+    ``path`` stays structured until the script renderer encodes it for
+    PowerShell. Passing a user-owned Windows path as a raw batch fragment would
+    make characters such as ``%`` and ``!`` alter the generated script.
+    """
+
+    path: Path
+    label: str
+    attempts: int = 10
+
+
 # cmd.exe metacharacters. A command containing any of these cannot be embedded
 # in a parenthesised for-loop body without escaping, and a mis-escaped script
 # would fail inside a new console window the user cannot easily debug. We refuse
@@ -116,6 +130,39 @@ def _batch_safe(text: str) -> bool:
     return not (_BATCH_UNSAFE & set(text))
 
 
+def _powershell_remove_command(path: Path) -> str:
+    """Return a batch-safe command that removes exactly one literal path."""
+    literal_path = str(path).replace("'", "''")
+    script = f"""$ErrorActionPreference = 'Stop'
+$target = '{literal_path}'
+function Remove-AmplifierPath([string] $path) {{
+    $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+    $item.Attributes = $item.Attributes -band (-bnot [IO.FileAttributes]::ReadOnly)
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {{
+        if ($item.PSIsContainer) {{ [IO.Directory]::Delete($path, $true) }}
+        else {{ [IO.File]::Delete($path) }}
+        return
+    }}
+    if ($item.PSIsContainer) {{
+        foreach ($child in Get-ChildItem -LiteralPath $path -Force -ErrorAction Stop) {{
+            Remove-AmplifierPath $child.FullName
+        }}
+        [IO.Directory]::Delete($path)
+    }} else {{
+        [IO.File]::Delete($path)
+    }}
+}}
+$item = Get-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+if ($null -ne $item) {{ Remove-AmplifierPath $target }}
+if (Test-Path -LiteralPath $target) {{ exit 1 }}
+"""
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    return (
+        '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" '
+        f"-NoProfile -NonInteractive -EncodedCommand {encoded}"
+    )
+
+
 def defer_uv_tool_swap(
     steps: Sequence[UvStep],
     *,
@@ -123,8 +170,9 @@ def defer_uv_tool_swap(
     intro_lines: Sequence[str],
     success_message: str,
     recovery_commands: Sequence[str],
+    cleanup_steps: Sequence[CleanupStep] = (),
 ) -> bool:
-    """Run uv tool commands from a script that starts AFTER this process exits.
+    """Run cleanup and uv commands from a script that starts AFTER this exits.
 
     Windows locks a running program's own files: while ``amplifier.exe`` is
     alive, the ``python3xx.dll`` / ``.pyd`` files it loaded from
@@ -139,13 +187,16 @@ def defer_uv_tool_swap(
     screen. Launch it in a new console and exit.
 
     Args:
-        steps: Commands to run, in order.
+        steps: uv commands to run after selected cleanup completes.
         operation: Short slug for the temp filename, e.g. ``reset``.
         intro_lines: Lines echoed at the top explaining what is happening.
         success_message: Line echoed when every required step succeeded.
         recovery_commands: Commands printed verbatim if the script gives up, so
             the user is never left with only a temp-file path to a tool they may
             no longer have installed.
+        cleanup_steps: Selected data paths to remove before any uv command.
+            Paths are rendered through encoded PowerShell commands, never
+            interpolated into batch syntax.
 
     Returns:
         True if the script was written and launched. False if generation or
@@ -159,6 +210,14 @@ def defer_uv_tool_swap(
             "[yellow]Warning:[/yellow] Cannot safely script the deferred uv commands."
         )
         return False
+
+    script_steps: list[tuple[str, str, int, bool]] = [
+        (_powershell_remove_command(step.path), step.label, step.attempts, True)
+        for step in cleanup_steps
+    ]
+    script_steps.extend(
+        (step.command, step.label, step.attempts, step.required) for step in steps
+    )
 
     # Every Windows utility below is spelled out as a full path under System32.
     # Two distinct reasons, both real:
@@ -194,20 +253,20 @@ def defer_uv_tool_swap(
         "echo(",
     ]
 
-    for index, step in enumerate(steps):
+    for index, (command, label, attempts, required) in enumerate(script_steps):
         # A successful attempt jumps past the remaining retries: to the next
         # step's label, or to :done for the final step. The :done label lives in
         # the footer, so it must NOT also be emitted here -- a duplicate label
         # would make `goto done` land on a `goto done` and spin forever.
-        is_last = index == len(steps) - 1
+        is_last = index == len(script_steps) - 1
         nxt = "done" if is_last else f"step{index + 2}"
-        lines.append(f"echo {step.label}")
-        lines.append(f"for /L %%i in (1,1,{step.attempts}) do (")
-        if step.required:
-            lines.append(f"    {step.command}")
+        lines.append(f"echo {label}")
+        lines.append(f"for /L %%i in (1,1,{attempts}) do (")
+        if required:
+            lines.append(f"    {command}")
             lines.append(f"    if !errorlevel! EQU 0 goto {nxt}")
             lines.append(
-                f"    echo   files still locked, attempt %%i of {step.attempts}; retrying in 3s..."
+                f"    echo   files still locked, attempt %%i of {attempts}; retrying in 3s..."
             )
             lines.append(
                 '    "%SystemRoot%\\System32\\ping.exe" -n 4 127.0.0.1 >NUL'
@@ -218,7 +277,7 @@ def defer_uv_tool_swap(
         else:
             # Best-effort steps stay quiet; their failure is not the story, and
             # exhausting attempts simply falls through to the next step.
-            lines.append(f"    {step.command} >NUL 2>&1")
+            lines.append(f"    {command} >NUL 2>&1")
             lines.append(f"    if !errorlevel! EQU 0 goto {nxt}")
             lines.append(
                 '    "%SystemRoot%\\System32\\ping.exe" -n 3 127.0.0.1 >NUL'
