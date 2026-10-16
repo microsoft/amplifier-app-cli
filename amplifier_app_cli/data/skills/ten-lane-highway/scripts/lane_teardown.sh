@@ -44,7 +44,7 @@
 #   lane_teardown.sh BATCH_DIR LANE reconcile [--yes] [--strict]
 #   lane_teardown.sh BATCH_DIR LANE audit     [--open-only]
 #
-#   BATCH_DIR   highway batch dir holding infra.tsv (e.g. /home/.../hw-model-performance)
+#   BATCH_DIR   workspace-contained batch directory chosen by the caller; holds infra.tsv
 #   LANE        SHORT lane / work-item id — e.g. woe, 161, dt1 — NOT the lane
 #               directory name (`woe-lane-scoped-teardown`).
 #
