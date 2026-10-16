@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from amplifier_foundation import BundleRegistry
 from amplifier_foundation.updates import BundleStatus as _BundleStatus
 
 from amplifier_foundation.paths.resolution import get_amplifier_home
@@ -25,12 +26,12 @@ from ..lib.bundle_loader import AppBundleDiscovery
 # would drift from the one users see everywhere else.
 from ..lib.bundle_loader.prepare import _extract_behavior_name
 from ..lib.settings import AppSettings
-from ..paths import create_bundle_registry
 from ..paths import create_config_manager
 from ..utils.atomic_write import atomic_write_json
 from ..utils.display import create_sha_text
 from ..utils.error_format import escape_markup
 from ..utils.file_uri import file_uri_path_value as _file_uri_path_value
+from ..utils.include_graph import local_source_path
 from ..utils.settings_manager import save_update_last_check
 from ..utils.source_status import check_all_sources
 from ..utils.update_executor import execute_updates
@@ -234,7 +235,7 @@ def _classify_source_status(
     if getattr(source, "error", None):
         return "check_failed"
 
-    file_path = _file_uri_path(getattr(source, "source_uri", ""))
+    file_path = local_source_path(getattr(source, "source_uri", ""))
     if file_path is not None:
         if not file_path.exists():
             return "missing_path"
@@ -585,7 +586,7 @@ def _strip_uri_fragment(uri: str) -> str:
 def _is_bundle_source_key(key: str) -> bool:
     """Whether a key represents a source rather than a registry alias."""
 
-    return key.startswith(
+    return local_source_path(key) is not None or key.startswith(
         (_INVALID_APP_SOURCE_PREFIX, "git+", "zip+", "file://", "http://", "https://")
     )
 
@@ -776,6 +777,17 @@ def _bundle_row_sort_key(
     return (label.lower(), 0, label.lower())
 
 
+def _result_display_names(results: dict[str, "BundleStatus"]) -> dict[str, str]:
+    """One safe label plan for report headings, progress, and completion."""
+    labels = _bundle_display_names(results)
+    for key, status in results.items():
+        if isinstance(status, DeclaredModuleStatus):
+            qualifier = "local" if local_source_path(key) is not None else labels[key]
+            labels[key] = f"{status.module_id} ({qualifier})"
+    _resolve_remaining_label_collisions(labels)
+    return labels
+
+
 def _extract_module_name_from_uri(source_uri: str) -> str:
     """Extract a clean module name from a source URI.
 
@@ -846,6 +858,8 @@ def _collect_unified_modules(
     if bundle_results:
         for bundle_name, bundle_status in bundle_results.items():
             for source in bundle_status.sources:
+                if not source.source_uri:
+                    continue  # Owner-level diagnostics are not module sources.
                 # Skip any bundle repo (identified by normalized URI match)
                 if _normalize_git_url(source.source_uri) in bundle_source_uris:
                     continue
@@ -1056,8 +1070,8 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
 
     from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
 
-    discovery = AppBundleDiscovery()
-    registry = create_bundle_registry()
+    registry = BundleRegistry(home=get_amplifier_home(), persist=False)
+    discovery = AppBundleDiscovery(registry=registry)
     settings = AppSettings()
     bundle_overrides = settings.get_bundle_sources()
     if bundle_overrides:
@@ -1217,7 +1231,11 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
     # sources/git.py:697-709), the only thing that would ever move it is this
     # command. Skipping it here is what let a transitively-included @main
     # bundle sit indefinitely behind a green "All sources up to date".
-    results.update(await _check_transitive_bundle_status(set(seeds.values()), results))
+    results.update(
+        await _check_transitive_bundle_status(
+            set(seeds.values()), results, registry=registry
+        )
+    )
 
     from ..utils.include_graph import collect_declared_module_sources
 
@@ -1244,7 +1262,38 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
     if root_discovery_failed:
         failures.update({label: "Incomplete cached module discovery" for label in roots})
 
+    async def ensure_owner(uri: str, parent: str, root: str) -> BundleStatus:
+        owner_uri = _strip_uri_fragment(uri)
+        owner = next(
+            (
+                status
+                for status in results.values()
+                if _strip_uri_fragment(status.bundle_source or "") == owner_uri
+            ),
+            None,
+        )
+        if owner is None:
+            try:
+                owner = await _check_bundle_uri(owner_uri, owner_uri)
+            except Exception as exc:  # One bad owner must not hide independent actions.
+                owner = _failed_bundle_status(owner_uri, owner_uri, exc)
+            owner = TransitiveBundleStatus(
+                bundle_name=owner_uri,
+                bundle_source=owner_uri,
+                sources=owner.sources,
+                included_by=parent,
+                included_under=root,
+                is_pinned=any(source.is_pinned for source in owner.sources),
+            )
+            results[owner_uri] = owner
+        # An explicit Git module can also own this exact cache. Keep its
+        # selective dependency-install action instead of replacing it with a
+        # cache-only refresh, regardless of declaration order.
+        return owner
+
     for uri, declaration in declared.items():
+        if declaration.embedded_in:
+            continue
         try:
             parsed = parse_uri(uri)
             if git_handler.can_handle(parsed):
@@ -1273,25 +1322,22 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
             is_pinned=source_status.is_pinned,
         )
 
+    # Decide embedded coverage after all explicit Git module actions exist.
+    # Otherwise declaration order can create a redundant cache-only refresh.
+    for declaration in declared.values():
+        if declaration.embedded_in:
+            await ensure_owner(
+                declaration.embedded_in, declaration.declared_by, declaration.root
+            )
+
     for root, error in failures.items():
         root_uri = roots[root]
-        owner = next(
-            (
-                status
-                for status in results.values()
-                if not isinstance(status, DeclaredModuleStatus)
-                and status.bundle_source
-                and _strip_uri_fragment(status.bundle_source)
-                == _strip_uri_fragment(root_uri)
-            ),
-            None,
-        )
-        if owner is not None:
-            owner.sources.append(
-                SourceStatus(
-                    source_uri="", is_cached=False, has_update=None, error=error
-                )
+        owner = await ensure_owner(root_uri, root, root)
+        owner.sources.append(
+            SourceStatus(
+                source_uri="", is_cached=False, has_update=None, error=error
             )
+        )
 
     return results
 
@@ -1299,6 +1345,8 @@ async def _check_all_bundle_status() -> dict[str, "BundleStatus"]:
 async def _check_transitive_bundle_status(
     checked_uris: set[str],
     direct_results: dict[str, "BundleStatus"],
+    *,
+    registry: BundleRegistry | None = None,
 ) -> dict[str, "BundleStatus"]:
     """Status-check every git source reachable via ``includes:`` from *checked_uris*.
 
@@ -1315,7 +1363,9 @@ async def _check_transitive_bundle_status(
         return {}
 
     cache_dir = get_amplifier_home() / "cache"
-    registry = create_bundle_registry()
+    if registry is None:
+        registry = BundleRegistry(home=get_amplifier_home(), persist=False)
+        AppBundleDiscovery(registry=registry)
     bundle_overrides = AppSettings().get_bundle_sources()
     if bundle_overrides:
         from ..lib.bundle_loader.prepare import _build_include_source_resolver
@@ -1672,7 +1722,7 @@ def _show_concise_report(
         table.add_column("Remote", style="dim", justify="right")
         table.add_column("Status", justify="center")
 
-        display_names = _bundle_display_names(bundle_results.keys())
+        display_names = _result_display_names(bundle_results)
         bundle_plan = bundle_plan or _bundle_report_plan(bundle_results)
 
         for bundle_name in sorted(
@@ -1696,9 +1746,7 @@ def _show_concise_report(
             )
 
             # Add "(active)" marker if this is the active bundle
-            display_name = display_names[bundle_name]
-            if isinstance(bundle_status, DeclaredModuleStatus):
-                display_name = f"{bundle_status.module_id} ({display_name})"
+            display_name = escape_markup(display_names[bundle_name])
             if active_bundle and bundle_name == active_bundle:
                 display_name = f"{display_name} [green](active)[/green]"
 
@@ -1905,7 +1953,7 @@ def _show_verbose_report(
     # === BUNDLES ===
     if bundle_results:
         active_bundle = _get_active_bundle_name()
-        display_names = _bundle_display_names(bundle_results.keys())
+        display_names = _result_display_names(bundle_results)
         bundle_plan = bundle_plan or _bundle_report_plan(bundle_results)
         for bundle_name in sorted(
             bundle_results.keys(),
@@ -1921,9 +1969,7 @@ def _show_verbose_report(
                 heading = (
                     "Module" if isinstance(status, DeclaredModuleStatus) else "Bundle"
                 )
-                display_name = display_names[bundle_name]
-                if isinstance(status, DeclaredModuleStatus):
-                    display_name = f"{status.module_id} ({display_name})"
+                display_name = escape_markup(display_names[bundle_name])
                 console.print(
                     f"[bold cyan]{heading}: {display_name}"
                     f"{title_suffix}[/bold cyan]"
@@ -1934,6 +1980,8 @@ def _show_verbose_report(
                 console.print()
 
                 for source in sorted(status.sources, key=lambda x: x.source_uri):
+                    if not source.source_uri:
+                        continue  # Owner already shows this diagnostic.
                     # Extract module name from source URI for cleaner display
                     source_name = source.source_uri
                     if "/" in source_name:
@@ -2114,7 +2162,7 @@ def _refresh_skills_cache(console: Console) -> None:
 def _deduplicate_declared_module_caches(
     report, bundle_results: dict[str, _BundleStatus]
 ) -> None:
-    """Let exact declared module actions own their legacy repository refresh.
+    """Let declared module and recovered owner actions own legacy refreshes.
 
     Cache identity comes from Foundation's URL + ref key, never the displayed
     module name. Legacy root-only entries cannot describe subdirectory installs.
@@ -2139,12 +2187,13 @@ def _deduplicate_declared_module_caches(
         return None
 
     for status in bundle_results.values():
-        if not isinstance(status, DeclaredModuleStatus):
+        if not isinstance(status, TransitiveBundleStatus):
             continue
-        for original in status.overridden_sources:
-            key = cache_key(original)
-            if key is not None:
-                overridden.setdefault(key, set()).add(original)
+        if isinstance(status, DeclaredModuleStatus):
+            for original in status.overridden_sources:
+                key = cache_key(original)
+                if key is not None:
+                    overridden.setdefault(key, set()).add(original)
         uri = status.bundle_source
         if not uri:
             continue
@@ -2257,10 +2306,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
     bundle_results = asyncio.run(_check_all_bundle_status())
     _deduplicate_declared_module_caches(report, bundle_results)
     bundle_plan = _bundle_report_plan(bundle_results)
-    bundle_labels = _bundle_display_names(bundle_results.keys())
-    for name, status in bundle_results.items():
-        if isinstance(status, DeclaredModuleStatus):
-            bundle_labels[name] = f"{status.module_id} ({bundle_labels[name]})"
+    bundle_labels = _result_display_names(bundle_results)
     has_bundle_updates = (
         any(s.has_updates for s in bundle_results.values()) if bundle_results else False
     )
@@ -2393,7 +2439,7 @@ def update(check_only: bool, yes: bool, force: bool, verbose: bool):
 
     def _on_update_progress(name: str, phase: str) -> None:
         label = _format_update_progress(name, phase)
-        spinner.update(f"[dim]{label}[/dim]")
+        spinner.update(f"[dim]{escape_markup(label)}[/dim]")
 
     try:
         result = asyncio.run(

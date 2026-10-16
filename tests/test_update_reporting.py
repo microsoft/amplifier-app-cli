@@ -276,6 +276,53 @@ def _command_patches(report, bundle_results, *, details=None, execute_calls=None
     )
 
 
+@pytest.mark.parametrize("verbose", [False, True])
+def test_local_module_labels_are_safe_and_visibly_unique(tmp_path, monkeypatch, verbose):
+    results = {}
+    # Letter-leading hash suffixes look like Rich tags unless labels are escaped.
+    for index in range(100):
+        path = tmp_path / f"private-source-{index}"
+        key = str(path)
+        if update_module._source_hash_suffixes([key])[key][0] not in "abcdef":
+            continue
+        path.mkdir()
+        results[key] = update_module.DeclaredModuleStatus(
+            bundle_name="tool-shared", bundle_source=key, module_id="tool-shared",
+            sources=[_source(key, is_cached=True, has_update=None)],
+        )
+        if len(results) == 2:
+            break
+    assert len(results) == 2
+    labels = update_module._result_display_names(results)
+    output = io.StringIO()
+    monkeypatch.setattr(update_module, "console", Console(file=output, width=240))
+    report = UpdateReport(local_file_sources=[], cached_git_sources=[])
+    with ExitStack() as stack:
+        for boundary in _command_patches(report, results):
+            stack.enter_context(boundary)
+        result = CliRunner().invoke(update, ["--check-only", *(["--verbose"] if verbose else [])])
+    assert result.exit_code == 0, result.exception
+    assert len(set(labels.values())) == 2
+    for label in labels.values():
+        assert label in output.getvalue()
+    assert str(tmp_path) not in output.getvalue()
+    assert "private-source" not in output.getvalue()
+    assert "Local" in output.getvalue()
+
+
+def test_native_path_classification_preserves_literals_and_does_not_claim_aliases(tmp_path):
+    local = tmp_path / "literal %20"
+    local.mkdir()
+    for uri in (str(local), local.as_uri()):
+        assert _classify_source_status(_source(uri, is_cached=True, has_update=None)) == "local"
+    assert _classify_source_status(
+        _source(str(local / "missing"), is_cached=False, has_update=None)
+    ) == "missing_path"
+    assert _classify_source_status(
+        _source("registered/name", is_cached=True, has_update=None)
+    ) == "not_checked"
+
+
 def test_missing_bundle_caches_are_downloads_not_updates(monkeypatch):
     """A cache reset keeps lazy downloads, but calls the first fetch a download."""
 

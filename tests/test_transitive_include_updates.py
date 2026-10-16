@@ -119,6 +119,185 @@ def _direct_status(name: str, uri: str):
     return BundleStatus(bundle_name=name, bundle_source=uri, sources=[])
 
 
+def _write_installable_fixture(path: Path, name: str, value: str) -> None:
+    """A network-free PEP 660 backend; installs only into this test's venv."""
+    path.mkdir(parents=True, exist_ok=True)
+    (path / f"{name}.py").write_text(f"VALUE = {value!r}\n", encoding="utf-8")
+    (path / "pyproject.toml").write_text(
+        f'[project]\nname = "{name}"\nversion = "1.0.0"\n'
+        '[build-system]\nrequires = []\nbuild-backend = "fixture_backend"\n'
+        'backend-path = ["."]\n',
+        encoding="utf-8",
+    )
+    (path / "fixture_backend.py").write_text(
+        "from pathlib import Path\n"
+        "from zipfile import ZipFile\n"
+        f"NAME = {name!r}\n"
+        "def build_editable(wheel_directory, config_settings=None, metadata_directory=None):\n"
+        "    wheel = f'{NAME}-1.0.0-py3-none-any.whl'\n"
+        "    dist = f'{NAME}-1.0.0.dist-info'\n"
+        "    files = {\n"
+        "        f'{NAME}.py': Path(__file__).with_name(f'{NAME}.py').read_text(),\n"
+        "        f'{dist}/METADATA': f'Metadata-Version: 2.1\\n"
+        "Name: {NAME}\\nVersion: 1.0.0\\n',\n"
+        "        f'{dist}/WHEEL': 'Wheel-Version: 1.0\\nGenerator: fixture\\n"
+        "Root-Is-Purelib: true\\nTag: py3-none-any\\n',\n"
+        "    }\n"
+        "    files[f'{dist}/RECORD'] = ''.join(f'{key},,\\n' for key in files)"
+        " + f'{dist}/RECORD,,\\n'\n"
+        "    with ZipFile(Path(wheel_directory) / wheel, 'w') as archive:\n"
+        "        for key, content in files.items():\n"
+        "            archive.writestr(key, content)\n"
+        "    return wheel\n"
+        "build_wheel = build_editable\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_actual_update_advances_module_bytes_and_preserves_unrelated_cache(
+    tmp_path, amplifier_home, monkeypatch, embedded
+):
+    """Real Click -> Git refresh -> isolated installation, no user's runtime."""
+    import asyncio
+    import io
+    from unittest.mock import AsyncMock
+
+    from amplifier_foundation import BundleRegistry
+    from amplifier_foundation.modules.activator import ModuleActivator
+    from amplifier_foundation.paths.resolution import parse_uri
+    from amplifier_foundation.sources.git import GitSourceHandler
+    from click.testing import CliRunner
+    from rich.console import Console
+
+    from amplifier_app_cli.commands import update as updater
+    from amplifier_app_cli.lib.bundle_loader import discovery
+    from amplifier_app_cli.utils.source_status import UpdateReport
+    from amplifier_app_cli.utils.update_executor import ExecutionResult
+
+    repo = tmp_path / "module-repo"
+    _make_repo(repo, _bundle_md("module-owner"))
+    for name in ("fixture_tool", "fixture_hook"):
+        _write_installable_fixture(repo / "modules" / name, name, "old")
+    _commit(repo, "add modules")
+    module_uri = _git_uri(repo, "main")
+    sources = [
+        module_uri + f"#subdirectory=modules/{name}"
+        for name in ("fixture_tool", "fixture_hook")
+    ]
+    if embedded:
+        parent_uri = module_uri
+        source_values = ["./modules/fixture_tool", "./modules/fixture_hook"]
+    else:
+        parent = tmp_path / "parent-repo"
+        _make_repo(parent, _bundle_md("current-parent"))
+        parent_uri = _git_uri(parent, "main")
+        source_values = sources
+    parent_repo = repo if embedded else parent
+    (parent_repo / "bundle.md").write_text(
+        "---\nbundle: {name: fixture-parent}\n"
+        f"tools:\n  - module: tool-fixture\n    source: {source_values[0]}\n"
+        f"hooks:\n  - module: hooks-fixture\n    source: {source_values[1]}\n---\n",
+        encoding="utf-8",
+    )
+    _commit(parent_repo, "declare modules")
+    cache = amplifier_home / "cache"
+    parent_cache = asyncio.run(_prime_cache(parent_uri, cache))
+    module_cache = asyncio.run(_prime_cache(module_uri, cache))
+    unrelated_repo = tmp_path / "unrelated"
+    _make_repo(unrelated_repo, _bundle_md("unrelated"))
+    unrelated = asyncio.run(_prime_cache(_git_uri(unrelated_repo, "main"), cache))
+    unrelated_before = {
+        p.relative_to(unrelated): p.read_bytes()
+        for p in unrelated.rglob("*") if p.is_file()
+    }
+    parent_head = _cached_head(parent_cache)
+    for name in ("fixture_tool", "fixture_hook"):
+        _write_installable_fixture(repo / "modules" / name, name, "new")
+    new_head = _commit(repo, "advance only module sources")
+    assert _cached_head(module_cache) != new_head
+
+    registry = BundleRegistry(home=amplifier_home)
+    registry.register({"fixture-parent": parent_uri})
+    registry.save()
+    monkeypatch.setattr(discovery, "WELL_KNOWN_BUNDLES", {})
+    monkeypatch.setattr(
+        "amplifier_app_cli.utils.umbrella_discovery.discover_umbrella_source", lambda: None
+    )
+    monkeypatch.setattr(updater, "check_all_sources", AsyncMock(
+        return_value=UpdateReport(local_file_sources=[], cached_git_sources=[])
+    ))
+    monkeypatch.setattr(updater, "execute_updates", AsyncMock(
+        return_value=ExecutionResult(success=True, updated=[], messages=[])
+    ))
+    monkeypatch.setattr(updater, "_refresh_skills_cache", lambda console: None)
+    monkeypatch.setattr(updater, "save_update_last_check", lambda value: None)
+    output = io.StringIO()
+    monkeypatch.setattr(updater, "console", Console(file=output, width=240))
+    # update_bundle has no target-interpreter argument; override only its install
+    # destination, retaining its real dependency-install implementation.
+    venv = tmp_path / "install-venv"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
+    real_init = ModuleActivator.__init__
+
+    def isolated_init(self, *args, **kwargs):
+        real_init(self, *args, install_python=str(venv / "bin" / "python"), **kwargs)
+
+    monkeypatch.setattr(ModuleActivator, "__init__", isolated_init)
+    refreshed = []
+    installed_paths = []
+    real_update = GitSourceHandler.update
+    real_install = ModuleActivator._install_dependencies
+
+    async def recording_update(self, parsed, cache_dir):
+        refreshed.append(parsed)
+        return await real_update(self, parsed, cache_dir)
+
+    async def recording_install(self, path):
+        installed_paths.append(path)
+        return await real_install(self, path)
+
+    monkeypatch.setattr(GitSourceHandler, "update", recording_update)
+    monkeypatch.setattr(ModuleActivator, "_install_dependencies", recording_install)
+    for flags in (["--check-only"], ["--check-only", "--force"]):
+        before = {p.relative_to(amplifier_home): p.read_bytes() if p.is_file() else None
+                  for p in amplifier_home.rglob("*")}
+        checked = CliRunner().invoke(updater.update, flags)
+        assert checked.exit_code == 0, checked.exception
+        assert {p.relative_to(amplifier_home): p.read_bytes() if p.is_file() else None
+                for p in amplifier_home.rglob("*")} == before
+        assert not refreshed and not installed_paths
+    result = CliRunner().invoke(updater.update, ["--yes"])
+    assert result.exit_code == 0, (result.exception, output.getvalue())
+    assert "Update complete" in output.getvalue()
+    assert _cached_head(module_cache) == new_head
+    for name in ("fixture_tool", "fixture_hook"):
+        assert (module_cache / "modules" / name / f"{name}.py").read_text() == "VALUE = 'new'\n"
+    if embedded:
+        assert refreshed == [parse_uri(parent_uri)]
+        assert not installed_paths
+        assert "Updated bundle:" in output.getvalue()
+        assert "Updated module:" not in output.getvalue()
+        assert not list(venv.rglob("fixture_tool.py"))
+    else:
+        assert refreshed == [parse_uri(uri) for uri in sources]
+        assert installed_paths == [
+            module_cache / "modules" / name
+            for name in ("fixture_tool", "fixture_hook")
+        ]
+        assert _cached_head(parent_cache) == parent_head
+        installed = subprocess.run(
+            [str(venv / "bin" / "python"), "-c",
+             "import fixture_tool, fixture_hook; print(fixture_tool.VALUE, fixture_hook.VALUE)"],
+            check=True, capture_output=True, text=True,
+        )
+        assert installed.stdout.strip() == "new new"
+    assert {
+        p.relative_to(unrelated): p.read_bytes()
+        for p in unrelated.rglob("*") if p.is_file()
+    } == unrelated_before
+
+
 # ---------------------------------------------------------------------------
 # The core defect: an @main include that only a walk can find
 # ---------------------------------------------------------------------------

@@ -22,11 +22,12 @@ from rich.console import Console
 from amplifier_app_cli.commands import update as updater
 from amplifier_app_cli.lib.bundle_loader import discovery as discovery_module
 from amplifier_app_cli.lib.settings import AppSettings
-from amplifier_app_cli.paths import create_bundle_registry
+from amplifier_app_cli.utils import module_cache, source_status, update_executor
 from amplifier_app_cli.utils.file_uri import file_uri_path_value
 from amplifier_app_cli.utils.include_graph import (
-    _local_path_for,
+    _cached_source_for,
     collect_declared_module_sources,
+    local_source_path,
 )
 from amplifier_app_cli.utils.source_status import CachedGitStatus, UpdateReport
 from amplifier_app_cli.utils.update_executor import ExecutionResult
@@ -108,11 +109,11 @@ def scenario(tmp_path, monkeypatch):
     settings.get_provider_overrides.return_value = []
     settings.get_added_bundles.return_value = {}
     monkeypatch.setattr(updater, "AppSettings", lambda: settings)
-    monkeypatch.setattr(updater, "create_bundle_registry", lambda: registry)
+    monkeypatch.setattr(updater, "BundleRegistry", lambda **kwargs: registry)
     monkeypatch.setattr(
         updater,
         "AppBundleDiscovery",
-        lambda: SimpleNamespace(list_cached_root_bundles=lambda: ["root"]),
+        lambda **kwargs: SimpleNamespace(list_cached_root_bundles=lambda: ["root"]),
     )
     monkeypatch.setattr(
         updater,
@@ -578,7 +579,7 @@ def test_real_discovery_walks_all_same_repo_root_manifests_before_row_dedup(
     monkeypatch.setattr(
         updater, "AppBundleDiscovery", discovery_module.AppBundleDiscovery
     )
-    monkeypatch.setattr(updater, "create_bundle_registry", create_bundle_registry)
+    monkeypatch.setattr(updater, "BundleRegistry", BundleRegistry)
 
     discovery = discovery_module.AppBundleDiscovery()
     assert discovery.list_cached_root_bundles() == ["root"]
@@ -664,7 +665,10 @@ def test_unknown_missing_module_is_not_current_or_an_update_action(
     scenario.apply.assert_not_called()
 
 
-def test_cached_bundle_include_file_uri_round_trip_decodes_once(scenario, tmp_path):
+@pytest.mark.parametrize("fragment", [False, True])
+def test_cached_bundle_include_file_uri_round_trip_decodes_once(
+    scenario, tmp_path, fragment
+):
     local = tmp_path / "manifest space %20.yaml"
     extra = MODULES + "#subdirectory=extra"
     local.write_text(
@@ -676,8 +680,11 @@ def test_cached_bundle_include_file_uri_round_trip_decodes_once(scenario, tmp_pa
         ),
         encoding="utf-8",
     )
-    uri = local.as_uri()
-    assert _local_path_for(uri, scenario.cache) == local
+    uri = (
+        tmp_path.as_uri() + f"#subdirectory={local.name}"
+        if fragment else local.as_uri()
+    )
+    assert _cached_source_for(uri, scenario.cache, scenario.registry).active_path == local
     scenario.write_bundle(CHILD, {"includes": [{"bundle": uri}]})
 
     found, failures = asyncio.run(
@@ -697,7 +704,538 @@ def test_ordinary_manifest_path_preserves_literal_percent_escape(tmp_path):
     local = tmp_path / "manifest space %20.yaml"
     local.write_text("bundle: {name: literal-path}\n", encoding="utf-8")
 
-    assert _local_path_for(str(local), tmp_path / "cache") == local
+    registry = BundleRegistry(home=tmp_path, persist=False)
+    assert _cached_source_for(str(local), tmp_path / "cache", registry).active_path == local
+
+
+def test_relative_embedded_module_is_covered_by_exact_owner(scenario):
+    embedded = scenario.active_path(ROOT) / "modules" / "tool-embedded"
+    embedded.mkdir(parents=True)
+    scenario.write_bundle(
+        APP, {"tools": [{"module": "tool-embedded", "source": "../modules/tool-embedded"}]}
+    )
+    found, failures = asyncio.run(
+        collect_declared_module_sources(
+            {"app": APP}, registry=scenario.registry, cache_dir=scenario.cache
+        )
+    )
+    assert not failures
+    assert found[str(embedded)].declaring_uri == APP
+    assert found[str(embedded)].embedded_in == ROOT
+    statuses = asyncio.run(updater._check_all_bundle_status())
+    assert str(embedded) not in statuses
+    scenario.behind.clear()
+    output = scenario.invoke("--check-only")
+    assert "tool-embedded" not in output
+    assert str(scenario.cache) not in output
+    assert "All sources up to date" in output
+
+
+@pytest.mark.parametrize("source_form", ["native", "file", "file_fragment"])
+def test_local_module_effective_path_preserves_literal_percent_and_hash(
+    scenario, source_form
+):
+    root = scenario.active_path(ROOT)
+    local = root / "module space %20#literal"
+    local.mkdir()
+    source = {
+        "native": str(local),
+        "file": local.as_uri(),
+        "file_fragment": root.as_uri() + f"#subdirectory={local.name}",
+    }[source_form]
+    assert local_source_path(source) == local
+    assert updater._classify_source_status(
+        SourceStatus(source_uri=source, is_cached=True, has_update=None)
+    ) == "local"
+    scenario.write_bundle(
+        APP, {"tools": [{"module": "tool-embedded", "source": source}]}
+    )
+    found, failures = asyncio.run(
+        collect_declared_module_sources(
+            {"app": APP}, registry=scenario.registry, cache_dir=scenario.cache
+        )
+    )
+    assert not failures
+    assert found[source].embedded_in == ROOT
+    assert source not in asyncio.run(updater._check_all_bundle_status())
+
+
+@pytest.mark.parametrize("as_file_uri", [False, True])
+def test_explicit_local_override_inside_cache_stays_visible(scenario, as_file_uri):
+    local = scenario.active_path(ROOT) / "modules" / "literal %20"
+    local.mkdir(parents=True)
+    uri = local.as_uri() if as_file_uri else str(local)
+    scenario.write_bundle(APP, {"tools": [{"module": "tool-worker", "source": uri}]})
+    scenario.settings.get_source_overrides.return_value = {"tool-worker": uri}
+    found, failures = asyncio.run(
+        collect_declared_module_sources(
+            {"app": APP},
+            registry=scenario.registry,
+            cache_dir=scenario.cache,
+            overrides={"tool-worker": uri},
+        )
+    )
+    assert not failures and found[uri].embedded_in is None
+    scenario.behind.clear()
+    output = scenario.invoke("--check-only")
+    assert "tool-worker (local)" in output and "Local" in output
+    assert str(scenario.cache) not in output
+    assert "Not checked" not in output
+    scenario.invoke("--yes")
+    assert not scenario.refreshed
+
+
+@pytest.mark.parametrize("kind", ["missing", "sibling", "escape", "symlink"])
+@pytest.mark.parametrize("file_fragment", [False, True])
+def test_unproven_local_ownership_is_not_hidden(scenario, kind, file_fragment):
+    root = scenario.active_path(ROOT)
+    sibling = scenario.active_path(CHILD) / "module"
+    sibling.mkdir()
+    if kind == "missing":
+        source = str(root / "missing")
+    elif kind == "sibling":
+        source = str(sibling)
+    elif kind == "escape":
+        source = str(root / ".." / sibling.parent.name / "module")
+    else:
+        (root / "linked").symlink_to(sibling, target_is_directory=True)
+        source = str(root / "linked")
+    expected_path = local_source_path(source)
+    assert expected_path is not None
+    if file_fragment:
+        subpath = (
+            str(sibling) if kind == "sibling" else str(expected_path.relative_to(root))
+        )
+        source = root.as_uri() + f"#subdirectory={subpath}"
+    assert local_source_path(source) == expected_path
+    scenario.write_bundle(APP, {"tools": [{"module": "tool-local", "source": source}]})
+    found, _ = asyncio.run(
+        collect_declared_module_sources(
+            {"app": APP}, registry=scenario.registry, cache_dir=scenario.cache
+        )
+    )
+    assert found[source].embedded_in is None
+    statuses = asyncio.run(updater._check_all_bundle_status())
+    assert statuses[source].bundle_source == source
+    assert updater._classify_source_status(statuses[source].sources[0]) == (
+        "missing_path" if kind == "missing" else "local"
+    )
+    output = scenario.invoke("--check-only")
+    assert "tool-local (local)" in output
+    assert ("Missing path" if kind == "missing" else "Local") in output
+
+
+def test_disagreeing_declarations_do_not_hide_shared_local_source(scenario):
+    local = scenario.active_path(ROOT) / "module"
+    local.mkdir()
+    declaration = {"tools": [{"module": "tool-shared", "source": str(local)}]}
+    scenario.write_bundle(APP, declaration)
+    scenario.write_bundle(CHILD, declaration)
+    found, _ = asyncio.run(
+        collect_declared_module_sources(
+            {"app": APP, "other": CHILD},
+            registry=scenario.registry,
+            cache_dir=scenario.cache,
+        )
+    )
+    assert found[str(local)].embedded_in is None
+
+
+@pytest.mark.parametrize("owner", [ROOT.replace("@main", "@next"), ROOT.replace(".git@", "@")])
+def test_embedded_owner_missing_after_report_dedup_gets_exact_cache_row(scenario, owner):
+    manifest = owner + "#subdirectory=behaviors/extra.yaml"
+    local = scenario.active_path(owner) / "module"
+    local.mkdir(parents=True)
+    scenario.write_bundle(
+        manifest, {"tools": [{"module": "tool-embedded", "source": "../module"}]}
+    )
+    scenario.registry.register({"different-cache": manifest})
+    scenario.registry.save()
+    # Reproduce repository row dedup omitting this root. Seeds still include it.
+    scenario.behind.clear()
+    scenario.behind.add(owner)
+    statuses = asyncio.run(updater._check_all_bundle_status())
+    assert str(local) not in statuses
+    assert statuses[owner].bundle_source == owner
+    assert isinstance(statuses[owner], updater.TransitiveBundleStatus)
+    scenario.invoke("--yes")
+    assert scenario.refreshed == [owner]
+    scenario.installs.assert_not_called()
+
+
+@pytest.mark.parametrize("namespace", ["shared-metadata", "modes"])
+def test_cached_extensionless_source_bound_includes(scenario, namespace):
+    # Containing root supplies only bindings: its own includes are not traversed.
+    scenario.write_bundle(ROOT, {"includes": ["not-registered"]})
+    if namespace == "modes":
+        root_manifest = scenario.active_path(ROOT) / "bundle.md"
+        root_manifest.write_text("---\nbundle: {name: modes}\n---\n")
+    scenario.write_bundle(
+        APP,
+        {"bundle": {"name": "shared-metadata", "namespace_root": ".."},
+         "includes": [f"{namespace}:behaviors/extra"]},
+    )
+    extra = ROOT + "#subdirectory=behaviors/extra.yaml"
+    scenario.write_bundle(
+        extra,
+        {"tools": [{"module": "tool-extra", "source": TOOL}],
+         "includes": [APP]},
+    )
+    # A conflicting registration must not replace this manifest's selected ref.
+    scenario.registry.register({namespace: CHILD})
+    assert scenario.registry.get_state(namespace).local_path is None
+    found, failures = asyncio.run(
+        collect_declared_module_sources(
+            {"app": APP}, registry=scenario.registry, cache_dir=scenario.cache
+        )
+    )
+    assert not failures
+    assert set(found) == {TOOL}
+    assert found[TOOL].declaring_uri == extra
+    scenario.forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+def test_incomplete_diagnostic_never_becomes_blank_module_row(scenario, verbose):
+    scenario.behind.clear()
+    scenario.active_path(APP).unlink()
+    statuses = asyncio.run(updater._check_all_bundle_status())
+    assert updater._collect_unified_modules(scenario.report, statuses) == {}
+    output = scenario.invoke("--check-only", *(["--verbose"] if verbose else []))
+    assert "incomplete module discovery" in output
+    assert "could not be checked" in output
+    assert "Modules" not in output
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_real_check_registry_does_not_persist_stale_path_cleanup(scenario, monkeypatch, force):
+    scenario.registry.get_state("root").local_path = str(scenario.cache / "gone")
+    scenario.registry.save()
+    home = scenario.cache.parent
+    before = {
+        p.relative_to(home): p.read_bytes() if p.is_file() else None
+        for p in home.rglob("*")
+    }
+    monkeypatch.setattr(discovery_module, "WELL_KNOWN_BUNDLES", {})
+    monkeypatch.setattr(
+        "amplifier_app_cli.lib.settings.AppSettings", lambda: scenario.settings
+    )
+    monkeypatch.setattr(updater, "AppBundleDiscovery", discovery_module.AppBundleDiscovery)
+    monkeypatch.setattr(updater, "BundleRegistry", BundleRegistry)
+    scenario.invoke("--check-only", *(["--force"] if force else []))
+    assert {
+        p.relative_to(home): p.read_bytes() if p.is_file() else None
+        for p in home.rglob("*")
+    } == before
+    assert not scenario.refreshed
+    for boundary in (
+        scenario.apply, scenario.installs, scenario.execute, scenario.clear,
+        scenario.skills, scenario.save, scenario.forbidden,
+    ):
+        boundary.assert_not_called()
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_omitted_owner_discovery_failure_cannot_be_green(scenario, malformed):
+    owner = ROOT.replace("@main", "@next")
+    manifest = owner + "#subdirectory=behaviors/extra.yaml"
+    path = scenario.write_bundle(manifest, {})
+    if malformed:
+        path.write_text("bundle: [broken\n")
+    else:
+        path.unlink()
+    scenario.registry.register({"omitted": manifest})
+    scenario.behind.clear()
+    output = scenario.invoke("--check-only")
+    assert "incomplete module discovery" in output
+    assert "All sources up to date" not in output
+    assert owner in scenario.checked
+
+
+def test_recovered_owner_status_failure_keeps_independent_module_action(scenario):
+    owner = ROOT.replace("@main", "@next")
+    manifest = owner + "#subdirectory=behaviors/extra.yaml"
+    (scenario.active_path(owner) / "module").mkdir(parents=True)
+    scenario.write_bundle(
+        manifest, {"tools": [{"module": "tool-embedded", "source": "../module"}]}
+    )
+    scenario.registry.register({"omitted": manifest})
+    scenario.errors[owner] = TimeoutError("private-token")
+    output = scenario.invoke("--check-only")
+    assert "timeout" in output and "private-token" not in output
+    assert "Update 2 modules" in output
+
+
+@pytest.mark.parametrize("link", ["manifest", "cache"])
+def test_escaped_declaring_manifest_is_incomplete_not_embedded(scenario, link):
+    root = scenario.active_path(ROOT)
+    outside = scenario.active_path(CHILD)
+    (root / "module").mkdir()
+    scenario.write_bundle(
+        CHILD, {"tools": [{"module": "tool-embedded", "source": str(root / "module")}]}
+    )
+    if link == "manifest":
+        (root / "bundle.md").unlink()
+        (root / "bundle.md").symlink_to(outside / "bundle.md")
+    else:
+        # Only delete this fixture's own empty files/directories.
+        (root / "bundle.md").unlink()
+        scenario.active_path(APP).unlink()
+        (root / "behaviors").rmdir()
+        (root / "module").rmdir()
+        root.rmdir()
+        root.symlink_to(outside, target_is_directory=True)
+    found, failures = asyncio.run(
+        collect_declared_module_sources(
+            {"root": ROOT}, registry=scenario.registry, cache_dir=scenario.cache
+        )
+    )
+    assert not found
+    assert failures == {"root": "Incomplete cached module discovery"}
+
+
+@pytest.mark.parametrize("stale_path", [False, True])
+def test_foreign_cached_namespace_uses_selected_uri_and_namespace_root(scenario, stale_path):
+    selected = CHILD.replace("@main", "@next") + "#subdirectory=bundles/foreign/bundle.yaml"
+    scenario.write_bundle(
+        selected, {"bundle": {"name": "foreign", "namespace_root": "../.."},
+                   "includes": ["not-traversed"]}
+    )
+    extra = CHILD.replace("@main", "@next") + "#subdirectory=behaviors/extra.yaml"
+    scenario.write_bundle(extra, {"tools": [{"module": "tool-extra", "source": TOOL}]})
+    scenario.registry.register({"foreign": selected})
+    if stale_path:
+        scenario.registry.get_state("foreign").local_path = str(scenario.active_path(ROOT))
+    scenario.registry.save()
+    before = (scenario.cache.parent / "registry.json").read_bytes()
+    scenario.write_bundle(APP, {"includes": ["foreign:behaviors/extra"]})
+    found, failures = asyncio.run(
+        collect_declared_module_sources(
+            {"app": APP}, registry=scenario.registry, cache_dir=scenario.cache
+        )
+    )
+    assert not failures and set(found) == {TOOL}
+    assert found[TOOL].declaring_uri == extra
+    assert (scenario.cache.parent / "registry.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("override_first", [False, True])
+def test_shared_local_source_with_one_explicit_override_never_hidden(scenario, override_first):
+    local = scenario.active_path(ROOT) / "module"
+    local.mkdir()
+    rows = [
+        {"module": "tool-embedded", "source": str(local)},
+        {"module": "tool-override", "source": str(local)},
+    ]
+    scenario.write_bundle(APP, {"tools": rows[::-1] if override_first else rows})
+    found, _ = asyncio.run(
+        collect_declared_module_sources(
+            {"app": APP}, registry=scenario.registry, cache_dir=scenario.cache,
+            overrides={"tool-override": str(local)},
+        )
+    )
+    assert found[str(local)].embedded_in is None
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_foreign_namespace_requires_its_selected_manifest(scenario, malformed):
+    selected = CHILD + "#subdirectory=bundles/foreign/bundle.yaml"
+    path = scenario.write_bundle(selected, {"bundle": {"name": "foreign"}})
+    if malformed:
+        path.write_text("bundle: [broken\n")
+    else:
+        path.unlink()
+    # The resource exists at the guessed fallback path, but missing namespace
+    # metadata cannot establish that this is the selected namespace's resource.
+    scenario.write_bundle(
+        CHILD + "#subdirectory=behaviors/extra.yaml",
+        {"tools": [{"module": "tool-extra", "source": TOOL}]},
+    )
+    scenario.registry.register({"foreign": selected})
+    scenario.write_bundle(APP, {"includes": ["foreign:behaviors/extra"]})
+    found, failures = asyncio.run(
+        collect_declared_module_sources(
+            {"app": APP}, registry=scenario.registry, cache_dir=scenario.cache
+        )
+    )
+    assert not found
+    assert failures == {"app": "Incomplete cached module discovery"}
+
+
+def test_explicit_extensionless_git_include_keeps_uri_identity(scenario):
+    extensionless = CHILD + "#subdirectory=behaviors/extra"
+    scenario.write_bundle(
+        extensionless + ".yaml", {"tools": [{"module": "tool-extra", "source": TOOL}]}
+    )
+    scenario.write_bundle(APP, {"includes": [extensionless]})
+    found, failures = asyncio.run(
+        collect_declared_module_sources(
+            {"app": APP}, registry=scenario.registry, cache_dir=scenario.cache
+        )
+    )
+    assert not failures and found[TOOL].declaring_uri == extensionless
+
+
+@pytest.mark.parametrize("embedded_first", [False, True])
+@pytest.mark.parametrize("diagnostic", [False, True])
+@pytest.mark.parametrize("subdirectory", [False, True])
+def test_exact_git_module_install_survives_embedded_owner_recovery(
+    scenario, embedded_first, diagnostic, subdirectory
+):
+    owner = ROOT.replace("@main", "@next")
+    explicit = owner + "#subdirectory=installable" if subdirectory else owner
+    manifest = owner + "#subdirectory=behaviors/extra.yaml"
+    module = scenario.active_path(owner) / "embedded"
+    module.mkdir(parents=True)
+    installable = scenario.active_path(explicit)
+    installable.mkdir(exist_ok=True)
+    (installable / "pyproject.toml").write_text(
+        '[project]\nname = "fixture-root-module"\nversion = "1.0.0"\n'
+    )
+    rows = [
+        {"module": "tool-root-git", "source": explicit},
+        {"module": "tool-embedded", "source": "../embedded"},
+    ]
+    scenario.write_bundle(
+        manifest,
+        {"tools": rows[::-1] if embedded_first else rows,
+         "includes": ["missing:absent"] if diagnostic else []},
+    )
+    scenario.registry.register({"omitted": manifest})
+    scenario.behind.clear()
+    scenario.behind.add(explicit)
+    statuses = asyncio.run(updater._check_all_bundle_status())
+    assert isinstance(statuses[explicit], updater.DeclaredModuleStatus)
+    assert sum(
+        s.bundle_source.split("#")[0] == owner for s in statuses.values()
+    ) == 1
+    output = scenario.invoke("--yes")
+    assert scenario.refreshed == [explicit]
+    assert scenario.apply.await_args.kwargs["selective"] == [explicit]
+    assert scenario.apply.await_args.kwargs["install_deps"] is True
+    scenario.installs.assert_awaited_once_with(installable)
+    if diagnostic:
+        assert "incomplete module discovery" in output
+
+
+@pytest.mark.parametrize("install_source", ["none", "root", "subdirectory"])
+def test_hybrid_owner_coalesces_real_legacy_refresh_without_losing_module_install(
+    scenario, monkeypatch, install_source
+):
+    owner = ROOT.replace("@main", "@next")
+    manifest = owner + "#subdirectory=behaviors/hybrid.yaml"
+    controls = [
+        owner.replace("@next", "@other"),
+        owner.replace(".git@", "@"),
+        owner.replace("/team/", "/other/"),
+    ]
+
+    def seed_module_cache(uri, module_id):
+        path = scenario.active_path(uri)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "pyproject.toml").write_text(
+            f'[project]\nname = "{module_id}"\nversion = "1.0.0"\n'
+            '[project.entry-points."amplifier.modules"]\n'
+            f'"{module_id}" = "fixture:mount"\n',
+            encoding="utf-8",
+        )
+        parsed = parse_uri(uri)
+        (path / ".amplifier_cache_meta.json").write_text(
+            json.dumps({
+                "git_url": f"https://{parsed.host}{parsed.path}",
+                "ref": parsed.ref,
+                "commit": "a" * 40,
+            }),
+            encoding="utf-8",
+        )
+        return path
+
+    owner_path = seed_module_cache(owner, "tool-hybrid")
+    for index, uri in enumerate(controls):
+        seed_module_cache(uri, f"tool-control-{index}")
+    (owner_path / "embedded").mkdir()
+    rows = [{"module": "tool-embedded", "source": "../embedded"}]
+    explicit = owner
+    if install_source != "none":
+        if install_source == "subdirectory":
+            explicit += "#subdirectory=installable"
+            installable = scenario.active_path(explicit)
+            installable.mkdir()
+            (installable / "pyproject.toml").write_text(
+                '[project]\nname = "fixture-installable"\nversion = "1.0.0"\n',
+                encoding="utf-8",
+            )
+        rows.append({"module": "tool-independent", "source": explicit})
+    scenario.write_bundle(ROOT, {})
+    scenario.write_bundle(manifest, {"tools": rows})
+    assert not (owner_path / "bundle.md").exists()
+    assert not (owner_path / "bundle.yaml").exists()
+    scenario.registry.register({"hybrid": manifest})
+    scenario.registry.save()
+    scenario.settings.get_app_bundles.return_value = []
+    scenario.behind.clear()
+    scenario.behind.update({owner, explicit})
+
+    # Use real discovery, legacy scanner, Click, executor and cache refresher.
+    # Only settings, remote status/update and dependency installation are faked.
+    monkeypatch.setattr(discovery_module, "WELL_KNOWN_BUNDLES", {})
+    monkeypatch.setattr(
+        "amplifier_app_cli.lib.settings.AppSettings", lambda: scenario.settings
+    )
+    monkeypatch.setattr(updater, "AppBundleDiscovery", discovery_module.AppBundleDiscovery)
+    monkeypatch.setattr(updater, "BundleRegistry", BundleRegistry)
+    monkeypatch.setattr(
+        source_status, "_get_github_commit_sha", AsyncMock(return_value="b" * 40)
+    )
+    check = AsyncMock(wraps=source_status.check_all_sources)
+    execute = AsyncMock(wraps=update_executor.execute_updates)
+    refresh = AsyncMock(wraps=module_cache.update_module)
+    monkeypatch.setattr(updater, "check_all_sources", check)
+    monkeypatch.setattr(updater, "execute_updates", execute)
+    monkeypatch.setattr(module_cache, "update_module", refresh)
+
+    assert discovery_module.AppBundleDiscovery().list_cached_root_bundles() == ["root"]
+    cached = module_cache.scan_cached_modules()
+    assert len(cached) == 4
+    assert next(m for m in cached if m.cache_path == owner_path).module_type == "tool"
+    statuses = asyncio.run(updater._check_all_bundle_status())
+    selected = explicit if install_source != "none" else owner
+    if install_source == "none":
+        assert isinstance(statuses[owner], updater.TransitiveBundleStatus)
+        assert not isinstance(statuses[owner], updater.DeclaredModuleStatus)
+    else:
+        assert isinstance(statuses[explicit], updater.DeclaredModuleStatus)
+    assert str(owner_path / "embedded") not in statuses
+
+    scenario.invoke("--check-only")
+    assert not scenario.refreshed
+    execute.assert_not_called()
+    refresh.assert_not_called()
+    output = scenario.invoke("--yes")
+    assert "Update complete" in output
+    assert len(scenario.refreshed) == 4
+    assert scenario.refreshed.count(selected) == 1
+    assert set(scenario.refreshed) == {*controls, selected}
+    execute.assert_awaited_once()
+    assert {
+        (s.url, s.ref) for s in execute.await_args.args[0].cached_git_sources
+    } == {
+        (f"https://{parse_uri(uri).host}{parse_uri(uri).path}", parse_uri(uri).ref)
+        for uri in controls
+    }
+    assert refresh.await_count == 3  # Only the distinct legacy cache identities.
+    if install_source == "none":
+        scenario.apply.assert_not_called()
+        scenario.installs.assert_not_called()
+    else:
+        scenario.apply.assert_awaited_once()
+        assert scenario.apply.await_args.kwargs == {
+            "cache_dir": scenario.cache,
+            "selective": [explicit],
+            "install_deps": True,
+        }
+        scenario.installs.assert_awaited_once_with(scenario.active_path(explicit))
+    scenario.forbidden.assert_not_called()
 
 
 @pytest.mark.parametrize(

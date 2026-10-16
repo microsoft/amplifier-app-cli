@@ -212,9 +212,9 @@ async def test_global_update_checks_app_only_sources_by_exact_uri(monkeypatch):
     monkeypatch.setattr(
         update_module,
         "AppBundleDiscovery",
-        lambda: SimpleNamespace(list_cached_root_bundles=lambda: []),
+        lambda **kwargs: SimpleNamespace(list_cached_root_bundles=lambda: []),
     )
-    monkeypatch.setattr(update_module, "create_bundle_registry", MagicMock())
+    monkeypatch.setattr(update_module, "BundleRegistry", MagicMock())
     monkeypatch.setattr(
         update_module,
         "AppSettings",
@@ -257,11 +257,11 @@ async def test_global_update_reports_registry_failure_and_checks_later_bundles(m
     monkeypatch.setattr(
         update_module,
         "AppBundleDiscovery",
-        lambda: SimpleNamespace(
+        lambda **kwargs: SimpleNamespace(
             list_cached_root_bundles=lambda: ["broken", working_bundle]
         ),
     )
-    monkeypatch.setattr(update_module, "create_bundle_registry", lambda: registry)
+    monkeypatch.setattr(update_module, "BundleRegistry", lambda **kwargs: registry)
     monkeypatch.setattr(
         update_module,
         "AppSettings",
@@ -302,9 +302,9 @@ async def test_global_update_reports_direct_app_check_failure_by_exact_uri(monke
     monkeypatch.setattr(
         update_module,
         "AppBundleDiscovery",
-        lambda: SimpleNamespace(list_cached_root_bundles=lambda: []),
+        lambda **kwargs: SimpleNamespace(list_cached_root_bundles=lambda: []),
     )
-    monkeypatch.setattr(update_module, "create_bundle_registry", MagicMock())
+    monkeypatch.setattr(update_module, "BundleRegistry", MagicMock())
     monkeypatch.setattr(
         update_module,
         "AppSettings",
@@ -422,9 +422,9 @@ async def test_global_update_collapses_an_app_subdirectory_into_its_root_bundle(
     monkeypatch.setattr(
         update_module,
         "AppBundleDiscovery",
-        lambda: SimpleNamespace(list_cached_root_bundles=lambda: ["team"]),
+        lambda **kwargs: SimpleNamespace(list_cached_root_bundles=lambda: ["team"]),
     )
-    monkeypatch.setattr(update_module, "create_bundle_registry", lambda: registry)
+    monkeypatch.setattr(update_module, "BundleRegistry", lambda **kwargs: registry)
     monkeypatch.setattr(
         update_module,
         "AppSettings",
@@ -464,9 +464,9 @@ async def test_global_update_keeps_an_app_subdirectory_on_a_different_ref(monkey
     monkeypatch.setattr(
         update_module,
         "AppBundleDiscovery",
-        lambda: SimpleNamespace(list_cached_root_bundles=lambda: ["team"]),
+        lambda **kwargs: SimpleNamespace(list_cached_root_bundles=lambda: ["team"]),
     )
-    monkeypatch.setattr(update_module, "create_bundle_registry", lambda: registry)
+    monkeypatch.setattr(update_module, "BundleRegistry", lambda **kwargs: registry)
     monkeypatch.setattr(
         update_module,
         "AppSettings",
