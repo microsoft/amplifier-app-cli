@@ -45,6 +45,7 @@ class IncrementalSaveHook:
         bundle_name: str,
         config: dict[str, Any],
         root_state: Any = None,
+        creation_metadata: dict[str, str] | None = None,
     ):
         """Initialize incremental save hook.
 
@@ -61,6 +62,7 @@ class IncrementalSaveHook:
         self.bundle_name = bundle_name
         self.config = config
         self.root_state = root_state
+        self.creation_metadata = dict(creation_metadata or {})
         self._last_message_count = 0
 
     async def on_tool_post(self, event: str, data: dict[str, Any]):
@@ -106,6 +108,7 @@ class IncrementalSaveHook:
 
             # Build metadata, preserving existing fields while updating dynamic ones
             metadata = {
+                **self.creation_metadata,
                 **existing_metadata,  # Preserve name, description, etc.
                 "session_id": self.session_id,
                 "created": existing_metadata.get(
@@ -163,6 +166,7 @@ def register_incremental_save(
     bundle_name: str,
     config: dict[str, Any],
     root_state: Any = None,
+    creation_metadata: dict[str, str] | None = None,
 ) -> IncrementalSaveHook | None:
     """Register incremental save hook on session.
 
@@ -185,7 +189,8 @@ def register_incremental_save(
         return None
 
     hook = IncrementalSaveHook(
-        session, store, session_id, bundle_name, config, root_state=root_state
+        session, store, session_id, bundle_name, config, root_state=root_state,
+        creation_metadata=creation_metadata,
     )
 
     # Register with priority 900 (high, but below trace collector at 1000)

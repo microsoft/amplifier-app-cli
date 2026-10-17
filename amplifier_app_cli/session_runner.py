@@ -118,6 +118,7 @@ class InitializedSession:
     store: SessionStore = field(default_factory=SessionStore)
     configurator: Any = None
     root_state: Any = None
+    creation_metadata: dict[str, str] = field(default_factory=dict)
 
     async def cleanup(self, *, release_ownership: bool = True):
         """Clean up session resources."""
@@ -221,6 +222,16 @@ async def create_initialized_session(
                 config.root_state = None
                 raise
 
+    # Capture only at root creation, after the shared writer has detected any
+    # existing history. Resume must not inherit a launcher's new declaration.
+    from .session_provenance import creation_metadata
+
+    provenance = (
+        creation_metadata(is_resume=config.is_resume)
+        if inherited_root_id in (None, session_id)
+        else {}
+    )
+
     # Set root session metadata once — propagates to all child sessions via config deep-merge.
     # Guards ensure values are only stamped on first creation (root session); child sessions
     # inherit parent values via config deep-merge and the guards prevent overwriting them.
@@ -253,6 +264,21 @@ async def create_initialized_session(
 
     # Step 4: Create session (bundle mode only)
     try:
+        # An internal job must be classified before session:start/CI discovery,
+        # including initialization failures. Exclusively create an empty native
+        # history; never replace an existing session or backfill legacy metadata.
+        if provenance.get("session_visibility") == "internal":
+            try:
+                SessionStore().save_new(
+                    session_id, [], {
+                        **provenance,
+                        "session_id": session_id,
+                        "bundle": config.bundle_name,
+                        "working_dir": cwd,
+                    },
+                )
+            except FileExistsError:
+                provenance = {}
         session = await _create_bundle_session(
             config=config,
             session_id=session_id,
@@ -449,6 +475,7 @@ async def create_initialized_session(
         store=SessionStore(),
         configurator=configurator,
         root_state=config.root_state,
+        creation_metadata=provenance,
     )
 
 
