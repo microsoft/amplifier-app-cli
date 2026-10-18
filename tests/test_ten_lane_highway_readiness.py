@@ -346,6 +346,19 @@ def test_watchdog_advisories_remain_append_only_across_runs(tmp_path: Path) -> N
     assert len(second.splitlines()) == 2
 
 
+@pytest.mark.parametrize("document", [SKILL, FIRST_RUN], ids=["skill", "first-run"])
+def test_highway_batch_location_follows_caller_workspace(document: Path) -> None:
+    """Guidance leaves the layout to the caller, not a personal home-directory example."""
+    text = document.read_text(encoding="utf-8")
+
+    assert "workspace-contained `BATCH_DIR`" in text
+    assert "caller" in text
+    teardown = (SCRIPTS / "lane_teardown.sh").read_text(encoding="utf-8")
+    for home_prefix in ("~/", "$HOME/", "${HOME}/", "/home/", "/Users/"):
+        assert home_prefix not in text
+        assert home_prefix not in teardown
+
+
 def test_highway_docs_forbid_clearing_wake_needed_while_watchdog_runs() -> None:
     docs = (
         f"{SKILL.read_text(encoding='utf-8')}\n"

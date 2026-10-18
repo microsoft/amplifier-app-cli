@@ -138,7 +138,12 @@ with the short work-item id `vbs` still resolves to lane `vbs-…`); an owner
 that matches no lane, matches ambiguously, or is unclaimed is reported as such
 rather than guessed at.
 
-State lives in `BATCH_DIR` (create one per highway, e.g. `~/dev/hw-<name>`):
+Use one workspace-contained `BATCH_DIR` per highway, following the caller's
+workspace conventions. The caller defines where `BATCH_DIR` lives, not this skill.
+Establish that path before creating batch state or launching lanes. Keep any
+`HIGHWAY_LANES_ROOT` override within the same workspace.
+
+State lives in `BATCH_DIR`:
 `manifest.tsv` (scripts write), `HIGHWAY.md` (you write), `goals/` (pre-composed
 goal files), `lanes/` (worktrees), `.width` (authoritative width), `infra.tsv`
 (the infra ledger), `infra.owners.tsv` (which lane claimed which row),

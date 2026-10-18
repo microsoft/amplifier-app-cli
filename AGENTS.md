@@ -105,6 +105,20 @@ Module cache force-refresh identity is Foundation's exact URL + ref cache key,
 never a semantic bundle name or module entry-point ID. Verify it with
 `uv run pytest tests/test_module_cache.py`.
 
+Ordinary updates must walk every cached root/app manifest before repository-row
+deduplication, then check all five declared module kinds with runtime source
+override precedence. Preserve exact module URIs (ref, `.git`, subdirectory);
+refresh/install them through Foundation's selective module update, never load
+them as bundles. Missing manifests are incomplete discovery, not current.
+Convert explicit file URIs to native paths with one decode; keep ordinary paths literal.
+Keep `--check-only --force` read-only; run `tests/test_declared_module_updates.py`.
+Hide local module rows only when their declaring Git manifest and readable code
+are proven inside that exact cache with no explicit override; retain an owner row
+even when repository dedup omitted it. An explicit Git module action may cover
+that cache; never replace its install. Reuse source-bound Foundation namespaces
+and extension probing for cached includes. Checking uses a shared nonpersistent
+registry; empty discovery diagnostics belong to the owner, never a module row.
+
 ## Persisted reminder display
 
 `ui.is_displayable_session_message()` is display-only: history and replay hide

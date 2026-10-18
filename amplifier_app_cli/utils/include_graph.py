@@ -39,14 +39,20 @@ exact side effect ``_check_all_bundle_status`` was written to avoid.
 from __future__ import annotations
 
 import logging
+import os
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Mapping
 
+from .file_uri import file_uri_path_value
+
 if TYPE_CHECKING:
-    from amplifier_foundation import BundleRegistry
-    from amplifier_foundation.sources.protocol import SourceStatus
+    from amplifier_foundation import Bundle, BundleRegistry
+    from amplifier_foundation.registry import _NamespaceSource
+    from amplifier_foundation.sources.protocol import ResolvedSource, SourceStatus
 
 logger = logging.getLogger(__name__)
 
@@ -118,68 +124,116 @@ class TransitiveStatus:
         return self.status.has_update is True
 
 
-def _local_path_for(uri: str, cache_dir: Path) -> Path | None:
-    """Best-available on-disk path for *uri*, WITHOUT touching the network.
+def local_source_path(uri: str) -> Path | None:
+    """Return the effective local path, decoding only explicit file URI bases once."""
+    if uri.lower().startswith("file:"):
+        from amplifier_foundation.paths.resolution import parse_uri
 
-    Returns None when the source is not a readable local/cached thing --
-    which is the correct answer for a source whose cache has been deleted.
-    Resolving it would clone, and a clone here would report a missing cache
-    as healthy.
-    """
-    from amplifier_foundation.paths.resolution import parse_uri
-    from amplifier_foundation.sources.git import GitSourceHandler
-
-    try:
-        parsed = parse_uri(uri)
-    except Exception:  # noqa: BLE001 - an unparseable URI is simply not walkable
-        return None
-
-    git_handler = GitSourceHandler()
-    if git_handler.can_handle(parsed):
-        cache_path = git_handler._get_cache_path(parsed, cache_dir)
-        if not cache_path.exists():
+        native = file_uri_path_value(uri, windows=os.name == "nt")
+        if native is None:
             return None
-        active = cache_path / parsed.subpath if parsed.subpath else cache_path
-        return active if active.exists() else None
-
-    if parsed.is_file:
-        path = Path(parsed.path)
-        return path if path.exists() else None
-
+        # Normalize the prefix for Foundation's fragment parser, not the filename.
+        subpath = parse_uri("file://" + uri.partition(":")[2]).subpath
+        path = Path(native)
+        return path / subpath if subpath else path
+    if Path(uri).is_absolute() or uri.startswith(("./", "../", ".\\", "..\\")):
+        return Path(uri)
     return None
+
+
+def _cached_source_for(
+    uri: str, cache_dir: Path, registry: BundleRegistry
+) -> ResolvedSource | None:
+    """Reconstruct Foundation's ResolvedSource from existing files, never resolve."""
+    from amplifier_foundation.paths.resolution import parse_uri
+    from amplifier_foundation.sources.file import FileSourceHandler
+    from amplifier_foundation.sources.git import GitSourceHandler
+    from amplifier_foundation.sources.protocol import ResolvedSource
+
+    parsed = parse_uri(uri)
+    handler = GitSourceHandler()
+    if handler.can_handle(parsed):
+        source_root = handler._get_cache_path(parsed, cache_dir)
+        if source_root.resolve() != Path(os.path.abspath(source_root)):
+            return None  # A sibling checkout is not this source's cache.
+        path = source_root / parsed.subpath if parsed.subpath else source_root
+        path = registry._find_resource_path(path)
+    else:
+        # Keep the base separate: local_source_path otherwise includes the fragment.
+        path = local_source_path(
+            strip_uri_fragment(uri) if uri.lower().startswith("file:") else uri
+        )
+        if path is None:
+            return None
+        base = path.resolve()
+        subpath = parsed.subpath if uri.lower().startswith("file:") else ""
+        path = base / subpath if subpath else base
+        path = registry._find_resource_path(path)
+        if path is None:
+            return None
+        source_root = (
+            base
+            if subpath
+            else FileSourceHandler()._find_source_root(path, cache_dir)
+        )
+    if path is not None and path.is_dir():
+        # Validate the actual file the loader would choose, not only its parent.
+        path = registry._find_nearest_bundle_file(path, path)
+    if path is None or not path.resolve().is_relative_to(source_root.resolve()):
+        return None
+    return ResolvedSource(active_path=path, source_root=source_root)
+
+
+async def _cached_namespace_sources(
+    uri: str, resolved: ResolvedSource, bundle: Bundle, registry: BundleRegistry
+) -> dict[str, _NamespaceSource]:
+    """Bind containing-root then self exactly as Foundation does, without loading includes."""
+    from amplifier_foundation.registry import _NamespaceSource
+
+    path = resolved.active_path
+    source_root = resolved.source_root.resolve()
+    search_start = path.parent.parent if path.is_file() else path.parent
+    containing = None
+    if search_start.resolve().is_relative_to(source_root):
+        nearest = registry._find_nearest_bundle_file(search_start, source_root)
+        if nearest is not None:
+            if not nearest.resolve().is_relative_to(source_root):
+                raise ValueError("Escaped containing manifest")
+            containing = await registry._load_from_path(nearest)
+    bindings = {}
+    for owner in (containing, bundle):
+        if owner is not None and owner.name and owner.base_path:
+            base = (owner.base_path / (owner.namespace_root or ".")).resolve()
+            if not base.is_relative_to(source_root):
+                raise ValueError("Escaped namespace root")
+            bindings[owner.name] = _NamespaceSource(uri, base, source_root)
+    return bindings
 
 
 def _is_git_uri(uri: str) -> bool:
     return uri.startswith("git+") or uri.startswith("git://")
 
 
-async def collect_transitive_git_sources(
+async def _iter_cached_bundles(
     roots: Mapping[str, str],
     *,
-    registry: "BundleRegistry",
+    registry: BundleRegistry,
     cache_dir: Path,
-    known_uris: set[str] | None = None,
     max_depth: int = 16,
-) -> dict[str, TransitiveSource]:
-    """Walk ``includes:`` from *roots* and return the git sources found.
+    failures: dict[str, str] | None = None,
+) -> AsyncIterator[tuple[str, str, str, Bundle | None]]:
+    """Yield root, immediate parent, full URI and cached manifest (if readable).
 
-    Args:
-        roots: Display name -> configured URI for every direct update target.
-        registry: Loader registry -- supplies include parsing/resolution and
-            the bundle-file parser.  Namespace includes resolve against its
-            state, so pass the same registry the CLI builds elsewhere.
-        cache_dir: Cache root (``<amplifier home>/cache``).
-        known_uris: Fragment-stripped URIs already covered by a direct row.
-            Anything here is skipped -- it is not "transitive", it is the
-            source that was already going to be checked.
-        max_depth: Belt-and-braces bound on graph depth.  Cycles are already
-            handled by the visited set; this only caps a pathological chain.
-
-    Returns:
-        Fragment-stripped URI -> TransitiveSource, in discovery order.
+    Both collectors use this bounded, read-only walk. A missing manifest still
+    yields its URI so include status checking retains its existing behavior.
+    Failure text deliberately contains neither configured URIs nor exceptions.
     """
-    known = set(known_uris or set())
-    found: dict[str, TransitiveSource] = {}
+    from amplifier_foundation.paths.resolution import parse_uri
+
+    def failed(root: str) -> None:
+        if failures is not None:
+            failures[root] = "Incomplete cached module discovery"
+        logger.debug("Could not completely read cached bundle declarations")
 
     # Visited on the FULL uri (fragment included): two behaviors in one repo
     # are different files with different includes, so collapsing them on the
@@ -197,57 +251,213 @@ async def collect_transitive_git_sources(
     while queue:
         root_label, label, uri, depth = queue.pop(0)
         if depth >= max_depth:
-            logger.debug(f"Include walk hit max depth at: {uri}")
-            continue
-
-        path = _local_path_for(uri, cache_dir)
-        if path is None:
+            failed(root_label)
+            yield root_label, label, uri, None
             continue
 
         try:
+            resolved_source = _cached_source_for(uri, cache_dir, registry)
+            if resolved_source is None:
+                failed(root_label)
+                yield root_label, label, uri, None
+                continue
+            path = resolved_source.active_path
             bundle = await registry._load_from_path(path)
-        except Exception as exc:  # noqa: BLE001 - an unreadable bundle is not fatal
-            logger.debug(f"Could not read includes from {uri}: {exc}")
+            namespace_sources = await _cached_namespace_sources(
+                uri, resolved_source, bundle, registry
+            )
+        except Exception:  # noqa: BLE001 - an unreadable bundle is not fatal
+            failed(root_label)
+            yield root_label, label, uri, None
             continue
 
+        yield root_label, label, uri, bundle
         parent_label = bundle.name or label
 
         for raw_include in bundle.includes or []:
-            spec = registry._parse_include(raw_include)
-            if not spec:
-                continue
-
             try:
-                resolved = registry._resolve_include_source(spec)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug(f"Could not resolve include '{spec}': {exc}")
-                continue
-
-            if not resolved:
-                continue
-
-            # A plain name is a registry alias; the loader lets _load_single
-            # look it up, so look it up the same way here.
-            if "://" not in resolved and not resolved.startswith("git+"):
-                looked_up = registry.find(resolved)
-                if not looked_up:
+                spec = registry._parse_include(raw_include)
+                if not spec:
+                    failed(root_label)
                     continue
-                resolved = looked_up
+                # Foreign namespaces may have no local_path (or a stale one).
+                # Rebuild their selected cached context rather than guessing a
+                # checkout-relative path or modifying shared registrations.
+                bindings = dict(namespace_sources)
+                if ":" in spec and "://" not in spec:
+                    namespace = spec.split(":", 1)[0]
+                    if namespace not in bindings:
+                        foreign_uri = registry.find(namespace)
+                        if foreign_uri:
+                            foreign = _cached_source_for(foreign_uri, cache_dir, registry)
+                            if foreign is None:
+                                raise ValueError("Missing cached namespace manifest")
+                            owner = await registry._load_from_path(foreign.active_path)
+                            foreign_bindings = await _cached_namespace_sources(
+                                foreign_uri, foreign, owner, registry
+                            )
+                            if owner.name in foreign_bindings:
+                                bindings[namespace] = foreign_bindings[owner.name]
+                resolved = registry._resolve_include_source(
+                    spec, namespace_sources=bindings
+                )
+                if not resolved:
+                    failed(root_label)
+                    continue
+                # A plain name is a registry alias, not a filesystem source.
+                if (
+                    "://" not in resolved
+                    and not resolved.startswith("git+")
+                    and not parse_uri(resolved).is_file
+                ):
+                    resolved = registry.find(resolved)
+                    if not resolved:
+                        failed(root_label)
+                        continue
+            except Exception:  # noqa: BLE001
+                failed(root_label)
+                continue
 
             if resolved in visited:
                 continue
             visited.add(resolved)
-
-            if _is_git_uri(resolved):
-                key = strip_uri_fragment(resolved)
-                if key not in known and key not in found:
-                    found[key] = TransitiveSource(
-                        uri=key, parent=parent_label, root=root_label, via=resolved
-                    )
-
             queue.append((root_label, parent_label, resolved, depth + 1))
 
+
+async def collect_transitive_git_sources(
+    roots: Mapping[str, str],
+    *,
+    registry: "BundleRegistry",
+    cache_dir: Path,
+    known_uris: set[str] | None = None,
+    max_depth: int = 16,
+) -> dict[str, TransitiveSource]:
+    """Return fragment-stripped included git sources, excluding direct targets.
+
+    Visit full URIs (including fragments) and reuse registry include resolution.
+    Missing caches are never downloaded; their include URIs are still returned.
+    """
+    known = set(known_uris or set())
+    root_uris = set(roots.values())
+    found: dict[str, TransitiveSource] = {}
+    async for root, parent, uri, _ in _iter_cached_bundles(
+        roots, registry=registry, cache_dir=cache_dir, max_depth=max_depth
+    ):
+        if uri in root_uris or not _is_git_uri(uri):
+            continue
+        key = strip_uri_fragment(uri)
+        if key not in known and key not in found:
+            found[key] = TransitiveSource(uri=key, parent=parent, root=root, via=uri)
     return found
+
+
+@dataclass(frozen=True)
+class DeclaredModuleSource:
+    """First declaration plus replaced URIs, so legacy caches honor overrides."""
+
+    module_id: str
+    declared_by: str
+    root: str
+    overridden_sources: tuple[str, ...] = ()
+    declaring_uri: str = ""
+    embedded_in: str | None = None
+
+
+def _embedded_owner(
+    uri: str, declaring_uri: str, cache_dir: Path, registry: BundleRegistry
+) -> str | None:
+    """Prove local code and its declaring manifest belong to one exact Git cache."""
+    from amplifier_foundation.paths.resolution import parse_uri
+    from amplifier_foundation.sources.git import GitSourceHandler
+
+    path = local_source_path(uri)
+    if path is None or not _is_git_uri(declaring_uri):
+        return None
+    try:
+        root = GitSourceHandler()._get_cache_path(parse_uri(declaring_uri), cache_dir)
+        manifest = _cached_source_for(declaring_uri, cache_dir, registry)
+        if manifest is None or not root.is_dir() or not path.is_dir():
+            return None
+        # Do not hide symlinked or escaping paths as repository-owned content.
+        canonical = path.resolve(strict=True)
+        if canonical != Path(os.path.abspath(path)):
+            return None
+        if not canonical.is_relative_to(root.resolve()):
+            return None
+        if not manifest.active_path.resolve().is_relative_to(root.resolve()):
+            return None
+        if not os.access(path, os.R_OK | os.X_OK):
+            return None
+    except (OSError, ValueError):
+        return None
+    return strip_uri_fragment(declaring_uri)
+
+
+async def collect_declared_module_sources(
+    roots: Mapping[str, str],
+    *,
+    registry: BundleRegistry,
+    cache_dir: Path,
+    overrides: Mapping[str, str] | None = None,
+) -> tuple[dict[str, DeclaredModuleSource], dict[str, str]]:
+    """Return exact effective URI -> declaration metadata, and root failures.
+
+    Inspect the same five module locations as Foundation's source collector.
+    Module sources are declarations, never bundle manifests to walk. First
+    provenance wins when several module IDs share the same effective source.
+    """
+    found: dict[str, DeclaredModuleSource] = {}
+    failures: dict[str, str] = {}
+    overrides = overrides or {}
+    async for root, parent, declaring_uri, bundle in _iter_cached_bundles(
+        roots, registry=registry, cache_dir=cache_dir, failures=failures
+    ):
+        if bundle is None:
+            continue
+        session = bundle.session or {}
+        declarations = [
+            session.get("orchestrator"),
+            session.get("context"),
+            *(bundle.providers or []),
+            *(bundle.tools or []),
+            *(bundle.hooks or []),
+        ]
+        for declaration in declarations:
+            if not isinstance(declaration, dict):
+                continue
+            module_id = declaration.get("module")
+            if not isinstance(module_id, str):
+                continue
+            uri = overrides.get(module_id, declaration.get("source"))
+            if not isinstance(uri, str) or not uri:
+                continue
+            embedded_in = (
+                None
+                if module_id in overrides
+                else _embedded_owner(uri, declaring_uri, cache_dir, registry)
+            )
+            entry = found.get(uri)
+            if entry is None:
+                entry = DeclaredModuleSource(
+                    module_id,
+                    bundle.name or parent,
+                    root,
+                    declaring_uri=declaring_uri,
+                    embedded_in=embedded_in,
+                )
+            elif entry.embedded_in != embedded_in:
+                entry = replace(entry, embedded_in=None)
+            found[uri] = entry
+            original = declaration.get("source")
+            if (
+                isinstance(original, str)
+                and original != uri
+                and original not in entry.overridden_sources
+            ):
+                found[uri] = replace(
+                    entry, overridden_sources=(*entry.overridden_sources, original)
+                )
+    return found, failures
 
 
 async def check_transitive_sources(
@@ -264,6 +474,7 @@ async def check_transitive_sources(
     """
     from amplifier_foundation.paths.resolution import parse_uri
     from amplifier_foundation.sources.git import GitSourceHandler
+    from amplifier_foundation.sources.protocol import SourceStatus
 
     git_handler = GitSourceHandler()
     results: dict[str, TransitiveStatus] = {}
@@ -274,9 +485,14 @@ async def check_transitive_sources(
             if not git_handler.can_handle(parsed):
                 continue
             status = await git_handler.get_status(parsed, cache_dir)
-        except Exception as exc:  # noqa: BLE001 - one bad source must not sink the report
-            logger.debug(f"Status check failed for {source.uri}: {exc}")
-            continue
+        except Exception:  # noqa: BLE001 - one bad source must not sink the report
+            logger.debug("Transitive source status check failed")
+            status = SourceStatus(
+                source_uri=source.uri,
+                is_cached=False,
+                has_update=None,
+                error="status check failed",
+            )
         results[key] = TransitiveStatus(source=source, status=status)
 
     return results
@@ -312,10 +528,13 @@ async def refresh_transitive_source(uri: str, *, cache_dir: Path) -> None:
 
 
 __all__ = [
+    "DeclaredModuleSource",
     "TransitiveSource",
     "TransitiveStatus",
     "check_transitive_sources",
+    "collect_declared_module_sources",
     "collect_transitive_git_sources",
+    "local_source_path",
     "refresh_transitive_source",
     "strip_uri_fragment",
     "transitive_statuses_for",
