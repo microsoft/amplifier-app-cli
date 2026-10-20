@@ -1,5 +1,15 @@
 # AGENTS.md — amplifier-app-cli
 
+## Filesystem write-permission projection
+
+Directory commands persist write policy under `tool-filesystem`. During config
+resolution, project only its operator write grants and denies onto declared
+`tool-apply-patch` entries; never copy bundle filesystem defaults, read policy,
+source, or engine. Validate both shared lists before granting anything. Preserve
+explicit empty patch allowlists and the module's omitted-policy default scope.
+Run `tests/test_patch_write_permissions.py` and `tests/test_merge_utils.py`.
+This assembly step does not update already-mounted tools.
+
 ## Boundary rule: `amplifier_app_cli/data/` vs. an external bundle
 
 `amplifier_app_cli/data/` ships inside the CLI's own wheel — anything placed there loads

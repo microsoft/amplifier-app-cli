@@ -266,14 +266,9 @@ async def resolve_bundle_config(
         session_id=session_id, project_slug=project_slug
     )
     if tool_overrides:
-        if bundle_config.get("tools"):
-            # Bundle has tools - merge overrides with existing
-            bundle_config["tools"] = _apply_tool_overrides(
-                bundle_config["tools"], tool_overrides
-            )
-        else:
-            # Bundle has no tools - use overrides directly
-            bundle_config["tools"] = tool_overrides
+        bundle_config["tools"] = _apply_tool_overrides(
+            bundle_config.get("tools") or [], tool_overrides
+        )
     elif bundle_config.get("tools"):
         # No user overrides, but still apply CLI tool policies
         # (e.g., cwd in write paths, default skills dirs)
@@ -997,6 +992,9 @@ def _apply_tool_overrides(
     Permission fields (allowed_write_paths, allowed_read_paths) are UNIONED
     rather than replaced, so session-scoped paths ADD to bundle defaults.
 
+    Operator tool-filesystem write permissions also extend declared
+    tool-apply-patch entries, without copying other filesystem configuration.
+
     Policy: Current working directory (".") is always included in allowed_write_paths
     for tool-filesystem, ensuring users can always write within their project.
     """
@@ -1034,7 +1032,53 @@ def _apply_tool_overrides(
         ):
             result.append(override)
 
+    result = _share_filesystem_write_permissions(
+        result, override_map.get("tool-filesystem", {})
+    )
     return _ensure_cli_tool_policies(result)
+
+
+def _share_filesystem_write_permissions(
+    tools: list[dict[str, Any]], filesystem_override: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Extend declared patch tools with operator-only filesystem write paths."""
+    filesystem_config = filesystem_override.get("config") or {}
+    if not isinstance(filesystem_config, dict):
+        return tools
+    # Validate the whole shared policy before applying any grants. Ignoring a
+    # malformed deny list could otherwise leave its matching grant unrestricted.
+    for field in ("allowed_write_paths", "denied_write_paths"):
+        if field in filesystem_config:
+            paths = filesystem_config[field]
+            if not isinstance(paths, list) or any(
+                not isinstance(path, str) for path in paths
+            ):
+                raise ValueError(
+                    f"tool-filesystem {field} must be a list of path strings"
+                )
+    shared = {
+        field: paths
+        for field in ("allowed_write_paths", "denied_write_paths")
+        if (paths := filesystem_config.get(field))
+    }
+    if not shared:
+        return tools
+
+    result = []
+    for tool in tools:
+        if isinstance(tool, dict) and tool.get("module") == "tool-apply-patch":
+            tool = tool.copy()
+            config = (tool.get("config") or {}).copy()
+            for field, shared_paths in shared.items():
+                paths = config.get(field, [])
+                if field == "allowed_write_paths" and field not in config:
+                    # Materialize the module's implicit scope only when adding
+                    # a grant. An explicit [] must not gain this default.
+                    paths = [config.get("working_dir") or "."]
+                config[field] = list(dict.fromkeys([*paths, *shared_paths]))
+            tool["config"] = config
+        result.append(tool)
+    return result
 
 
 def _ensure_cli_tool_policies(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
