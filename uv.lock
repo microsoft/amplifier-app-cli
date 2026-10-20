@@ -46,7 +46,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "amplifier-module-context-simple", git = "https://github.com/microsoft/amplifier-module-context-simple?rev=db641363013ff906b656f49498a87ab01f5c506f" },
+    { name = "amplifier-module-context-simple", git = "https://github.com/microsoft/amplifier-module-context-simple?rev=main" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
 ]
@@ -84,7 +84,7 @@ dependencies = [
 [[package]]
 name = "amplifier-module-context-simple"
 version = "1.0.0"
-source = { git = "https://github.com/microsoft/amplifier-module-context-simple?rev=db641363013ff906b656f49498a87ab01f5c506f#db641363013ff906b656f49498a87ab01f5c506f" }
+source = { git = "https://github.com/microsoft/amplifier-module-context-simple?rev=main#db641363013ff906b656f49498a87ab01f5c506f" }
 
 [[package]]
 name = "annotated-types"
