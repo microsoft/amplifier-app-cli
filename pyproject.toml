@@ -64,7 +64,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
-dev = ["pytest>=9.0.3", "pytest-asyncio>=0.24.0"]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.24.0",
+    # Real context used by the repair/save/resume regression, not a runtime default.
+    "amplifier-module-context-simple @ git+https://github.com/microsoft/amplifier-module-context-simple@db641363013ff906b656f49498a87ab01f5c506f",
+]
 
 [tool.uv.sources]
 amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "main" }

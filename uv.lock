@@ -23,6 +23,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "amplifier-module-context-simple" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -45,6 +46,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "amplifier-module-context-simple", git = "https://github.com/microsoft/amplifier-module-context-simple?rev=db641363013ff906b656f49498a87ab01f5c506f" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
 ]
@@ -72,12 +74,17 @@ wheels = [
 [[package]]
 name = "amplifier-foundation"
 version = "1.0.0"
-source = { git = "https://github.com/microsoft/amplifier-foundation?rev=main#89575c3482e3e8afe5a03df72e723cf815fa1f6c" }
+source = { git = "https://github.com/microsoft/amplifier-foundation?rev=main#a5f91fc4765dd3c6a1496b400c4fe428e5aa06f2" }
 dependencies = [
     { name = "amplifier-core" },
     { name = "filelock" },
     { name = "pyyaml" },
 ]
+
+[[package]]
+name = "amplifier-module-context-simple"
+version = "1.0.0"
+source = { git = "https://github.com/microsoft/amplifier-module-context-simple?rev=db641363013ff906b656f49498a87ab01f5c506f#db641363013ff906b656f49498a87ab01f5c506f" }
 
 [[package]]
 name = "annotated-types"
