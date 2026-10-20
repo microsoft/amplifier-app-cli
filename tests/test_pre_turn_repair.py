@@ -5,14 +5,21 @@ functions work correctly on in-memory context messages (no ``line_num``
 keys) — the exact contract the pre-turn repair helper relies on.
 """
 
+import ast
+import asyncio
+import importlib
 import json
+import logging
 from copy import deepcopy
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
 from amplifier_foundation.session import (
     diagnose_transcript,
-    find_orphaned_tool_calls,
     repair_transcript,
 )
 from amplifier_foundation.session.diagnosis import (
@@ -239,15 +246,19 @@ class TestRepairTranscriptInMemory:
 
     def test_ordering_violation_repaired(self):
         messages = _ordering_violation_messages()
+        original = deepcopy(messages)
         diagnosis = diagnose_transcript(messages)
         repaired = repair_transcript(messages, diagnosis)
 
-        # The misplaced real tool result should be removed and replaced
-        # with a synthetic result placed right after the assistant message.
-        # Verify there's exactly one tool result and it's synthetic.
+        # Moving the observed receipt changes chronology, not its payload.
         tool_results = [m for m in repaired if m.get("role") == "tool"]
         assert len(tool_results) == 1
-        assert tool_results[0]["content"] == SYNTHETIC_TOOL_RESULT_CONTENT
+        assert tool_results[0] == original[-1]
+        assert tool_results[0]["content"] == "file1.py"
+        call_index = next(i for i, m in enumerate(repaired) if m.get("tool_calls"))
+        assert repaired[call_index + 1] == tool_results[0]
+        assert diagnose_transcript(repaired)["status"] == "healthy"
+        assert messages == original
 
     def test_multi_tool_orphan_all_repaired(self):
         """Assistant with 2 tool_calls, both orphaned."""
@@ -282,3 +293,162 @@ class TestRepairTranscriptInMemory:
         assert len(tool_results) == 2
         result_ids = {m["tool_call_id"] for m in tool_results}
         assert result_ids == {"tc_a", "tc_b"}
+
+
+def _installed_interactive_helpers(**bindings):
+    """Execute unchanged helper bodies, not a CLI launch or a save shim."""
+    main = importlib.import_module("amplifier_app_cli.main")
+    source = Path(main.__file__)
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    interactive = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "interactive_chat"
+    )
+    names = {"_extract_model_name", "_save_session", "_repair_transcript_if_needed"}
+    functions = [
+        node
+        for node in interactive.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in names
+    ]
+    assert {node.name for node in functions} == names
+    namespace = {
+        "datetime": datetime,
+        "UTC": UTC,
+        "Path": Path,
+        "logger": logging.getLogger(__name__),
+        **bindings,
+    }
+    # Trusted installed CLI definitions only; never transcript or user input.
+    exec(  # noqa: S102
+        compile(ast.Module(body=functions, type_ignores=[]), str(source), "exec"),
+        namespace,
+    )
+    return namespace
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["healthy", "late", "parallel"])
+async def test_pre_turn_receipts_survive_native_save_and_resume(
+    tmp_path, monkeypatch, case
+):
+    """Real installed Foundation/context/store; no shared-root lock or full REPL."""
+    from amplifier_app_cli import session_runner
+    from amplifier_app_cli.session_store import SessionStore
+    from amplifier_module_context_simple import SimpleContextManager
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("AMPLIFIER_HOME", str(tmp_path / "amplifier-home"))
+    monkeypatch.setenv("AMPLIFIER_CONTEXT_INTELLIGENCE_BASE_PATH", str(tmp_path / "ci"))
+    monkeypatch.chdir(tmp_path)
+    if case == "healthy":
+        messages = _healthy_messages()[1:]
+    else:
+        messages = _ordering_violation_messages()[1:]
+        messages.append({"role": "assistant", "content": "Observed result recorded"})
+    receipt = next(m for m in messages if m["role"] == "tool")
+    receipt["metadata"] = {"receipt": 7, "source": "observed"}
+    if case == "parallel":
+        missing = deepcopy(messages[1]["tool_calls"][0])
+        missing["id"] = "tc_missing"
+        messages[1]["tool_calls"].append(missing)
+    original = deepcopy(messages)
+    context = SimpleContextManager(max_tokens=100_000, compaction_notice_enabled=False)
+    await context.set_messages(messages)
+    # Initialization legitimately adds metadata such as _seq.
+    canonical = deepcopy(await context.get_messages())
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    store.save(
+        "fixture",
+        canonical,
+        {
+            "session_id": "fixture",
+            "name": "Receipt test",
+            "description": "Keep observed results",
+            "created": "2026-01-01T00:00:00+00:00",
+        },
+    )
+    seed_metadata = store.get_metadata("fixture")
+    save = Mock(wraps=store.save)
+    monkeypatch.setattr(store, "save", save)
+    session = MagicMock(config={})
+    session.coordinator.get.side_effect = lambda key: (
+        context if key == "context" else None
+    )
+    session.coordinator.get_capability.return_value = None
+    helpers = _installed_interactive_helpers(
+        session=session,
+        store=store,
+        actual_session_id="fixture",
+        config={"providers": [{"config": {"model": "fixture-model"}}]},
+        bundle_name="fixture-bundle",
+        initialized=SimpleNamespace(root_state=None),
+        handoff=SimpleNamespace(requested=asyncio.Event()),
+    )
+    monkeypatch.setattr(session_runner, "SessionStore", lambda: store)
+    monkeypatch.setattr(
+        session_runner, "_create_bundle_session", AsyncMock(return_value=session)
+    )
+    monkeypatch.setattr(
+        "amplifier_app_cli.commands.init.check_first_run", lambda: False
+    )
+    await helpers["_repair_transcript_if_needed"]()
+    assert save.call_count == (0 if case == "healthy" else 1)
+    # Context may re-stamp _seq on repair; retain this initialized canonical form.
+    repaired = deepcopy(await context.get_messages())
+    expected_receipt = next(m for m in repaired if m.get("tool_call_id") == "tc_1")
+    assert all(
+        expected_receipt["metadata"][k] == v for k, v in receipt["metadata"].items()
+    )
+    for _ in range(4):
+        await helpers["_save_session"]()
+        persisted, metadata = store.load("fixture")
+        results = [m for m in persisted if m["role"] == "tool"]
+        observed = [m for m in results if m["tool_call_id"] == "tc_1"]
+        assert len(observed) == 1
+        assert observed[0]["content"] == receipt["content"]
+        assert observed[0]["name"] == expected_receipt["name"]
+        assert observed[0]["metadata"] == expected_receipt["metadata"]
+        assert len(results) == (2 if case == "parallel" else 1)
+        call_index = next(i for i, m in enumerate(persisted) if m.get("tool_calls"))
+        assert persisted[call_index + 1 : call_index + 1 + len(results)] == results
+        if case == "parallel":
+            missing_results = [m for m in results if m["tool_call_id"] == "tc_missing"]
+            assert len(missing_results) == 1
+            assert missing_results[0]["content"] == SYNTHETIC_TOOL_RESULT_CONTENT
+        assert diagnose_transcript(persisted)["status"] == "healthy"
+        assert [m["content"] for m in persisted if m["role"] == "user"] == [
+            m["content"] for m in original if m["role"] == "user"
+        ]
+        assert all(
+            metadata[key] == seed_metadata[key]
+            for key in ("created", "name", "description")
+        )
+        assert metadata["bundle"] == "fixture-bundle"
+        assert metadata["model"] == "fixture-model"
+        assert store.get_metadata("fixture") == metadata
+        context = SimpleContextManager(
+            max_tokens=100_000, compaction_notice_enabled=False
+        )
+        cfg = session_runner.SessionConfig(
+            config={},
+            search_paths=[],
+            verbose=False,
+            session_id="fixture",
+            initial_transcript=persisted,
+        )
+        initialized = await session_runner.create_initialized_session(cfg, MagicMock())
+        assert await context.get_messages() == persisted
+        helpers.update(session=initialized.session, initialized=initialized)
+        saves_before = save.call_count
+        await helpers["_repair_transcript_if_needed"]()
+        assert save.call_count == saves_before
+    await helpers["_save_session"]()
+    assert store.load("fixture")[0] == persisted
+    backup = store.base_dir / "fixture" / "transcript.jsonl.backup"
+    assert [
+        json.loads(line) for line in backup.read_text(encoding="utf-8").splitlines()
+    ] == persisted
+    assert messages == original

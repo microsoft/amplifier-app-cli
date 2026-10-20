@@ -156,6 +156,11 @@ Tests must use the Foundation dependency installed in their test environment.
 Do not prepend a neighboring checkout to `sys.path`: that silently bypasses the
 published dependency and lockfile. Install an explicit local override in the
 test virtualenv when cross-repository development requires one.
+Declare required real-module test imports in the dev group and lockfile.
+After an upstream-dependent regression changes, verify a clean
+`uv sync --locked --all-extras --dev` install and the affected tests without
+supplemental installs; a cross-repo test environment alone does not prove the
+committed lockfile is ready.
 
 ## Interactive slash completion
 
