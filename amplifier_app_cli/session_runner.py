@@ -30,6 +30,7 @@ import os
 import sys
 import uuid
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -49,6 +50,55 @@ if TYPE_CHECKING:
     from rich.console import Console
 
 logger = logging.getLogger(__name__)
+
+
+async def repair_transcript_if_needed(
+    session: AmplifierSession, save_session: Callable[[], Awaitable[Any]]
+) -> None:
+    """Apply Foundation's best-effort repair, then persist before dispatch.
+
+    Unsafe associations may remain broken; Foundation owns that decision.
+    A failed checkpoint must propagate rather than dispatch an unsaved repair.
+    """
+    try:
+        context = session.coordinator.get("context")
+        if (
+            not context
+            or not hasattr(context, "get_messages")
+            or not hasattr(context, "set_messages")
+        ):
+            return
+
+        messages = await context.get_messages()
+        if not messages:
+            return
+
+        from amplifier_foundation.session import (
+            diagnose_transcript,
+            repair_transcript,
+        )
+
+        diagnosis = diagnose_transcript(messages)
+        if diagnosis["status"] != "broken":
+            return
+
+        failure_modes = diagnosis.get("failure_modes", [])
+        orphan_ids = diagnosis.get("orphaned_tool_ids", [])
+        repaired = repair_transcript(messages, diagnosis)
+        await context.set_messages(repaired)
+    except Exception as exc:
+        # Foundation availability, diagnosis and context mutation are best-effort.
+        logger.debug("Pre-turn transcript repair failed: %s", exc)
+        return
+
+    # Deliberately outside the best-effort boundary, including ImportError and
+    # cancellation: never dispatch a repair whose persistence failed.
+    await save_session()
+    logger.warning(
+        "Pre-turn transcript repair: %s (orphaned tool calls: %s).",
+        ", ".join(failure_modes),
+        ", ".join(orphan_ids) if orphan_ids else "none",
+    )
 
 
 @dataclass
@@ -299,9 +349,9 @@ async def create_initialized_session(
         )
 
     # Step 7: Restore transcript (resume only)
-    # NOTE: Transcript repair (orphaned tool calls, ordering violations) is handled
-    # by _repair_transcript_if_needed() in main.py, which runs before every LLM call.
-    # This covers both resume and mid-session Ctrl+C cases in a single code path.
+    # Initialization only restores history. Chat and headless host entry points
+    # call shared pre-turn repair and persist it before execution, once their
+    # save callbacks exist (including after mid-session interruptions).
     if config.is_resume and config.initial_transcript:
         transcript_to_restore = config.initial_transcript
 
