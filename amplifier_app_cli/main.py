@@ -80,7 +80,11 @@ from .provider_diagnostics import DEFAULT_TIMEOUT_S as _PROVIDER_DIAGNOSTIC_TIME
 from .provider_diagnostics import format_model_line
 from .provider_diagnostics import invoke_list_models
 from .provider_diagnostics import test_provider_connectivity
-from .session_runner import SessionConfig, create_initialized_session
+from .session_runner import (
+    SessionConfig,
+    create_initialized_session,
+    repair_transcript_if_needed,
+)
 from .session_store import SessionStore
 from .stdout_offload import patch_stdout_offloaded as patch_stdout
 from .ui.dashboard_renderer import DashboardRenderer
@@ -4002,57 +4006,8 @@ async def interactive_chat(
 
     # Helper to detect and repair broken transcripts before each turn
     async def _repair_transcript_if_needed():
-        """Pre-turn transcript repair.
-
-        Detects and fixes orphaned tool calls, ordering violations, and
-        incomplete assistant turns left by interrupted operations (Ctrl+C,
-        SIGKILL, OOM, MCP transport failures).
-
-        Uses the same foundation diagnosis library as resume-time repair
-        (session_runner.py), but operates on live in-memory context messages
-        rather than on-disk transcript files.  Runs once per turn; the scan
-        is a pure in-memory walk (<10 ms for typical sessions).
-        """
-        context = session.coordinator.get("context")
-        if not context or not hasattr(context, "get_messages"):
-            return
-
-        try:
-            messages = await context.get_messages()
-            if not messages:
-                return
-
-            from amplifier_foundation.session import (
-                diagnose_transcript,
-                repair_transcript,
-            )
-
-            diagnosis = diagnose_transcript(messages)
-            if diagnosis["status"] != "broken":
-                return
-
-            failure_modes = diagnosis.get("failure_modes", [])
-            orphan_ids = diagnosis.get("orphaned_tool_ids", [])
-
-            # Repair and update context in-place
-            repaired = repair_transcript(messages, diagnosis)
-            if hasattr(context, "set_messages"):
-                await context.set_messages(repaired)
-
-            # Persist immediately so the fix survives further interruptions
-            await _save_session()
-
-            logger.warning(
-                "Pre-turn transcript repair: %s (orphaned tool calls: %s).",
-                ", ".join(failure_modes),
-                ", ".join(orphan_ids) if orphan_ids else "none",
-            )
-        except ImportError:
-            # Foundation not available (non-standard setup) — skip repair
-            pass
-        except Exception as e:
-            # Repair must never block the session — log and continue
-            logger.debug("Pre-turn transcript repair failed: %s", e)
+        """Repair live history and checkpoint through the interactive save path."""
+        await repair_transcript_if_needed(session, _save_session)
 
     # Helper to execute a prompt with Ctrl+C handling
     async def _execute_with_interrupt(prompt_text: str) -> bool:
@@ -4854,6 +4809,12 @@ async def execute_single(
 
         _original_sigint_handler = signal.signal(signal.SIGINT, _goal_sigint_handler)
         try:
+            await repair_transcript_if_needed(session, _persist_session)
+            if handoff.requested.is_set():
+                return
+            # A successful repair checkpoint must not suppress saving messages
+            # added by a subsequent failed turn. Failed repair saves never get here.
+            session_save_attempted = False
             execution_started = True
             response = await session.execute(prompt)
         finally:

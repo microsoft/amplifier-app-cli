@@ -136,6 +136,10 @@ JSON output paths must restore the console's configured backing stream, not a
 dynamic temporary stdout capture.
 Run-command diagnostics before headless execution belong on stderr so JSON
 stdout remains one parseable payload.
+Both chat and headless entry points use shared pre-turn transcript repair and
+persist before dispatch. A failed repair checkpoint must prevent execution;
+a successful one must not suppress saving a subsequent failed turn.
+Test this through actual `execute_single`, not only extracted interactive helpers.
 
 ## Fork event ownership and cumulative cost
 
