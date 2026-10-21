@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from amplifier_app_cli.agent_config import merge_configs
 from amplifier_app_cli.lib.merge_utils import merge_tool_configs
 from amplifier_app_cli.lib.settings import AppSettings, NotificationFlags, SettingsPaths
 from amplifier_app_cli.runtime.config import (
@@ -40,6 +41,11 @@ def _entry(tools, module):
 def test_operator_write_paths_reach_patch_without_other_filesystem_config(
     patch_tool, filesystem_declared
 ):
+    patch_tool["config"]["additional_allowed_write_paths"] = [
+        "patch-extra",
+        "shared-output",
+        "patch-extra",
+    ]
     tools = [patch_tool]
     if filesystem_declared:
         tools.append(
@@ -73,7 +79,12 @@ def test_operator_write_paths_reach_patch_without_other_filesystem_config(
         "source": "./modules/patch",
         "config": {
             "engine": "function",
-            "allowed_write_paths": [".", "shared-output", "shared-cache"],
+            "allowed_write_paths": ["."],
+            "additional_allowed_write_paths": [
+                "patch-extra",
+                "shared-output",
+                "shared-cache",
+            ],
             "denied_write_paths": ["protected", "shared-protected"],
         },
     }
@@ -107,12 +118,18 @@ def test_patch_override_merges_normally_then_shared_paths_union_in_stable_order(
 ):
     patch_tool["config"]["allowed_write_paths"].append("workspace")
     patch_tool["config"]["denied_write_paths"].append("common-protected")
+    patch_tool["config"]["additional_allowed_write_paths"] = ["bundle-extra"]
     patch_override = {
         "module": "tool-apply-patch",
         "source": "./modules/custom-patch",
         "config": {
             "engine": "custom-engine",
             "allowed_write_paths": ["workspace", "patch-output"],
+            "additional_allowed_write_paths": [
+                "patch-extra",
+                "shared-output",
+                "patch-extra",
+            ],
             "denied_write_paths": ["common-protected", "patch-protected"],
             "allowed_read_paths": ["patch-input"],
             "patch_only": True,
@@ -144,7 +161,12 @@ def test_patch_override_merges_normally_then_shared_paths_union_in_stable_order(
     # The ordinary patch-specific merge uses an unordered permission union.
     # Sharing must append to that result, not redefine its existing order.
     expected_config = merge_tool_configs(patch_tool["config"], patch_override["config"])
-    expected_config["allowed_write_paths"].append("shared-output")
+    # The additive field still follows ordinary overlay replacement first.
+    expected_config["additional_allowed_write_paths"] = [
+        "patch-extra",
+        "shared-output",
+        "workspace",
+    ]
     expected_config["denied_write_paths"].append("shared-protected")
     assert _entry(result, "tool-apply-patch") == {
         "module": "tool-apply-patch",
@@ -276,17 +298,15 @@ def test_filesystem_override_does_not_create_an_absent_patch_module(tools):
 
 
 @pytest.mark.parametrize(
-    ("config", "expected_scope"),
+    "config",
     [
-        (None, "."),
-        ({"engine": "function"}, "."),
-        ({"engine": "function", "working_dir": "workspace"}, "workspace"),
+        None,
+        {"engine": "function"},
+        {"engine": "function", "working_dir": "workspace"},
     ],
     ids=["no-config", "implicit-cwd", "configured-working-dir"],
 )
-def test_nonempty_shared_grant_preserves_omitted_patch_module_default_scope(
-    config, expected_scope
-):
+def test_nonempty_shared_grant_defers_omitted_patch_default_until_mount(config):
     tool = {"module": "tool-apply-patch"}
     if config is not None:
         tool["config"] = config
@@ -300,7 +320,9 @@ def test_nonempty_shared_grant_preserves_omitted_patch_module_default_scope(
     result = _apply_tool_overrides([tool], overrides)
 
     resolved = _entry(result, "tool-apply-patch")["config"]
-    assert resolved["allowed_write_paths"] == [expected_scope, "shared-output"]
+    assert "allowed_write_paths" not in resolved
+    assert resolved["additional_allowed_write_paths"] == ["shared-output"]
+    assert ("working_dir" in resolved) == ("working_dir" in (config or {}))
     if config is not None:
         for key, value in config.items():
             assert resolved[key] == value
@@ -359,11 +381,12 @@ def test_explicit_empty_patch_allow_list_gets_grant_but_no_implicit_scope(workin
     )
 
     resolved = _entry(result, "tool-apply-patch")["config"]
-    assert resolved == {**config, "allowed_write_paths": ["shared-output"]}
+    assert resolved == {**config, "additional_allowed_write_paths": ["shared-output"]}
 
 
 def test_resolution_does_not_mutate_cached_tools_or_nested_operator_lists(patch_tool):
     patch_tool["config"]["options"] = {"labels": ["bundle-label"]}
+    patch_tool["config"]["additional_allowed_write_paths"] = ["bundle-extra"]
     tools = [
         patch_tool,
         {
@@ -380,6 +403,7 @@ def test_resolution_does_not_mutate_cached_tools_or_nested_operator_lists(patch_
             "config": {
                 "allowed_write_paths": ["patch-output"],
                 "denied_write_paths": ["patch-protected"],
+                "additional_allowed_write_paths": ["patch-extra"],
                 "options": {"labels": ["operator-label"]},
             },
         },
@@ -409,8 +433,9 @@ def test_resolution_does_not_mutate_cached_tools_or_nested_operator_lists(patch_
     config = _entry(first, "tool-apply-patch")["config"]
     reapplied_patch = deepcopy(_entry(reapplied, "tool-apply-patch"))
     for field, expected in (
-        ("allowed_write_paths", {".", "patch-output", "shared-output"}),
+        ("allowed_write_paths", {".", "patch-output"}),
         ("denied_write_paths", {"protected", "patch-protected", "shared-protected"}),
+        ("additional_allowed_write_paths", {"patch-extra", "shared-output"}),
     ):
         assert set(config[field]) == expected
         assert len(config[field]) == len(expected)
@@ -418,6 +443,15 @@ def test_resolution_does_not_mutate_cached_tools_or_nested_operator_lists(patch_
         assert len(reapplied_patch["config"][field]) == len(expected)
         reapplied_patch["config"][field] = config[field]
     assert reapplied_patch == _entry(first, "tool-apply-patch")
+    assert config["additional_allowed_write_paths"] == ["patch-extra", "shared-output"]
+    for field in (
+        "allowed_write_paths",
+        "denied_write_paths",
+        "additional_allowed_write_paths",
+    ):
+        config[field].append("result-only")
+    assert tools == original_tools
+    assert overrides == original_overrides
 
 
 @pytest.mark.parametrize("grant", [[], ["shared-output"]])
@@ -508,7 +542,8 @@ async def test_empty_bundle_tools_resolve_explicit_patch_declaration_through_hel
         "source": "./modules/patch",
         "config": {
             "engine": "function",
-            "allowed_write_paths": [".", "shared-output"],
+            "allowed_write_paths": ["."],
+            "additional_allowed_write_paths": ["shared-output"],
             "denied_write_paths": ["protected", "shared-protected"],
         },
     }
@@ -517,10 +552,20 @@ async def test_empty_bundle_tools_resolve_explicit_patch_declaration_through_hel
     assert overrides == original_overrides
 
 
-@pytest.mark.parametrize("field", ["allowed_write_paths", "denied_write_paths"])
 @pytest.mark.parametrize(
-    "malformed",
-    ["private-value", {"path": "private-value"}, None, [None], [1], [["private-value"]]],
+    ("field", "malformed"),
+    [
+        (field, malformed)
+        for field in ("allowed_write_paths", "denied_write_paths")
+        for malformed in (
+            "private-value",
+            {"path": "private-value"},
+            [None],
+            [1],
+            [["private-value"]],
+        )
+    ]
+    + [("allowed_write_paths", None)],
 )
 def test_malformed_shared_policy_rejects_assembly_before_grants(
     patch_tool, field, malformed
@@ -536,10 +581,78 @@ def test_malformed_shared_policy_rejects_assembly_before_grants(
         }
     ]
     original = deepcopy(patch_tool)
+    original_overrides = deepcopy(overrides)
     with pytest.raises(ValueError, match=f"tool-filesystem {field}") as exc:
         _apply_tool_overrides([patch_tool], overrides)
+    assert str(exc.value) == f"tool-filesystem {field} must be a list of path strings"
     assert "private-value" not in str(exc.value)
     assert patch_tool == original
+    assert overrides == original_overrides
+
+
+@pytest.mark.parametrize("include_patch", [False, True])
+@pytest.mark.parametrize("shared_grants", [[], ["shared-output"]])
+def test_null_shared_denies_preserve_filesystem_contract_without_clearing_patch_denies(
+    patch_tool, include_patch, shared_grants
+):
+    tools = [patch_tool] if include_patch else []
+    overrides = [
+        {
+            "module": "tool-filesystem",
+            "config": {
+                "allowed_write_paths": shared_grants,
+                "denied_write_paths": None,
+            },
+        }
+    ]
+    original_tools = deepcopy(tools)
+    original_overrides = deepcopy(overrides)
+
+    resolved = _apply_tool_overrides(tools, overrides)
+
+    assert _entry(resolved, "tool-filesystem")["config"]["denied_write_paths"] is None
+    if include_patch:
+        config = _entry(resolved, "tool-apply-patch")["config"]
+        assert config["denied_write_paths"] == ["protected"]
+        assert config["allowed_write_paths"] == ["."]
+        if shared_grants:
+            assert config["additional_allowed_write_paths"] == shared_grants
+        else:
+            assert "additional_allowed_write_paths" not in config
+    else:
+        assert not any(tool.get("module") == "tool-apply-patch" for tool in resolved)
+    assert tools == original_tools
+    assert overrides == original_overrides
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["allowed_write_paths", "denied_write_paths", "additional_allowed_write_paths"],
+)
+@pytest.mark.parametrize(
+    "malformed",
+    [None, "/private-value", {"path": "private-value"}, [None], [1], [["private-value"]]],
+)
+@pytest.mark.parametrize("shared_grant", [False, True], ids=["deny-only", "grant-and-deny"])
+def test_malformed_patch_policy_rejects_all_present_fields_without_mutation(
+    patch_tool, field, malformed, shared_grant
+):
+    patch_tool["config"][field] = malformed
+    shared = {"denied_write_paths": ["shared-protected"]}
+    if shared_grant:
+        shared["allowed_write_paths"] = ["shared-output"]
+    overrides = [{"module": "tool-filesystem", "config": shared}]
+    tools = [patch_tool]
+    original_tools = deepcopy(tools)
+    original_overrides = deepcopy(overrides)
+
+    with pytest.raises(ValueError) as exc:
+        _apply_tool_overrides(tools, overrides)
+
+    assert str(exc.value) == f"tool-apply-patch {field} must be a list of path strings"
+    assert "private-value" not in str(exc.value)
+    assert tools == original_tools
+    assert overrides == original_overrides
 
 
 def test_all_declared_patch_entries_receive_shared_policy(patch_tool):
@@ -565,12 +678,9 @@ def test_all_declared_patch_entries_receive_shared_policy(patch_tool):
             "protected",
             "shared-protected",
         ]
-        assert "shared-output" in tool["config"]["allowed_write_paths"]
-    assert patches[0]["config"]["allowed_write_paths"] == [".", "shared-output"]
-    assert patches[1]["config"]["allowed_write_paths"] == [
-        "second-output",
-        "shared-output",
-    ]
+        assert tool["config"]["additional_allowed_write_paths"] == ["shared-output"]
+    assert patches[0]["config"]["allowed_write_paths"] == ["."]
+    assert patches[1]["config"]["allowed_write_paths"] == ["second-output"]
     assert tools == original
 
 
@@ -592,9 +702,10 @@ def test_real_settings_scopes_share_write_permissions(tmp_path, patch_tool, scop
         _apply_tool_overrides([patch_tool], settings.get_tool_overrides()),
         "tool-apply-patch",
     )["config"]
-    assert set(resolved["allowed_write_paths"]) == {".", grant}
+    assert resolved["allowed_write_paths"] == ["."]
+    assert resolved["additional_allowed_write_paths"] == [grant]
     assert set(resolved["denied_write_paths"]) == {"protected", deny}
-    assert len(resolved["allowed_write_paths"]) == 2
+    assert len(resolved["allowed_write_paths"]) == 1
     assert len(resolved["denied_write_paths"]) == 2
 
 
@@ -611,10 +722,93 @@ def test_real_settings_remove_leaves_no_derived_patch_grant(tmp_path, patch_tool
     assert grant in _entry(
         _apply_tool_overrides([patch_tool], settings.get_tool_overrides()),
         "tool-apply-patch",
-    )["config"]["allowed_write_paths"]
+    )["config"]["additional_allowed_write_paths"]
     assert settings.remove_allowed_write_path(grant)
     reconstructed = _entry(
         _apply_tool_overrides([patch_tool], settings.get_tool_overrides()),
         "tool-apply-patch",
     )
     assert reconstructed == patch_tool
+
+
+@pytest.mark.parametrize("explicit_child_allow", [False, True])
+def test_actual_child_merge_preserves_deferred_grants_and_config_ownership(
+    explicit_child_allow,
+):
+    tools = [
+        {
+            "module": "tool-apply-patch",
+            "id": identity,
+            "source": f"./modules/{identity}",
+            "config": {"engine": "function"},
+        }
+        for identity in ("primary-patch", "secondary-patch")
+    ]
+    overrides = [
+        {
+            "module": "tool-filesystem",
+            "config": {"allowed_write_paths": ["shared-output"]},
+        }
+    ]
+    parent = {"tools": _apply_tool_overrides(tools, overrides)}
+    overlay = {}
+    if explicit_child_allow:
+        overlay = {
+            "tools": [
+                {
+                    "module": "tool-apply-patch",
+                    "id": "primary-patch",
+                    "config": {"allowed_write_paths": []},
+                }
+            ]
+        }
+    original_parent = deepcopy(parent)
+    original_overlay = deepcopy(overlay)
+
+    child = merge_configs(parent, overlay)
+    sibling = merge_configs(parent, overlay)
+    parent_patches = {
+        tool["id"]: tool
+        for tool in parent["tools"]
+        if tool["module"] == "tool-apply-patch"
+    }
+    child_patches = {
+        tool["id"]: tool
+        for tool in child["tools"]
+        if tool["module"] == "tool-apply-patch"
+    }
+    sibling_patches = {
+        tool["id"]: tool
+        for tool in sibling["tools"]
+        if tool["module"] == "tool-apply-patch"
+    }
+    assert set(child_patches) == {"primary-patch", "secondary-patch"}
+    for identity, tool in child_patches.items():
+        config = tool["config"]
+        assert tool["source"] == parent_patches[identity]["source"]
+        assert tool is not parent_patches[identity]
+        assert config is not parent_patches[identity]["config"]
+        assert config is not sibling_patches[identity]["config"]
+        assert "working_dir" not in config
+        assert config["additional_allowed_write_paths"] == ["shared-output"]
+        assert config["additional_allowed_write_paths"] is not (
+            parent_patches[identity]["config"]["additional_allowed_write_paths"]
+        )
+        if explicit_child_allow and identity == "primary-patch":
+            assert config["allowed_write_paths"] == []
+            assert config["allowed_write_paths"] is not (
+                overlay["tools"][0]["config"]["allowed_write_paths"]
+            )
+        else:
+            assert "allowed_write_paths" not in config
+    child_patches["primary-patch"]["config"]["additional_allowed_write_paths"].append(
+        "child-only"
+    )
+    child_patches["primary-patch"]["config"]["working_dir"] = "child-workspace"
+    assert child_patches["secondary-patch"]["config"] == {
+        "engine": "function",
+        "additional_allowed_write_paths": ["shared-output"],
+    }
+    assert parent == original_parent
+    assert overlay == original_overlay
+    assert sibling == merge_configs(original_parent, original_overlay)

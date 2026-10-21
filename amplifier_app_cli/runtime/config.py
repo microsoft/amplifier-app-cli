@@ -1041,7 +1041,7 @@ def _apply_tool_overrides(
 def _share_filesystem_write_permissions(
     tools: list[dict[str, Any]], filesystem_override: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    """Extend declared patch tools with operator-only filesystem write paths."""
+    """Share operator write paths, deferring patch default scope until mount."""
     filesystem_config = filesystem_override.get("config") or {}
     if not isinstance(filesystem_config, dict):
         return tools
@@ -1050,6 +1050,10 @@ def _share_filesystem_write_permissions(
     for field in ("allowed_write_paths", "denied_write_paths"):
         if field in filesystem_config:
             paths = filesystem_config[field]
+            # The filesystem consumer treats null denies as no explicit denials.
+            # Preserve that contract without passing null to the patch module.
+            if field == "denied_write_paths" and paths is None:
+                continue
             if not isinstance(paths, list) or any(
                 not isinstance(path, str) for path in paths
             ):
@@ -1069,12 +1073,26 @@ def _share_filesystem_write_permissions(
         if isinstance(tool, dict) and tool.get("module") == "tool-apply-patch":
             tool = tool.copy()
             config = (tool.get("config") or {}).copy()
+            for field in (
+                "allowed_write_paths",
+                "denied_write_paths",
+                "additional_allowed_write_paths",
+            ):
+                if field in config:
+                    paths = config[field]
+                    if not isinstance(paths, list) or any(
+                        not isinstance(path, str) for path in paths
+                    ):
+                        raise ValueError(
+                            f"tool-apply-patch {field} must be a list of path strings"
+                        )
+                    config[field] = paths.copy()
             for field, shared_paths in shared.items():
+                if field == "allowed_write_paths":
+                    # The module knows each session's working directory at mount.
+                    # Do not freeze an omitted allowlist or expand explicit [] here.
+                    field = "additional_allowed_write_paths"
                 paths = config.get(field, [])
-                if field == "allowed_write_paths" and field not in config:
-                    # Materialize the module's implicit scope only when adding
-                    # a grant. An explicit [] must not gain this default.
-                    paths = [config.get("working_dir") or "."]
                 config[field] = list(dict.fromkeys([*paths, *shared_paths]))
             tool["config"] = config
         result.append(tool)
