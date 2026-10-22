@@ -506,7 +506,12 @@ async def test_filesystem_null_write_denies_compose_with_images_and_patch(
     assert tools["tool-image"]["allowed_write_paths"] == [str(tmp_path / "outputs")]
     assert tools["tool-image"]["denied_write_paths"] == [str(tmp_path / "outputs/private")]
     assert tools["tool-apply-patch"]["allowed_write_paths"] == []
-    assert tools["tool-apply-patch"]["additional_allowed_write_paths"] == ["outputs"]
+    if section == "modules":
+        # Directory-command policy is persisted in modules.tools and shared
+        # with the patch module. General overrides remain module-specific.
+        assert tools["tool-apply-patch"]["additional_allowed_write_paths"] == ["outputs"]
+    else:
+        assert "additional_allowed_write_paths" not in tools["tool-apply-patch"]
     assert tools["tool-apply-patch"]["denied_write_paths"] == ["patch-private"]
     assert tools["tool-filesystem"]["denied_write_paths"] is None
     assert prepared.bundle.tools == plan["tools"]
