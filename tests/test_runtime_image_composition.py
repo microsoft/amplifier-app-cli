@@ -471,6 +471,50 @@ async def test_fresh_image_paths_intersect_and_denials_union_before_normal_merge
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("section", ["overrides", "modules"])
+async def test_filesystem_null_write_denies_compose_with_images_and_patch(
+    composition, tmp_path, section
+):
+    composition.root.tools = [
+        _image_tool(
+            allow_paid=False,
+            backend="saved-image-account",
+            allowed_write_paths=["outputs"],
+            denied_write_paths=["outputs/private"],
+        ),
+        {"module": "tool-filesystem", "config": {}},
+        {"module": "tool-apply-patch", "config": {
+            "allowed_write_paths": [], "denied_write_paths": ["patch-private"],
+        }},
+    ]
+    filesystem = {
+        "module": "tool-filesystem",
+        "config": {"allowed_write_paths": ["outputs"], "denied_write_paths": None},
+    }
+    body = (
+        {"overrides": {"tool-filesystem": {"config": filesystem["config"]}}}
+        if section == "overrides"
+        else {"modules": {"tools": [filesystem]}}
+    )
+    settings = _settings(tmp_path, body)
+    before = settings.paths.global_settings.read_bytes()
+    root_before = deepcopy(composition.root.tools)
+    plan, prepared = await runtime_config.resolve_bundle_config("chosen-root", settings)
+    tools = {row["module"]: row["config"] for row in plan["tools"]}
+    assert tools["tool-image"]["allow_paid"] is False
+    assert tools["tool-image"]["backend"] == "saved-image-account"
+    assert tools["tool-image"]["allowed_write_paths"] == [str(tmp_path / "outputs")]
+    assert tools["tool-image"]["denied_write_paths"] == [str(tmp_path / "outputs/private")]
+    assert tools["tool-apply-patch"]["allowed_write_paths"] == []
+    assert tools["tool-apply-patch"]["additional_allowed_write_paths"] == ["outputs"]
+    assert tools["tool-apply-patch"]["denied_write_paths"] == ["patch-private"]
+    assert tools["tool-filesystem"]["denied_write_paths"] is None
+    assert prepared.bundle.tools == plan["tools"]
+    assert composition.root.tools == root_before
+    assert settings.paths.global_settings.read_bytes() == before
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("shared_paths", [[], ["artist"]])
 async def test_empty_or_disjoint_image_allow_lists_never_become_a_union(
     composition, tmp_path, shared_paths

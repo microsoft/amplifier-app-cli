@@ -275,13 +275,31 @@ def test_filtered_tool_is_never_added_back(tmp_path):
     assert restrict_child_images(parent, child, working_dir=tmp_path) == child
 
 
-@pytest.mark.parametrize("bad", [None, "outputs", [7], {"path": "outputs"}])
+@pytest.mark.parametrize("bad", ["outputs", [7], {"path": "outputs"}])
 @pytest.mark.parametrize("key", ["allowed_read_paths", "denied_write_paths"])
-def test_malformed_file_policy_fails_instead_of_broadening(tmp_path, bad, key):
-    parent = {"tools": [filesystem(**{key: bad})]}
+@pytest.mark.parametrize("module", ["tool-image", "tool-filesystem"])
+def test_malformed_file_policy_fails_instead_of_broadening(tmp_path, bad, key, module):
+    parent = {"tools": [{"module": module, "config": {key: bad}}]}
     child = {"tools": [image(allow_paid=True)]}
     with pytest.raises(ValueError, match="lists of strings"):
         restrict_child_images(parent, child, working_dir=tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("module", "key"),
+    [
+        ("tool-filesystem", "allowed_read_paths"),
+        ("tool-filesystem", "allowed_write_paths"),
+        ("tool-image", "allowed_read_paths"),
+        ("tool-image", "denied_write_paths"),
+    ],
+)
+def test_null_image_policy_and_filesystem_allowlists_still_refuse(tmp_path, module, key):
+    parent = {"tools": [{"module": module, "config": {key: None}}]}
+    with pytest.raises(ValueError, match="lists of strings"):
+        restrict_child_images(
+            parent, {"tools": [image(allow_paid=True)]}, working_dir=tmp_path
+        )
 
 
 def test_malformed_module_config_is_not_silently_dropped(tmp_path):
@@ -355,6 +373,38 @@ async def test_spawner_narrows_before_both_execution_boundaries(spawn_boundary, 
         str(tmp_path / f"outputs/{name}") for name in ("private", "spawn", "overlay")
     }
     assert all(row["module"] != "tool-filesystem" for row in child["tools"])
+    assert (parent, overlay) == before
+
+
+@pytest.mark.asyncio
+async def test_filesystem_null_write_denies_preserve_child_image_restrictions(
+    spawn_boundary, tmp_path
+):
+    parent = {
+        "tools": [
+            image(
+                allow_paid=False,
+                backend="saved-image-account",
+                allowed_write_paths=["outputs"],
+                denied_write_paths=["outputs/private"],
+            ),
+            filesystem(allowed_write_paths=["outputs"], denied_write_paths=None),
+        ]
+    }
+    overlay = {"tools": [image(
+        allow_paid=True,
+        allowed_write_paths=["outputs/job"],
+        denied_write_paths=["outputs/job/denied"],
+    )]}
+    before = deepcopy((parent, overlay))
+    child = await spawn_boundary(parent, overlay)
+    policy = image_configs(child)[0]
+    assert policy["allow_paid"] is False
+    assert policy["backend"] == "saved-image-account"
+    assert policy["allowed_write_paths"] == [str(tmp_path / "outputs/job")]
+    assert set(policy["denied_write_paths"]) == {
+        str(tmp_path / "outputs/private"), str(tmp_path / "outputs/job/denied")
+    }
     assert (parent, overlay) == before
 
 
