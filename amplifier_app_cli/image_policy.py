@@ -39,6 +39,11 @@ def _policies(rows: Any, *, overlay: bool = False) -> list[dict[str, Any]]:
                 "denied_write_paths",
             }
         }
+        # The filesystem consumer accepts null write-denies as no additional
+        # restrictions. Normalize only that source contract; image policy and
+        # allowlists remain strict, and other declarations' denials still union.
+        if module == "tool-filesystem" and policy.get("denied_write_paths") is None:
+            policy.pop("denied_write_paths", None)
         # A complete image declaration requires a literal grant. Only omission
         # in a partial agent overlay means inherit rather than disable.
         if module == "tool-image" and (not overlay or "allow_paid" in config):
