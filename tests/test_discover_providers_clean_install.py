@@ -7,7 +7,8 @@ fails, then retries get_provider_info().  If the install also fails the provider
 still appears in the picker via _get_provider_display_name() fallback.
 """
 
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from unittest.mock import MagicMock, call, patch
 
 
 from amplifier_app_cli.provider_manager import ProviderManager
@@ -24,10 +25,13 @@ def _make_manager() -> ProviderManager:
     return ProviderManager()
 
 
-def _failing_source(error: Exception | None = None) -> MagicMock:
-    """Return a mock source whose resolve() raises, simulating a missing install."""
+_SOURCE_PATH = Path(__file__).parent / "resolved-provider-fixture"
+
+
+def _resolved_source() -> MagicMock:
+    """Source resolution succeeds; missing SDKs fail at get_provider_info()."""
     mock = MagicMock()
-    mock.resolve.side_effect = error or ImportError("No module named 'anthropic'")
+    mock.resolve.return_value = _SOURCE_PATH
     return mock
 
 
@@ -66,7 +70,7 @@ class TestGitProviderInstalledOnDemand:
             ),
             patch(
                 "amplifier_app_cli.provider_manager.source_from_uri",
-                return_value=_failing_source(),
+                return_value=_resolved_source(),
             ),
             patch(
                 "amplifier_app_cli.provider_manager.ensure_provider_installed",
@@ -74,8 +78,11 @@ class TestGitProviderInstalledOnDemand:
             ) as mock_ensure,
             patch(
                 "amplifier_app_cli.provider_manager.get_provider_info",
-                return_value=provider_info,
-            ),
+                side_effect=[
+                    ModuleNotFoundError("No module named 'anthropic'"),
+                    provider_info,
+                ],
+            ) as mock_get_info,
         ):
             providers = manager._discover_providers_from_sources()
 
@@ -87,6 +94,10 @@ class TestGitProviderInstalledOnDemand:
         mock_ensure.assert_called_once_with(
             "provider-anthropic", config_manager=manager.config
         )
+        assert mock_get_info.call_args_list == [
+            call("provider-anthropic", source_path=_SOURCE_PATH),
+            call("provider-anthropic", source_path=_SOURCE_PATH),
+        ]
 
     def test_ensure_provider_installed_called_with_correct_module_id(self):
         """Verify module_id passed to ensure_provider_installed is the full prefixed ID."""
@@ -110,7 +121,7 @@ class TestGitProviderInstalledOnDemand:
             ),
             patch(
                 "amplifier_app_cli.provider_manager.source_from_uri",
-                return_value=_failing_source(),
+                return_value=_resolved_source(),
             ),
             patch(
                 "amplifier_app_cli.provider_manager.ensure_provider_installed",
@@ -118,17 +129,25 @@ class TestGitProviderInstalledOnDemand:
             ) as mock_ensure,
             patch(
                 "amplifier_app_cli.provider_manager.get_provider_info",
-                return_value={
-                    "display_name": "OpenAI",
-                    "description": "OpenAI provider",
-                },
-            ),
+                side_effect=[
+                    ModuleNotFoundError("No module named 'openai'"),
+                    {
+                        "display_name": "OpenAI",
+                        "description": "OpenAI provider",
+                    },
+                ],
+            ) as mock_get_info,
         ):
             manager._discover_providers_from_sources()
 
         call_args = mock_ensure.call_args
         assert call_args[0][0] == "provider-openai"
         assert call_args[1]["config_manager"] is manager.config
+        mock_ensure.assert_called_once()
+        assert mock_get_info.call_args_list == [
+            call("provider-openai", source_path=_SOURCE_PATH),
+            call("provider-openai", source_path=_SOURCE_PATH),
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -161,8 +180,12 @@ class TestGitProviderFallbackOnInstallFailure:
             ),
             patch(
                 "amplifier_app_cli.provider_manager.source_from_uri",
-                return_value=_failing_source(),
+                return_value=_resolved_source(),
             ),
+            patch(
+                "amplifier_app_cli.provider_manager.get_provider_info",
+                side_effect=ModuleNotFoundError("No module named 'openai'"),
+            ) as mock_get_info,
             patch(
                 "amplifier_app_cli.provider_manager.ensure_provider_installed",
                 return_value=False,
@@ -176,6 +199,9 @@ class TestGitProviderFallbackOnInstallFailure:
         assert module_id == "provider-openai"
         assert display_name == "OpenAI"
         mock_ensure.assert_called_once()
+        mock_get_info.assert_called_once_with(
+            "provider-openai", source_path=_SOURCE_PATH
+        )
 
     def test_provider_display_names_are_correct_for_all_fallbacks(self):
         """When all installs fail, each provider gets its proper display name from the dict."""
@@ -211,12 +237,16 @@ class TestGitProviderFallbackOnInstallFailure:
             ),
             patch(
                 "amplifier_app_cli.provider_manager.source_from_uri",
-                return_value=_failing_source(),
+                return_value=_resolved_source(),
             ),
+            patch(
+                "amplifier_app_cli.provider_manager.get_provider_info",
+                side_effect=ModuleNotFoundError("No module named 'fixture_sdk'"),
+            ) as mock_get_info,
             patch(
                 "amplifier_app_cli.provider_manager.ensure_provider_installed",
                 return_value=False,
-            ),
+            ) as mock_ensure,
         ):
             providers = manager._discover_providers_from_sources()
 
@@ -226,6 +256,10 @@ class TestGitProviderFallbackOnInstallFailure:
                 f"{module_id}: expected '{expected_display}', "
                 f"got '{providers[module_id][1]}'"
             )
+        assert mock_ensure.call_count == len(expected_names)
+        assert mock_get_info.call_args_list == [
+            call(module_id, source_path=_SOURCE_PATH) for module_id in expected_names
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -252,12 +286,16 @@ class TestAllKnownProvidersOnCleanInstall:
             ),
             patch(
                 "amplifier_app_cli.provider_manager.source_from_uri",
-                return_value=_failing_source(),
+                return_value=_resolved_source(),
             ),
+            patch(
+                "amplifier_app_cli.provider_manager.get_provider_info",
+                side_effect=ModuleNotFoundError("No module named 'fixture_sdk'"),
+            ) as mock_get_info,
             patch(
                 "amplifier_app_cli.provider_manager.ensure_provider_installed",
                 return_value=False,
-            ),
+            ) as mock_ensure,
         ):
             providers = manager._discover_providers_from_sources()
 
@@ -265,13 +303,24 @@ class TestAllKnownProvidersOnCleanInstall:
             assert module_id in providers, (
                 f"Provider {module_id} missing — should appear even when install fails"
             )
+        assert mock_ensure.call_count == len(DEFAULT_PROVIDER_SOURCES)
+        assert mock_get_info.call_args_list == [
+            call(module_id, source_path=_SOURCE_PATH)
+            for module_id in DEFAULT_PROVIDER_SOURCES
+        ]
 
     def test_all_providers_appear_when_all_installs_succeed(self):
         """Happy path: every install succeeds — every known provider appears with full info."""
         manager = _make_manager()
         ordered = list(DEFAULT_PROVIDER_SOURCES.items())
 
-        def fake_get_info(module_id: str) -> dict:
+        attempted: set[str] = set()
+
+        def fake_get_info(module_id: str, *, source_path: Path) -> dict:
+            assert source_path == _SOURCE_PATH
+            if module_id not in attempted:
+                attempted.add(module_id)
+                raise ModuleNotFoundError("No module named 'fixture_sdk'")
             name = module_id.replace("provider-", "")
             return {
                 "display_name": name.title(),
@@ -289,22 +338,28 @@ class TestAllKnownProvidersOnCleanInstall:
             ),
             patch(
                 "amplifier_app_cli.provider_manager.source_from_uri",
-                return_value=_failing_source(),
+                return_value=_resolved_source(),
             ),
             patch(
                 "amplifier_app_cli.provider_manager.ensure_provider_installed",
                 return_value=True,
-            ),
+            ) as mock_ensure,
             patch(
                 "amplifier_app_cli.provider_manager.get_provider_info",
                 side_effect=fake_get_info,
-            ),
+            ) as mock_get_info,
         ):
             providers = manager._discover_providers_from_sources()
 
         assert len(providers) == len(DEFAULT_PROVIDER_SOURCES)
         for module_id in DEFAULT_PROVIDER_SOURCES:
             assert module_id in providers
+        assert mock_ensure.call_count == len(DEFAULT_PROVIDER_SOURCES)
+        assert mock_get_info.call_args_list == [
+            call(module_id, source_path=_SOURCE_PATH)
+            for module_id in DEFAULT_PROVIDER_SOURCES
+            for _ in range(2)
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -337,25 +392,33 @@ class TestPostInstallInfoRetry:
             ),
             patch(
                 "amplifier_app_cli.provider_manager.source_from_uri",
-                return_value=_failing_source(),
+                return_value=_resolved_source(),
             ),
             patch(
                 "amplifier_app_cli.provider_manager.ensure_provider_installed",
                 return_value=True,
-            ),
+            ) as mock_ensure,
             patch(
                 "amplifier_app_cli.provider_manager.get_provider_info",
-                return_value=None,  # Still None even after successful install
-            ),
+                side_effect=[
+                    ModuleNotFoundError("No module named 'google'"),
+                    None,  # Still None even after successful install
+                ],
+            ) as mock_get_info,
         ):
             providers = manager._discover_providers_from_sources()
 
         assert "provider-gemini" in providers
         _, display_name, _ = providers["provider-gemini"]
         assert display_name == "Google Gemini"
+        mock_ensure.assert_called_once()
+        assert mock_get_info.call_args_list == [
+            call("provider-gemini", source_path=_SOURCE_PATH),
+            call("provider-gemini", source_path=_SOURCE_PATH),
+        ]
 
     def test_get_provider_info_called_after_ensure_installed_succeeds(self):
-        """get_provider_info() is called exactly once in the retry path after install."""
+        """The initial SDK failure and post-install retry use the same source path."""
         manager = _make_manager()
 
         with (
@@ -376,25 +439,30 @@ class TestPostInstallInfoRetry:
             ),
             patch(
                 "amplifier_app_cli.provider_manager.source_from_uri",
-                return_value=_failing_source(),
+                return_value=_resolved_source(),
             ),
             patch(
                 "amplifier_app_cli.provider_manager.ensure_provider_installed",
                 return_value=True,
-            ),
+            ) as mock_ensure,
             patch(
                 "amplifier_app_cli.provider_manager.get_provider_info",
-                return_value={
-                    "display_name": "Ollama",
-                    "description": "Ollama provider",
-                },
+                side_effect=[
+                    ModuleNotFoundError("No module named 'ollama'"),
+                    {
+                        "display_name": "Ollama",
+                        "description": "Ollama provider",
+                    },
+                ],
             ) as mock_get_info,
         ):
             providers = manager._discover_providers_from_sources()
 
-        # get_provider_info should be called once (in the retry, not the initial try
-        # since source.resolve() raised before reaching it)
-        mock_get_info.assert_called_once_with("provider-ollama")
+        mock_ensure.assert_called_once()
+        assert mock_get_info.call_args_list == [
+            call("provider-ollama", source_path=_SOURCE_PATH),
+            call("provider-ollama", source_path=_SOURCE_PATH),
+        ]
         assert "provider-ollama" in providers
 
 
@@ -421,7 +489,15 @@ class TestLocalSourcePathUnchanged:
             ),
             patch(
                 "amplifier_app_cli.provider_manager.source_from_uri",
-                return_value=_failing_source(),
+                return_value=_resolved_source(),
+            ),
+            patch(
+                "amplifier_app_cli.provider_manager.get_provider_info",
+                side_effect=ModuleNotFoundError("No module named 'fixture_sdk'"),
+            ) as mock_get_info,
+            patch(
+                "amplifier_app_cli.provider_manager.uv_target_args",
+                return_value=[],
             ),
             patch(
                 "amplifier_app_cli.provider_manager.ensure_provider_installed",
@@ -429,9 +505,18 @@ class TestLocalSourcePathUnchanged:
             patch(
                 "amplifier_app_cli.provider_manager.subprocess.run",
                 return_value=MagicMock(returncode=1, stderr="local install failed"),
-            ),
+            ) as mock_install,
         ):
-            manager._discover_providers_from_sources()
+            providers = manager._discover_providers_from_sources()
 
         # The new git-source code path must NOT fire for local providers
         mock_ensure.assert_not_called()
+        mock_install.assert_called_once()
+        mock_get_info.assert_called_once_with(
+            "provider-local", source_path=_SOURCE_PATH
+        )
+        assert providers["local"] == (
+            "local",
+            "Local",
+            "Provider: local (install failed - check pyproject.toml)",
+        )

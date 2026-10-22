@@ -228,6 +228,17 @@ the first install and the entire file is identical after a repeat install.
 
 ## Lightweight provider configuration
 
+Resolve the effective runtime source before configuration-time provider imports.
+Installed-package checks and picker inventories must not execute provider packages:
+a wheel's cached children cannot be mixed with the selected source at startup.
+Activate provider dependencies before their dependents; preserve installed-only
+unknown providers and explicit activated paths. Selected-source/origin failures
+must not fall back to a wheel, evict imports, or trigger an install to hide the
+conflict. Run `tests/test_provider_source_origin.py` and
+`tests/test_provider_source_precedence.py`; verify first-run startup with a
+preinstalled provider wheel in an isolated environment, without weakening Core's
+origin checks.
+
 Model discovery and login must expand an independent full configuration copy
 once with `lib.env_vars.expand_env_vars`, before deriving constructor arguments.
 Do not discard saved account settings or expand returned environment values a

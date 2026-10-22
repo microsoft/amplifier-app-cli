@@ -24,6 +24,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class ProviderSourceError(ImportError):
+    """The selected provider source cannot be used without mixing origins."""
+
+
 def _get_provider_module_name(provider_id: str) -> str:
     """Convert provider ID to Python module name.
 
@@ -50,7 +54,7 @@ def _load_provider_module_from_source_path(provider_id: str, source_path: Path) 
     module_name = _get_provider_module_name(provider_id)
     expected_file = (source_path / module_name / "__init__.py").resolve()
     if not expected_file.is_file():
-        raise ImportError(
+        raise ProviderSourceError(
             f"Configured source for provider '{provider_id}' does not contain "
             f"expected package '{module_name}'"
         )
@@ -59,23 +63,63 @@ def _load_provider_module_from_source_path(provider_id: str, source_path: Path) 
     if cached_module is not None:
         cached_file = getattr(cached_module, "__file__", None)
         if cached_file is None or Path(cached_file).resolve() != expected_file:
-            raise ImportError(
+            raise ProviderSourceError(
                 f"Provider '{provider_id}' is already loaded from a different source"
             )
+
+    # A prior failed import can leave children behind without the parent.
+    # Never evict them or combine them with another copy of the package.
+    expected_package = expected_file.parent
+    for name, child in tuple(sys.modules.items()):
+        if name.startswith(module_name + ".") and child is not None:
+            child_file = getattr(child, "__file__", None)
+            if child_file is not None and not Path(child_file).resolve().is_relative_to(
+                expected_package
+            ):
+                raise ProviderSourceError(
+                    f"Provider '{provider_id}' has a submodule loaded from a different source"
+                )
 
     module = importlib.import_module(module_name)
     loaded_file = getattr(module, "__file__", None)
     if loaded_file is None or Path(loaded_file).resolve() != expected_file:
-        raise ImportError(
+        raise ProviderSourceError(
             f"Provider '{provider_id}' loaded from a different source than configured"
         )
     return module
 
 
+def _load_selected_provider_module(
+    module_id: str, sources: dict[str, str]
+) -> Any:
+    """Resolve the runtime source before the first configuration-time import."""
+    from .provider_sources import PROVIDER_DEPENDENCIES, source_from_uri
+
+    # A provider can import another provider at module scope (Azure/OpenAI).
+    # Resolve that dependency first, not whichever wheel happens to be installed.
+    for dependency in PROVIDER_DEPENDENCIES.get(module_id, []):
+        if dependency in sources:
+            _load_selected_provider_module(dependency, sources)
+
+    try:
+        source_path = source_from_uri(sources[module_id]).resolve()
+    except Exception as exc:
+        raise ProviderSourceError(
+            f"Could not resolve the selected source for provider '{module_id}'"
+        ) from exc
+
+    path = str(source_path)
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    importlib.invalidate_caches()
+    return _load_provider_module_from_source_path(module_id, source_path)
+
+
 def _load_provider_module(provider_id: str, *, source_path: Path | None = None) -> Any:
     """Load a provider module.
 
-    Tries entry points first, then direct import.
+    Uses the selected runtime source before entry points or direct import.
+    Installed-only providers remain discoverable when no source is configured.
 
     Args:
         provider_id: Provider ID (e.g., "provider-anthropic")
@@ -96,6 +140,13 @@ def _load_provider_module(provider_id: str, *, source_path: Path | None = None) 
         else f"provider-{provider_id}"
     )
 
+    from .lib.settings import AppSettings
+    from .provider_sources import get_effective_provider_sources
+
+    sources = get_effective_provider_sources(AppSettings())
+    if module_id in sources:
+        return _load_selected_provider_module(module_id, sources)
+
     # Try entry point first
     try:
         eps = importlib.metadata.entry_points(group="amplifier.modules")
@@ -111,6 +162,8 @@ def _load_provider_module(provider_id: str, *, source_path: Path | None = None) 
     module_name = _get_provider_module_name(provider_id)
     try:
         return importlib.import_module(module_name)
+    except ProviderSourceError:
+        raise
     except ImportError as e:
         raise ImportError(f"Could not load provider module '{provider_id}': {e}") from e
 
@@ -168,6 +221,8 @@ def load_provider_class(
         logger.warning(f"No provider class found in module for '{provider_id}'")
         return None
 
+    except ProviderSourceError:
+        raise
     except ImportError as e:
         if source_path is not None:
             raise
@@ -412,6 +467,8 @@ def get_provider_info(
         info = provider.get_info()
         return info.model_dump() if hasattr(info, "model_dump") else vars(info)
 
+    except ProviderSourceError:
+        raise
     except Exception as e:
         if source_path is not None:
             raise
