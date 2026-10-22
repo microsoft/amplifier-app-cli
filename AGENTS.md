@@ -1,5 +1,26 @@
 # AGENTS.md — amplifier-app-cli
 
+## Filesystem write-permission projection
+
+Directory commands persist write policy under `tool-filesystem`. During config
+resolution, project only its operator write grants and denies onto declared
+`tool-apply-patch` entries; never copy bundle filesystem defaults, read policy,
+source, or engine. Validate both shared lists before granting anything. Preserve
+explicit empty patch allowlists and the module's omitted-policy default scope.
+Shared filesystem `denied_write_paths: null` means no additional denies, matching
+that consumer; preserve it without forwarding null or clearing patch denies.
+Append grants to the portable `additional_allowed_write_paths` field, not
+`allowed_write_paths`; union denies into `denied_write_paths`. Validate all three
+present patch policy fields as lists of strings whenever sharing nonempty write
+policy. Do not materialize the patch default or working directory during assembly:
+the module selects its default only at mount, after session.working_dir is available
+for root, child, and resumed sessions. Explicit [] gains only the extra grants.
+Publish upstream module support for this field before shipping the CLI projection;
+older module versions do not consume it. Keep generic tool-overlay merge semantics
+unchanged: this new field is replaced, not automatically unioned, by an overlay.
+Run `tests/test_patch_write_permissions.py` and `tests/test_merge_utils.py`.
+This assembly step does not update already-mounted tools.
+
 ## Boundary rule: `amplifier_app_cli/data/` vs. an external bundle
 
 `amplifier_app_cli/data/` ships inside the CLI's own wheel — anything placed there loads
@@ -136,6 +157,10 @@ JSON output paths must restore the console's configured backing stream, not a
 dynamic temporary stdout capture.
 Run-command diagnostics before headless execution belong on stderr so JSON
 stdout remains one parseable payload.
+Both chat and headless entry points use shared pre-turn transcript repair and
+persist before dispatch. A failed repair checkpoint must prevent execution;
+a successful one must not suppress saving a subsequent failed turn.
+Test this through actual `execute_single`, not only extracted interactive helpers.
 
 ## Fork event ownership and cumulative cost
 
@@ -156,6 +181,11 @@ Tests must use the Foundation dependency installed in their test environment.
 Do not prepend a neighboring checkout to `sys.path`: that silently bypasses the
 published dependency and lockfile. Install an explicit local override in the
 test virtualenv when cross-repository development requires one.
+Declare required real-module test imports in the dev group and lockfile.
+After an upstream-dependent regression changes, verify a clean
+`uv sync --locked --all-extras --dev` install and the affected tests without
+supplemental installs; a cross-repo test environment alone does not prove the
+committed lockfile is ready.
 
 ## Interactive slash completion
 
