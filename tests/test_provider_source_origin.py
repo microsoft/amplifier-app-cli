@@ -56,7 +56,7 @@ def _run(tmp_path: Path, body: str, *, configured: bool = True) -> dict:
     config.parent.mkdir(parents=True)
     config.write_text(
         "config:\n  providers:\n    - module: provider-origin-fixture\n"
-        f"      source: {json.dumps(str(selected))}\n"
+        f"      source: {json.dumps(f'file://{selected}')}\n"
         if configured
         else "{}\n",
         encoding="utf-8",
@@ -80,6 +80,8 @@ def _run(tmp_path: Path, body: str, *, configured: bool = True) -> dict:
         f"sys.path.insert(0, {str(wheel)!r})\n"
         f"name = {name!r}\n"
         f"selected = Path({str(selected)!r})\n"
+        "selected_uri = f'file://{selected}'\n"
+        f"wheel_uri = {'file://' + str(wheel)!r}\n"
         "def deny_network(event, args):\n"
         "    if event in {'socket.connect', 'socket.getaddrinfo'}:\n"
         "        raise PermissionError('No network in provider-origin fixture')\n"
@@ -110,6 +112,37 @@ def test_installed_check_does_not_import_entry_point_parent(tmp_path):
     assert result == {"imported": False}
 
 
+def test_fixture_uses_real_local_resolver_and_retains_strict_network_guard(tmp_path):
+    result = _run(
+        tmp_path,
+        """
+        import socket
+        from amplifier_app_cli.lib.bundle_loader.resolvers import FoundationFileSource
+        from amplifier_app_cli.provider_sources import source_from_uri
+        source = source_from_uri(selected_uri)
+        assert isinstance(source, FoundationFileSource)
+        assert source.resolve() == selected.resolve()
+        blocked = 0
+        try:
+            socket.getaddrinfo("example.invalid", 443)
+        except PermissionError as error:
+            assert str(error) == "No network in provider-origin fixture"
+            blocked += 1
+        for address in [("192.0.2.1", 443), ("127.0.0.1", 9)]:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connection:
+                try:
+                    connection.connect(address)
+                except PermissionError as error:
+                    assert str(error) == "No network in provider-origin fixture"
+                    blocked += 1
+        assert blocked == 3
+        assert name not in sys.modules
+        print(json.dumps({"local_source": True, "network_controls_blocked": blocked}))
+        """,
+    )
+    assert result == {"local_source": True, "network_controls_blocked": 3}
+
+
 def test_metadata_and_later_source_load_share_package_and_children(tmp_path):
     result = _run(
         tmp_path,
@@ -136,7 +169,7 @@ def test_unknown_provider_source_modules_is_used_before_installed_wheel(tmp_path
         """
         config = Path.home() / ".amplifier/settings.yaml"
         config.write_text("sources:\\n  modules:\\n    provider-origin-fixture: "
-                          + json.dumps(str(selected)) + "\\n")
+                          + json.dumps(selected_uri) + "\\n")
         from amplifier_app_cli.provider_loader import get_provider_info
         assert get_provider_info("origin-fixture")["display_name"] == "selected"
         print(json.dumps({"origin": "selected"}))
@@ -150,7 +183,7 @@ def test_wrong_preloaded_origin_is_rejected_not_evicted(tmp_path, preload):
     result = _run(
         tmp_path,
         f"""
-        from amplifier_app_cli.provider_loader import get_provider_info
+        from amplifier_app_cli.provider_loader import ProviderSourceError, get_provider_info
         if {preload!r} == "package":
             original = importlib.import_module(name)
         else:
@@ -163,8 +196,8 @@ def test_wrong_preloaded_origin_is_rejected_not_evicted(tmp_path, preload):
         before = original.__file__
         try:
             get_provider_info("origin-fixture")
-        except ImportError:
-            pass
+        except ProviderSourceError as error:
+            assert "different source" in str(error)
         else:
             raise AssertionError("Wrong origin was silently accepted or hidden")
         assert original.__file__ == before
@@ -181,11 +214,13 @@ def test_unavailable_selected_source_does_not_fall_back_to_wheel(tmp_path):
         """
         import shutil
         shutil.rmtree(selected)
-        from amplifier_app_cli.provider_loader import get_provider_info
+        from amplifier_app_cli.lib.bundle_loader.resolvers import ModuleResolutionError
+        from amplifier_app_cli.provider_loader import ProviderSourceError, get_provider_info
         try:
             get_provider_info("origin-fixture")
-        except ImportError:
-            pass
+        except ProviderSourceError as error:
+            assert isinstance(error.__cause__, ModuleResolutionError)
+            assert "Module path not found" in str(error.__cause__)
         else:
             raise AssertionError("Unavailable selected source silently used a wheel")
         assert name not in sys.modules
@@ -243,7 +278,7 @@ def test_picker_uses_selected_source_before_entry_point_import(tmp_path):
         """
         from unittest.mock import patch
         from amplifier_app_cli.provider_manager import ProviderManager
-        sources = {"provider-origin-fixture": str(selected)}
+        sources = {"provider-origin-fixture": selected_uri}
         with patch("amplifier_app_cli.provider_manager.get_effective_provider_sources",
                    return_value=sources):
             providers = ProviderManager().list_providers()
@@ -270,8 +305,8 @@ def test_provider_dependency_is_selected_before_dependent_import(tmp_path):
                         + path.read_text())
         config = Path.home() / ".amplifier/settings.yaml"
         config.write_text("sources:\\n  modules:\\n    provider-origin-fixture: "
-                          + json.dumps(str(selected))
-                          + "\\n    provider-origin-base: " + json.dumps(str(selected)) + "\\n")
+                          + json.dumps(selected_uri)
+                          + "\\n    provider-origin-base: " + json.dumps(selected_uri) + "\\n")
         from amplifier_app_cli.provider_loader import get_provider_info
         with patch("amplifier_app_cli.provider_sources.PROVIDER_DEPENDENCIES",
                    {"provider-origin-fixture": ["provider-origin-base"]}):
@@ -313,8 +348,8 @@ def test_picker_dependency_resolution_failure_does_not_import_or_repair(tmp_path
         assert path.is_file()
         config = Path.home() / ".amplifier/settings.yaml"
         config.write_text(json.dumps({"sources": {"modules": {
-            "provider-origin-base": str(missing),
-            "provider-origin-fixture": str(selected),
+            "provider-origin-base": f"file://{missing}",
+            "provider-origin-fixture": selected_uri,
         }}}))
         assert is_provider_module_installed("provider-origin-base")
         assert is_provider_module_installed("provider-origin-fixture")
@@ -369,9 +404,9 @@ def test_sdk_repair_retry_retains_custom_settings_source_path(tmp_path, source_k
         wheel = Path(sys.path[0])
         ambient = Path.home() / ".amplifier/settings.yaml"
         ambient.write_text(json.dumps({"config": {"providers": [
-            {"module": module_id, "source": str(wheel)}
+            {"module": module_id, "source": wheel_uri}
         ]}}))
-        source_uri = (str(selected) if source_kind == "local" else
+        source_uri = (selected_uri if source_kind == "local" else
                       "git+https://example.invalid/provider-origin-fixture@selected")
         custom = selected.parent / "manager-settings"
         custom.mkdir()
@@ -385,7 +420,7 @@ def test_sdk_repair_retry_retains_custom_settings_source_path(tmp_path, source_k
         repaired = False
 
         def resolve_source(uri):
-            root = {source_uri: selected, str(wheel): wheel}[uri]
+            root = {source_uri: selected, wheel_uri: wheel}[uri]
             return SimpleNamespace(resolve=lambda: root)
 
         def get_info(provider_id, *, source_path=None):
@@ -425,7 +460,7 @@ def test_sdk_repair_retry_retains_custom_settings_source_path(tmp_path, source_k
                   side_effect=install_git) as git_install,
         ):
             assert get_effective_provider_sources(settings) == {module_id: source_uri}
-            assert get_effective_provider_sources(AppSettings()) == {module_id: str(wheel)}
+            assert get_effective_provider_sources(AppSettings()) == {module_id: wheel_uri}
             providers = ProviderManager(settings)._discover_providers_from_sources()
             if source_kind == "local":
                 local_install.assert_called_once()
@@ -467,7 +502,7 @@ def test_local_retry_origin_error_propagates_without_purging_imports(tmp_path):
 
         with (
             patch("amplifier_app_cli.provider_manager.get_effective_provider_sources",
-                  return_value={"provider-origin-fixture": str(selected)}),
+                  return_value={"provider-origin-fixture": selected_uri}),
             patch("amplifier_app_cli.provider_manager.get_provider_info",
                   side_effect=get_info),
             patch("amplifier_app_cli.provider_manager.uv_target_args", return_value=[]),
