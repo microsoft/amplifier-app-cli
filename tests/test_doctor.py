@@ -73,6 +73,10 @@ def test_missing_files_complete_without_creating_home(target):
     ("a: " + "[" * 34 + "0" + "]" * 34, "too_large"),
     ("a: [" + ",".join("0" for _ in range(10001)) + "]", "too_large"),
     ("#" * (diag.SETTINGS_LIMIT + 1), "too_large"),
+], ids=[
+    "empty", "empty-mapping", "null", "list-root", "boolean-root",
+    "malformed", "duplicate-key", "alias", "standard-tag", "custom-tag",
+    "unhashable-key", "scalar-limit", "depth-limit", "node-limit", "file-limit",
 ])
 def test_bounded_settings(target, text, status):
     write_settings(target, text)
