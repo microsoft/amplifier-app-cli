@@ -9,6 +9,7 @@ bundle:
 agents:
   include:
     - app-cli:cli-expert
+    - app-cli:cli-doctor
 
 # Thin awareness pointer ONLY.
 #

@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.scripts]
-amplifier = "amplifier_app_cli.main:main"
+amplifier = "amplifier_app_cli.__main__:main"
 
 [tool.uv]
 package = true

@@ -1,5 +1,7 @@
 """Amplifier CLI - Command-line interface for the Amplifier platform."""
 
+from __future__ import annotations
+
 import asyncio
 import html
 import json
@@ -12,104 +14,15 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import RLock
 from typing import TYPE_CHECKING, Any
-
-import click
-
-from amplifier_app_cli.utils.help_formatter import AmplifierGroup
 
 if TYPE_CHECKING:
     from amplifier_foundation.bundle import PreparedBundle
-from amplifier_core import (
-    AmplifierSession,
-    ModuleValidationError,  # pyright: ignore[reportAttributeAccessIssue]
-)
-from amplifier_core.llm_errors import LLMError
-from amplifier_foundation import sanitize_message
-from prompt_toolkit import PromptSession
-from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.completion import CompleteEvent
-from prompt_toolkit.filters import has_completions
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.history import FileHistory, InMemoryHistory
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.shortcuts import CompleteStyle
-from rich.panel import Panel
 
-# Errors that mean the terminal can never satisfy the REPL, so retrying is
-# pointless. See the REPL loop's handler for the full story: on Windows without
-# a real console, prompt_toolkit's Win32Output raises before the loop reaches
-# any await, so the "keep going" catch-all turns into an unkillable busy spin.
-#
-# `prompt_toolkit.output.win32` asserts `sys.platform == "win32"` at import, so
-# this must stay guarded. On POSIX the tuple is empty and `except ()` catches
-# nothing -- the POSIX path is byte-identical in effect to what shipped.
-if sys.platform == "win32":  # pragma: no cover - platform-specific
-    from prompt_toolkit.output.win32 import NoConsoleScreenBufferError
-
-    _TERMINAL_UNUSABLE_ERRORS: tuple[type[BaseException], ...] = (
-        NoConsoleScreenBufferError,
-    )
-else:
-    _TERMINAL_UNUSABLE_ERRORS = ()
-
-
-from amplifier_foundation.paths.resolution import get_amplifier_home
-from .commands.agents import agents as agents_group
-from .commands.allowed_dirs import allowed_dirs as allowed_dirs_group
-from .commands.bundle import bundle as bundle_group
-from .commands.denied_dirs import denied_dirs as denied_dirs_group
-from .commands.init import check_first_run, init_cmd, prompt_first_run_init
-from .commands.module import module as module_group
-from .commands.notify import notify as notify_group
-from .commands.provider import provider as provider_group
-from .commands.reset import reset as reset_cmd
-from .commands.routing import routing_group
-from .commands.run import register_run_command
-from .commands.session import register_session_commands
-from .commands.source import source as source_group
-from .commands.tool import tool as tool_group
-from .commands.update import update as update_cmd
-from .commands.version import version as version_cmd
-from .console import Markdown, console
-from .dedicated_tty_input import close_dedicated_tty_input, get_dedicated_tty_input
-from .effective_config import get_effective_config_summary
-from .key_manager import KeyManager
-from .lib.settings import AppSettings
-from .provider_diagnostics import DEFAULT_TIMEOUT_S as _PROVIDER_DIAGNOSTIC_TIMEOUT_S
-from .provider_diagnostics import format_model_line
-from .provider_diagnostics import invoke_list_models
-from .provider_diagnostics import test_provider_connectivity
-from .session_runner import (
-    SessionConfig,
-    create_initialized_session,
-    repair_transcript_if_needed,
-)
-from .session_store import SessionStore
-from .stdout_offload import patch_stdout_offloaded as patch_stdout
-from .ui.dashboard_renderer import DashboardRenderer
-from .ui.dashboard_renderer import _redact_value as _dr_redact_value
-from .ui.error_display import display_llm_error, display_validation_error
-from .ui.item_renderer import ItemRenderer
-from .ui.log_filter import LLMErrorLogFilter
-from .ui.completion import (
-    Candidate,
-    SlashCompleter,
-    build_completion_snapshot,
-    longest_common_prefix,
-)
-from .ui.view_policy import resolve_view
-from .utils.error_format import escape_markup
-from .utils.shell_completion import (
-    can_safely_modify as _completion_can_safely_modify,
-    detect_shell as _completion_detect_shell,
-    get_shell_config_file as _completion_config_file,
-    install_completion_to_config as _install_completion,
-    is_click_completion_instruction,
-    is_completion_installed as _completion_is_installed,
-    manual_installation_instruction,
-)
-from .utils.version import get_core_version, get_version
+_cli_ready = False
+_cli_initializing = False
+_cli_lock = RLock()
 
 
 def _report_terminal_unusable(exc: BaseException, *, verbose: bool = False) -> None:
@@ -121,8 +34,7 @@ def _report_terminal_unusable(exc: BaseException, *, verbose: bool = False) -> N
     prompt_toolkit traceback naming ``Win32Output`` -- accurate, but it points
     at a library internal rather than at what they did or what to do instead.
     """
-    # Local imports: this helper is defined above main.py's own import block so
-    # it can sit next to the _TERMINAL_UNUSABLE_ERRORS tuple it belongs to.
+    # Keep the terminal-error reporting usable independently of CLI startup.
     from .console import console as _console
     from .utils.error_format import escape_markup as _escape
 
@@ -140,8 +52,6 @@ def _report_terminal_unusable(exc: BaseException, *, verbose: bool = False) -> N
     if verbose:
         _console.print_exception()
 
-
-logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Cleanup-window observability events
@@ -162,16 +72,6 @@ CLEANUP_STORE_BEGIN: str = "cleanup:store_begin"
 CLEANUP_STORE_END: str = "cleanup:store_end"
 CLEANUP_FINALLY_BEGIN: str = "cleanup:finally_begin"
 CLEANUP_FINALLY_END: str = "cleanup:finally_end"
-
-# Suppress duplicate LLM error lines from console output.
-# The CLI renders LLM errors as Rich panels — the logger.error() calls
-# from the provider ("[PROVIDER] Anthropic API error: ...") and session
-# ("Execution failed: ...") would duplicate the same info as raw text.
-# This filter must be attached to the console HANDLER (not the root logger)
-# so it intercepts records propagated from child loggers like provider modules.
-# Log file handlers managed by hooks use their own loggers and are unaffected.
-_llm_error_filter = LLMErrorLogFilter()
-
 
 def _ensure_utf8_output() -> None:
     """Force UTF-8 on stdout/stderr so terminal-rendered Unicode survives copy/paste.
@@ -289,12 +189,6 @@ def _attach_llm_error_filter() -> None:
     # Fallback: no stderr handler found — attach to root logger.
     if _llm_error_filter not in root.filters:
         root.addFilter(_llm_error_filter)
-
-
-# Load API keys from ~/.amplifier/keys.env on startup
-# This allows keys saved by 'amplifier init' or 'amplifier provider use' to be available
-if not os.environ.get("_AMPLIFIER_COMPLETE"):
-    KeyManager()
 
 
 # Placeholder for the run command; assigned after registration below
@@ -3264,20 +3158,7 @@ def get_module_search_paths() -> list[Path]:
     return paths
 
 
-@click.group(cls=AmplifierGroup, invoke_without_command=True)
-@click.version_option(
-    version=f"{get_version()} (core {get_core_version()})",
-    prog_name="amplifier",
-)
-@click.option(
-    "--install-completion",
-    is_flag=True,
-    flag_value="auto",
-    default=None,
-    help="Install completion for the shell detected from $SHELL (bash, zsh, or fish)",
-)
-@click.pass_context
-def cli(ctx, install_completion):
+def _cli_callback(ctx, install_completion):
     """Amplifier - AI-powered modular development platform."""
     # Handle --install-completion flag
     if install_completion:
@@ -5005,42 +4886,202 @@ async def execute_single(
             console.file = original_console_file
 
 
-# Register standalone commands
-cli.add_command(agents_group)
-cli.add_command(allowed_dirs_group)
-cli.add_command(denied_dirs_group)
-cli.add_command(bundle_group)
-cli.add_command(init_cmd)
-cli.add_command(module_group)
-cli.add_command(notify_group)
-cli.add_command(provider_group)
-cli.add_command(routing_group)
-cli.add_command(source_group)
-cli.add_command(tool_group)
-cli.add_command(update_cmd)
-cli.add_command(version_cmd)
-cli.add_command(reset_cmd)
+def _initialize_cli() -> None:
+    """Build the ordinary CLI once, in this module's original global namespace.
+
+    Legacy doctor imports defer this work, but explicit public ``cli`` access
+    must still return the real decorated group, regardless of process argv.
+    """
+    global _cli_ready, _cli_initializing, cli, _run_command
+    global click, AmplifierGroup, AmplifierSession, ModuleValidationError, LLMError
+    global sanitize_message, PromptSession, Buffer, CompleteEvent, has_completions
+    global HTML, FileHistory, InMemoryHistory, KeyBindings, CompleteStyle, Panel
+    global NoConsoleScreenBufferError, _TERMINAL_UNUSABLE_ERRORS, get_amplifier_home
+    global agents_group, allowed_dirs_group, bundle_group, denied_dirs_group
+    global check_first_run, init_cmd, prompt_first_run_init, module_group, notify_group
+    global provider_group, reset_cmd, routing_group, register_run_command
+    global register_session_commands, source_group, tool_group, update_cmd, version_cmd
+    global Markdown, console, close_dedicated_tty_input, get_dedicated_tty_input
+    global get_effective_config_summary, KeyManager, AppSettings
+    global _PROVIDER_DIAGNOSTIC_TIMEOUT_S, format_model_line, invoke_list_models
+    global test_provider_connectivity, SessionConfig, create_initialized_session
+    global repair_transcript_if_needed, SessionStore, patch_stdout, DashboardRenderer
+    global _dr_redact_value, display_llm_error, display_validation_error, ItemRenderer
+    global LLMErrorLogFilter, Candidate, SlashCompleter, build_completion_snapshot
+    global longest_common_prefix, resolve_view, escape_markup
+    global _completion_can_safely_modify, _completion_detect_shell, _completion_config_file
+    global _install_completion, is_click_completion_instruction, _completion_is_installed
+    global manual_installation_instruction, get_core_version, get_version
+    global logger, _llm_error_filter
+
+    with _cli_lock:
+        if _cli_ready:
+            return
+        if _cli_initializing:
+            raise RuntimeError("CLI initialization is already in progress")
+        _cli_initializing = True
+        try:
+            from . import _ensure_tls_shim
+
+            _ensure_tls_shim()
+            import click
+
+            from amplifier_app_cli.utils.help_formatter import AmplifierGroup
+            from amplifier_core import (
+                AmplifierSession,
+                ModuleValidationError,  # pyright: ignore[reportAttributeAccessIssue]
+            )
+            from amplifier_core.llm_errors import LLMError
+            from amplifier_foundation import sanitize_message
+            from prompt_toolkit import PromptSession
+            from prompt_toolkit.buffer import Buffer
+            from prompt_toolkit.completion import CompleteEvent
+            from prompt_toolkit.filters import has_completions
+            from prompt_toolkit.formatted_text import HTML
+            from prompt_toolkit.history import FileHistory, InMemoryHistory
+            from prompt_toolkit.key_binding import KeyBindings
+            from prompt_toolkit.shortcuts import CompleteStyle
+            from rich.panel import Panel
+
+            # On Windows without a real console, retrying the REPL would spin.
+            # This import asserts win32; on POSIX except () catches nothing.
+            if sys.platform == "win32":  # pragma: no cover - platform-specific
+                from prompt_toolkit.output.win32 import NoConsoleScreenBufferError
+
+                _TERMINAL_UNUSABLE_ERRORS = (NoConsoleScreenBufferError,)
+            else:
+                _TERMINAL_UNUSABLE_ERRORS = ()
+
+            from amplifier_foundation.paths.resolution import get_amplifier_home
+            from .commands import _load_exports
+
+            # Preserve the original commands-package import ordering and bind
+            # same-named public command objects before importing submodules.
+            _load_exports()
+            from .commands.agents import agents as agents_group
+            from .commands.allowed_dirs import allowed_dirs as allowed_dirs_group
+            from .commands.bundle import bundle as bundle_group
+            from .commands.denied_dirs import denied_dirs as denied_dirs_group
+            from .commands.init import check_first_run, init_cmd, prompt_first_run_init
+            from .commands.module import module as module_group
+            from .commands.notify import notify as notify_group
+            from .commands.provider import provider as provider_group
+            from .commands.reset import reset as reset_cmd
+            from .commands.routing import routing_group
+            from .commands.run import register_run_command
+            from .commands.session import register_session_commands
+            from .commands.source import source as source_group
+            from .commands.tool import tool as tool_group
+            from .commands.update import update as update_cmd
+            from .commands.version import version as version_cmd
+            from .console import Markdown, console
+            from .dedicated_tty_input import close_dedicated_tty_input, get_dedicated_tty_input
+            from .effective_config import get_effective_config_summary
+            from .key_manager import KeyManager
+            from .lib.settings import AppSettings
+            from .provider_diagnostics import DEFAULT_TIMEOUT_S as _PROVIDER_DIAGNOSTIC_TIMEOUT_S
+            from .provider_diagnostics import format_model_line
+            from .provider_diagnostics import invoke_list_models
+            from .provider_diagnostics import test_provider_connectivity
+            from .session_runner import (
+                SessionConfig,
+                create_initialized_session,
+                repair_transcript_if_needed,
+            )
+            from .session_store import SessionStore
+            from .stdout_offload import patch_stdout_offloaded as patch_stdout
+            from .ui.dashboard_renderer import DashboardRenderer
+            from .ui.dashboard_renderer import _redact_value as _dr_redact_value
+            from .ui.error_display import display_llm_error, display_validation_error
+            from .ui.item_renderer import ItemRenderer
+            from .ui.log_filter import LLMErrorLogFilter
+            from .ui.completion import (
+                Candidate,
+                SlashCompleter,
+                build_completion_snapshot,
+                longest_common_prefix,
+            )
+            from .ui.view_policy import resolve_view
+            from .utils.error_format import escape_markup
+            from .utils.shell_completion import (
+                can_safely_modify as _completion_can_safely_modify,
+                detect_shell as _completion_detect_shell,
+                get_shell_config_file as _completion_config_file,
+                install_completion_to_config as _install_completion,
+                is_click_completion_instruction,
+                is_completion_installed as _completion_is_installed,
+                manual_installation_instruction,
+            )
+            from .utils.version import get_core_version, get_version
+
+            logger = logging.getLogger(__name__)
+            # Attach this filter to console handlers, not the root logger:
+            # child provider/session log records would otherwise be duplicated.
+            _llm_error_filter = LLMErrorLogFilter()
+            # Completion never loads keys; ordinary startup retains that step.
+            if not os.environ.get("_AMPLIFIER_COMPLETE"):
+                KeyManager()
+
+            # Apply the original decorators in their original order. Keep the
+            # group local until registration succeeds; never publish a callback.
+            group = click.pass_context(_cli_callback)
+            group = click.option(
+                "--install-completion",
+                is_flag=True,
+                flag_value="auto",
+                default=None,
+                help="Install completion for the shell detected from $SHELL (bash, zsh, or fish)",
+            )(group)
+            group = click.version_option(
+                version=f"{get_version()} (core {get_core_version()})",
+                prog_name="amplifier",
+            )(group)
+            group = click.group(name="cli", cls=AmplifierGroup, invoke_without_command=True)(group)
+
+            from .commands.doctor import doctor
+
+            group.add_command(doctor)
+            group.add_command(agents_group)
+            group.add_command(allowed_dirs_group)
+            group.add_command(denied_dirs_group)
+            group.add_command(bundle_group)
+            group.add_command(init_cmd)
+            group.add_command(module_group)
+            group.add_command(notify_group)
+            group.add_command(provider_group)
+            group.add_command(routing_group)
+            group.add_command(source_group)
+            group.add_command(tool_group)
+            group.add_command(update_cmd)
+            group.add_command(version_cmd)
+            group.add_command(reset_cmd)
+
+            run_command = register_run_command(
+                group,
+                interactive_chat=interactive_chat,
+                execute_single=execute_single,
+                get_module_search_paths=get_module_search_paths,
+                check_first_run=check_first_run,
+                prompt_first_run_init=prompt_first_run_init,
+            )
+            register_session_commands(
+                group,
+                interactive_chat=interactive_chat,
+                execute_single=execute_single,
+                get_module_search_paths=get_module_search_paths,
+            )
+            _run_command = run_command
+            cli = group
+            _cli_ready = True
+        finally:
+            _cli_initializing = False
 
 
-# Note: The *_with_session variants were removed in favor of unified functions
-# that accept optional initial_transcript parameter for resume functionality.
-# See execute_single() and interactive_chat() above.
-
-_run_command = register_run_command(
-    cli,
-    interactive_chat=interactive_chat,
-    execute_single=execute_single,
-    get_module_search_paths=get_module_search_paths,
-    check_first_run=check_first_run,
-    prompt_first_run_init=prompt_first_run_init,
-)
-
-register_session_commands(
-    cli,
-    interactive_chat=interactive_chat,
-    execute_single=execute_single,
-    get_module_search_paths=get_module_search_paths,
-)
+def __getattr__(name):
+    if name == "cli":
+        _initialize_cli()
+        return cli
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _guard_shared_venv_home() -> None:
@@ -5098,6 +5139,12 @@ def _activate_home_env() -> None:
 
 def main():
     """Main entry point."""
+    if len(sys.argv) > 1 and sys.argv[1] == "doctor":
+        sys.dont_write_bytecode = True
+        from .commands.doctor import main as doctor_main
+
+        return doctor_main()
+    _initialize_cli()
     completion_instruction = os.environ.get("_AMPLIFIER_COMPLETE")
     if completion_instruction:
         if not is_click_completion_instruction(completion_instruction):
@@ -5111,6 +5158,12 @@ def main():
     _guard_shared_venv_home()
     _activate_home_env()
     cli()
+
+
+# Ordinary imports retain eager startup. Only the exact passive route defers
+# initialization; main() always rechecks current argv rather than this decision.
+if not (len(sys.argv) > 1 and sys.argv[1] == "doctor"):
+    _initialize_cli()
 
 
 if __name__ == "__main__":

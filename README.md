@@ -71,6 +71,48 @@ saved selections and user-added bundles are unchanged.
 
 ## Commands
 
+### Passive CLI diagnosis
+
+```bash
+amplifier doctor                          # Local runtime and settings declarations
+amplifier doctor --format json            # One structured report
+amplifier doctor --session <exact-id>       # Include this project's session settings
+```
+
+Doctor reads installed distribution metadata and bounded settings files from the
+current directory and Amplifier home. It does not resolve effective settings,
+fetch/install dependencies, load credentials, mount modules, or repair anything.
+Existing-session state remains **unknown**, including when `--session` is used.
+Exit codes: `0` collection complete, `1` partial/refused, `2` invalid arguments.
+Collection complete is not a health verdict.
+The JSON report always marks health `not_assessed`; `issues` records collection
+limits, not every possible environment defect.
+The bounded diagnostic YAML parser intentionally accepts less syntax than the
+runtime parser: aliases, explicit tags, and duplicate keys report
+`unsupported_yaml`, not malformed `invalid_yaml`. This is a collection limit,
+not an instruction to repair settings that the runtime accepts.
+
+Declaration values and arbitrary names use report-local equality refs. Scope,
+container/member and zero-based parsed-order indices locate their declarations;
+they do not establish precedence or serve as mutation selectors. Local paths
+still identify the environment: review a report before sharing.
+
+The installed console script and `python -m amplifier_app_cli doctor` take a
+passive startup route, including launchers targeting the legacy
+`amplifier_app_cli.main:main` entry. Python interpreter startup and its initial
+import-cache handling are outside that guarantee; later application bytecode
+is suppressed.
+The passive route requires `doctor` as the exact first argument after the
+launcher; preceding arguments do not take this route.
+The lightweight console dispatcher avoids importing the full interactive CLI
+implementation on that route. Explicit Python access to the public `cli`
+export still initializes the ordinary Click group, regardless of process arguments.
+
+For agentic interpretation, delegate to **`app-cli:cli-doctor`** in a CLI session.
+It uses the report and loads the existing `amplifier-config` skill when needed.
+The agent's own child state is not proof of another session's live state.
+Diagnosis does not authorize changes or live probes.
+
 ### Configuration Commands
 
 ```bash
