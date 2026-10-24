@@ -39,6 +39,17 @@ jobs:
         # watching, which is how a total macOS breakage (#247) shipped.
         run: uv run pytest -q
 
+      - name: Verify installed doctor wheel and generated legacy launcher outside checkout
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        shell: bash
+        run: |
+          uv build --wheel --out-dir "$RUNNER_TEMP/doctor-wheels"
+          uv venv "$RUNNER_TEMP/doctor-runtime"
+          uv pip install --python "$RUNNER_TEMP/doctor-runtime/bin/python" "$RUNNER_TEMP"/doctor-wheels/*.whl
+          cp tests/check_doctor_wheel.py tests/doctor_safety_probe.py "$RUNNER_TEMP/"
+          cd "$RUNNER_TEMP"
+          env -u PYTHONPATH -u PYTHONDONTWRITEBYTECODE "$RUNNER_TEMP/doctor-runtime/bin/python" check_doctor_wheel.py
+
   integration:
     name: pytest -m integration (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

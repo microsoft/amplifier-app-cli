@@ -257,3 +257,20 @@ The Highway watchdog records append-only `wake-needed` advisories only: it must
 not invoke Amplifier or consume markers, including triggers within its log
 verbosity gap. Keep its bounded fake-command tests proving each trigger records
 without starting host tmux or an Amplifier session.
+
+## Passive doctor entry point
+
+The published console script, legacy `main:main` launcher and module entry
+dispatch exact leading `doctor` before normal CLI startup. Keep collection free
+of key loading, preparation,
+network, subprocesses and application-state writes; Python's initial import
+cache is a separate interpreter boundary. Preserve ownership enforcement and
+ordinary startup/TLS behavior. Per-scope declarations are not effective settings
+or live-session evidence. Keep public package/command exports static across
+argv routes; deferred `main.py` imports must initialize the real Click group
+once on explicit `cli` access or later ordinary dispatch, in the same module
+namespace so existing global patches still apply. Unknown attribute probes must
+not initialize it. Run `tests/test_doctor.py`,
+`tests/test_doctor_entrypoint.py`, `tests/test_cli_doctor_agent.py` and the
+installed-wheel check in CI when changing this boundary. Keep doctor instructions
+agent-scoped and reuse `amplifier-config` rather than duplicate its workflow.
