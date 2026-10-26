@@ -250,6 +250,7 @@ def test_ordinary_click_group_uses_same_doctor_flag_and_json_contract(tmp_path):
     code = """
 import importlib
 import json
+import os
 from click.testing import CliRunner
 from amplifier_app_cli import cli
 from amplifier_app_cli.lib import diagnostics
@@ -261,10 +262,14 @@ for status, exit_code in (('complete', 0), ('partial', 1), ('refused', 1)):
     report = diagnostics.unavailable_report()
     report['collection_status'] = status
     module.collect_diagnostics = lambda target: report
+    expected = (json.dumps(report, ensure_ascii=True) + os.linesep).encode('utf-8')
+    outputs = []
     for args in (['--format', 'json'], ['--format', 'json', '--verbose']):
         result = runner.invoke(cli, ['doctor', *args])
         assert result.exit_code == exit_code, result.output
-        assert result.stdout_bytes == (json.dumps(report, ensure_ascii=True) + '\\n').encode()
+        assert result.stdout_bytes == expected
+        outputs.append(result.stdout_bytes)
+    assert outputs[0] == outputs[1]
     result = runner.invoke(cli, ['doctor', '--verbose'])
     assert result.exit_code == exit_code, result.output
     assert result.output == diagnostics.render_text(report) + '\\n'

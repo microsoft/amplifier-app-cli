@@ -529,12 +529,15 @@ def test_json_bytes_unchanged_with_verbose_and_same_collector(target, status, co
         (guard.site_packages_dir() / "synthetic.pth").write_text(str(foreign), encoding="utf-8")
     report = safe_report(target)
     assert report["collection_status"] == status
-    expected = (json.dumps(report, ensure_ascii=True) + "\n").encode()
+    expected = (json.dumps(report, ensure_ascii=True) + os.linesep).encode("utf-8")
     runner = CliRunner()
+    outputs = []
     for args in (["--format", "json"], ["--format", "json", "--verbose"]):
         result = runner.invoke(doctor, args)
         assert result.exit_code == code, result.output
         assert result.stdout_bytes == expected
+        outputs.append(result.stdout_bytes)
+    assert outputs[0] == outputs[1]
 
 
 @pytest.mark.parametrize("args", [["--verbose"], ["--format", "text", "--verbose"]],
