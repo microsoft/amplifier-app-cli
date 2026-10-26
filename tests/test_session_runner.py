@@ -4,10 +4,12 @@ import logging
 import json
 import sys as _sys
 from decimal import Decimal
+from io import StringIO
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from rich.console import Console
 
 from amplifier_app_cli.session_runner import (
     InitializedSession,
@@ -25,14 +27,14 @@ from amplifier_app_cli.cost_history import ForkLineageCost
 _MODULE = "amplifier_app_cli.session_runner"
 
 
-def _make_session_config(session_config_initial=None, **kwargs):
+def _make_session_config(session_config_initial=None, *, verbose=False, **kwargs):
     """Return a minimal SessionConfig with a PreparedBundle mock."""
     prepared_bundle = MagicMock()
     prepared_bundle.mount_plan = {"providers": [], "tools": []}
     return SessionConfig(
         config=dict(session_config_initial or {}),
         search_paths=[],
-        verbose=False,
+        verbose=verbose,
         prepared_bundle=prepared_bundle,
         bundle_name="test-bundle",
         **kwargs,
@@ -97,39 +99,113 @@ async def test_resume_uses_lineage_cost_only_for_native_transcript_forks(
 
 
 @pytest.mark.anyio
-async def test_resume_warns_when_a_fork_cost_segment_is_incomplete(tmp_path) -> None:
+@pytest.mark.parametrize("verbose", [False, True])
+@pytest.mark.parametrize("total", [Decimal("0.10"), Decimal("0")])
+@pytest.mark.parametrize("diagnostic_count", [0, 1, 1000])
+async def test_resume_fork_cost_warning_output(
+    tmp_path, caplog, capsys, verbose, total, diagnostic_count
+) -> None:
     from contextlib import ExitStack
 
-    session_id = "fork"
+    session_id = "fictitious-fork"
     session_dir = tmp_path / session_id
     session_dir.mkdir()
-    (session_dir / "metadata.json").write_text(
-        json.dumps({"session_id": session_id, "parent_id": "root", "forked_from_turn": 1}),
+    metadata_path = session_dir / "metadata.json"
+    metadata_path.write_text(
+        json.dumps(
+            {"session_id": session_id, "parent_id": "fixture-parent", "forked_from_turn": 1}
+        ),
         encoding="utf-8",
     )
+    metadata_before = metadata_path.read_bytes()
     mock_session = _make_mock_session()
+    context = MagicMock(
+        get_messages=AsyncMock(return_value=[]), set_messages=AsyncMock()
+    )
+    mock_session.coordinator.get.side_effect = (
+        lambda key: context if key == "context" else None
+    )
+    transcript = [{"role": "user", "content": "resume"}]
     cfg = _make_session_config(
-        session_id=session_id, initial_transcript=[{"role": "user", "content": "resume"}]
+        session_id=session_id, initial_transcript=transcript, verbose=verbose
     )
     store = MagicMock(base_dir=tmp_path)
-    console = MagicMock()
+    diagnostics = tuple(
+        f"missing_fixture_segment:{session_id}:segment-{index}"
+        for index in range(diagnostic_count)
+    )
+    lineage_result = ForkLineageCost(total, diagnostics)
+    console_output, log_output = StringIO(), StringIO()
+    console = Console(file=console_output, width=160, color_system=None)
+    handler = logging.StreamHandler(log_output)
+    handler.setLevel(logging.WARNING)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    root_logger = logging.getLogger()
 
     with ExitStack() as stack:
         for patcher in _configurator_patches(mock_session):
             stack.enter_context(patcher)
         stack.enter_context(patch(f"{_MODULE}.SessionStore", return_value=store))
-        stack.enter_context(
+        restore_lineage = stack.enter_context(
             patch(
                 "amplifier_app_cli.cost_history.restore_fork_lineage_cost",
-                return_value=ForkLineageCost(Decimal("0.10"), ("missing_ci_capture:fork",)),
+                return_value=lineage_result,
             )
         )
-        await create_initialized_session(cfg, console)
+        restore_ordinary = stack.enter_context(
+            patch("amplifier_app_cli.cost_history.restore_session_cost")
+        )
+        stack.enter_context(caplog.at_level(logging.WARNING, logger=_MODULE))
+        root_logger.addHandler(handler)
+        try:
+            initialized = await create_initialized_session(cfg, console)
+        finally:
+            root_logger.removeHandler(handler)
+            handler.close()
 
-    console.print.assert_called_once_with(
-        "[yellow]Warning:[/yellow] cumulative fork cost history is incomplete; "
-        "only verified available CI cost segments were restored."
+    assert initialized.session is mock_session
+    context.set_messages.assert_awaited_once_with(transcript)
+    assert context.set_messages.call_args.args[0] is transcript
+    restore_lineage.assert_called_once_with(
+        mock_session.coordinator, session_id=session_id, session_dir=session_dir
     )
+    restore_ordinary.assert_not_called()
+    assert lineage_result.total == total
+    assert lineage_result.diagnostics is diagnostics
+    assert metadata_path.read_bytes() == metadata_before
+
+    expected = ""
+    if diagnostics:
+        expected = (
+            "Warning: historical cost is incomplete. "
+            "Available amounts are a partial subtotal.\n"
+            if total > 0
+            else "Warning: complete historical cost is unavailable. "
+            "Do not treat missing cost as zero.\n"
+        )
+    assert console_output.getvalue() == expected
+    assert console_output.getvalue().count("Warning:") == bool(diagnostics)
+    assert len(console_output.getvalue()) < 150
+    assert session_id not in console_output.getvalue()
+    assert "$0" not in console_output.getvalue()
+    assert "free" not in console_output.getvalue()
+
+    records = [
+        record for record in caplog.records
+        if record.name == _MODULE and record.levelno >= logging.WARNING
+    ]
+    if verbose and diagnostics:
+        assert len(records) == 1
+        assert records[0].levelno == logging.WARNING
+        assert records[0].msg == "Incomplete fork cost history for %s: %s"
+        assert records[0].args == (session_id, ", ".join(diagnostics))
+        assert log_output.getvalue() == records[0].getMessage() + "\n"
+    else:
+        assert records == []
+        assert log_output.getvalue() == ""
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 # ---------------------------------------------------------------------------
