@@ -176,6 +176,11 @@ boundary plus child-owned CI cost only; it never reconstructs ancestors.
 Honor configured CI relocation without falling back from a missing selected
 capture. An unavailable or pre-boundary fork is explicitly incomplete, never
 verified zero. Keep ordinary non-fork resume's CI-then-native fallback.
+On every incomplete fork resume, show one compact console warning. Use partial
+subtotal wording only for `total > 0`; zero cannot distinguish known zero-cost
+segments from missing history. Preserve diagnostic tuples and join/log their
+full WARNING detail only under `SessionConfig.verbose`. Keep accounting intact
+and use the caller's console stream, never a new global stdout write.
 
 Tests must use the Foundation dependency installed in their test environment.
 Do not prepend a neighboring checkout to `sys.path`: that silently bypasses the
