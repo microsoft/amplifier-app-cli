@@ -459,6 +459,81 @@ def collect_diagnostics(target: DiagnosticTarget) -> dict:
     return report
 
 
+def render_summary(report: dict) -> str:
+    """Render a fixed-copy checklist, not effective settings or a health verdict."""
+    status_copy = {
+        "valid": "Read",
+        "empty": "No entries",
+        "missing": "Not present (optional)",
+        "invalid_yaml": "Could not parse format or encoding",
+        "invalid_shape": "Could not inspect: expected named settings",
+        "unsupported_yaml": "Doctor cannot inspect this YAML syntax",
+        "unsupported_file": "Not read: not a regular file",
+        "unsupported_symlink": "Not read: symbolic links are not inspected",
+        "unreadable": "Could not read",
+        "too_large": "Doctor's inspection limit was reached",
+    }
+    notice_copy = {
+        "ownership_conflict": "Collection stopped: This installation is linked to another Amplifier home.",
+        "ownership_unknown": "Collection stopped: Installation ownership could not be checked.",
+        "target_unavailable": "Collection stopped: The local environment could not be inspected.",
+        "invalid_session_id": "Collection stopped: The session selection was rejected.",
+        "distribution_metadata_unavailable": "Some installation details could not be read or shown.",
+        "distribution_version_withheld": "Some installation details could not be read or shown.",
+        "path_withheld": "Some location details were withheld.",
+        "declarations_truncated": "Some configuration entries were omitted.",
+        "environment_channels_truncated": "Some environment entries were omitted.",
+    }
+    collection = report["collection_status"]
+    lines = [
+        "Amplifier doctor",
+        {
+            "complete": "Configuration report collected",
+            "partial": "Configuration report incomplete",
+        }.get(collection, "Configuration report could not be collected"),
+        "",
+    ]
+    scopes = [
+        ("global", "User settings (global)"),
+        ("project", "Project settings"),
+        ("local", "Local settings"),
+    ]
+    if report["target"]["session_selected"]:
+        scopes.append(("session", "Session settings"))
+    explained = set()
+    for scope, label in scopes:
+        row = next((row for row in report["scopes"] if row["scope"] == scope), {})
+        status = row.get("status")
+        copy = "Not read" if collection == "refused" else status_copy.get(status, "Not read")
+        lines.append(label + ": " + copy)
+        if collection != "refused" and status in status_copy:
+            explained.add((scope, "settings_" + status))
+    lines.append("AI connections and running session: Not tested")
+
+    notices = []
+    if report["ownership"]["status"] == "override":
+        notices.append("An existing ownership override allowed collection.")
+    for issue in report["issues"]:
+        code = issue["code"]
+        if code in notice_copy:
+            copy = notice_copy[code]
+        elif (issue.get("scope"), code) in explained:
+            continue
+        else:
+            copy = "Other collection limits were reported; see technical details."
+        if copy not in notices:
+            notices.append(copy)
+    lines.extend(notices)
+    lines.extend((
+        "Effective settings were not resolved.",
+        "No settings were changed.",
+        "These results do not confirm Amplifier is working.",
+        "Next: Tell Amplifier what went wrong and ask for the CLI doctor agent.",
+        "Technical details: amplifier doctor --verbose (review before sharing).",
+    ))
+    return "\n".join(lines)
+
+
 def render_text(report: dict) -> str:
     """Render the allowlisted report, with no resolution or health inference."""
     lines = [

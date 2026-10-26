@@ -74,17 +74,24 @@ saved selections and user-added bundles are unchanged.
 ### Passive CLI diagnosis
 
 ```bash
-amplifier doctor                          # Local runtime and settings declarations
-amplifier doctor --format json            # One structured report
-amplifier doctor --session <exact-id>       # Include this project's session settings
+amplifier doctor                          # Short local-settings checklist
+amplifier doctor --verbose                # Original technical report
+amplifier doctor --format json            # Unchanged structured report
+amplifier doctor --session <exact-id> --verbose  # Include that session's settings
 ```
 
 Doctor reads installed distribution metadata and bounded settings files from the
 current directory and Amplifier home. It does not resolve effective settings,
 fetch/install dependencies, load credentials, mount modules, or repair anything.
+The default checklist shows whether user, project and local settings could be
+read. A session row appears only with `--session`, which selects this project's
+exact session's saved settings, not its live state. Missing settings are optional.
+AI connections and running sessions are not tested. `--verbose` shows technical
+details and has no effect with `--format json`.
 Existing-session state remains **unknown**, including when `--session` is used.
 Exit codes: `0` collection complete, `1` partial/refused, `2` invalid arguments.
-Collection complete is not a health verdict.
+Partial means some collection was limited; refused means collection stopped.
+Collection complete is not a health verdict or proof that Amplifier works.
 The JSON report always marks health `not_assessed`; `issues` records collection
 limits, not every possible environment defect.
 The bounded diagnostic YAML parser intentionally accepts less syntax than the
@@ -92,8 +99,9 @@ runtime parser: aliases, explicit tags, and duplicate keys report
 `unsupported_yaml`, not malformed `invalid_yaml`. This is a collection limit,
 not an instruction to repair settings that the runtime accepts.
 
-Declaration values and arbitrary names use report-local equality refs. Scope,
-container/member and zero-based parsed-order indices locate their declarations;
+In technical text and JSON, declaration values and arbitrary names use
+report-local equality refs. Scope, container/member and zero-based parsed-order
+indices locate their declarations;
 they do not establish precedence or serve as mutation selectors. Local paths
 still identify the environment: review a report before sharing.
 
@@ -108,7 +116,8 @@ The lightweight console dispatcher avoids importing the full interactive CLI
 implementation on that route. Explicit Python access to the public `cli`
 export still initializes the ordinary Click group, regardless of process arguments.
 
-For agentic interpretation, delegate to **`app-cli:cli-doctor`** in a CLI session.
+Next: Tell Amplifier what went wrong and ask for the CLI doctor agent
+(**`app-cli:cli-doctor`**) in a CLI session. Doctor does not start an agent or model.
 It uses the report and loads the existing `amplifier-config` skill when needed.
 The agent's own child state is not proof of another session's live state.
 Diagnosis does not authorize changes or live probes.

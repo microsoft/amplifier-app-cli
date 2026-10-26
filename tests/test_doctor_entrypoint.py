@@ -77,7 +77,11 @@ def _run(tmp_path, kind, args, *, settings=None):
 @pytest.mark.parametrize("args,code", [
     (["--format", "json"], 0),
     ([], 0),
+    (["--verbose"], 0),
+    (["--format", "text", "--verbose"], 0),
+    (["--format", "json", "--verbose"], 0),
     (["--help"], 0),
+    (["--verbose", "--help"], 0),
     (["--session", "synthetic_session-01", "--format", "json"], 0),
     (["--format", "synthetic-secret"], 2),
     (["--format", "\x1b[31msynthetic-secret"], 2),
@@ -85,6 +89,12 @@ def _run(tmp_path, kind, args, *, settings=None):
     (["--session", "../synthetic-secret"], 2),
     (["--session"], 2),
     (["synthetic-secret"], 2),
+    (["--verbose=synthetic-secret"], 2),
+    (["--verbose", "--format", "synthetic-secret"], 2),
+], ids=[
+    "json", "summary", "verbose", "text-verbose", "json-verbose", "help", "verbose-help",
+    "session-json", "bad-format", "control-format", "unknown", "bad-session",
+    "missing-session", "extra", "verbose-value", "verbose-bad-format",
 ])
 def test_published_entries_are_passive(tmp_path, kind, args, code):
     result, errors = _run(tmp_path, kind, args)
@@ -93,21 +103,41 @@ def test_published_entries_are_passive(tmp_path, kind, args, code):
     if code == 2:
         assert result.stdout == ""
         assert errors == [
-            "Usage: amplifier doctor [--format text|json] [--session SESSION_ID]",
+            "Usage: amplifier doctor [--format text|json] [--session SESSION_ID] [--verbose]",
             "Error: invalid_doctor_arguments",
         ]
     else:
         assert errors == []
-    if args == ["--format", "json"]:
+    if "json" in args:
         assert result.stdout.count("\n") == 1
         assert json.loads(result.stdout)["collection_status"] == "complete"
+    elif code == 0 and "--help" in args:
+        assert "--verbose" in result.stdout
+        assert "Show technical details (text only; does not affect JSON)." in " ".join(result.stdout.split())
+    elif code == 0 and "--verbose" in args:
+        assert result.stdout.startswith("Amplifier doctor (passive)\n")
+        assert "Collection: complete (not a health verdict)" in result.stdout
+    elif code == 0:
+        assert result.stdout.startswith("Amplifier doctor\nConfiguration report collected\n")
+        assert str(tmp_path) not in result.stdout
 
 
 @pytest.mark.parametrize("kind", ["console", "module", "legacy_module"])
-def test_real_partial_entry_returns_one(tmp_path, kind):
-    result, errors = _run(tmp_path, kind, ["--format", "json"], settings="bundle: [synthetic-secret")
+@pytest.mark.parametrize("args", [
+    ["--format", "json"], [], ["--verbose"], ["--format", "text", "--verbose"],
+    ["--format", "json", "--verbose"],
+], ids=["json", "summary", "verbose", "text-verbose", "json-verbose"])
+def test_real_partial_entry_returns_one(tmp_path, kind, args):
+    result, errors = _run(tmp_path, kind, args, settings="bundle: [synthetic-secret")
     assert result.returncode == 1
-    assert json.loads(result.stdout)["collection_status"] == "partial"
+    if "json" in args:
+        assert json.loads(result.stdout)["collection_status"] == "partial"
+    elif "--verbose" in args:
+        assert "Collection: partial (not a health verdict)" in result.stdout
+        assert "global: invalid_yaml " in result.stdout
+    else:
+        assert result.stdout.startswith("Amplifier doctor\nConfiguration report incomplete\n")
+        assert "User settings (global): Could not parse format or encoding" in result.stdout
     assert "synthetic-secret" not in result.stdout + result.stderr
     assert errors == []
 
@@ -214,6 +244,37 @@ def _run_import_check(tmp_path, code, *args):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     return result
+
+
+def test_ordinary_click_group_uses_same_doctor_flag_and_json_contract(tmp_path):
+    code = """
+import importlib
+import json
+import os
+from click.testing import CliRunner
+from amplifier_app_cli import cli
+from amplifier_app_cli.lib import diagnostics
+module = importlib.import_module('amplifier_app_cli.commands.doctor')
+assert cli.commands['doctor'] is module.doctor
+assert next(p for p in module.doctor.params if p.name == 'verbose').is_flag
+runner = CliRunner()
+for status, exit_code in (('complete', 0), ('partial', 1), ('refused', 1)):
+    report = diagnostics.unavailable_report()
+    report['collection_status'] = status
+    module.collect_diagnostics = lambda target: report
+    expected = (json.dumps(report, ensure_ascii=True) + os.linesep).encode('utf-8')
+    outputs = []
+    for args in (['--format', 'json'], ['--format', 'json', '--verbose']):
+        result = runner.invoke(cli, ['doctor', *args])
+        assert result.exit_code == exit_code, result.output
+        assert result.stdout_bytes == expected
+        outputs.append(result.stdout_bytes)
+    assert outputs[0] == outputs[1]
+    result = runner.invoke(cli, ['doctor', '--verbose'])
+    assert result.exit_code == exit_code, result.output
+    assert result.output == diagnostics.render_text(report) + '\\n'
+"""
+    _run_import_check(tmp_path, code)
 
 
 @pytest.mark.parametrize("route", ["ordinary", "foreign_doctor"])
