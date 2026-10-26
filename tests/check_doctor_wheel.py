@@ -65,31 +65,56 @@ def _run(command, args, env, project, code, *, collection=None):
     if code == 2:
         assert result.stdout == ""
         assert errors == [
-            "Usage: amplifier doctor [--format text|json] [--session SESSION_ID]",
+            "Usage: amplifier doctor [--format text|json] [--session SESSION_ID] [--verbose]",
             "Error: invalid_doctor_arguments",
         ]
     else:
         assert errors == [], errors
+    if "--help" in args:
+        assert "Show technical details (text only; does not affect JSON)." in " ".join(result.stdout.split())
     if collection is not None:
-        assert result.stdout.count("\n") == 1
-        report = json.loads(result.stdout)
-        assert report["collection_status"] == collection
-        assert report["health"] == {"status": "not_assessed", "reason": "collection_only"}
-        return report
+        if "json" in args:
+            assert result.stdout.count("\n") == 1
+            report = json.loads(result.stdout)
+            assert report["collection_status"] == collection
+            assert report["health"] == {"status": "not_assessed", "reason": "collection_only"}
+            return report
+        if "--verbose" in args:
+            assert result.stdout.startswith("Amplifier doctor (passive)\n")
+            assert "Collection: " + collection + " (not a health verdict)" in result.stdout
+            assert "Effective settings: unknown (effective_resolution_not_performed)" in result.stdout
+        else:
+            header = {
+                "complete": "Configuration report collected",
+                "partial": "Configuration report incomplete",
+                "refused": "Configuration report could not be collected",
+            }[collection]
+            assert result.stdout.startswith("Amplifier doctor\n" + header + "\n")
+            assert "AI connections and running session: Not tested" in result.stdout
+            assert "These results do not confirm Amplifier is working." in result.stdout
+            assert str(project) not in result.stdout
+            assert env["AMPLIFIER_HOME"] not in result.stdout
+        return result.stdout
 
 
 def _check_entry(command, root, env, ownership_pth):
     project = root / "project"
     app_home = Path(env["AMPLIFIER_HOME"])
     for args, code, status in (
-        (["--format", "json"], 0, "complete"), ([], 0, None),
+        (["--format", "json"], 0, "complete"), ([], 0, "complete"),
+        (["--verbose"], 0, "complete"),
+        (["--format", "text", "--verbose"], 0, "complete"),
+        (["--format", "json", "--verbose"], 0, "complete"),
         (["--help"], 0, None),
+        (["--verbose", "--help"], 0, None),
         (["--session", "synthetic_session-01", "--format", "json"], 0, "complete"),
         (["--format", "synthetic-secret"], 2, None),
         (["--unknown=synthetic-secret"], 2, None),
         (["--session", "../synthetic-secret"], 2, None),
         (["--session"], 2, None),
         (["synthetic-secret"], 2, None),
+        (["--verbose=synthetic-secret"], 2, None),
+        (["--verbose", "--format", "synthetic-secret"], 2, None),
     ):
         _run(command, args, env, project, code, collection=status)
         assert not app_home.exists()
@@ -100,7 +125,13 @@ def _check_entry(command, root, env, ownership_pth):
     settings.write_text("bundle: [synthetic-secret", encoding="utf-8")
     before = settings.read_bytes()
     try:
-        _run(command, ["--format", "json"], env, project, 1, collection="partial")
+        for args in (
+            ["--format", "json"], ["--format", "json", "--verbose"],
+            [], ["--verbose"], ["--format", "text", "--verbose"],
+        ):
+            output = _run(command, args, env, project, 1, collection="partial")
+            if not args:
+                assert "User settings (global): Could not parse format or encoding" in output
         assert settings.read_bytes() == before
         assert list(app_home.iterdir()) == [settings]
     finally:
@@ -116,12 +147,23 @@ def _check_entry(command, root, env, ownership_pth):
             guarded_env = dict(env)
             if override:
                 guarded_env["AMPLIFIER_ALLOW_SHARED_VENV"] = "1"
-            report = _run(
-                command, ["--format", "json"], guarded_env, project, code,
-                collection=collection,
-            )
-            assert report["ownership"]["status"] == status
-            assert report["ownership"]["foreign_count"] == 1
+            for args in (
+                ["--format", "json"], ["--format", "json", "--verbose"],
+                [], ["--verbose"], ["--format", "text", "--verbose"],
+            ):
+                output = _run(command, args, guarded_env, project, code, collection=collection)
+                if "json" in args:
+                    assert output["ownership"]["status"] == status
+                    assert output["ownership"]["foreign_count"] == 1
+                elif "--verbose" in args:
+                    assert "Ownership: " + status in output
+                elif override:
+                    assert "An existing ownership override allowed collection." in output
+                else:
+                    assert "User settings (global): Not read" in output
+                    assert "Project settings: Not read" in output
+                    assert "Local settings: Not read" in output
+                    assert "Collection stopped: This installation is linked to another Amplifier home." in output
             assert not app_home.exists()
             assert not list(project.iterdir())
     finally:

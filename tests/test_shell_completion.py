@@ -346,7 +346,7 @@ def test_actual_cli_protocol_emits_native_dynamic_records(
         (
             "amplifier doctor --",
             "2",
-            {"plain,--format", "plain,--session", "plain,--help"},
+            {"plain,--format", "plain,--session", "plain,--verbose", "plain,--help"},
         ),
         ("amplifier doctor --format ", "3", {"plain,text", "plain,json"}),
         (

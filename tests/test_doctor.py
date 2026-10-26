@@ -1,5 +1,6 @@
 """Synthetic collector fixtures: nothing here comes from a real user home."""
 
+from copy import deepcopy
 import importlib.metadata as metadata
 import json
 import os
@@ -44,6 +45,7 @@ def safe_report(target):
     report = diag.collect_diagnostics(target)
     assert SECRET not in json.dumps(report)
     assert SECRET not in diag.render_text(report)
+    assert SECRET not in diag.render_summary(report)
     return report
 
 
@@ -58,6 +60,20 @@ def test_missing_files_complete_without_creating_home(target):
     assert report["effective_settings"]["reason"] == "effective_resolution_not_performed"
     assert report["live_session"]["reason"] == "not_observed"
     assert not target.home.exists()
+    assert diag.render_summary(report).splitlines() == [
+        "Amplifier doctor",
+        "Configuration report collected",
+        "",
+        "User settings (global): Not present (optional)",
+        "Project settings: Not present (optional)",
+        "Local settings: Not present (optional)",
+        "AI connections and running session: Not tested",
+        "Effective settings were not resolved.",
+        "No settings were changed.",
+        "These results do not confirm Amplifier is working.",
+        "Next: Tell Amplifier what went wrong and ask for the CLI doctor agent.",
+        "Technical details: amplifier doctor --verbose (review before sharing).",
+    ]
 
 
 @pytest.mark.parametrize("text,status", [
@@ -198,6 +214,9 @@ def test_limits_are_explicit(target, monkeypatch):
     assert report["environment_channels"]["module_count"] == 210
     assert report["collection_status"] == "partial"
     assert {"declarations_truncated", "environment_channels_truncated"} <= {r["code"] for r in report["issues"]}
+    summary = diag.render_summary(report)
+    assert "Some configuration entries were omitted." in summary
+    assert "Some environment entries were omitted." in summary
 
 
 def test_regular_files_only(target):
@@ -254,6 +273,7 @@ def test_guard_refusal_stops_collection_and_override_is_reported(target, monkeyp
     report = safe_report(target)
     assert report["collection_status"] == "complete"
     assert report["ownership"]["status"] == "override"
+    assert "An existing ownership override allowed collection." in diag.render_summary(report)
     assert not target.home.exists()
 
 
@@ -267,6 +287,7 @@ def test_unknown_guard_fails_closed(target, monkeypatch):
     assert report["ownership"]["status"] == "unknown"
     assert report["runtime"] is None
     assert report["issues"] == [{"code": "ownership_unknown"}]
+    assert "Collection stopped: Installation ownership could not be checked." in diag.render_summary(report)
 
 
 @pytest.mark.parametrize("suffix", ["\x1b[31m", "\u202e", "/https://user:password@example.test", "?token=synthetic"])
@@ -276,6 +297,7 @@ def test_unsafe_path_withheld(target, tmp_path, suffix):
     assert report["target"]["cwd"] is None
     assert {"code": "path_withheld"} in report["issues"]
     assert suffix not in diag.render_text(report)
+    assert "Some location details were withheld." in diag.render_summary(report)
     assert report["collection_status"] == "partial"
 
 
@@ -346,6 +368,7 @@ def test_bad_metadata_is_partial_without_payload(target, tmp_path, monkeypatch, 
         monkeypatch.setattr(metadata, "distribution", fail)
     report = safe_report(target)
     assert report["collection_status"] == "partial"
+    assert "Some installation details could not be read or shown." in diag.render_summary(report)
 
 
 def test_text_and_json_exit_contract(target):
@@ -360,4 +383,174 @@ def test_text_and_json_exit_contract(target):
     assert json.loads(result.output)["collection_status"] == "partial"
     result = runner.invoke(doctor)
     assert result.exit_code == 1
+    assert "Configuration report incomplete" in result.output
+    result = runner.invoke(doctor, ["--verbose"])
+    assert result.exit_code == 1
     assert "not a health verdict" in result.output
+
+
+@pytest.mark.parametrize("status,copy", [
+    ("valid", "Read"),
+    ("empty", "No entries"),
+    ("missing", "Not present (optional)"),
+    ("invalid_yaml", "Could not parse format or encoding"),
+    ("invalid_shape", "Could not inspect: expected named settings"),
+    ("unsupported_yaml", "Doctor cannot inspect this YAML syntax"),
+    ("unsupported_file", "Not read: not a regular file"),
+    ("unsupported_symlink", "Not read: symbolic links are not inspected"),
+    ("unreadable", "Could not read"),
+    ("too_large", "Doctor's inspection limit was reached"),
+    ("unknown", "Not read"),
+    ("not_selected", "Not read"),
+    ("\x1b[31mfuture-private-status", "Not read"),
+], ids=[
+    "read", "empty", "missing", "format", "shape", "syntax", "file", "symlink",
+    "unreadable", "limit", "unknown", "not-selected", "future",
+])
+def test_summary_scope_statuses(target, status, copy):
+    report = safe_report(target)
+    report["scopes"][0]["status"] = status
+    assert diag.render_summary(report).splitlines()[3] == "User settings (global): " + copy
+
+
+@pytest.mark.parametrize("selected", [False, True], ids=["no-session", "session"])
+def test_summary_refusal_never_claims_scopes_were_read(target, selected):
+    report = safe_report(target)
+    report["target"]["session_selected"] = selected
+    report["collection_status"] = "refused"
+    report["issues"] = [{"code": "ownership_conflict"}]
+    for row, status in zip(report["scopes"], ("valid", "missing", "empty", "not_selected")):
+        row["status"] = status
+    lines = diag.render_summary(report).splitlines()
+    assert lines[1] == "Configuration report could not be collected"
+    expected = [
+        "User settings (global): Not read", "Project settings: Not read", "Local settings: Not read",
+    ]
+    if selected:
+        expected.append("Session settings: Not read")
+    assert lines[3:3 + len(expected)] == expected
+    assert ("Session settings: Not read" in lines) is selected
+    assert "Collection stopped: This installation is linked to another Amplifier home." in lines
+
+
+def test_summary_selected_session_only_and_fixed_order(target):
+    report = safe_report(diag.DiagnosticTarget(target.cwd, target.home, "synthetic_session"))
+    report["scopes"].reverse()
+    lines = diag.render_summary(report).splitlines()
+    assert lines[3:8] == [
+        "User settings (global): Not present (optional)",
+        "Project settings: Not present (optional)",
+        "Local settings: Not present (optional)",
+        "Session settings: Not present (optional)",
+        "AI connections and running session: Not tested",
+    ]
+    report["target"]["session_selected"] = False
+    report["scopes"][0]["status"] = "valid"
+    assert "Session settings:" not in diag.render_summary(report)
+
+
+def test_summary_notices_are_all_preserved_and_deduplicated(target):
+    report = safe_report(target)
+    report["collection_status"] = "partial"
+    report["ownership"]["status"] = "override"
+    report["issues"] = [
+        {"code": code} for code in (
+            "ownership_conflict", "ownership_unknown", "target_unavailable", "invalid_session_id",
+            "distribution_metadata_unavailable", "distribution_version_withheld",
+            "path_withheld", "declarations_truncated", "environment_channels_truncated",
+            "future_limit", "future_limit",
+        )
+    ] * 2
+    lines = diag.render_summary(report).splitlines()
+    for notice in (
+        "Collection stopped: This installation is linked to another Amplifier home.",
+        "Collection stopped: Installation ownership could not be checked.",
+        "Collection stopped: The local environment could not be inspected.",
+        "Collection stopped: The session selection was rejected.",
+        "An existing ownership override allowed collection.",
+        "Some installation details could not be read or shown.",
+        "Some location details were withheld.",
+        "Some configuration entries were omitted.",
+        "Some environment entries were omitted.",
+        "Other collection limits were reported; see technical details.",
+    ):
+        assert lines.count(notice) == 1
+    report["collection_status"] = "complete"
+    report["issues"] = []
+    assert "An existing ownership override allowed collection." in diag.render_summary(report)
+
+
+def test_summary_scope_issues_explained_only_when_represented(target):
+    report = safe_report(target)
+    report["scopes"][0]["status"] = "unsupported_yaml"
+    report["issues"] = [{"code": "settings_unsupported_yaml", "scope": "global"}]
+    assert "Other collection limits" not in diag.render_summary(report)
+    for issue in (
+        {"code": "settings_unsupported_yaml", "scope": "session"},
+        {"code": "settings_unsupported_yaml"},
+        {"code": "settings_unreadable", "scope": "global"},
+        {"code": "settings_future", "scope": "global"},
+        {"code": "future", "scope": "global"},
+        {"code": "settings_unsupported_yaml", "scope": "future"},
+    ):
+        report["issues"] = [issue]
+        assert "Other collection limits were reported; see technical details." in diag.render_summary(report)
+
+
+def test_summary_is_fixed_ascii_copy_and_does_not_mutate_report(target):
+    report = safe_report(target)
+    payload = "private-target-\x1b[31m\u202e\N{SNOWMAN}"
+    report["target"].update(cwd=payload, home=payload, session_selected=True)
+    report["runtime"] = {"version": payload, "local_target": payload}
+    report["declarations"] = [{"value_ref": payload, "source_kind": payload}]
+    report["environment_channels"] = {"modules": [payload]}
+    report["ownership"]["status"] = payload
+    report["scopes"][0].update(path=payload, status=payload)
+    report["scopes"][3].update(path=payload, status="valid", session_id=payload)
+    report["issues"] = [{"code": payload, "scope": payload}]
+    before = deepcopy(report)
+    summary = diag.render_summary(report)
+    assert report == before
+    assert summary.isascii()
+    assert payload not in summary
+    assert "Other collection limits were reported; see technical details." in summary
+    assert "All checks pass" not in summary
+    assert "Session settings: Read" in summary
+
+
+@pytest.mark.parametrize("status,code", [
+    ("complete", 0), ("partial", 1), ("refused", 1),
+], ids=["complete", "partial", "refused"])
+def test_json_bytes_unchanged_with_verbose_and_same_collector(target, status, code):
+    if status == "partial":
+        write_settings(target, "bundle: [")
+    elif status == "refused":
+        foreign = target.home.parent / "foreign-home" / "cache" / "synthetic-0123456789abcdef"
+        (guard.site_packages_dir() / "synthetic.pth").write_text(str(foreign), encoding="utf-8")
+    report = safe_report(target)
+    assert report["collection_status"] == status
+    expected = (json.dumps(report, ensure_ascii=True) + "\n").encode()
+    runner = CliRunner()
+    for args in (["--format", "json"], ["--format", "json", "--verbose"]):
+        result = runner.invoke(doctor, args)
+        assert result.exit_code == code, result.output
+        assert result.stdout_bytes == expected
+
+
+@pytest.mark.parametrize("args", [["--verbose"], ["--format", "text", "--verbose"]],
+                         ids=["verbose", "text-verbose"])
+def test_verbose_is_exact_original_technical_renderer(target, args):
+    write_settings(target, "bundle: {active: synthetic}")
+    report = safe_report(target)
+    result = CliRunner().invoke(doctor, args)
+    assert result.exit_code == 0
+    assert result.output == diag.render_text(report) + "\n"
+
+
+def test_help_explains_presentation_and_saved_session(target):
+    result = CliRunner().invoke(doctor, ["--help"], terminal_width=120)
+    assert result.exit_code == 0
+    assert "Read local configuration without changing settings." in result.output
+    assert "text checklist (default)" in result.output
+    assert "exact session's settings, not its live state." in result.output
+    assert "Show technical details (text only; does not affect JSON)." in result.output
