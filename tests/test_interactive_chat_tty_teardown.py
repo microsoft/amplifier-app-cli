@@ -29,6 +29,7 @@ tests pass.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -190,7 +191,7 @@ class TestInteractiveChatClosesDedicatedTtyOnTeardown:
                 bundle_name="test-bundle",
             )
 
-        mock_ps.prompt_async.assert_awaited_once()
+        mock_ps.prompt_async.assert_awaited_once_with(set_exception_handler=False)
         mock_close.assert_called_once()
 
     @pytest.mark.asyncio
@@ -455,3 +456,80 @@ class TestCloseDedicatedTtyTeardownIsRobust:
         # having been opened -- the close call didn't short-circuit anything.
         mock_ps.prompt_async.assert_awaited_once()
         initialized.cleanup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_loop_error_reporter_spans_public_chat_lifetime(
+    tmp_path: Path, cleanup_fails: bool
+):
+    """The same owner must cover initialization, idle input, and cleanup."""
+    from amplifier_app_cli.main import interactive_chat
+
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+    observer = MagicMock()
+    owners = {}
+    session = _make_mock_session()
+    initialized = _make_initialized(session)
+    failure = RuntimeError("synthetic cleanup failure")
+
+    async def initialize(*_args, **_kwargs):
+        owners["initialize"] = loop.get_exception_handler()
+        return initialized
+
+    async def prompt(*_args, **_kwargs):
+        owners["prompt"] = loop.get_exception_handler()
+        raise EOFError
+
+    async def cleanup():
+        owners["cleanup"] = loop.get_exception_handler()
+        if cleanup_fails:
+            raise failure
+
+    initialized.cleanup.side_effect = cleanup
+    mock_ps = MagicMock()
+    mock_ps.prompt_async = AsyncMock(side_effect=prompt)
+    mock_close = MagicMock()
+
+    loop.set_exception_handler(observer)
+    try:
+        with (
+            patch(f"{_MODULE}.create_initialized_session", new=initialize),
+            patch(f"{_MODULE}._create_prompt_session", return_value=mock_ps),
+            patch("amplifier_app_cli.incremental_save.register_incremental_save"),
+            patch(f"{_MODULE}.SessionStore") as MockStore,
+            patch(f"{_MODULE}.AppSettings"),
+            patch(f"{_MODULE}.console"),
+            patch(f"{_MODULE}.get_effective_config_summary"),
+            patch(f"{_MODULE}.close_dedicated_tty_input", new=mock_close),
+        ):
+            MockStore.return_value.get_metadata_if_exists.return_value = {}
+            chat = interactive_chat(
+                config={},
+                search_paths=[tmp_path],
+                verbose=False,
+                bundle_name="test-bundle",
+            )
+            if cleanup_fails:
+                with pytest.raises(RuntimeError) as caught:
+                    await chat
+                assert caught.value is failure
+            else:
+                await chat
+
+        assert set(owners) == {"initialize", "prompt", "cleanup"}
+        reporter = owners["initialize"]
+        assert reporter is not None and reporter is not observer, (
+            "interactive_chat must own loop error reporting before initialization"
+        )
+        assert owners["prompt"] is reporter
+        assert owners["cleanup"] is reporter, (
+            "The reporter must remain active while session cleanup runs"
+        )
+        assert loop.get_exception_handler() is observer
+        initialized.cleanup.assert_awaited_once()
+        session.execute.assert_not_awaited()
+        mock_close.assert_called_once()
+    finally:
+        loop.set_exception_handler(previous)

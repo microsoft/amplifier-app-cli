@@ -13,6 +13,7 @@ import sys
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial, wraps
 from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, Any
@@ -3691,6 +3692,19 @@ def _create_prompt_session(
     return session
 
 
+def _with_loop_error_reporting(function):
+    """Keep passive imports lazy and the public wrapper in main's namespace."""
+
+    @wraps(function)
+    async def wrapped(*args, **kwargs):
+        from .loop_errors import report_loop_errors
+
+        return await report_loop_errors(function)(*args, **kwargs)
+
+    return wrapped
+
+
+@_with_loop_error_reporting
 async def interactive_chat(
     config: dict,
     search_paths: list[Path],
@@ -4183,7 +4197,11 @@ async def interactive_chat(
                 # freeze risk applies to any background Rich writes that
                 # land while the user is composing input.
                 with patch_stdout():
-                    user_input = await handoff.prompt(prompt_session.prompt_async)
+                    user_input = await handoff.prompt(
+                        partial(
+                            prompt_session.prompt_async, set_exception_handler=False
+                        )
+                    )
 
                 if user_input.lower() in ["exit", "quit"]:
                     break

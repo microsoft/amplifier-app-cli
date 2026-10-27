@@ -199,20 +199,34 @@ class CLIHandoff:
     async def prompt(self, factory):
         if self.requested.is_set():
             raise EOFError
-        prompt = asyncio.create_task(factory())
+        interrupted = object()
+
+        async def read_prompt():
+            try:
+                return await factory()
+            except KeyboardInterrupt:
+                # Task re-raises KeyboardInterrupt into the event loop before
+                # its awaiter can catch it. Carry an ordinary outcome instead.
+                return interrupted
+
+        prompt = asyncio.create_task(read_prompt())
         release = asyncio.create_task(self.requested.wait())
         try:
-            done, _ = await asyncio.wait(
-                {prompt, release}, return_when=asyncio.FIRST_COMPLETED
-            )
-            if release in done:
-                raise EOFError
-            return await prompt
+            await asyncio.wait({prompt, release}, return_when=asyncio.FIRST_COMPLETED)
         finally:
             for task in (prompt, release):
                 if not task.done():
                     task.cancel()
             await asyncio.gather(prompt, release, return_exceptions=True)
+        # The release event can be set after wait's completion snapshot, or
+        # while the finally above awaits child cleanup. Deliver no prompt
+        # outcome until both children are observed and release is rechecked.
+        if self.requested.is_set():
+            raise EOFError
+        result = prompt.result()
+        if result is interrupted:
+            raise KeyboardInterrupt
+        return result
 
     async def finish(self, save=None, after_cleanup=None):
         """Complete all persistence before either normal release or handoff."""

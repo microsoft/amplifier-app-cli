@@ -255,6 +255,19 @@ and `tests/test_env_vars.py` for this boundary.
 
 REPL exit commands return an action from `CommandProcessor`; only the normal
 REPL loop may terminate so its shared `finally` runs cleanup and closes TTY input once.
+`CLIHandoff.prompt` carries prompt-child `KeyboardInterrupt` as an ordinary
+outcome, then raises it in the parent so the REPL can confirm exit. Preserve
+release-wins EOF and child cancellation/await behavior; run `tests/test_session_handoff.py`.
+
+`loop_errors.report_loop_errors` owns loop diagnostics from interactive initialization
+through cleanup. Both idle and steering prompts must set `set_exception_handler=False`
+to prevent prompt-toolkit's modal error prompt; preserve steering's SIGINT policy.
+Diagnostics contain bounded safe type/frame metadata, never raw exception messages,
+task/context representations or tracebacks. Keep output off the loop callback.
+Final draining follows replacement workers under one absolute 500 ms deadline;
+it bypasses normal output rate delay, not cancellation or privacy controls.
+Run `tests/test_loop_errors.py`, `tests/test_loop_errors_bounds.py`, `tests/test_steering.py` and
+`tests/test_interactive_chat_tty_teardown.py` when changing this boundary.
 
 ## Highway watchdog regression
 

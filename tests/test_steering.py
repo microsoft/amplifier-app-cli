@@ -1,9 +1,9 @@
 """Unit tests for mid-turn steering UX (app-cli side).
 
 Tests the SteeringInputManager introduced in the anchored-input + queued-badge
-feature.  All tests cover the logic layer (_enqueue, on_steering_injected,
-_prompt_message, run() with injected input) so no real TTY or prompt_toolkit
-app is required.
+feature. Most tests cover the logic layer with injected input. The loop-handler
+regression runs the real prompt_toolkit app with pipe input and DummyOutput;
+no real TTY is required.
 
 Spec coverage
 ~~~~~~~~~~~~~
@@ -36,6 +36,7 @@ StdinArbiter and CLIApprovalProvider integration tests are preserved unchanged.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -1757,3 +1758,78 @@ async def test_steered_delimiter_only_inputs_do_not_crash(text, action, data):
     else:
         steer_cap.assert_not_called()
         assert manager.pending_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("check", ["prompt_flags", "live_loop_handler"])
+async def test_real_steering_prompt_preserves_loop_error_owner(monkeypatch, check):
+    """Exercise the real Application, not the injected-input shortcut.
+
+    prompt_toolkit's default exception handler opens a second, modal prompt
+    for background errors. Steering must leave the CLI's handler installed.
+    """
+    import prompt_toolkit
+    from prompt_toolkit.input.defaults import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from amplifier_app_cli.steering_input import _CtrlCInterrupt
+
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+    observer = MagicMock()
+    ready = asyncio.Event()
+    calls = []
+    constructors = []
+    real_session = prompt_toolkit.PromptSession
+    real_prompt_async = real_session.prompt_async
+    stop = asyncio.Event()
+    manager = SteeringInputManager(
+        steer_cap=MagicMock(),
+        arbiter=None,
+        stop_event=stop,
+        console=MagicMock(),
+        session=SimpleNamespace(
+            coordinator=SimpleNamespace(cancellation=MagicMock())
+        ),
+    )
+
+    async def prompt_async(self, *args, **kwargs):
+        calls.append(kwargs.copy())
+        return await real_prompt_async(self, *args, **kwargs)
+
+    def create_session(*args, **kwargs):
+        constructors.append(kwargs.copy())
+        session = real_session(*args, output=DummyOutput(), **kwargs)
+        session.app.before_render += lambda _app: ready.set()
+        return session
+
+    with create_pipe_input() as pipe:
+        monkeypatch.setattr(
+            "amplifier_app_cli.dedicated_tty_input.get_dedicated_tty_input",
+            lambda: pipe,
+        )
+        monkeypatch.setattr(prompt_toolkit, "PromptSession", create_session)
+        monkeypatch.setattr(real_session, "prompt_async", prompt_async)
+        loop.set_exception_handler(observer)
+        task = asyncio.create_task(manager.run())
+        try:
+            await asyncio.wait_for(ready.wait(), timeout=3)
+            assert not task.done(), "The real steering prompt must be active"
+            assert constructors[0]["interrupt_exception"] is _CtrlCInterrupt
+            assert calls[0]["handle_sigint"] is False
+            if check == "prompt_flags":
+                assert calls[0].get("set_exception_handler") is False
+            else:
+                assert loop.get_exception_handler() is observer, (
+                    "The active steering Application replaced the CLI loop "
+                    "handler with prompt_toolkit's modal error handler"
+                )
+        finally:
+            stop.set()
+            task.cancel()
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(task, return_exceptions=True), timeout=3
+                )
+            finally:
+                loop.set_exception_handler(previous)
