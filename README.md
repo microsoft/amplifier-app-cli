@@ -116,9 +116,26 @@ The lightweight console dispatcher avoids importing the full interactive CLI
 implementation on that route. Explicit Python access to the public `cli`
 export still initializes the ordinary Click group, regardless of process arguments.
 
-Next: Tell Amplifier what went wrong and ask for the CLI doctor agent
-(**`app-cli:cli-doctor`**) in a CLI session. Doctor does not start an agent or model.
-It uses the report and loads the existing `amplifier-config` skill when needed.
+For model-backed diagnosis inside an interactive CLI session, invoke the
+packaged skill manually:
+
+```text
+/doctor
+/doctor inspect my provider configuration
+```
+
+`/doctor` requests passive CLI inspection through the existing
+**`app-cli:cli-doctor`** agent. Optional text is a natural-language request,
+not shell commands or flags. The skill runs inline in the current session
+and instructs the model to delegate to the existing agent's child session;
+loading and delegation use model-backed tool calls, not deterministic dispatch.
+By contrast, shell `amplifier doctor` is deterministic passive collection and
+does not start an agent or model.
+
+The packaged skill is available from discovered user-invocable metadata before
+its body is loaded. Configured skill sources, including workspace and user
+skills, can shadow the packaged `doctor` skill. The agent uses the report and
+loads the existing `amplifier-config` skill when needed.
 The agent's own child state is not proof of another session's live state.
 Diagnosis does not authorize changes or live probes.
 
