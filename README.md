@@ -2,6 +2,13 @@
 
 Command-line interface for the Amplifier AI-powered modular development platform.
 
+Fresh sessions compose the external image capability below the selected root,
+preserving explicit configuration, opt-outs and child restrictions. Saved session
+plans receive no new defaults. See [image behavior](docs/INTERACTIVE_MODE.md) for
+configuration and the [draft host contract](contracts/image-capability-host.v1.md)
+for the intended boundaries and qualification limits. Composition does not
+establish image-provider entitlement or authorize a paid request.
+
 > **Note**: This is a **reference implementation** of an Amplifier CLI. It works with [amplifier-core](https://github.com/microsoft/amplifier-core) and demonstrates how to build a CLI around the kernel. You can use this as-is, fork it, or build your own CLI using the core.
 
 ## Installation

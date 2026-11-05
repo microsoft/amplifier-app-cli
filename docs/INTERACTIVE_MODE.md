@@ -126,6 +126,42 @@ web        - Web search/fetch
 task       - Agent delegation
 ```
 
+### Shared image capability
+
+Fresh bundle resolution composes the external
+[`imagegen` behavior](https://github.com/microsoft/amplifier-bundle-imagegen/blob/main/behaviors/imagegen.yaml),
+not its root bundle. It supplies defaults below your selected root; explicit
+app bundles compose later. Existing `overrides.tool-image.config` and
+`modules.tools` settings still apply, including an explicit backend or
+`allow_paid: false`. The CLI does not choose an image account or model.
+
+To remove the image tool from the current session, use the ordinary tool
+disable control:
+
+```text
+/config tools disable image_generate
+/config save --scope project
+```
+
+The saved opt-out uses the existing generic settings shape:
+
+```yaml
+configurator:
+  disabled:
+    tools:
+      - image_generate
+```
+
+This unmounts the tool during session initialization; it does not prevent bundle
+download or remove the shared guidance. Use `/config tools enable image_generate`
+to re-enable it in the current session and save again if desired. Removing a
+manually added imagegen entry from `bundle.app` alone is **not** an opt-out from
+the default capability. There is no separate image menu or wizard.
+
+Saved sub-session mount plans are not freshly composed and receive no new
+image behavior or defaults on resume. Composition by itself is not proof of
+provider entitlement or successful image generation.
+
 ## Usage Patterns
 
 ### Pattern 1: Safe Code Review

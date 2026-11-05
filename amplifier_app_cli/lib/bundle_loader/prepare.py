@@ -180,6 +180,7 @@ async def load_and_prepare_bundle(
     source_overrides: dict[str, str] | None = None,
     progress_callback: Callable[[str, str], None] | None = None,
     bundle_source_overrides: dict[str, str] | None = None,
+    compose_defaults: list[str] | None = None,
 ) -> PreparedBundle:
     """Load bundle by name or URI and prepare it for execution.
 
@@ -212,6 +213,10 @@ async def load_and_prepare_bundle(
             Keys are matched as substrings of include URIs. If matched, the override
             URI is used instead.
             Example: {"amplifier-bundle-superpowers": "/local/path"}
+        compose_defaults: Optional behavior URIs supplying defaults BELOW the
+            selected root, before ordinary compose_behaviors. Unlike explicit
+            app bundles, these must not overwrite a root's module configuration
+            or runtime identity. Saved mount plans do not use this seam.
 
     Returns:
         PreparedBundle ready for create_session().
@@ -280,6 +285,23 @@ async def load_and_prepare_bundle(
     # load_bundle() creates an empty registry that doesn't know about well-known bundles.
     bundle = await load_bundle(uri, registry=discovery.registry)
     logger.debug(f"Loaded bundle: {bundle.name} v{bundle.version}")
+
+    # Defaults contribute a capability without replacing an explicit root
+    # setting (notably a paid-call denial). Foundation merges module lists by
+    # identity, so a root already carrying the capability still mounts it once.
+    # Compose into a new Bundle; never mutate the registry's cached root.
+    for default_uri in compose_defaults or []:
+        if progress_callback:
+            progress_callback("composing", _extract_behavior_name(default_uri))
+        try:
+            default_bundle = await load_bundle(default_uri, registry=discovery.registry)
+            composed = default_bundle.compose(bundle)
+            # These root metadata fields are not merged by Bundle.compose().
+            composed.includes = list(bundle.includes)
+            composed.namespace_root = bundle.namespace_root
+            bundle = composed
+        except Exception as e:
+            logger.warning(f"Failed to compose default behavior '{default_uri}': {e}")
 
     # 3. Compose additional behavior bundles (app-level policies like notifications)
     if compose_behaviors:

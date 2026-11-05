@@ -32,6 +32,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras --dev
 
+      - name: Verify image routing dependency
+        run: uv run --no-sync python -c "from amplifier_foundation.operation_routing import prepare_operation"
+
       - name: Run test suite
         # No exclusions. The whole suite runs on every push and PR, on both
         # platforms. If you are tempted to add a --deselect here, fix the test
