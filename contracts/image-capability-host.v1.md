@@ -1,7 +1,9 @@
 # CLI image-capability host — v1 (DRAFT)
 
 Clause prefix: **ICLI**. Owner: `amplifier-app-cli`.
-Proposed host obligations, not ratified text, implemented support or permission to make paid calls.
+Proposed host obligations, not ratified text or permission to make paid calls.
+Implementation and qualification status are recorded separately below; a draft
+promise is not evidence that every delivery boundary has passed.
 This draft requires no Core changes and does not replace the CLI's existing governance.
 
 ## Who builds against this
@@ -72,7 +74,7 @@ adapter qualification, not inference from vision support. This draft changes no 
 
 ## How the kit checks it
 
-**Proposed checks — not run.** Use synthetic providers/resolvers in an isolated installed
+**Acceptance matrix.** Use synthetic providers/resolvers in an isolated installed
 CLI, then record exact CLI, Foundation, imagegen, routing and provider revisions.
 Positive and negative assertions must pass at the real composition/host boundaries:
 
@@ -88,6 +90,27 @@ Fixture success is not live entitlement or visual-quality evidence. Any later li
 qualification needs an explicit account, bounded spend and retained receipts/pixels;
 report unavailable checks separately and keep JSON stdout free of terminal diagnostics.
 
+### Implemented and checked scope
+
+Fresh composition below the selected root, explicit tool overrides and opt-outs,
+saved-plan preservation, child permission narrowing and independent child plans
+are implemented in this candidate. Portable image execution remains in Imagegen.
+The maintained composition tests replace fetching, installation and execution
+boundaries; they do not make image-provider calls.
+
+On 2026-11-05, candidate `6c55a6899a9e719ddce2d5bf33a4122077933abf`
+passed 315 focused image/child and adjacent merge/isolation checks both from
+source and from its noneditable wheel. The declared locked environment used
+Python 3.13.16, Core 1.6.1 and Foundation
+`a5f91fc4765dd3c6a1496b400c4fe428e5aa06f2`; its `prepare_operation`
+import passed and all 107 installed Python files matched the source.
+
+That result does not qualify live image accounts, paid operations, complete
+host accounting, or the final accepted CLI/Imagegen/routing delivery graph.
+Installed headless artifact delivery and restart/no-replay acceptance retain
+their own exact-source evidence and limits; they are not inferred from these
+composition checks.
+
 ## Open questions
 
 Which dependency combination and CLI guard/accounting seams qualify image operations?
@@ -98,3 +121,4 @@ Which older snapshots can resume unchanged, and which require a new session?
 | Date | Change | Evidence |
 | --- | --- | --- |
 | 2026-10-13 | Initial DRAFT ICLI1–5 for shared routed images. | Read-only review of CLI AGENTS, README, spawn/resume and root-state guidance; checks above remain proposed. |
+| 2026-11-05 | Separate implemented composition from remaining acceptance promises; retain draft status. | Independent source and noneditable-wheel focused qualification of `6c55a689`; no live-provider claim. |
