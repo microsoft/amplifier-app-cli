@@ -1,5 +1,6 @@
 """Provider configuration management."""
 
+import importlib.metadata
 import logging
 import subprocess
 import sys
@@ -9,6 +10,7 @@ from typing import Any
 from .lib.home_env import uv_target_args
 from .lib.settings import AppSettings
 from .lib.settings import ScopeType
+from .provider_loader import ProviderSourceError
 from .provider_loader import get_provider_info
 from .provider_sources import _get_ordered_providers
 from .provider_sources import ensure_provider_installed
@@ -286,33 +288,20 @@ class ProviderManager:
         Returns:
             List of (module_id, display_name, description) tuples
         """
-        import asyncio
-
-        from amplifier_core.loader import ModuleLoader
-
-        providers: dict[str, tuple[str, str, str]] = {}
-
-        # Discover installed providers via entry points
-        loader = ModuleLoader()
-        modules = asyncio.run(loader.discover())
-
-        for module in modules:
-            if module.type == "provider":
-                # Try to get proper display_name from provider's get_info()
-                info = get_provider_info(module.id)
-                if info and "display_name" in info:
-                    display_name = info["display_name"]
-                else:
-                    # Fallback to module's name from entry point
-                    display_name = module.name
-                providers[module.id] = (module.id, display_name, module.description)
-
-        # Always merge source-discovered providers (handles local file paths,
-        # user-added providers, and modules installed with --target flag)
-        source_providers = self._discover_providers_from_sources()
-        for module_id, provider_info in source_providers.items():
-            if module_id not in providers:
-                providers[module_id] = provider_info
+        # Select sources before any provider import. Full module discovery can
+        # execute installed packages and cache their children from another root.
+        providers = self._discover_providers_from_sources()
+        selected_sources = get_effective_provider_sources(self.config)
+        for ep in importlib.metadata.entry_points(group="amplifier.modules"):
+            module_id = ep.name
+            if not module_id.startswith("provider-") or module_id in selected_sources:
+                continue
+            info = get_provider_info(module_id)
+            providers[module_id] = (
+                module_id,
+                (info or {}).get("display_name", _get_provider_display_name(module_id)),
+                (info or {}).get("description", f"Provider: {module_id}"),
+            )
 
         # Sort alphabetically by display name (second element of tuple)
         return sorted(providers.values(), key=lambda p: p[1].lower())
@@ -346,8 +335,13 @@ class ProviderManager:
         for module_id, source_uri in ordered_providers:
             try:
                 # Resolve source to path (handles both git URLs and local paths)
-                source = source_from_uri(source_uri)
-                module_path = source.resolve()
+                try:
+                    source = source_from_uri(source_uri)
+                    module_path = source.resolve()
+                except Exception as exc:
+                    raise ProviderSourceError(
+                        f"Could not resolve the selected source for provider '{module_id}'"
+                    ) from exc
 
                 # Add to sys.path if not already there
                 path_str = str(module_path)
@@ -359,7 +353,7 @@ class ProviderManager:
                 importlib.invalidate_caches()
 
                 # Try to get provider info via direct import
-                info = get_provider_info(module_id)
+                info = get_provider_info(module_id, source_path=module_path)
                 if info:
                     display_name = info.get(
                         "display_name", _get_provider_display_name(module_id)
@@ -384,6 +378,10 @@ class ProviderManager:
                         f"Discovered provider from source (no info): {module_id}"
                     )
 
+            except ProviderSourceError:
+                # An origin conflict is not a missing SDK. Do not overwrite an
+                # installed provider or fall back to a different copy to hide it.
+                raise
             except Exception as e:
                 # For local sources, try to install with deps (same as install_known_providers)
                 if is_local_path(source_uri):
@@ -420,7 +418,7 @@ class ProviderManager:
                             sys.path.insert(0, path_str)
 
                         # Retry getting provider info
-                        info = get_provider_info(module_id)
+                        info = get_provider_info(module_id, source_path=module_path)
                         if info:
                             display_name = info.get(
                                 "display_name", _get_provider_display_name(module_id)
@@ -449,6 +447,8 @@ class ProviderManager:
                                 f"Discovered local provider after install (no info): {module_id}"
                             )
 
+                    except ProviderSourceError:
+                        raise
                     except Exception as install_error:
                         # Install failed - show fallback with consistent description
                         logger.warning(
@@ -477,7 +477,7 @@ class ProviderManager:
                     if installed:
                         # Refresh Python's view of newly installed packages
                         importlib.invalidate_caches()
-                        info = get_provider_info(module_id)
+                        info = get_provider_info(module_id, source_path=module_path)
                         if info:
                             display_name = info.get(
                                 "display_name", _get_provider_display_name(module_id)

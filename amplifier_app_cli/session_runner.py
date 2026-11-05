@@ -440,14 +440,18 @@ async def create_initialized_session(
                 )
                 if result.incomplete:
                     console.print(
-                        "[yellow]Warning:[/yellow] cumulative fork cost history is incomplete; "
-                        "only verified available CI cost segments were restored."
+                        "[yellow]Warning:[/yellow] historical cost is incomplete. "
+                        "Available amounts are a partial subtotal."
+                        if result.total > 0
+                        else "[yellow]Warning:[/yellow] complete historical cost is unavailable. "
+                        "Do not treat missing cost as zero."
                     )
-                    logger.warning(
-                        "Incomplete fork cost history for %s: %s",
-                        session_id,
-                        ", ".join(result.diagnostics),
-                    )
+                    if config.verbose:
+                        logger.warning(
+                            "Incomplete fork cost history for %s: %s",
+                            session_id,
+                            ", ".join(result.diagnostics),
+                        )
             else:
                 restore_session_cost(
                     session.coordinator, session_id, session_events_path(session_dir)

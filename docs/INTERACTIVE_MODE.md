@@ -14,6 +14,12 @@ amplifier run
 
 Within an interactive session, you compose prompts and issue slash commands. Runtime mode switching is provided by the [`amplifier-bundle-modes`](https://github.com/microsoft/amplifier-bundle-modes) bundle (`/mode <name>`, `/modes`, `/mode off`); other commands are app-CLI built-ins documented below.
 
+Background errors during initialization, input, or cleanup produce bounded
+diagnostics without opening a second prompt that asks you to press Enter.
+Diagnostics show the exception type and source-frame locations; arbitrary error
+messages and task details are withheld. Repeated errors are counted, and queue
+overflow is reported. This reports errors; it does not repair SDK cleanup failures.
+
 ## Slash Commands
 
 | Command | Purpose | Notes |

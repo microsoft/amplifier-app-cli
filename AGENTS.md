@@ -176,6 +176,11 @@ boundary plus child-owned CI cost only; it never reconstructs ancestors.
 Honor configured CI relocation without falling back from a missing selected
 capture. An unavailable or pre-boundary fork is explicitly incomplete, never
 verified zero. Keep ordinary non-fork resume's CI-then-native fallback.
+On every incomplete fork resume, show one compact console warning. Use partial
+subtotal wording only for `total > 0`; zero cannot distinguish known zero-cost
+segments from missing history. Preserve diagnostic tuples and join/log their
+full WARNING detail only under `SessionConfig.verbose`. Keep accounting intact
+and use the caller's console stream, never a new global stdout write.
 
 Tests must use the Foundation dependency installed in their test environment.
 Do not prepend a neighboring checkout to `sys.path`: that silently bypasses the
@@ -228,6 +233,17 @@ the first install and the entire file is identical after a repeat install.
 
 ## Lightweight provider configuration
 
+Resolve the effective runtime source before configuration-time provider imports.
+Installed-package checks and picker inventories must not execute provider packages:
+a wheel's cached children cannot be mixed with the selected source at startup.
+Activate provider dependencies before their dependents; preserve installed-only
+unknown providers and explicit activated paths. Selected-source/origin failures
+must not fall back to a wheel, evict imports, or trigger an install to hide the
+conflict. Run `tests/test_provider_source_origin.py` and
+`tests/test_provider_source_precedence.py`; verify first-run startup with a
+preinstalled provider wheel in an isolated environment, without weakening Core's
+origin checks.
+
 Model discovery and login must expand an independent full configuration copy
 once with `lib.env_vars.expand_env_vars`, before deriving constructor arguments.
 Do not discard saved account settings or expand returned environment values a
@@ -239,6 +255,19 @@ and `tests/test_env_vars.py` for this boundary.
 
 REPL exit commands return an action from `CommandProcessor`; only the normal
 REPL loop may terminate so its shared `finally` runs cleanup and closes TTY input once.
+`CLIHandoff.prompt` carries prompt-child `KeyboardInterrupt` as an ordinary
+outcome, then raises it in the parent so the REPL can confirm exit. Preserve
+release-wins EOF and child cancellation/await behavior; run `tests/test_session_handoff.py`.
+
+`loop_errors.report_loop_errors` owns loop diagnostics from interactive initialization
+through cleanup. Both idle and steering prompts must set `set_exception_handler=False`
+to prevent prompt-toolkit's modal error prompt; preserve steering's SIGINT policy.
+Diagnostics contain bounded safe type/frame metadata, never raw exception messages,
+task/context representations or tracebacks. Keep output off the loop callback.
+Final draining follows replacement workers under one absolute 500 ms deadline;
+it bypasses normal output rate delay, not cancellation or privacy controls.
+Run `tests/test_loop_errors.py`, `tests/test_loop_errors_bounds.py`, `tests/test_steering.py` and
+`tests/test_interactive_chat_tty_teardown.py` when changing this boundary.
 
 ## Highway watchdog regression
 
@@ -246,3 +275,20 @@ The Highway watchdog records append-only `wake-needed` advisories only: it must
 not invoke Amplifier or consume markers, including triggers within its log
 verbosity gap. Keep its bounded fake-command tests proving each trigger records
 without starting host tmux or an Amplifier session.
+
+## Passive doctor entry point
+
+The published console script, legacy `main:main` launcher and module entry
+dispatch exact leading `doctor` before normal CLI startup. Keep collection free
+of key loading, preparation,
+network, subprocesses and application-state writes; Python's initial import
+cache is a separate interpreter boundary. Preserve ownership enforcement and
+ordinary startup/TLS behavior. Per-scope declarations are not effective settings
+or live-session evidence. Keep public package/command exports static across
+argv routes; deferred `main.py` imports must initialize the real Click group
+once on explicit `cli` access or later ordinary dispatch, in the same module
+namespace so existing global patches still apply. Unknown attribute probes must
+not initialize it. Run `tests/test_doctor.py`,
+`tests/test_doctor_entrypoint.py`, `tests/test_cli_doctor_agent.py` and the
+installed-wheel check in CI when changing this boundary. Keep doctor instructions
+agent-scoped and reuse `amplifier-config` rather than duplicate its workflow.

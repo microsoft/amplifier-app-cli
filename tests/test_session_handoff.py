@@ -193,3 +193,145 @@ async def test_interactive_unsupported_takeover_keeps_owner_and_reports_failure(
         assert "Session acquired" not in output.getvalue()
     finally:
         root.release()
+
+
+@pytest.mark.parametrize("release_wins", [False, True])
+async def test_prompt_keyboard_interrupt_is_caught_in_parent_task(tmp_path, release_wins):
+    """Run in a child process: the pre-fix Task re-raise would abort pytest."""
+    source = """
+import asyncio
+import sys
+from types import SimpleNamespace
+from amplifier_app_cli.session_handoff import CLIHandoff
+
+async def main():
+    release_wins = sys.argv[1] == 'True'
+    control = CLIHandoff(SimpleNamespace(), SimpleNamespace())
+    before = asyncio.all_tasks()
+    async def factory():
+        if release_wins:
+            control.requested.set()
+        raise KeyboardInterrupt
+    try:
+        await control.prompt(factory)
+    except KeyboardInterrupt:
+        assert not release_wins
+        print('PARENT_CAUGHT')
+    except EOFError:
+        assert release_wins
+        print('RELEASE_WON')
+    else:
+        raise AssertionError('Prompt did not propagate its outcome')
+    assert not (asyncio.all_tasks() - before), 'Handoff left pending children'
+
+asyncio.run(main())
+"""
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-B",
+        "-c",
+        source,
+        str(release_wins),
+        cwd=tmp_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=3)
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await asyncio.wait_for(process.wait(), timeout=3)
+
+    assert process.returncode == 0, stderr.decode(errors="replace")
+    assert stdout.decode().strip() == ("RELEASE_WON" if release_wins else "PARENT_CAUGHT")
+    assert not stderr, stderr.decode(errors="replace")
+
+
+@pytest.mark.parametrize("outcome", ["value", "eof", "cancel"])
+async def test_prompt_preserves_value_eof_and_parent_cancellation(outcome):
+    control = CLIHandoff(SimpleNamespace(), Mock())
+    entered = asyncio.Event()
+    prompt_children = []
+    value = object()
+
+    async def factory():
+        prompt_children.append(asyncio.current_task())
+        entered.set()
+        if outcome == "cancel":
+            await asyncio.Future()
+        if outcome == "eof":
+            raise EOFError
+        return value
+
+    before = asyncio.all_tasks()
+    task = asyncio.create_task(control.prompt(factory))
+    if outcome == "cancel":
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+        assert prompt_children[0].cancelled()
+    elif outcome == "eof":
+        with pytest.raises(EOFError):
+            await asyncio.wait_for(task, timeout=1)
+    else:
+        assert await asyncio.wait_for(task, timeout=1) is value
+    assert not (asyncio.all_tasks() - before), "Handoff left pending children"
+
+
+@pytest.mark.parametrize("timing", ["ready_callback", "child_cleanup"])
+@pytest.mark.parametrize("outcome", ["interrupt", "value", "error"])
+async def test_late_release_wins_after_prompt_completion(timing, outcome):
+    """Release takes priority after the wait snapshot and during child cleanup."""
+    control = CLIHandoff(SimpleNamespace(), Mock())
+    release_points = []
+    children = []
+
+    class ReleaseDuringCleanup(asyncio.Event):
+        async def wait(self):
+            children.append(asyncio.current_task())
+            try:
+                return await super().wait()
+            except asyncio.CancelledError:
+                release_points.append("child_cleanup")
+                self.set()
+                await asyncio.sleep(0)  # Keep the parent suspended in its gather.
+                raise
+
+    if timing == "child_cleanup":
+        control.requested = ReleaseDuringCleanup()
+
+    def request_release(completed):
+        assert completed.done()
+        release_points.append("ready_callback")
+        control.requested.set()
+
+    async def factory():
+        child = asyncio.current_task()
+        children.append(child)
+        if timing == "ready_callback":
+            # asyncio.wait has registered its completion callback first. That
+            # wakes the parent; this callback sets the event before it resumes,
+            # but the release-wait child is still in the ready queue.
+            child.add_done_callback(request_release)
+        if outcome == "interrupt":
+            raise KeyboardInterrupt
+        if outcome == "error":
+            raise RuntimeError("synthetic prompt failure")
+        return "must not be delivered after release"
+
+    before = asyncio.all_tasks()
+    try:
+        await control.prompt(factory)
+    except EOFError:
+        assert control.requested.is_set()
+    except KeyboardInterrupt:
+        pytest.fail("Late release must prevent parent interrupt/exit confirmation")
+    except RuntimeError:
+        pytest.fail("Late release must take priority over the prompt error")
+    else:
+        pytest.fail("Late release must take priority over the prompt value")
+    assert release_points == [timing]
+    assert all(child.done() for child in children)
+    assert not (asyncio.all_tasks() - before), "Handoff left pending children"

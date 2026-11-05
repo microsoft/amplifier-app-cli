@@ -151,11 +151,27 @@ def _violations(path: Path) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     aliases = _home_aliases(tree)
     found: list[str] = []
+    # The passive doctor cannot import Foundation's eager package initializer.
+    # Permit only its one fallback expression, within current_target; behavioral
+    # parity against the installed Foundation helper lives in test_doctor.py.
+    passive_default_lines = set()
+    if path == _PACKAGE_ROOT / "lib" / "diagnostics.py":
+        target_function = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "current_target"
+        )
+        passive_default_lines = {
+            node.lineno for node in ast.walk(target_function)
+            if _joins_amplifier(node) and _is_path_home_call(node.left)
+        }
+        assert len(passive_default_lines) == 1
 
     for node in ast.walk(tree):
         # Path.home() / ".amplifier" -- and the one-hop `home = Path.home()`
         # form, which reads innocently and is exactly how routing.py hid one.
         if _joins_amplifier(node):
+            if node.lineno in passive_default_lines:
+                continue
             left = node.left  # type: ignore[attr-defined]
             if _is_path_home_call(left) or (
                 isinstance(left, ast.Name) and left.id in aliases

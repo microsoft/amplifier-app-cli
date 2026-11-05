@@ -75,6 +75,74 @@ saved selections and user-added bundles are unchanged.
 
 ## Commands
 
+### Passive CLI diagnosis
+
+```bash
+amplifier doctor                          # Short local-settings checklist
+amplifier doctor --verbose                # Original technical report
+amplifier doctor --format json            # Unchanged structured report
+amplifier doctor --session <exact-id> --verbose  # Include that session's settings
+```
+
+Doctor reads installed distribution metadata and bounded settings files from the
+current directory and Amplifier home. It does not resolve effective settings,
+fetch/install dependencies, load credentials, mount modules, or repair anything.
+The default checklist shows whether user, project and local settings could be
+read. A session row appears only with `--session`, which selects this project's
+exact session's saved settings, not its live state. Missing settings are optional.
+AI connections and running sessions are not tested. `--verbose` shows technical
+details and has no effect with `--format json`.
+Existing-session state remains **unknown**, including when `--session` is used.
+Exit codes: `0` collection complete, `1` partial/refused, `2` invalid arguments.
+Partial means some collection was limited; refused means collection stopped.
+Collection complete is not a health verdict or proof that Amplifier works.
+The JSON report always marks health `not_assessed`; `issues` records collection
+limits, not every possible environment defect.
+The bounded diagnostic YAML parser intentionally accepts less syntax than the
+runtime parser: aliases, explicit tags, and duplicate keys report
+`unsupported_yaml`, not malformed `invalid_yaml`. This is a collection limit,
+not an instruction to repair settings that the runtime accepts.
+
+In technical text and JSON, declaration values and arbitrary names use
+report-local equality refs. Scope, container/member and zero-based parsed-order
+indices locate their declarations;
+they do not establish precedence or serve as mutation selectors. Local paths
+still identify the environment: review a report before sharing.
+
+The installed console script and `python -m amplifier_app_cli doctor` take a
+passive startup route, including launchers targeting the legacy
+`amplifier_app_cli.main:main` entry. Python interpreter startup and its initial
+import-cache handling are outside that guarantee; later application bytecode
+is suppressed.
+The passive route requires `doctor` as the exact first argument after the
+launcher; preceding arguments do not take this route.
+The lightweight console dispatcher avoids importing the full interactive CLI
+implementation on that route. Explicit Python access to the public `cli`
+export still initializes the ordinary Click group, regardless of process arguments.
+
+For model-backed diagnosis inside an interactive CLI session, invoke the
+packaged skill manually:
+
+```text
+/doctor
+/doctor inspect my provider configuration
+```
+
+`/doctor` requests passive CLI inspection through the existing
+**`app-cli:cli-doctor`** agent. Optional text is a natural-language request,
+not shell commands or flags. The skill runs inline in the current session
+and instructs the model to delegate to the existing agent's child session;
+loading and delegation use model-backed tool calls, not deterministic dispatch.
+By contrast, shell `amplifier doctor` is deterministic passive collection and
+does not start an agent or model.
+
+The packaged skill is available from discovered user-invocable metadata before
+its body is loaded. Configured skill sources, including workspace and user
+skills, can shadow the packaged `doctor` skill. The agent uses the report and
+loads the existing `amplifier-config` skill when needed.
+The agent's own child state is not proof of another session's live state.
+Diagnosis does not authorize changes or live probes.
+
 ### Configuration Commands
 
 ```bash

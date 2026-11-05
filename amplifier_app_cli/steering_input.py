@@ -453,6 +453,9 @@ class SteeringInputManager:
                             # _execute_with_interrupt and prevent the cancellation
                             # token from being updated when Ctrl-C is pressed.
                             handle_sigint=False,
+                            # The CLI owns non-modal loop diagnostics throughout
+                            # interactive_chat, including this prompt and cleanup.
+                            set_exception_handler=False,
                         )
                     )
 

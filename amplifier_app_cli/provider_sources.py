@@ -113,11 +113,11 @@ def get_effective_provider_sources(
     if config_manager:
         # 1. Apply source overrides for known providers (sources.modules)
         overrides = config_manager.get_module_sources()
-        for module_id in list(sources.keys()):
-            if module_id in overrides:
-                sources[module_id] = overrides[module_id]
+        for module_id, source in overrides.items():
+            if module_id.startswith("provider-") or module_id in sources:
+                sources[module_id] = source
                 logger.debug(
-                    f"Using override source for {module_id}: {overrides[module_id]}"
+                    f"Using override source for {module_id}: {source}"
                 )
 
         # 2. Add user-added provider modules from settings
@@ -172,7 +172,7 @@ def get_effective_provider_sources(
 
 
 def is_provider_module_installed(provider_id: str) -> bool:
-    """Check whether a provider module is installed and importable.
+    """Check whether a provider package is discoverable without importing it.
 
     Args:
         provider_id: Provider module ID (e.g., "provider-anthropic"). A bare
@@ -208,20 +208,21 @@ def is_provider_module_installed(provider_id: str) -> bool:
         for ep in eps:
             if ep.name == module_id:
                 try:
-                    return importlib.util.find_spec(ep.module) is not None
+                    # find_spec on a dotted name imports its parent. That can
+                    # cache wheel submodules before the runtime source is chosen.
+                    return importlib.util.find_spec(ep.module.split(".", 1)[0]) is not None
                 except (ImportError, AttributeError, ValueError):
                     # Parent package missing/broken -> treat as not installed.
                     return False
     except Exception:
         pass
 
-    # Fall back to direct import check when no entry point is registered.
+    # The conventional top-level package check is also import-free.
     try:
         provider_name = module_id.replace("provider-", "")
         module_name = f"amplifier_module_provider_{provider_name.replace('-', '_')}"
-        importlib.import_module(module_name)
-        return True
-    except ImportError:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, AttributeError, ValueError):
         return False
 
 

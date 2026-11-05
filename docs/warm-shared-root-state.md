@@ -55,3 +55,12 @@ CI capture; it never reads an ancestor. It honors
 or pre-boundary history rather than falling back to a native root log, which
 can contain rewritten inherited activity. Ordinary non-fork resume retains its
 CI-then-legacy-root compatibility fallback.
+
+With this warning-display fix, incomplete fork history shows one compact warning
+per resume: `Warning: historical cost is incomplete. Available amounts are a partial subtotal.`
+When the available subtotal is zero, it instead says:
+`Warning: complete historical cost is unavailable. Do not treat missing cost as zero.`
+A zero subtotal cannot distinguish known zero-cost segments from missing history.
+Use the existing `amplifier run --resume <id> --verbose` flag to include full
+diagnostic details. Complete history shows no warning. Cost accounting, saved
+metadata, and transcript restoration are unchanged.
