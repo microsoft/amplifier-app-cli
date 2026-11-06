@@ -1283,7 +1283,8 @@ class TestModelDiscoveryResolvesInstanceId:
 
         captured: dict[str, str] = {}
 
-        def fake_get_provider_models(provider_name, collected_config=None):
+        def fake_get_provider_models(provider_name, collected_config=None, *, require_catalog=False):
+            assert require_catalog is True
             captured["provider_name"] = provider_name
             return []
 
