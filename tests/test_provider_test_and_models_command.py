@@ -94,8 +94,9 @@ class TestProviderTestNoName:
         result = _visible(await cp._handle_provider("test"))
         assert "anthropic-fable" in result
         assert "openai-fast" in result
-        assert "2 models available" in result
-        assert "1 model available" in result
+        assert "2 models listed" in result
+        assert "1 model listed" in result
+        assert "inference not tested" in result
         assert "\u2713" in result  # success checkmark for both
 
     @pytest.mark.asyncio
@@ -163,7 +164,7 @@ class TestProviderTestNoName:
         cp = _cp_with(pin=_make_pin(available=list(providers)), providers=providers)
         result = _visible(await cp._handle_provider("test"))
         assert "\u2713" in result
-        assert "1 model available" in result
+        assert "1 model listed" in result
 
 
 class TestProviderTestWithName:

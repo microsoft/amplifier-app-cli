@@ -49,7 +49,7 @@ def no_live_model_listing():
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
             "amplifier_app_cli.commands.routing._list_models_bounded",
-            lambda _selector, _settings: [],
+            lambda _selector, _settings: None,
         )
         yield
 

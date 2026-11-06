@@ -1437,7 +1437,8 @@ class TestProviderModelsConfiguredInstances:
         settings.get_provider_overrides.return_value = providers
         requested: list[tuple[str, dict | None]] = []
 
-        def list_models(module_id, config_manager, collected_config=None):
+        def list_models(module_id, config_manager, collected_config=None, *, require_catalog=False):
+            assert require_catalog is True
             requested.append((module_id, collected_config))
             return [self._model(collected_config["default_model"])]
 
@@ -1551,7 +1552,7 @@ class TestProviderModelsConfiguredInstances:
             result = CliRunner().invoke(provider, ["models", "unconfigured"])
 
         assert result.exit_code == 0, result.output
-        assert "No models available for provider 'unconfigured'" in result.output
+        assert "The model catalog for 'unconfigured' returned no models." in result.output
         manager.get_provider_config.assert_called_once_with("provider-unconfigured")
         get_models.assert_called_once()
         assert get_models.call_args.args[0] == "provider-unconfigured"

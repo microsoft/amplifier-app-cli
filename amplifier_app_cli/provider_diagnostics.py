@@ -19,7 +19,7 @@ The two surfaces intentionally source providers differently:
   diagnostic completes.
 
 What must not diverge between the two is the actual definition of
-"connectivity is OK" (list_models() succeeds) and how a possibly-async
+"catalog accessible" (list_models() succeeds) and how a possibly-async
 ``list_models()`` is invoked. That mechanic lives here, once, and both
 ``provider_loader.get_provider_models`` and the in-session slash commands
 call through it.
@@ -35,6 +35,10 @@ from typing import Any
 
 if TYPE_CHECKING:
     from amplifier_core import ModelInfo  # pyright: ignore[reportAttributeAccessIssue]
+
+
+class ModelCatalogUnavailable(RuntimeError):
+    """No provider catalog could be queried; distinct from a successful empty list."""
 
 
 async def invoke_list_models(provider: Any) -> list["ModelInfo"]:
@@ -57,7 +61,7 @@ async def invoke_list_models(provider: Any) -> list["ModelInfo"]:
 
 @dataclass
 class ProviderTestResult:
-    """Outcome of a single provider connectivity check."""
+    """Outcome of a catalog check, not an inference or entitlement test."""
 
     name: str
     ok: bool
@@ -71,19 +75,21 @@ DEFAULT_TIMEOUT_S = 15.0
 async def test_provider_connectivity(
     name: str, provider: Any, timeout_s: float = DEFAULT_TIMEOUT_S
 ) -> ProviderTestResult:
-    """Connectivity check for one provider: call list_models(), time it.
+    """Catalog accessibility check: call list_models(), time it; no inference.
 
     Never raises -- failures (including a timeout) are captured in the
     returned result, not thrown, so a caller can run many of these
     concurrently (e.g. via ``asyncio.gather``) without one slow or failing
     provider aborting the batch or hanging an interactive session forever.
 
-    This is the same definition of "connectivity is OK" that ``amplifier
+    This is the same definition of "catalog accessible" that ``amplifier
     provider test`` uses (list_models() succeeds), so the CLI and the
     in-session diagnostic cannot silently disagree on what "ok" means.
     """
     start = time.monotonic()
     try:
+        if not callable(getattr(provider, "list_models", None)):
+            raise ModelCatalogUnavailable("Provider has no model catalog method")
         models = await asyncio.wait_for(invoke_list_models(provider), timeout_s)
     except TimeoutError:
         elapsed = time.monotonic() - start
@@ -96,7 +102,7 @@ async def test_provider_connectivity(
 
     elapsed = time.monotonic() - start
     count = len(models)
-    detail = f"{count} model{'s' if count != 1 else ''} available"
+    detail = f"catalog accessible: {count} model{'s' if count != 1 else ''} listed; inference not tested"
     return ProviderTestResult(name=name, ok=True, elapsed_s=elapsed, detail=detail)
 
 
