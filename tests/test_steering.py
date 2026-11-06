@@ -1266,6 +1266,112 @@ async def test_approval_provider_clears_arbiter_on_exception():
     assert not arbiter.approval_active
 
 
+# ---------------------------------------------------------------------------
+# CLIApprovalSystem arbiter integration
+#
+# The legacy CLIApprovalSystem (used by hook approvals, e.g. computer-use
+# write gate) must coordinate with the StdinArbiter the same way
+# CLIApprovalProvider does, so the steering reader suspends while the
+# approval prompt is active.  Without this, the steering reader can
+# consume keystrokes meant for the approval prompt, freezing the session.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_approval_system_sets_arbiter():
+    """CLIApprovalSystem sets arbiter.approval_active during prompt."""
+    from amplifier_app_cli.ui.approval import CLIApprovalSystem
+
+    arbiter = StdinArbiter()
+    system = CLIApprovalSystem(arbiter=arbiter)
+
+    states_during: list[bool] = []
+
+    async def fake_prompt(prompt, options, timeout, default):
+        states_during.append(arbiter.approval_active)
+        return "Allow once"
+
+    with patch.object(system, "_prompt_user", side_effect=fake_prompt):
+        assert not arbiter.approval_active
+        result = await system.request_approval(
+            prompt="Allow keyboard?",
+            options=["Allow once", "Deny"],
+            timeout=300,
+            default="deny",
+        )
+        assert not arbiter.approval_active
+
+    assert result == "Allow once"
+    assert states_during == [True]
+
+
+@pytest.mark.asyncio
+async def test_approval_system_clears_arbiter_on_exception():
+    """CLIApprovalSystem clears arbiter even if _prompt_user raises."""
+    from amplifier_app_cli.ui.approval import CLIApprovalSystem
+
+    arbiter = StdinArbiter()
+    system = CLIApprovalSystem(arbiter=arbiter)
+
+    async def boom(prompt, options, timeout, default):
+        raise RuntimeError("prompt failed")
+
+    with patch.object(system, "_prompt_user", side_effect=boom):
+        with pytest.raises(RuntimeError):
+            await system.request_approval(
+                prompt="Allow keyboard?",
+                options=["Allow once", "Deny"],
+                timeout=300,
+                default="deny",
+            )
+
+    assert not arbiter.approval_active
+
+
+@pytest.mark.asyncio
+async def test_approval_system_clears_arbiter_on_timeout():
+    """CLIApprovalSystem clears arbiter when approval times out."""
+    from amplifier_app_cli.ui.approval import ApprovalTimeoutError, CLIApprovalSystem
+
+    arbiter = StdinArbiter()
+    system = CLIApprovalSystem(arbiter=arbiter)
+
+    async def timeout_prompt(prompt, options, timeout, default):
+        raise ApprovalTimeoutError("timed out")
+
+    with patch.object(system, "_prompt_user", side_effect=timeout_prompt):
+        with pytest.raises(ApprovalTimeoutError):
+            await system.request_approval(
+                prompt="Allow keyboard?",
+                options=["Allow once", "Deny"],
+                timeout=1,
+                default="deny",
+            )
+
+    assert not arbiter.approval_active
+
+
+@pytest.mark.asyncio
+async def test_approval_system_works_without_arbiter():
+    """CLIApprovalSystem still works when no arbiter is provided (sub-sessions)."""
+    from amplifier_app_cli.ui.approval import CLIApprovalSystem
+
+    system = CLIApprovalSystem()  # No arbiter — back-compat
+
+    async def fake_prompt(prompt, options, timeout, default):
+        return "Allow once"
+
+    with patch.object(system, "_prompt_user", side_effect=fake_prompt):
+        result = await system.request_approval(
+            prompt="Allow?",
+            options=["Allow once", "Deny"],
+            timeout=300,
+            default="deny",
+        )
+
+    assert result == "Allow once"
+
+
 # ===========================================================================
 # Spec §4.2 — app-cli drain-semantics hardening (steering-drain.md)
 # A1–A6: failing-test-first per spec

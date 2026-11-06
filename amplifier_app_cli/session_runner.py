@@ -298,7 +298,15 @@ async def create_initialized_session(
         pass  # CWD may be unavailable in sandboxed/container environments
 
     # Step 3: Create CLI UX systems (app-layer policy)
-    approval_system = CLIApprovalSystem()
+    # The arbiter is created early so both the legacy CLIApprovalSystem (used
+    # by hook approvals, e.g. computer-use write gate) and the newer
+    # CLIApprovalProvider (used by tool-level approvals) share the same
+    # instance.  Without this, the steering reader can consume keystrokes
+    # meant for a hook approval prompt, freezing the session.
+    from .stdin_arbiter import StdinArbiter
+
+    arbiter = StdinArbiter()
+    approval_system = CLIApprovalSystem(arbiter=arbiter)
     display_system = CLIDisplaySystem()
 
     # Step 4: Create session (bundle mode only)
@@ -460,10 +468,11 @@ async def create_initialized_session(
             logger.debug("Prior session cost restore skipped", exc_info=True)
 
     # Step 10: Register approval provider (app-layer policy)
+    # Reuse the arbiter created in step 3 — CLIApprovalSystem and
+    # CLIApprovalProvider must share the same instance so the steering
+    # reader sees a single approval_active flag for both paths.
     from .approval_provider import CLIApprovalProvider
-    from .stdin_arbiter import StdinArbiter
 
-    arbiter = StdinArbiter()
     session.coordinator.register_capability("cli.stdin_arbiter", arbiter)
 
     register_provider = session.coordinator.get_capability("approval.register_provider")

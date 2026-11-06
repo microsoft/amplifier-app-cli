@@ -1,12 +1,16 @@
 """CLI approval system implementation using rich terminal UX."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
-from typing import TYPE_CHECKING
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from rich.console import Console
 from rich.prompt import Prompt
+
+if TYPE_CHECKING:
+    from amplifier_app_cli.stdin_arbiter import StdinArbiter
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +30,19 @@ else:
 
 
 class CLIApprovalSystem:
-    """Terminal-based approval with Rich formatting and timeout."""
+    """Terminal-based approval with Rich formatting and timeout.
 
-    def __init__(self):
+    When an ``arbiter`` is provided, the approval prompt claims exclusive
+    stdin access before reading input so the mid-turn steering reader
+    suspends for the duration of the prompt.  Without this coordination
+    the steering reader can consume the approval response, leaving the
+    approval waiting indefinitely (up to its timeout).
+    """
+
+    def __init__(self, arbiter: StdinArbiter | None = None):
         self.console = Console()
         self.cache: dict[str, str] = {}  # Session-scoped approval cache
+        self._arbiter = arbiter
 
     async def request_approval(
         self,
@@ -63,6 +75,34 @@ class CLIApprovalSystem:
             )
             return cached_decision
 
+        # Claim stdin so the steering reader suspends and cannot consume
+        # keystrokes meant for this prompt.  Mirrors CLIApprovalProvider's
+        # begin_approval/end_approval pattern.
+        if self._arbiter is not None:
+            self._arbiter.begin_approval()
+        try:
+            choice = await self._prompt_user(prompt, options, timeout, default)
+
+            # Cache "Allow always" decisions
+            if choice == "Allow always":
+                self.cache[cache_key] = "Allow once"  # Cache as simplified "allow"
+                self.console.print(
+                    "[green]✓ Approval cached for this session[/green]"
+                )
+
+            return choice
+        finally:
+            if self._arbiter is not None:
+                self._arbiter.end_approval()
+
+    async def _prompt_user(
+        self,
+        prompt: str,
+        options: list[str],
+        timeout: float,
+        default: Literal["allow", "deny"],
+    ) -> str:
+        """Display the approval prompt and collect user input."""
         # Display prompt
         self.console.print()
         self.console.print("[yellow]⚠️  Hook Approval Required[/yellow]")
@@ -74,19 +114,9 @@ class CLIApprovalSystem:
         # Get user input with timeout
         try:
             async with asyncio.timeout(timeout):
-                choice = await asyncio.to_thread(
+                return await asyncio.to_thread(
                     Prompt.ask, "Your choice", choices=options
                 )
-
-                # Cache "Allow always" decisions
-                if choice == "Allow always":
-                    self.cache[cache_key] = "Allow once"  # Cache as simplified "allow"
-                    self.console.print(
-                        "[green]✓ Approval cached for this session[/green]"
-                    )
-
-                return choice
-
         except TimeoutError:
             self.console.print(
                 f"\n[yellow]⏱  Timeout ({timeout}s) - using default: {default}[/yellow]"
