@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .lib.env_vars import expand_env_vars
-from .provider_diagnostics import invoke_list_models
+from .provider_diagnostics import ModelCatalogUnavailable, invoke_list_models
 
 if TYPE_CHECKING:
     from amplifier_core import ModelInfo  # pyright: ignore[reportAttributeAccessIssue]
@@ -234,18 +234,24 @@ def get_provider_models(
     provider_id: str,
     config_manager: object | None = None,
     collected_config: dict[str, Any] | None = None,
+    *,
+    require_catalog: bool = False,
 ) -> list["ModelInfo"]:
     """Get available models for a provider.
 
     Loads the provider and queries list_models() to get dynamic model list.
     Re-raises authentication and connection errors so callers can show meaningful messages.
-    Returns empty list only for non-critical failures (provider not found, no list_models method).
+    By default, unavailable discovery retains the legacy empty-list behavior.
+    With require_catalog=True, missing provider/construction/method support raises
+    ModelCatalogUnavailable; a successful empty catalog still returns [].
+    Calls list_models() without arguments, preserving provider-owned defaults.
 
     Args:
         provider_id: Provider ID (e.g., "provider-anthropic" or "anthropic")
         config_manager: Optional config manager (for future source resolution)
         collected_config: Optional config values collected from user (base_url, host, etc.)
             Used to instantiate provider with real connection values for dynamic model discovery.
+        require_catalog: Distinguish unavailable discovery from a successful empty list.
 
     Returns:
         List of ModelInfo for available models, empty list if unavailable
@@ -256,6 +262,8 @@ def get_provider_models(
     """
     provider_class = load_provider_class(provider_id)
     if not provider_class:
+        if require_catalog:
+            raise ModelCatalogUnavailable("Provider implementation is unavailable")
         return []
 
     # Try different instantiation approaches for different provider signatures
@@ -265,12 +273,16 @@ def get_provider_models(
         logger.debug(
             f"Could not instantiate provider '{provider_id}' for model listing"
         )
+        if require_catalog:
+            raise ModelCatalogUnavailable("Provider could not be initialized")
         return []
 
-    return list_models_for_instance(provider)
+    return list_models_for_instance(provider, require_catalog=require_catalog)
 
 
-def list_models_for_instance(provider: Any) -> list["ModelInfo"]:
+def list_models_for_instance(
+    provider: Any, *, require_catalog: bool = False
+) -> list["ModelInfo"]:
     """Call list_models() on an ALREADY-INSTANTIATED provider instance.
 
     Extracted from get_provider_models() so a caller that already holds a
@@ -295,8 +307,10 @@ def list_models_for_instance(provider: Any) -> list["ModelInfo"]:
             meaningful error messages -- same contract as
             get_provider_models().
     """
-    if not hasattr(provider, "list_models"):
+    if not callable(getattr(provider, "list_models", None)):
         logger.debug(f"Provider {provider!r} does not have list_models()")
+        if require_catalog:
+            raise ModelCatalogUnavailable("Provider has no model catalog method")
         return []
 
     # Call list_models (may be sync or async) via the shared invocation

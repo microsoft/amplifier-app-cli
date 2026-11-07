@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fnmatch
 import logging
 import re
 from collections.abc import Mapping
@@ -16,6 +15,10 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from amplifier_foundation.paths.resolution import get_amplifier_home
+from amplifier_foundation.model_patterns import (
+    is_glob_pattern as _is_glob,
+    select_model_pattern,
+)
 from ..lib.bundle_loader.discovery import WELL_KNOWN_BUNDLES
 from ..lib.routing_provenance import resolve_matrix_origins, resolve_winning_paths
 from ..lib.settings import AppSettings, Scope, get_custom_routing_dir
@@ -449,30 +452,9 @@ def _check_compatibility(
     return covered, total
 
 
-_GLOB_CHARS = frozenset("*?[")
-
-
-def _is_glob(model: str) -> bool:
-    return any(ch in model for ch in _GLOB_CHARS)
-
-
 def _best_glob_match(pattern: str, models: list[str]) -> str | None:
-    """The model id the routing hook would pick for *pattern* from *models*.
-
-    Reuses the hook's own version-aware sort when importable so the id shown
-    here is the id that actually runs; falls back to a plain reverse sort
-    (the same matcher, minus the date-suffix awareness) when it is not.
-    """
-    lowered = pattern.lower()
-    matched = [m for m in models if fnmatch.fnmatch(m.lower(), lowered)]
-    if not matched:
-        return None
-    try:
-        from amplifier_module_hooks_routing.resolver import _version_sort_key
-
-        return sorted(matched, key=_version_sort_key, reverse=True)[0]
-    except Exception:  # pragma: no cover - import environment dependent
-        return sorted(matched, reverse=True)[0]
+    """Use Foundation's public matcher, whether or not the hook is installed."""
+    return select_model_pattern(pattern, models)
 
 
 # Wall-clock cap on ONE provider's live model listing, in seconds.
@@ -488,14 +470,14 @@ def _best_glob_match(pattern: str, models: list[str]) -> str | None:
 _LIVE_LIST_TIMEOUT_S = 6.0
 
 
-def _list_models_bounded(selector: str, settings: AppSettings) -> list[str]:
+def _list_models_bounded(selector: str, settings: AppSettings) -> list[str] | None:
     """`_list_models_for_provider` with a hard wall-clock cap.
 
     Runs the listing on a worker thread and abandons it on timeout. The thread
     is left to finish on its own (``shutdown(wait=False)``) -- for a CLI that
     is about to exit that is the right trade, and it cannot leak into the
     process's own event loop because the listing helper builds its own.
-    Returns ``[]`` on timeout, the same "could not list" value the helper
+    Returns ``None`` on timeout, the same "could not list" value the helper
     itself uses for every other failure.
     """
     import concurrent.futures
@@ -517,9 +499,9 @@ def _list_models_bounded(selector: str, settings: AppSettings) -> list[str]:
             selector,
             timeout,
         )
-        return []
+        return None
     except Exception:
-        return []
+        return None
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
@@ -542,7 +524,7 @@ class _LiveModels:
     preference the resolver applies.
 
     Honest about what it could not check: a provider whose list could not be
-    fetched (offline, no key, module not installed, empty list) is UNVERIFIED,
+    fetched (offline, no key, module not installed) is UNVERIFIED,
     never "no match". Unverified candidates render exactly as before this
     class existed, and `show` names them once in a footer.
     """
@@ -579,8 +561,7 @@ class _LiveModels:
         selector = self._configured_selector(provider)
         models: list[str] | None = None
         if selector is not None:
-            listed = _list_models_bounded(selector, self._settings)
-            models = listed or None  # [] means "could not list", not "lists nothing"
+            models = _list_models_bounded(selector, self._settings)
         if models is None:
             self.unverified.add(provider)
         self._cache[provider] = models
@@ -1454,7 +1435,7 @@ def _build_model_cache(
 
 def _list_models_for_provider(
     provider_name: str, settings: AppSettings | None = None
-) -> list[str]:
+) -> list[str] | None:
     """List available models for a provider. Returns model name strings.
 
     If settings is provided, looks up the provider's config (API keys, base_url, etc.)
@@ -1478,7 +1459,9 @@ def _list_models_for_provider(
                 else provider_name
             )
         )
-        models = get_provider_models(provider_id, collected_config=collected_config)
+        models = get_provider_models(
+            provider_id, collected_config=collected_config, require_catalog=True
+        )
         # ModelInfo's identifier is `.id`, not `.name`. This helper had no
         # caller until `_LiveModels` arrived, so the old `getattr(m, "name",
         # m)` -- which fell through to str(m) and returned the whole dataclass
@@ -1489,7 +1472,7 @@ def _list_models_for_provider(
             str(getattr(m, "id", None) or getattr(m, "name", None) or m) for m in models
         ]
     except Exception:
-        return []
+        return None
 
 
 def _prompt_provider_and_model(

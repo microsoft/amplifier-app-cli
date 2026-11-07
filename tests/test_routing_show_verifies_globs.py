@@ -43,7 +43,7 @@ CHATGPT_ONLY = [{"module": "provider-openai-chatgpt", "source": "git+x"}]
 ALIASES = {"openai": ("openai-chatgpt",)}
 
 
-def _listing(table: dict[str, list[str]]):
+def _listing(table: dict[str, list[str] | None]):
     """Patch the live model listing with a fixed provider-selector -> models table.
 
     Patched at ``_list_models_bounded`` -- the seam ``_LiveModels`` calls and
@@ -51,7 +51,7 @@ def _listing(table: dict[str, list[str]]):
     guard rather than being defeated by it.
     """
     return patch.object(
-        r, "_list_models_bounded", side_effect=lambda sel, _s: table.get(sel, [])
+        r, "_list_models_bounded", side_effect=lambda sel, _s: table.get(sel)
     )
 
 
@@ -89,9 +89,9 @@ class TestResolve:
             listing.assert_not_called()
 
     def test_unlistable_provider_is_unverified_never_no_match(self, tmp_path):
-        """Offline / no key / module absent -> [] -> UNVERIFIED, and named."""
+        """Offline / no key / module absent -> None -> UNVERIFIED, and named."""
         s = _settings(tmp_path, OPENAI_ONLY)
-        with _listing({"openai": []}):
+        with _listing({"openai": None}):
             live = r._LiveModels(s)
             assert live.resolve("openai", "gpt-?.?-luna") == ("unverified", None)
             assert live.unverified == {"openai"}
@@ -222,7 +222,7 @@ class TestRendering:
 
     def test_details_unverified_renders_as_before_plus_footer(self, tmp_path):
         s = _settings(tmp_path, OPENAI_ONLY)
-        with _listing({"openai": []}), self._capture() as out:
+        with _listing({"openai": None}), self._capture() as out:
             r._show_matrix_details(MATRIX, s, "t")
         text = "\n".join(str(c.args[0]) for c in out.call_args_list if c.args)
         assert "\u2605 openai / gpt-?.?-luna" in text and "\u2190 active" in text

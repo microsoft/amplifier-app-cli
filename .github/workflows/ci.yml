@@ -30,7 +30,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --all-extras --dev
+        run: uv sync --locked --all-extras --dev
 
       - name: Verify image routing dependency
         run: uv run --no-sync python -c "from amplifier_foundation.operation_routing import prepare_operation"
@@ -92,7 +92,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: uv sync --all-extras --dev
+        run: uv sync --locked --all-extras --dev
 
       - name: Run integration tests
         # pyproject.toml sets `addopts = -m "not integration"`, so these tests

@@ -1032,9 +1032,10 @@ def provider_edit(name: str, scope: str) -> None:
 @provider.command("test")
 @click.argument("name", required=False, shell_complete=complete_configured_provider_names)
 def provider_test(name: str | None) -> None:
-    """Test provider connectivity.
+    """Check provider catalog accessibility (not inference).
 
     Tests one or all configured providers by calling list_models().
+    A successful empty catalog is valid. No inference or model entitlement is tested.
 
     Examples:
       amplifier provider test              # test all
@@ -1073,7 +1074,7 @@ def provider_test(name: str | None) -> None:
 
         start = time.time()
         try:
-            models = get_provider_models(module_id, collected_config=config)
+            models = get_provider_models(module_id, collected_config=config, require_catalog=True)
             elapsed = time.time() - start
             latency = f"{elapsed:.1f}s"
             model_count = len(models)
@@ -1081,7 +1082,7 @@ def provider_test(name: str | None) -> None:
                 display,
                 "[green]✓[/green]",
                 latency,
-                f"{model_count} model(s) available",
+                f"Catalog accessible: {model_count} model(s) listed; inference not tested",
             )
         except Exception as e:
             elapsed = time.time() - start
@@ -1161,7 +1162,7 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
     # Fetch models
     try:
         model_list = get_provider_models(
-            module_id, config_manager, collected_config=stored_config
+            module_id, config_manager, collected_config=stored_config, require_catalog=True
         )
     except Exception as e:
         console.print(
@@ -1180,8 +1181,8 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
 
     # Handle empty list
     if not model_list:
-        console.print(f"[yellow]No models available for provider '{display}'.[/]")
-        console.print("This provider may require manual model specification.")
+        console.print(f"[yellow]The model catalog for '{display}' returned no models.[/]")
+        console.print("Provider defaults may filter this list. You can still specify an exact model manually.")
         return
 
     # Build and display table
@@ -1837,7 +1838,7 @@ def _manage_reorder_providers(
 def _manage_test_providers(
     settings: AppSettings, providers: list[dict[str, Any]]
 ) -> None:
-    """Test provider connections from the manage loop."""
+    """Check catalog accessibility from the manage loop; never run inference."""
     if not providers:
         console.print("  [yellow]No providers to test.[/yellow]")
         return
@@ -1848,7 +1849,7 @@ def _manage_test_providers(
     table.add_column("Latency", justify="right")
     table.add_column("Details")
 
-    with console.status("[dim]Testing provider connections...[/dim]", spinner="dots"):
+    with console.status("[dim]Checking provider catalogs...[/dim]", spinner="dots"):
         for p in providers:
             module_id = p.get("module", "unknown")
             display = p.get("id") or _display_name(module_id)
@@ -1856,7 +1857,7 @@ def _manage_test_providers(
 
             start = time.time()
             try:
-                models = get_provider_models(module_id, collected_config=config)
+                models = get_provider_models(module_id, collected_config=config, require_catalog=True)
                 elapsed = time.time() - start
                 latency = f"{elapsed:.1f}s"
                 model_count = len(models)
@@ -1864,7 +1865,7 @@ def _manage_test_providers(
                     display,
                     "[green]✓[/green]",
                     latency,
-                    f"{model_count} model(s) available",
+                    f"Catalog accessible: {model_count} model(s) listed; inference not tested",
                 )
             except Exception as e:
                 elapsed = time.time() - start
