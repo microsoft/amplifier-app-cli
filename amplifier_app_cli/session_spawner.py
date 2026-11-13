@@ -1328,6 +1328,12 @@ async def spawn_sub_session(
 
     # Initialize child session (mounts modules per merged config)
     # Now the resolver is available for loading modules with source: directives
+    from .session_checkpoint import install_session_checkpoint
+    from .session_store import SessionStore
+
+    install_session_checkpoint(
+        child_session, SessionStore(), session_id=sub_session_id
+    )
     await child_session.initialize()
 
     # === Issue #233 fix: propagate runtime_skill_overlay capability ===
@@ -2419,6 +2425,11 @@ async def resume_sub_session(
 
     # Initialize session (mounts modules per config)
     # Now the resolver is available for loading modules with source: directives
+    from .session_checkpoint import install_session_checkpoint
+
+    install_session_checkpoint(
+        child_session, store, session_id=sub_session_id
+    )
     await child_session.initialize()
 
     # Mention resolver - restore bundle mappings if available

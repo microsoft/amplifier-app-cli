@@ -746,6 +746,63 @@ def _configurator_patches(mock_sess):
     ]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_resume", [False, True])
+async def test_root_retry_installs_fresh_checkpoint_before_each_initialize(
+    tmp_path, is_resume
+):
+    from contextlib import ExitStack
+    from amplifier_app_cli.session_runner import _create_bundle_session
+    from amplifier_app_cli.session_store import SessionStore
+
+    config = _make_session_config(
+        session_id="root",
+        initial_transcript=[] if is_resume else None,
+    )
+    store = SessionStore(tmp_path)
+    sessions = []
+    checkpoints = []
+    events = []
+
+    async def create(**kwargs):
+        candidate = _make_mock_session()
+        candidate.cleanup = AsyncMock(side_effect=lambda: events.append("cleanup"))
+        candidate.coordinator.get.return_value = MagicMock(
+            get_messages=AsyncMock(return_value=[{"role": "user", "content": "saved"}])
+        )
+        capabilities = {}
+        candidate.coordinator.register_capability.side_effect = capabilities.__setitem__
+        await kwargs["before_initialize"](candidate)
+        checkpoints.append(capabilities["session.durable_checkpoint"])
+        assert kwargs["is_resumed"] is is_resume
+        events.append("initialize")
+        sessions.append(candidate)
+        return candidate
+
+    config.prepared_bundle.create_session = AsyncMock(side_effect=create)
+    with ExitStack() as stack:
+        stack.enter_context(patch(f"{_MODULE}.SessionStore", return_value=store))
+        stack.enter_context(patch(f"{_MODULE}._inject_observability_events"))
+        stack.enter_context(patch(f"{_MODULE}._inject_invocation_metadata"))
+        stack.enter_context(patch(f"{_MODULE}.register_mention_handling"))
+        stack.enter_context(patch(f"{_MODULE}.register_session_spawning"))
+        stack.enter_context(patch(f"{_MODULE}._invalidate_all_install_state"))
+        stack.enter_context(
+            patch(f"{_MODULE}._should_attempt_self_healing", side_effect=[True, False])
+        )
+        stack.enter_context(patch("amplifier_app_cli.runtime.config.inject_user_providers"))
+        stack.enter_context(patch("amplifier_app_cli.paths.create_foundation_resolver"))
+        result = await _create_bundle_session(
+            config, "root", MagicMock(), MagicMock(), Console(file=StringIO())
+        )
+
+    assert result is sessions[1]
+    assert checkpoints[0] is not checkpoints[1]
+    assert events == ["initialize", "cleanup", "initialize"]
+    await checkpoints[1]()
+    assert store.load("root")[0] == [{"role": "user", "content": "saved"}]
+
+
 class TestInitializedSessionConfiguratorField:
     """Tests for the new configurator field on InitializedSession."""
 

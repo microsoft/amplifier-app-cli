@@ -666,6 +666,19 @@ async def _create_bundle_session(
     # create_session() below.
     _inject_invocation_metadata(prepared_bundle, mode=config.invocation_mode)
 
+    from .session_checkpoint import install_session_checkpoint
+
+    store = SessionStore()
+
+    async def before_initialize(candidate: AmplifierSession) -> None:
+        install_session_checkpoint(
+            candidate,
+            store,
+            session_id=session_id,
+            bundle=config.bundle_name,
+            root_state=config.root_state,
+        )
+
     # Step 4c: Create session (foundation handles init internally)
     # Self-healing: The kernel intentionally swallows module load errors to be resilient.
     # If providers fail to load due to stale install state (missing dependencies),
@@ -683,6 +696,7 @@ async def _create_bundle_session(
                 display_system=display_system,
                 session_cwd=Path.cwd(),  # CLI uses CWD for local @-mentions
                 is_resumed=config.is_resume,  # Pass resume flag to kernel
+                before_initialize=before_initialize,
             )
 
             # Self-healing check: if configured modules failed to load,
@@ -694,6 +708,10 @@ async def _create_bundle_session(
                     "Likely stale install state - invalidating and retrying..."
                 )
                 _invalidate_all_install_state(prepared_bundle)
+                # Abandon the first coordinator and its session-bound resources
+                # before constructing a new one. Never carry live closures or
+                # prepared request state into the self-healed session.
+                await session.cleanup()
                 # Retry once - if it fails again, it's a real error
                 session = await prepared_bundle.create_session(
                     session_id=session_id,
@@ -701,6 +719,7 @@ async def _create_bundle_session(
                     display_system=display_system,
                     session_cwd=Path.cwd(),  # CLI uses CWD for local @-mentions
                     is_resumed=config.is_resume,  # Pass resume flag to kernel
+                    before_initialize=before_initialize,
                 )
                 # Warn if retry still has issues
                 if _should_attempt_self_healing(session, prepared_bundle):
