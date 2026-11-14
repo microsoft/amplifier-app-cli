@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("legacy_session_doubles_without_media")
 
 # ---------------------------------------------------------------------------
 # Shared helpers

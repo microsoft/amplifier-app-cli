@@ -1865,11 +1865,6 @@ class CommandProcessor:
                 # This root already owns Foundation's lock.  Fork from its
                 # live context rather than reacquiring the same lock or
                 # reading a potentially older on-disk history.
-                result = fork_session_in_memory(
-                    messages, turn=turn, parent_id=session_id
-                )
-                child_id = custom_name or result.session_id
-                now = datetime.now(UTC).isoformat()
                 shared_parent = root_state.read(store)
                 parent_messages = messages
                 parent_metadata = (
@@ -1877,68 +1872,26 @@ class CommandProcessor:
                     if shared_parent is not None
                     else store.get_metadata_if_exists(session_id)
                 )
-                child_messages = result.messages or []
-                from .cost_history import build_fork_cost_boundary
-
-                boundary = build_fork_cost_boundary(
-                    parent_dir=session_dir,
-                    parent_id=session_id,
-                    parent_messages=parent_messages,
-                    parent_metadata=parent_metadata,
-                    fork_turn=result.forked_from_turn,
-                    child_messages=child_messages,
+                from .session_media import CLISessionMedia
+                from .session_media_fork import fork_native_session
+                media_host = self.session.coordinator.get_capability("cli.session_media")
+                root_state.held.check()
+                result = fork_native_session(
+                    store, session_id, parent_messages, parent_metadata, turn=turn,
+                    new_session_id=custom_name, fenced=True, bundle=self.bundle_name,
+                    source_media=media_host.store if isinstance(media_host, CLISessionMedia) and media_host.durable else None,
                 )
-                store.save_new(
-                    child_id,
-                    child_messages,
-                    {
-                        "session_id": child_id,
-                        "parent_id": session_id,
-                        "forked_from_turn": result.forked_from_turn,
-                        "fork_cost_boundary": boundary,
-                        "forked_at": now,
-                        "created": now,
-                        "turn_count": count_turns(child_messages),
-                        "bundle": parent_metadata.get("bundle", self.bundle_name),
-                        "model": parent_metadata.get("model"),
-                    },
-                )
-                result.session_id = child_id
             else:
-                child_id = custom_name or str(uuid.uuid4())
-                from .cost_history import build_fork_cost_boundary
-                from .shared_root_state import load_root_resume
+                from .commands.session import _fork_source
+                from .session_media_fork import fork_native_session
+                from .shared_root_state import _shared_root_platform_supported, shared_root_id_supported
 
-                parent_messages, parent_metadata = load_root_resume(store, session_id)
-                result = fork_session_in_memory(
-                    parent_messages, turn=turn, parent_id=session_id
-                )
-                child_messages = result.messages or []
-                boundary = build_fork_cost_boundary(
-                    parent_dir=session_dir,
-                    parent_id=session_id,
-                    parent_messages=parent_messages,
-                    parent_metadata=parent_metadata,
-                    fork_turn=result.forked_from_turn,
-                    child_messages=child_messages,
-                )
-                now = datetime.now(UTC).isoformat()
-                store.save_new(
-                    child_id,
-                    child_messages,
-                    {
-                        "session_id": child_id,
-                        "parent_id": session_id,
-                        "forked_from_turn": result.forked_from_turn,
-                        "fork_cost_boundary": boundary,
-                        "forked_at": now,
-                        "created": now,
-                        "turn_count": count_turns(child_messages),
-                        "bundle": parent_metadata.get("bundle", self.bundle_name),
-                        "model": parent_metadata.get("model"),
-                    },
-                )
-                result.session_id = child_id
+                with _fork_source(store, session_id) as (parent_messages, parent_metadata):
+                    result = fork_native_session(
+                        store, session_id, parent_messages, parent_metadata, turn=turn,
+                        new_session_id=custom_name, bundle=self.bundle_name,
+                        fenced=_shared_root_platform_supported() and shared_root_id_supported(session_id),
+                    )
 
             lines = [
                 f"✓ Forked session created: {result.session_id}",
@@ -3776,7 +3729,7 @@ async def interactive_chat(
         command_processor.configurator = initialized.configurator
 
     # Create session store for saving
-    store = SessionStore()
+    store = vars(initialized).get("store") or SessionStore()
 
     # Register incremental save hook for crash recovery between tool calls
     from .incremental_save import register_incremental_save
@@ -4520,7 +4473,7 @@ async def execute_single(
         messages = await context.get_messages() if context else []
         if not messages:
             return 0
-        store = SessionStore()
+        store = vars(initialized).get("store") or SessionStore()
         # Load existing metadata to preserve fields like name, description
         # that may have been set by other hooks (e.g., session-naming)
         existing_metadata = store.get_metadata_if_exists(actual_session_id)

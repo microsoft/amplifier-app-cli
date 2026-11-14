@@ -180,6 +180,32 @@ async def create_initialized_session(
     config: SessionConfig,
     console: "Console",
 ) -> InitializedSession:
+    """Retain setup ownership until the fully initialized result is returned."""
+    lifetime = []
+    try:
+        result = await _create_initialized_session(config, console, lifetime)
+    except BaseException:
+        cleanup_settled = True
+        try:
+            if lifetime:
+                try:
+                    await lifetime.pop().cleanup()
+                except BaseException:
+                    cleanup_settled = False
+                    logger.warning("Root setup cleanup failed", exc_info=True)
+        finally:
+            if config.root_state is not None and cleanup_settled:
+                config.root_state.release()
+                config.root_state = None
+        raise
+    return result
+
+
+async def _create_initialized_session(
+    config: SessionConfig,
+    console: "Console",
+    lifetime: list,
+) -> InitializedSession:
     """Create and fully initialize a session.
 
     This is the SINGLE entry point for all session creation.
@@ -310,6 +336,7 @@ async def create_initialized_session(
             display_system=display_system,
             console=console,
         )
+        lifetime.append(session)
     except BaseException:
         # No context was created successfully, so no session save is possible;
         # release the just-acquired writer rather than leave a dead lock.
@@ -500,7 +527,7 @@ async def create_initialized_session(
         session=session,
         session_id=session_id,
         config=config,
-        store=SessionStore(),
+        store=session.coordinator.get_capability("cli.session_store") or SessionStore(),
         configurator=configurator,
         root_state=config.root_state,
     )
@@ -666,6 +693,27 @@ async def _create_bundle_session(
     # create_session() below.
     _inject_invocation_metadata(prepared_bundle, mode=config.invocation_mode)
 
+    from .session_checkpoint import install_session_checkpoint
+    from .session_media import install_session_media, mount_session_media
+
+    store = SessionStore()
+    constructing: AmplifierSession | None = None
+
+    async def before_initialize(candidate: AmplifierSession) -> None:
+        nonlocal constructing
+        constructing = candidate
+        install_session_checkpoint(
+            candidate,
+            store,
+            session_id=session_id,
+            bundle=config.bundle_name,
+            root_state=config.root_state,
+        )
+        install_session_media(
+            candidate, store, config=config.config,
+            restored_messages=config.initial_transcript,
+        )
+
     # Step 4c: Create session (foundation handles init internally)
     # Self-healing: The kernel intentionally swallows module load errors to be resilient.
     # If providers fail to load due to stale install state (missing dependencies),
@@ -683,6 +731,7 @@ async def _create_bundle_session(
                 display_system=display_system,
                 session_cwd=Path.cwd(),  # CLI uses CWD for local @-mentions
                 is_resumed=config.is_resume,  # Pass resume flag to kernel
+                before_initialize=before_initialize,
             )
 
             # Self-healing check: if configured modules failed to load,
@@ -694,6 +743,11 @@ async def _create_bundle_session(
                     "Likely stale install state - invalidating and retrying..."
                 )
                 _invalidate_all_install_state(prepared_bundle)
+                # Abandon the first coordinator and its session-bound resources
+                # before constructing a new one. Never carry live closures or
+                # prepared request state into the self-healed session.
+                constructing = None
+                await session.cleanup()
                 # Retry once - if it fails again, it's a real error
                 session = await prepared_bundle.create_session(
                     session_id=session_id,
@@ -701,6 +755,7 @@ async def _create_bundle_session(
                     display_system=display_system,
                     session_cwd=Path.cwd(),  # CLI uses CWD for local @-mentions
                     is_resumed=config.is_resume,  # Pass resume flag to kernel
+                    before_initialize=before_initialize,
                 )
                 # Warn if retry still has issues
                 if _should_attempt_self_healing(session, prepared_bundle):
@@ -708,7 +763,12 @@ async def _create_bundle_session(
                         "Self-healing retry completed but some modules still failed to load. "
                         "Check module configuration, credentials, and dependencies."
                     )
-    except (ModuleValidationError, RuntimeError) as e:
+    except BaseException as e:
+        if constructing is not None:
+            await constructing.cleanup()
+            constructing = None
+        if not isinstance(e, (ModuleValidationError, RuntimeError)):
+            raise
         if not display_validation_error(console, e, verbose=config.verbose):
             console.print(f"[red]Error:[/red] {escape_markup(e)}")
             if config.verbose:
@@ -718,10 +778,14 @@ async def _create_bundle_session(
         core_logger.setLevel(original_level)
 
     # Step 5: Register mention handling (wrap foundation's resolver)
-    register_mention_handling(session)
-
-    # Step 6: Register session spawning
-    register_session_spawning(session, prepared_bundle=prepared_bundle)
+    try:
+        await mount_session_media(session)
+        register_mention_handling(session)
+        # Step 6: Register session spawning
+        register_session_spawning(session, prepared_bundle=prepared_bundle)
+    except BaseException:
+        await session.cleanup()
+        raise
 
     return session
 

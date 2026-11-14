@@ -81,3 +81,19 @@ def isolated_home(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     return tmp_path
+
+
+@pytest.fixture
+def legacy_session_doubles_without_media():
+    """Keep old MagicMock-only spawn tests scoped to their original boundary.
+
+    Those doubles have no real coordinator identity/cleanup registry/providers.
+    Actual media mount, checkpoint and provider privacy are exercised separately
+    by test_session_media_host and test_session_media_checkpoint.
+    """
+    from unittest.mock import AsyncMock
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("amplifier_app_cli.session_media.install_session_media", lambda *a, **k: None)
+        mp.setattr("amplifier_app_cli.session_media.mount_session_media", AsyncMock())
+        yield

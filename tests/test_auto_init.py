@@ -121,9 +121,11 @@ class TestSessionRunnerNonTTY:
 
     def test_non_tty_calls_auto_init(self):
         """When stdin is not a TTY, session_runner should call auto_init_from_env."""
-        from amplifier_app_cli.session_runner import create_initialized_session
+        from amplifier_app_cli.session_runner import create_initialized_session, _create_initialized_session
 
-        source = inspect.getsource(create_initialized_session)
+        entry = inspect.getsource(create_initialized_session)
+        assert "await _create_initialized_session(" in entry
+        source = inspect.getsource(_create_initialized_session)
         # The function should reference auto_init_from_env for non-TTY path
         assert "auto_init_from_env" in source, (
             "create_initialized_session should call auto_init_from_env for non-TTY contexts"
@@ -135,9 +137,11 @@ class TestSessionRunnerNonTTY:
 
     def test_tty_still_calls_prompt(self):
         """When stdin IS a TTY, session_runner should still call prompt_first_run_init."""
-        from amplifier_app_cli.session_runner import create_initialized_session
+        from amplifier_app_cli.session_runner import create_initialized_session, _create_initialized_session
 
-        source = inspect.getsource(create_initialized_session)
+        entry = inspect.getsource(create_initialized_session)
+        assert "await _create_initialized_session(" in entry
+        source = inspect.getsource(_create_initialized_session)
         assert "prompt_first_run_init" in source, (
             "create_initialized_session should still call prompt_first_run_init for TTY"
         )

@@ -571,6 +571,9 @@ def register_session_commands(
             click.echo("\n" + ctx.get_help())
             ctx.exit()
 
+    from .session_storage import register_session_storage_commands
+    register_session_storage_commands(session, store_factory=lambda: SessionStore())
+
     @session.command(name="list")
     @click.option("--limit", "-n", default=20, help="Number of sessions to show")
     @click.option(
@@ -1018,38 +1021,12 @@ def register_session_commands(
         # another host may have saved since the display-only preview.
         try:
             with _fork_source(store, session_id) as (action_messages, action_metadata):
-                result = fork_session_in_memory(
-                    action_messages, turn=turn, parent_id=session_id
+                from ..session_media_fork import fork_native_session
+                result = fork_native_session(
+                    store, session_id, action_messages, action_metadata, turn=turn,
+                    new_session_id=new_name,
+                    fenced=_shared_root_platform_supported() and shared_root_id_supported(session_id),
                 )
-                child_id = new_name or result.session_id
-                child_messages = result.messages or []
-                from ..cost_history import build_fork_cost_boundary
-
-                boundary = build_fork_cost_boundary(
-                    parent_dir=session_dir,
-                    parent_id=session_id,
-                    parent_messages=action_messages,
-                    parent_metadata=action_metadata,
-                    fork_turn=result.forked_from_turn,
-                    child_messages=child_messages,
-                )
-                now = datetime.now(UTC).isoformat()
-                store.save_new(
-                    child_id,
-                    child_messages,
-                    {
-                        "session_id": child_id,
-                        "parent_id": session_id,
-                        "forked_from_turn": result.forked_from_turn,
-                        "fork_cost_boundary": boundary,
-                        "forked_at": now,
-                        "created": now,
-                        "turn_count": count_turns(child_messages),
-                        "bundle": action_metadata.get("bundle"),
-                        "model": action_metadata.get("model"),
-                    },
-                )
-                result.session_id = child_id
 
             console.print(
                 f"[green]✓[/green] Forked session created: {result.session_id}"

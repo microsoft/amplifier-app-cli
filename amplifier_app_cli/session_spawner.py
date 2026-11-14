@@ -9,6 +9,8 @@ import logging
 import os
 import sys
 import time
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +31,70 @@ BASE_SYSTEM_PROMPT_BUILDER_ERROR_CAPABILITY = (
 )
 SYSTEM_PROMPT_SNAPSHOT_KEY = "base-prompt-snapshot"
 SYSTEM_PROMPT_SNAPSHOT_SCHEMA = 1
+
+_SETUP_SESSION: ContextVar[list | None] = ContextVar("cli_child_setup", default=None)
+
+
+def _protect_child_setup(operation):
+    """Close construction resources until the existing execution finally owns them.
+
+    The slot is per invocation/task, including nested spawns. It is never a
+    coordinator capability or inherited child authority.
+    """
+    @wraps(operation)
+    async def protected(*args, **kwargs):
+        slot = []
+        token = _SETUP_SESSION.set(slot)
+        try:
+            return await operation(*args, **kwargs)
+        finally:
+            try:
+                await _close_child_setup()
+            finally:
+                _SETUP_SESSION.reset(token)
+    return protected
+
+
+def _own_child_setup(session):
+    slot = _SETUP_SESSION.get()
+    if slot is None:
+        raise RuntimeError("Child construction has no cleanup owner")
+    slot[:] = [session, []]
+
+
+def _undo_child_setup(callback):
+    slot = _SETUP_SESSION.get()
+    if not slot:
+        raise RuntimeError("Child construction has no cleanup owner")
+    slot[1].append(callback)
+
+
+async def _close_child_setup():
+    slot = _SETUP_SESSION.get()
+    if not slot:
+        return
+    session, callbacks = slot
+    slot.clear()
+    # Attempt every inverse even when another cleanup fails. Preserve a setup
+    # error/cancellation rather than replace it with a diagnostic cleanup error.
+    for callback in reversed(callbacks):
+        try:
+            callback()
+        except BaseException:
+            logger.warning("Child parent-registration cleanup failed", exc_info=True)
+    active_error = sys.exception()
+    try:
+        await session.cleanup()
+    except BaseException:
+        if active_error is None:
+            raise
+        logger.warning("Child session cleanup failed", exc_info=True)
+
+
+def _handoff_child_setup(session):
+    slot = _SETUP_SESSION.get()
+    if not slot or slot[0] is not session:
+        raise RuntimeError("Child cleanup ownership changed before execution")
 
 
 def _prepared_bundle_has_system_prompt_source(prepared_bundle: Any) -> bool:
@@ -887,6 +953,7 @@ async def _install_transcript_checkpoint(
     return unregister if callable(unregister) else _noop
 
 
+@_protect_child_setup
 async def spawn_sub_session(
     agent_name: str,
     instruction: str,
@@ -1188,6 +1255,31 @@ async def spawn_sub_session(
         bundle_pkg_paths = parent_session.coordinator.get_capability(
             "bundle_package_paths"
         )
+        from .session_media import media_configuration
+
+        media_policy = media_configuration(merged_config)
+        media_payload = {}
+        if media_policy is not None:
+            from .session_store import SessionStore
+
+            if "media" not in inspect.signature(run_session_in_subprocess).parameters:
+                raise RuntimeError(
+                    "Selected Foundation subprocess runner does not support the "
+                    "media payload; install the qualified dependency graph"
+                )
+            # This subprocess currently has no qualified canonical checkpoint.
+            # Explicitly disable publication/hydration rather than copying a
+            # parent store, authority token or inherited image grant.
+            directory = SessionStore().reserve_session(sub_session_id).absolute()
+            directory.chmod(0o700)
+            media_payload["media"] = {
+                "v": 1, "session_id": sub_session_id,
+                "session_directory": str(directory),
+                "policy": {
+                    key: value for key, value in media_policy.items()
+                    if key not in ("enabled", "retention")
+                } | {"retention": "drop"},
+            }
 
         result = await run_session_in_subprocess(
             config=child_config,
@@ -1201,6 +1293,7 @@ async def spawn_sub_session(
             ),
             sys_paths=[p for p in sys.path if p not in _DEFAULT_SYS_PATHS],
             mention_mappings=bundle_ctx.get("mention_mappings") if bundle_ctx else None,
+            **media_payload,
         )
 
         # Emit session:fork event from parent hooks (finding #14)
@@ -1259,10 +1352,12 @@ async def spawn_sub_session(
         approval_system=parent_session.coordinator.approval_system,  # Inherit from parent
         display_system=display_system,  # Inherit from parent
     )
+    _own_child_setup(child_session)
 
     # Notify display system we're entering a nested session (for indentation)
     if hasattr(display_system, "push_nesting"):
         display_system.push_nesting()
+        _undo_child_setup(display_system.pop_nesting)
 
     # NOTE: Parent message injection moved to AFTER initialize() because
     # the context module is only mounted during initialize().
@@ -1328,7 +1423,19 @@ async def spawn_sub_session(
 
     # Initialize child session (mounts modules per merged config)
     # Now the resolver is available for loading modules with source: directives
+    from .session_checkpoint import install_session_checkpoint
+    from .session_store import SessionStore
+    from .session_media import install_session_media, mount_session_media
+
+    store = SessionStore()
+    checkpoint_metadata: dict = {}
+    install_session_checkpoint(
+        child_session, store, session_id=sub_session_id,
+        metadata_factory=lambda: dict(checkpoint_metadata),
+    )
+    install_session_media(child_session, store, config=merged_config)
     await child_session.initialize()
+    await mount_session_media(child_session)
 
     # === Issue #233 fix: propagate runtime_skill_overlay capability ===
     #
@@ -1369,6 +1476,7 @@ async def spawn_sub_session(
     parent_cancellation = parent_session.coordinator.cancellation
     child_cancellation = child_session.coordinator.cancellation
     parent_cancellation.register_child(child_cancellation)
+    _undo_child_setup(lambda: parent_cancellation.unregister_child(child_cancellation))
     logger.debug(
         f"Registered child cancellation token for sub-session {sub_session_id}"
     )
@@ -1613,7 +1721,10 @@ async def spawn_sub_session(
             "content": base_prompt_snapshot,
         }
 
-    store = SessionStore()
+    # Reconstruction must not depend on the optional/best-effort autosave.
+    # These fields were authored for this child, not copied from an unrelated
+    # owner's unlocked persisted metadata snapshot.
+    checkpoint_metadata.update(metadata)
     unregister_checkpoint = await _install_transcript_checkpoint(
         child_session, store, sub_session_id, metadata, write_now=True
     )
@@ -1627,6 +1738,7 @@ async def spawn_sub_session(
     # while unwinding. The handler only confirms and logs an already-published
     # accumulator; it is NOT what makes the partial readable (see the note at
     # the top of this module -- the consumer often reads before this runs).
+    _handoff_child_setup(child_session)
     try:
         try:
             response = await child_session.execute(instruction)
@@ -1667,17 +1779,7 @@ async def spawn_sub_session(
     finally:
         # Unregister child cancellation token before cleanup
         # MUST run even if execution was cancelled (CancelledError) or failed
-        parent_cancellation.unregister_child(child_cancellation)
-        logger.debug(
-            f"Unregistered child cancellation token for sub-session {sub_session_id}"
-        )
-
-        # Notify display system we're exiting the nested session (for indentation)
-        if hasattr(display_system, "pop_nesting"):
-            display_system.pop_nesting()
-
-        # Cleanup child session
-        await child_session.cleanup()
+        await _close_child_setup()
 
     # Return response and session ID for potential multi-turn
     # Include enriched fields from orchestrator:complete hook
@@ -2025,6 +2127,7 @@ def _refresh_registered_agent_secrets(
     return result if changed else agents
 
 
+@_protect_child_setup
 async def resume_sub_session(
     sub_session_id: str,
     instruction: str,
@@ -2356,6 +2459,7 @@ async def resume_sub_session(
         approval_system=approval_system,
         display_system=display_system,
     )
+    _own_child_setup(child_session)
 
     # Register app-layer capabilities for resumed child session BEFORE initialization
     # Must be mounted before initialize() so modules with source: directives can be resolved
@@ -2419,7 +2523,25 @@ async def resume_sub_session(
 
     # Initialize session (mounts modules per config)
     # Now the resolver is available for loading modules with source: directives
+    from .session_checkpoint import install_session_checkpoint
+    from .session_media import install_session_media, mount_session_media
+
+    install_session_checkpoint(
+        child_session, store, session_id=sub_session_id,
+        metadata_factory=lambda: {
+            key: metadata[key] for key in (
+                "config", "parent_id", "trace_id", "agent_name", "child_span",
+                "created", "agent_overlay", "bundle_context",
+                "self_delegation_depth", "working_dir",
+                "caller_provider_preferences", SYSTEM_PROMPT_SNAPSHOT_KEY,
+            ) if key in metadata
+        },
+    )
+    install_session_media(
+        child_session, store, config=merged_config, restored_messages=transcript
+    )
     await child_session.initialize()
+    await mount_session_media(child_session)
 
     # Mention resolver - restore bundle mappings if available
     if bundle_context and bundle_context.get("mention_mappings"):
@@ -2643,6 +2765,7 @@ async def resume_sub_session(
         resume_parent_cancellation = parent_session.coordinator.cancellation
         resume_child_cancellation = child_session.coordinator.cancellation
         resume_parent_cancellation.register_child(resume_child_cancellation)
+        _undo_child_setup(lambda: resume_parent_cancellation.unregister_child(resume_child_cancellation))
         logger.debug(
             f"Registered child cancellation token for resumed sub-session {sub_session_id}"
         )
@@ -2669,6 +2792,7 @@ async def resume_sub_session(
     #
     # NOTE: the `except BaseException` below is synchronous only -- see the
     # spawn path's note. The cancellation path must stay free of any await.
+    _handoff_child_setup(child_session)
     try:
         try:
             response = await child_session.execute(instruction)
@@ -2709,17 +2833,9 @@ async def resume_sub_session(
     finally:
         # Unregister child cancellation token before cleanup
         # MUST run even if execution was cancelled (CancelledError) or failed
-        if (
-            resume_parent_cancellation is not None
-            and resume_child_cancellation is not None
-        ):
-            resume_parent_cancellation.unregister_child(resume_child_cancellation)
-            logger.debug(
-                f"Unregistered child cancellation token for resumed sub-session {sub_session_id}"
-            )
+        await _close_child_setup()
 
         # Cleanup child session
-        await child_session.cleanup()
 
     # Return response and same session ID
     # Include enriched fields from orchestrator:complete hook
