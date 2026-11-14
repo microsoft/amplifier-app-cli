@@ -30,6 +30,26 @@ POLICY = {
 }
 
 
+async def test_actual_core_public_neutral_mount_before_initialization(tmp_path):
+    from amplifier_core import AmplifierSession
+    actual = AmplifierSession(config={"session": {"orchestrator": "loop-basic", "context": "context-simple"}}, session_id="actual")
+    host = install_session_media(actual, SessionStore(tmp_path), config={})
+    original = Provider(host.capability)
+    try:
+        await actual.coordinator.mount("providers", original, name="selected-account")
+        await mount_session_media(actual)
+        wrapped = actual.coordinator.get("providers")["selected-account"]
+        assert wrapped is not original
+        assert wrapped is host.prepare_provider(original, alias="selected-account")
+        assert actual.coordinator.get_capability("cli.media.prepare_provider") == host.prepare_provider
+        assert actual.coordinator.get_capability("session.media") is None
+        assert host.capability.enabled is False
+        assert not (tmp_path / "actual/media").exists()
+    finally:
+        await actual.cleanup()
+        assert host.closed
+
+
 class Coordinator:
     def __init__(self, session_id, rows):
         self.session_id = session_id
