@@ -80,8 +80,14 @@ def install_session_hook_graph(session, *, owner, host_participants):
     for name in host_participants:
         graph.coordinator(name)
     session.coordinator.register_capability(HOOK_GRAPH_CAPABILITY, graph)
+    # Portable contributors (notably the mode tool) use the host-neutral key.
+    # Keep the CLI spelling as an alias to the exact same owner/factory.
+    transition_factory = lambda: transition_session_hook_graph(session)
     session.coordinator.register_capability(
-        "cli.media.graph_transition", lambda: transition_session_hook_graph(session)
+        "session.media.graph_transition", transition_factory
+    )
+    session.coordinator.register_capability(
+        "cli.media.graph_transition", transition_factory
     )
     if "loop-live" in participants:
         session.coordinator.register_capability(

@@ -116,6 +116,9 @@ async def test_actual_root_preinit_configure_late_participants_and_receipt(tmp_p
         assert created == [actual]
         bridge = actual.coordinator.get_capability("session.media.tool_post")
         assert isinstance(bridge, MediaHookBridge)
+        assert actual.coordinator.get_capability("session.media.graph_transition") is (
+            actual.coordinator.get_capability("cli.media.graph_transition")
+        )
         session_hooks(actual, "host.incremental_save").register(
             "tool:post", lambda e, d: HookResult(), priority=900, name="fixture-save")
         transitions = []
@@ -154,7 +157,7 @@ async def test_actual_root_preinit_configure_late_participants_and_receipt(tmp_p
             original = next(original for original, wrapper in host.wrappers.values() if wrapper is wrapped)
             await wrapped.request_budget(request)
             with pytest.raises(ValueError, match="active leases"):
-                with actual.coordinator.get_capability("cli.media.graph_transition")():
+                with actual.coordinator.get_capability("session.media.graph_transition")():
                     raise AssertionError("must not enter while counted candidate is live")
             assert await wrapped.complete(request) == "synthetic provider result"
             counted, sent = original.observed
