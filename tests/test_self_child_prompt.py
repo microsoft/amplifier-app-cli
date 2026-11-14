@@ -15,7 +15,7 @@ from amplifier_app_cli.session_spawner import (
     spawn_sub_session,
 )
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("legacy_session_doubles_without_media")]
 
 
 @pytest.fixture(scope="module")

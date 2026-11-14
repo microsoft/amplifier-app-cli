@@ -180,6 +180,32 @@ async def create_initialized_session(
     config: SessionConfig,
     console: "Console",
 ) -> InitializedSession:
+    """Retain setup ownership until the fully initialized result is returned."""
+    lifetime = []
+    try:
+        result = await _create_initialized_session(config, console, lifetime)
+    except BaseException:
+        cleanup_settled = True
+        try:
+            if lifetime:
+                try:
+                    await lifetime.pop().cleanup()
+                except BaseException:
+                    cleanup_settled = False
+                    logger.warning("Root setup cleanup failed", exc_info=True)
+        finally:
+            if config.root_state is not None and cleanup_settled:
+                config.root_state.release()
+                config.root_state = None
+        raise
+    return result
+
+
+async def _create_initialized_session(
+    config: SessionConfig,
+    console: "Console",
+    lifetime: list,
+) -> InitializedSession:
     """Create and fully initialize a session.
 
     This is the SINGLE entry point for all session creation.
@@ -310,6 +336,7 @@ async def create_initialized_session(
             display_system=display_system,
             console=console,
         )
+        lifetime.append(session)
     except BaseException:
         # No context was created successfully, so no session save is possible;
         # release the just-acquired writer rather than leave a dead lock.
@@ -719,6 +746,7 @@ async def _create_bundle_session(
                 # Abandon the first coordinator and its session-bound resources
                 # before constructing a new one. Never carry live closures or
                 # prepared request state into the self-healed session.
+                constructing = None
                 await session.cleanup()
                 # Retry once - if it fails again, it's a real error
                 session = await prepared_bundle.create_session(
@@ -750,11 +778,14 @@ async def _create_bundle_session(
         core_logger.setLevel(original_level)
 
     # Step 5: Register mention handling (wrap foundation's resolver)
-    await mount_session_media(session)
-    register_mention_handling(session)
-
-    # Step 6: Register session spawning
-    register_session_spawning(session, prepared_bundle=prepared_bundle)
+    try:
+        await mount_session_media(session)
+        register_mention_handling(session)
+        # Step 6: Register session spawning
+        register_session_spawning(session, prepared_bundle=prepared_bundle)
+    except BaseException:
+        await session.cleanup()
+        raise
 
     return session
 

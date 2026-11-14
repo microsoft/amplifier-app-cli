@@ -125,6 +125,60 @@ class TestSubprocessRouting:
         assert result["turn_count"] == 1
         assert result["metadata"] == {}
 
+    async def test_explicit_media_payload_is_child_owned_drop_only(
+        self, monkeypatch, isolated_home
+    ):
+        from pathlib import Path
+
+        policy = {
+            "enabled": True, "max_bytes": 1024, "max_pixels": 100,
+            "max_images": 2, "retention": "durable",
+        }
+        parent = _make_parent_session(config={"session": {}, "session_media": policy})
+        fake = _make_subprocess_runner_module()
+        # Preserve the real public parameter contract rather than a **kwargs
+        # mock that would hide an unpaired Foundation dependency.
+        import inspect
+        fake.run_session_in_subprocess.__signature__ = inspect.Signature([
+            inspect.Parameter("media", inspect.Parameter.KEYWORD_ONLY, default=None)
+        ])
+        monkeypatch.setitem(sys.modules, "amplifier_foundation.subprocess_runner", fake)
+        await spawn_sub_session(
+            agent_name="test", instruction="synthetic", parent_session=parent,
+            agent_configs={"test": {}}, sub_session_id="media-child",
+            use_subprocess=True,
+        )
+        payload = fake.run_session_in_subprocess.call_args.kwargs["media"]
+        assert set(payload) == {"v", "session_id", "session_directory", "policy"}
+        assert payload["session_id"] == "media-child"
+        assert payload["policy"] == {
+            "max_bytes": 1024, "max_pixels": 100, "max_images": 2, "retention": "drop",
+        }
+        directory = Path(payload["session_directory"])
+        assert directory.is_absolute()
+        assert directory.name == "media-child"
+        assert directory.is_dir()
+        assert "media" not in parent.config
+        assert "enabled" not in payload["policy"]
+
+    async def test_unpaired_subprocess_media_api_refuses_before_reservation(
+        self, monkeypatch, isolated_home
+    ):
+        from amplifier_app_cli.session_store import SessionStore
+        parent = _make_parent_session(config={"session": {}, "session_media": {
+            "max_bytes": 1024, "max_pixels": 100, "max_images": 2,
+        }})
+        fake = _make_subprocess_runner_module()
+        monkeypatch.setitem(sys.modules, "amplifier_foundation.subprocess_runner", fake)
+        with pytest.raises(RuntimeError, match="does not support"):
+            await spawn_sub_session(
+                agent_name="test", instruction="fixture", parent_session=parent,
+                agent_configs={"test": {}}, sub_session_id="unpaired-child",
+                use_subprocess=True,
+            )
+        fake.run_session_in_subprocess.assert_not_called()
+        assert not (SessionStore().base_dir / "unpaired-child").exists()
+
     async def test_self_subprocess_warns_that_base_prompt_cannot_inherit(
         self, monkeypatch, caplog
     ):

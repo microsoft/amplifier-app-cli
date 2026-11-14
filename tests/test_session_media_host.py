@@ -1,11 +1,13 @@
 """Public host binding/projection controls using synthetic candidate Foundation."""
 
 import base64
+import asyncio
 import copy
 import hashlib
 import io
 import os
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -309,3 +311,59 @@ async def test_computer_overlay_frozen_before_count_witness_checked_before_send(
         assert request.messages[0].content == "canonical"
     finally:
         await host.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Candidate store is POSIX-only")
+@pytest.mark.parametrize("failure", [RuntimeError("fixture"), asyncio.CancelledError()])
+async def test_public_spawn_post_initialize_setup_failure_releases_media_lock(
+    tmp_path, monkeypatch, failure
+):
+    from amplifier_app_cli.session_spawner import spawn_sub_session
+    from amplifier_foundation.session.media import MediaPolicy, SessionMediaStore
+    from amplifier_foundation.session.checkpoint import verified_checkpoint_refs
+
+    native = SessionStore(tmp_path)
+    child = session("child", [])
+    child.coordinator.mount = AsyncMock()
+    child.coordinator.cancellation = MagicMock()
+    child.coordinator.collect_contributions = AsyncMock(return_value=[])
+    child.initialize = AsyncMock()
+    child.execute = AsyncMock()
+    child.cleanup = AsyncMock(side_effect=child.coordinator.cleanup)
+    parent = MagicMock()
+    parent.session_id, parent.trace_id, parent.loader = "parent", "trace", None
+    parent.config = {"session": {"orchestrator": "loop-basic"}, "session_media": POLICY}
+    parent.coordinator.config = {}
+    parent.coordinator.get = MagicMock(return_value=None)
+    parent.coordinator.get_capability = MagicMock(return_value=None)
+    parent.coordinator.cancellation = MagicMock()
+
+    with (
+        patch("amplifier_app_cli.session_spawner.AmplifierSession", return_value=child),
+        patch("amplifier_app_cli.session_store.SessionStore", return_value=native),
+        patch("amplifier_app_cli.paths.create_foundation_resolver"),
+        patch("amplifier_app_cli.session_spawner._expand_system_instruction",
+              AsyncMock(side_effect=failure)),
+        pytest.raises(type(failure)),
+    ):
+        await spawn_sub_session(
+            agent_name="named", instruction="fixture", parent_session=parent,
+            agent_configs={"named": {"instruction": "render before execute"}},
+            sub_session_id="child",
+        )
+    child.initialize.assert_awaited_once()
+    child.execute.assert_not_awaited()
+    child.cleanup.assert_awaited_once()
+    parent.coordinator.display_system.push_nesting.assert_called_once()
+    parent.coordinator.display_system.pop_nesting.assert_called_once()
+    parent.coordinator.cancellation.unregister_child.assert_called_once_with(
+        child.coordinator.cancellation
+    )
+    assert not native._media_stores
+    # A leaked writer descriptor would refuse a fresh independent coordinator.
+    reopened = SessionMediaStore(
+        tmp_path / "child" / "media", "child",
+        policy=MediaPolicy(**{key: value for key, value in POLICY.items() if key != "enabled"}),
+        checkpoint_verifier=verified_checkpoint_refs,
+    )
+    reopened.close()

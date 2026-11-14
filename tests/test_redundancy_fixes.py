@@ -60,10 +60,13 @@ class TestSessionRunnerRedundantSetLevel:
         from amplifier_app_cli import session_runner
 
         source = _get_function_source(session_runner, "_create_bundle_session")
-        handlers = _get_except_handlers(source, "ModuleValidationError")
+        # Resource cleanup also covers cancellation and other init failures.
+        handlers = _get_except_handlers(source, "BaseException")
 
-        assert len(handlers) == 1, "Expected exactly one ModuleValidationError handler"
-        handler = handlers[0]
+        handler = next(
+            node for node in handlers
+            if "display_validation_error" in ast.unparse(node)
+        )
 
         # The first statement in the except block should NOT be a setLevel call.
         # It should be an `if` statement (the `if not display_validation_error(...)` guard).

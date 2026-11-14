@@ -1,6 +1,7 @@
 """Tests for session_runner module - unified session initialization."""
 
 import logging
+import asyncio
 import json
 import sys as _sys
 from decimal import Decimal
@@ -744,6 +745,44 @@ def _configurator_patches(mock_sess):
         patch("amplifier_app_cli.ui.CLIApprovalSystem"),
         patch("amplifier_app_cli.ui.CLIDisplaySystem"),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["get_messages", "set_messages", "configurator"])
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_root_retains_cleanup_through_last_initialization_await(stage, cancelled, tmp_path):
+    from contextlib import ExitStack
+    from types import SimpleNamespace
+    failure = asyncio.CancelledError() if cancelled else RuntimeError("synthetic setup")
+    root = MagicMock()
+    cfg = _make_session_config(
+        session_id="root", root_state=root,
+        initial_transcript=[{"role": "user", "content": "saved"}] if stage != "configurator" else None,
+    )
+    selected = _make_mock_session()
+    selected.cleanup = AsyncMock()
+    context = SimpleNamespace(get_messages=AsyncMock(return_value=[]), set_messages=AsyncMock())
+    if stage != "configurator":
+        getattr(context, stage).side_effect = failure
+    selected.coordinator.get.return_value = context
+    configurator = MagicMock()
+    configurator.apply_saved_settings = AsyncMock(side_effect=failure if stage == "configurator" else None)
+    with ExitStack() as stack:
+        for patcher in _configurator_patches(selected):
+            stack.enter_context(patcher)
+        stack.enter_context(patch("amplifier_app_cli.session_store.SessionStore", return_value=MagicMock()))
+        stack.enter_context(patch("amplifier_foundation.configurator.SessionConfigurator", return_value=configurator))
+        # Existing ordinary configurator errors are deliberately best effort;
+        # cancellation and failed restoration must instead unwind setup.
+        if stage == "configurator" and not cancelled:
+            result = await create_initialized_session(cfg, MagicMock())
+            selected.cleanup.assert_not_awaited()
+            await result.cleanup()
+        else:
+            with pytest.raises(type(failure)):
+                await create_initialized_session(cfg, MagicMock())
+        selected.cleanup.assert_awaited_once()
+        root.release.assert_called_once()
 
 
 @pytest.mark.asyncio
