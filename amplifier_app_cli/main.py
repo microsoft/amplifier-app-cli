@@ -2758,7 +2758,15 @@ class CommandProcessor:
                     parsed_value = value  # Keep as string
 
         try:
-            from .session_hooks import transition_session_hook_graph
+            from .session_hooks import CLIHookGraph, HOOK_GRAPH_CAPABILITY, transition_session_hook_graph
+            graph = self.session.coordinator.get_capability(HOOK_GRAPH_CAPABILITY)
+            if isinstance(graph, CLIHookGraph):
+                current_value = configurator.config_get(path)
+                # A no-op must not retire a counted request's generation. Keep
+                # bool/int and int/float distinct: config_set preserves those
+                # types even where Python's value equality would merge them.
+                if type(current_value) is type(parsed_value) and current_value == parsed_value:
+                    return f"Already set {path} = {parsed_value!r}"
             with transition_session_hook_graph(self.session):
                 configurator.config_set(path, parsed_value)
             return f"\u2713 Set {path} = {parsed_value!r}"

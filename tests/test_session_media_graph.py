@@ -181,6 +181,25 @@ async def test_actual_root_preinit_configure_late_participants_and_receipt(tmp_p
             )
             assert actual.config == unchanged
             assert bridge.graph_receipt is before_typo and bridge.validate_receipt(before_typo)
+            # The real configurator must suspend the configured occurrence and
+            # restore its exact media adapter, not manufacture a fresh raw mount.
+            assert "Disabled" in await processor._handle_config_toggle(
+                "providers", "disable", "fixture-provider"
+            )
+            disabled_receipt = bridge.graph_receipt
+            assert bridge.validate_receipt(disabled_receipt)
+            assert not bridge.validate_receipt(before_typo)
+            assert "fixture-provider" not in actual.coordinator.get("providers")
+            assert "Enabled" in await processor._handle_config_toggle(
+                "providers", "enable", "fixture-provider"
+            )
+            assert actual.coordinator.get("providers")["fixture-provider"] is wrapped
+            assert bridge.validate_receipt(bridge.graph_receipt)
+            assert not bridge.validate_receipt(disabled_receipt)
+            await wrapped.request_budget(request)
+            assert await wrapped.complete(request) == "synthetic provider result"
+            assert original.observed[-1][1] == [hashlib.sha256(payload).hexdigest()]
+            assert await context.get_messages() == before
         assert await processor._handle_mode("synthetic on") == "Mode: synthetic"
         next_receipt = bridge.graph_receipt
         assert next_receipt is not receipt
@@ -191,6 +210,9 @@ async def test_actual_root_preinit_configure_late_participants_and_receipt(tmp_p
             await wrapped.request_budget(request)
             assert "Already" in await processor._handle_mode("synthetic on")
             assert "Not in" in await processor._handle_mode("different off")
+            assert "Already set" in await processor._handle_config_set("fixture_mode", "synthetic")
+            assert "active leases" in await processor._handle_config_set("fixture_mode", "different")
+            assert actual.config["fixture_mode"] == "synthetic"
             assert bridge.graph_receipt is next_receipt and bridge.validate_receipt(next_receipt)
             assert await wrapped.complete(request) == "synthetic provider result"
             assert original.observed[-1][1] == [hashlib.sha256(payload).hexdigest()]
