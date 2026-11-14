@@ -24,6 +24,8 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "amplifier-module-context-simple" },
+    { name = "amplifier-module-hooks-mode" },
+    { name = "amplifier-module-tool-mode" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -31,7 +33,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "amplifier-core", specifier = "==2.0.2" },
-    { name = "amplifier-foundation", extras = ["media"], git = "https://github.com/microsoft/amplifier-foundation?rev=a03ffd439c8a159db4f75297b1c8cd2dc95c0203" },
+    { name = "amplifier-foundation", extras = ["media"], git = "https://github.com/microsoft/amplifier-foundation?rev=fd32d2f6ab41d153790b398ea3ee4c513972f968" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "filelock", specifier = ">=3.29.6" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
@@ -47,6 +49,8 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "amplifier-module-context-simple", git = "https://github.com/microsoft/amplifier-module-context-simple?rev=main" },
+    { name = "amplifier-module-hooks-mode", git = "https://github.com/microsoft/amplifier-bundle-modes?subdirectory=modules%2Fhooks-mode&rev=2b0e82a1ab8cd161336f6ae7912fb9a4fce4c7e9" },
+    { name = "amplifier-module-tool-mode", git = "https://github.com/microsoft/amplifier-bundle-modes?subdirectory=modules%2Ftool-mode&rev=2b0e82a1ab8cd161336f6ae7912fb9a4fce4c7e9" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
 ]
@@ -74,7 +78,7 @@ wheels = [
 [[package]]
 name = "amplifier-foundation"
 version = "1.0.0"
-source = { git = "https://github.com/microsoft/amplifier-foundation?rev=a03ffd439c8a159db4f75297b1c8cd2dc95c0203#a03ffd439c8a159db4f75297b1c8cd2dc95c0203" }
+source = { git = "https://github.com/microsoft/amplifier-foundation?rev=fd32d2f6ab41d153790b398ea3ee4c513972f968#fd32d2f6ab41d153790b398ea3ee4c513972f968" }
 dependencies = [
     { name = "amplifier-core" },
     { name = "filelock" },
@@ -90,6 +94,19 @@ media = [
 name = "amplifier-module-context-simple"
 version = "1.0.0"
 source = { git = "https://github.com/microsoft/amplifier-module-context-simple?rev=main#db641363013ff906b656f49498a87ab01f5c506f" }
+
+[[package]]
+name = "amplifier-module-hooks-mode"
+version = "1.0.0"
+source = { git = "https://github.com/microsoft/amplifier-bundle-modes?subdirectory=modules%2Fhooks-mode&rev=2b0e82a1ab8cd161336f6ae7912fb9a4fce4c7e9#2b0e82a1ab8cd161336f6ae7912fb9a4fce4c7e9" }
+dependencies = [
+    { name = "pyyaml" },
+]
+
+[[package]]
+name = "amplifier-module-tool-mode"
+version = "1.0.0"
+source = { git = "https://github.com/microsoft/amplifier-bundle-modes?subdirectory=modules%2Ftool-mode&rev=2b0e82a1ab8cd161336f6ae7912fb9a4fce4c7e9#2b0e82a1ab8cd161336f6ae7912fb9a4fce4c7e9" }
 
 [[package]]
 name = "annotated-types"

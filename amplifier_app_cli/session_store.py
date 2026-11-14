@@ -11,6 +11,7 @@ Uses amplifier_foundation utilities for:
 """
 
 import logging
+import os
 import shutil
 from collections.abc import Callable
 from datetime import UTC
@@ -89,21 +90,119 @@ class SessionStore:
     - Files created: transcript.jsonl, metadata.json, config.md
     """
 
-    def __init__(self, base_dir: Path | None = None):
+    def __init__(self, base_dir: Path | None = None, *, canonical_binding=None):
         """Initialize with base directory for sessions.
 
         Args:
             base_dir: Base directory for session storage.
                      Defaults to ~/.amplifier/projects/<project-slug>/sessions/
+            canonical_binding: The actual live Foundation VersionedSessionBinding
+                already allocated by the caller. Never creates or migrates one.
         """
         if base_dir is None:
             project_slug = get_project_slug()
             base_dir = get_amplifier_home() / "projects" / project_slug / "sessions"
+        self._canonical_binding = canonical_binding
+        # Retain the original auxiliary-publication failure, not an instruction
+        # to replay. The binding retains its actual commit/uncertain intent;
+        # owner-driven reconciliation is separate from this thin save boundary.
+        self.versioned_publication_failure: BaseException | None = None
+        if canonical_binding is not None:
+            from amplifier_foundation.session.transcript_lifetime import VersionedSessionBinding
+
+            if type(canonical_binding) is not VersionedSessionBinding:
+                raise TypeError("Expected the actual live VersionedSessionBinding")
+            canonical_binding.check()  # Includes process ownership, before any write.
+            base_dir = Path(base_dir).absolute()
+            if base_dir / canonical_binding.session_id != canonical_binding.directory:
+                raise ValueError("Versioned binding directory does not match base_dir")
+            # The caller already created this private namespace exclusively.
+            # Do not mkdir, resolve aliases, open a writer or guess enrollment.
+        else:
+            base_dir.mkdir(parents=True, exist_ok=True)
         self.base_dir = base_dir
-        self.base_dir.mkdir(parents=True, exist_ok=True)
         # Live host-only objects. Never serialize a media store, receipt,
         # prepared request or parent capability into metadata.
         self._media_stores: dict[str, object] = {}
+
+    def _refuse_legacy_write(self) -> None:
+        if self._canonical_binding is not None:
+            raise ValueError("A versioned binding requires explicit versioned publication")
+
+    def _versioned_binding(self, session_id: str, expected):
+        from amplifier_foundation.session.transcript_v2 import CommittedPrefix
+
+        binding = self._canonical_binding
+        if binding is None:
+            raise ValueError("No live versioned binding was supplied")
+        binding.check()
+        if (session_id != binding.session_id
+                or self.base_dir.absolute() / session_id != binding.directory):
+            raise ValueError("Versioned session identity or directory mismatch")
+        if type(expected) is not CommittedPrefix or expected.session_id != session_id:
+            raise TypeError("Expected an exact session-bound CommittedPrefix selector")
+        if self.versioned_publication_failure is not None:
+            raise RuntimeError(
+                "Versioned publication requires owner reconciliation"
+            ) from self.versioned_publication_failure
+        return binding
+
+    def save_versioned(
+        self, session_id: str, transcript: list, metadata: dict, *,
+        expected, operation_id: str, admit: Callable[[], None],
+    ):
+        """Publish caller-selected full canonical rows through the live owner.
+
+        ``expected``, ``operation_id`` and actual asset admission are mandatory.
+        No suffix is inferred and no effect is retried. Metadata failure after
+        commit leaves the exact new prefix in Foundation and latches this store
+        for explicit owner reconciliation; it never rolls the transcript back.
+        """
+        binding = self._versioned_binding(session_id, expected)
+        if not callable(admit):
+            raise TypeError("Explicit asset admission is required")
+        rows = []
+        for message in transcript:
+            original = message if isinstance(message, dict) else message.model_dump()
+            if original["role"] not in ("system", "developer"):
+                rows.append(sanitize_message(message))
+        media_store = self._media_stores.get(session_id)
+        ack = None
+        try:
+            with binding.publication() as check:
+                ack = binding.rewrite(
+                    rows, expected=expected, operation_id=operation_id,
+                    admit=admit, media_store=media_store,
+                )
+                check()
+                self._save_metadata(binding.directory, metadata)
+                check()
+                # This slot belongs to the binding, not this operation. Capture
+                # while publication is held: a successor may replace it as soon
+                # as the real context exits, before this caller returns.
+                result = binding.last_receipt if media_store is not None else ack
+        except BaseException as error:
+            if ack is not None:
+                self.versioned_publication_failure = error
+            raise
+        # The real owner and checkpoint context have both exited successfully.
+        return result
+
+    def acknowledge_versioned(self, session_id: str, *, expected):
+        """Acknowledge the selected commit, without writing or legacy routing."""
+        binding = self._versioned_binding(session_id, expected)
+        media_store = self._media_stores.get(session_id)
+        if media_store is None:
+            raise ValueError("Versioned acknowledgement requires a bound media store")
+        receipt = None
+        try:
+            with binding.publication():
+                receipt = binding.checkpoint(expected=expected, media_store=media_store)
+        except BaseException as error:
+            if receipt is not None:
+                self.versioned_publication_failure = error
+            raise
+        return receipt
 
     def bind_media_store(self, session_id: str, media_store) -> None:
         """Bind this host's saves to one fresh session-owned media store."""
@@ -127,6 +226,7 @@ class SessionStore:
         A changed source refuses rather than recovering a backup or replaying a
         tool. Every successful bound save must refresh this live receipt.
         """
+        self._refuse_legacy_write()
         media_store = self._media_stores.get(session_id)
         if media_store is None:
             return None
@@ -160,6 +260,7 @@ class SessionStore:
             ValueError: If session_id is empty or invalid
             IOError: If unable to write files after retries
         """
+        self._refuse_legacy_write()
         if not session_id or not session_id.strip():
             raise ValueError("session_id cannot be empty")
 
@@ -185,6 +286,7 @@ class SessionStore:
         target can never replace an existing independent conversation.
         """
 
+        self._refuse_legacy_write()
         if not session_id or not session_id.strip():
             raise ValueError("session_id cannot be empty")
         if "/" in session_id or "\\" in session_id or session_id in (".", ".."):
@@ -196,6 +298,7 @@ class SessionStore:
     def save_new(self, session_id: str, transcript: list, metadata: dict) -> None:
         """Save a new session without allowing an existing directory to change."""
 
+        self._refuse_legacy_write()
         session_dir = self.reserve_session(session_id)
         try:
             SessionHistoryStore(session_dir).save(
@@ -216,6 +319,7 @@ class SessionStore:
             session_dir: Directory for this session
             transcript: List of message objects
         """
+        self._refuse_legacy_write()
         SessionHistoryStore(session_dir).save_messages(
             transcript, sanitizer=sanitize_message
         )
@@ -268,13 +372,17 @@ class SessionStore:
         return SessionHistoryStore(session_dir).load_metadata()
 
     def has_transcript(self, session_id: str) -> bool:
-        """Distinguish a native history (including backup) from log-only folders."""
+        """Recognize native history, not its health, without legacy fallback.
+
+        An explicit damaged V2 namespace remains a transcript candidate; load
+        dispatches to Foundation's committed-prefix reader and must refuse it.
+        """
         if not self.exists(session_id):
             return False
         session_dir = self.base_dir / session_id
         return any(
-            (session_dir / name).exists()
-            for name in ("transcript.jsonl", "transcript.jsonl.backup")
+            os.path.lexists(session_dir / name)
+            for name in ("transcript.v2", "transcript.jsonl", "transcript.jsonl.backup")
         )
 
     def update_metadata(self, session_id: str, updates: dict) -> dict:

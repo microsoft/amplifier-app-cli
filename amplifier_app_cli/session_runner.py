@@ -152,6 +152,12 @@ class SessionConfig:
     # receive a shared writer handle.
     root_state: Any = None
 
+    # Process-local prospective cohort opt-in, never a mount-plan/settings key.
+    # The caller creates/reacquires the real Foundation owner before any native
+    # session FD is opened. A serialized prefix or Boolean cannot opt in.
+    canonical_binding: Any = None
+    canonical_admit: Any = None
+
     @property
     def is_resume(self) -> bool:
         """True if this is resuming an existing session."""
@@ -168,12 +174,30 @@ class InitializedSession:
     store: SessionStore = field(default_factory=SessionStore)
     configurator: Any = None
     root_state: Any = None
+    _cleanup_attempted: bool = field(default=False, init=False, repr=False)
+    _cleanup_error: BaseException | None = field(default=None, init=False, repr=False)
 
     async def cleanup(self, *, release_ownership: bool = True):
         """Clean up session resources."""
-        await self.session.cleanup()
+        if self._cleanup_attempted:
+            if self._cleanup_error is not None:
+                raise self._cleanup_error
+            return
+        self._cleanup_attempted = True
+        from .session_media import cleanup_session_media_owner
+        try:
+            await cleanup_session_media_owner(self.session)
+        except BaseException as error:
+            self._cleanup_error = error
+            raise
         if self.root_state is not None and release_ownership:
             self.root_state.release()
+        if self.config.canonical_binding is not None and release_ownership:
+            self.config.canonical_binding.close()
+            _ROOT_BINDING_OWNERS.pop(self.config.canonical_binding, None)
+
+
+_ROOT_BINDING_OWNERS: dict[Any, Any] = {}
 
 
 class _RootSetupOwner:
@@ -184,6 +208,7 @@ class _RootSetupOwner:
         self.attempted = False
         self.settled = False
         self.cleanup_error = None
+        self.canonical_binding = None
 
     def own(self, session):
         if self.session is session:
@@ -201,7 +226,8 @@ class _RootSetupOwner:
             return self.settled  # Never replay failed or cancelled cleanup.
         self.attempted = True
         try:
-            await self.session.cleanup()
+            from .session_media import cleanup_session_media_owner
+            await cleanup_session_media_owner(self.session)
         except BaseException as error:
             self.cleanup_error = error
             try:
@@ -230,6 +256,9 @@ async def create_initialized_session(
         if config.root_state is not None and cleanup_settled:
             config.root_state.release()
             config.root_state = None
+        if lifetime.canonical_binding is not None and cleanup_settled:
+            lifetime.canonical_binding.close()
+            _ROOT_BINDING_OWNERS.pop(lifetime.canonical_binding, None)
         raise
     return result
 
@@ -289,7 +318,31 @@ async def _create_initialized_session(
                 auto_init_from_env(console)
 
     # Step 2: Generate session ID if not provided
-    session_id = config.session_id or str(uuid.uuid4())
+    session_id = config.session_id or (
+        config.canonical_binding.session_id
+        if config.canonical_binding is not None else str(uuid.uuid4())
+    )
+    if config.canonical_binding is not None:
+        from amplifier_foundation.session.transcript_lifetime import VersionedSessionBinding
+        binding = config.canonical_binding
+        if type(binding) is not VersionedSessionBinding or binding.session_id != session_id:
+            raise ValueError("A real session-bound prospective transcript owner is required")
+        if not callable(config.canonical_admit) or config.root_state is not None:
+            raise ValueError("Prospective ownership requires explicit admission and no legacy writer")
+        binding.check()
+        if binding in _ROOT_BINDING_OWNERS:
+            raise RuntimeError("Prospective source already has a live root cleanup owner")
+        _ROOT_BINDING_OWNERS[binding] = lifetime
+        lifetime.canonical_binding = binding
+        config.session_id = session_id
+        # The prospective lease is the source owner, not proof of maintenance
+        # exclusion for old legacy writers and not a shared-root takeover.
+        config.shared_root = False
+        committed_rows = binding.load_messages()
+        if config.initial_transcript is None and committed_rows:
+            config.initial_transcript = committed_rows
+        elif config.is_resume and config.initial_transcript != committed_rows:
+            raise ValueError("Prospective resume rows differ from the selected committed prefix")
 
     # Acquire the one Foundation-owned writer capability before constructing
     # provider context.  A child has an inherited, different root ID and is
@@ -461,7 +514,8 @@ async def _finish_initialized_session(session, config, session_id, console, cwd)
         )
 
         try:
-            session_dir = SessionStore().base_dir / session_id
+            native = session.coordinator.get_capability("cli.session_store")
+            session_dir = (native if native is not None else SessionStore()).base_dir / session_id
             from amplifier_foundation.session.history import SessionHistoryStore
 
             metadata = SessionHistoryStore(session_dir).load_metadata()
@@ -723,7 +777,10 @@ async def _create_bundle_session(
     from .session_checkpoint import install_session_checkpoint
     from .session_media import install_session_media, mount_session_media
 
-    store = SessionStore()
+    store = (
+        SessionStore(config.canonical_binding.directory.parent, canonical_binding=config.canonical_binding)
+        if config.canonical_binding is not None else SessionStore()
+    )
     lifetime = lifetime if lifetime is not None else _RootSetupOwner()
 
     async def before_initialize(candidate: AmplifierSession) -> None:
@@ -746,6 +803,7 @@ async def _create_bundle_session(
             session_id=session_id,
             bundle=config.bundle_name,
             root_state=config.root_state,
+            canonical_admit=config.canonical_admit,
         )
         install_session_media(
             candidate, store, config=config.config,
@@ -900,6 +958,8 @@ def register_session_spawning(
         self_delegation_depth: int = 0,
         session_metadata: dict | None = None,
         use_subprocess: bool = False,
+        canonical_binding: Any = None,
+        canonical_admit: Any = None,
     ) -> dict:
         return await spawn_sub_session(
             agent_name=agent_name,
@@ -915,6 +975,8 @@ def register_session_spawning(
             self_delegation_depth=self_delegation_depth,
             session_metadata=session_metadata,
             use_subprocess=use_subprocess,
+            canonical_binding=canonical_binding,
+            canonical_admit=canonical_admit,
         )
 
     async def resume_capability(
@@ -922,6 +984,8 @@ def register_session_spawning(
         instruction: str,
         provider_preferences: list | None = None,
         model_role: str | list[str] | None = None,
+        canonical_binding: Any = None,
+        canonical_admit: Any = None,
     ) -> dict:
         # Mirrors spawn_capability's provider_preferences: a delegate pinned
         # to a provider at spawn must stay pinned on every subsequent leg.
@@ -930,8 +994,11 @@ def register_session_spawning(
         return await resume_sub_session(
             sub_session_id=sub_session_id,
             instruction=instruction,
+            parent_session=session,
             provider_preferences=provider_preferences,
             model_role=model_role,
+            canonical_binding=canonical_binding,
+            canonical_admit=canonical_admit,
         )
 
     session.coordinator.register_capability("session.spawn", spawn_capability)

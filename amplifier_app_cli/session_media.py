@@ -78,7 +78,7 @@ class CLISessionMedia:
     """One coordinator's ownership, never a parent closure or durable authority."""
 
     def __init__(self, session: Any, native: SessionStore, policy: dict | None) -> None:
-        from amplifier_foundation.session.checkpoint import verified_checkpoint_refs
+        from amplifier_foundation.session.checkpoint import verified_media_checkpoint_refs
         from amplifier_foundation.session.media import (
             MediaPolicy, NeutralSessionMediaStore, SessionMediaStore, bind_session_media,
         )
@@ -89,6 +89,9 @@ class CLISessionMedia:
         self.generation = uuid.uuid4().hex
         self.wrappers: dict[int, tuple[Any, Any]] = {}
         self.closed = False
+        self.cleanup_attempted = False
+        self.cleanup_settled = False
+        self.cleanup_error: BaseException | None = None
         self.durable = policy is not None and policy.get("enabled", True) and os.name == "posix"
         selected = {key: value for key, value in (policy or {}).items() if key != "enabled"}
         # SessionMediaStore validates no-follow path components, private mode,
@@ -96,7 +99,7 @@ class CLISessionMedia:
         root = native.base_dir.absolute() / self.session_id / "media"
         self.store = SessionMediaStore(
             root, self.session_id, policy=MediaPolicy(**selected),
-            checkpoint_verifier=verified_checkpoint_refs,
+            checkpoint_verifier=verified_media_checkpoint_refs,
             policy_verifier=self._source_policy,
         ) if self.durable else NeutralSessionMediaStore(self.session_id)
         try:
@@ -111,7 +114,7 @@ class CLISessionMedia:
                 session.coordinator.register_capability(
                     "computer_use.media_policy", self._computer_policy
                 )
-            session.coordinator.register_cleanup(self.close)
+            session.coordinator.register_cleanup(self._cleanup_for_core)
         except BaseException:
             native.unbind_media_store(self.session_id, self.store)
             self.store.close()
@@ -233,6 +236,26 @@ class CLISessionMedia:
                     await coordinator.mount("providers", wrapped, name=alias)
 
     async def close(self) -> None:
+        if self.cleanup_attempted:
+            return  # Never replay an uncertain physical cleanup.
+        self.cleanup_attempted = True
+        try:
+            await self._close()
+        except BaseException as error:
+            self.cleanup_error = error
+            raise
+        self.cleanup_settled = True
+
+    async def _cleanup_for_core(self) -> None:
+        # Core logs and swallows callback exceptions. Keep the original locally
+        # without feeding private provider/store exception chains to that sink;
+        # the explicit CLI cleanup boundary checks settlement and propagates it.
+        try:
+            await self.close()
+        except BaseException:
+            return
+
+    async def _close(self) -> None:
         if self.closed:
             return
         self.closed = True
@@ -261,6 +284,19 @@ class CLISessionMedia:
         self.wrappers.clear()
 
 
+async def cleanup_session_media_owner(session) -> None:
+    """Require CLI-owned settlement even when Core logs callback failures."""
+    getter = getattr(session.coordinator, "get_capability", None)
+    host = getter(_HOST) if callable(getter) and not inspect.iscoroutinefunction(getter) else None
+    await session.cleanup()
+    if isinstance(host, CLISessionMedia) and not host.cleanup_attempted:
+        await host.close()
+    if isinstance(host, CLISessionMedia) and not host.cleanup_settled:
+        if host.cleanup_error is not None:
+            raise host.cleanup_error
+        raise RuntimeError("CLI session media cleanup did not settle")
+
+
 def install_session_media(
     session: Any, native: SessionStore, *, config: Mapping | None = None,
     restored_messages: list | None = None,
@@ -272,11 +308,18 @@ def install_session_media(
     session.coordinator.register_capability(_PREPARE, host.prepare_provider)
     if restored_messages is not None and host.durable:
         try:
-            native.acknowledge_saved(session.session_id, restored_messages)
+            binding = vars(native).get("_canonical_binding")
+            if binding is not None:
+                if restored_messages != native.load(session.session_id)[0]:
+                    raise ValueError("Prospective restored messages differ from the selected source")
+                native.acknowledge_versioned(session.session_id, expected=binding.expected)
+            else:
+                native.acknowledge_saved(session.session_id, restored_messages)
         except BaseException:
             # No resumed pixels may be prepared from a stale/serialized receipt.
-            native.unbind_media_store(session.session_id, host.store)
-            host.store.close()
+            # The registered owner and outer construction guard perform the
+            # single witnessed cleanup. A raw close here could mask this ACK
+            # failure and be replayed by Core's subsequent cleanup callback.
             raise
     return host
 

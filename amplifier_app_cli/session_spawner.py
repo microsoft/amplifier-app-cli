@@ -34,17 +34,21 @@ SYSTEM_PROMPT_SNAPSHOT_KEY = "base-prompt-snapshot"
 SYSTEM_PROMPT_SNAPSHOT_SCHEMA = 1
 
 _SETUP_SESSION: ContextVar[list | None] = ContextVar("cli_child_setup", default=None)
+# Failed cleanup is retained for the caller's explicit diagnosis, never replayed
+# or evicted (which could release a still-live source lease).
+_RETAINED_CHILD_CLEANUPS: dict[Any, tuple[Any, Any, BaseException]] = {}
+_CHILD_BINDING_OWNERS: dict[Any, list] = {}
 
 
 def _protect_child_setup(operation):
-    """Close construction resources until the existing execution finally owns them.
+    """Own construction and execution resources for one continuous lifetime.
 
     The slot is per invocation/task, including nested spawns. It is never a
     coordinator capability or inherited child authority.
     """
     @wraps(operation)
     async def protected(*args, **kwargs):
-        slot = []
+        slot = [None, [], None]
         token = _SETUP_SESSION.set(slot)
         try:
             return await operation(*args, **kwargs)
@@ -60,7 +64,48 @@ def _own_child_setup(session):
     slot = _SETUP_SESSION.get()
     if slot is None:
         raise RuntimeError("Child construction has no cleanup owner")
-    slot[:] = [session, []]
+    if slot[0] is not None:
+        raise RuntimeError("Child construction already has a session")
+    slot[0] = session
+
+
+def _validate_child_binding(binding, admit, session_id, parent_session=None):
+    """Accept only a caller-supplied live owner, never serialized config."""
+    if binding is None:
+        if admit is not None:
+            raise ValueError("Asset admission requires an explicit child binding")
+        return
+    from amplifier_foundation.session.transcript_lifetime import VersionedSessionBinding
+
+    if type(binding) is not VersionedSessionBinding:
+        raise TypeError("Expected the actual live VersionedSessionBinding")
+    if not session_id or binding.session_id != session_id:
+        raise ValueError("Explicit child session ID must match its versioned binding")
+    if not callable(admit):
+        raise TypeError("Explicit child asset admission is required")
+    binding.check()
+    if parent_session is not None:
+        parent_store = parent_session.coordinator.get_capability("cli.session_store")
+        if (parent_session.session_id == session_id
+                or (parent_store is not None
+                    and vars(parent_store).get("_canonical_binding") is binding)):
+            raise ValueError("A child cannot borrow its parent's live versioned binding")
+    if binding in _RETAINED_CHILD_CLEANUPS:
+        raise RuntimeError("Child cleanup requires explicit owner settlement before reuse")
+    if binding in _CHILD_BINDING_OWNERS:
+        raise RuntimeError("Versioned child binding already has a live cleanup owner")
+
+
+def _own_child_binding(binding):
+    if binding is not None:
+        slot = _SETUP_SESSION.get()
+        if not slot or slot[2] is not None:
+            raise RuntimeError("Child binding has no exclusive cleanup owner")
+        if binding in _CHILD_BINDING_OWNERS or binding in _RETAINED_CHILD_CLEANUPS:
+            raise RuntimeError("Versioned child binding already has a cleanup owner")
+        binding.check()
+        slot[2] = binding
+        _CHILD_BINDING_OWNERS[binding] = slot
 
 
 def _undo_child_setup(callback):
@@ -74,7 +119,9 @@ async def _close_child_setup():
     slot = _SETUP_SESSION.get()
     if not slot:
         return
-    session, callbacks = slot
+    session, callbacks, binding = slot
+    # Consume cleanup before awaiting: both the execution finally and decorator
+    # can reach here, but a failed/cancelled cleanup must never be replayed.
     slot.clear()
     # Attempt every inverse even when another cleanup fails. Preserve a setup
     # error/cancellation rather than replace it with a diagnostic cleanup error.
@@ -82,14 +129,28 @@ async def _close_child_setup():
         try:
             callback()
         except BaseException:
-            logger.warning("Child parent-registration cleanup failed", exc_info=True)
+            logger.warning("Child parent-registration cleanup failed")
     active_error = sys.exception()
     try:
-        await session.cleanup()
-    except BaseException:
+        if session is not None:
+            from .session_media import cleanup_session_media_owner
+            await cleanup_session_media_owner(session)
+        # Core can swallow registered cleanup callback failures. Only the
+        # actual media owner's settled witness permits releasing custody.
+        if binding is not None:
+            binding.close()
+    except BaseException as error:
+        if binding is not None:
+            _RETAINED_CHILD_CLEANUPS[binding] = (session, binding, error)
         if active_error is None:
             raise
-        logger.warning("Child session cleanup failed", exc_info=True)
+        logger.warning(
+            "Child session cleanup failed; source owner retained"
+            if binding is not None else "Child session cleanup failed"
+        )
+    finally:
+        if binding is not None:
+            _CHILD_BINDING_OWNERS.pop(binding, None)
 
 
 def _handoff_child_setup(session):
@@ -850,13 +911,13 @@ async def _write_checkpoint(
     session_id: str,
     metadata: dict,
 ) -> bool:
-    """Snapshot the live transcript to SessionStore. Best-effort, never raises.
+    """Snapshot live rows; legacy best-effort, prospective failures propagate.
 
     MUST only ever be called from the NORMAL execution path (pre-execute, or
     from a provider:request hook). Calling it while unwinding a cancellation
     would reintroduce the unbounded await this whole design exists to avoid.
 
-    Returns True if a checkpoint was written, False if it was skipped or failed.
+    Returns True if written, False for a legacy best-effort failure.
     """
     from datetime import UTC
     from datetime import datetime
@@ -868,16 +929,21 @@ async def _write_checkpoint(
         snapshot["status"] = "in_progress"
         snapshot["turn_count"] = len(transcript)
         snapshot["last_updated"] = datetime.now(UTC).isoformat()
-        store.save(session_id, transcript, snapshot)
+        from .session_checkpoint import save_runtime_checkpoint
+        save_runtime_checkpoint(session, store, session_id, transcript, snapshot)
         logger.debug(
             f"Sub-session {session_id} checkpointed ({len(transcript)} messages)"
         )
         return True
-    except Exception as e:
+    except Exception:
+        if vars(store).get("_canonical_binding") is not None:
+            # An unknown prospective operation is not an autosave miss. The
+            # actual binding retains its intent; never hide it with a new ID.
+            raise
         # A failed checkpoint must never take down the run it is protecting.
         # CancelledError is a BaseException and is deliberately NOT caught here:
         # if the hook itself is cancelled, that cancellation must propagate.
-        logger.debug(f"Transcript checkpoint for {session_id} failed: {e}")
+        logger.debug("Sub-session transcript checkpoint failed")
         return False
 
 
@@ -969,6 +1035,9 @@ async def spawn_sub_session(
     self_delegation_depth: int = 0,
     session_metadata: dict | None = None,
     use_subprocess: bool = False,
+    *,
+    canonical_binding=None,
+    canonical_admit=None,
 ) -> dict:
     """
     Spawn sub-session with agent configuration overlay.
@@ -1004,6 +1073,11 @@ async def spawn_sub_session(
             run_session_in_subprocess instead of in-process. Also
             triggered when spawn_mode: "subprocess" is set in
             merged config. Returns early with output dict.
+        canonical_binding: Private in-process argument: the exact live Foundation
+            owner allocated by the caller for the explicit sub_session_id before
+            child construction. Never loaded from config or inherited.
+        canonical_admit: That caller's actual asset-publication callback. Required
+            with a binding; it is neither inferred from rows nor serialized.
 
     Returns:
         Dict with "output" (response) and "session_id" (for multi-turn)
@@ -1011,6 +1085,12 @@ async def spawn_sub_session(
     Raises:
         ValueError: If agent not found or config invalid
     """
+    _validate_child_binding(canonical_binding, canonical_admit, sub_session_id, parent_session)
+    if canonical_binding is not None and canonical_binding.load_messages():
+        # Spawn constructs fresh context; it must not erase an existing selected
+        # prefix on its first full-snapshot save. Foundation validates the actual
+        # live selector here before custody is accepted or any child is created.
+        raise ValueError("Spawn requires an empty versioned source; use explicit resume")
     # Freeze only the explicit structured carrier before any provider/config
     # resolution await. Do not parse instruction text or read parent history.
     from .session_media_inheritance import snapshot_selected_messages
@@ -1031,6 +1111,13 @@ async def spawn_sub_session(
     # A child overlay may narrow a host limit, not turn an opt-out or finite
     # parent bound into a fresh unlimited grant.
     merged_config = restrict_child_media(parent_session, merged_config)
+    if canonical_binding is not None:
+        if use_subprocess or merged_config.get("spawn_mode") == "subprocess":
+            raise RuntimeError("Subprocess dispatch cannot transfer a live versioned child binding")
+        # Accept custody before the first configuration await. Even a cancelled
+        # provider-resolution setup has one cleanup owner; pure input validation
+        # and the unsupported subprocess route leave custody with the caller.
+        _own_child_binding(canonical_binding)
 
     # === Issue #233 fix: propagate live agent registry to child ===
     #
@@ -1247,6 +1334,8 @@ async def spawn_sub_session(
     # Route to subprocess runner if requested via parameter or config
     spawn_mode = merged_config.get("spawn_mode")
     if use_subprocess or spawn_mode == "subprocess":
+        if canonical_binding is not None:
+            raise RuntimeError("Subprocess dispatch cannot transfer a live versioned child binding")
         from .session_media_inheritance import selected_messages_have_media
         if selected_messages_have_media(parent_messages):
             raise RuntimeError("Subprocess structured media inheritance has no durable checkpoint owner")
@@ -1355,6 +1444,12 @@ async def spawn_sub_session(
         # neither capability and preserves its ordinary child behavior.
         self_base_prompt_builder = _get_self_base_prompt_builder(parent_session)
 
+    from .session_store import SessionStore
+    store = (
+        SessionStore(canonical_binding.directory.parent, canonical_binding=canonical_binding)
+        if canonical_binding is not None else SessionStore()
+    )
+
     # Create child session with parent_id and inherited UX systems (kernel mechanism)
     # NOTE: We intentionally do NOT share parent's loader here.
     # The loader caches modules with their config, so sharing would cause child sessions
@@ -1444,14 +1539,13 @@ async def spawn_sub_session(
     # Initialize child session (mounts modules per merged config)
     # Now the resolver is available for loading modules with source: directives
     from .session_checkpoint import install_session_checkpoint
-    from .session_store import SessionStore
     from .session_media import install_session_media, mount_session_media
 
-    store = SessionStore()
     checkpoint_metadata: dict = {}
     install_session_checkpoint(
         child_session, store, session_id=sub_session_id,
         metadata_factory=lambda: dict(checkpoint_metadata),
+        canonical_admit=canonical_admit,
     )
     install_session_media(child_session, store, config=merged_config)
     await child_session.initialize()
@@ -1553,6 +1647,9 @@ async def spawn_sub_session(
         self_delegation_depth: int = 0,
         session_metadata: dict | None = None,
         use_subprocess: bool = False,
+        *,
+        canonical_binding=None,
+        canonical_admit=None,
     ) -> dict:
         return await spawn_sub_session(
             agent_name=agent_name,
@@ -1568,6 +1665,8 @@ async def spawn_sub_session(
             self_delegation_depth=self_delegation_depth,
             session_metadata=session_metadata,
             use_subprocess=use_subprocess,
+            canonical_binding=canonical_binding,
+            canonical_admit=canonical_admit,
         )
 
     async def child_resume_capability(
@@ -1575,6 +1674,9 @@ async def spawn_sub_session(
         instruction: str,
         provider_preferences: list | None = None,
         model_role: str | list[str] | None = None,
+        *,
+        canonical_binding=None,
+        canonical_admit=None,
     ) -> dict:
         # Kept in step with child_spawn_capability above: a caller that can
         # pin a provider at spawn must be able to pin the same one on every
@@ -1583,9 +1685,11 @@ async def spawn_sub_session(
         return await resume_sub_session(
             sub_session_id=sub_session_id,
             instruction=instruction,
-            parent_session=parent_session,
+            parent_session=child_session,
             provider_preferences=provider_preferences,
             model_role=model_role,
+            canonical_binding=canonical_binding,
+            canonical_admit=canonical_admit,
         )
 
     child_session.coordinator.register_capability(
@@ -1702,8 +1806,6 @@ async def spawn_sub_session(
     from datetime import UTC
     from datetime import datetime
 
-    from .session_store import SessionStore
-
     # Extract or generate trace_id for W3C Trace Context pattern
     # Root session ID is the trace_id, propagate it to all children
     parent_trace_id = getattr(parent_session, "trace_id", parent_session.session_id)
@@ -1794,7 +1896,8 @@ async def spawn_sub_session(
         metadata["status"] = "complete"
         metadata["last_updated"] = datetime.now(UTC).isoformat()
 
-        store.save(sub_session_id, transcript, metadata)
+        from .session_checkpoint import save_runtime_checkpoint
+        save_runtime_checkpoint(child_session, store, sub_session_id, transcript, metadata)
         logger.debug(f"Sub-session {sub_session_id} state persisted")
 
         # Bridge child session costs to parent coordinator (bridge_child_cost never raises)
@@ -2162,6 +2265,9 @@ async def resume_sub_session(
     parent_session: AmplifierSession | None = None,
     provider_preferences: list | None = None,
     model_role: str | list[str] | None = None,
+    *,
+    canonical_binding=None,
+    canonical_admit=None,
 ) -> dict:
     """Resume existing sub-session for multi-turn engagement.
 
@@ -2181,6 +2287,10 @@ async def resume_sub_session(
         model_role: Optional model_role declaration to carry onto the resumed
             leg, so its routing hook resolves the SAME role the spawn leg was
             given rather than falling back to settings priority.
+        canonical_binding: Private live owner already resumed by the caller at
+            its exact expected prefix. No implicit enrollment or migration.
+        canonical_admit: Explicit asset admission for this leg, never inherited
+            from the original child or a parent capability.
 
     Returns:
         Dict with "output" (response) and "session_id" (same ID)
@@ -2196,7 +2306,12 @@ async def resume_sub_session(
     from .session_store import SessionStore
 
     # Load session state from storage
-    store = SessionStore()
+    _validate_child_binding(canonical_binding, canonical_admit, sub_session_id, parent_session)
+    _own_child_binding(canonical_binding)
+    store = (
+        SessionStore(canonical_binding.directory.parent, canonical_binding=canonical_binding)
+        if canonical_binding is not None else SessionStore()
+    )
 
     if not store.exists(sub_session_id):
         # NOT RESUMABLE -- say so, and say what to do instead.
@@ -2216,9 +2331,17 @@ async def resume_sub_session(
             f"the resume."
         )
 
+    if canonical_binding is None and os.path.lexists(store.base_dir / sub_session_id / "transcript.v2"):
+        raise RuntimeError("Versioned child resume requires its explicit live binding")
     try:
-        transcript, metadata = store.load(sub_session_id)
+        if canonical_binding is not None:
+            transcript = canonical_binding.load_messages()
+            metadata = store.get_metadata(sub_session_id)
+        else:
+            transcript, metadata = store.load(sub_session_id)
     except Exception as e:
+        if canonical_binding is not None:
+            raise  # Preserve the actual prospective failure, without a raw diagnostic copy.
         raise RuntimeError(
             f"Failed to load sub-session '{sub_session_id}': {str(e)}"
         ) from e
@@ -2570,6 +2693,7 @@ async def resume_sub_session(
                 "caller_provider_preferences", SYSTEM_PROMPT_SNAPSHOT_KEY,
             ) if key in metadata
         },
+        canonical_admit=canonical_admit,
     )
     install_session_media(
         child_session, store, config=merged_config, restored_messages=transcript
@@ -2624,6 +2748,9 @@ async def resume_sub_session(
         self_delegation_depth: int = 0,
         session_metadata: dict | None = None,
         use_subprocess: bool = False,
+        *,
+        canonical_binding=None,
+        canonical_admit=None,
     ) -> dict:
         return await spawn_sub_session(
             agent_name=agent_name,
@@ -2639,6 +2766,8 @@ async def resume_sub_session(
             self_delegation_depth=self_delegation_depth,
             session_metadata=session_metadata,
             use_subprocess=use_subprocess,
+            canonical_binding=canonical_binding,
+            canonical_admit=canonical_admit,
         )
 
     async def child_resume_capability(
@@ -2646,6 +2775,9 @@ async def resume_sub_session(
         instruction: str,
         provider_preferences: list | None = None,
         model_role: str | list[str] | None = None,
+        *,
+        canonical_binding=None,
+        canonical_admit=None,
     ) -> dict:
         # Kept in step with child_spawn_capability above: a caller that can
         # pin a provider at spawn must be able to pin the same one on every
@@ -2657,6 +2789,8 @@ async def resume_sub_session(
             parent_session=child_session,
             provider_preferences=provider_preferences,
             model_role=model_role,
+            canonical_binding=canonical_binding,
+            canonical_admit=canonical_admit,
         )
 
     child_session.coordinator.register_capability(
@@ -2852,7 +2986,8 @@ async def resume_sub_session(
         metadata["turn_count"] = len(updated_transcript)
         metadata["last_updated"] = datetime.now(UTC).isoformat()
 
-        store.save(sub_session_id, updated_transcript, metadata)
+        from .session_checkpoint import save_runtime_checkpoint
+        save_runtime_checkpoint(child_session, store, sub_session_id, updated_transcript, metadata)
         logger.debug(
             f"Sub-session {sub_session_id} state updated (turn {metadata['turn_count']})"
         )

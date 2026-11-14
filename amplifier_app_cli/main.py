@@ -813,11 +813,16 @@ class CommandProcessor:
         return f"Unhandled action: {action}"
 
     async def _handle_mode(self, args: str) -> str:
-        from .session_hooks import transition_session_hook_graph
+        from .session_hooks import CLIHookGraph, HOOK_GRAPH_CAPABILITY, transition_session_hook_graph
+        participating = isinstance(
+            self.session.coordinator.get_capability(HOOK_GRAPH_CAPABILITY), CLIHookGraph
+        )
+        state = self.session.coordinator.session_state
+        if participating and state.get("mode_transition_failure"):
+            raise RuntimeError("A failed participating mode operation requires host recovery")
         command = args.strip().lower()
         if not command or command == "info" or command.startswith("info "):
             return await self._handle_mode_operation(args)
-        state = self.session.coordinator.session_state
         current = state.get("active_mode")
         parts = command.split()
         target, explicit = parts[0], parts[1] if len(parts) > 1 else None
@@ -830,8 +835,39 @@ class CommandProcessor:
         )
         if unchanged:
             return await self._handle_mode_operation(args)
-        with transition_session_hook_graph(self.session):
-            return await self._handle_mode_operation(args)
+        entered = False
+        try:
+            with transition_session_hook_graph(self.session):
+                entered = True
+                return await self._handle_mode_operation(args)
+        except BaseException:
+            if entered and participating:
+                state["active_mode"] = None
+                state["mode_transition_failure"] = {
+                    "source": "cli.command", "target_mode": target,
+                    "reason": "participating-mode-operation-did-not-settle",
+                }
+            raise
+
+    async def _emit_mode_event(self, event: str, payload: dict) -> None:
+        """Verify actual mode contributions before advancing CLI mode state."""
+        from .session_hooks import CLIHookGraph, HOOK_GRAPH_CAPABILITY
+        coordinator = self.session.coordinator
+        graph = coordinator.get_capability(HOOK_GRAPH_CAPABILITY)
+        mode_hooks = coordinator.session_state.get("mode_hooks")
+        if isinstance(graph, CLIHookGraph) and mode_hooks is not None:
+            tracker = getattr(mode_hooks, "track_transition", None)
+            if not callable(tracker):
+                raise RuntimeError("Participating mode contribution tracker is unavailable")
+            # The original target binds the completion witness. A string ID is
+            # the only tracker value crossing Core's event-data boundary.
+            with tracker(event, payload=payload) as operation:
+                await coordinator.hooks.emit(
+                    event, {**payload, "transition_id": operation.id}
+                )
+                operation.verify()
+        else:
+            await coordinator.hooks.emit(event, payload)
 
     async def _handle_mode_operation(self, args: str) -> str:
         """Handle /mode command for setting, toggling, or clearing modes."""
@@ -854,7 +890,7 @@ class CommandProcessor:
         if args == "off":
             if current_mode:
                 # Emit mode:cleared BEFORE state mutation so hooks see the old state
-                await self.session.coordinator.hooks.emit(
+                await self._emit_mode_event(
                     "mode:cleared",
                     {"name": current_mode, "previous_mode": current_mode},
                 )
@@ -913,7 +949,7 @@ class CommandProcessor:
                             "block_tools": mode_def.block_tools,
                         }
                     )
-                await self.session.coordinator.hooks.emit("mode:changed", _payload)
+                await self._emit_mode_event("mode:changed", _payload)
             else:
                 _payload = {"name": mode_name, "mode": mode_name}
                 if discovery:
@@ -927,7 +963,7 @@ class CommandProcessor:
                             "block_tools": mode_def.block_tools,
                         }
                     )
-                await self.session.coordinator.hooks.emit("mode:activated", _payload)
+                await self._emit_mode_event("mode:activated", _payload)
             session_state["active_mode"] = mode_name
             mode_hooks = session_state.get("mode_hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
@@ -938,7 +974,7 @@ class CommandProcessor:
             if current_mode != mode_name:
                 return f"Not in {mode_name} mode"
             # Emit mode:cleared BEFORE state mutation so hooks see the old state
-            await self.session.coordinator.hooks.emit(
+            await self._emit_mode_event(
                 "mode:cleared", {"name": mode_name, "previous_mode": mode_name}
             )
             session_state["active_mode"] = None
@@ -950,7 +986,7 @@ class CommandProcessor:
         # Toggle behavior (no explicit on/off)
         if current_mode == mode_name:
             # Emit mode:cleared BEFORE state mutation so hooks see the old state
-            await self.session.coordinator.hooks.emit(
+            await self._emit_mode_event(
                 "mode:cleared", {"name": mode_name, "previous_mode": mode_name}
             )
             session_state["active_mode"] = None
@@ -980,7 +1016,7 @@ class CommandProcessor:
                             "block_tools": mode_def.block_tools,
                         }
                     )
-                await self.session.coordinator.hooks.emit("mode:changed", _payload)
+                await self._emit_mode_event("mode:changed", _payload)
             else:
                 _payload = {"name": mode_name, "mode": mode_name}
                 if discovery:
@@ -994,7 +1030,7 @@ class CommandProcessor:
                             "block_tools": mode_def.block_tools,
                         }
                     )
-                await self.session.coordinator.hooks.emit("mode:activated", _payload)
+                await self._emit_mode_event("mode:activated", _payload)
             session_state["active_mode"] = mode_name
             mode_hooks = session_state.get("mode_hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
@@ -3779,6 +3815,9 @@ async def interactive_chat(
     prepared_bundle: "PreparedBundle | None" = None,
     initial_prompt: str | None = None,
     initial_transcript: list[dict] | None = None,
+    *,
+    canonical_binding: Any = None,
+    canonical_admit: Any = None,
 ):
     """Run an interactive chat session.
 
@@ -3813,6 +3852,8 @@ async def interactive_chat(
         # presence into "chat".
         invocation_mode="chat",
         shared_root=True,
+        canonical_binding=canonical_binding,
+        canonical_admit=canonical_admit,
     )
 
     # Create fully initialized session (handles all setup including resume).
@@ -3969,7 +4010,8 @@ async def interactive_chat(
                     store, messages, bundle=bundle_name, metadata=metadata
                 )
             else:
-                store.save(actual_session_id, messages, metadata)
+                from .session_checkpoint import save_runtime_checkpoint
+                save_runtime_checkpoint(session, store, actual_session_id, messages, metadata)
 
     # Helper to detect and repair broken transcripts before each turn
     async def _repair_transcript_if_needed():
@@ -4488,6 +4530,9 @@ async def execute_single(
     output_format: str = "text",
     prepared_bundle: "PreparedBundle | None" = None,
     initial_transcript: list[dict] | None = None,
+    *,
+    canonical_binding: Any = None,
+    canonical_admit: Any = None,
 ):
     """Execute a single prompt and exit.
 
@@ -4544,6 +4589,8 @@ async def execute_single(
         # pipe arriving with no --mode at all.
         invocation_mode="single",
         shared_root=True,
+        canonical_binding=canonical_binding,
+        canonical_admit=canonical_admit,
     )
 
     # Session startup is outside the execution try/finally, so contention
@@ -4613,7 +4660,8 @@ async def execute_single(
         if root_state is not None:
             root_state.checkpoint(store, messages, bundle=bundle_name, metadata=metadata)
         else:
-            store.save(actual_session_id, messages, metadata)
+            from .session_checkpoint import save_runtime_checkpoint
+            save_runtime_checkpoint(session, store, actual_session_id, messages, metadata)
         return len(messages)
 
     try:

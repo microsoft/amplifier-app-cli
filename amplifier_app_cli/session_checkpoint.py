@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from collections.abc import Callable
 from typing import Any
+import uuid
 
 from .session_store import SessionStore
 
@@ -23,6 +24,7 @@ def install_session_checkpoint(
     bundle: str = "unknown",
     root_state: Any = None,
     metadata_factory: Callable[[], dict] | None = None,
+    canonical_admit: Callable[[], None] | None = None,
 ) -> None:
     """Install a fresh callback for this session, without inheriting authority.
 
@@ -49,7 +51,34 @@ def install_session_checkpoint(
             return root_state.checkpoint(
                 store, messages, bundle=bundle, metadata=metadata
             )
-        return store.save(session_id, messages, metadata)
+        return save_runtime_checkpoint(session, store, session_id, messages, metadata)
+
+    binding = vars(store).get("_canonical_binding")
+    if binding is not None:
+        if not callable(canonical_admit):
+            raise ValueError("Prospective checkpoints require actual asset admission")
+
+        def save_canonical(messages, metadata):
+            binding.check()
+            # This callback receives a full canonical snapshot, not a settled
+            # suffix. Each invocation is one explicit rewrite intent. Unknown
+            # completion remains in Foundation's exact reconciliation state.
+            return store.save_versioned(
+                session_id, messages, metadata, expected=binding.expected,
+                operation_id=uuid.uuid4().hex, admit=canonical_admit,
+            )
+
+        session.coordinator.register_capability("cli.canonical_checkpoint_save", save_canonical)
 
     session.coordinator.register_capability("cli.session_store", store)
     session.coordinator.register_capability("session.durable_checkpoint", checkpoint)
+
+
+def save_runtime_checkpoint(session, store, session_id, messages, metadata):
+    """Select the explicit installed prospective writer, never legacy fallback."""
+    if vars(store).get("_canonical_binding") is not None:
+        callback = session.coordinator.get_capability("cli.canonical_checkpoint_save")
+        if not callable(callback):
+            raise RuntimeError("Prospective session has no owned checkpoint operation")
+        return callback(messages, metadata)
+    return store.save(session_id, messages, metadata)

@@ -127,7 +127,10 @@ class IncrementalSaveHook:
                     self.store, messages, bundle=self.bundle_name, metadata=metadata
                 )
             else:
-                self.store.save(self.session_id, messages, metadata)
+                from .session_checkpoint import save_runtime_checkpoint
+                save_runtime_checkpoint(
+                    self.session, self.store, self.session_id, messages, metadata
+                )
 
             tool_name = data.get("tool_name", "unknown")
             logger.debug(
