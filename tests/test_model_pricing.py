@@ -62,7 +62,7 @@ def test_tiered_price_never_looks_like_a_universal_low_rate():
     rendered = format_model_pricing(_model(_details("tiered")))
     assert "<= 100,000: input 0.10, output 0.50" in rendered
     assert "> 100,000: input 0.50, output 2.50" in rendered
-    assert "fresh + cached input counted once" in rendered
+    assert "fresh input + cache reads + cache writes, counted once" in rendered
     assert "whole request, including output" in rendered
 
 

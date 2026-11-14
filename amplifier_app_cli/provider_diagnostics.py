@@ -168,7 +168,7 @@ def format_model_pricing(model: "ModelInfo") -> str:
                 summary = (
                     f"<= {threshold:,}: {_format_rates(tiers[0]['rates'])}; "
                     f"> {threshold:,}: {_format_rates(tiers[1]['rates'])}. "
-                    "Tier uses fresh + cached input counted once; "
+                    "Tier uses fresh input + cache reads + cache writes, counted once; "
                     "selected rates apply to the whole request, including output"
                 )
             else:
