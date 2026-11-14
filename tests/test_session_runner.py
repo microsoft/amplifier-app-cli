@@ -845,6 +845,55 @@ async def test_root_retry_installs_fresh_checkpoint_before_each_initialize(
     assert store.load("root")[0] == [{"role": "user", "content": "saved"}]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["mount", "register", "create", "retry"])
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_root_construction_cleanup_failure_retains_writer(stage, cancelled, tmp_path):
+    from contextlib import ExitStack
+    root = MagicMock()
+    config = _make_session_config(session_id="root", root_state=root)
+    selected = _make_mock_session()
+    selected.session_id = "root"
+    selected.cleanup = AsyncMock(side_effect=asyncio.CancelledError() if cancelled else RuntimeError("cleanup failure"))
+    setup_error = RuntimeError("setup failure")
+    called = []
+
+    async def create(**kwargs):
+        called.append("create")
+        await kwargs["before_initialize"](selected)
+        if stage == "create":
+            raise setup_error
+        return selected
+
+    config.prepared_bundle.create_session = AsyncMock(side_effect=create)
+    with ExitStack() as stack:
+        for patcher in _configurator_patches(selected):
+            # Exercise real construction, not the helper seam mock.
+            if patcher.attribute != "_create_bundle_session":
+                stack.enter_context(patcher)
+        stack.enter_context(patch(f"{_MODULE}.SessionStore", return_value=MagicMock()))
+        stack.enter_context(patch(f"{_MODULE}._inject_observability_events"))
+        stack.enter_context(patch(f"{_MODULE}._inject_invocation_metadata"))
+        stack.enter_context(patch(f"{_MODULE}._invalidate_all_install_state"))
+        stack.enter_context(patch(f"{_MODULE}._should_attempt_self_healing", return_value=stage == "retry"))
+        stack.enter_context(patch("amplifier_app_cli.session_media.install_session_media"))
+        stack.enter_context(patch("amplifier_app_cli.session_media.mount_session_media",
+                                  AsyncMock(side_effect=setup_error if stage == "mount" else None)))
+        stack.enter_context(patch(f"{_MODULE}.register_mention_handling",
+                                  side_effect=setup_error if stage == "register" else None))
+        stack.enter_context(patch(f"{_MODULE}.register_session_spawning"))
+        stack.enter_context(patch("amplifier_app_cli.runtime.config.inject_user_providers"))
+        stack.enter_context(patch("amplifier_app_cli.paths.create_foundation_resolver"))
+        with pytest.raises(RuntimeError) as error:
+            await create_initialized_session(config, Console(file=StringIO()))
+    assert error.value is setup_error if stage != "retry" else "self-healing" in str(error.value)
+    assert any("writer retained" in note for note in error.value.__notes__)
+    selected.cleanup.assert_awaited_once()
+    root.release.assert_not_called()
+    assert config.root_state is root
+    assert called == ["create"]  # No cleanup or create replay after uncertainty.
+
+
 class TestInitializedSessionConfiguratorField:
     """Tests for the new configurator field on InitializedSession."""
 

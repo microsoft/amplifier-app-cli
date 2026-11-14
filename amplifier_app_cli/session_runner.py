@@ -176,27 +176,54 @@ class InitializedSession:
             self.root_state.release()
 
 
+class _RootSetupOwner:
+    """Keep construction and cleanup uncertainty beside the held root writer."""
+
+    def __init__(self):
+        self.session = None
+        self.attempted = False
+        self.settled = False
+        self.cleanup_error = None
+
+    def own(self, session):
+        if self.session is session:
+            return
+        if self.session is not None and not self.settled:
+            raise RuntimeError("Previous root construction cleanup is not settled")
+        self.session = session
+        self.attempted = self.settled = False
+        self.cleanup_error = None
+
+    async def cleanup(self, cause):
+        if self.session is None:
+            return True
+        if self.attempted:
+            return self.settled  # Never replay failed or cancelled cleanup.
+        self.attempted = True
+        try:
+            await self.session.cleanup()
+        except BaseException as error:
+            self.cleanup_error = error
+            cause.add_note(f"Root construction cleanup did not settle ({type(error).__name__}); writer retained")
+            logger.warning("Root construction cleanup did not settle; writer retained", exc_info=True)
+            return False
+        self.settled = True
+        return True
+
+
 async def create_initialized_session(
     config: SessionConfig,
     console: "Console",
 ) -> InitializedSession:
     """Retain setup ownership until the fully initialized result is returned."""
-    lifetime = []
+    lifetime = _RootSetupOwner()
     try:
         result = await _create_initialized_session(config, console, lifetime)
-    except BaseException:
-        cleanup_settled = True
-        try:
-            if lifetime:
-                try:
-                    await lifetime.pop().cleanup()
-                except BaseException:
-                    cleanup_settled = False
-                    logger.warning("Root setup cleanup failed", exc_info=True)
-        finally:
-            if config.root_state is not None and cleanup_settled:
-                config.root_state.release()
-                config.root_state = None
+    except BaseException as cause:
+        cleanup_settled = await lifetime.cleanup(cause)
+        if config.root_state is not None and cleanup_settled:
+            config.root_state.release()
+            config.root_state = None
         raise
     return result
 
@@ -204,7 +231,7 @@ async def create_initialized_session(
 async def _create_initialized_session(
     config: SessionConfig,
     console: "Console",
-    lifetime: list,
+    lifetime: _RootSetupOwner,
 ) -> InitializedSession:
     """Create and fully initialize a session.
 
@@ -328,22 +355,15 @@ async def _create_initialized_session(
     display_system = CLIDisplaySystem()
 
     # Step 4: Create session (bundle mode only)
-    try:
-        session = await _create_bundle_session(
-            config=config,
-            session_id=session_id,
-            approval_system=approval_system,
-            display_system=display_system,
-            console=console,
-        )
-        lifetime.append(session)
-    except BaseException:
-        # No context was created successfully, so no session save is possible;
-        # release the just-acquired writer rather than leave a dead lock.
-        if config.root_state is not None:
-            config.root_state.release()
-            config.root_state = None
-        raise
+    session = await _create_bundle_session(
+        config=config,
+        session_id=session_id,
+        approval_system=approval_system,
+        display_system=display_system,
+        console=console,
+        lifetime=lifetime,
+    )
+    lifetime.own(session)
 
     if config.root_state is not None:
         session.coordinator.register_capability("cli.shared_root_state", config.root_state)
@@ -653,6 +673,7 @@ async def _create_bundle_session(
     approval_system: Any,
     display_system: Any,
     console: "Console",
+    lifetime: _RootSetupOwner | None = None,
 ) -> AmplifierSession:
     """Create session using bundle mode (foundation handles most setup).
 
@@ -697,11 +718,10 @@ async def _create_bundle_session(
     from .session_media import install_session_media, mount_session_media
 
     store = SessionStore()
-    constructing: AmplifierSession | None = None
+    lifetime = lifetime if lifetime is not None else _RootSetupOwner()
 
     async def before_initialize(candidate: AmplifierSession) -> None:
-        nonlocal constructing
-        constructing = candidate
+        lifetime.own(candidate)
         install_session_checkpoint(
             candidate,
             store,
@@ -733,6 +753,7 @@ async def _create_bundle_session(
                 is_resumed=config.is_resume,  # Pass resume flag to kernel
                 before_initialize=before_initialize,
             )
+            lifetime.own(session)
 
             # Self-healing check: if configured modules failed to load,
             # this likely indicates stale install state (missing dependencies).
@@ -746,8 +767,9 @@ async def _create_bundle_session(
                 # Abandon the first coordinator and its session-bound resources
                 # before constructing a new one. Never carry live closures or
                 # prepared request state into the self-healed session.
-                constructing = None
-                await session.cleanup()
+                retry_cause = RuntimeError("Abandoned root requires settled cleanup before self-healing retry")
+                if not await lifetime.cleanup(retry_cause):
+                    raise retry_cause from lifetime.cleanup_error
                 # Retry once - if it fails again, it's a real error
                 session = await prepared_bundle.create_session(
                     session_id=session_id,
@@ -757,6 +779,7 @@ async def _create_bundle_session(
                     is_resumed=config.is_resume,  # Pass resume flag to kernel
                     before_initialize=before_initialize,
                 )
+                lifetime.own(session)
                 # Warn if retry still has issues
                 if _should_attempt_self_healing(session, prepared_bundle):
                     logger.warning(
@@ -764,9 +787,8 @@ async def _create_bundle_session(
                         "Check module configuration, credentials, and dependencies."
                     )
     except BaseException as e:
-        if constructing is not None:
-            await constructing.cleanup()
-            constructing = None
+        if not await lifetime.cleanup(e):
+            raise  # Original construction cause survives; cleanup detail is retained.
         if not isinstance(e, (ModuleValidationError, RuntimeError)):
             raise
         if not display_validation_error(console, e, verbose=config.verbose):
@@ -783,8 +805,8 @@ async def _create_bundle_session(
         register_mention_handling(session)
         # Step 6: Register session spawning
         register_session_spawning(session, prepared_bundle=prepared_bundle)
-    except BaseException:
-        await session.cleanup()
+    except BaseException as cause:
+        await lifetime.cleanup(cause)
         raise
 
     return session
