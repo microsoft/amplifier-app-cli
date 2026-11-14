@@ -533,3 +533,75 @@ async def test_loop_error_reporter_spans_public_chat_lifetime(
         mock_close.assert_called_once()
     finally:
         loop.set_exception_handler(previous)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", [
+    "amplifier_app_cli.incremental_save.register_incremental_save",
+    "amplifier_app_cli.goal_progress_hook.register_goal_progress_hook",
+    "amplifier_app_cli.goal_circuit_breaker.register_goal_circuit_breaker",
+    "amplifier_app_cli.session_hooks.seal_session_hook_graph",
+])
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_interactive_late_setup_failure_unwinds_initialized_owner(tmp_path, stage, cancelled):
+    from amplifier_app_cli.main import interactive_chat
+    from amplifier_app_cli.session_runner import InitializedSession, SessionConfig
+    from contextlib import ExitStack
+    session = _make_mock_session()
+    effects = []
+    session.cleanup = AsyncMock(side_effect=lambda: effects.append("media-cleanup"))
+    writer = MagicMock()
+    writer.release.side_effect = lambda: effects.append("release")
+    initialized = InitializedSession(
+        session, "test-session-id", SessionConfig({}, [], False),
+        store=MagicMock(), root_state=writer,
+    )
+    failure = asyncio.CancelledError() if cancelled else RuntimeError("late setup failed")
+    with ExitStack() as stack:
+        stack.enter_context(patch(f"{_MODULE}.create_initialized_session", AsyncMock(return_value=initialized)))
+        stack.enter_context(patch("amplifier_app_cli.incremental_save.register_incremental_save"))
+        stack.enter_context(patch("amplifier_app_cli.goal_progress_hook.register_goal_progress_hook"))
+        stack.enter_context(patch("amplifier_app_cli.goal_circuit_breaker.register_goal_circuit_breaker"))
+        stack.enter_context(patch("amplifier_app_cli.session_hooks.seal_session_hook_graph"))
+        stack.enter_context(patch(stage, side_effect=failure))
+        prompt = stack.enter_context(patch(f"{_MODULE}._create_prompt_session"))
+        close = stack.enter_context(patch(f"{_MODULE}.close_dedicated_tty_input"))
+        stack.enter_context(patch(f"{_MODULE}.console"))
+        with pytest.raises(type(failure)) as caught:
+            await interactive_chat(config={}, search_paths=[tmp_path], verbose=False, bundle_name="fixture")
+    assert caught.value is failure
+    assert effects == ["media-cleanup", "release"]
+    session.cleanup.assert_awaited_once()
+    session.execute.assert_not_awaited()
+    prompt.assert_not_called()
+    close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_interactive_late_setup_cleanup_failure_retains_writer_and_original_cause(tmp_path):
+    from amplifier_app_cli.main import interactive_chat
+    from amplifier_app_cli.session_runner import InitializedSession, SessionConfig
+    session = _make_mock_session()
+    session.cleanup = AsyncMock(side_effect=RuntimeError("cleanup unsettled"))
+    writer = MagicMock()
+    initialized = InitializedSession(
+        session, "test-session-id", SessionConfig({}, [], False),
+        store=MagicMock(), root_state=writer,
+    )
+    failure = RuntimeError("seal failed")
+    with (
+        patch(f"{_MODULE}.create_initialized_session", AsyncMock(return_value=initialized)),
+        patch("amplifier_app_cli.incremental_save.register_incremental_save"),
+        patch("amplifier_app_cli.goal_progress_hook.register_goal_progress_hook"),
+        patch("amplifier_app_cli.goal_circuit_breaker.register_goal_circuit_breaker"),
+        patch("amplifier_app_cli.session_hooks.seal_session_hook_graph", side_effect=failure),
+        patch(f"{_MODULE}.close_dedicated_tty_input") as close,
+        patch(f"{_MODULE}.console"),
+    ):
+        with pytest.raises(RuntimeError) as caught:
+            await interactive_chat(config={}, search_paths=[tmp_path], verbose=False, bundle_name="fixture")
+    assert caught.value is failure
+    assert any("writer retained" in note for note in failure.__notes__)
+    session.cleanup.assert_awaited_once()
+    writer.release.assert_not_called()
+    close.assert_called_once()

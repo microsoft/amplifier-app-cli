@@ -12,6 +12,7 @@ import signal
 import sys
 import uuid
 from collections.abc import Callable
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from functools import partial, wraps
 from pathlib import Path
@@ -3696,7 +3697,46 @@ def _with_loop_error_reporting(function):
     return wrapped
 
 
+_INTERACTIVE_SETUP: ContextVar[list | None] = ContextVar("cli_interactive_setup", default=None)
+
+
+def _protect_interactive_setup(function):
+    """Own initialized resources through late registration and prompt setup."""
+    @wraps(function)
+    async def protected(*args, **kwargs):
+        slot = []
+        token = _INTERACTIVE_SETUP.set(slot)
+        try:
+            return await function(*args, **kwargs)
+        finally:
+            try:
+                if slot:
+                    initialized = slot.pop()  # Attempt once, never replay uncertainty.
+                    cause = sys.exception()
+                    try:
+                        await initialized.cleanup()
+                    except BaseException as error:
+                        if cause is None:
+                            raise
+                        cause.add_note(
+                            f"Interactive setup cleanup did not settle ({type(error).__name__}); writer retained"
+                        )
+                        logger.warning("Interactive setup cleanup did not settle; writer retained", exc_info=True)
+                    finally:
+                        close_dedicated_tty_input()
+            finally:
+                _INTERACTIVE_SETUP.reset(token)
+    return protected
+
+
+def _handoff_interactive_setup():
+    slot = _INTERACTIVE_SETUP.get()
+    if slot is not None:
+        slot.clear()
+
+
 @_with_loop_error_reporting
+@_protect_interactive_setup
 async def interactive_chat(
     config: dict,
     search_paths: list[Path],
@@ -3754,6 +3794,7 @@ async def interactive_chat(
         if not exc.displayed:
             console.print(f"[red]Error:[/red] {escape_markup(exc)}")
         raise SystemExit(1) from None
+    _INTERACTIVE_SETUP.get().append(initialized)
     session = initialized.session
     actual_session_id = initialized.session_id
     from .session_handoff import CLIHandoff
@@ -3849,8 +3890,11 @@ async def interactive_chat(
         )
     except _TERMINAL_UNUSABLE_ERRORS as e:
         _report_terminal_unusable(e, verbose=verbose)
-        await initialized.cleanup()
-        close_dedicated_tty_input()
+        _handoff_interactive_setup()
+        try:
+            await initialized.cleanup()
+        finally:
+            close_dedicated_tty_input()
         return
 
     # Helper to extract model name from config
@@ -4147,6 +4191,7 @@ async def interactive_chat(
     # so bailing on an unusable terminal still awaits initialized.cleanup()
     # and closes the dedicated tty fd -- leaking those was a real bug caught
     # by test_interactive_chat_teardown_does_not_raise_when_fd_never_opened.
+    _handoff_interactive_setup()
     try:
         await handoff.start()
         # An interactive session needs a terminal prompt_toolkit can actually

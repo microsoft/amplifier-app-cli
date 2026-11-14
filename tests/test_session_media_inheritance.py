@@ -36,7 +36,7 @@ def session(identity, rows):
                            coordinator=Coordinator(identity, rows))
 
 
-async def fixture(tmp_path):
+async def fixture(tmp_path, *, age_seconds=0):
     native = SessionStore(tmp_path)
     rows, child_rows = [], []
     parent, child = session("parent", rows), session("child", child_rows)
@@ -45,6 +45,10 @@ async def fixture(tmp_path):
         data = io.BytesIO()
         Image.new("RGB", (2, 3), color).save(data, "PNG")
         origin = {"kind": "tool", "session_id": "parent", "id": call}
+        if age_seconds:
+            from datetime import UTC, datetime, timedelta
+            created = datetime.now(UTC) - timedelta(seconds=age_seconds)
+            origin.update(created_at=created.isoformat(), expires_at=(created + timedelta(hours=1)).isoformat())
         ref = (await source.capability.ingest(data.getvalue(), source_format="image-bytes",
                                              origin=origin, policy=None))["value"]
         await source.capability.publish([ref], origin=origin, disposition="retain")
@@ -168,10 +172,11 @@ async def test_nested_adoption_after_cold_child_reopen_has_no_parent_owner(tmp_p
             await grand.close()
 
 
-async def test_actual_cold_resume_restores_adopted_pixels_without_parent_or_readoption(tmp_path, monkeypatch):
+@pytest.mark.parametrize("narrow_ttl", [False, True])
+async def test_actual_cold_resume_restores_adopted_pixels_without_parent_or_readoption(tmp_path, monkeypatch, narrow_ttl):
     from unittest.mock import MagicMock, patch
     from amplifier_app_cli.session_spawner import resume_sub_session
-    native, parent, child, rows, child_rows, source, target = await fixture(tmp_path)
+    native, parent, child, rows, child_rows, source, target = await fixture(tmp_path, age_seconds=60 if narrow_ttl else 0)
     await inherit_selected_messages(child, parent, rows[:1])
     await child.coordinator.get_capability("session.durable_checkpoint")()
     native.update_metadata("child", {"config": child.config, "agent_name": "named", "parent_id": "parent"})
@@ -193,13 +198,41 @@ async def test_actual_cold_resume_restores_adopted_pixels_without_parent_or_read
         for callback in fresh.coordinator.cleanups:
             await callback()
     fresh.cleanup = AsyncMock(side_effect=cleanup)
+    current_parent = None
+    current_host = None
+    if narrow_ttl:
+        current_parent = session("current-parent", [])
+        current_parent.config["session_media"] = {**POLICY, "ttl_seconds": 1}
+        current_parent.coordinator.cancellation = MagicMock()
+        current_host = install_session_media(current_parent, native)
     async def execute(instruction):
         assert restored == saved
         owner = fresh.coordinator.get_capability("cli.session_media")
         ref = restored[0]["metadata"][MEDIA_NAMESPACE]["refs"][0]
         assert ref["session_id"] == "child"
-        with owner.store.resolve_ref(ref) as stream:
-            assert stream.read().startswith(b"\x89PNG")
+        if narrow_ttl:
+            assert owner.store.policy.ttl_seconds == 1
+            with pytest.raises(MediaRefusal) as refused:
+                owner.store.resolve_ref(ref)
+            assert refused.value.code == "source_policy"
+            from amplifier_core.message_models import ChatRequest, Message
+            class Provider:
+                name, default_model = "fixture", "vision"
+                def get_media_request_support(self, **kwargs): return {"v": 1, "positions": ["user"]}
+                async def complete(self, request):
+                    assert not any(
+                        getattr(block, "type", None) == "image"
+                        for message in request.messages
+                        for block in message.content if isinstance(message.content, list)
+                    )
+                    assert "Image unavailable" in str(request)
+                    return "warning-only"
+            wrapped = owner.prepare_provider(Provider())
+            assert await wrapped.complete(ChatRequest(messages=[Message(**row) for row in restored])) == "warning-only"
+        else:
+            with owner.store.resolve_ref(ref) as stream:
+                assert stream.read().startswith(b"\x89PNG")
+        assert native.load("child")[0] == saved
         return "resumed"
     fresh.execute = AsyncMock(side_effect=execute)
     monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "-1")
@@ -209,11 +242,13 @@ async def test_actual_cold_resume_restores_adopted_pixels_without_parent_or_read
         patch("amplifier_app_cli.paths.create_foundation_resolver"),
         patch("amplifier_foundation.session.media_conversion.adopt_selected_media") as adopt,
     ):
-        result = await resume_sub_session("child", "follow-up", parent_session=None)
+        result = await resume_sub_session("child", "follow-up", parent_session=current_parent)
     assert result["output"] == "resumed"
     adopt.assert_not_called()
     fresh.execute.assert_awaited_once()
     fresh.cleanup.assert_awaited_once()
+    if current_host is not None:
+        await current_host.close()
 
 
 async def test_parent_prompt_not_inherited_and_prose_never_resolves(tmp_path):

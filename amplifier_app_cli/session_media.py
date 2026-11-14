@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
+import asyncio
 import inspect
 import os
 from typing import Any
@@ -141,6 +143,15 @@ class CLISessionMedia:
         return True
 
     def _source_policy(self, ref, *, purpose):
+        # Reopening/adoption never rewrites original provenance. A current
+        # tighter host TTL is a delivery restriction over that original clock,
+        # not permission to renew already-recorded pixels.
+        ttl = self.store.policy.ttl_seconds
+        if ttl is not None:
+            created = datetime.fromisoformat(ref["provenance"]["created_at"])
+            if created + timedelta(seconds=ttl) <= datetime.now(UTC):
+                from amplifier_foundation.session.media import MediaRefusal
+                raise MediaRefusal("Current host observation lifetime expired", code="source_policy")
         classification = self.store.get_origin_classification(ref)
         if classification == "computer-use":
             return self._computer_policy(ref, purpose=purpose)
@@ -241,6 +252,11 @@ class CLISessionMedia:
         if errors:
             # Retain all original handles for diagnosis; an uncertain close is
             # not automatically replayed. Every other wrapper was attempted.
+            cancelled = next((error for error in errors if isinstance(error, asyncio.CancelledError)), None)
+            if cancelled is not None:
+                if len(errors) > 1:
+                    raise cancelled from BaseExceptionGroup("Additional media cleanup failures", errors)
+                raise cancelled
             raise BaseExceptionGroup("CLI session media cleanup failed", errors)
         self.wrappers.clear()
 

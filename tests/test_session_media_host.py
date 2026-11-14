@@ -292,6 +292,42 @@ async def test_close_failure_still_closes_every_counted_wrapper_scope(tmp_path):
     assert active == []
 
 
+async def test_cancel_during_close_preserves_task_cancellation_and_closes_other_scopes(tmp_path):
+    from contextlib import contextmanager
+    entered, blocking = asyncio.Event(), asyncio.Event()
+    active = []
+    @contextmanager
+    def request_scope():
+        active.append(True)
+        try:
+            yield lambda: True
+        finally:
+            active.pop()
+    selected = session("cancel-close", [], policy={"enabled": False})
+    selected.coordinator.register_capability(
+        "session.media.tool_post", SimpleNamespace(request_scope=request_scope)
+    )
+    host = install_session_media(selected, SessionStore(tmp_path))
+    first = host.prepare_provider(Provider(host.capability), alias="first")
+    second = host.prepare_provider(Provider(host.capability), alias="second")
+    await second.request_budget(ChatRequest(messages=[Message(role="user", content="text")]))
+    close_first = first.aclose
+    async def wait_for_cancel():
+        await close_first()
+        entered.set()
+        await blocking.wait()
+    first.aclose = wait_for_cancel
+    task = asyncio.create_task(host.close())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+    assert active == [] and second._closed
+    assert host.closed and host.wrappers
+    await host.close()  # Uncertain close is not replayed.
+
+
 async def test_child_policy_intersection_preserves_parent_optout_quotas_and_expiry(tmp_path):
     from amplifier_app_cli.session_media import restrict_child_media
     parent = session("parent", [], policy={
