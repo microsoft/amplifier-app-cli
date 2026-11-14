@@ -97,6 +97,21 @@ def test_known_free_is_an_exact_decimal_zero(zero):
     assert isinstance(result, Decimal)
 
 
+@pytest.mark.parametrize("unknown", [
+    {"cost_usd": None},
+    {"cost_usd": None, "known_subtotal_usd": "0.02", "complete": False},
+    {"cost_usd": "0.02", "complete": False},
+    {"cost_usd": "invalid"},
+])
+def test_present_unknown_cost_never_becomes_a_partial_total(unknown):
+    assert sum_cost_usd([{"cost_usd": "0.03"}, None, unknown]) is None
+
+
+def test_known_zero_is_not_absent_or_unknown():
+    assert sum_cost_usd([None, {"cost_usd": "0"}]) == Decimal("0")
+    assert sum_cost_usd([None]) is None
+
+
 @pytest.mark.asyncio
 async def test_spawn_bridge_registers_child_cost_on_parent():
     """After spawn_sub_session completes, parent coordinator has a delegate contributor."""
@@ -129,6 +144,7 @@ async def test_spawn_bridge_registers_child_cost_on_parent():
     # A caller cannot corrupt the frozen contribution by mutating its snapshot.
     result["cost_usd"] = "99"
     assert registered[key]() == {"cost_usd": "0.07"}
+    assert result.get("complete", True) is True
 
 
 @pytest.mark.asyncio
@@ -166,6 +182,45 @@ async def test_bridge_swallows_exception_and_registers_unknown_cost(caplog):
         in record.getMessage()
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_failed_collection_registers_unknown_cost():
+    child_coord = MagicMock()
+    child_coord.collect_contributions = AsyncMock(side_effect=RuntimeError("simulated"))
+    parent_coord = MagicMock()
+    await bridge_child_cost(
+        child_coordinator=child_coord,
+        parent_coordinator=parent_coord,
+        child_session_id="failed-child",
+    )
+    channel, name, callback = parent_coord.register_contributor.call_args.args
+    assert (channel, name) == ("session.cost", "delegate:failed-child")
+    assert callback() == {
+        "cost_usd": None, "known_subtotal_usd": None, "complete": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_bridge_preserves_unknown_and_separate_known_subtotal():
+    child_coord = MagicMock()
+    child_coord.collect_contributions = AsyncMock(return_value=[
+        {"cost_usd": "0.03"},
+        {"cost_usd": None, "known_subtotal_usd": "0.02", "complete": False},
+    ])
+    parent_coord = MagicMock()
+    await bridge_child_cost(
+        child_coordinator=child_coord,
+        parent_coordinator=parent_coord,
+        child_session_id="partial-child",
+    )
+    channel, name, callback = parent_coord.register_contributor.call_args.args
+    assert (channel, name) == ("session.cost", "delegate:partial-child")
+    assert callback() == {
+        "cost_usd": None, "known_subtotal_usd": "0.05", "complete": False,
+    }
+    assert sum_cost_usd([{"cost_usd": "0.10"}, callback()]) is None
+    assert json.loads(json.dumps(callback())) == callback()
 
 
 @pytest.mark.asyncio

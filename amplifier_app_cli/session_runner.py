@@ -508,6 +508,7 @@ async def _finish_initialized_session(session, config, session_id, console, cwd)
     # retain the old CI-then-native fallback for compatibility.
     if config.is_resume:
         from .cost_history import (
+            read_session_cost,
             restore_fork_lineage_cost,
             restore_session_cost,
             session_events_path,
@@ -540,9 +541,21 @@ async def _finish_initialized_session(session, config, session_id, console, cwd)
                             ", ".join(result.diagnostics),
                         )
             else:
-                restore_session_cost(
-                    session.coordinator, session_id, session_events_path(session_dir)
+                observation = read_session_cost(
+                    session_events_path(session_dir), session_id=session_id
                 )
+                restore_session_cost(
+                    session.coordinator, session_id, session_events_path(session_dir),
+                    observation=observation,
+                )
+                if observation.incomplete:
+                    console.print(
+                        "[yellow]Warning:[/yellow] historical cost is incomplete. "
+                        "Available amounts are a partial subtotal."
+                        if observation.total is not None and observation.total > 0
+                        else "[yellow]Warning:[/yellow] complete historical cost is unavailable. "
+                        "Do not treat missing cost as zero."
+                    )
         except Exception:
             logger.debug("Prior session cost restore skipped", exc_info=True)
 

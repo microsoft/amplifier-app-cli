@@ -191,5 +191,17 @@ Rule of thumb: **`amplifier provider`** changes what's available tomorrow.
 
 amplifier provider list   show configured providers
 amplifier provider test   check every key works
+amplifier provider models <name>  list catalog models and price estimates
 amplifier run -p <name>   start a session on <name>
 ```
+
+`/provider models <name>` reads the session's mounted provider; the shell command
+reads saved configuration. Both show provider-reported price estimates without
+maintaining a CLI rate table. `Unknown` means the catalog has no supported price
+data, not that the model is free. Tiered prices include both sides of the input
+threshold, cache rates, and the whole-request rule. Catalog estimates are not
+request charges; actual costs come from provider usage.
+
+On resume, missing or invalid historical request costs make the historical total
+unknown. A warning identifies any available amounts as a partial subtotal. Known
+zero remains distinct from unavailable cost. Historical events are not repriced.

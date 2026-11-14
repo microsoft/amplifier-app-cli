@@ -14,6 +14,7 @@ dependencies = [
     # Participating media hook receipts qualify this exact public Core ABI.
     "amplifier-core==2.0.2",
     # Tool installs consume published metadata, not this repository's uv.lock.
+    # Includes accepted model/session and completeness-aware child cost APIs.
     # Candidate media graph; draft merge hold until accepted upstream qualification.
     "amplifier-foundation[media] @ git+https://github.com/microsoft/amplifier-foundation@fd32d2f6ab41d153790b398ea3ee4c513972f968",
     "pyyaml>=6.0.3",

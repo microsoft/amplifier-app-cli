@@ -1192,7 +1192,6 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
     table.add_column("Context", justify="right")
     table.add_column("Max Output", justify="right")
     table.add_column("Capabilities")
-
     for model in model_list:
         table.add_row(
             model.id,
@@ -1203,6 +1202,12 @@ def provider_models(ctx: click.Context, provider_id: str | None) -> None:
         )
 
     console.print(table)
+
+    from ..provider_diagnostics import format_model_pricing
+
+    console.print("\nPrice estimates (provider catalog; not request charges):")
+    for model in model_list:
+        console.print(f"  {model.id}: {format_model_pricing(model)}", markup=False)
 
 
 # ============================================================
