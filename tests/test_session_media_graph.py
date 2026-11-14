@@ -42,7 +42,7 @@ class Loader:
             elif module_id == "fixture-context":
                 await current.mount("context", Context())
             elif module_id == "fixture-provider":
-                await current.mount("providers", Provider(), name="fixture-provider")
+                await current.mount("providers", Provider(support=config.get("support", True)), name="fixture-provider")
             else:
                 raise AssertionError(f"Unexpected fixture module: {module_id}")
         return mount
@@ -54,16 +54,16 @@ class Loader:
 class Provider:
     name = "selected-fixture"
     default_model = "selected-vision"
-    def __init__(self): self.observed = []
+    def __init__(self, *, support=True): self.observed, self.support = [], support
     def get_media_request_support(self, *, model, request_options):
-        return {"v": 1, "positions": ["user", "tool"]}
+        return {"v": 1, "positions": ["user", "tool"] if self.support else []}
     def observe(self, request):
         images = [
             hashlib.sha256(base64.b64decode(block.source["data"])).hexdigest()
             for message in request.messages if isinstance(message.content, list)
             for block in message.content if isinstance(block, ImageBlock)
         ]
-        self.observed.append((request, images))
+        self.observed.append((request, images, str(request)))
     async def request_budget(self, request, *, request_options=None):
         self.observe(request)
         return {"estimated_input_tokens": 10, "input_limit_tokens": 100,
@@ -185,6 +185,10 @@ async def test_actual_root_preinit_configure_late_participants_and_receipt(tmp_p
         assert bridge.validate_receipt(next_receipt)
         assert transitions == ["synthetic"]
         if image_format:
+            await wrapped.request_budget(request)
+            assert "Already" in await processor._handle_mode("synthetic on")
+            assert "Not in" in await processor._handle_mode("different off")
+            assert bridge.graph_receipt is next_receipt and bridge.validate_receipt(next_receipt)
             assert await wrapped.complete(request) == "synthetic provider result"
             assert original.observed[-1][1] == [hashlib.sha256(payload).hexdigest()]
             assert await context.get_messages() == before
@@ -285,3 +289,79 @@ async def test_actual_raw_spawn_and_cold_resume_have_fresh_graph_and_owned_pixel
         assert selected[0]["metadata"]["experimental.media.v1"]["refs"][0]["session_id"] == "parent"
     finally:
         await parent.cleanup()
+
+
+@pytest.mark.parametrize("selected_alias", ["account-A", "account-B"])
+@pytest.mark.skipif(os.name != "posix", reason="POSIX media durability")
+async def test_two_configured_aliases_keep_exact_selected_adapter_and_unsupported_warning(tmp_path, selected_alias):
+    native = SessionStore(tmp_path)
+    plan = {
+        "session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+        "providers": [
+            {"module": "fixture-provider", "instance_id": "account-A", "config": {"support": True}},
+            {"module": "fixture-provider", "instance_id": "account-B", "config": {"support": False}},
+        ],
+    }
+    prepared = PreparedBundle(deepcopy(plan), MagicMock(), Bundle(name="fixture"))
+    config = SessionConfig(config=deepcopy(plan), search_paths=[], verbose=False, session_id="root",
+                           prepared_bundle=prepared, bundle_name="fixture", shared_root=False,
+                           invocation_mode="single")
+    def factory(*args, **kwargs):
+        actual = AmplifierSession(*args, **kwargs)
+        actual.coordinator.loader = Loader()
+        return actual
+    settings = MagicMock()
+    settings.with_session.return_value.get_merged_settings.return_value = {"configurator": {}}
+    with (
+        patch("amplifier_core.AmplifierSession", side_effect=factory),
+        patch("amplifier_app_cli.commands.init.check_first_run", return_value=False),
+        patch("amplifier_app_cli.session_runner.SessionStore", return_value=native),
+        patch("amplifier_app_cli.session_runner.AppSettings", return_value=settings),
+        patch("amplifier_app_cli.paths.create_foundation_resolver"),
+        patch("amplifier_app_cli.runtime.config.inject_user_providers"),
+    ):
+        initialized = await create_initialized_session(config, Console(file=StringIO()))
+    actual = initialized.session
+    try:
+        seal_session_hook_graph(actual)
+        bridge = actual.coordinator.get_capability("session.media.tool_post")
+        assert bridge.validate_receipt(bridge.graph_receipt)
+        host = actual.coordinator.get_capability("cli.session_media")
+        providers = actual.coordinator.get("providers")
+        assert set(providers) == {"account-A", "account-B"}
+        assert all(provider.name != alias for alias, provider in providers.items())
+        raw_by_alias = {
+            alias: next(raw for raw, wrapper in host.wrappers.values() if wrapper is wrapped)
+            for alias, wrapped in providers.items()
+        }
+        evidence = actual.coordinator.get_capability("cli.hooks.participating_graph").construction.participants_evidence()
+        adapters = evidence["adapters"]
+        assert all(any(edge["previous"] is raw_by_alias[alias] and edge["installed"] is providers[alias]
+                       for edge in adapters) for alias in providers)
+        data = io.BytesIO()
+        Image.new("RGB", (2, 2), "green").save(data, "PNG")
+        origin = {"kind": "tool", "session_id": "root", "id": "capture"}
+        ref = (await host.capability.ingest(data.getvalue(), source_format="image-bytes", origin=origin, policy=None))["value"]
+        await host.capability.publish([ref], origin=origin, disposition="retain")
+        context = actual.coordinator.get("context")
+        rows = [{"role": "user", "content": "observation",
+                 "metadata": {"experimental.media.v1": {"refs": [ref]}}}]
+        await context.set_messages(rows)
+        await actual.coordinator.get_capability("session.durable_checkpoint")()
+        request = ChatRequest(messages=[Message(**row) for row in rows])
+        selected = providers[selected_alias]
+        await selected.request_budget(request)
+        await selected.complete(request)
+        counted, sent = raw_by_alias[selected_alias].observed
+        assert counted[0] is sent[0] and counted[0] is not request
+        if selected_alias == "account-A":
+            assert counted[1] == sent[1] == [ref["sha256"]]
+        else:
+            assert counted[1] == sent[1] == []
+            assert "Image unavailable" in sent[2]
+        other = "account-B" if selected_alias == "account-A" else "account-A"
+        assert raw_by_alias[other].observed == []
+        assert await context.get_messages() == rows
+        assert bridge.validate_receipt(bridge.graph_receipt)
+    finally:
+        await initialized.cleanup()

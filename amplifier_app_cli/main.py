@@ -817,6 +817,19 @@ class CommandProcessor:
         command = args.strip().lower()
         if not command or command == "info" or command.startswith("info "):
             return await self._handle_mode_operation(args)
+        state = self.session.coordinator.session_state
+        current = state.get("active_mode")
+        parts = command.split()
+        target, explicit = parts[0], parts[1] if len(parts) > 1 else None
+        discovery = state.get("mode_discovery")
+        unchanged = (
+            (command == "off" and not current)
+            or (explicit == "on" and current == target)
+            or (explicit == "off" and current != target)
+            or (target != "off" and discovery and not discovery.find(target))
+        )
+        if unchanged:
+            return await self._handle_mode_operation(args)
         with transition_session_hook_graph(self.session):
             return await self._handle_mode_operation(args)
 
