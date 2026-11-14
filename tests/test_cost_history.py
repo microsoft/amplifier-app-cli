@@ -9,6 +9,8 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from amplifier_app_cli.cost_history import (
     _prefix_fingerprint,
     build_fork_cost_boundary,
@@ -165,6 +167,66 @@ def test_verified_zero_fork_history_registers_zero_once(tmp_path: Path) -> None:
     assert callbacks[("session.cost", "history:child")]() == {"cost_usd": "0"}
     restore_fork_lineage_cost(coordinator, session_id="child", session_dir=child)
     assert len(callbacks) == 1
+
+
+@pytest.mark.parametrize("boundary", [None, {"version": 1, "status": "invalid"}])
+@pytest.mark.parametrize("capture", ["missing", "null_cost", "missing_cost", "empty"])
+def test_fork_without_known_amount_never_exposes_zero_subtotal(tmp_path: Path, boundary, capture) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    child = _save(
+        store, "child", _messages("old"), {
+            "parent_id": "gone-parent",
+            "forked_from_turn": 1,
+            **({"fork_cost_boundary": boundary} if boundary is not None else {}),
+        },
+    )
+    events = child / "context-intelligence" / "events.jsonl"
+    if capture != "missing":
+        rows = [] if capture == "empty" else [_response("child", None)]
+        if capture == "missing_cost":
+            rows[0]["data"]["usage"] = {}
+        _write_events(events, rows)
+    before = {path: path.read_bytes() for path in child.rglob("*") if path.is_file()}
+    coordinator = MagicMock(session_state={})
+    callbacks = _registered(coordinator)
+
+    result = restore_fork_lineage_cost(coordinator, session_id="child", session_dir=child)
+
+    assert result.incomplete
+    assert callbacks[("session.cost", "history:child")]() == {
+        "cost_usd": None, "known_subtotal_usd": None, "complete": False,
+    }
+    assert {path: path.read_bytes() for path in child.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("known_source", ["inherited", "child", "child_with_unknown"])
+def test_incomplete_fork_retains_observed_zero_subtotal(tmp_path: Path, known_source) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    messages = _messages("old")
+    if known_source == "inherited":
+        parent = _save(store, "parent", messages, {})
+        _write_events(
+            parent / "context-intelligence" / "events.jsonl",
+            [_submit("parent", "old"), _response("parent", "0")],
+        )
+        child, boundary = _fork(store, "parent", "child", messages, {}, 1)
+        assert boundary["status"] == "verified"
+        # The child capture is missing; only the inherited zero is known.
+    else:
+        child = _save(store, "child", messages, {"parent_id": "gone", "forked_from_turn": 1})
+        rows = [_response("child", "0")]
+        if known_source == "child_with_unknown":
+            rows.append(_response("child", None))
+        _write_events(child / "context-intelligence" / "events.jsonl", rows)
+    coordinator = MagicMock(session_state={})
+    callbacks = _registered(coordinator)
+
+    result = restore_fork_lineage_cost(coordinator, session_id="child", session_dir=child)
+
+    assert result.incomplete
+    assert callbacks[("session.cost", "history:child")]() == {
+        "cost_usd": None, "known_subtotal_usd": "0", "complete": False,
+    }
 
 
 def test_timestamp_free_store_messages_create_verified_boundary_and_restore(tmp_path: Path) -> None:

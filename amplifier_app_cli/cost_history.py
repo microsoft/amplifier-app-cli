@@ -539,15 +539,15 @@ def build_fork_cost_boundary(
     return boundary
 
 
-def _sum_owner_ci_cost(session_dir: Path, owner: str) -> tuple[Decimal, tuple[str, ...]]:
-    """Sum child-owned spend only; inherited cost comes only from metadata."""
+def _sum_owner_ci_cost(session_dir: Path, owner: str) -> tuple[Decimal | None, tuple[str, ...]]:
+    """Sum observed child-owned amounts; None means no known amount, not zero."""
     events_path = ci_events_path(session_dir)
     diagnostics: set[str] = set()
     if not events_path.is_file():
-        return Decimal("0"), (f"missing_ci_capture:{owner}",)
+        return None, (f"missing_ci_capture:{owner}",)
     before = _capture_stamp(events_path)
     history = SessionHistoryStore(session_dir, events_path=events_path, session_id=owner)
-    total = Decimal("0")
+    total: Decimal | None = None
     for event in history.iter_events():
         if event.get("session_id") != owner:
             continue
@@ -561,7 +561,7 @@ def _sum_owner_ci_cost(session_dir: Path, owner: str) -> tuple[Decimal, tuple[st
         if amount is None:
             _add(diagnostics, f"invalid_cost:{owner}")
             continue
-        total += amount
+        total = (total if total is not None else Decimal("0")) + amount
     diagnostics.update(_history_diagnostics(history, owner))
     if _foreign_owner_cost_exists(events_path, owner):
         _add(diagnostics, f"foreign_cost:{owner}")
@@ -601,7 +601,8 @@ def restore_fork_lineage_cost(
     inherited_total = inherited[-1] if inherited else Decimal("0")
     own_total, own_diagnostics = _sum_owner_ci_cost(session_dir, session_id)
     diagnostics.update(own_diagnostics)
-    total = inherited_total + own_total
+    total = inherited_total + (own_total if own_total is not None else Decimal("0"))
+    known_subtotal = str(total) if inherited is not None or own_total is not None else None
 
     marker = _restoration_marker(coordinator)
     if marker is None or session_id not in marker:
@@ -609,9 +610,9 @@ def restore_fork_lineage_cost(
             coordinator.register_contributor(
                 SESSION_COST_CHANNEL,
                 f"history:{session_id}",
-                lambda total=total, incomplete=bool(diagnostics): {
+                lambda total=total, incomplete=bool(diagnostics), subtotal=known_subtotal: {
                     "cost_usd": None if incomplete else str(total),
-                    **({"complete": False, "known_subtotal_usd": str(total)} if incomplete else {}),
+                    **({"complete": False, "known_subtotal_usd": subtotal} if incomplete else {}),
                 },
             )
         except Exception:
