@@ -31,7 +31,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "amplifier-core", specifier = ">=1.5.3" },
-    { name = "amplifier-foundation", extras = ["media"], git = "https://github.com/microsoft/amplifier-foundation?rev=538a5d6472a28809c27a7b11900bce3c4faf38c7" },
+    { name = "amplifier-foundation", extras = ["media"], git = "https://github.com/microsoft/amplifier-foundation?rev=543f887589f543c0d4986d84eb45b184cb8138e2" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "filelock", specifier = ">=3.29.6" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
@@ -74,7 +74,7 @@ wheels = [
 [[package]]
 name = "amplifier-foundation"
 version = "1.0.0"
-source = { git = "https://github.com/microsoft/amplifier-foundation?rev=538a5d6472a28809c27a7b11900bce3c4faf38c7#538a5d6472a28809c27a7b11900bce3c4faf38c7" }
+source = { git = "https://github.com/microsoft/amplifier-foundation?rev=543f887589f543c0d4986d84eb45b184cb8138e2#543f887589f543c0d4986d84eb45b184cb8138e2" }
 dependencies = [
     { name = "amplifier-core" },
     { name = "filelock" },

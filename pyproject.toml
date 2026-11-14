@@ -14,7 +14,7 @@ dependencies = [
     "amplifier-core>=1.5.3",
     # Tool installs consume published metadata, not this repository's uv.lock.
     # Candidate media graph; draft merge hold until accepted upstream qualification.
-    "amplifier-foundation[media] @ git+https://github.com/microsoft/amplifier-foundation@538a5d6472a28809c27a7b11900bce3c4faf38c7",
+    "amplifier-foundation[media] @ git+https://github.com/microsoft/amplifier-foundation@543f887589f543c0d4986d84eb45b184cb8138e2",
     "pyyaml>=6.0.3",
     "prompt-toolkit>=3.0.52",
     "httpx[socks]>=0.28.1",
@@ -73,7 +73,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "538a5d6472a28809c27a7b11900bce3c4faf38c7" }
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "543f887589f543c0d4986d84eb45b184cb8138e2" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

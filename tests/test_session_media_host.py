@@ -314,6 +314,45 @@ async def test_computer_overlay_frozen_before_count_witness_checked_before_send(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Candidate store is POSIX-only")
+async def test_forked_screenshot_classification_does_not_restore_source_authority(tmp_path):
+    from amplifier_foundation.session.media import MEDIA_NAMESPACE, MediaRefusal
+    from amplifier_app_cli.session_media_fork import fork_native_session
+    rows = []
+    native = SessionStore(tmp_path)
+    parent = session("parent", rows)
+    host = install_session_media(parent, native)
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2), "white").save(output, "PNG")
+    origin = {"kind": "tool", "session_id": "parent", "id": "actual-capture"}
+    ref = (await host.capability.ingest(output.getvalue(), source_format="image-bytes",
+                                       origin=origin, policy=None))["value"]
+    parent.coordinator.tools["original"] = SimpleNamespace(
+        _owns_media_ref=lambda value: value == ref,
+        _validate_media_ref=lambda value, **kwargs: True,
+    )
+    host._computer_policy(ref, purpose="persist")
+    await host.capability.publish([ref], origin=origin, disposition="retain")
+    rows.append({"role": "user", "content": "Saved screenshot", "metadata": {MEDIA_NAMESPACE: {"refs": [ref]}}})
+    native.save("parent", rows, {})
+    try:
+        result = fork_native_session(native, "parent", rows, {}, turn=1,
+                                     new_session_id="child", fenced=True, source_media=host.store)
+    finally:
+        await host.close()
+    child = session("child", result.messages)
+    owned = install_session_media(child, native, restored_messages=result.messages)
+    copied = result.messages[0]["metadata"][MEDIA_NAMESPACE]["refs"][0]
+    try:
+        assert owned.store.get_origin_classification(copied) == "computer-use"
+        with pytest.raises(MediaRefusal) as error:
+            owned.store.validate_ref(copied)
+        assert error.value.code == "source_policy"
+        assert child.coordinator.tools == {}  # No parent tool/consent inherited.
+    finally:
+        await owned.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Candidate store is POSIX-only")
 @pytest.mark.parametrize("failure", [RuntimeError("fixture"), asyncio.CancelledError()])
 async def test_public_spawn_post_initialize_setup_failure_releases_media_lock(
     tmp_path, monkeypatch, failure
