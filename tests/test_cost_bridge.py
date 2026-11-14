@@ -4,6 +4,7 @@ _sum_cost_usd and _bridge_child_cost live in amplifier_foundation.bundle._prepar
 and are imported directly from there (app-cli delegates, not reimplements).
 """
 
+import json
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -44,16 +45,30 @@ def test_accepts_string_cost_usd():
     assert isinstance(result, Decimal)
 
 
-def test_skips_none_entries_in_mixed_list():
+def test_skips_no_activity_entries_in_mixed_list():
     result = sum_cost_usd(
         [
             {"cost_usd": Decimal("0.03")},
             None,
-            {"cost_usd": None},
             {"cost_usd": Decimal("0.02")},
         ]
     )
     assert result == Decimal("0.05")
+
+
+@pytest.mark.parametrize("unknown", [
+    {"cost_usd": None},
+    {"cost_usd": None, "known_subtotal_usd": "0.02", "complete": False},
+    {"cost_usd": "0.02", "complete": False},
+    {"cost_usd": "invalid"},
+])
+def test_present_unknown_cost_never_becomes_a_partial_total(unknown):
+    assert sum_cost_usd([{"cost_usd": "0.03"}, None, unknown]) is None
+
+
+def test_known_zero_is_not_absent_or_unknown():
+    assert sum_cost_usd([None, {"cost_usd": "0"}]) == Decimal("0")
+    assert sum_cost_usd([None]) is None
 
 
 @pytest.mark.asyncio
@@ -81,11 +96,15 @@ async def test_spawn_bridge_registers_child_cost_on_parent():
     key = ("session.cost", "delegate:test-child-123")
     assert key in registered
     result = registered[key]()
-    assert result == {"cost_usd": Decimal("0.07")}
+    # Legacy Foundation emits Decimal; the completeness-aware bridge emits an
+    # exact JSON-safe string. Both preserve the same known value without floats.
+    assert isinstance(result["cost_usd"], (str, Decimal))
+    assert Decimal(result["cost_usd"]) == Decimal("0.07")
+    assert result.get("complete", True) is True
 
 
 @pytest.mark.asyncio
-async def test_bridge_swallows_exception_and_logs():
+async def test_bridge_swallows_exception_and_logs(caplog):
     """_bridge_child_cost never raises — errors are logged as warnings."""
     child_coord = MagicMock()
     # Simulate a failure inside collect_contributions
@@ -101,8 +120,51 @@ async def test_bridge_swallows_exception_and_logs():
         child_session_id="test-child-err",
     )
 
-    # No contributor registered because the bridge failed before it could register
-    parent_coord.register_contributor.assert_not_called()
+    # Failure must never escape the app-layer spawn wrapper. The strict contract
+    # below additionally requires that accounting failure remain visible.
+    assert any(
+        record.levelname == "WARNING" and "child session cost" in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_collection_registers_unknown_cost():
+    child_coord = MagicMock()
+    child_coord.collect_contributions = AsyncMock(side_effect=RuntimeError("simulated"))
+    parent_coord = MagicMock()
+    await bridge_child_cost(
+        child_coordinator=child_coord,
+        parent_coordinator=parent_coord,
+        child_session_id="failed-child",
+    )
+    channel, name, callback = parent_coord.register_contributor.call_args.args
+    assert (channel, name) == ("session.cost", "delegate:failed-child")
+    assert callback() == {
+        "cost_usd": None, "known_subtotal_usd": None, "complete": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_bridge_preserves_unknown_and_separate_known_subtotal():
+    child_coord = MagicMock()
+    child_coord.collect_contributions = AsyncMock(return_value=[
+        {"cost_usd": "0.03"},
+        {"cost_usd": None, "known_subtotal_usd": "0.02", "complete": False},
+    ])
+    parent_coord = MagicMock()
+    await bridge_child_cost(
+        child_coordinator=child_coord,
+        parent_coordinator=parent_coord,
+        child_session_id="partial-child",
+    )
+    channel, name, callback = parent_coord.register_contributor.call_args.args
+    assert (channel, name) == ("session.cost", "delegate:partial-child")
+    assert callback() == {
+        "cost_usd": None, "known_subtotal_usd": "0.05", "complete": False,
+    }
+    assert sum_cost_usd([{"cost_usd": "0.10"}, callback()]) is None
+    assert json.loads(json.dumps(callback())) == callback()
 
 
 @pytest.mark.asyncio
@@ -211,8 +273,10 @@ async def test_resume_bridge_accumulates_incremental_costs():
     # Verify incremental values and that their sum is correct
     _, _, cb1 = all_register_calls[0]
     _, _, cb2 = all_register_calls[1]
-    assert cb1()["cost_usd"] == Decimal("0.04")
-    assert cb2()["cost_usd"] == Decimal("0.06")
+    assert isinstance(cb1()["cost_usd"], (str, Decimal))
+    assert isinstance(cb2()["cost_usd"], (str, Decimal))
+    assert Decimal(cb1()["cost_usd"]) == Decimal("0.04")
+    assert Decimal(cb2()["cost_usd"]) == Decimal("0.06")
 
     # Simulate what collect_contributions + _sum_cost_usd would produce:
     # both entries are returned, summed to $0.10 (no double-counting)

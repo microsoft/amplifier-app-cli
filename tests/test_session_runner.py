@@ -18,7 +18,7 @@ from amplifier_app_cli.session_runner import (
     create_initialized_session,
     register_session_spawning,
 )
-from amplifier_app_cli.cost_history import ForkLineageCost
+from amplifier_app_cli.cost_history import ForkLineageCost, SessionCostHistory
 
 # ---------------------------------------------------------------------------
 # Helpers shared across tests
@@ -96,6 +96,37 @@ async def test_resume_uses_lineage_cost_only_for_native_transcript_forks(
 
     assert restore_lineage.called is expects_lineage
     assert restore_ordinary.called is not expects_lineage
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("total", [Decimal("0.10"), Decimal("0"), None])
+async def test_ordinary_resume_warns_once_for_incomplete_cost(tmp_path, total):
+    from contextlib import ExitStack
+
+    session_id = "ordinary-resume"
+    session_dir = tmp_path / session_id
+    session_dir.mkdir()
+    (session_dir / "metadata.json").write_text(
+        json.dumps({"session_id": session_id}), encoding="utf-8"
+    )
+    mock_session = _make_mock_session()
+    cfg = _make_session_config(
+        session_id=session_id, initial_transcript=[{"role": "user", "content": "resume"}]
+    )
+    observed = SessionCostHistory(total, ("missing_or_invalid_response_cost",))
+    output = StringIO()
+    with ExitStack() as stack:
+        for patcher in _configurator_patches(mock_session):
+            stack.enter_context(patcher)
+        stack.enter_context(patch(f"{_MODULE}.SessionStore", return_value=MagicMock(base_dir=tmp_path)))
+        stack.enter_context(patch("amplifier_app_cli.cost_history.read_session_cost", return_value=observed))
+        restore = stack.enter_context(patch("amplifier_app_cli.cost_history.restore_session_cost"))
+        await create_initialized_session(cfg, Console(file=output, width=160, color_system=None))
+    assert restore.call_args.kwargs["observation"] is observed
+    rendered = output.getvalue()
+    assert rendered.count("Warning:") == 1
+    assert ("partial subtotal" in rendered) is (total is not None and total > 0)
+    assert ("Do not treat missing cost as zero." in rendered) is (total is None or total == 0)
 
 
 @pytest.mark.anyio

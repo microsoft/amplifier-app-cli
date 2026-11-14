@@ -75,13 +75,28 @@ def _decimal(value: object) -> Decimal | None:
     return amount if amount.is_finite() and amount >= 0 else None
 
 
-def sum_prior_cost_usd(events_path: Path, *, session_id: str | None = None) -> Decimal | None:
-    """Read ordinary-session cost through Foundation's streaming CI reader."""
+@dataclass(frozen=True)
+class SessionCostHistory:
+    """Known historical spend and whether it covers every observed response."""
+
+    total: Decimal | None
+    diagnostics: tuple[str, ...]
+
+    @property
+    def incomplete(self) -> bool:
+        return bool(self.diagnostics)
+
+
+def read_session_cost(events_path: Path, *, session_id: str | None = None) -> SessionCostHistory:
+    """Read ordinary-session cost without disguising unknown requests as free."""
     session_dir = events_path.parent
     if session_dir.name == "context-intelligence":
         session_dir = session_dir.parent
     history = SessionHistoryStore(session_dir, events_path=events_path, session_id=session_id)
     total: Decimal | None = None
+    diagnostics: set[str] = set()
+    if not events_path.is_file():
+        diagnostics.add("missing_cost_history")
     for event in history.iter_events():
         if event.get("event") != _LLM_RESPONSE_EVENT:
             continue
@@ -89,7 +104,17 @@ def sum_prior_cost_usd(events_path: Path, *, session_id: str | None = None) -> D
         amount = _decimal(usage.get("cost_usd") if isinstance(usage, dict) else None)
         if amount is not None:
             total = (total or Decimal("0")) + amount
-    return total
+        else:
+            diagnostics.add("missing_or_invalid_response_cost")
+    if total is None:
+        diagnostics.add("no_priced_response_history")
+    diagnostics.update(_history_diagnostics(history, session_id or session_dir.name))
+    return SessionCostHistory(total, tuple(sorted(diagnostics)))
+
+
+def sum_prior_cost_usd(events_path: Path, *, session_id: str | None = None) -> Decimal | None:
+    """Return the known subtotal; use read_session_cost to assess completeness."""
+    return read_session_cost(events_path, session_id=session_id).total
 
 
 def _add(diagnostics: set[str], code: str) -> None:
@@ -514,15 +539,15 @@ def build_fork_cost_boundary(
     return boundary
 
 
-def _sum_owner_ci_cost(session_dir: Path, owner: str) -> tuple[Decimal, tuple[str, ...]]:
-    """Sum child-owned spend only; inherited cost comes only from metadata."""
+def _sum_owner_ci_cost(session_dir: Path, owner: str) -> tuple[Decimal | None, tuple[str, ...]]:
+    """Sum observed child-owned amounts; None means no known amount, not zero."""
     events_path = ci_events_path(session_dir)
     diagnostics: set[str] = set()
     if not events_path.is_file():
-        return Decimal("0"), (f"missing_ci_capture:{owner}",)
+        return None, (f"missing_ci_capture:{owner}",)
     before = _capture_stamp(events_path)
     history = SessionHistoryStore(session_dir, events_path=events_path, session_id=owner)
-    total = Decimal("0")
+    total: Decimal | None = None
     for event in history.iter_events():
         if event.get("session_id") != owner:
             continue
@@ -536,7 +561,7 @@ def _sum_owner_ci_cost(session_dir: Path, owner: str) -> tuple[Decimal, tuple[st
         if amount is None:
             _add(diagnostics, f"invalid_cost:{owner}")
             continue
-        total += amount
+        total = (total if total is not None else Decimal("0")) + amount
     diagnostics.update(_history_diagnostics(history, owner))
     if _foreign_owner_cost_exists(events_path, owner):
         _add(diagnostics, f"foreign_cost:{owner}")
@@ -576,15 +601,19 @@ def restore_fork_lineage_cost(
     inherited_total = inherited[-1] if inherited else Decimal("0")
     own_total, own_diagnostics = _sum_owner_ci_cost(session_dir, session_id)
     diagnostics.update(own_diagnostics)
-    total = inherited_total + own_total
+    total = inherited_total + (own_total if own_total is not None else Decimal("0"))
+    known_subtotal = str(total) if inherited is not None or own_total is not None else None
 
     marker = _restoration_marker(coordinator)
-    if total > 0 and (marker is None or session_id not in marker):
+    if marker is None or session_id not in marker:
         try:
             coordinator.register_contributor(
                 SESSION_COST_CHANNEL,
                 f"history:{session_id}",
-                lambda total=total: {"cost_usd": str(total)},
+                lambda total=total, incomplete=bool(diagnostics), subtotal=known_subtotal: {
+                    "cost_usd": None if incomplete else str(total),
+                    **({"complete": False, "known_subtotal_usd": subtotal} if incomplete else {}),
+                },
             )
         except Exception:
             logger.warning(
@@ -603,16 +632,25 @@ def restore_session_cost(
     coordinator: Any,
     session_id: str,
     events_path: Path,
+    *,
+    observation: SessionCostHistory | None = None,
 ) -> Decimal | None:
     """Re-seed ordinary resume cost via a synthetic contributor."""
-    prior_total = sum_prior_cost_usd(events_path, session_id=session_id)
-    if prior_total is None or prior_total <= 0:
+    result = observation or read_session_cost(events_path, session_id=session_id)
+    prior_total = result.total
+    if prior_total is None and not result.incomplete:
         return None
     try:
         coordinator.register_contributor(
             SESSION_COST_CHANNEL,
             f"history:{session_id}",
-            lambda total=prior_total: {"cost_usd": str(total)},
+            lambda total=prior_total, incomplete=result.incomplete: {
+                "cost_usd": str(total) if total is not None and not incomplete else None,
+                **({
+                    "complete": False,
+                    "known_subtotal_usd": str(total) if total is not None else None,
+                } if incomplete else {}),
+            },
         )
     except Exception:
         logger.warning(
