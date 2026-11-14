@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 from typing import Any
 
@@ -106,6 +107,111 @@ async def test_provider_connectivity(
     return ProviderTestResult(name=name, ok=True, elapsed_s=elapsed, detail=detail)
 
 
+def _rate(value: Any) -> str:
+    """Validate display rates without inventing a missing or invalid price."""
+    if not isinstance(value, (str, int, float, Decimal)) or isinstance(value, bool):
+        raise ValueError("Missing rate")
+    try:
+        amount = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ValueError("Invalid rate") from exc
+    if not amount.is_finite() or amount < 0:
+        raise ValueError("Invalid rate")
+    return format(amount, "f")
+
+
+def _format_rates(rates: Any) -> str:
+    if not isinstance(rates, dict):
+        raise ValueError("Missing rates")
+    labels = (
+        ("input", "input"),
+        ("output", "output"),
+        ("cache_read", "cache read"),
+        ("cache_write_5m", "cache write 5m"),
+        ("cache_write_1h", "cache write 1h"),
+    )
+    return ", ".join(f"{label} {_rate(rates[key])}" for key, label in labels)
+
+
+def format_model_pricing(model: "ModelInfo") -> str:
+    """Show provider catalog estimates, never calculate request costs here."""
+    details = getattr(model, "pricing_details", None)
+    if details is not None:
+        try:
+            if (
+                not isinstance(details, dict)
+                or type(details.get("version")) is not int
+                or details["version"] != 1
+                or details.get("currency") != "USD"
+                or details.get("unit") != "per_million_tokens"
+                or details.get("basis") != "standard_global"
+            ):
+                return "Unknown"
+            if details.get("kind") == "fixed":
+                summary = _format_rates(details["rates"])
+            elif details.get("kind") == "tiered":
+                threshold = details["threshold_tokens"]
+                tiers = details["tiers"]
+                if (
+                    type(threshold) is not int
+                    or threshold <= 0
+                    or details.get("threshold_basis")
+                    != "input_tokens+cache_read_input_tokens+cache_creation_input_tokens"
+                    or not isinstance(tiers, list)
+                    or len(tiers) != 2
+                    or type(tiers[0].get("up_to")) is not int
+                    or type(tiers[1].get("above")) is not int
+                    or tiers[0].get("up_to") != threshold
+                    or tiers[1].get("above") != threshold
+                ):
+                    return "Unknown"
+                summary = (
+                    f"<= {threshold:,}: {_format_rates(tiers[0]['rates'])}; "
+                    f"> {threshold:,}: {_format_rates(tiers[1]['rates'])}. "
+                    "Tier uses fresh + cached input counted once; "
+                    "selected rates apply to the whole request, including output"
+                )
+            else:
+                return "Unknown"
+            modifiers = details.get("modifiers", {})
+            if not isinstance(modifiers, dict):
+                return "Unknown"
+            labels = {"us_inference": "US inference", "confirmed_fast": "confirmed fast"}
+            if modifiers.keys() - labels.keys():
+                return "Unknown"
+            suffix = "; ".join(
+                f"{labels[key]} x{_rate(value)}"
+                for key, value in modifiers.items()
+                if key in labels
+            )
+            return f"USD/M tokens (standard global): {summary}" + (
+                f"; {suffix}" if suffix else ""
+            )
+        except (KeyError, TypeError, AttributeError, ValueError):
+            return "Unknown"
+    pricing = getattr(model, "pricing", None)
+    if pricing is None:
+        return "Unknown"
+    try:
+        currency = pricing.currency
+        if not isinstance(currency, str) or len(currency) != 3 or not currency.isalpha():
+            return "Unknown"
+        summary = (
+            f"input {_rate(pricing.input_per_million)}, "
+            f"output {_rate(pricing.output_per_million)}"
+        )
+        for field, label in (
+            ("cache_read_per_million", "cache read"),
+            ("cache_write_per_million", "cache write"),
+        ):
+            value = getattr(pricing, field, None)
+            if value is not None:
+                summary += f", {label} {_rate(value)}"
+        return f"{currency}/M tokens: {summary}"
+    except (AttributeError, ValueError):
+        return "Unknown"
+
+
 def format_model_line(model: "ModelInfo") -> str:
     """Render one ``ModelInfo`` as a compact, single-line summary.
 
@@ -117,4 +223,7 @@ def format_model_line(model: "ModelInfo") -> str:
     context = f"{model.context_window:,}" if model.context_window else "-"
     max_out = f"{model.max_output_tokens:,}" if model.max_output_tokens else "-"
     caps = ", ".join(model.capabilities) if model.capabilities else "-"
-    return f"{model.id:<28} context={context:<10} max_out={max_out:<8} caps={caps}"
+    return (
+        f"{model.id:<28} context={context:<10} max_out={max_out:<8} caps={caps}"
+        f"\n  Price estimate: {format_model_pricing(model)}"
+    )

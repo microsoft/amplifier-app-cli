@@ -75,13 +75,28 @@ def _decimal(value: object) -> Decimal | None:
     return amount if amount.is_finite() and amount >= 0 else None
 
 
-def sum_prior_cost_usd(events_path: Path, *, session_id: str | None = None) -> Decimal | None:
-    """Read ordinary-session cost through Foundation's streaming CI reader."""
+@dataclass(frozen=True)
+class SessionCostHistory:
+    """Known historical spend and whether it covers every observed response."""
+
+    total: Decimal | None
+    diagnostics: tuple[str, ...]
+
+    @property
+    def incomplete(self) -> bool:
+        return bool(self.diagnostics)
+
+
+def read_session_cost(events_path: Path, *, session_id: str | None = None) -> SessionCostHistory:
+    """Read ordinary-session cost without disguising unknown requests as free."""
     session_dir = events_path.parent
     if session_dir.name == "context-intelligence":
         session_dir = session_dir.parent
     history = SessionHistoryStore(session_dir, events_path=events_path, session_id=session_id)
     total: Decimal | None = None
+    diagnostics: set[str] = set()
+    if not events_path.is_file():
+        diagnostics.add("missing_cost_history")
     for event in history.iter_events():
         if event.get("event") != _LLM_RESPONSE_EVENT:
             continue
@@ -89,7 +104,17 @@ def sum_prior_cost_usd(events_path: Path, *, session_id: str | None = None) -> D
         amount = _decimal(usage.get("cost_usd") if isinstance(usage, dict) else None)
         if amount is not None:
             total = (total or Decimal("0")) + amount
-    return total
+        else:
+            diagnostics.add("missing_or_invalid_response_cost")
+    if total is None:
+        diagnostics.add("no_priced_response_history")
+    diagnostics.update(_history_diagnostics(history, session_id or session_dir.name))
+    return SessionCostHistory(total, tuple(sorted(diagnostics)))
+
+
+def sum_prior_cost_usd(events_path: Path, *, session_id: str | None = None) -> Decimal | None:
+    """Return the known subtotal; use read_session_cost to assess completeness."""
+    return read_session_cost(events_path, session_id=session_id).total
 
 
 def _add(diagnostics: set[str], code: str) -> None:
@@ -579,12 +604,15 @@ def restore_fork_lineage_cost(
     total = inherited_total + own_total
 
     marker = _restoration_marker(coordinator)
-    if total > 0 and (marker is None or session_id not in marker):
+    if marker is None or session_id not in marker:
         try:
             coordinator.register_contributor(
                 SESSION_COST_CHANNEL,
                 f"history:{session_id}",
-                lambda total=total: {"cost_usd": str(total)},
+                lambda total=total, incomplete=bool(diagnostics): {
+                    "cost_usd": None if incomplete else str(total),
+                    **({"complete": False, "known_subtotal_usd": str(total)} if incomplete else {}),
+                },
             )
         except Exception:
             logger.warning(
@@ -603,16 +631,25 @@ def restore_session_cost(
     coordinator: Any,
     session_id: str,
     events_path: Path,
+    *,
+    observation: SessionCostHistory | None = None,
 ) -> Decimal | None:
     """Re-seed ordinary resume cost via a synthetic contributor."""
-    prior_total = sum_prior_cost_usd(events_path, session_id=session_id)
-    if prior_total is None or prior_total <= 0:
+    result = observation or read_session_cost(events_path, session_id=session_id)
+    prior_total = result.total
+    if prior_total is None and not result.incomplete:
         return None
     try:
         coordinator.register_contributor(
             SESSION_COST_CHANNEL,
             f"history:{session_id}",
-            lambda total=prior_total: {"cost_usd": str(total)},
+            lambda total=prior_total, incomplete=result.incomplete: {
+                "cost_usd": str(total) if total is not None and not incomplete else None,
+                **({
+                    "complete": False,
+                    "known_subtotal_usd": str(total) if total is not None else None,
+                } if incomplete else {}),
+            },
         )
     except Exception:
         logger.warning(

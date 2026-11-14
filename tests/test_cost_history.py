@@ -14,6 +14,7 @@ from amplifier_app_cli.cost_history import (
     build_fork_cost_boundary,
     restore_fork_lineage_cost,
     restore_session_cost,
+    read_session_cost,
     sum_prior_cost_usd,
 )
 from amplifier_app_cli.session_store import SessionStore
@@ -99,6 +100,71 @@ def test_ordinary_resume_keeps_legacy_cost_reader(tmp_path: Path) -> None:
     assert sum_prior_cost_usd(events, session_id="root") == Decimal("0.15")
     assert restore_session_cost(coordinator, "root", events) == Decimal("0.15")
     assert callbacks[("session.cost", "history:root")]() == {"cost_usd": "0.15"}
+
+
+def test_ordinary_resume_preserves_unknown_and_known_zero(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    coordinator = MagicMock()
+    callbacks = _registered(coordinator)
+    _write_events(events, [_response("root", "0")])
+    assert not read_session_cost(events, session_id="root").incomplete
+    assert restore_session_cost(coordinator, "root", events) == Decimal("0")
+    assert callbacks[("session.cost", "history:root")]() == {"cost_usd": "0"}
+
+    _write_events(events, [_response("root", "0.10"), _response("root", None)])
+    before = events.read_bytes()
+    observed = read_session_cost(events, session_id="root")
+    assert observed.incomplete
+    assert observed.total == Decimal("0.10")
+    callbacks.clear()
+    restore_session_cost(coordinator, "root", events, observation=observed)
+    assert callbacks[("session.cost", "history:root")]() == {
+        "cost_usd": None, "known_subtotal_usd": "0.10", "complete": False,
+    }
+    assert events.read_bytes() == before
+
+
+def test_unknown_only_and_missing_history_are_not_free(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    coordinator = MagicMock()
+    callbacks = _registered(coordinator)
+    for missing in (True, False):
+        if not missing:
+            _write_events(events, [_response("root", None)])
+        observed = read_session_cost(events, session_id="root")
+        assert observed.incomplete and observed.total is None
+        restore_session_cost(coordinator, "root", events, observation=observed)
+        assert callbacks[("session.cost", "history:root")]() == {
+            "cost_usd": None, "known_subtotal_usd": None, "complete": False,
+        }
+
+
+def test_empty_or_non_response_history_is_not_verified_zero(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    for rows in ([], [_submit("root", "old prompt")]):
+        _write_events(events, rows)
+        result = read_session_cost(events, session_id="root")
+        assert result.total is None and result.incomplete
+        assert "no_priced_response_history" in result.diagnostics
+
+
+def test_verified_zero_fork_history_registers_zero_once(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    messages = _messages("first")
+    parent = _save(store, "parent", messages, {})
+    _write_events(
+        parent / "context-intelligence" / "events.jsonl",
+        [_submit("parent", "first"), _response("parent", "0")],
+    )
+    child, _ = _fork(store, "parent", "child", messages, {}, 1)
+    _write_events(child / "context-intelligence" / "events.jsonl", [_response("child", "0")])
+    coordinator = MagicMock(session_state={})
+    callbacks = _registered(coordinator)
+    result = restore_fork_lineage_cost(coordinator, session_id="child", session_dir=child)
+    assert result.total == 0 and not result.incomplete
+    assert callbacks[("session.cost", "history:child")]() == {"cost_usd": "0"}
+    restore_fork_lineage_cost(coordinator, session_id="child", session_dir=child)
+    assert len(callbacks) == 1
 
 
 def test_timestamp_free_store_messages_create_verified_boundary_and_restore(tmp_path: Path) -> None:
@@ -379,6 +445,9 @@ def test_restore_excludes_unscoped_and_foreign_costs_and_is_idempotent(tmp_path:
     assert "ci_unscoped_event:child" in first.diagnostics
     assert "foreign_cost:child" in first.diagnostics
     assert len(callbacks) == 1
+    assert callbacks[("session.cost", "history:child")]() == {
+        "cost_usd": None, "known_subtotal_usd": "0.30", "complete": False,
+    }
 
 
 def test_invalid_oversized_boundary_and_unstable_capture_are_explicit(tmp_path: Path, monkeypatch) -> None:
