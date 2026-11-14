@@ -3739,10 +3739,22 @@ def _protect_interactive_setup(function):
                     except BaseException as error:
                         if cause is None:
                             raise
-                        cause.add_note(
-                            f"Interactive setup cleanup did not settle ({type(error).__name__}); writer retained"
+                        try:
+                            BaseException.add_note(
+                                cause, "Interactive setup cleanup did not settle; writer retained"
+                            )
+                        except BaseException:
+                            pass  # Diagnostics must not replace the primary cause.
+                        # Provider/cleanup errors and their chains can contain
+                        # private media. Keep only this fixed custody diagnostic
+                        # at the logging boundary; preserve the original cause
+                        # object in memory and propagate it unchanged.
+                        logger.warning(
+                            "Interactive setup cleanup did not settle; writer retained; "
+                            "exception details withheld",
+                            exc_info=None,
+                            stack_info=False,
                         )
-                        logger.warning("Interactive setup cleanup did not settle; writer retained", exc_info=True)
                     finally:
                         close_dedicated_tty_input()
             finally:

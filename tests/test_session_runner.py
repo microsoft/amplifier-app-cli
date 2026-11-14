@@ -863,7 +863,9 @@ async def test_root_construction_cleanup_failure_retains_writer(stage, cancelled
     config = _make_session_config(session_id="root", root_state=root)
     selected = _make_mock_session()
     selected.session_id = "root"
-    selected.cleanup = AsyncMock(side_effect=asyncio.CancelledError() if cancelled else RuntimeError("cleanup failure"))
+    sentinel = "data:image/png;base64,PRIVATEPIXELS?secret=construction-cleanup"
+    cleanup_error = asyncio.CancelledError(sentinel) if cancelled else RuntimeError(sentinel)
+    selected.cleanup = AsyncMock(side_effect=cleanup_error)
     setup_error = RuntimeError("setup failure")
     called = []
 
@@ -893,6 +895,7 @@ async def test_root_construction_cleanup_failure_retains_writer(stage, cancelled
         stack.enter_context(patch(f"{_MODULE}.register_session_spawning"))
         stack.enter_context(patch("amplifier_app_cli.runtime.config.inject_user_providers"))
         stack.enter_context(patch("amplifier_app_cli.paths.create_foundation_resolver"))
+        warning = stack.enter_context(patch(f"{_MODULE}.logger.warning"))
         with pytest.raises(RuntimeError) as error:
             await create_initialized_session(config, Console(file=StringIO()))
     assert error.value is setup_error if stage != "retry" else "self-healing" in str(error.value)
@@ -901,6 +904,14 @@ async def test_root_construction_cleanup_failure_retains_writer(stage, cancelled
     root.release.assert_not_called()
     assert config.root_state is root
     assert called == ["create"]  # No cleanup or create replay after uncertainty.
+    warning.assert_any_call(
+        "Root construction cleanup did not settle; writer retained; exception details withheld",
+        exc_info=None, stack_info=False,
+    )
+    custody_logs = [call for call in warning.call_args_list if call.kwargs.get("exc_info", True) is None]
+    assert len(custody_logs) == 1
+    assert sentinel not in repr(warning.call_args_list)
+    assert cleanup_error.args == (sentinel,)
 
 
 @pytest.mark.asyncio

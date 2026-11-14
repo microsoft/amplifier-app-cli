@@ -204,8 +204,14 @@ class _RootSetupOwner:
             await self.session.cleanup()
         except BaseException as error:
             self.cleanup_error = error
-            cause.add_note(f"Root construction cleanup did not settle ({type(error).__name__}); writer retained")
-            logger.warning("Root construction cleanup did not settle; writer retained", exc_info=True)
+            try:
+                BaseException.add_note(cause, "Root construction cleanup did not settle; writer retained")
+            except BaseException:
+                pass  # Diagnostics must not replace the primary setup failure.
+            logger.warning(
+                "Root construction cleanup did not settle; writer retained; exception details withheld",
+                exc_info=None, stack_info=False,
+            )
             return False
         self.settled = True
         return True

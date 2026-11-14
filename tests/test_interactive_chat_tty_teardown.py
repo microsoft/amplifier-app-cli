@@ -605,3 +605,69 @@ async def test_interactive_late_setup_cleanup_failure_retains_writer_and_origina
     session.cleanup.assert_awaited_once()
     writer.release.assert_not_called()
     close.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("primary_cancelled", [False, True])
+@pytest.mark.parametrize("cleanup_cancelled", [False, True])
+async def test_late_cleanup_log_withholds_private_exception_chain_at_entry(
+    tmp_path, primary_cancelled, cleanup_cancelled
+):
+    """The logger must never receive exceptions, traceback or private messages."""
+    import logging
+    from amplifier_app_cli.main import interactive_chat
+    from amplifier_app_cli.session_runner import InitializedSession, SessionConfig
+
+    sentinel = "data:image/png;base64,PRIVATEPIXELS?secret=cleanup-token"
+    base_primary = asyncio.CancelledError if primary_cancelled else RuntimeError
+    class PrimaryError(base_primary):
+        def add_note(self, note):
+            raise AssertionError("exception override must not replace original cause")
+    primary_type = PrimaryError
+    cleanup_type = asyncio.CancelledError if cleanup_cancelled else ValueError
+    primary = primary_type(sentinel + "-primary")
+    cleanup = cleanup_type(sentinel + "-cleanup")
+    cleanup.__cause__ = RuntimeError(sentinel + "-chain")
+    session = _make_mock_session()
+    session.cleanup = AsyncMock(side_effect=cleanup)
+    writer = MagicMock()
+    initialized = InitializedSession(
+        session, "test-session-id", SessionConfig({}, [], False),
+        store=MagicMock(), root_state=writer,
+    )
+    received = []
+
+    def log_at_entry(message, *args, **kwargs):
+        # Inspect before any formatter/filter can remove evidence.
+        received.append((message, args, kwargs))
+        assert args == ()
+        assert kwargs == {"exc_info": None, "stack_info": False}
+        assert sentinel not in message
+        record = logging.LogRecord("test", logging.WARNING, __file__, 1, message, args, None)
+        rendered = logging.Formatter("%(levelname)s %(message)s").format(record)
+        assert sentinel not in rendered and "Traceback" not in rendered
+        assert len(rendered) < 256
+
+    with (
+        patch(f"{_MODULE}.create_initialized_session", AsyncMock(return_value=initialized)),
+        patch("amplifier_app_cli.incremental_save.register_incremental_save"),
+        patch("amplifier_app_cli.goal_progress_hook.register_goal_progress_hook"),
+        patch("amplifier_app_cli.goal_circuit_breaker.register_goal_circuit_breaker"),
+        patch("amplifier_app_cli.session_hooks.seal_session_hook_graph", side_effect=primary),
+        patch(f"{_MODULE}.logger.warning", side_effect=log_at_entry),
+        patch(f"{_MODULE}.close_dedicated_tty_input") as close,
+        patch(f"{_MODULE}.console"),
+    ):
+        with pytest.raises(primary_type) as caught:
+            await interactive_chat(
+                config={}, search_paths=[tmp_path], verbose=False, bundle_name="fixture"
+            )
+    assert caught.value is primary
+    assert primary.args == (sentinel + "-primary",)
+    assert cleanup.args == (sentinel + "-cleanup",)
+    assert cleanup.__cause__.args == (sentinel + "-chain",)
+    assert len(received) == 1
+    assert primary.__notes__ == ["Interactive setup cleanup did not settle; writer retained"]
+    session.cleanup.assert_awaited_once()
+    writer.release.assert_not_called()
+    close.assert_called_once()
