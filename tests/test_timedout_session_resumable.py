@@ -42,7 +42,7 @@ import pytest
 
 from amplifier_app_cli.session_store import SessionStore
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("legacy_session_doubles_without_media")]
 
 SUB_SESSION_ID = "parent0000000000-child00000000000_test-agent"
 
@@ -270,6 +270,21 @@ async def test_raw_child_checkpoint_exists_before_initialize_and_bypasses_thrott
 
     rows, _ = store.load(SUB_SESSION_ID)
     assert rows[-1] == {"role": "user", "content": "settled"}
+    assert store.get_metadata(SUB_SESSION_ID)["config"]
+    if not resume:
+        # Exercise actual reconstruction, not just the existence of rows.
+        async def resumed_execute(instruction):
+            assert context.messages[-1]["content"] == "settled"
+            return "resumed"
+
+        child.execute.side_effect = resumed_execute
+        child.initialize.side_effect = None
+        p1, p2, p3, p4, p5 = _spawn_patches(child)
+        with p1, p2, p3, p4, p5:
+            result = await resume_sub_session(
+                SUB_SESSION_ID, "continue", parent_session=parent
+            )
+        assert result["output"] == "resumed"
 
 
 # ---------------------------------------------------------------------------

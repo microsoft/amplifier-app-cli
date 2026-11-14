@@ -243,14 +243,14 @@ class SharedRootSession:
         *,
         bundle: str,
         metadata: dict[str, Any],
-    ) -> None:
+    ) -> Any:
         """Save native history under the shared lock without a second checkpoint.
 
         The method name is retained for existing CLI save-hook callers. The
         bundle argument is a host convention; metadata remains the native shape.
         """
         self.held.check()
-        native_store.save(self.session_id, messages, metadata)
+        return native_store.save(self.session_id, messages, metadata)
 
     def delete_checkpoint(self) -> None:
         """Remove a historical checkpoint on an explicit session deletion."""

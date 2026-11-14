@@ -500,7 +500,7 @@ async def create_initialized_session(
         session=session,
         session_id=session_id,
         config=config,
-        store=SessionStore(),
+        store=session.coordinator.get_capability("cli.session_store") or SessionStore(),
         configurator=configurator,
         root_state=config.root_state,
     )
@@ -667,16 +667,24 @@ async def _create_bundle_session(
     _inject_invocation_metadata(prepared_bundle, mode=config.invocation_mode)
 
     from .session_checkpoint import install_session_checkpoint
+    from .session_media import install_session_media, mount_session_media
 
     store = SessionStore()
+    constructing: AmplifierSession | None = None
 
     async def before_initialize(candidate: AmplifierSession) -> None:
+        nonlocal constructing
+        constructing = candidate
         install_session_checkpoint(
             candidate,
             store,
             session_id=session_id,
             bundle=config.bundle_name,
             root_state=config.root_state,
+        )
+        install_session_media(
+            candidate, store, config=config.config,
+            restored_messages=config.initial_transcript,
         )
 
     # Step 4c: Create session (foundation handles init internally)
@@ -727,7 +735,12 @@ async def _create_bundle_session(
                         "Self-healing retry completed but some modules still failed to load. "
                         "Check module configuration, credentials, and dependencies."
                     )
-    except (ModuleValidationError, RuntimeError) as e:
+    except BaseException as e:
+        if constructing is not None:
+            await constructing.cleanup()
+            constructing = None
+        if not isinstance(e, (ModuleValidationError, RuntimeError)):
+            raise
         if not display_validation_error(console, e, verbose=config.verbose):
             console.print(f"[red]Error:[/red] {escape_markup(e)}")
             if config.verbose:
@@ -737,6 +750,7 @@ async def _create_bundle_session(
         core_logger.setLevel(original_level)
 
     # Step 5: Register mention handling (wrap foundation's resolver)
+    await mount_session_media(session)
     register_mention_handling(session)
 
     # Step 6: Register session spawning

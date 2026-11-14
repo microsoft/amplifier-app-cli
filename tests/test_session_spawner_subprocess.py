@@ -17,7 +17,7 @@ import pytest
 from amplifier_app_cli.session_spawner import spawn_sub_session
 
 # Configure anyio for async tests (asyncio backend only)
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("legacy_session_doubles_without_media")]
 
 
 @pytest.fixture(scope="module")

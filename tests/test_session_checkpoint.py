@@ -46,7 +46,6 @@ async def test_checkpoint_saves_settled_rows_and_current_metadata(tmp_path):
 async def test_checkpoint_uses_actual_root_writer_and_returns_its_receipt():
     session, context, capabilities = make_session([{"role": "user", "content": "x"}])
     store = MagicMock()
-    store.get_metadata_if_exists.return_value = {"name": "current"}
     receipt = object()
     root = SimpleNamespace(checkpoint=MagicMock(return_value=receipt))
     install_session_checkpoint(
@@ -55,7 +54,7 @@ async def test_checkpoint_uses_actual_root_writer_and_returns_its_receipt():
     assert await capabilities["session.durable_checkpoint"]() is receipt
     root.checkpoint.assert_called_once()
     assert root.checkpoint.call_args.args == (store, context.get_messages.return_value)
-    assert root.checkpoint.call_args.kwargs["metadata"]["name"] == "current"
+    assert "name" not in root.checkpoint.call_args.kwargs["metadata"]
     store.save.assert_not_called()
 
 
@@ -95,4 +94,42 @@ async def test_checkpoint_without_canonical_context_refuses():
     install_session_checkpoint(session, store, session_id="owner")
     with pytest.raises(RuntimeError, match="Canonical context"):
         await capabilities["session.durable_checkpoint"]()
+    store.save.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_does_not_replay_other_owner_fields(tmp_path, monkeypatch):
+    store = SessionStore(tmp_path)
+    rows = [{"role": "user", "content": "x"}]
+    store.save("owner", rows, {"other-owner": "before"})
+    session, _, caps = make_session(rows)
+    install_session_checkpoint(session, store, session_id="owner")
+    save = store.save
+
+    def interleaved(session_id, messages, metadata):
+        store.update_metadata("owner", {"other-owner": "newer"})
+        return save(session_id, messages, metadata)
+
+    monkeypatch.setattr(store, "save", interleaved)
+    await caps["session.durable_checkpoint"]()
+    assert store.get_metadata("owner")["other-owner"] == "newer"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_context_read_never_writes():
+    session, context, caps = make_session([])
+    entered = asyncio.Event()
+
+    async def hanging():
+        entered.set()
+        await asyncio.Event().wait()
+
+    context.get_messages.side_effect = hanging
+    store = MagicMock()
+    install_session_checkpoint(session, store, session_id="owner")
+    task = asyncio.create_task(caps["session.durable_checkpoint"]())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
     store.save.assert_not_called()

@@ -1330,11 +1330,21 @@ async def spawn_sub_session(
     # Now the resolver is available for loading modules with source: directives
     from .session_checkpoint import install_session_checkpoint
     from .session_store import SessionStore
+    from .session_media import install_session_media, mount_session_media
 
+    store = SessionStore()
+    checkpoint_metadata: dict = {}
     install_session_checkpoint(
-        child_session, SessionStore(), session_id=sub_session_id
+        child_session, store, session_id=sub_session_id,
+        metadata_factory=lambda: dict(checkpoint_metadata),
     )
-    await child_session.initialize()
+    install_session_media(child_session, store, config=merged_config)
+    try:
+        await child_session.initialize()
+        await mount_session_media(child_session)
+    except BaseException:
+        await child_session.cleanup()
+        raise
 
     # === Issue #233 fix: propagate runtime_skill_overlay capability ===
     #
@@ -1619,7 +1629,10 @@ async def spawn_sub_session(
             "content": base_prompt_snapshot,
         }
 
-    store = SessionStore()
+    # Reconstruction must not depend on the optional/best-effort autosave.
+    # These fields were authored for this child, not copied from an unrelated
+    # owner's unlocked persisted metadata snapshot.
+    checkpoint_metadata.update(metadata)
     unregister_checkpoint = await _install_transcript_checkpoint(
         child_session, store, sub_session_id, metadata, write_now=True
     )
@@ -2426,11 +2439,28 @@ async def resume_sub_session(
     # Initialize session (mounts modules per config)
     # Now the resolver is available for loading modules with source: directives
     from .session_checkpoint import install_session_checkpoint
+    from .session_media import install_session_media, mount_session_media
 
     install_session_checkpoint(
-        child_session, store, session_id=sub_session_id
+        child_session, store, session_id=sub_session_id,
+        metadata_factory=lambda: {
+            key: metadata[key] for key in (
+                "config", "parent_id", "trace_id", "agent_name", "child_span",
+                "created", "agent_overlay", "bundle_context",
+                "self_delegation_depth", "working_dir",
+                "caller_provider_preferences", SYSTEM_PROMPT_SNAPSHOT_KEY,
+            ) if key in metadata
+        },
     )
-    await child_session.initialize()
+    install_session_media(
+        child_session, store, config=merged_config, restored_messages=transcript
+    )
+    try:
+        await child_session.initialize()
+        await mount_session_media(child_session)
+    except BaseException:
+        await child_session.cleanup()
+        raise
 
     # Mention resolver - restore bundle mappings if available
     if bundle_context and bundle_context.get("mention_mappings"):

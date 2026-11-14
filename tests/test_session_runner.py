@@ -766,12 +766,15 @@ async def test_root_retry_installs_fresh_checkpoint_before_each_initialize(
 
     async def create(**kwargs):
         candidate = _make_mock_session()
+        candidate.session_id = "root"
+        candidate.coordinator.session_id = "root"
         candidate.cleanup = AsyncMock(side_effect=lambda: events.append("cleanup"))
         candidate.coordinator.get.return_value = MagicMock(
             get_messages=AsyncMock(return_value=[{"role": "user", "content": "saved"}])
         )
         capabilities = {}
         candidate.coordinator.register_capability.side_effect = capabilities.__setitem__
+        candidate.coordinator.get_capability.side_effect = capabilities.get
         await kwargs["before_initialize"](candidate)
         checkpoints.append(capabilities["session.durable_checkpoint"])
         assert kwargs["is_resumed"] is is_resume

@@ -101,8 +101,54 @@ class SessionStore:
             base_dir = get_amplifier_home() / "projects" / project_slug / "sessions"
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        # Live host-only objects. Never serialize a media store, receipt,
+        # prepared request or parent capability into metadata.
+        self._media_stores: dict[str, object] = {}
 
-    def save(self, session_id: str, transcript: list, metadata: dict) -> None:
+    def bind_media_store(self, session_id: str, media_store) -> None:
+        """Bind this host's saves to one fresh session-owned media store."""
+        if media_store.session_id != session_id:
+            raise ValueError("Media store session identity mismatch")
+        existing = self._media_stores.get(session_id)
+        if existing is not None and existing is not media_store:
+            raise ValueError("Session already has a different live media store")
+        self._media_stores[session_id] = media_store
+
+    def unbind_media_store(self, session_id: str, media_store) -> None:
+        """Release only the exact host binding; a replacement is independent."""
+        if self._media_stores.get(session_id) is media_store:
+            del self._media_stores[session_id]
+
+    def acknowledge_saved(self, session_id: str, transcript: list):
+        """Attest to the already-saved effective rows; never perform a save.
+
+        Foundation owns verification and POSIX durability. The compatibility
+        verifier is O(history), bounded by one row, not the T2 append protocol.
+        A changed source refuses rather than recovering a backup or replaying a
+        tool. Every successful bound save must refresh this live receipt.
+        """
+        media_store = self._media_stores.get(session_id)
+        if media_store is None:
+            return None
+        from amplifier_foundation.session.checkpoint import acknowledge_legacy_checkpoint
+
+        def effective_rows():
+            # Match Foundation SessionHistoryStore's role filtering and the
+            # actual CLI sanitizer, not pre-hook or unsanitized messages.
+            for message in transcript:
+                original = message if isinstance(message, dict) else message.model_dump()
+                if original["role"] not in ("system", "developer"):
+                    yield sanitize_message(message)
+
+        receipt = acknowledge_legacy_checkpoint(
+            self.base_dir / session_id,
+            session_id=session_id,
+            expected_messages=effective_rows(),
+        )
+        media_store.acknowledge_checkpoint(receipt)
+        return receipt
+
+    def save(self, session_id: str, transcript: list, metadata: dict):
         """Save session state atomically with backup.
 
         Args:
@@ -130,6 +176,7 @@ class SessionStore:
         )
 
         logger.debug(f"Session {session_id} saved successfully")
+        return self.acknowledge_saved(session_id, transcript)
 
     def reserve_session(self, session_id: str) -> Path:
         """Atomically reserve a new native session directory.
@@ -160,6 +207,7 @@ class SessionStore:
             shutil.rmtree(session_dir, ignore_errors=True)
             raise
         logger.debug(f"New session {session_id} saved successfully")
+        return self.acknowledge_saved(session_id, transcript)
 
     def _save_transcript(self, session_dir: Path, transcript: list) -> None:
         """Save transcript with atomic write and backup.
@@ -171,6 +219,7 @@ class SessionStore:
         SessionHistoryStore(session_dir).save_messages(
             transcript, sanitizer=sanitize_message
         )
+        return self.acknowledge_saved(session_dir.name, transcript)
 
     def _save_metadata(self, session_dir: Path, metadata: dict) -> None:
         """Save native metadata with the CLI's existing credential redaction."""

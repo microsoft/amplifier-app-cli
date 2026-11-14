@@ -3776,7 +3776,7 @@ async def interactive_chat(
         command_processor.configurator = initialized.configurator
 
     # Create session store for saving
-    store = SessionStore()
+    store = vars(initialized).get("store") or SessionStore()
 
     # Register incremental save hook for crash recovery between tool calls
     from .incremental_save import register_incremental_save
@@ -4520,7 +4520,7 @@ async def execute_single(
         messages = await context.get_messages() if context else []
         if not messages:
             return 0
-        store = SessionStore()
+        store = vars(initialized).get("store") or SessionStore()
         # Load existing metadata to preserve fields like name, description
         # that may have been set by other hooks (e.g., session-naming)
         existing_metadata = store.get_metadata_if_exists(actual_session_id)
