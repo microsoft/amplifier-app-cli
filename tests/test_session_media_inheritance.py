@@ -168,6 +168,54 @@ async def test_nested_adoption_after_cold_child_reopen_has_no_parent_owner(tmp_p
             await grand.close()
 
 
+async def test_actual_cold_resume_restores_adopted_pixels_without_parent_or_readoption(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock, patch
+    from amplifier_app_cli.session_spawner import resume_sub_session
+    native, parent, child, rows, child_rows, source, target = await fixture(tmp_path)
+    await inherit_selected_messages(child, parent, rows[:1])
+    await child.coordinator.get_capability("session.durable_checkpoint")()
+    native.update_metadata("child", {"config": child.config, "agent_name": "named", "parent_id": "parent"})
+    saved = deepcopy(child_rows)
+    await source.close()
+    await target.close()
+    shutil.rmtree(tmp_path / "parent")
+    restored = []
+    fresh = session("child", restored)
+    fresh.coordinator.mount = AsyncMock()
+    fresh.coordinator.cancellation = MagicMock()
+    fresh.coordinator.collect_contributions = AsyncMock(return_value=[])
+    fresh.coordinator.context.set_system_prompt_factory = AsyncMock()
+    async def set_messages(messages):
+        restored[:] = messages
+    fresh.coordinator.context.set_messages = AsyncMock(side_effect=set_messages)
+    fresh.initialize = AsyncMock()
+    async def cleanup():
+        for callback in fresh.coordinator.cleanups:
+            await callback()
+    fresh.cleanup = AsyncMock(side_effect=cleanup)
+    async def execute(instruction):
+        assert restored == saved
+        owner = fresh.coordinator.get_capability("cli.session_media")
+        ref = restored[0]["metadata"][MEDIA_NAMESPACE]["refs"][0]
+        assert ref["session_id"] == "child"
+        with owner.store.resolve_ref(ref) as stream:
+            assert stream.read().startswith(b"\x89PNG")
+        return "resumed"
+    fresh.execute = AsyncMock(side_effect=execute)
+    monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "-1")
+    with (
+        patch("amplifier_app_cli.session_spawner.AmplifierSession", return_value=fresh),
+        patch("amplifier_app_cli.session_store.SessionStore", return_value=native),
+        patch("amplifier_app_cli.paths.create_foundation_resolver"),
+        patch("amplifier_foundation.session.media_conversion.adopt_selected_media") as adopt,
+    ):
+        result = await resume_sub_session("child", "follow-up", parent_session=None)
+    assert result["output"] == "resumed"
+    adopt.assert_not_called()
+    fresh.execute.assert_awaited_once()
+    fresh.cleanup.assert_awaited_once()
+
+
 async def test_parent_prompt_not_inherited_and_prose_never_resolves(tmp_path):
     native = SessionStore(tmp_path)
     rows = []
@@ -229,9 +277,12 @@ async def test_actual_spawn_selected_history_requires_ack_even_without_autosave(
             raise OSError("synthetic ACK failure")
         return actual_ack(identity, transcript)
     monkeypatch.setattr(native, "acknowledge_saved", acknowledge)
+    def create_child(**kwargs):
+        child.config = kwargs["config"]
+        return child
     try:
         with (
-            patch("amplifier_app_cli.session_spawner.AmplifierSession", return_value=child),
+            patch("amplifier_app_cli.session_spawner.AmplifierSession", side_effect=create_child),
             patch("amplifier_app_cli.session_store.SessionStore", return_value=native),
             patch("amplifier_app_cli.paths.create_foundation_resolver"),
             patch("amplifier_app_cli.session_spawner._expand_system_instruction", AsyncMock(side_effect=lambda text, _: text)),

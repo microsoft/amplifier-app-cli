@@ -1027,6 +1027,10 @@ async def spawn_sub_session(
 
     # Merge parent config with agent overlay
     merged_config = merge_configs(parent_session.config, agent_config)
+    from .session_media import restrict_child_media
+    # A child overlay may narrow a host limit, not turn an opt-out or finite
+    # parent bound into a fresh unlimited grant.
+    merged_config = restrict_child_media(parent_session, merged_config)
 
     # === Issue #233 fix: propagate live agent registry to child ===
     #
@@ -1265,9 +1269,14 @@ async def spawn_sub_session(
         )
         from .session_media import media_configuration
 
-        media_policy = media_configuration(merged_config)
+        # The subprocess route is deliberately text-only until its own canonical
+        # checkpoint is qualified. Do not turn the normal in-process default into
+        # an invented finite subprocess quota or implicit inheritance.
+        media_policy = media_configuration(merged_config) if "session_media" in merged_config else None
         media_payload = {}
-        if media_policy is not None:
+        if media_policy is not None and media_policy.get("enabled", True) and all(
+            type(media_policy.get(name)) is int for name in ("max_bytes", "max_pixels", "max_images")
+        ):
             from .session_store import SessionStore
 
             if "media" not in inspect.signature(run_session_in_subprocess).parameters:
@@ -2447,6 +2456,9 @@ async def resume_sub_session(
     # Persist the reconstructed mount plan, including a current explicit
     # caller chain and any resolved promotion. Otherwise a later cold resume
     # sees the previous config chain even though caller metadata was updated.
+    if parent_session is not None:
+        from .session_media import restrict_child_media
+        merged_config = restrict_child_media(parent_session, merged_config)
     metadata["config"] = merged_config
 
     # Sub-session resume creates fresh UX systems. Parent UX context (approval history,

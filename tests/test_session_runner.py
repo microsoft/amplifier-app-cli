@@ -292,12 +292,20 @@ class TestInitializedSession:
 # ---------------------------------------------------------------------------
 
 
+def _return_stamped(selected):
+    async def create(**kwargs):
+        from amplifier_app_cli.session_runner import _stamp_candidate_metadata
+        _stamp_candidate_metadata(selected, kwargs["config"], kwargs["session_id"])
+        return selected
+    return create
+
+
 class TestPostSessionMetadataStamping:
-    """Tests for the two-phase root-level metadata stamping.
+    """Tests for metadata stamping on the actual pre-initialize candidate.
 
     create_initialized_session writes root-level metadata into config.config
     BEFORE session creation (to propagate via deep-merge to child sessions)
-    and then into session.config AFTER creation (belt-and-suspenders: the
+    and then into session.config BEFORE module initialization (the
     foundation layer may copy config.config into a fresh dict when building
     the coordinator, so session.config and config.config are not guaranteed
     to be the same object — hooks read coordinator.config, so we must ensure
@@ -328,7 +336,7 @@ class TestPostSessionMetadataStamping:
             patch(
                 f"{_MODULE}._create_bundle_session",
                 new_callable=AsyncMock,
-                return_value=mock_sess,
+                side_effect=_return_stamped(mock_sess),
             ),
             patch(
                 "amplifier_app_cli.commands.init.check_first_run", return_value=False
@@ -360,7 +368,7 @@ class TestPostSessionMetadataStamping:
             patch(
                 f"{_MODULE}._create_bundle_session",
                 new_callable=AsyncMock,
-                return_value=mock_sess,
+                side_effect=_return_stamped(mock_sess),
             ),
             patch(
                 "amplifier_app_cli.commands.init.check_first_run", return_value=False
@@ -388,7 +396,7 @@ class TestPostSessionMetadataStamping:
             patch(
                 f"{_MODULE}._create_bundle_session",
                 new_callable=AsyncMock,
-                return_value=mock_sess,
+                side_effect=_return_stamped(mock_sess),
             ),
             patch(
                 "amplifier_app_cli.commands.init.check_first_run", return_value=False
@@ -429,7 +437,7 @@ class TestPostSessionMetadataStamping:
             patch(
                 f"{_MODULE}._create_bundle_session",
                 new_callable=AsyncMock,
-                return_value=mock_sess,
+                side_effect=_return_stamped(mock_sess),
             ),
             patch(
                 "amplifier_app_cli.commands.init.check_first_run", return_value=False
@@ -462,7 +470,7 @@ class TestPostSessionMetadataStamping:
             patch(
                 f"{_MODULE}._create_bundle_session",
                 new_callable=AsyncMock,
-                return_value=mock_sess,
+                side_effect=_return_stamped(mock_sess),
             ),
             patch(
                 "amplifier_app_cli.commands.init.check_first_run", return_value=False
@@ -495,7 +503,7 @@ class TestPostSessionMetadataStamping:
             patch(
                 f"{_MODULE}._create_bundle_session",
                 new_callable=AsyncMock,
-                return_value=mock_sess,
+                side_effect=_return_stamped(mock_sess),
             ),
             patch(
                 "amplifier_app_cli.commands.init.check_first_run", return_value=False
@@ -795,6 +803,7 @@ async def test_root_retry_installs_fresh_checkpoint_before_each_initialize(
     from amplifier_app_cli.session_store import SessionStore
 
     config = _make_session_config(
+        session_config_initial={"session_media": {"enabled": False}},
         session_id="root",
         initial_transcript=[] if is_resume else None,
     )
@@ -1007,7 +1016,9 @@ class TestSessionConfiguratorWiring:
             result = await create_initialized_session(cfg, console)
 
         assert result.configurator is mock_configurator
-        mock_configurator_cls.assert_called_once_with(mock_sess, cfg.prepared_bundle)
+        mock_configurator_cls.assert_called_once_with(
+            mock_sess, cfg.prepared_bundle, coordinator=mock_sess.coordinator,
+        )
 
     @pytest.mark.anyio
     async def test_configurator_apply_saved_settings_called(self):

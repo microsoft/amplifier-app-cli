@@ -812,6 +812,14 @@ class CommandProcessor:
         return f"Unhandled action: {action}"
 
     async def _handle_mode(self, args: str) -> str:
+        from .session_hooks import transition_session_hook_graph
+        command = args.strip().lower()
+        if not command or command == "info" or command.startswith("info "):
+            return await self._handle_mode_operation(args)
+        with transition_session_hook_graph(self.session):
+            return await self._handle_mode_operation(args)
+
+    async def _handle_mode_operation(self, args: str) -> str:
         """Handle /mode command for setting, toggling, or clearing modes."""
         args = args.strip()
         args_lower = args.lower()
@@ -2642,9 +2650,38 @@ class CommandProcessor:
             return f"Method not available: {method_name}"
 
         try:
-            result = method(name)
-            if inspect.isawaitable(result):
-                result = await result
+            # Resolve harmless input errors through the public read-only inventory
+            # BEFORE the issuer retires the current generation. Do not recover a
+            # potentially mutating failure by restoring the old receipt.
+            from .session_hooks import CLIHookGraph, HOOK_GRAPH_CAPABILITY
+            graph = self.session.coordinator.get_capability(HOOK_GRAPH_CAPABILITY)
+            if isinstance(graph, CLIHookGraph):
+                inventory = getattr(configurator, {
+                    "context": "context_list", "tools": "tools_list",
+                    "providers": "providers_list", "agents": "agents_list",
+                    "behaviors": "behaviors_list",
+                }[category])()
+                matches = []
+                for item in inventory:
+                    names = (item.get("name"), item.get("module_id")) if isinstance(item, dict) else (
+                        getattr(item, "name", None), getattr(item, "module_id", None)
+                    )
+                    if name in names:
+                        matches.append(item)
+                if not matches:
+                    return f"Error: {category} item {name!r} not found."
+                states = [
+                    item.get("enabled") if isinstance(item, dict) else getattr(item, "enabled", None)
+                    for item in matches
+                ]
+                wanted = action == "enable"
+                if states and all(state is wanted for state in states):
+                    return f"Already {action}d {name}"
+            from .session_hooks import transition_session_hook_graph
+            with transition_session_hook_graph(self.session):
+                result = method(name)
+                if inspect.isawaitable(result):
+                    result = await result
 
             # Format success message
             if isinstance(result, dict):
@@ -2707,7 +2744,9 @@ class CommandProcessor:
                     parsed_value = value  # Keep as string
 
         try:
-            configurator.config_set(path, parsed_value)
+            from .session_hooks import transition_session_hook_graph
+            with transition_session_hook_graph(self.session):
+                configurator.config_set(path, parsed_value)
             return f"\u2713 Set {path} = {parsed_value!r}"
         except (ValueError, RuntimeError) as e:
             return f"Error setting config: {e}"

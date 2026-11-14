@@ -365,35 +365,15 @@ async def _create_initialized_session(
     )
     lifetime.own(session)
 
+    from .session_hooks import configure_session_hook_graph
+    with configure_session_hook_graph(session):
+        return await _finish_initialized_session(session, config, session_id, console, cwd)
+
+
+async def _finish_initialized_session(session, config, session_id, console, cwd):
+    """Finish root restoration/settings while construction ownership is held."""
     if config.root_state is not None:
         session.coordinator.register_capability("cli.shared_root_state", config.root_state)
-
-    # Belt-and-suspenders: ensure session.config (== coordinator.config) carries the same
-    # root-level metadata that was written into config.config above.  This matters because
-    # the foundation layer may copy config.config into a fresh dict when building the
-    # coordinator, so session.config and config.config are not guaranteed to be the same
-    # object.  Hooks read from coordinator.config, so we must ensure the values are there.
-    # Guards mirror the pre-session guards: child sessions inherit values from the parent
-    # via config deep-merge, so we only fill in missing values, never overwrite.
-    session.config["working_dir"] = cwd
-    if "root_session_id" not in session.config:
-        session.config["root_session_id"] = config.config.get(
-            "root_session_id", session_id
-        )
-    if "application_host" not in session.config:
-        session.config["application_host"] = config.config.get(
-            "application_host", "Amplifier CLI"
-        )
-    if "bundle_name" not in session.config:
-        session.config["bundle_name"] = config.bundle_name
-    if "project_slug" not in session.config:
-        session.config["project_slug"] = config.config.get("project_slug", "")
-    if "project_dir" not in session.config:
-        session.config["project_dir"] = config.config.get("project_dir", cwd)
-    if "project_name" not in session.config:
-        session.config["project_name"] = config.config.get(
-            "project_name", Path(cwd).name if cwd else ""
-        )
 
     # Step 7: Restore transcript (resume only)
     # Initialization only restores history. Chat and headless host entry points
@@ -525,7 +505,11 @@ async def _create_initialized_session(
         try:
             from amplifier_foundation.configurator import SessionConfigurator
 
-            configurator = SessionConfigurator(session, config.prepared_bundle)
+            from .session_hooks import session_hook_coordinator
+            configurator = SessionConfigurator(
+                session, config.prepared_bundle,
+                coordinator=session_hook_coordinator(session, "host.configurator"),
+            )
             from .project_utils import get_project_slug
 
             app_settings = AppSettings().with_session(session_id, get_project_slug())
@@ -562,6 +546,22 @@ _CLEANUP_EVENTS: tuple[str, ...] = (
     "cleanup:finally_begin",
     "cleanup:finally_end",
 )
+
+
+def _stamp_candidate_metadata(candidate, config, session_id):
+    """Stamp the actual plan before the graph owner snapshots construction."""
+    try:
+        cwd = str(Path.cwd().resolve())
+    except OSError:
+        cwd = ""
+    candidate.config["working_dir"] = cwd
+    defaults = {
+        "root_session_id": session_id, "application_host": "Amplifier CLI",
+        "bundle_name": config.bundle_name, "project_slug": "",
+        "project_dir": cwd, "project_name": Path(cwd).name if cwd else "",
+    }
+    for name, default in defaults.items():
+        candidate.config.setdefault(name, config.config.get(name, default))
 
 
 def _inject_observability_events(prepared_bundle: "PreparedBundle") -> None:
@@ -722,6 +722,7 @@ async def _create_bundle_session(
 
     async def before_initialize(candidate: AmplifierSession) -> None:
         lifetime.own(candidate)
+        _stamp_candidate_metadata(candidate, config, session_id)
         from .session_hooks import install_session_hook_graph
         interactive = config.invocation_mode == "chat"
         install_session_hook_graph(

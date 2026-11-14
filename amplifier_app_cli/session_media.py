@@ -8,6 +8,7 @@ enablement is opt-in until the selected dependency graph has been qualified.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 import inspect
 import os
 from typing import Any
@@ -20,10 +21,10 @@ _PREPARE = "cli.media.prepare_provider"
 
 
 def media_configuration(config: Mapping) -> dict | None:
-    """Validate explicit host policy; absence is the unchanged no-media policy."""
+    """Use shared resource policy; only actual host-supplied quotas narrow it."""
     value = config.get("session_media")
     if value is None:
-        return None
+        return {"enabled": True}
     if not isinstance(value, dict) or set(value) - {
         "enabled", "max_bytes", "max_pixels", "max_images", "retention", "ttl_seconds"
     }:
@@ -31,9 +32,44 @@ def media_configuration(config: Mapping) -> dict | None:
     if "enabled" in value and type(value["enabled"]) is not bool:
         raise ValueError("session_media.enabled must be boolean")
     for key in ("max_bytes", "max_pixels", "max_images"):
-        if type(value.get(key)) is not int or value[key] <= 0:
-            raise ValueError(f"session_media.{key} must be a positive integer")
+        if value.get(key) is not None and (type(value[key]) is not int or value[key] <= 0):
+            raise ValueError(f"session_media.{key} must be a positive integer or null")
     return dict(value)
+
+
+def restrict_child_media(parent, child_config):
+    """Narrow a fresh child's host policy; never inherit a live media owner."""
+    from amplifier_foundation.session.media import MediaPolicy
+    result = deepcopy(child_config)
+    parent_policy = media_configuration(parent.config)
+    child_policy = media_configuration(child_config)
+    policies = [parent_policy, child_policy]
+    current = parent.coordinator.get_capability(_HOST)
+    if ("session_media" not in parent.config and "session_media" not in child_config
+            and not isinstance(current, CLISessionMedia)):
+        return result
+    if isinstance(current, CLISessionMedia):
+        if not current.durable:
+            policies.append({"enabled": False})
+        else:
+            policies.append({
+                name: getattr(current.store.policy, name)
+                for name in ("max_bytes", "max_pixels", "max_images", "retention", "ttl_seconds")
+            })
+    narrowed = {"enabled": all(policy.get("enabled", True) for policy in policies)}
+    for name in ("max_bytes", "max_pixels", "max_images", "ttl_seconds"):
+        values = [policy[name] for policy in policies if policy.get(name) is not None]
+        if values:
+            narrowed[name] = min(values)
+    rank = {"drop": 0, "request-only": 1, "durable": 2}
+    # Validate every declaration before selecting the stricter one.
+    for policy in policies:
+        MediaPolicy(**{name: value for name, value in policy.items() if name != "enabled"})
+    narrowed["retention"] = min(
+        (policy.get("retention", "durable") for policy in policies), key=rank.__getitem__,
+    )
+    result["session_media"] = narrowed
+    return result
 
 
 class CLISessionMedia:
@@ -51,7 +87,7 @@ class CLISessionMedia:
         self.generation = uuid.uuid4().hex
         self.wrappers: dict[int, tuple[Any, Any]] = {}
         self.closed = False
-        self.durable = policy is not None and os.name == "posix"
+        self.durable = policy is not None and policy.get("enabled", True) and os.name == "posix"
         selected = {key: value for key, value in (policy or {}).items() if key != "enabled"}
         # SessionMediaStore validates no-follow path components, private mode,
         # owner and exclusive lifetime lock. Do not normalize away symlinks.
@@ -66,7 +102,7 @@ class CLISessionMedia:
             coordinator = session_hook_coordinator(session, "host.media")
             self.capability = bind_session_media(
                 coordinator, store=self.store,
-                enabled=self.durable and policy.get("enabled", False),
+                enabled=self.durable,
             )
             if self.durable:
                 native.bind_media_store(self.session_id, self.store)
@@ -143,18 +179,28 @@ class CLISessionMedia:
         entry = self.wrappers.get(id(provider))
         if entry is not None and entry[0] is provider:
             return entry[1]
-        identity = {
+        identity = lambda: {
             "provider": alias or getattr(provider, "name", type(provider).__name__),
             "account": alias or getattr(provider, "name", type(provider).__name__),
             "generation": self.generation,
         }
+        bridge = self.session.coordinator.get_capability("session.media.tool_post")
+        scope = getattr(bridge, "request_scope", None)
+        scope_options = {"request_scope": scope} if callable(scope) else {}
         wrapped = MediaPreparedProvider(
             provider, self.capability, provider_identity=identity,
             execution_scope=None if self.durable else "text_only",
             prepare_overlay=self._prepare_overlay,
+            **scope_options,
         )
         self.wrappers[id(provider)] = (provider, wrapped)
         return wrapped
+
+    def invalidate_prepared(self):
+        """Called only inside an admitted idle graph transition."""
+        if self.durable:
+            self.store.revoke()
+        self.generation = uuid.uuid4().hex
 
     async def mount_providers(self) -> None:
         """Use Core's public provider mount, never mutate its mount dictionary."""
@@ -164,19 +210,39 @@ class CLISessionMedia:
         for alias, provider in list(providers.items()):
             wrapped = self.prepare_provider(provider, alias=alias)
             if wrapped is not provider:
-                await coordinator.mount("providers", wrapped, name=alias)
+                from .session_hooks import CLIHookGraph, HOOK_GRAPH_CAPABILITY
+                graph = self.session.coordinator.get_capability(HOOK_GRAPH_CAPABILITY)
+                if isinstance(graph, CLIHookGraph):
+                    # Only the issuer can record the actual adapter/source edge.
+                    # A generic replacement mount cannot attest this identity.
+                    await coordinator.mount_adapter(
+                        "providers", wrapped, previous=provider, name=alias,
+                    )
+                else:
+                    await coordinator.mount("providers", wrapped, name=alias)
 
     async def close(self) -> None:
         if self.closed:
             return
         self.closed = True
+        errors = []
         try:
             for _, wrapper in self.wrappers.values():
-                await wrapper.aclose()
+                try:
+                    await wrapper.aclose()
+                except BaseException as error:
+                    errors.append(error)
         finally:
-            self.wrappers.clear()
             self.native.unbind_media_store(self.session_id, self.store)
-            self.store.close()
+            try:
+                self.store.close()
+            except BaseException as error:
+                errors.append(error)
+        if errors:
+            # Retain all original handles for diagnosis; an uncertain close is
+            # not automatically replayed. Every other wrapper was attempted.
+            raise BaseExceptionGroup("CLI session media cleanup failed", errors)
+        self.wrappers.clear()
 
 
 def install_session_media(
@@ -205,6 +271,8 @@ async def mount_session_media(session: Any) -> None:
     if not isinstance(host, CLISessionMedia):
         return
     orchestrator = (session.config.get("session") or {}).get("orchestrator")
+    if isinstance(orchestrator, dict):
+        orchestrator = orchestrator.get("module")
     if orchestrator == "loop-live":
         # Its CLI host adapter installs native/replacement providers at execute,
         # then consumes cli.media.prepare_provider on that exact selection.

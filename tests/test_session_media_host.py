@@ -33,7 +33,7 @@ POLICY = {
 async def test_actual_core_public_neutral_mount_before_initialization(tmp_path):
     from amplifier_core import AmplifierSession
     actual = AmplifierSession(config={"session": {"orchestrator": "loop-basic", "context": "context-simple"}}, session_id="actual")
-    host = install_session_media(actual, SessionStore(tmp_path), config={})
+    host = install_session_media(actual, SessionStore(tmp_path), config={"session_media": {"enabled": False}})
     original = Provider(host.capability)
     try:
         await actual.coordinator.mount("providers", original, name="selected-account")
@@ -201,9 +201,9 @@ async def test_nested_and_resumed_binding_never_inherit_parent_capability(tmp_pa
         await resumed.close()
 
 
-async def test_unconfigured_text_host_has_neutral_no_storage_projection(tmp_path):
+async def test_explicitly_disabled_host_has_neutral_no_storage_projection(tmp_path):
     native = SessionStore(tmp_path)
-    selected = session("text", [], policy=None)
+    selected = session("text", [], policy={"enabled": False})
     original = Provider(None)
     selected.coordinator.providers["chosen"] = original
     host = install_session_media(selected, native)
@@ -222,8 +222,122 @@ async def test_unconfigured_text_host_has_neutral_no_storage_projection(tmp_path
         await host.close()
 
 
+async def test_media_wrapper_forwards_shared_scope_and_issuer_adapter_edge(tmp_path):
+    """Structural host plumbing only; the shared owner qualifies its scope."""
+    from amplifier_app_cli.session_hooks import CLIHookGraph, HOOK_GRAPH_CAPABILITY
+    native = SessionStore(tmp_path)
+    selected = session("text", [], policy={"enabled": False})
+    original = Provider(None)
+    selected.coordinator.providers["chosen"] = original
+    scope = MagicMock()
+    selected.coordinator.register_capability("session.media.tool_post", SimpleNamespace(request_scope=scope))
+    hooks = SimpleNamespace()
+    async def mount_adapter(kind, module, *, previous, name):
+        assert previous is original
+        return await selected.coordinator.mount(kind, module, name=name)
+    view = SimpleNamespace(
+        hooks=hooks, mount_adapter=AsyncMock(side_effect=mount_adapter),
+        get_capability=selected.coordinator.get_capability,
+        register_capability=selected.coordinator.register_capability,
+    )
+    construction = SimpleNamespace(participant=MagicMock(return_value=view))
+    selected.coordinator.register_capability(HOOK_GRAPH_CAPABILITY, CLIHookGraph(selected, construction))
+    host = install_session_media(selected, native)
+    wrapper = SimpleNamespace(aclose=AsyncMock())
+    try:
+        with patch("amplifier_foundation.session.media_provider.MediaPreparedProvider", return_value=wrapper) as factory:
+            await mount_session_media(selected)
+        assert factory.call_args.kwargs["request_scope"] is scope
+        assert factory.call_args.kwargs["provider_identity"]()["account"] == "chosen"
+        view.mount_adapter.assert_awaited_once_with("providers", wrapper, previous=original, name="chosen")
+        assert selected.coordinator.providers["chosen"] is wrapper
+        construction.participant.assert_called_once_with("host.media")
+    finally:
+        await host.close()
+
+
+async def test_close_failure_still_closes_every_counted_wrapper_scope(tmp_path):
+    from contextlib import contextmanager
+    active = []
+    @contextmanager
+    def request_scope():
+        active.append("request")
+        try:
+            yield lambda: True
+        finally:
+            active.pop()
+    selected = session("closing", [], policy={"enabled": False})
+    selected.coordinator.register_capability(
+        "session.media.tool_post", SimpleNamespace(request_scope=request_scope)
+    )
+    native = SessionStore(tmp_path)
+    host = install_session_media(selected, native)
+    first = host.prepare_provider(Provider(host.capability), alias="first")
+    second = host.prepare_provider(Provider(host.capability), alias="second")
+    await second.request_budget(ChatRequest(messages=[Message(role="user", content="text")]))
+    assert active == ["request"]
+    close_first = first.aclose
+    async def failed_close():
+        await close_first()
+        raise OSError("synthetic transport close failure")
+    first.aclose = failed_close
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await host.close()
+    assert any(isinstance(error, OSError) for error in caught.value.exceptions)
+    assert active == []
+    assert host.closed and host.wrappers  # Original handles retained, not replayed.
+    assert second._closed
+    assert not native._media_stores
+    await host.close()
+    assert active == []
+
+
+async def test_child_policy_intersection_preserves_parent_optout_quotas_and_expiry(tmp_path):
+    from amplifier_app_cli.session_media import restrict_child_media
+    parent = session("parent", [], policy={
+        "enabled": False, "max_bytes": 4096, "max_pixels": 100, "max_images": 2,
+        "ttl_seconds": 60,
+    })
+    proposed = {"session_media": {"enabled": True, "max_bytes": None, "max_images": 100}}
+    before = copy.deepcopy(proposed)
+    narrowed = restrict_child_media(parent, proposed)["session_media"]
+    assert narrowed["enabled"] is False
+    assert narrowed["max_bytes"] == 4096 and narrowed["max_images"] == 2
+    assert narrowed["max_pixels"] == 100 and narrowed["ttl_seconds"] == 60
+    assert proposed == before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX private media ownership")
+async def test_default_cli_policy_has_no_observation_quota_or_fabricated_ttl(tmp_path):
+    selected = session("default", [], policy=None)
+    native = SessionStore(tmp_path)
+    host = install_session_media(selected, native)
+    try:
+        assert host.durable and host.capability.enabled
+        assert host.store.policy.max_bytes is None
+        assert host.store.policy.max_pixels is None
+        assert host.store.policy.max_images is None
+        assert host.store.policy.ttl_seconds is None
+        data = io.BytesIO()
+        Image.new("RGB", (2, 2), "red").save(data, "PNG")
+        rows = []
+        for index in range(12):
+            origin = {"kind": "tool", "session_id": "default", "id": f"observation-{index}"}
+            ref = (await host.capability.ingest(
+                data.getvalue(), source_format="image-bytes", origin=origin, policy=None,
+            ))["value"]
+            await host.capability.publish([ref], origin=origin, disposition="retain")
+            assert ref["provenance"]["expires_at"] is None
+            rows.append({"role": "user", "content": "observation",
+                         "metadata": {"experimental.media.v1": {"refs": [ref]}}})
+        native.save("default", rows, {})
+        assert native.load("default")[0] == rows
+    finally:
+        await host.close()
+
+
 @pytest.mark.parametrize("policy", [
-    {}, {"enabled": True}, {**POLICY, "max_bytes": True},
+    {**POLICY, "max_bytes": True},
     {**POLICY, "enabled": 1}, {**POLICY, "source": "/arbitrary"},
 ])
 async def test_invalid_explicit_policy_refuses_before_binding(policy):
@@ -234,7 +348,7 @@ async def test_invalid_explicit_policy_refuses_before_binding(policy):
 async def test_neutral_inline_unavailable_before_count_and_unowned_ref_refuses(tmp_path):
     from amplifier_foundation.session.media import MediaRefusal
 
-    selected = session("text", [], policy=None)
+    selected = session("text", [], policy={"enabled": False})
     host = install_session_media(selected, SessionStore(tmp_path))
     provider = Provider(host.capability)
     wrapped = host.prepare_provider(provider)
