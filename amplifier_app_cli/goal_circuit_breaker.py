@@ -276,7 +276,8 @@ def register_goal_circuit_breaker(
     no-op when hooks aren't available.
     """
     coordinator = getattr(session, "coordinator", None)
-    hooks = coordinator.get("hooks") if coordinator is not None else None
+    from .session_hooks import session_hooks
+    hooks = session_hooks(session, "host.goal_circuit_breaker") if coordinator is not None else None
     if not hooks or not hasattr(hooks, "register"):
         return None
 

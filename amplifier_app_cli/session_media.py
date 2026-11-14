@@ -62,8 +62,10 @@ class CLISessionMedia:
             policy_verifier=self._source_policy,
         ) if self.durable else NeutralSessionMediaStore(self.session_id)
         try:
+            from .session_hooks import session_hook_coordinator
+            coordinator = session_hook_coordinator(session, "host.media")
             self.capability = bind_session_media(
-                session.coordinator, store=self.store,
+                coordinator, store=self.store,
                 enabled=self.durable and policy.get("enabled", False),
             )
             if self.durable:
@@ -156,11 +158,13 @@ class CLISessionMedia:
 
     async def mount_providers(self) -> None:
         """Use Core's public provider mount, never mutate its mount dictionary."""
+        from .session_hooks import session_hook_coordinator
+        coordinator = session_hook_coordinator(self.session, "host.media")
         providers = self.session.coordinator.get("providers") or {}
         for alias, provider in list(providers.items()):
             wrapped = self.prepare_provider(provider, alias=alias)
             if wrapped is not provider:
-                await self.session.coordinator.mount("providers", wrapped, name=alias)
+                await coordinator.mount("providers", wrapped, name=alias)
 
     async def close(self) -> None:
         if self.closed:

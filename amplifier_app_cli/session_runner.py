@@ -722,6 +722,17 @@ async def _create_bundle_session(
 
     async def before_initialize(candidate: AmplifierSession) -> None:
         lifetime.own(candidate)
+        from .session_hooks import install_session_hook_graph
+        interactive = config.invocation_mode == "chat"
+        install_session_hook_graph(
+            candidate, owner="cli.interactive" if interactive else "cli.headless",
+            host_participants=(
+                "host.incremental_save", "host.goal_progress",
+                "host.goal_circuit_breaker", "host.steering", "host.media",
+            ) if interactive else (
+                "host.trace_collector", "host.goal_progress", "host.goal_circuit_breaker", "host.media",
+            ),
+        )
         install_session_checkpoint(
             candidate,
             store,

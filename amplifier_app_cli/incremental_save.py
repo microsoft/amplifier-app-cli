@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from amplifier_core import AmplifierSession
 
 from .session_store import SessionStore
+from .session_hooks import session_hooks
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +180,7 @@ def register_incremental_save(
     Returns:
         The created hook instance, or None if hooks not available
     """
-    hooks = session.coordinator.get("hooks")
+    hooks = session_hooks(session, "host.incremental_save")
     if not hooks or not hasattr(hooks, "register"):
         logger.debug("Hooks not available, skipping incremental save registration")
         return None

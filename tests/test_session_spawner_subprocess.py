@@ -125,6 +125,21 @@ class TestSubprocessRouting:
         assert result["turn_count"] == 1
         assert result["metadata"] == {}
 
+    async def test_selected_media_cannot_silently_disappear_into_subprocess(self, monkeypatch):
+        from amplifier_foundation.session.media import MEDIA_NAMESPACE
+        parent = _make_parent_session()
+        fake = _make_subprocess_runner_module()
+        monkeypatch.setitem(sys.modules, "amplifier_foundation.subprocess_runner", fake)
+        with pytest.raises(RuntimeError, match="no durable checkpoint owner"):
+            await spawn_sub_session(
+                agent_name="test", instruction="not a ref carrier",
+                parent_session=parent, agent_configs={"test": {}},
+                parent_messages=[{"role": "user", "content": "observation",
+                                  "metadata": {MEDIA_NAMESPACE: {"refs": []}}}],
+                use_subprocess=True,
+            )
+        fake.run_session_in_subprocess.assert_not_called()
+
     async def test_explicit_media_payload_is_child_owned_drop_only(
         self, monkeypatch, isolated_home
     ):

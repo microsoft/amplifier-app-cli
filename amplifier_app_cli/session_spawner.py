@@ -22,6 +22,7 @@ from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
 
 from .agent_config import merge_configs
 from .image_policy import restrict_child_images
+from .session_hooks import install_session_hook_graph, seal_session_hook_graph, session_hooks
 
 logger = logging.getLogger(__name__)
 
@@ -917,7 +918,7 @@ async def _install_transcript_checkpoint(
         await _write_checkpoint(session, store, session_id, metadata)
         last_written[0] = time.monotonic()
 
-    hooks = session.coordinator.get("hooks")
+    hooks = session_hooks(session, "host.child_observers")
     if hooks is None or not hasattr(hooks, "register"):
         # No hook registry: the pre-registration write above still stands, but
         # no mid-run events will fire, so there is nothing further to install.
@@ -1010,6 +1011,10 @@ async def spawn_sub_session(
     Raises:
         ValueError: If agent not found or config invalid
     """
+    # Freeze only the explicit structured carrier before any provider/config
+    # resolution await. Do not parse instruction text or read parent history.
+    from .session_media_inheritance import snapshot_selected_messages
+    parent_messages = snapshot_selected_messages(parent_messages)
     # Get agent configuration
     # Special handling for "self" - spawn with parent's config (no agent overlay)
     if agent_name == "self":
@@ -1238,6 +1243,9 @@ async def spawn_sub_session(
     # Route to subprocess runner if requested via parameter or config
     spawn_mode = merged_config.get("spawn_mode")
     if use_subprocess or spawn_mode == "subprocess":
+        from .session_media_inheritance import selected_messages_have_media
+        if selected_messages_have_media(parent_messages):
+            raise RuntimeError("Subprocess structured media inheritance has no durable checkpoint owner")
         from amplifier_foundation.subprocess_runner import run_session_in_subprocess
 
         if agent_name == "self":
@@ -1353,6 +1361,9 @@ async def spawn_sub_session(
         display_system=display_system,  # Inherit from parent
     )
     _own_child_setup(child_session)
+    install_session_hook_graph(
+        child_session, owner="cli.spawn", host_participants=("host.child_observers", "host.media")
+    )
 
     # Notify display system we're entering a nested session (for indentation)
     if hasattr(display_system, "push_nesting"):
@@ -1466,10 +1477,9 @@ async def spawn_sub_session(
                 pass  # child coordinator without capability support; safe to skip
     # === end issue #233 fix (skill capability) ===
 
-    # Note: Parent context inheritance is now handled by tool-task formatting
-    # the parent messages directly into the instruction text. This ensures the
-    # child agent sees the context regardless of session/orchestrator behavior.
-    # The parent_messages parameter is kept for potential future use.
+    # Explicitly selected canonical rows travel only through parent_messages.
+    # Instruction text is never scanned for references or treated as authority.
+    # Adoption/append happens after child reconstruction metadata is complete.
 
     # Wire up cancellation propagation: parent cancellation should propagate to child
     # This enables graceful Ctrl+C handling for nested agent sessions
@@ -1633,7 +1643,7 @@ async def spawn_sub_session(
     # Register temporary hook to capture orchestrator:complete data
     # This gives us status, turn_count, and metadata from the orchestrator
     completion_data: dict = {}
-    hooks = child_session.coordinator.get("hooks")
+    hooks = session_hooks(child_session, "host.child_observers")
     if _spawn_preference_failure is not None:
         _spawn_preference_failure["session_id"] = sub_session_id
         logger.warning(
@@ -1725,9 +1735,18 @@ async def spawn_sub_session(
     # These fields were authored for this child, not copied from an unrelated
     # owner's unlocked persisted metadata snapshot.
     checkpoint_metadata.update(metadata)
+    from .session_media_inheritance import inherit_selected_messages
+    inherited_media = await inherit_selected_messages(
+        child_session, parent_session, parent_messages
+    )
+    if inherited_media:
+        # Required even when legacy autosave is disabled. Assets were published
+        # first; failure stops execution, never re-runs the originating tool.
+        await child_session.coordinator.get_capability("session.durable_checkpoint")()
     unregister_checkpoint = await _install_transcript_checkpoint(
         child_session, store, sub_session_id, metadata, write_now=True
     )
+    seal_session_hook_graph(child_session)
 
     # Execute instruction in child session; cleanup MUST run even on CancelledError
     #
@@ -2460,6 +2479,9 @@ async def resume_sub_session(
         display_system=display_system,
     )
     _own_child_setup(child_session)
+    install_session_hook_graph(
+        child_session, owner="cli.resume_child", host_participants=("host.child_observers", "host.media")
+    )
 
     # Register app-layer capabilities for resumed child session BEFORE initialization
     # Must be mounted before initialize() so modules with source: directives can be resolved
@@ -2651,7 +2673,7 @@ async def resume_sub_session(
         )
 
     # Emit session:resume event for observability
-    hooks = child_session.coordinator.get("hooks")
+    hooks = session_hooks(child_session, "host.child_observers")
     if hooks:
         await hooks.emit(
             "session:resume",
@@ -2739,7 +2761,7 @@ async def resume_sub_session(
     # Register temporary hook to capture orchestrator:complete data
     # This gives us status, turn_count, and metadata from the orchestrator
     completion_data: dict = {}
-    hooks = child_session.coordinator.get("hooks")
+    hooks = session_hooks(child_session, "host.child_observers")
     unregister_hook = None
     if hooks:
         from amplifier_core.hooks import HookResult
@@ -2792,6 +2814,7 @@ async def resume_sub_session(
     #
     # NOTE: the `except BaseException` below is synchronous only -- see the
     # spawn path's note. The cancellation path must stay free of any await.
+    seal_session_hook_graph(child_session)
     _handoff_child_setup(child_session)
     try:
         try:

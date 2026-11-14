@@ -11,7 +11,8 @@ dependencies = [
     "rich>=13.0.0",
     "pygments>=2.13.0",
     "pydantic>=2.0.0",
-    "amplifier-core>=1.5.3",
+    # Participating media hook receipts qualify this exact public Core ABI.
+    "amplifier-core==2.0.2",
     # Tool installs consume published metadata, not this repository's uv.lock.
     # Candidate media graph; draft merge hold until accepted upstream qualification.
     "amplifier-foundation[media] @ git+https://github.com/microsoft/amplifier-foundation@543f887589f543c0d4986d84eb45b184cb8138e2",

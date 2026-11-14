@@ -3760,6 +3760,9 @@ async def interactive_chat(
 
     register_goal_circuit_breaker(session)
 
+    from .session_hooks import seal_session_hook_graph
+    seal_session_hook_graph(session)
+
     # Show banner only for NEW sessions (resume shows banner via history display in commands/session.py)
     if not session_config.is_resume:
         config_summary = get_effective_config_summary(config, bundle_name)
@@ -3934,7 +3937,8 @@ async def interactive_chat(
         # registry across turns.  The unique per-turn name does NOT prevent
         # that -- it defeats name-based dedup -- the unregister does.  Mirrors
         # the register/unregister-in-finally pattern in session_spawner.py.
-        _hooks = session.coordinator.get("hooks")
+        from .session_hooks import session_hooks
+        _hooks = session_hooks(session, "host.steering")
         _unregister_badge_hook = None
         if _hooks and hasattr(_hooks, "register"):
             _unregister_badge_hook = _hooks.register(
@@ -4502,7 +4506,8 @@ async def execute_single(
         await handoff.start()
         # Register trace collector hooks if in json-trace mode
         if trace_collector:
-            hooks = session.coordinator.get("hooks")
+            from .session_hooks import session_hooks
+            hooks = session_hooks(session, "host.trace_collector")
             if hooks:
                 hooks.register(
                     "tool:pre",
@@ -4534,6 +4539,8 @@ async def execute_single(
         from .goal_circuit_breaker import register_goal_circuit_breaker
 
         register_goal_circuit_breaker(session)
+        from .session_hooks import seal_session_hook_graph
+        seal_session_hook_graph(session)
 
         # === /goal support in headless mode (see docs/GOAL_COMMAND.md) ===
         # The auto-continue loop itself now lives in the orchestrator (see
