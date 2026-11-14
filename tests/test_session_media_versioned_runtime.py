@@ -11,6 +11,7 @@ import base64
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import asdict, replace
+from functools import partial
 import hashlib
 from importlib import import_module
 from io import BytesIO, StringIO
@@ -25,7 +26,8 @@ import pytest
 from PIL import Image
 from rich.console import Console
 
-from amplifier_core import AmplifierSession
+from amplifier_core import AmplifierSession, HookResult
+from amplifier_foundation import RUNTIME_CONTEXT_OVERLAY_CAPABILITY, RuntimeOverlay, TransitionResult
 from amplifier_core.message_models import ChatRequest, ImageBlock, Message
 from amplifier_foundation.bundle import Bundle, PreparedBundle
 from amplifier_foundation.session.media import MediaRefusal
@@ -42,7 +44,7 @@ from amplifier_foundation.session.versioned_checkpoint import (
     VersionedCheckpointRefused,
 )
 
-from amplifier_app_cli.session_hooks import seal_session_hook_graph
+from amplifier_app_cli.session_hooks import seal_session_hook_graph, session_hook_coordinator
 from amplifier_app_cli.session_runner import SessionConfig, create_initialized_session
 from amplifier_app_cli.session_store import SessionStore
 
@@ -107,8 +109,17 @@ class Loader:
     def __init__(self, execute=None):
         self.queue = []
         self.execute = execute
+        self.real_mounts = {}
 
     async def load(self, module_id, config, *, source_hint=None, coordinator=None):
+        if module_id in {"tool-mode", "hooks-mode"}:
+            module = import_module(
+                "amplifier_module_tool_mode" if module_id == "tool-mode" else "amplifier_module_hooks_mode"
+            )
+            mount = partial(module.mount, config=config)
+            self.real_mounts[module_id] = (module, mount, coordinator)
+            return mount
+
         async def mount(current):
             if module_id == "fixture-versioned-loop":
                 async def execute(*args, **kwargs):
@@ -202,7 +213,7 @@ class Runtime:
             canonical_binding=self.binding, canonical_admit=self.admit,
         )
 
-    async def open(self, *, rows=None, setup_error=None, cleanup_error=None, media_cleanup_error=None):
+    async def open(self, *, rows=None, setup_error=None, cleanup_error=None, media_cleanup_error=None, seal=True):
         config = self.configuration(rows=rows)
         prepared = config.prepared_bundle
         create = prepared.create_session
@@ -273,10 +284,12 @@ class Runtime:
         assert result.config.canonical_binding is self.binding
         assert result.root_state is result.config.root_state is None
         assert result.config.shared_root is False
-        seal_session_hook_graph(result.session)
+        if seal:
+            seal_session_hook_graph(result.session)
         bridge = result.session.coordinator.get_capability("session.media.tool_post")
         assert isinstance(bridge, MediaHookBridge)
-        assert bridge.validate_receipt(bridge.graph_receipt)
+        if seal:
+            assert bridge.validate_receipt(bridge.graph_receipt)
         return result
 
     async def stage(self, image_format, *, session=None, policy=None):
@@ -1245,3 +1258,225 @@ async def test_public_binding_factory_refuses_existing_nonprivate_parent_before_
     assert stat.S_IMODE(parent.stat().st_mode) == 0o755
     assert parent.stat().st_ino == untouched.st_ino
     assert parent.stat().st_mtime_ns == untouched.st_mtime_ns
+
+
+class VersionedModes:
+    """Finite cross-owner join: real modes and real T2, synthetic inference only."""
+
+    def __init__(self, runtime):
+        self.runtime = runtime
+        self.session = runtime.initialized.session
+        self.coordinator = self.session.coordinator
+        self.bridge = self.coordinator.get_capability("session.media.tool_post")
+        self.graph = self.coordinator.get_capability("cli.hooks.participating_graph")
+        self.tool = self.coordinator.get("tools")["mode"]
+        self.hooks = self.coordinator.session_state["mode_hooks"]
+        self.view = session_hook_coordinator(self.session, "host.mode")
+        self.events, self.posts = [], []
+        self.remove_post = None
+        self.fault = None
+        for event in ("mode:activated", "mode:changed", "mode:cleared"):
+            self.view.hooks.register(event, self.contribute, priority=100, name=f"versioned-{event}")
+
+    def contribute(self, event, data):
+        target = None if event == "mode:cleared" else data.get("new", data.get("name"))
+        self.events.append((event, target))
+        self.view.config["versioned_mode_active"] = target
+        if self.remove_post:
+            self.remove_post()
+            self.remove_post = None
+        if target:
+            def post(_event, _data):
+                self.posts.append(target)
+                return HookResult()
+            self.remove_post = self.view.hooks.register(
+                "tool:post", post, name=f"versioned-mode-post-{target}", priority=90,
+            )
+        if self.fault is not None:
+            raise self.fault
+        return HookResult()
+
+    def evidence(self):
+        return self.graph.construction.participants_evidence()
+
+
+async def open_versioned_modes(runtime):
+    directory = runtime.parent.parent / "composed-modes"
+    directory.mkdir()
+    for name in ("alpha", "beta"):
+        context = directory / f"{name}-context.txt"
+        context.write_text(f"synthetic versioned {name} context", encoding="utf-8")
+        (directory / f"{name}.md").write_text(
+            "---\nmode:\n"
+            f"  name: {name}\n  description: versioned {name} mode\n"
+            "  default_action: allow\n  contributes:\n"
+            f"    context: [{json.dumps(str(context))}]\n"
+            f"---\nSynthetic versioned {name} guidance.\n",
+            encoding="utf-8",
+        )
+    runtime.plan["tools"] = [{"module": "tool-mode", "config": {"gate_policy": "auto"}}]
+    runtime.plan["hooks"] = [{"module": "hooks-mode", "config": {"search_paths": [str(directory)]}}]
+    await runtime.open(seal=False)
+    root = VersionedModes(runtime)
+    seal_session_hook_graph(root.session)
+    assert_public_graph_and_owner(runtime)
+    assert isinstance(root.tool, import_module("amplifier_module_tool_mode").ModeTool)
+    assert isinstance(root.hooks, import_module("amplifier_module_hooks_mode").ModeHooks)
+    loads = {row["module"]: row for row in root.evidence()["loads"]}
+    loader = root.coordinator.loader
+    for module_id in ("tool-mode", "hooks-mode"):
+        module, mount, view = loader.real_mounts[module_id]
+        assert mount.func is module.mount
+        assert loads[module_id]["mount"] is mount and loads[module_id]["mounted"]
+        assert view is not root.coordinator
+    assert root.coordinator.get_capability("session.media.graph_transition") is (
+        root.coordinator.get_capability("cli.media.graph_transition")
+    )
+    return root
+
+
+async def close_versioned_modes(runtime, monkeypatch):
+    """Observe real settlement while the real binding remains exclusively held."""
+    host = runtime.host
+    physical_close = host.store.close
+    calls = []
+
+    def close():
+        assert_held(runtime.binding)
+        physical_close()
+        calls.append("store-closed-owner-held")
+
+    monkeypatch.setattr(host.store, "close", close)
+    await runtime.initialized.cleanup()
+    assert calls == ["store-closed-owner-held"]
+    assert host.cleanup_attempted and host.cleanup_settled and host.cleanup_error is None
+    with pytest.raises(VersionedSessionConflict, match="closed"):
+        runtime.binding.check()
+    fresh = VersionedSessionBinding.resume(
+        runtime.binding.directory, session_id="root", expected=runtime.binding.expected,
+    )
+    runtime.bindings.append(fresh)
+    fresh.check()
+
+
+@pytest.mark.parametrize("image_format", ["PNG", "JPEG"])
+async def test_composed_versioned_modes_actual_set_change_clear_keep_typed_ack_and_private_pixels(
+    runtime, image_format, monkeypatch,
+):
+    root = await open_versioned_modes(runtime)
+    try:
+        payload, ref = await runtime.stage(image_format)
+        ack = await root.coordinator.get_capability("session.durable_checkpoint")()
+        assert type(ack) is VersionedCheckpointReceipt
+        canonical = await runtime.observe(payload)
+        previous = [root.bridge.graph_receipt]
+        native, binding, store = runtime.initialized.store, runtime.binding, runtime.host.store
+        for event, target in zip(
+            ("mode:activated", "mode:changed", "mode:cleared"), ("alpha", "beta", None),
+        ):
+            options = {"operation": "clear"} if target is None else {"operation": "set", "name": target}
+            generation = runtime.host.generation
+            assert (await root.tool.execute(options)).success is True
+            assert root.events[-1] == (event, target)
+            assert root.session.config["versioned_mode_active"] == target
+            assert root.coordinator.session_state["active_mode"] == target
+            assert runtime.host.generation != generation
+            receipt = root.bridge.graph_receipt
+            assert root.bridge.validate_receipt(receipt)
+            assert all(not root.bridge.validate_receipt(old) for old in previous)
+            previous.append(receipt)
+            for owner in ("hooks-mode", "host.mode"):
+                assert any(row["participant"] == owner and row["event"] == event
+                           and row["kind"] == "callback" and row["state"] == "completed"
+                           for row in root.evidence()["contributions"])
+            overlay = root.coordinator.session_state.get("mode_runtime_overlay")
+            paths = root.coordinator.get_capability(RUNTIME_CONTEXT_OVERLAY_CAPABILITY)
+            if target:
+                assert isinstance(overlay, RuntimeOverlay)
+                assert set(overlay.dump_state()["scope_claims"]) == {f"mode:{target}"}
+                assert len(paths) == 1 and paths[0].endswith(f"{target}-context.txt")
+            else:
+                assert overlay is None and not paths
+            n = len(root.posts)
+            outcome = await root.bridge({"tool_name": "composed-probe", "tool_call_id": event,
+                                         "result": {"kept": True}})
+            assert outcome["complete"] and outcome["result"] == {"kept": True}
+            assert root.posts[n:] == ([target] if target else [])
+            successor_ack = await root.coordinator.get_capability("session.durable_checkpoint")()
+            assert type(successor_ack) is VersionedCheckpointReceipt
+            assert successor_ack is binding.last_receipt and successor_ack is not ack
+            assert successor_ack.verify()
+            ack = successor_ack
+            assert await runtime.observe(payload) == canonical
+            assert native is runtime.initialized.store and native._canonical_binding is binding
+            assert runtime.host.store is store
+            assert native.load("root")[0] == canonical == binding.load_messages()
+            assert canonical[0]["metadata"]["experimental.media.v1"]["refs"] == [ref]
+            assert base64.b64encode(payload).decode() not in json.dumps(canonical)
+            assert_public_graph_and_owner(runtime)
+    finally:
+        await close_versioned_modes(runtime, monkeypatch)
+
+
+@pytest.mark.parametrize("failure", ["external-callback", "overlay-refusal"])
+async def test_composed_versioned_modes_failed_transition_invalidates_graph_without_new_ack_or_dispatch(
+    runtime, failure, monkeypatch,
+):
+    root = await open_versioned_modes(runtime)
+    try:
+        payload, _ = await runtime.stage("PNG")
+        ack = await root.coordinator.get_capability("session.durable_checkpoint")()
+        canonical = await runtime.observe(payload)
+        assert (await root.tool.execute({"operation": "set", "name": "alpha"})).success
+        await runtime.observe(payload)
+        old_receipt = root.bridge.graph_receipt
+        old_construction = root.graph.construction
+        prefix = runtime.binding.expected
+        source = files(runtime.binding.directory / "transcript.v2")
+        admissions = deepcopy(runtime.asset_admissions)
+        overlay = root.coordinator.session_state["mode_runtime_overlay"]
+        assert isinstance(overlay, RuntimeOverlay)
+        overlay_calls = []
+        if failure == "external-callback":
+            root.fault = RuntimeError("composed-external-fixed-sentinel")
+        else:
+            async def refuse_apply(scope, *values):
+                overlay_calls.append(scope)
+                return TransitionResult(success=False, scope=scope, error="composed-overlay-fixed-refusal")
+            # Fault the actual RuntimeOverlay public boundary, never ModeTool or
+            # its private tracker, callback, graph issuer or transition wrapper.
+            monkeypatch.setattr(overlay, "apply", refuse_apply)
+        result = await root.tool.execute({"operation": "set", "name": "beta"})
+        assert not result.success and result.error["code"] == "internal_error"
+        assert root.graph.construction is not old_construction
+        assert root.bridge.graph_receipt is None
+        assert not root.bridge.validate_receipt(old_receipt)
+        assert root.evidence()["state"] == "invalid"
+        assert root.coordinator.session_state["mode_transition_failure"]["target_mode"] == "beta"
+        assert runtime.binding.last_receipt is ack
+        assert runtime.binding.expected == prefix == committed(runtime.binding.directory)
+        assert files(runtime.binding.directory / "transcript.v2") == source
+        assert runtime.asset_admissions == admissions
+        provider = root.coordinator.get("providers")["fixture-versioned-provider"]
+        raw = next(raw for raw, wrapped in runtime.host.wrappers.values() if wrapped is provider)
+        before = list(raw.observed)
+        request = ChatRequest(messages=[Message(**row) for row in canonical])
+        with pytest.raises(ValueError, match="graph"):
+            await provider.request_budget(request)
+        with pytest.raises(ValueError, match="graph"):
+            await provider.complete(request)
+        assert raw.observed == before
+        events = list(root.events)
+        again = await root.tool.execute({"operation": "clear"})
+        assert not again.success
+        assert root.events == events and root.bridge.graph_receipt is None
+        assert not (await root.tool.execute({"operation": "current"})).success
+        assert (await root.hooks.handle_tool_pre("tool:pre", {"tool_name": "ordinary"})).action == "deny"
+        if failure == "overlay-refusal":
+            assert overlay_calls == ["mode:beta"]
+        assert await root.coordinator.get("context").get_messages() == canonical
+        assert runtime.initialized.store.load("root")[0] == canonical
+        assert runtime.binding.last_receipt is ack
+        assert_held(runtime.binding)
+    finally:
+        await close_versioned_modes(runtime, monkeypatch)

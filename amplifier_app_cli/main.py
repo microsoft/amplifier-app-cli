@@ -547,6 +547,8 @@ class CommandProcessor:
         # command dispatch must never inherit another session's shortcuts.
         self._mode_shortcuts: dict[str, str] = {}
         self._skill_shortcuts: dict[str, dict] = {}
+        # Private diagnostic custody only, never session state or presentation.
+        self._mode_transition_error: BaseException | None = None
         # Initialize session_state if not present
         if not hasattr(self.session.coordinator, "session_state"):
             self.session.coordinator.session_state = {}
@@ -840,8 +842,9 @@ class CommandProcessor:
             with transition_session_hook_graph(self.session):
                 entered = True
                 return await self._handle_mode_operation(args)
-        except BaseException:
+        except BaseException as error:
             if entered and participating:
+                self._mode_transition_error = error
                 state["active_mode"] = None
                 state["mode_transition_failure"] = {
                     "source": "cli.command", "target_mode": target,
@@ -4363,9 +4366,21 @@ async def interactive_chat(
                                 console.print(f"[cyan]{text}[/cyan]")
                         else:
                             # Handle command
-                            result = await command_processor.handle_command(
-                                action, data
-                            )
+                            try:
+                                result = await command_processor.handle_command(
+                                    action, data
+                                )
+                            except Exception:
+                                if action != "handle_mode" or command_processor._mode_transition_error is None:
+                                    raise
+                                # Classify the actual participating failure before
+                                # any formatter or verbose traceback renderer sees
+                                # its private message, notes, cause or context.
+                                console.print(
+                                    "[red]Participating mode operation failed; host recovery is required. "
+                                    "Exception details withheld.[/red]"
+                                )
+                                continue  # Neither recovery nor trailing inference.
                             console.print(f"[cyan]{result}[/cyan]")
 
                         # If command included trailing text, execute it as a prompt

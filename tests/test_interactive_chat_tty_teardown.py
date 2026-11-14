@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -58,6 +59,18 @@ def _use_headless_patch_stdout():
     ):
         with patch.object(PromptSession, "__init__", new=_headless_init):
             yield
+
+
+@pytest.fixture
+def participating_mode_root(tmp_path, monkeypatch):
+    """Reuse the optional installed-mode assembly without adding it to old tests."""
+    pytest.importorskip("amplifier_module_hooks_mode", reason="Installed participating modes fixture")
+    pytest.importorskip("amplifier_module_tool_mode", reason="Installed participating modes fixture")
+    # conftest makes this directory importable. Borrow only the fixture, never
+    # another checkout or a source-path override for the installed dependencies.
+    from test_session_media_modes import mode_root
+
+    yield from mode_root.__wrapped__(tmp_path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
@@ -671,3 +684,251 @@ async def test_late_cleanup_log_withholds_private_exception_chain_at_entry(
     session.cleanup.assert_awaited_once()
     writer.release.assert_not_called()
     close.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX durable media acknowledgement")
+@pytest.mark.parametrize("verbose", [False, True])
+@pytest.mark.parametrize("failure", ["overlay-error", "overlay-cancel", "external-cancel"])
+@pytest.mark.parametrize("custody", [None, "root", "binding"])
+async def test_actual_repl_participating_mode_failure_is_private_before_rendering(
+    participating_mode_root, verbose, failure, custody,
+):
+    """Real REPL -> CLI command -> installed ModeHooks -> real graph refusal.
+
+    Only prompt input/output and external ownership listeners are synthetic.
+    The borrowed root has already registered/sealed its hooks, so skip duplicate
+    late REPL observers. Never execute inference or open a terminal.
+    """
+    import base64
+    import importlib
+    import json
+    import logging
+    import sys
+    from io import StringIO
+    from rich.console import Console
+    from amplifier_app_cli.main import CommandProcessor, interactive_chat
+    from test_session_media_modes import RASTERS, _observe_real_mode_verify
+
+    main = importlib.import_module(_MODULE)
+    private = "data:image/png;base64," + base64.b64encode(RASTERS["PNG"]).decode() + "?secret=mode-token"
+    conversions, prints, exceptions, events, logs, processors, closed = [], [], [], [], [], [], []
+
+    class PrivateError(RuntimeError):
+        def __str__(self):
+            conversions.append("str")
+            return private
+
+        def __repr__(self):
+            conversions.append("repr")
+            return private
+
+    class PrivateCancellation(asyncio.CancelledError):
+        def __str__(self):
+            conversions.append("cancel-str")
+            return private
+
+        def __repr__(self):
+            conversions.append("cancel-repr")
+            return private
+
+    class CleanupUnsettled(RuntimeError):
+        pass
+
+    primary = PrivateCancellation(private) if failure == "overlay-cancel" else PrivateError(private)
+    primary.__cause__ = ValueError(private + "-cause")
+    primary.__context__ = ValueError(private + "-context")
+    BaseException.add_note(primary, private + "-note")
+    cleanup_error = CleanupUnsettled("synthetic cleanup uncertainty")
+    stream = StringIO()
+
+    class EntryConsole(Console):
+        def print(self, *objects, **kwargs):
+            prints.append((objects, kwargs))
+            return super().print(*objects, **kwargs)
+
+        def print_exception(self, *args, **kwargs):
+            exceptions.append(sys.exception())
+            return super().print_exception(*args, **kwargs)
+
+    def log_entry(logger, level, message, arguments, exc_info=None, extra=None,
+                  stack_info=False, stacklevel=1):
+        logs.append((message, arguments, exc_info, extra, stack_info))
+
+    original_init = CommandProcessor.__init__
+
+    def processor_init(processor, *args, **kwargs):
+        original_init(processor, *args, **kwargs)
+        processors.append(processor)
+
+    # A failed physical-close witness must also survive the borrowed fixture's
+    # final cleanup call without replay. Its cached failure is expected there.
+    with contextlib.ExitStack() as expected:
+        if custody:
+            expected.enter_context(pytest.raises(CleanupUnsettled))
+        async with participating_mode_root() as root:
+            await root.add_pixels("PNG")
+            predecessor = root.graph.construction
+            receipt = root.bridge.graph_receipt
+            overlay = root.mode_hooks._get_or_create_overlay()
+            calls = []
+            native_emit = root.mode_hooks.coordinator.hooks.emit
+            original_close = root.host._close
+            writer, binding = MagicMock(), MagicMock()
+            if custody == "root":
+                root.initialized.root_state = writer
+            elif custody == "binding":
+                root.initialized.config.canonical_binding = binding
+
+            async def physical_close():
+                closed.append("media")
+                await original_close()
+                if custody:
+                    raise cleanup_error
+
+            async def event_entry(name, payload):
+                events.append((name, payload))
+                return await native_emit(name, payload)
+
+            async def fail_overlay(*args, **kwargs):
+                calls.append("overlay")
+                if failure != "external-cancel":
+                    raise primary
+                return await original_apply(*args, **kwargs)
+
+            original_apply = overlay.apply
+            if failure == "external-cancel":
+                # Real Core swallows this unrelated callback's cancellation;
+                # the issuer, not the REPL, converts its failed seal to error.
+                root.fault_event = "mode:activated"
+                root.fault = asyncio.CancelledError("synthetic external callback cancellation")
+            prompt = MagicMock()
+            prompt.prompt_async = AsyncMock(side_effect=[
+                "/mode alpha on must-not-run", "/mode off", "/exit",
+            ])
+            runtime_mentions = AsyncMock(side_effect=AssertionError("must not execute trailing prompt"))
+            cleanup = AsyncMock(wraps=root.initialized.cleanup)
+            patchers = (
+                patch.object(main, "create_initialized_session", AsyncMock(return_value=root.initialized)),
+                patch.object(CommandProcessor, "__init__", new=processor_init),
+                patch.object(main, "_create_prompt_session", return_value=prompt),
+                patch("amplifier_app_cli.incremental_save.register_incremental_save"),
+                patch("amplifier_app_cli.goal_progress_hook.register_goal_progress_hook"),
+                patch("amplifier_app_cli.goal_circuit_breaker.register_goal_circuit_breaker"),
+                patch("amplifier_app_cli.session_handoff.CLIHandoff.start", AsyncMock()),
+                patch.object(main, "AppSettings"),
+                patch.object(main, "console", EntryConsole(file=stream, width=100)),
+                patch.object(main, "process_runtime_mentions", runtime_mentions),
+                patch.object(root.initialized, "cleanup", cleanup),
+                patch.object(root.host, "_close", side_effect=physical_close),
+                patch.object(overlay, "apply", side_effect=fail_overlay),
+                patch.object(root.mode_hooks.coordinator.hooks, "emit", side_effect=event_entry),
+                patch.object(logging.Logger, "_log", new=log_entry),
+            )
+            with contextlib.ExitStack() as stack:
+                for patcher in patchers:
+                    stack.enter_context(patcher)
+                tty = stack.enter_context(patch.object(main, "close_dedicated_tty_input"))
+                verifications = stack.enter_context(_observe_real_mode_verify(root))
+                try:
+                    await asyncio.wait_for(
+                        interactive_chat(config={}, search_paths=[], verbose=verbose, bundle_name="mode-fixture"),
+                        timeout=5,
+                    )
+                except BaseException as error:
+                    if custody:
+                        assert error is cleanup_error
+                    else:
+                        assert failure == "overlay-cancel" and error is primary
+                else:
+                    assert not custody and failure != "overlay-cancel"
+                cleanup.assert_awaited_once()
+                tty.assert_called_once()
+                runtime_mentions.assert_not_awaited()
+            assert main._INTERACTIVE_SETUP.get() is None
+            assert closed == ["media"]
+            assert not conversions, "Private error was formatted before reaching the console"
+            assert not exceptions, "Private exception reached the verbose traceback renderer"
+            for objects, kwargs in prints:
+                assert all(not isinstance(value, BaseException) for value in objects)
+                assert all(private not in value for value in objects if type(value) is str)
+                assert not kwargs
+            assert private not in stream.getvalue() and "Traceback" not in stream.getvalue()
+            safe_message = (
+                "[red]Participating mode operation failed; host recovery is required. "
+                "Exception details withheld.[/red]"
+            )
+            safe_prints = [objects for objects, _kwargs in prints if objects == (safe_message,)]
+            assert len(safe_prints) == (0 if failure == "overlay-cancel" else 2)
+            for message, arguments, exc_info, extra, stack_info in logs:
+                assert type(message) is str and private not in message
+                assert not arguments and exc_info is None and extra is None and not stack_info
+            assert private not in json.dumps(events)
+            assert len(calls) == 1 and len(verifications) == 1
+            assert root.graph.construction is not predecessor
+            assert root.bridge.graph_receipt is None and not root.bridge.validate_receipt(receipt)
+            assert root.evidence()["state"] == "invalid"
+            state = root.coordinator.session_state
+            assert state["active_mode"] is None and state["mode_transition_failure"] == {
+                "source": "cli.command", "target_mode": "alpha",
+                "reason": "participating-mode-operation-did-not-settle",
+            }
+            assert private not in json.dumps(state["mode_transition_failure"])
+            if failure != "external-cancel":
+                assert verifications[0]["error"] is primary
+                assert verifications[0]["raised"] is primary
+                assert processors[0]._mode_transition_error is primary
+                assert primary.args == (private,)
+                assert primary.__cause__.args == (private + "-cause",)
+                assert primary.__context__.args == (private + "-context",)
+                assert primary.__notes__ == [private + "-note"]
+            else:
+                assert verifications[0]["error"] is None and verifications[0]["raised"] is None
+                assert isinstance(processors[0]._mode_transition_error, ValueError)
+            assert len(root.events) == 1  # No /mode off recovery or replay.
+            assert root.raw.observed == []  # No count/send or inference.
+            await root.unchanged_canonical()
+            assert root.host.cleanup_attempted and root.host.cleanup_settled is (not custody)
+            writer.release.assert_not_called()
+            binding.close.assert_not_called()
+    assert closed == ["media"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verbose", [False, True])
+async def test_actual_repl_legacy_mode_error_keeps_existing_presentation(tmp_path, verbose):
+    """A nonparticipating command must still use the normal error renderer."""
+    from io import StringIO
+    from rich.console import Console
+    from amplifier_app_cli.main import CommandProcessor, interactive_chat
+
+    session = _make_mock_session()
+    session.coordinator.get_capability.return_value = None
+    initialized = _make_initialized(session)
+    primary = RuntimeError("synthetic legacy-visible-mode-error")
+    prompt = MagicMock()
+    prompt.prompt_async = AsyncMock(side_effect=["/mode alpha on", "/exit"])
+    stream = StringIO()
+    console = Console(file=stream)
+    patchers = (
+        patch(f"{_MODULE}.create_initialized_session", AsyncMock(return_value=initialized)),
+        patch(f"{_MODULE}._create_prompt_session", return_value=prompt),
+        patch(f"{_MODULE}.SessionStore"),
+        patch(f"{_MODULE}.AppSettings"),
+        patch(f"{_MODULE}.console", console),
+        patch("amplifier_app_cli.incremental_save.register_incremental_save"),
+        patch.object(CommandProcessor, "_emit_mode_event", AsyncMock(side_effect=primary)),
+    )
+    with contextlib.ExitStack() as stack:
+        for patcher in patchers:
+            stack.enter_context(patcher)
+        traceback = stack.enter_context(patch.object(console, "print_exception", wraps=console.print_exception))
+        tty = stack.enter_context(patch(f"{_MODULE}.close_dedicated_tty_input"))
+        await interactive_chat(config={}, search_paths=[tmp_path], verbose=verbose)
+    assert "synthetic legacy-visible-mode-error" in stream.getvalue()
+    assert "Exception details withheld" not in stream.getvalue()
+    assert traceback.call_count == int(verbose)
+    assert "mode_transition_failure" not in session.coordinator.session_state
+    initialized.cleanup.assert_awaited_once()
+    session.execute.assert_not_awaited()
+    tty.assert_called_once()
