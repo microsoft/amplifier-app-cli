@@ -88,12 +88,20 @@ class _PolicyReadCapture:
         self.environment = _environment_digest()
         self.cwd = os.getcwd()
         self.complete = True
-        # Public home resolution canonicalizes aliases. Retain its lexical
-        # input too, so a same-environment symlink retarget cannot reuse the
-        # old settings/registry witness.
+        from amplifier_foundation.paths.resolution import get_amplifier_home
+
+        self.watch(get_amplifier_home(), content=False)
+        # The public helper owns home selection and canonicalizes aliases.
+        # Only a nonempty explicit input supplies lexical provenance we can
+        # additionally observe without duplicating its default-home policy.
         raw_home = os.environ.get("AMPLIFIER_HOME")
-        self.watch(Path(raw_home).expanduser() if raw_home else Path.home() / ".amplifier",
-                   content=False)
+        if raw_home:
+            self.watch(Path(raw_home).expanduser(), content=False)
+        else:
+            # Default lexical aliases are not exposed by the public helper.
+            # Current resolution remains useful, but every guard must resolve
+            # again rather than reuse a potentially incomplete home witness.
+            self.complete = False
 
     def watch(self, path, *, content=True):
         if path is None:

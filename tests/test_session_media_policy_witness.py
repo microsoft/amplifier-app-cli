@@ -13,6 +13,7 @@ from amplifier_app_cli.runtime import config as runtime
 from amplifier_foundation.session.metadata import SessionMetadataStore
 from test_session_media_policy import (  # noqa: F401
     configuration, external_requests_forbidden, prospective, registered, invoke,
+    require_linux_custody,
 )
 
 
@@ -507,3 +508,119 @@ def test_unknown_auxiliary_reply_latches_exact_failure_without_replay(configurat
                 owner.binding.last_receipt, fields, expected_prefix=prefix,
             )
         assert len(calls) == 1
+
+
+@pytest.mark.parametrize("home_input", ["unset", "empty"])
+def test_default_home_public_resolution_has_no_reusable_witness(configuration, counted, monkeypatch, home_input):
+    from amplifier_foundation.paths import resolution
+
+    home, _, _, _ = configuration
+    directory, _, _, _, expected = prospective(configuration)
+    if home_input == "unset":
+        monkeypatch.delenv("AMPLIFIER_HOME")
+    else:
+        monkeypatch.setenv("AMPLIFIER_HOME", "")
+    original = resolution.get_amplifier_home
+    public_calls = []
+
+    def observe():
+        selected = original()
+        public_calls.append(selected)
+        return selected
+
+    monkeypatch.setattr(resolution, "get_amplifier_home", observe)
+    config, witness = policy.capture_closed_policy_config(directory, "root", expected)
+    assert public_calls and all(path == home for path in public_calls)
+    assert config["session_media"]["retention"] == "durable"
+    assert config["session_media"]["max_pixels"] == 100
+    assert witness is None
+    with owners.default_owner_factory("root", purpose="apply") as owner:
+        owner.prepare_media()
+        assert owner.projection.known and owner._policy_witness is None
+        before = len(counted)
+        owner.check()
+        owner.check()
+        assert len(counted) == before + 2
+
+
+@pytest.mark.parametrize("home_input", ["unset", "empty"])
+def test_default_home_alias_retarget_gets_fresh_public_policy(configuration, tmp_path, monkeypatch, home_input):
+    from amplifier_foundation.paths.resolution import get_amplifier_home
+
+    require_linux_custody()
+    home, _, _, _ = configuration
+    original_home = tmp_path / "original-default-home"
+    home.rename(original_home)
+    home.symlink_to(original_home, target_is_directory=True)
+    directory, _, _, _, expected = prospective(configuration)
+    if home_input == "unset":
+        monkeypatch.delenv("AMPLIFIER_HOME")
+    else:
+        monkeypatch.setenv("AMPLIFIER_HOME", "")
+    assert get_amplifier_home() == original_home
+    replacement = tmp_path / "replacement-default-home"
+    replacement.mkdir()
+    settings = yaml.safe_load((original_home / "settings.yaml").read_text())
+    settings["config"]["session_media"]["max_pixels"] = 8
+    (replacement / "settings.yaml").write_text(yaml.safe_dump(settings))
+    (replacement / "registry.json").write_bytes((original_home / "registry.json").read_bytes())
+    with owners.default_owner_factory("root", purpose="apply") as owner:
+        owner.prepare_media()
+        assert owner.projection.known and owner.projection.policy.max_pixels == 100
+        assert owner._policy_witness is None
+        home.unlink()
+        home.symlink_to(replacement, target_is_directory=True)
+        assert get_amplifier_home() == replacement
+        fresh, witness = policy.capture_closed_policy_config(directory, "root", expected)
+        assert fresh["session_media"]["max_pixels"] == 8 and witness is None
+        with pytest.raises(owners.StorageOwnerHeld):
+            owner.check()
+
+
+def test_explicit_public_home_does_not_observe_decoy_os_home(configuration, tmp_path, monkeypatch):
+    import asyncio
+    from amplifier_app_cli.lib.settings import AppSettings
+    from amplifier_foundation.paths import resolution
+
+    home, _, _, _ = configuration
+    decoy = tmp_path / "decoy-os-home"
+    (decoy / ".amplifier").mkdir(parents=True)
+    decoy_settings = decoy / ".amplifier" / "settings.yaml"
+    decoy_registry = decoy / ".amplifier" / "registry.json"
+    decoy_settings.write_text("config: [invalid-decoy\n")
+    decoy_registry.write_text("{invalid-decoy")
+    monkeypatch.setenv("HOME", str(decoy))
+    monkeypatch.setenv("USERPROFILE", str(decoy))
+    original_public = resolution.get_amplifier_home
+    public_calls = []
+
+    def observe():
+        selected = original_public()
+        public_calls.append(selected)
+        return selected
+
+    original_read = Path.read_text
+
+    def reject_decoy(path, *args, **kwargs):
+        if path in (decoy_settings, decoy_registry):
+            pytest.fail("Explicit home resolution read decoy OS-home settings")
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(resolution, "get_amplifier_home", observe)
+    monkeypatch.setattr(Path, "read_text", reject_decoy)
+    # Pure capture/read-set check remains portable; no prospective custody.
+    capture = policy._PolicyReadCapture()
+    assert public_calls == [home]
+    assert capture.complete
+    assert all(not Path(path).is_relative_to(decoy)
+               for path, _content in capture.entries)
+    witness = capture.freeze()
+    assert witness is not None and witness.check()
+    decoy_settings.write_text("another invalid decoy\n")
+    decoy_registry.write_text("another invalid decoy\n")
+    assert witness.check()
+    current = asyncio.run(policy.resolve_declared_config_async(
+        "owned", AppSettings(), session_id="root", project_slug="fixture",
+    ))
+    assert current["session_media"]["max_pixels"] == 100
+    assert public_calls and all(path == home for path in public_calls)
