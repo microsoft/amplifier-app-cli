@@ -572,7 +572,10 @@ def register_session_commands(
             ctx.exit()
 
     from .session_storage import register_session_storage_commands
-    register_session_storage_commands(session, store_factory=lambda: SessionStore())
+    from ..session_storage_owner import default_owner_factory
+    register_session_storage_commands(
+        session, store_factory=lambda: SessionStore(), controller_factory=default_owner_factory,
+    )
 
     @session.command(name="list")
     @click.option("--limit", "-n", default=20, help="Number of sessions to show")

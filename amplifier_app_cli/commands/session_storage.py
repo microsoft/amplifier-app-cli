@@ -226,10 +226,58 @@ def _activation_report(result):
     }
 
 
-def register_session_storage_commands(session, *, store_factory, admission_factory=None):
+def register_session_storage_commands(session, *, store_factory, admission_factory=None, controller_factory=None):
+    def committed(command, session_id, *, operation=None, operation_id=None, expected_plan=None,
+                  export_assets=False, records=None, backups=()):
+        if controller_factory is None:
+            return False
+        try:
+            owner = controller_factory(
+                session_id, purpose=command, operation=operation.absolute() if operation is not None else None,
+                operation_id=operation_id,
+            )
+            if owner is None:
+                return False
+            # External synchronous Click process only. Async hosts call the
+            # controller's async run directly; no nested asyncio.run/task clone.
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                raise RuntimeError("Use the async maintenance controller on a running loop")
+            expected = _expected_plan(expected_plan) if expected_plan is not None else None
+            with owner:
+                report = asyncio.run(owner.run(
+                    expected_plan=expected, expected_json=_json, export_assets=export_assets,
+                    records=records, backups=backups,
+                ))
+            owner.verify_export_after_close()
+            output = _json(report)
+        except Exception as error:
+            from ..session_storage_owner import public_held
+
+            reason = public_held(error)
+            if reason is not None:
+                raise click.ClickException(reason) from error
+            # The legacy read-only status policy is untouched; this is the new
+            # callback-bearing standalone controller boundary only.
+            if command == "status":
+                raise click.ClickException("STORAGE_STATUS_FAILED: Committed status not confirmed; preserve operation files.") from error
+            raise _operation_failure(command, error) from error
+        click.echo(output)
+        return True
+
     @session.group("storage")
     def storage():
-        """Inspect storage; changes require private host maintenance admission."""
+        """Inspect or maintain an exact closed enrolled session.
+
+        T2 uses the actual standalone lease owner. Ref-bearing maintenance stays
+        HELD when effective bundle/child policy or the original source validator
+        is unavailable. Unknown inline history stays unchanged. Legacy mutation
+        still requires private host maintenance exclusion. Stable --operation-id
+        is selection DATA, not permission; retain it for apply/resume/status.
+        """
 
     @storage.command("preview")
     @click.argument("session_id")
@@ -239,6 +287,8 @@ def register_session_storage_commands(session, *, store_factory, admission_facto
                   help="Selected prefix count; no suffix assets are inventoried.")
     def preview(session_id, backup, records):
         """Read the exact native-v1 primary under supported writer ownership."""
+        if committed("preview", session_id, records=records, backups=backup):
+            return
         if admission_factory is not None:
             # This new host-callback lane has its own privacy boundary, including
             # factory entry, current permission/custody checks and context exit.
@@ -315,8 +365,12 @@ def register_session_storage_commands(session, *, store_factory, admission_facto
     @click.option("--expected-plan", required=True, type=click.Path(path_type=Path))
     @click.option("--export-assets", is_flag=True,
                   help="Build a separate portable closure now (not the recovery operation).")
-    def prepare(session_id, operation, expected_plan, export_assets):
+    @click.option("--operation-id", default=None, help="Stable original operation identity DATA; retain for apply/resume.")
+    def prepare(session_id, operation, expected_plan, export_assets, operation_id=None):
         """Build once; never overwrite/rebuild an existing or unknown operation."""
+        if committed("prepare", session_id, operation=operation, operation_id=operation_id,
+                     expected_plan=expected_plan, export_assets=export_assets):
+            return
         try:
             from amplifier_foundation.session.media_conversion import build_candidate
 
@@ -344,7 +398,10 @@ def register_session_storage_commands(session, *, store_factory, admission_facto
             raise _operation_failure("prepare", error) from error
         click.echo(output)
 
-    def activate(session_id, operation, expected_plan, *, resume):
+    def activate(session_id, operation, expected_plan, *, resume, operation_id=None):
+        if committed("resume" if resume else "apply", session_id, operation=operation,
+                     operation_id=operation_id, expected_plan=expected_plan):
+            return
         try:
             from amplifier_foundation.session.media_activation import apply_candidate, resume_candidate
 
@@ -374,23 +431,28 @@ def register_session_storage_commands(session, *, store_factory, admission_facto
     @click.argument("session_id")
     @click.argument("operation", type=click.Path(path_type=Path))
     @click.option("--expected-plan", required=True, type=click.Path(path_type=Path))
-    def apply(session_id, operation, expected_plan):
+    @click.option("--operation-id", default=None)
+    def apply(session_id, operation, expected_plan, operation_id=None):
         """Apply once under live host admission; a plan is not authority."""
-        activate(session_id, operation, expected_plan, resume=False)
+        activate(session_id, operation, expected_plan, resume=False, operation_id=operation_id)
 
     @storage.command("resume")
     @click.argument("session_id")
     @click.argument("operation", type=click.Path(path_type=Path))
     @click.option("--expected-plan", required=True, type=click.Path(path_type=Path))
-    def resume(session_id, operation, expected_plan):
+    @click.option("--operation-id", default=None)
+    def resume(session_id, operation, expected_plan, operation_id=None):
         """Reacquire admission and ACK actual bytes; never replay replacement."""
-        activate(session_id, operation, expected_plan, resume=True)
+        activate(session_id, operation, expected_plan, resume=True, operation_id=operation_id)
 
     @storage.command("status")
     @click.argument("session_id")
     @click.argument("operation", type=click.Path(path_type=Path))
-    def status(session_id, operation):
+    @click.option("--operation-id", default=None)
+    def status(session_id, operation, operation_id=None):
         """Read conversion AND activation facts; on-disk ACK is not live ACK."""
+        if committed("status", session_id, operation=operation, operation_id=operation_id):
+            return
         from amplifier_foundation.session.media_activation import reconcile_activation
         from amplifier_foundation.session.media_conversion import reconcile
 
@@ -412,8 +474,11 @@ def register_session_storage_commands(session, *, store_factory, admission_facto
     @storage.command("export")
     @click.argument("session_id")
     @click.argument("operation", type=click.Path(path_type=Path))
-    def export(session_id, operation):
+    @click.option("--operation-id", default=None)
+    def export(session_id, operation, operation_id=None):
         """Expose ONLY an already-built verified portable closure, never its parent."""
+        if committed("export", session_id, operation=operation, operation_id=operation_id):
+            return
         try:
             from amplifier_foundation.session.media_activation import reconcile_activation
             from amplifier_foundation.session.media_conversion import (

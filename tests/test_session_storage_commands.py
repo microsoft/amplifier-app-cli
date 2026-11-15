@@ -31,7 +31,11 @@ pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX format owner")
 
 
 def cli_for(tmp_path, monkeypatch):
+    from amplifier_app_cli import session_storage_owner
+
     native = SessionStore(tmp_path / "sessions")
+    monkeypatch.setattr(session_storage_owner, "default_session_directory",
+                        lambda session_id: native.base_dir / session_id)
     cli = click.Group()
     register_session_commands(cli, interactive_chat=AsyncMock(), execute_single=AsyncMock(), get_module_search_paths=list)
     import amplifier_app_cli.commands.session as commands
