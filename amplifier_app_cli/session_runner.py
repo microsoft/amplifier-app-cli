@@ -41,6 +41,7 @@ from amplifier_core import AmplifierSession
 from amplifier_core import ModuleValidationError
 
 from .lib.settings import AppSettings
+from .session_binding_custody import claim_binding, close_binding, retain_binding
 from .session_store import SessionStore
 from .ui.error_display import display_validation_error
 from .utils.error_format import escape_markup
@@ -176,6 +177,7 @@ class InitializedSession:
     root_state: Any = None
     _cleanup_attempted: bool = field(default=False, init=False, repr=False)
     _cleanup_error: BaseException | None = field(default=None, init=False, repr=False)
+    _binding_owner: Any = field(default=None, init=False, repr=False)
 
     async def cleanup(self, *, release_ownership: bool = True):
         """Clean up session resources."""
@@ -187,17 +189,18 @@ class InitializedSession:
         from .session_media import cleanup_session_media_owner
         try:
             await cleanup_session_media_owner(self.session)
+            if self.root_state is not None and release_ownership:
+                self.root_state.release()
+            if self.config.canonical_binding is not None and release_ownership:
+                close_binding(self.config.canonical_binding, self._binding_owner)
         except BaseException as error:
             self._cleanup_error = error
+            if self.config.canonical_binding is not None and self._binding_owner is not None:
+                retain_binding(
+                    self.config.canonical_binding, self._binding_owner, error,
+                    session=self.session,
+                )
             raise
-        if self.root_state is not None and release_ownership:
-            self.root_state.release()
-        if self.config.canonical_binding is not None and release_ownership:
-            self.config.canonical_binding.close()
-            _ROOT_BINDING_OWNERS.pop(self.config.canonical_binding, None)
-
-
-_ROOT_BINDING_OWNERS: dict[Any, Any] = {}
 
 
 class _RootSetupOwner:
@@ -230,6 +233,8 @@ class _RootSetupOwner:
             await cleanup_session_media_owner(self.session)
         except BaseException as error:
             self.cleanup_error = error
+            if self.canonical_binding is not None:
+                retain_binding(self.canonical_binding, self, error, session=self.session)
             try:
                 BaseException.add_note(cause, "Root construction cleanup did not settle; writer retained")
             except BaseException:
@@ -257,9 +262,19 @@ async def create_initialized_session(
             config.root_state.release()
             config.root_state = None
         if lifetime.canonical_binding is not None and cleanup_settled:
-            lifetime.canonical_binding.close()
-            _ROOT_BINDING_OWNERS.pop(lifetime.canonical_binding, None)
+            try:
+                close_binding(lifetime.canonical_binding, lifetime)
+            except BaseException as error:
+                retain_binding(
+                    lifetime.canonical_binding, lifetime, error, session=lifetime.session,
+                )
+                try:
+                    BaseException.add_note(cause, "Root writer release did not settle; owner retained")
+                except BaseException:
+                    pass  # A diagnostic must not mask the original setup cause.
+                logger.warning("Root writer release failed; owner retained; exception details withheld")
         raise
+    result._binding_owner = lifetime
     return result
 
 
@@ -330,9 +345,7 @@ async def _create_initialized_session(
         if not callable(config.canonical_admit) or config.root_state is not None:
             raise ValueError("Prospective ownership requires explicit admission and no legacy writer")
         binding.check()
-        if binding in _ROOT_BINDING_OWNERS:
-            raise RuntimeError("Prospective source already has a live root cleanup owner")
-        _ROOT_BINDING_OWNERS[binding] = lifetime
+        claim_binding(binding, lifetime)
         lifetime.canonical_binding = binding
         config.session_id = session_id
         # The prospective lease is the source owner, not proof of maintenance
@@ -794,6 +807,12 @@ async def _create_bundle_session(
         SessionStore(config.canonical_binding.directory.parent, canonical_binding=config.canonical_binding)
         if config.canonical_binding is not None else SessionStore()
     )
+    if config.canonical_binding is None and config.is_resume:
+        # Use this invocation's actual selected native store, not a guessed
+        # default source. Check namespace presence only; Foundation owns reads.
+        # No Core/media owner or transcript FD has been constructed yet.
+        if os.path.lexists(store.base_dir / session_id / "transcript.v2"):
+            raise RuntimeError("Versioned root resume requires its explicit live binding")
     lifetime = lifetime if lifetime is not None else _RootSetupOwner()
 
     async def before_initialize(candidate: AmplifierSession) -> None:

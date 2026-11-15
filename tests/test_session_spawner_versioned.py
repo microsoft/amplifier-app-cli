@@ -31,6 +31,7 @@ from amplifier_foundation.session.transcript_source import open_committed_source
 from amplifier_foundation.session.versioned_checkpoint import VersionedCheckpointReceipt
 
 from amplifier_app_cli import session_spawner as spawner
+from amplifier_app_cli.session_binding_custody import binding_custody
 from amplifier_app_cli.session_checkpoint import install_session_checkpoint
 from amplifier_app_cli.session_hooks import install_session_hook_graph
 from amplifier_app_cli.session_media import CLISessionMedia, install_session_media
@@ -119,6 +120,22 @@ class Loader:
 
 def snapshot(root):
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
+def active_custody(binding):
+    current = binding_custody(binding)
+    return current is not None and current.error is None
+
+
+def retained_custody(binding):
+    current = binding_custody(binding)
+    return current is not None and current.error is not None
+
+
+def retained_child(binding):
+    current = binding_custody(binding)
+    assert current is not None and current.error is not None
+    return current.session, current.binding, current.error
 
 
 def selected_prefix(directory):
@@ -239,6 +256,26 @@ class Rig:
             "named", "offline instruction", parent, {"named": {}}, sub_session_id=sid,
             canonical_binding=self.owners[sid], canonical_admit=self.admit(sid), **kwargs,
         )
+
+    async def open_root(self, binding, monkeypatch, *, bound=True, rows=None):
+        from amplifier_foundation.bundle import Bundle, PreparedBundle
+        from amplifier_app_cli.session_runner import SessionConfig, create_initialized_session
+        from rich.console import Console
+
+        settings = MagicMock()
+        settings.with_session.return_value.get_merged_settings.return_value = {"configurator": {}}
+        monkeypatch.setattr("amplifier_core.AmplifierSession", self.factory)
+        monkeypatch.setattr("amplifier_app_cli.commands.init.check_first_run", lambda: False)
+        monkeypatch.setattr("amplifier_app_cli.session_runner.AppSettings", lambda: settings)
+        monkeypatch.setattr("amplifier_app_cli.runtime.config.inject_user_providers", lambda *a, **kw: None)
+        prepared = PreparedBundle(deepcopy(PLAN), MagicMock(), Bundle(name="custody-fixture"))
+        return await create_initialized_session(SessionConfig(
+            config=deepcopy(PLAN), search_paths=[], verbose=False,
+            session_id=binding.session_id, prepared_bundle=prepared,
+            initial_transcript=rows,
+            canonical_binding=binding if bound else None,
+            canonical_admit=self.admit(binding.session_id) if bound else None,
+        ), Console(file=io.StringIO()))
 
 
 @pytest.fixture
@@ -511,14 +548,14 @@ async def test_continuous_cleanup_preserves_primary_and_retains_failed_owner(
         if cleanup_kind == "success":
             with pytest.raises(VersionedSessionConflict, match="closed"):
                 owner.check()
-            assert owner not in spawner._RETAINED_CHILD_CLEANUPS
+            assert not retained_custody(owner)
         else:
             owner.check()
             before = snapshot(owner.directory)
             with pytest.raises(RuntimeError, match="explicit owner settlement"):
                 await rig.spawn(parent)
             assert snapshot(owner.directory) == before and rig.cleanup_calls == ["child"]
-            actual, retained, error = spawner._RETAINED_CHILD_CLEANUPS.pop(owner)
+            actual, retained, error = retained_child(owner)
             assert retained is owner and error is failure
             with pytest.raises(VersionedSessionConflict, match="retains"):
                 VersionedSessionBinding.resume(owner.directory, session_id="child", expected=owner.expected)
@@ -544,7 +581,7 @@ async def test_cleanup_failure_without_primary_propagates_exact_error(rig, clean
             await rig.spawn(parent)
         assert caught.value is failure
         assert rig.cleanup_calls == ["child"]
-        actual, retained, error = spawner._RETAINED_CHILD_CLEANUPS.pop(owner)
+        actual, retained, error = retained_child(owner)
         assert retained is owner and error is failure
         owner.check()
         await rig.actual_cleanup(actual)
@@ -557,6 +594,7 @@ async def test_cleanup_failure_without_primary_propagates_exact_error(rig, clean
 
 
 async def test_unknown_operation_blocks_final_save_without_new_admission_or_replay(rig, monkeypatch):
+    from amplifier_app_cli.session_checkpoint import CheckpointBlocked
     parent, _ = await rig.parent()
     owner = rig.allocate("child")
     calls = []
@@ -575,20 +613,21 @@ async def test_unknown_operation_blocks_final_save_without_new_admission_or_repl
         with pytest.raises(OSError) as caught:
             await actual.coordinator.get_capability("session.durable_checkpoint")()
         assert caught.value is failure
+        assert actual.coordinator.get_capability("_cli.checkpoint_failure").primary is failure
         assert owner.expected == initial
         settled = selected_prefix(owner.directory)
         assert settled != initial and settled.operation_id == calls[0]
         before = snapshot(owner.directory)
         admissions = list(rig.admissions)
         # Even the old autosave path is fail-closed when explicitly bound.
-        with pytest.raises(VersionedSessionConflict, match="reconciliation"):
+        with pytest.raises(CheckpointBlocked, match="reconciliation"):
             await spawner._write_checkpoint(actual, actual.coordinator.get_capability("cli.session_store"), "child", {})
         assert snapshot(owner.directory) == before and rig.admissions == admissions
         return "not successful"
 
     rig.actions["child"] = execute
     try:
-        with pytest.raises(VersionedSessionConflict, match="reconciliation"):
+        with pytest.raises(CheckpointBlocked, match="reconciliation"):
             await rig.spawn(parent)
         assert len(calls) == 1 and rig.admissions.count("child") == 1
         assert owner.expected == initial
@@ -687,13 +726,13 @@ async def test_external_task_cancellation_through_actual_core_keeps_cancelled_er
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=5)
         assert task.cancelled() and rig.cleanup_calls == ["child"]
-        assert owner not in spawner._CHILD_BINDING_OWNERS
+        assert not active_custody(owner)
         if cleanup_kind == "success":
             with pytest.raises(VersionedSessionConflict, match="closed"):
                 owner.check()
         else:
             owner.check()
-            actual, retained, error = spawner._RETAINED_CHILD_CLEANUPS.pop(owner)
+            actual, retained, error = retained_child(owner)
             assert retained is owner and error is rig.cleanup_error
             await rig.actual_cleanup(actual)
             owner.close()
@@ -751,7 +790,7 @@ async def test_parent_binding_and_concurrent_reuse_refuse_without_closing_live_o
         finish.set()
         assert (await asyncio.wait_for(task, timeout=5))["output"] == "one owner"
         assert rig.cleanup_calls == ["child"]
-        assert owner not in spawner._CHILD_BINDING_OWNERS
+        assert not active_custody(owner)
     finally:
         finish.set()
         if task is not None and not task.done():
@@ -812,7 +851,7 @@ async def test_cold_resume_exact_selector_failure_precedes_media_and_core_constr
             )
         assert not rig.created and not rig.cleanup_calls
         assert snapshot(owner.directory) == before
-        assert reopened not in spawner._CHILD_BINDING_OWNERS
+        assert not active_custody(reopened)
         with pytest.raises(VersionedSessionConflict, match="closed"):
             reopened.check()
     finally:
@@ -827,7 +866,7 @@ async def test_binding_custody_covers_configuration_await_before_child_construct
     failure = ValueError("offline configuration failure")
 
     async def resolution(*args):
-        assert owner in spawner._CHILD_BINDING_OWNERS
+        assert active_custody(owner)
         entered.set()
         if failure_kind == "error":
             raise failure
@@ -850,7 +889,7 @@ async def test_binding_custody_covers_configuration_await_before_child_construct
             assert caught.value is failure
         assert len(rig.created) == 1 and not rig.cleanup_calls
         assert snapshot(owner.directory) == before
-        assert owner not in spawner._CHILD_BINDING_OWNERS
+        assert not active_custody(owner)
         with pytest.raises(VersionedSessionConflict, match="closed"):
             owner.check()
     finally:
@@ -942,7 +981,7 @@ async def test_actual_core_swallowed_media_callback_failure_keeps_binding(
                     await asyncio.wait_for(task, timeout=5)
                 assert caught.value is expected_error
 
-        actual, retained, cleanup_error = spawner._RETAINED_CHILD_CLEANUPS[owner]
+        actual, retained, cleanup_error = retained_child(owner)
         host = actual.coordinator.get_capability("cli.session_media")
         assert type(host) is CLISessionMedia and callback_attempts == [host]
         # Critical negative control: unmodified actual Core ran the registered
@@ -953,7 +992,7 @@ async def test_actual_core_swallowed_media_callback_failure_keeps_binding(
         assert retained is owner and cleanup_error is failure
         owner.check()
         host.store._check()  # The physical media owner is still open.
-        assert owner not in spawner._CHILD_BINDING_OWNERS
+        assert not active_custody(owner)
         assert spawner._SETUP_SESSION.get() is None
         with pytest.raises(VersionedSessionConflict, match="retains"):
             VersionedSessionBinding.resume(
@@ -987,7 +1026,6 @@ async def test_actual_core_swallowed_media_callback_failure_keeps_binding(
                 await wrapper.aclose()
             host.native.unbind_media_store(host.session_id, host.store)
             host.store.close()
-        spawner._RETAINED_CHILD_CLEANUPS.pop(owner, None)
         rig.setup_error = None
         await parent.cleanup()
         for current in rig.owners.values():
@@ -1022,8 +1060,8 @@ async def test_spawn_rejects_reacquired_nonempty_binding_before_acceptance_and_r
         assert rig.native_calls == natives and not rig.cleanup_calls
         assert snapshot(reacquired.directory) == before
         assert reacquired.expected == selected and reacquired.load_messages() == saved_rows
-        assert reacquired not in spawner._CHILD_BINDING_OWNERS
-        assert reacquired not in spawner._RETAINED_CHILD_CLEANUPS
+        assert not active_custody(reacquired)
+        assert not retained_custody(reacquired)
         reacquired.check()  # Validation refusal never accepts or closes caller custody.
         with pytest.raises(VersionedSessionConflict, match="retains"):
             VersionedSessionBinding.resume(
@@ -1167,8 +1205,8 @@ async def test_actual_registered_root_resume_refuses_its_own_binding_before_chil
         assert rig.created == created and rig.admissions == admissions
         assert not rig.cleanup_calls
         assert snapshot(owner.directory) == before and owner.expected == selected
-        assert owner not in spawner._CHILD_BINDING_OWNERS
-        assert owner not in spawner._RETAINED_CHILD_CLEANUPS
+        assert not active_custody(owner)
+        assert not retained_custody(owner)
         owner.check()
         with pytest.raises(VersionedSessionConflict, match="retains"):
             VersionedSessionBinding.resume(
@@ -1180,3 +1218,788 @@ async def test_actual_registered_root_resume_refuses_its_own_binding_before_chil
     finally:
         await actual_root.cleanup()
         owner.close()
+
+
+async def test_shared_custody_idle_actual_root_refuses_raw_resume_without_parent(tmp_path, monkeypatch):
+    # Read-only reuse of the root owner's actual public startup fixture. No
+    # root-runtime source edits or alternate Core/ownership implementation.
+    from tests.test_session_media_versioned_runtime import Runtime
+
+    runtime = Runtime(tmp_path)
+    initialized = await runtime.open()
+    owner = runtime.binding
+    before = snapshot(owner.directory)
+    created = list(runtime.created)
+    try:
+        with pytest.raises(RuntimeError, match="custody|cleanup owner"):
+            await spawner.resume_sub_session(
+                "root", "must not adopt idle root", canonical_binding=owner,
+                canonical_admit=runtime.admit,
+            )  # Intentionally omit parent_session: the public default is None.
+        assert snapshot(owner.directory) == before and runtime.created == created
+        owner.check()
+        with pytest.raises(VersionedSessionConflict, match="retains"):
+            VersionedSessionBinding.resume(owner.directory, session_id="root", expected=owner.expected)
+        assert await initialized.session.execute("root remains usable") == "fixture done"
+        assert runtime.asset_admissions == []
+    finally:
+        await initialized.cleanup()
+        owner.close()
+
+
+async def test_shared_custody_actual_live_child_refuses_root_adoption(rig, monkeypatch):
+    parent, _ = await rig.parent()
+    owner = rig.allocate("child")
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def execute(actual, **kwargs):
+        entered.set()
+        await finish.wait()
+        owner.check()
+        return "original child remained usable"
+
+    rig.actions["child"] = execute
+    task = asyncio.create_task(rig.spawn(parent))
+    accidental_root = None
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        created, native_calls, admissions = list(rig.created), list(rig.native_calls), list(rig.admissions)
+        before = snapshot(owner.directory)
+        with pytest.raises(RuntimeError, match="custody|cleanup owner"):
+            accidental_root = await rig.open_root(owner, monkeypatch)
+        assert snapshot(owner.directory) == before
+        assert rig.created == created and rig.native_calls == native_calls
+        assert rig.admissions == admissions and rig.cleanup_calls == []
+        owner.check()
+        finish.set()
+        assert (await asyncio.wait_for(task, timeout=5))["output"] == "original child remained usable"
+        assert rig.cleanup_calls == ["child"]
+    finally:
+        finish.set()
+        if not task.done():
+            try:
+                await task
+            except BaseException:
+                pass
+        if accidental_root is not None:
+            await accidental_root.cleanup()
+        await parent.cleanup()
+        for current in rig.owners.values():
+            current.close()
+
+
+@pytest.mark.parametrize("producer", ["root", "child"])
+@pytest.mark.parametrize("cleanup_kind", ["error", "cancel"])
+async def test_shared_custody_retained_callback_failure_refuses_opposite_role(
+    rig, monkeypatch, producer, cleanup_kind,
+):
+    parent, _ = await rig.parent()
+    owner = rig.allocate("owned")
+    failure = (OSError("PRIVATE_SHARED_CLEANUP_ERROR") if cleanup_kind == "error"
+               else asyncio.CancelledError("PRIVATE_SHARED_CLEANUP_CANCEL"))
+    callback_attempts = []
+    original_close = CLISessionMedia._close
+    root = None
+    host = None
+    rig.actions["owned"] = AsyncMock(return_value="normal producer execution")
+
+    async def fail_close(current):
+        if current.session_id != "owned":
+            return await original_close(current)
+        owner.check()
+        current.store._check()
+        callback_attempts.append(current)
+        current.closed = True
+        raise failure
+
+    monkeypatch.setattr(CLISessionMedia, "_close", fail_close)
+    try:
+        if producer == "root":
+            root = await rig.open_root(owner, monkeypatch)
+            with pytest.raises(type(failure)) as caught:
+                await root.cleanup()
+        else:
+            with pytest.raises(type(failure)) as caught:
+                await rig.spawn(parent, sid="owned")
+        assert caught.value is failure
+        actual = root.session if root is not None else rig.created[-1]
+        host = actual.coordinator.get_capability("cli.session_media")
+        current = binding_custody(owner)
+        assert current is not None and current.error is failure
+        assert current.binding is owner and current.session is actual
+        assert host.cleanup_attempted and not host.cleanup_settled
+        assert host.cleanup_error is failure and callback_attempts == [host]
+        assert rig.core_cleanup_returns == ["owned"]  # Actual Core swallowed callback failure.
+        owner.check()
+        host.store._check()
+        with pytest.raises(VersionedSessionConflict, match="retains"):
+            VersionedSessionBinding.resume(owner.directory, session_id="owned", expected=owner.expected)
+        before = snapshot(owner.directory)
+        created, admissions, cleanups = list(rig.created), list(rig.admissions), list(rig.cleanup_calls)
+        if producer == "root":
+            with pytest.raises(RuntimeError, match="explicit owner settlement"):
+                await spawner.resume_sub_session(
+                    "owned", "no parent, no adoption", canonical_binding=owner,
+                    canonical_admit=rig.admit("owned"),
+                )
+            with pytest.raises(type(failure)) as repeat:
+                await root.cleanup()
+            assert repeat.value is failure
+        else:
+            with pytest.raises(RuntimeError, match="explicit owner settlement"):
+                await rig.open_root(owner, monkeypatch)
+        assert binding_custody(owner) is current  # Exact original owner, never replaced.
+        assert rig.created == created and rig.admissions == admissions
+        assert rig.cleanup_calls == cleanups and snapshot(owner.directory) == before
+        await host.close()
+        assert callback_attempts == [host] and host.cleanup_error is failure
+    finally:
+        if host is None and callback_attempts:
+            host = callback_attempts[0]
+        if host is not None:
+            for _, wrapper in host.wrappers.values():
+                await wrapper.aclose()
+            host.native.unbind_media_store(host.session_id, host.store)
+            host.store.close()
+        # Keep the real failed custody record retained, even after explicit
+        # test-owner descriptor settlement. Production has no automatic reset.
+        await parent.cleanup()
+        for current in rig.owners.values():
+            current.close()
+
+
+@pytest.mark.parametrize("producer", ["root", "child"])
+async def test_shared_custody_settled_owner_allows_fresh_binding_in_opposite_role(
+    rig, monkeypatch, producer,
+):
+    parent, _ = await rig.parent()
+    owner = rig.allocate("owned")
+    rig.actions["owned"] = AsyncMock(return_value="original or resumed execution")
+    root = None
+    try:
+        if producer == "root":
+            root = await rig.open_root(owner, monkeypatch)
+            root.store.save_versioned(
+                "owned", [], {"config": deepcopy(PLAN), "agent_name": "named"},
+                expected=owner.expected, operation_id="root-seed", admit=rig.admit("owned"),
+            )
+            assert binding_custody(owner) is not None
+            await root.cleanup()
+        else:
+            await rig.spawn(parent, sid="owned")
+        assert binding_custody(owner) is None
+        with pytest.raises(VersionedSessionConflict, match="closed"):
+            owner.check()
+        fresh = VersionedSessionBinding.resume(
+            owner.directory, session_id="owned", expected=owner.expected,
+        )
+        assert fresh is not owner
+        rig.owners["owned"] = fresh
+        if producer == "root":
+            result = await spawner.resume_sub_session(
+                "owned", "now an explicit cold child", canonical_binding=fresh,
+                canonical_admit=rig.admit("owned"),
+            )
+            assert result["output"] == "original or resumed execution"
+        else:
+            root = await rig.open_root(fresh, monkeypatch)
+            assert root.store._canonical_binding is fresh
+            assert binding_custody(fresh) is not None
+            await root.cleanup()
+        assert binding_custody(fresh) is None
+    finally:
+        if root is not None:
+            await root.cleanup()
+        await parent.cleanup()
+        for current in rig.owners.values():
+            current.close()
+
+
+async def test_shared_custody_claim_is_atomic_and_release_requires_exact_owner(rig):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from amplifier_app_cli.session_binding_custody import claim_binding, close_binding, retain_binding
+
+    binding = rig.allocate("atomic")
+    tokens = [[], []]  # Equal, but not identical ownership tokens.
+    barrier = Barrier(2)
+
+    def compete(token):
+        barrier.wait(timeout=5)
+        try:
+            claim_binding(binding, token)
+        except RuntimeError:
+            return False
+        return True
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(compete, token) for token in tokens]
+        outcomes = [future.result(timeout=10) for future in futures]
+    assert outcomes.count(True) == 1
+    winner, loser = tokens[outcomes.index(True)], tokens[outcomes.index(False)]
+    current = binding_custody(binding)
+    assert current.binding is binding and current.owner is winner
+    try:
+        with pytest.raises(RuntimeError, match="different cleanup owner"):
+            close_binding(binding, loser)
+        with pytest.raises(RuntimeError, match="different cleanup owner"):
+            retain_binding(binding, loser, ValueError("not your failure"))
+        assert binding_custody(binding) is current and current.error is None
+        binding.check()
+        close_binding(binding, winner)  # No session resources were constructed.
+        assert binding_custody(binding) is None
+    finally:
+        binding.close()
+
+
+@pytest.mark.parametrize("producer", ["root", "child"])
+async def test_shared_custody_claim_covers_actual_initialize_before_handoff(rig, monkeypatch, producer):
+    parent, _ = await rig.parent()
+    owner = rig.allocate("owned")
+    entered, finish = asyncio.Event(), asyncio.Event()
+    original_initialize = AmplifierSession.initialize
+
+    async def pause_initialize(actual):
+        if actual.session_id == "owned":
+            owner.check()
+            assert binding_custody(owner) is not None
+            entered.set()
+            await finish.wait()
+        return await original_initialize(actual)
+
+    monkeypatch.setattr(AmplifierSession, "initialize", pause_initialize)
+    rig.actions["owned"] = AsyncMock(return_value="constructed and executed")
+    task = asyncio.create_task(
+        rig.open_root(owner, monkeypatch) if producer == "root" else rig.spawn(parent, sid="owned"),
+    )
+    root = None
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        current = binding_custody(owner)
+        before = snapshot(owner.directory)
+        created, admissions, cleanups = list(rig.created), list(rig.admissions), list(rig.cleanup_calls)
+        if producer == "root":
+            with pytest.raises(RuntimeError, match="cleanup owner"):
+                await spawner.resume_sub_session(
+                    "owned", "no partial-setup adoption", canonical_binding=owner,
+                    canonical_admit=rig.admit("owned"),
+                )
+        else:
+            with pytest.raises(RuntimeError, match="cleanup owner"):
+                await rig.open_root(owner, monkeypatch)
+        assert binding_custody(owner) is current
+        assert snapshot(owner.directory) == before and rig.created == created
+        assert rig.admissions == admissions and rig.cleanup_calls == cleanups
+        owner.check()
+        finish.set()
+        result = await asyncio.wait_for(task, timeout=5)
+        if producer == "root":
+            root = result
+            assert await root.session.execute("still original root") == "constructed and executed"
+            await root.cleanup()
+        else:
+            assert result["output"] == "constructed and executed"
+        assert binding_custody(owner) is None
+    finally:
+        finish.set()
+        if not task.done():
+            try:
+                await task
+            except BaseException:
+                pass
+        if root is not None:
+            await root.cleanup()
+        await parent.cleanup()
+        for current in rig.owners.values():
+            current.close()
+
+
+@pytest.mark.parametrize("failure_kind", ["error", "cancel"])
+async def test_shared_custody_failed_root_construction_retains_original_owner(tmp_path, failure_kind):
+    from tests.test_session_media_versioned_runtime import Runtime
+
+    runtime = Runtime(tmp_path)
+    owner = runtime.binding
+    primary = ValueError("PRIVATE_ROOT_CONSTRUCTION_PRIMARY")
+    failure = (OSError("PRIVATE_ROOT_CONSTRUCTION_CLEANUP") if failure_kind == "error"
+               else asyncio.CancelledError("PRIVATE_ROOT_CONSTRUCTION_CLEANUP_CANCEL"))
+    try:
+        with pytest.raises(ValueError) as caught:
+            await runtime.open(setup_error=primary, media_cleanup_error=failure)
+        assert caught.value is primary
+        current = binding_custody(owner)
+        host = runtime.host
+        assert current is not None and current.session is runtime.created[-1]
+        # Store.close errors are grouped by the actual CLISessionMedia owner;
+        # cancellation remains the exact CancelledError, not a RuntimeError.
+        if failure_kind == "cancel":
+            assert current.error is failure and host.cleanup_error is failure
+        else:
+            assert isinstance(current.error, BaseExceptionGroup)
+            assert current.error is host.cleanup_error and current.error.exceptions == (failure,)
+        before = snapshot(owner.directory)
+        with pytest.raises(RuntimeError, match="explicit owner settlement"):
+            await spawner.resume_sub_session(
+                "root", "must not take failed root setup", canonical_binding=owner,
+                canonical_admit=runtime.admit,
+            )
+        assert binding_custody(owner) is current and snapshot(owner.directory) == before
+        assert runtime.physical_close_attempts == ["physical-close"]
+        owner.check()
+        await host.close()
+        assert runtime.physical_close_attempts == ["physical-close"]
+    finally:
+        if runtime.host is not None:
+            runtime.physical_close()
+        owner.close()
+
+
+@pytest.mark.parametrize("primary_kind", ["error", "cancel"])
+@pytest.mark.parametrize("release_kind", ["error", "cancel"])
+async def test_fable_root_setup_lease_close_failure_preserves_primary_once(
+    tmp_path, monkeypatch, caplog, primary_kind, release_kind,
+):
+    from tests.test_session_media_versioned_runtime import Runtime
+    from amplifier_app_cli.session_binding_custody import close_binding
+
+    runtime = Runtime(tmp_path)
+    owner = runtime.binding
+    actual_close = owner.close
+    attempts = []
+    primary = (ValueError("PRIVATE_SETUP_PRIMARY") if primary_kind == "error"
+               else asyncio.CancelledError("PRIVATE_SETUP_PRIMARY_CANCEL"))
+    release_error = (OSError("PRIVATE_LEASE_RELEASE") if release_kind == "error"
+                     else asyncio.CancelledError("PRIVATE_LEASE_RELEASE_CANCEL"))
+
+    def fail_before_close():
+        owner.check()
+        attempts.append("release")
+        raise release_error
+
+    monkeypatch.setattr(owner, "close", fail_before_close)
+    try:
+        with caplog.at_level(logging.WARNING, logger="amplifier_app_cli.session_runner"):
+            with pytest.raises(type(primary)) as caught:
+                await runtime.open(setup_error=primary)
+        assert caught.value is primary
+        assert "Root writer release did not settle; owner retained" in primary.__notes__
+        custody = binding_custody(owner)
+        assert custody.error is release_error and custody.closing is True
+        assert custody.session is runtime.created[-1]
+        host = custody.session.coordinator.get_capability("cli.session_media")
+        assert host.cleanup_settled and attempts == ["release"]
+        owner.check()
+        before = snapshot(owner.directory)
+        with pytest.raises(RuntimeError, match="explicit owner settlement"):
+            await spawner.resume_sub_session(
+                "root", "no adoption", canonical_binding=owner, canonical_admit=runtime.admit,
+            )
+        with pytest.raises(RuntimeError, match="explicit owner settlement"):
+            await runtime.open()
+        with pytest.raises(RuntimeError, match="explicit owner settlement"):
+            close_binding(owner, custody.owner)
+        assert attempts == ["release"] and binding_custody(owner) is custody
+        assert snapshot(owner.directory) == before
+        own_logs = [r for r in caplog.records if r.name == "amplifier_app_cli.session_runner"]
+        assert own_logs and all(r.exc_info is None and "PRIVATE_" not in r.getMessage() for r in own_logs)
+    finally:
+        actual_close()  # Explicit test-owner physical settlement, not retry of failed dispatch.
+
+
+@pytest.mark.parametrize("release_kind", ["error", "cancel"])
+async def test_fable_initialized_lease_close_failure_is_retained_not_success_or_replayed(
+    tmp_path, monkeypatch, caplog, release_kind,
+):
+    from tests.test_session_media_versioned_runtime import Runtime
+
+    runtime = Runtime(tmp_path)
+    root = await runtime.open()
+    owner = runtime.binding
+    actual_close = owner.close
+    attempts = []
+    release_error = (OSError("PRIVATE_INITIALIZED_RELEASE") if release_kind == "error"
+                     else asyncio.CancelledError("PRIVATE_INITIALIZED_RELEASE_CANCEL"))
+
+    def fail_before_close():
+        owner.check()
+        attempts.append("release")
+        raise release_error
+
+    monkeypatch.setattr(owner, "close", fail_before_close)
+    try:
+        with caplog.at_level(logging.WARNING, logger="amplifier_app_cli.session_runner"):
+            with pytest.raises(type(release_error)) as caught:
+                await root.cleanup()
+            assert caught.value is release_error
+            with pytest.raises(type(release_error)) as repeat:
+                await root.cleanup()
+        assert repeat.value is release_error and root._cleanup_error is release_error
+        custody = binding_custody(owner)
+        assert custody.error is release_error and custody.session is root.session and custody.closing
+        assert runtime.host.cleanup_settled and attempts == ["release"]
+        owner.check()
+        with pytest.raises(VersionedSessionConflict, match="retains"):
+            VersionedSessionBinding.resume(owner.directory, session_id="root", expected=owner.expected)
+        with pytest.raises(RuntimeError, match="explicit owner settlement"):
+            await spawner.resume_sub_session(
+                "root", "no false-success adoption", canonical_binding=owner,
+                canonical_admit=runtime.admit,
+            )
+        assert attempts == ["release"]
+        assert all(r.exc_info is None and "PRIVATE_" not in r.getMessage()
+                   for r in caplog.records if r.name == "amplifier_app_cli.session_runner")
+    finally:
+        actual_close()
+
+
+@pytest.mark.parametrize("damage", ["none", "descriptor", "dangling-namespace"])
+async def test_fable_unbound_root_selected_t2_refuses_before_core_media_or_native_fd(
+    rig, monkeypatch, damage,
+):
+    owner = rig.allocate("selected")
+    owner.close()
+    if damage == "descriptor":
+        (owner.directory / "transcript.v2" / "current.json").write_bytes(b"not a descriptor")
+    elif damage == "dangling-namespace":
+        # A lexical namespace, even damaged, must not become legacy enrollment.
+        import shutil
+        shutil.rmtree(owner.directory / "transcript.v2")
+        (owner.directory / "transcript.v2").symlink_to(owner.directory / "absent", target_is_directory=True)
+    native = SessionStore(rig.root)
+    selected = []
+
+    def select_store():
+        selected.append(native)
+        return native
+
+    monkeypatch.setattr("amplifier_app_cli.session_runner.SessionStore", select_store)
+    before = snapshot(rig.root)
+    try:
+        with pytest.raises(RuntimeError, match="Versioned root resume requires its explicit live binding"):
+            await rig.open_root(owner, monkeypatch, bound=False, rows=[])
+        assert selected == [native] and not rig.created
+        assert not rig.cleanup_calls and not rig.admissions
+        assert snapshot(rig.root) == before
+        assert binding_custody(owner) is None
+        assert not (owner.directory / "media").exists()
+    finally:
+        owner.close()
+
+
+async def test_fable_unbound_root_selected_legacy_resume_remains_supported(rig, monkeypatch):
+    native = SessionStore(rig.root)
+    native.save("legacy-root", [{"role": "user", "content": "legacy history"}],
+                {"config": deepcopy(PLAN), "agent_name": "named"})
+    rows = native.load("legacy-root")[0]
+    monkeypatch.setattr("amplifier_app_cli.session_runner.SessionStore", lambda: native)
+
+    async def execute(actual, context, **kwargs):
+        assert await context.get_messages() == rows
+        assert actual.coordinator.get_capability("cli.session_store") is native
+        return "legacy root remains supported"
+    rig.actions["legacy-root"] = execute
+    root = await rig.open_root(
+        SimpleNamespace(session_id="legacy-root"), monkeypatch, bound=False, rows=rows,
+    )
+    try:
+        assert root.store is native and root.config.canonical_binding is None
+        assert await root.session.execute("continue") == "legacy root remains supported"
+        assert not (rig.root / "legacy-root" / "transcript.v2").exists()
+    finally:
+        await root.cleanup()
+
+
+@pytest.mark.parametrize("entry", ["spawn", "resume"])
+@pytest.mark.parametrize("failure_stage", [
+    "admit-error", "admit-cancel", "context-error", "throttle-error",
+    "direct-error", "direct-cancel",
+])
+async def test_actual_registered_child_checkpoint_hook_privacy_and_no_replay(
+    rig, monkeypatch, capfd, entry, failure_stage,
+):
+    """Use the normal child registration, actual Core emit and prepared pixels."""
+    from PIL.PngImagePlugin import PngInfo
+    from rich.console import Console
+    from amplifier_core.models import HookResult
+    from amplifier_app_cli.session_checkpoint import CheckpointBlocked, save_runtime_checkpoint
+    # Read-only reuse of d4's hostile exception fixture, never its hook wiring.
+    from tests.test_session_checkpoint_failure import primary, SECRET
+
+    parent, _ = await rig.parent()
+    owner = rig.allocate("child")
+    rig.actions["child"] = AsyncMock(return_value="seed cold resume")
+    if entry == "resume":
+        await rig.spawn(parent)
+        previous = owner
+        owner = VersionedSessionBinding.resume(
+            previous.directory, session_id="child", expected=previous.expected,
+        )
+        rig.owners["child"] = owner
+        rig.cleanup_calls.clear()
+        rig.core_cleanup_returns.clear()
+    error = primary(cancelled=failure_stage.endswith("cancel"))
+    state = {"armed": False, "clock": 0.0, "admit": 0, "clock_calls": 0}
+    write_operations, diagnostics, checks = [], [], []
+    original_admit = rig.admit("child")
+    actual_rewrite = owner._writer.rewrite
+    host = None
+    physical_close = None
+    cleanup_attempts = []
+    cleanup_error = OSError("synthetic child cleanup did not settle")
+
+    def admit():
+        state["admit"] += 1
+        if state["armed"] and failure_stage.startswith(("admit", "direct")):
+            raise error
+        return original_admit()
+
+    def rewrite(*args, **kwargs):
+        write_operations.append(kwargs["operation_id"])
+        return actual_rewrite(*args, **kwargs)
+
+    def monotonic():
+        state["clock_calls"] += 1
+        if state["armed"] and failure_stage == "throttle-error":
+            raise error
+        return state["clock"]
+
+    monkeypatch.setattr(spawner, "time", SimpleNamespace(monotonic=monotonic))
+    monkeypatch.setattr(owner._writer, "rewrite", rewrite)
+    monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "3600")
+    actual_log, actual_print = logging.Logger._log, Console.print
+
+    def logger_entry(self, level, msg, args, *rest, **kwargs):
+        diagnostics.append((msg, args, kwargs.get("exc_info")))
+        return actual_log(self, level, msg, args, *rest, **kwargs)
+
+    def console_entry(self, *args, **kwargs):
+        diagnostics.append((args, kwargs))
+        return actual_print(self, *args, **kwargs)
+
+    monkeypatch.setattr(logging.Logger, "_log", logger_entry)
+    monkeypatch.setattr(Console, "print", console_entry)
+
+    async def execute(actual, context, **kwargs):
+        nonlocal host, physical_close
+        host = actual.coordinator.get_capability("cli.session_media")
+        native = actual.coordinator.get_capability("cli.session_store")
+        provider = actual.coordinator.get("providers")["fixture-provider"]
+        raw = next(raw for raw, wrapper in host.wrappers.values() if wrapper is provider)
+        bridge = actual.coordinator.get_capability("session.media.tool_post")
+        graph_receipt = bridge.graph_receipt
+        assert bridge.validate_receipt(graph_receipt)
+        data, pnginfo = io.BytesIO(), PngInfo()
+        pnginfo.add_text("private-fixture", SECRET)
+        Image.new("RGB", (3, 2), "orange").save(data, "PNG", pnginfo=pnginfo)
+        payload = data.getvalue()
+        assert SECRET.encode() in payload
+        origin = {"kind": "upload", "session_id": "child", "id": "private-fixture-upload"}
+        ref = (await host.capability.ingest(
+            payload, source_format="image-bytes", origin=origin, policy=None,
+        ))["value"]
+        rig.groups["child"] = [([ref], origin)]
+        await context.set_messages([{
+            "role": "user", "content": "observe the synthetic asset",
+            "metadata": {MEDIA_NAMESPACE: {"refs": [ref]}},
+        }])
+        receipt = await actual.coordinator.get_capability("session.durable_checkpoint")()
+        assert type(receipt) is VersionedCheckpointReceipt
+        rows = await context.get_messages()
+        request = ChatRequest(messages=[Message(**row) for row in rows])
+        await provider.request_budget(request)  # Actual cached counted pixel candidate.
+        assert len(raw.observed) == 1
+        assert raw.observed[0][1] == [hashlib.sha256(payload).hexdigest()]
+        assert raw.observed[0][0] is not request
+        before = snapshot(owner.directory)
+        selected_prefix_before = owner.expected
+        admissions, operations = state["admit"], len(write_operations)
+        epoch, clock_calls = host.store.epoch, state["clock_calls"]
+        state["clock"] = 3601.0  # First request is outside the real callback throttle.
+        state["armed"] = True
+        actual_get_messages = context.get_messages
+        if failure_stage == "context-error":
+            async def fail_messages():
+                raise error
+            monkeypatch.setattr(context, "get_messages", fail_messages)
+        if failure_stage.startswith("direct"):
+            # First direct writer call keeps the exact original; only registered
+            # hook entry translates it into a safe deny action.
+            with pytest.raises(type(error)) as first:
+                await spawner._write_checkpoint(actual, native, "child", {})
+            assert first.value is error
+        result = await actual.coordinator.hooks.emit("provider:request", {})
+        assert type(result) is HookResult and result.action == "deny"
+        interrupted = failure_stage.endswith("cancel")
+        assert ("interrupted" in result.reason.lower()) is interrupted
+        assert SECRET not in result.reason
+        failure = actual.coordinator.get_capability("_cli.checkpoint_failure")
+        assert failure.primary is error and failure.interrupted is interrupted
+        assert vars(native)["_cli_checkpoint_failures"]["child"] is failure
+        assert error.stringifications == 0
+        assert error.__cause__.args == (SECRET + "-cause",)
+        assert error.__context__.args == (SECRET + "-context",)
+        assert error.__notes__ == [SECRET + "-note"]
+        assert not asyncio.current_task().cancelling()  # Hook cancellation is an interruption.
+        assert host.store.epoch == epoch + 1
+        expected_attempt = int(failure_stage.startswith(("admit", "direct")))
+        assert state["admit"] == admissions + expected_attempt
+        assert len(write_operations) == operations + expected_attempt
+        after_calls = state["clock_calls"]
+        assert after_calls == clock_calls + int(not failure_stage.startswith("direct"))
+        stable = snapshot(owner.directory)
+        assert owner.expected == selected_prefix_before == selected_prefix(owner.directory)
+        # Foundation durably retains the first failed operation's exact intent;
+        # that is not a committed rewrite or permission to invent another one.
+        assert all(stable[name] == value for name, value in before.items())
+        added = set(stable) - set(before)
+        assert len(added) == expected_attempt
+        assert all(name.startswith("transcript.v2/operations/") and name.endswith("/intent.json")
+                   for name in added)
+        # Within the throttle window now: the outer safe wrapper must still
+        # deny before it can return a false-good HookResult from the callback.
+        state["clock"] = 3601.01
+        for _ in range(2):
+            again = await actual.coordinator.hooks.emit("provider:request", {})
+            assert again.action == "deny" and again.reason == result.reason
+        assert state["clock_calls"] == after_calls
+        assert actual.coordinator.get_capability("_cli.checkpoint_failure") is failure
+        for operation in (provider.request_budget, provider.complete):
+            for candidate in (request, ChatRequest(messages=[Message(**row) for row in rows])):
+                with pytest.raises(CheckpointBlocked) as blocked:
+                    await operation(candidate)
+                safe = blocked.value
+                seen_safe = set()
+                while safe is not None and id(safe) not in seen_safe:
+                    seen_safe.add(id(safe))
+                    assert isinstance(safe, CheckpointBlocked) and safe is not error
+                    assert safe.__cause__ is None and not getattr(safe, "__notes__", ())
+                    assert SECRET not in str(safe)
+                    safe = safe.__context__
+        with pytest.raises(CheckpointBlocked):
+            host.prepare_provider(raw)
+        with pytest.raises(CheckpointBlocked):
+            await actual.coordinator.get_capability("session.durable_checkpoint")()
+        with pytest.raises(CheckpointBlocked):
+            save_runtime_checkpoint(actual, native, "child", rows, {})
+        with pytest.raises(CheckpointBlocked):
+            actual.coordinator.get_capability("cli.canonical_checkpoint_save")(rows, {})
+        assert len(raw.observed) == 1  # Prior count only: no new count or send.
+        assert state["admit"] == admissions + expected_attempt
+        assert len(write_operations) == operations + expected_attempt
+        assert snapshot(owner.directory) == stable
+        assert bridge.validate_receipt(graph_receipt)
+        # The injected context failure belongs to this callback boundary.
+        # Restore the ordinary reader before host finalization; the permanent
+        # checkpoint latch (not an ongoing broken fixture) must refuse its save.
+        monkeypatch.setattr(context, "get_messages", actual_get_messages)
+        owner.check()
+        with pytest.raises(VersionedSessionConflict, match="retains"):
+            VersionedSessionBinding.resume(owner.directory, session_id="child", expected=owner.expected)
+
+        physical_close = host.store.close
+        def fail_physical_close():
+            owner.check()
+            cleanup_attempts.append("close")
+            raise cleanup_error
+        monkeypatch.setattr(host.store, "close", fail_physical_close)
+        checks.append("registered hook, cached request and cleanup fence verified")
+        return "final save must refuse safely"
+
+    rig.actions["child"] = execute
+    try:
+        with pytest.raises(CheckpointBlocked):
+            if entry == "spawn":
+                await spawner.spawn_sub_session(
+                    "named", "offline registered-hook case", parent, {"named": {}},
+                    sub_session_id="child", canonical_binding=owner, canonical_admit=admit,
+                )
+            else:
+                await spawner.resume_sub_session(
+                    "child", "offline cold hook case", canonical_binding=owner,
+                    canonical_admit=admit,
+                )
+        assert checks == ["registered hook, cached request and cleanup fence verified"]
+        assert error.stringifications == 0
+        custody = binding_custody(owner)
+        assert custody is not None and custody.session is host.session
+        assert custody.error is host.cleanup_error and not host.cleanup_settled
+        assert rig.core_cleanup_returns == ["child"] and cleanup_attempts == ["close"]
+        owner.check()
+        with pytest.raises(VersionedSessionConflict, match="retains"):
+            VersionedSessionBinding.resume(owner.directory, session_id="child", expected=owner.expected)
+        with pytest.raises(RuntimeError, match="explicit owner settlement"):
+            await spawner.resume_sub_session(
+                "child", "no adoption", canonical_binding=owner, canonical_admit=admit,
+            )
+        await host.close()
+        assert cleanup_attempts == ["close"]
+        assert SECRET not in repr(diagnostics)  # Captured at logger/console entry, not filtering.
+        captured = capfd.readouterr()
+        assert SECRET not in captured.out + captured.err
+        assert error.stringifications == 0
+    finally:
+        if physical_close is not None:
+            physical_close()  # Explicit test-owner descriptor settlement only.
+        await parent.cleanup()
+        for current in rig.owners.values():
+            current.close()
+
+
+@pytest.mark.parametrize("entry", ["spawn", "resume"])
+async def test_actual_registered_child_checkpoint_hook_success_keeps_pixels_and_no_latch(
+    rig, monkeypatch, entry,
+):
+    from amplifier_core.models import HookResult
+
+    parent, _ = await rig.parent()
+    owner = rig.allocate("child")
+    rig.actions["child"] = AsyncMock(return_value="seed")
+    if entry == "resume":
+        await rig.spawn(parent)
+        owner = VersionedSessionBinding.resume(
+            owner.directory, session_id="child", expected=owner.expected,
+        )
+        rig.owners["child"] = owner
+    monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "0")
+    verified = []
+
+    async def execute(actual, context, **kwargs):
+        host = actual.coordinator.get_capability("cli.session_media")
+        payload = image_bytes("PNG")
+        origin = {"kind": "upload", "session_id": "child", "id": "positive-hook-upload"}
+        ref = (await host.capability.ingest(
+            payload, source_format="image-bytes", origin=origin, policy=None,
+        ))["value"]
+        rig.groups["child"] = [([ref], origin)]
+        await context.set_messages([{
+            "role": "user", "content": "normal hook observation",
+            "metadata": {MEDIA_NAMESPACE: {"refs": [ref]}},
+        }])
+        selected, epoch = owner.expected, host.store.epoch
+        # Nothing test-registers the hook: only normal public child setup did.
+        result = await actual.coordinator.hooks.emit("provider:request", {})
+        assert type(result) is HookResult and result.action == "continue"
+        assert owner.expected != selected
+        assert host.store.epoch == epoch
+        assert actual.coordinator.get_capability("_cli.checkpoint_failure") is None
+        assert type(owner.last_receipt) is VersionedCheckpointReceipt
+        await assert_count_send(actual, payload)
+        verified.append("actual registered hook and provider positive")
+        return "normal hook remains functional"
+
+    rig.actions["child"] = execute
+    try:
+        if entry == "spawn":
+            result = await rig.spawn(parent)
+        else:
+            result = await spawner.resume_sub_session(
+                "child", "normal resumed hook", canonical_binding=owner,
+                canonical_admit=rig.admit("child"),
+            )
+        assert result["output"] == "normal hook remains functional"
+        assert verified == ["actual registered hook and provider positive"]
+        assert binding_custody(owner) is None
+    finally:
+        await parent.cleanup()
+        for current in rig.owners.values():
+            current.close()

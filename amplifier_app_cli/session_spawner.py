@@ -22,6 +22,9 @@ from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
 
 from .agent_config import merge_configs
 from .image_policy import restrict_child_images
+from .session_binding_custody import (
+    claim_binding, close_binding, require_binding_available, retain_binding,
+)
 from .session_hooks import install_session_hook_graph, seal_session_hook_graph, session_hooks
 
 logger = logging.getLogger(__name__)
@@ -34,10 +37,6 @@ SYSTEM_PROMPT_SNAPSHOT_KEY = "base-prompt-snapshot"
 SYSTEM_PROMPT_SNAPSHOT_SCHEMA = 1
 
 _SETUP_SESSION: ContextVar[list | None] = ContextVar("cli_child_setup", default=None)
-# Failed cleanup is retained for the caller's explicit diagnosis, never replayed
-# or evicted (which could release a still-live source lease).
-_RETAINED_CHILD_CLEANUPS: dict[Any, tuple[Any, Any, BaseException]] = {}
-_CHILD_BINDING_OWNERS: dict[Any, list] = {}
 
 
 def _protect_child_setup(operation):
@@ -90,10 +89,7 @@ def _validate_child_binding(binding, admit, session_id, parent_session=None):
                 or (parent_store is not None
                     and vars(parent_store).get("_canonical_binding") is binding)):
             raise ValueError("A child cannot borrow its parent's live versioned binding")
-    if binding in _RETAINED_CHILD_CLEANUPS:
-        raise RuntimeError("Child cleanup requires explicit owner settlement before reuse")
-    if binding in _CHILD_BINDING_OWNERS:
-        raise RuntimeError("Versioned child binding already has a live cleanup owner")
+    require_binding_available(binding)
 
 
 def _own_child_binding(binding):
@@ -101,11 +97,8 @@ def _own_child_binding(binding):
         slot = _SETUP_SESSION.get()
         if not slot or slot[2] is not None:
             raise RuntimeError("Child binding has no exclusive cleanup owner")
-        if binding in _CHILD_BINDING_OWNERS or binding in _RETAINED_CHILD_CLEANUPS:
-            raise RuntimeError("Versioned child binding already has a cleanup owner")
-        binding.check()
+        claim_binding(binding, slot)
         slot[2] = binding
-        _CHILD_BINDING_OWNERS[binding] = slot
 
 
 def _undo_child_setup(callback):
@@ -138,19 +131,16 @@ async def _close_child_setup():
         # Core can swallow registered cleanup callback failures. Only the
         # actual media owner's settled witness permits releasing custody.
         if binding is not None:
-            binding.close()
+            close_binding(binding, slot)
     except BaseException as error:
         if binding is not None:
-            _RETAINED_CHILD_CLEANUPS[binding] = (session, binding, error)
+            retain_binding(binding, slot, error, session=session)
         if active_error is None:
             raise
         logger.warning(
             "Child session cleanup failed; source owner retained"
             if binding is not None else "Child session cleanup failed"
         )
-    finally:
-        if binding is not None:
-            _CHILD_BINDING_OWNERS.pop(binding, None)
 
 
 def _handoff_child_setup(session):
@@ -1006,10 +996,12 @@ async def _install_transcript_checkpoint(
         await _write_checkpoint(session, store, session_id, metadata)
         return HookResult()
 
+    from .session_checkpoint import checkpoint_hook
+
     try:
         unregister = hooks.register(
             PROVIDER_REQUEST,
-            _on_provider_request,
+            checkpoint_hook(session, store, _on_provider_request),
             priority=999,
             name="_spawn_transcript_checkpoint",
         )
