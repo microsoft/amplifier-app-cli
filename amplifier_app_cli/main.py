@@ -4187,7 +4187,9 @@ async def interactive_chat(
                 _reader_task = asyncio.create_task(_manager.run())
 
                 try:
-                    execute_task = asyncio.create_task(session.execute(prompt_text))
+                    from .session_execution import execute_session
+
+                    execute_task = asyncio.create_task(execute_session(session, prompt_text))
 
                     # Poll task while checking for cancellation
                     while not execute_task.done():
@@ -4913,7 +4915,9 @@ async def execute_single(
             # added by a subsequent failed turn. Failed repair saves never get here.
             session_save_attempted = False
             execution_started = True
-            response = await session.execute(prompt)
+            from .session_execution import execute_session
+
+            response = await execute_session(session, prompt)
         finally:
             signal.signal(signal.SIGINT, _original_sigint_handler)
 

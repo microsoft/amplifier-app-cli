@@ -93,6 +93,8 @@ class CLISessionMedia:
         self.cleanup_attempted = False
         self.cleanup_settled = False
         self.cleanup_error: BaseException | None = None
+        self.execution = None
+        self._execution_owner = None  # Strong once-installed custody, never a readiness flag.
         self.durable = policy is not None and policy.get("enabled", True) and os.name == "posix"
         selected = {key: value for key, value in (policy or {}).items() if key != "enabled"}
         # SessionMediaStore validates no-follow path components, private mode,
@@ -256,6 +258,10 @@ class CLISessionMedia:
     async def close(self) -> None:
         if self.cleanup_attempted:
             return  # Never replay an uncertain physical cleanup.
+        from .session_execution import require_session_execution_idle
+        require_session_execution_idle(self.session)
+        if self.execution is not None:
+            self.execution.closed = True
         self.cleanup_attempted = True
         try:
             await self._close()
@@ -306,6 +312,8 @@ async def cleanup_session_media_owner(session) -> None:
     """Require CLI-owned settlement even when Core logs callback failures."""
     getter = getattr(session.coordinator, "get_capability", None)
     host = getter(_HOST) if callable(getter) and not inspect.iscoroutinefunction(getter) else None
+    from .session_execution import wait_session_execution
+    await wait_session_execution(session)
     await session.cleanup()
     if isinstance(host, CLISessionMedia) and not host.cleanup_attempted:
         await host.close()
@@ -347,6 +355,8 @@ async def mount_session_media(session: Any) -> None:
     host = session.coordinator.get_capability(_HOST)
     if not isinstance(host, CLISessionMedia):
         return
+    from .session_execution import install_session_execution
+    await install_session_execution(session)
     orchestrator = (session.config.get("session") or {}).get("orchestrator")
     if isinstance(orchestrator, dict):
         orchestrator = orchestrator.get("module")

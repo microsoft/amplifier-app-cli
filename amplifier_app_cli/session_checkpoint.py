@@ -232,4 +232,6 @@ def save_runtime_checkpoint(session, store, session_id, messages, metadata):
         except BaseException as error:
             latch_checkpoint_failure(session, store, error)
             raise
+    if _stored_checkpoint_failure(session, store) is not None:
+        check_checkpoint_ready(session, store)
     return store.save(session_id, messages, metadata)

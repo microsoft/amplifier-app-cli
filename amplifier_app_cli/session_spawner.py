@@ -1863,7 +1863,9 @@ async def spawn_sub_session(
     _handoff_child_setup(child_session)
     try:
         try:
-            response = await child_session.execute(instruction)
+            from .session_execution import execute_session
+
+            response = await execute_session(child_session, instruction)
         except BaseException:
             # Timed out or cancelled: the post-run block below never runs, so
             # the agent's own partial text stays published for the delegate
@@ -2956,7 +2958,9 @@ async def resume_sub_session(
     _handoff_child_setup(child_session)
     try:
         try:
-            response = await child_session.execute(instruction)
+            from .session_execution import execute_session
+
+            response = await execute_session(child_session, instruction)
         except BaseException:
             # Timed out or cancelled: the agent's own partial text stays
             # published for the delegate tool to read.
