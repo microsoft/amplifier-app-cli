@@ -3807,6 +3807,38 @@ def _handoff_interactive_setup():
         slot.clear()
 
 
+_CHECKPOINT_FAILURE_TEXT = (
+    "Durable checkpoint failed; owner reconciliation is required. Exception details withheld."
+)
+
+
+class _CheckpointPresentationError(Exception):
+    """Presentation-only signal; the checkpoint owner retains the private primary."""
+
+
+def _checkpoint_presentation_failed(session, store=None):
+    from .session_checkpoint import CheckpointBlocked, check_checkpoint_ready
+
+    try:
+        check_checkpoint_ready(session, store)
+    except CheckpointBlocked:
+        return True
+    return False
+
+
+def _save_checkpoint_for_presentation(session, store, session_id, messages, metadata):
+    from .session_checkpoint import save_runtime_checkpoint
+
+    try:
+        return save_runtime_checkpoint(session, store, session_id, messages, metadata)
+    except Exception:
+        if not _checkpoint_presentation_failed(session, store):
+            raise  # Preserve ordinary unbound persistence errors and their rendering.
+    # Never pass the original (or its chain) to a generic/verbose error renderer.
+    # The direct callback and its private failure latch retain original semantics.
+    raise _CheckpointPresentationError() from None
+
+
 @_with_loop_error_reporting
 @_protect_interactive_setup
 async def interactive_chat(
@@ -4013,8 +4045,9 @@ async def interactive_chat(
                     store, messages, bundle=bundle_name, metadata=metadata
                 )
             else:
-                from .session_checkpoint import save_runtime_checkpoint
-                save_runtime_checkpoint(session, store, actual_session_id, messages, metadata)
+                from .main import _save_checkpoint_for_presentation
+
+                _save_checkpoint_for_presentation(session, store, actual_session_id, messages, metadata)
 
     # Helper to detect and repair broken transcripts before each turn
     async def _repair_transcript_if_needed():
@@ -4227,6 +4260,8 @@ async def interactive_chat(
                         return True
 
                     except asyncio.CancelledError:
+                        if _checkpoint_presentation_failed(session, store):
+                            raise  # A first interrupted checkpoint is not a request to retry it.
                         # Immediate cancellation - task was force-cancelled
                         console.print("\n[yellow]Cancelled[/yellow]")
                         # Still save session to preserve any partial progress
@@ -4420,6 +4455,10 @@ async def interactive_chat(
                     break
                 # Otherwise continue in the REPL
 
+            except _CheckpointPresentationError:
+                console.print(f"[red]{_CHECKPOINT_FAILURE_TEXT}[/red]")
+                break  # Failed ownership requires reconciliation, not another turn/save.
+
             except ModuleValidationError as e:
                 if not display_validation_error(console, e, verbose=verbose):
                     console.print(f"[red]Error:[/red] {escape_markup(e)}")
@@ -4471,6 +4510,10 @@ async def interactive_chat(
                 console.print(f"[red]Error:[/red] {escape_markup(e)}")
                 if verbose:
                     console.print_exception()
+
+    except _CheckpointPresentationError:
+        # Initial-prompt execution is outside the normal REPL iteration.
+        console.print(f"[red]{_CHECKPOINT_FAILURE_TEXT}[/red]")
 
     finally:
         # Get hooks first for cleanup-window observability
@@ -4675,9 +4718,24 @@ async def execute_single(
         if root_state is not None:
             root_state.checkpoint(store, messages, bundle=bundle_name, metadata=metadata)
         else:
-            from .session_checkpoint import save_runtime_checkpoint
-            save_runtime_checkpoint(session, store, actual_session_id, messages, metadata)
+            _save_checkpoint_for_presentation(session, store, actual_session_id, messages, metadata)
         return len(messages)
+
+    def _report_checkpoint_failure():
+        nonlocal json_output_data
+        json_output_data = None  # Discard a response assembled before the failed final save.
+        if output_format in ["json", "json-trace"]:
+            if original_stdout is not None:
+                sys.stdout = original_stdout
+            print(json.dumps({
+                "status": "error",
+                "error": _CHECKPOINT_FAILURE_TEXT,
+                "error_type": "CheckpointBlocked",
+                "session_id": actual_session_id,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }, indent=2))
+        else:
+            console.print(f"[red]{_CHECKPOINT_FAILURE_TEXT}[/red]")
 
     try:
         # Freeze the configured label under the cleanup boundary, before any
@@ -4923,6 +4981,15 @@ async def execute_single(
                 {"session_id": actual_session_id, "message_count": saved_count},
             )
 
+    except _CheckpointPresentationError:
+        _report_checkpoint_failure()
+        sys.exit(1)
+
+    except asyncio.CancelledError:
+        if _checkpoint_presentation_failed(session, vars(initialized).get("store")):
+            _report_checkpoint_failure()
+        raise  # Preserve task cancellation and the original interrupted-checkpoint identity.
+
     except ModuleValidationError as e:
         if output_format in ["json", "json-trace"]:
             json_output_data = None
@@ -4986,11 +5053,22 @@ async def execute_single(
 
     finally:
         hooks = session.coordinator.get("hooks")
+        checkpoint_interruption = None
         if execution_started and not session_save_attempted:
             # Do not gate this recovery write on observability hooks: a hook
             # failure must not prevent saving the turn before cleanup.
             try:
                 await _persist_session()
+            except _CheckpointPresentationError:
+                logger.warning(_CHECKPOINT_FAILURE_TEXT, exc_info=None, stack_info=False)
+            except asyncio.CancelledError as error:
+                if not _checkpoint_presentation_failed(session, vars(initialized).get("store")):
+                    raise
+                # A first checkpoint interrupted during failure persistence must
+                # not bypass cleanup or be replayed. Propagate its exact identity
+                # after the ordinary cleanup attempt and TTY release.
+                checkpoint_interruption = error
+                logger.warning(_CHECKPOINT_FAILURE_TEXT, exc_info=None, stack_info=False)
             except Exception as save_exc:  # noqa: BLE001 -- preserve the execution error
                 logger.warning(
                     "Session %s: transcript save after failed turn did not complete: %s",
@@ -5025,6 +5103,11 @@ async def execute_single(
             await handoff.finish(save_for_handoff, after_cleanup)
         finally:
             close_dedicated_tty_input()
+        if checkpoint_interruption is not None:
+            if original_stdout is not None:
+                sys.stdout = original_stdout
+                console.file = original_console_file
+            raise checkpoint_interruption
         # Close the dedicated terminal-input fd (see dedicated_tty_input.py)
         # opened for this session's PromptSessions -- no fd leak past this
         # session's teardown.
