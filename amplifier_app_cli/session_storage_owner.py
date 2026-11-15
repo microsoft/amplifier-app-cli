@@ -73,7 +73,7 @@ def _private_directory(path):
 
 
 def default_session_directory(session_id):
-    from amplifier_core.utils.paths import get_amplifier_home
+    from amplifier_foundation.paths.resolution import get_amplifier_home
     from .project_utils import get_project_slug
 
     return get_amplifier_home().absolute() / "projects" / get_project_slug() / "sessions" / _identity(session_id)
@@ -108,35 +108,21 @@ def project_policy(session_id, *, resolved_config=None):
     from amplifier_foundation.session.media import MediaPolicy
     from .lib.settings import AppSettings
     from .project_utils import get_project_slug
-    from .session_media import media_configuration
+    from .session_media_policy import meet, settings_media_declarations
 
-    settings = AppSettings().with_session(session_id, get_project_slug()).get_merged_settings()
-    # Runtime settings ordinarily live under config; accept the direct host
-    # declaration as another restriction, never let one widen the other.
-    config_settings = settings.get("config", {})
-    if not isinstance(config_settings, dict):
-        held("policy")
-    declarations = [mapping["session_media"] for mapping in (settings, config_settings)
-                    if "session_media" in mapping]
-    policies = []
-    for config in (resolved_config, *({"session_media": value} for value in declarations)):
-        if config is None:
-            continue
-        value = media_configuration(config)
-        policy = MediaPolicy(**{k: v for k, v in value.items() if k != "enabled"})
-        policies.append((value.get("enabled", True), policy))
-    known = resolved_config is not None
-    if not known:
+    if resolved_config is None:
         return PolicyProjection(MediaPolicy(retention="drop"), False)
-    rank = {"drop": 0, "request-only": 1, "durable": 2}
-    kwargs = {}
-    for name in ("max_bytes", "max_pixels", "max_images", "ttl_seconds"):
-        values = [getattr(p, name) for _, p in policies if getattr(p, name) is not None]
-        kwargs[name] = min(values) if values else None
-    kwargs["retention"] = min((p.retention for _, p in policies), key=rank.__getitem__)
-    if not all(enabled for enabled, _ in policies):
-        kwargs["retention"] = "drop"
-    return PolicyProjection(MediaPolicy(**kwargs), True)
+    value = meet(
+        resolved_config.get("session_media", {}),
+        *settings_media_declarations(
+            AppSettings().with_session(session_id, get_project_slug()),
+            session_id=session_id, project_slug=get_project_slug(),
+        ),
+    )
+    enabled = value.pop("enabled")
+    if not enabled:
+        value["retention"] = "drop"
+    return PolicyProjection(MediaPolicy(**value), True)
 
 
 class CommittedRangeView:
@@ -237,8 +223,22 @@ class SessionStorageOwner:
                     or self.media.root != self.directory / "media"
                     or self.media.epoch != self.epoch):
                 held("source")
-            if project_policy(self.session_id, resolved_config=self.resolved_config) != self.projection:
+            if self._policy_projection() != self.projection:
                 held("policy")
+
+    def _policy_projection(self):
+        if self.resolved_config is not None:
+            return project_policy(self.session_id, resolved_config=self.resolved_config)
+        from amplifier_foundation.session.media import MediaPolicy
+        from .session_media_policy import closed_policy_config
+
+        try:
+            config = closed_policy_config(self.directory, self.session_id, self.current)
+            return project_policy(self.session_id, resolved_config=config)
+        except Exception:
+            # Missing/incomplete manifests or historical restrictions never
+            # become a permissive default. Ref-free maintenance remains useful.
+            return PolicyProjection(MediaPolicy(retention="drop"), False)
 
     def close(self):
         if self.closed:
@@ -302,7 +302,7 @@ class SessionStorageOwner:
             held("api")  # No private parser/row materialization fallback on fd32.
         if self.media is not None:
             held("operation")  # A failed or completed preparation is not replayed.
-        self.projection = project_policy(self.session_id, resolved_config=self.resolved_config)
+        self.projection = self._policy_projection()
         if not self.projection.known or self.projection.policy.retention != "durable":
             # Without a known pixel policy, prove the source is ref-free BEFORE
             # even reopening a media writer. Settings/drop defaults cannot

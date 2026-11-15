@@ -155,6 +155,9 @@ class AppBundleDiscovery:
         self,
         search_paths: list[Path] | None = None,
         registry: BundleRegistry | None = None,
+        *,
+        registrations: dict[str, str] | None = None,
+        probe_packages: bool = True,
     ) -> None:
         """Initialize discovery with search paths.
 
@@ -164,12 +167,16 @@ class AppBundleDiscovery:
         """
         self._search_paths = search_paths or self._default_search_paths()
         self._registry = registry or BundleRegistry()
+        self._probe_packages = probe_packages
 
         # Register well-known bundles first (defaults)
         self._register_well_known_bundles()
 
         # Load user-added bundles second (can override well-known bundles)
-        self._load_user_registry()
+        if registrations is None:
+            self._load_user_registry()
+        else:
+            self._registry.register(registrations)
 
     def _load_user_registry(self) -> None:
         """Load user-added bundles from the registry file.
@@ -193,7 +200,7 @@ class AppBundleDiscovery:
         """
         for name, bundle_info in WELL_KNOWN_BUNDLES.items():
             # Try local package first (faster for editable installs)
-            uri = self._find_packaged_bundle(bundle_info["package"])
+            uri = self._find_packaged_bundle(bundle_info["package"]) if self._probe_packages else None
             if not uri:
                 # Fallback to remote URI (always works)
                 uri = bundle_info["remote"]

@@ -172,85 +172,28 @@ def _preserve_root_instruction(
     composed.instruction = root_instruction
 
 
-async def load_and_prepare_bundle(
+async def load_and_compose_bundle(
     bundle_name: str,
     discovery: AppBundleDiscovery,
-    install_deps: bool = True,
     compose_behaviors: list[str] | None = None,
-    source_overrides: dict[str, str] | None = None,
     progress_callback: Callable[[str, str], None] | None = None,
     bundle_source_overrides: dict[str, str] | None = None,
     compose_defaults: list[str] | None = None,
-) -> PreparedBundle:
-    """Load bundle by name or URI and prepare it for execution.
+    *,
+    require_complete: bool = False,
+    load_agent_metadata: bool = True,
+) -> Bundle:
+    """Load and compose declarations, without preparing or mounting modules.
 
-    Uses CLI discovery to find the bundle URI, then foundation's prepare()
-    to download/install all modules from git sources.
+    Defaults compose below the selected root; behaviors/apps compose after it.
+    Preserve root instruction/namespace rules and append the AGENTS tail only
+    after composition. ``require_complete`` propagates even optional composition
+    failures, for callers that cannot accept partial policy information.
 
-    This is the CORRECT way to load bundles with remote modules:
-    1. Discovery: bundle_name → URI (via CLI search paths), or use URI directly
-    2. Load: URI → Bundle (handles file://, git+, http://, zip+)
-    3. Compose: Optionally compose additional behavior bundles
-    4. Prepare: Bundle → PreparedBundle (downloads modules, installs deps)
-
-    Args:
-        bundle_name: Bundle name (e.g., "foundation") or URI (e.g., "git+https://...").
-            If a URI is provided, it's used directly without discovery lookup.
-        discovery: CLI bundle discovery for name → URI resolution.
-        install_deps: Whether to install Python dependencies for modules.
-        compose_behaviors: Optional list of behavior bundle URIs to compose
-            onto the main bundle before preparation. These are typically
-            app-level policy behaviors like notifications.
-            Example: ["git+https://github.com/org/bundle@main#subdirectory=behaviors/foo.yaml"]
-        source_overrides: Optional dict mapping module_id -> source_uri.
-            Passed to bundle.prepare() to override module sources before download.
-            This enables settings.yaml overrides to take effect at prepare time.
-        progress_callback: Optional callback(action, detail) for progress reporting.
-            Called at each phase transition during bundle preparation.
-            Actions include "loading", "composing", "activating", "installing", etc.
-        bundle_source_overrides: Optional dict mapping substring keys -> override URIs.
-            Used to redirect bundle include URIs before foundation resolves them.
-            Keys are matched as substrings of include URIs. If matched, the override
-            URI is used instead.
-            Example: {"amplifier-bundle-superpowers": "/local/path"}
-        compose_defaults: Optional behavior URIs supplying defaults BELOW the
-            selected root, before ordinary compose_behaviors. Unlike explicit
-            app bundles, these must not overwrite a root's module configuration
-            or runtime identity. Saved mount plans do not use this seam.
-
-    Returns:
-        PreparedBundle ready for create_session().
-
-    Raises:
-        FileNotFoundError: If bundle not found in any search path.
-        RuntimeError: If preparation fails (download, install errors).
-
-    Example:
-        discovery = AppBundleDiscovery(search_paths=get_bundle_search_paths())
-        prepared = await load_and_prepare_bundle("foundation", discovery)
-        session = await prepared.create_session()
-
-    Example with URI:
-        prepared = await load_and_prepare_bundle(
-            "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/amplifier-dev.yaml",
-            discovery,
-        )
-
-    Example with behaviors:
-        prepared = await load_and_prepare_bundle(
-            "foundation",
-            discovery,
-            compose_behaviors=[
-                "git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=behaviors/desktop-notifications.yaml"
-            ],
-        )
-
-    Example with source overrides:
-        prepared = await load_and_prepare_bundle(
-            "foundation",
-            discovery,
-            source_overrides={"tool-task": "/local/path/to/module"},
-        )
+    Source effects belong to the supplied registry and enclosing Foundation
+    source-admission policy. This helper alone is NOT an offline/no-write API.
+    ``load_agent_metadata=False`` omits agent descriptions/module overlays for
+    host-declaration-only consumers. It does not project current agent overlays.
     """
     # Check if input looks like a URI rather than a bundle name
     # URI prefixes that indicate direct loading without discovery
@@ -301,6 +244,8 @@ async def load_and_prepare_bundle(
             composed.namespace_root = bundle.namespace_root
             bundle = composed
         except Exception as e:
+            if require_complete:
+                raise
             logger.warning(f"Failed to compose default behavior '{default_uri}': {e}")
 
     # 3. Compose additional behavior bundles (app-level policies like notifications)
@@ -331,6 +276,8 @@ async def load_and_prepare_bundle(
                     f"Composed behavior '{behavior_bundle.name}' onto '{bundle.name}'"
                 )
             except Exception as e:
+                if require_complete:
+                    raise
                 logger.warning(f"Failed to compose behavior '{behavior_uri}': {e}")
                 # Continue without this behavior - notifications are optional
 
@@ -360,7 +307,29 @@ async def load_and_prepare_bundle(
     # module set and silently fail to load any tool the parent didn't also
     # declare. The downstream call at runtime/config.py is now redundant for
     # description population but kept idempotent for backward safety.
-    bundle.load_agent_metadata()
+    if load_agent_metadata:
+        bundle.load_agent_metadata()
+
+    return bundle
+
+
+async def load_and_prepare_bundle(
+    bundle_name: str,
+    discovery: AppBundleDiscovery,
+    install_deps: bool = True,
+    compose_behaviors: list[str] | None = None,
+    source_overrides: dict[str, str] | None = None,
+    progress_callback: Callable[[str, str], None] | None = None,
+    bundle_source_overrides: dict[str, str] | None = None,
+    compose_defaults: list[str] | None = None,
+) -> PreparedBundle:
+    """Compose declarations, then cross the execution preparation boundary."""
+    bundle = await load_and_compose_bundle(
+        bundle_name, discovery, compose_behaviors=compose_behaviors,
+        compose_defaults=compose_defaults,
+        bundle_source_overrides=bundle_source_overrides,
+        progress_callback=progress_callback,
+    )
 
     # 4. Prepare: download modules from git sources, install deps
     # Build source resolver callback if overrides provided

@@ -170,12 +170,25 @@ class SessionStore:
         ack = None
         try:
             with binding.publication() as check:
+                from dataclasses import asdict
+                from .session_media_policy import (
+                    RESTRICTIONS_KEY, publication_restrictions,
+                )
+                restrictions = publication_restrictions(
+                    binding.directory, session_id, expected, media_store,
+                )
                 ack = binding.rewrite(
                     rows, expected=expected, operation_id=operation_id,
                     admit=admit, media_store=media_store,
                 )
                 check()
-                self._save_metadata(binding.directory, metadata)
+                auxiliary = {key: value for key, value in metadata.items() if key != RESTRICTIONS_KEY}
+                if restrictions is not None:
+                    auxiliary[RESTRICTIONS_KEY] = {
+                        "version": 1, "session_id": session_id,
+                        "prefix": asdict(binding.expected), "restrictions": restrictions,
+                    }
+                self._save_metadata(binding.directory, auxiliary)
                 check()
                 # This slot belongs to the binding, not this operation. Capture
                 # while publication is held: a successor may replace it as soon
