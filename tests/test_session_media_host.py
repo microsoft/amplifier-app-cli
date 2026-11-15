@@ -224,12 +224,23 @@ async def test_explicitly_disabled_host_has_neutral_no_storage_projection(tmp_pa
 
 async def test_media_wrapper_forwards_shared_scope_and_issuer_adapter_edge(tmp_path):
     """Structural host plumbing only; the shared owner qualifies its scope."""
+    from contextlib import contextmanager
     from amplifier_app_cli.session_hooks import CLIHookGraph, HOOK_GRAPH_CAPABILITY
     native = SessionStore(tmp_path)
     selected = session("text", [], policy={"enabled": False})
     original = Provider(None)
     selected.coordinator.providers["chosen"] = original
-    scope = MagicMock()
+    scope_events = []
+    @contextmanager
+    def scope():
+        scope_events.append("enter")
+        def check():
+            scope_events.append("validate")
+            return True
+        try:
+            yield check
+        finally:
+            scope_events.append("exit")
     selected.coordinator.register_capability("session.media.tool_post", SimpleNamespace(request_scope=scope))
     hooks = SimpleNamespace()
     async def mount_adapter(kind, module, *, previous, name):
@@ -247,7 +258,13 @@ async def test_media_wrapper_forwards_shared_scope_and_issuer_adapter_edge(tmp_p
     try:
         with patch("amplifier_foundation.session.media_provider.MediaPreparedProvider", return_value=wrapper) as factory:
             await mount_session_media(selected)
-        assert factory.call_args.kwargs["request_scope"] is scope
+        guarded_scope = factory.call_args.kwargs["request_scope"]
+        assert callable(guarded_scope) and guarded_scope is not scope
+        with guarded_scope() as validate:
+            assert scope_events == ["enter", "validate"]
+            assert validate() is True
+            assert scope_events == ["enter", "validate", "validate"]
+        assert scope_events == ["enter", "validate", "validate", "exit"]
         assert factory.call_args.kwargs["provider_identity"]()["account"] == "chosen"
         view.mount_adapter.assert_awaited_once_with("providers", wrapper, previous=original, name="chosen")
         assert selected.coordinator.providers["chosen"] is wrapper

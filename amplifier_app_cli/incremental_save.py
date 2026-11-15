@@ -3,7 +3,8 @@
 Saves transcript.jsonl after each tool completion (tool:post event),
 providing crash recovery between tool calls rather than just between turns.
 
-This is a non-blocking hook that uses the existing SessionStore for atomic writes.
+Legacy saves remain best-effort. Prospective bound saves deny and latch failures
+without exposing private exceptions to Core's hook diagnostics.
 """
 
 from __future__ import annotations
@@ -65,6 +66,15 @@ class IncrementalSaveHook:
         self._last_message_count = 0
 
     async def on_tool_post(self, event: str, data: dict[str, Any]):
+        if vars(self.store).get("_canonical_binding") is not None:
+            from .session_checkpoint import checkpoint_hook
+
+            return await checkpoint_hook(
+                self.session, self.store, self._on_tool_post,
+            )(event, data)
+        return await self._on_tool_post(event, data)
+
+    async def _on_tool_post(self, event: str, data: dict[str, Any]):
         """Save transcript after tool completion.
 
         Debounces by checking if message count has changed since last save.
@@ -75,7 +85,8 @@ class IncrementalSaveHook:
             data: Event data containing tool_name and result
 
         Returns:
-            HookResult with action="continue" (never blocks)
+            HookResult with action="continue" after saving/skipping. The outer
+            prospective hook boundary converts failures to a safe deny result.
         """
         from amplifier_core.models import HookResult
 
@@ -138,6 +149,8 @@ class IncrementalSaveHook:
             )
 
         except Exception as e:
+            if vars(self.store).get("_canonical_binding") is not None:
+                raise  # The outer safe hook retains/denies without formatting.
             # Log but don't fail - incremental save is best-effort
             logger.warning(f"Incremental save failed: {e}")
 

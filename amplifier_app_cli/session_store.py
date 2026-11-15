@@ -388,6 +388,10 @@ class SessionStore:
     def update_metadata(self, session_id: str, updates: dict) -> dict:
         """Update specific fields in session metadata.
 
+        This independent auxiliary metadata API is not a transcript commit,
+        source-selection CAS or durable-media ACK. Transcript-coupled metadata
+        belongs to save_versioned's live publication context.
+
         Args:
             session_id: Session identifier
             updates: Dictionary of fields to update
@@ -574,6 +578,9 @@ class SessionStore:
             ValueError: If session_id is invalid
             IOError: If unable to write config
         """
+        # No prospective caller uses this legacy mkdir/backup route. A config
+        # snapshot is not authority to bypass the selected owner's publication.
+        self._refuse_legacy_write()
         if not session_id or not session_id.strip():
             raise ValueError("session_id cannot be empty")
 
@@ -612,6 +619,9 @@ class SessionStore:
         Returns:
             Number of sessions removed
         """
+        # A bound store owns one live prospective source, not maintenance or
+        # deletion authority over its namespace (or sibling sessions).
+        self._refuse_legacy_write()
         if days < 0:
             raise ValueError("days must be non-negative")
 

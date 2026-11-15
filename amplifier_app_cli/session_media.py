@@ -8,6 +8,7 @@ enablement is opt-in until the selected dependency graph has been qualified.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 import asyncio
@@ -182,7 +183,9 @@ class CLISessionMedia:
     def prepare_provider(self, provider: Any, *, alias: str | None = None) -> Any:
         """Wrap the actual selected instance after its native owner installs it."""
         from amplifier_foundation.session.media_provider import MediaPreparedProvider
+        from .session_checkpoint import check_checkpoint_ready
 
+        check_checkpoint_ready(self.session, self.native)
         if self.closed:
             raise RuntimeError("CLI session media is closed")
         # Reuse only within this coordinator. No parent-owned prepared cache can
@@ -200,12 +203,27 @@ class CLISessionMedia:
         }
         bridge = self.session.coordinator.get_capability("session.media.tool_post")
         scope = getattr(bridge, "request_scope", None)
-        scope_options = {"request_scope": scope} if callable(scope) else {}
+
+        @contextmanager
+        def request_scope():
+            check_checkpoint_ready(self.session, self.native)
+            with scope() if callable(scope) else nullcontext(lambda: True) as graph_check:
+                def validate():
+                    check_checkpoint_ready(self.session, self.native)
+                    valid = graph_check()
+                    check_checkpoint_ready(self.session, self.native)
+                    return valid
+
+                validate()
+                yield validate
+                check_checkpoint_ready(self.session, self.native)
+            check_checkpoint_ready(self.session, self.native)
+
         wrapped = MediaPreparedProvider(
             provider, self.capability, provider_identity=identity,
             execution_scope=None if self.durable else "text_only",
             prepare_overlay=self._prepare_overlay,
-            **scope_options,
+            request_scope=request_scope,
         )
         self.wrappers[id(provider)] = (provider, wrapped)
         return wrapped

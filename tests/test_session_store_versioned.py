@@ -558,3 +558,30 @@ def test_ordinary_legacy_saves_remain_unbound_and_unchanged(tmp_path):
         store.save_versioned("legacy", [], {}, expected=None,
                              operation_id="no-owner", admit=lambda: None)
     assert snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("maintenance", ["cleanup", "policy-cleanup", "config-snapshot"])
+def test_bound_store_refuses_legacy_maintenance_before_effects(owner, maintenance, monkeypatch):
+    store = SessionStore(owner.directory.parent, canonical_binding=owner)
+    store._save_metadata(owner.directory, {"session_id": "root", "name": "retained"})
+    sibling = owner.directory.parent / "independent"
+    sibling.mkdir()
+    (sibling / "kept").write_text("independent source", encoding="utf-8")
+    before = snapshot(owner.directory.parent)
+    calls = []
+    monkeypatch.setattr(
+        "amplifier_app_cli.session_store.shutil.rmtree",
+        lambda path: calls.append(path),
+    )
+    with pytest.raises(ValueError, match="explicit versioned publication"):
+        if maintenance == "config-snapshot":
+            store.save_config_snapshot("root", {"model": "not-published"})
+        else:
+            store.cleanup_old_sessions(
+                days=0,
+                remove_session=(lambda path: calls.append(path) or True)
+                if maintenance == "policy-cleanup" else None,
+            )
+    assert calls == []
+    assert snapshot(owner.directory.parent) == before
+    owner.check()

@@ -1,6 +1,7 @@
 """Fail-closed checkpoint at the loop's settled canonical append boundary.
 
-This is deliberately separate from best-effort tool:post/throttled autosaves.
+Direct calls remain separate from registered hook diagnostics. Prospective
+autosaves share this failure latch; ordinary unbound autosaves stay best-effort.
 The loop calls it only after the effective results are in canonical context.
 Foundation owns the on-disk format and durability receipt; this host owns the
 storage location and, for a shared root, the existing writer fence.
@@ -10,10 +11,107 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
+import asyncio
+import inspect
 import uuid
 
 from .session_store import SessionStore
+
+
+_BLOCKED = "Durable checkpoint failed; owner reconciliation is required."
+_INTERRUPTED = "Durable checkpoint was interrupted; owner reconciliation is required."
+
+
+class CheckpointBlocked(RuntimeError):
+    """Safe dispatch refusal, never a carrier for the private primary failure."""
+
+
+@dataclass(repr=False)
+class _CheckpointFailure:
+    primary: BaseException = field(repr=False)
+    interrupted: bool
+    revocation_error: BaseException | None = field(default=None, repr=False)
+
+
+def _checkpoint_failure(session, store=None):
+    getter = getattr(session.coordinator, "get_capability", None)
+    failure = getter("_cli.checkpoint_failure") if callable(getter) else None
+    if not isinstance(failure, _CheckpointFailure):
+        failure = None
+    if failure is None and store is not None:
+        failure = vars(store).get("_cli_checkpoint_failures", {}).get(
+            getattr(session, "session_id", None)
+        )
+    return failure
+
+
+def latch_checkpoint_failure(session, store, error: BaseException) -> None:
+    """Retain the first actual failure privately, without formatting or replay.
+
+    A hook's cancellation is an interrupted checkpoint, not proof that Core
+    cancelled its task. Neither a surviving graph receipt nor an older media
+    ACK permits delivery after this latch. Reconciliation is owner-driven;
+    installing another callback must not clear it.
+    """
+    failure = _checkpoint_failure(session, store)
+    if failure is not None:
+        return
+    failure = _CheckpointFailure(error, isinstance(error, asyncio.CancelledError))
+    # Core's actual RustSession has no mutable __dict__. Keep runtime-only
+    # custody on its coordinator, never in session metadata or persisted data.
+    session.coordinator.register_capability("_cli.checkpoint_failure", failure)
+    vars(store).setdefault("_cli_checkpoint_failures", {})[session.session_id] = failure
+    from .session_media import CLISessionMedia
+
+    host = session.coordinator.get_capability("cli.session_media")
+    if isinstance(host, CLISessionMedia) and host.session is session and host.native is store:
+        if host.durable:
+            try:
+                host.store.revoke()
+            except BaseException as secondary:
+                failure.revocation_error = secondary
+
+
+def check_checkpoint_ready(session, store=None) -> None:
+    """Reject later operations with fixed safe text, never rethrow the primary."""
+    failure = _checkpoint_failure(session, store)
+    if failure is not None:
+        raise CheckpointBlocked(_INTERRUPTED if failure.interrupted else _BLOCKED) from None
+
+
+def checkpoint_hook(session, store, callback):
+    """Wrap a registered Core hook (event, data) -> HookResult.
+
+    Core may format/log/swallow callback BaseExceptions. This boundary returns
+    its real deny action instead, retains the original only in private local
+    custody, and blocks provider preparation/count/send independently of Core's
+    handling of that result. Wrap the entire child callback, including its
+    throttle/context lookup, not only its final write. Direct checkpoint calls
+    remain separate and retain their original failure semantics.
+    """
+    async def guarded(event, data):
+        from amplifier_core.models import HookResult
+
+        if vars(store).get("_canonical_binding") is None:
+            result = callback(event, data)
+            return await result if inspect.isawaitable(result) else result
+        try:
+            check_checkpoint_ready(session, store)
+            result = callback(event, data)
+            result = await result if inspect.isawaitable(result) else result
+            check_checkpoint_ready(session, store)
+            return result
+        except BaseException as error:
+            latch_checkpoint_failure(session, store, error)
+        # Outside the exception handler: no original exception escapes into
+        # Core's diagnostic sink, including cause/context/notes/opaque __str__.
+        failure = _checkpoint_failure(session, store)
+        reason = _INTERRUPTED if failure.interrupted else _BLOCKED
+        return HookResult(action="deny", reason=reason, user_message=reason)
+
+    return guarded
 
 
 def install_session_checkpoint(
@@ -32,7 +130,7 @@ def install_session_checkpoint(
     permitted here. A failed save must stop the next provider dispatch.
     """
 
-    async def checkpoint() -> Any:
+    async def perform_checkpoint() -> Any:
         context = session.coordinator.get("context")
         if context is None or not callable(getattr(context, "get_messages", None)):
             raise RuntimeError("Canonical context is unavailable for checkpoint")
@@ -53,20 +151,34 @@ def install_session_checkpoint(
             )
         return save_runtime_checkpoint(session, store, session_id, messages, metadata)
 
+    async def checkpoint() -> Any:
+        check_checkpoint_ready(session, store)
+        try:
+            return await perform_checkpoint()
+        except BaseException as error:
+            if binding is not None:
+                latch_checkpoint_failure(session, store, error)
+            raise
+
     binding = vars(store).get("_canonical_binding")
     if binding is not None:
         if not callable(canonical_admit):
             raise ValueError("Prospective checkpoints require actual asset admission")
 
         def save_canonical(messages, metadata):
-            binding.check()
+            check_checkpoint_ready(session, store)
             # This callback receives a full canonical snapshot, not a settled
             # suffix. Each invocation is one explicit rewrite intent. Unknown
             # completion remains in Foundation's exact reconciliation state.
-            return store.save_versioned(
-                session_id, messages, metadata, expected=binding.expected,
-                operation_id=uuid.uuid4().hex, admit=canonical_admit,
-            )
+            try:
+                binding.check()
+                return store.save_versioned(
+                    session_id, messages, metadata, expected=binding.expected,
+                    operation_id=uuid.uuid4().hex, admit=canonical_admit,
+                )
+            except BaseException as error:
+                latch_checkpoint_failure(session, store, error)
+                raise
 
         session.coordinator.register_capability("cli.canonical_checkpoint_save", save_canonical)
 
@@ -77,8 +189,13 @@ def install_session_checkpoint(
 def save_runtime_checkpoint(session, store, session_id, messages, metadata):
     """Select the explicit installed prospective writer, never legacy fallback."""
     if vars(store).get("_canonical_binding") is not None:
-        callback = session.coordinator.get_capability("cli.canonical_checkpoint_save")
-        if not callable(callback):
-            raise RuntimeError("Prospective session has no owned checkpoint operation")
-        return callback(messages, metadata)
+        check_checkpoint_ready(session, store)
+        try:
+            callback = session.coordinator.get_capability("cli.canonical_checkpoint_save")
+            if not callable(callback):
+                raise RuntimeError("Prospective session has no owned checkpoint operation")
+            return callback(messages, metadata)
+        except BaseException as error:
+            latch_checkpoint_failure(session, store, error)
+            raise
     return store.save(session_id, messages, metadata)

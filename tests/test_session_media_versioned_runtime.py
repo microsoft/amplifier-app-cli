@@ -487,7 +487,9 @@ async def test_initialized_cleanup_failure_keeps_actual_source_lease(runtime, fa
     fresh.check()
 
 
-async def test_late_ack_failure_stops_checkpoint_then_dispatch_and_never_rewrites_again(runtime, monkeypatch):
+async def test_late_ack_failure_stops_checkpoint_then_dispatch_and_never_rewrites_again(runtime, monkeypatch, caplog):
+    from amplifier_app_cli.session_checkpoint import CheckpointBlocked
+
     async def settled_dispatch(prompt, context, providers, tools, hooks, coordinator, **kwargs):
         # Controlled orchestrator, but actual public Core execute and the real
         # installed CLI callback determine whether count/send is reachable.
@@ -504,8 +506,11 @@ async def test_late_ack_failure_stops_checkpoint_then_dispatch_and_never_rewrite
     binding, media = runtime.binding, runtime.host.store
     initial = binding.expected
     error = OSError("late ACK physical-fence failure")
+    error.__cause__ = ValueError("late ACK private cause")
+    error.add_note("late ACK private note")
     actual_ack, actual_check, actual_write = media.acknowledge_checkpoint, binding.check, binding._writer.rewrite
-    receipts, writes = [], []
+    actual_save = opened.store.save_versioned
+    receipts, writes, original_failures = [], [], []
     armed = False
 
     def acknowledge_then_arm(receipt):
@@ -524,10 +529,18 @@ async def test_late_ack_failure_stops_checkpoint_then_dispatch_and_never_rewrite
         writes.append(kwargs["operation_id"])
         return actual_write(*args, **kwargs)
 
+    def capture_original_failure(*args, **kwargs):
+        try:
+            return actual_save(*args, **kwargs)
+        except BaseException as primary:
+            original_failures.append(primary)
+            raise
+
     provider = opened.session.coordinator.get("providers")["fixture-versioned-provider"]
     raw = next(raw for raw, wrapped in runtime.host.wrappers.values() if wrapped is provider)
 
     monkeypatch.setattr(binding._writer, "rewrite", write_once)
+    monkeypatch.setattr(opened.store, "save_versioned", capture_original_failure)
     try:
         with monkeypatch.context() as faults:
             faults.setattr(media, "acknowledge_checkpoint", acknowledge_then_arm)
@@ -543,12 +556,45 @@ async def test_late_ack_failure_stops_checkpoint_then_dispatch_and_never_rewrite
         actual = committed(binding.directory)
         assert actual != initial and actual.operation_id == writes[0]
         assert binding.expected == initial and binding.last_receipt is None
+        failure = opened.session.coordinator.get_capability("_cli.checkpoint_failure")
+        primary, = original_failures
+        assert type(primary) is VersionedCheckpointRefused
+        assert failure.primary is primary
+        assert primary.__cause__ is error
+        assert vars(opened.store)["_cli_checkpoint_failures"]["root"] is failure
+        assert failure.interrupted is False
+        assert error.args == ("late ACK physical-fence failure",)
+        assert error.__cause__.args == ("late ACK private cause",)
+        assert error.__notes__ == ["late ACK private note"]
+        assert_held(binding)
         before = files(binding.directory)
-        with pytest.raises(RuntimeError, match="VersionedSessionConflict.*reconciliation"):
+        caplog.clear()
+        with pytest.raises(
+            RuntimeError,
+            match=r"^Execution failed: CheckpointBlocked: Durable checkpoint failed; owner reconciliation is required\.$",
+        ) as blocked_dispatch:
             await opened.session.execute("inspect generated observation")
+        assert "late ACK" not in str(blocked_dispatch.value)
+        assert "late ACK" not in caplog.text
+        assert blocked_dispatch.value.__cause__ is None
+        assert "VersionedSessionConflict" not in str(blocked_dispatch.value)
+        request = ChatRequest(messages=[
+            Message(**row) for row in await opened.session.coordinator.get("context").get_messages()
+        ])
+        for operation in (provider.request_budget, provider.complete):
+            with pytest.raises(CheckpointBlocked) as blocked_provider:
+                await operation(request)
+            assert str(blocked_provider.value) == "Durable checkpoint failed; owner reconciliation is required."
+            assert blocked_provider.value.__cause__ is None and blocked_provider.value.__context__ is None
+        assert failure.primary is primary is original_failures[0]
+        assert primary.__cause__ is error
+        assert error.__cause__.args == ("late ACK private cause",)
+        assert error.__notes__ == ["late ACK private note"]
         assert files(binding.directory) == before
-        assert len(writes) == 1
+        assert len(writes) == len(original_failures) == len(receipts) == 1
         assert len(runtime.asset_admissions) == 1 and raw.observed == []
+        assert binding.expected == initial and binding.last_receipt is None
+        assert_held(binding)  # Neither safe refusal nor provider token release transfers custody.
         assert ref["sha256"] == hashlib.sha256(payload).hexdigest()
     finally:
         await opened.cleanup()
