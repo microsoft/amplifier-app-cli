@@ -150,6 +150,19 @@ def session_execution(session) -> SessionExecution | None:
         published._fail(error)
         raise error from None
     if not isinstance(owner, SessionExecution):
+        get = getattr(session.coordinator, "get", None)
+        endpoint = get("orchestrator") if callable(get) and not asyncio.iscoroutinefunction(get) else None
+        if isinstance(endpoint, _OrchestratorProxy):
+            # Loss of both capabilities also hides the media owner's anchor.
+            # The actually mounted CLI proxy still proves installation happened.
+            # Use its retained owner ONLY to refuse/latch, never to restore a
+            # capability, return readiness or touch another session's resources.
+            retained = endpoint._owner
+            error = SessionExecutionUnsettled(_BLOCKED)
+            if (isinstance(retained, SessionExecution) and retained.session is session
+                    and retained.proxy is endpoint):
+                retained._fail(error)
+            raise error from None
         return None  # Legacy/setup cleanup before an execution owner exists.
     if owner.session is not session or published is not owner:
         error = SessionExecutionUnsettled(_BLOCKED)

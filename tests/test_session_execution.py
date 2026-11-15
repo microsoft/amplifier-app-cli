@@ -629,6 +629,105 @@ async def test_missing_both_owner_refs_cleanup_retains_pending_python_and_lease(
     host.store.close()
 
 
+@pytest.mark.parametrize("missing", ["media", "execution", "both"])
+@pytest.mark.parametrize("private_primary", [False, True])
+async def test_public_capability_loss_cleanup_retains_python_media_and_lease(runtime, missing, private_primary):
+    from amplifier_app_cli.session_checkpoint import _stored_checkpoint_failure
+    entered, release, exited = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    async def execute(**kwargs):
+        try:
+            return "body done"
+        finally:
+            entered.set()
+            await release.wait()
+            exited.set()
+    runtime.execute = execute
+    opened = await runtime.open()
+    actual, host = opened.session, runtime.host
+    owner = session_execution(actual)
+    class PrivateFailure(OSError):
+        def __str__(self):
+            raise AssertionError("private capability-loss failure must not be formatted")
+        __repr__ = __str__
+    primary = PrivateFailure() if private_primary else None
+    if primary is not None:
+        primary.__cause__ = OSError("private cause")
+        primary.add_note("private note")
+    task = asyncio.create_task(execute_session(actual, "capability loss"))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        if primary is not None:
+            owner._fail(primary)
+        if missing in {"media", "both"}:
+            actual.coordinator.register_capability("cli.session_media", None)
+        if missing in {"execution", "both"}:
+            actual.coordinator.register_capability("cli.session_execution", None)
+        assert actual.coordinator.get("orchestrator") is owner.proxy
+        assert host._execution_owner is owner
+        with pytest.raises(SessionExecutionUnsettled, match="ownership must be retained") as caught:
+            await opened.cleanup()
+        cleanup_error = caught.value
+        assert not exited.is_set() and not owner.invocation.native.done()
+        assert not host.closed and not host.cleanup_attempted and not host.cleanup_settled
+        assert list(opened.store._media_stores) == ["root"] and host.wrappers
+        custody = binding_custody(runtime.binding)
+        assert custody.error is cleanup_error and custody.session is actual
+        held(runtime)
+        failure = _stored_checkpoint_failure(actual, opened.store)
+        assert failure.primary is (primary if primary is not None else owner.failure)
+        if primary is not None:
+            assert primary.__notes__ == ["private note"]
+            assert primary.__cause__.args == ("private cause",)
+        before = files(runtime.parent)
+        with pytest.raises(CheckpointBlocked):
+            save_runtime_checkpoint(actual, opened.store, "root", [], {})
+        assert files(runtime.parent) == before
+        with pytest.raises(SessionExecutionUnsettled):
+            await execute_session(actual, "no dispatch after loss")
+        with pytest.raises(SessionExecutionUnsettled):
+            await host.close()
+        await actual.cleanup()  # Real registered callback must also refuse close.
+        assert not host.closed and not host.cleanup_attempted
+        assert owner.invocation.generation == 1
+        held(runtime)
+    finally:
+        release.set()
+        with pytest.raises(SessionExecutionUnsettled):
+            await task
+    assert exited.is_set() and owner.invocation.native.done()
+    with pytest.raises(SessionExecutionUnsettled) as repeated:
+        await opened.cleanup()
+    assert repeated.value is cleanup_error
+    assert binding_custody(runtime.binding).error is cleanup_error
+    assert not host.closed and not host.cleanup_attempted and not host.cleanup_settled
+    held(runtime)
+    # Only the fixture's physical handle, after Python exit and all retention
+    # assertions. No capability restoration, owner cleanup replay or custody reset.
+    host.store.close()
+
+
+async def test_foreign_mounted_proxy_refuses_without_latching_its_owner(runtime):
+    from amplifier_core import AmplifierSession
+    from amplifier_app_cli.session_checkpoint import _stored_checkpoint_failure
+    opened = await runtime.open()
+    owner = session_execution(opened.session)
+    foreign = AmplifierSession(runtime.plan, session_id="foreign-proxy-fixture")
+    await foreign.coordinator.mount("orchestrator", owner.proxy)
+    try:
+        with pytest.raises(SessionExecutionUnsettled):
+            session_execution(foreign)
+        with pytest.raises(SessionExecutionUnsettled):
+            await wait_session_execution(foreign)
+        assert owner.failure is None and owner.invocation is None
+        assert _stored_checkpoint_failure(opened.session, opened.store) is None
+        assert not runtime.host.cleanup_attempted and not runtime.host.closed
+        held(runtime)
+    finally:
+        await foreign.cleanup()
+        await opened.cleanup()
+    fresh_after_close(runtime)
+
+
 async def test_actual_unbound_execution_latch_blocks_save_without_uuid_or_files(tmp_path, monkeypatch):
     from unittest.mock import Mock
     from amplifier_core import AmplifierSession
