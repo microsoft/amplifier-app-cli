@@ -9,6 +9,7 @@ import asyncio
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import json
+import os
 from pathlib import Path
 from typing import BinaryIO, Callable, ContextManager, Protocol
 
@@ -18,6 +19,7 @@ from ..shared_root_state import SharedRootSession, _shared_root_platform_support
 
 
 _FAILURES = {
+    "preview": "STORAGE_PREVIEW_FAILED: Admitted preview not confirmed; preserve source files and inspect storage.",
     "prepare": "STORAGE_PREPARE_FAILED: Preparation not confirmed; preserve operation files and inspect status.",
     "apply": "STORAGE_APPLY_FAILED: Activation not confirmed; preserve operation files and inspect status.",
     "resume": "STORAGE_RESUME_FAILED: Resume not confirmed; preserve operation files and inspect status.",
@@ -32,6 +34,7 @@ _REFUSALS = {
     "STORAGE_MAINTENANCE_HELD": "HELD: SharedRootSession alone cannot quiesce old native descriptors",
     "STORAGE_SOURCE_MISMATCH": "Admission differs from selected native/session/source",
     "STORAGE_MEDIA_MISMATCH": "Admission requires the actual writable native-bound media store",
+    "STORAGE_MEDIA_ROOT_MISMATCH": "Admission requires the exact canonical selected-session media root",
     "STORAGE_CUSTODY_INVALID": "Maintenance must check actual custody, not return consent",
     "STORAGE_PERMISSION_INVALID": "Permission check must raise on refusal, not return consent",
     "STORAGE_OWNER_MISMATCH": "Storage owner differs from this host",
@@ -129,6 +132,10 @@ def _selected(native, session_id):
     if native._canonical_binding is not None:
         raise _StorageRefusal("STORAGE_T2_HELD")
     directory = native.base_dir.absolute() / session_id
+    # Namespace presence is the boundary, not a parseable descriptor or a live
+    # Python binding. Preserve damaged and dangling entries without legacy I/O.
+    if os.path.lexists(directory / "transcript.v2"):
+        raise _StorageRefusal("STORAGE_T2_HELD")
     for marker in ("transcript.jsonl.append-pending", "transcript.commit.json"):
         if (directory / marker).exists() or (directory / marker).is_symlink():
             raise _StorageRefusal("STORAGE_LAYOUT_HELD")
@@ -158,6 +165,13 @@ def _admitted(factory, native, session_id, source, purpose):
                     or admission.media_store.read_only
                     or native._media_stores.get(session_id) is not admission.media_store):
                 raise _StorageRefusal("STORAGE_MEDIA_MISMATCH")
+            # Public SessionMediaStore.root is the exact constructor path.
+            # Match CLI SessionMedia's canonical lexical root; never resolve,
+            # normalize a relative path, or adopt an alias/foreign same-ID store.
+            root = admission.media_store.root
+            if (not isinstance(root, Path) or not root.is_absolute()
+                    or ".." in root.parts or root != source.parent / "media"):
+                raise _StorageRefusal("STORAGE_MEDIA_ROOT_MISMATCH")
             if admission.maintenance.check() is not None:
                 raise _StorageRefusal("STORAGE_CUSTODY_INVALID")
             if admission.check_permission(purpose) is not None:
@@ -225,6 +239,26 @@ def register_session_storage_commands(session, *, store_factory, admission_facto
                   help="Selected prefix count; no suffix assets are inventoried.")
     def preview(session_id, backup, records):
         """Read the exact native-v1 primary under supported writer ownership."""
+        if admission_factory is not None:
+            # This new host-callback lane has its own privacy boundary, including
+            # factory entry, current permission/custody checks and context exit.
+            # Keep the preexisting unadmitted read-only policy below unchanged.
+            try:
+                from amplifier_foundation.session.media_conversion import preview as owner_preview
+
+                native = store_factory()
+                source = _selected(native, session_id)
+                with _admitted(admission_factory, native, session_id, source, "preview") as admitted:
+                    plan = owner_preview(
+                        source, owner="amplifier-cli", session_id=session_id, fence=admitted[2],
+                        backups=tuple(path.absolute() for path in backup), selected_records=records,
+                    )
+                output = _json({"state": "preview-only-not-applied", "plan": asdict(plan)})
+            except Exception as error:
+                raise _operation_failure("preview", error) from error
+            click.echo(output)
+            return
+
         from amplifier_foundation.session.media_conversion import preview as owner_preview
         native = store_factory()
 
@@ -244,13 +278,9 @@ def register_session_storage_commands(session, *, store_factory, admission_facto
             source = _selected(native, session_id)
             kwargs = dict(owner="amplifier-cli", session_id=session_id,
                           backups=tuple(path.absolute() for path in backup), selected_records=records)
-            if admission_factory is None:
-                # Legacy read control only: does NOT establish mutation admission
-                # or prove absence of already-open legacy descriptors.
-                plan = owner_preview(source, fence=fence, **kwargs)
-            else:
-                with _admitted(admission_factory, native, session_id, source, "preview") as admitted:
-                    plan = owner_preview(source, fence=admitted[2], **kwargs)
+            # Legacy read control only: does NOT establish mutation admission
+            # or prove absence of already-open legacy descriptors.
+            plan = owner_preview(source, fence=fence, **kwargs)
         except (OSError, ValueError, RuntimeError, TypeError) as error:
             raise click.ClickException(str(error)) from error
         click.echo(json.dumps({"state": "preview-only-not-applied", "plan": asdict(plan)}, sort_keys=True))

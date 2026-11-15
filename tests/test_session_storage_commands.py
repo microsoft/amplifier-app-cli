@@ -743,6 +743,7 @@ def test_export_rejects_valid_substitution_after_admission_exit(owned, tmp_path,
 
 _PRIVATE_DIAGNOSTIC = "fixture-private-provider-origin-cleanup-payload"
 _SAFE_FAILURES = {
+    "preview": "STORAGE_PREVIEW_FAILED: Admitted preview not confirmed; preserve source files and inspect storage.",
     "prepare": "STORAGE_PREPARE_FAILED: Preparation not confirmed; preserve operation files and inspect status.",
     "apply": "STORAGE_APPLY_FAILED: Activation not confirmed; preserve operation files and inspect status.",
     "resume": "STORAGE_RESUME_FAILED: Resume not confirmed; preserve operation files and inspect status.",
@@ -769,7 +770,14 @@ def _private_error(flavor):
             str_calls.append(True)
             raise AssertionError(_PRIVATE_DIAGNOSTIC)
 
+    class HostileRepr(ValueError):
+        def __repr__(self):
+            str_calls.append(True)
+            raise AssertionError(_PRIVATE_DIAGNOSTIC)
+
     error = Hostile() if flavor == "hostile-str" else ValueError("fixture generic failure")
+    if flavor == "hostile-repr":
+        error = HostileRepr()
     if flavor == "message":
         error = ValueError(_PRIVATE_DIAGNOSTIC)
     elif flavor == "cause":
@@ -925,3 +933,228 @@ def test_actual_versioned_binding_is_explicitly_held_not_header_stripped(owned, 
         binding.check()
     finally:
         binding.close()
+
+
+@pytest.mark.parametrize("seam", ["store-entry", "factory-entry", "permission", "maintenance", "factory-exit"])
+@pytest.mark.parametrize("flavor", [
+    "message", "cause", "context", "notes", "hostile-str", "hostile-repr", "lookup",
+])
+@pytest.mark.parametrize("delivery", ["entrypoint", "click"])
+def test_admitted_preview_diagnostics_are_private(owned, capsys, seam, flavor, delivery):
+    """The real registered preview, never a copied private entrypoint."""
+    from types import SimpleNamespace
+
+    owned.images(("PNG",))
+    before = snapshots(owned.directory)
+    error, format_calls = _private_error(flavor)
+    original_cause, original_context = error.__cause__, error.__context__
+    original_notes = getattr(error, "__notes__", None)
+    original = owned.admission_factory
+
+    def refuse(*args, **kwargs):
+        raise error
+
+    @contextmanager
+    def admission(*args, **kwargs):
+        if seam == "factory-entry":
+            raise error
+        with original(*args, **kwargs) as admitted:
+            if seam == "permission":
+                admitted = replace(admitted, check_permission=refuse)
+            elif seam == "maintenance":
+                admitted = replace(admitted, maintenance=SimpleNamespace(
+                    directory=owned.directory, session_id="root", check=refuse,
+                ))
+            yield admitted
+        if seam == "factory-exit":
+            raise error
+
+    cli = click.Group()
+    session_storage.register_session_storage_commands(
+        cli, store_factory=refuse if seam == "store-entry" else owned.store_factory,
+        admission_factory=admission,
+    )
+    capsys.readouterr()
+    caught = None
+    if delivery == "entrypoint":
+        try:
+            cli.commands["storage"].commands["preview"].callback(
+                session_id="root", backup=(), records=None,
+            )
+        except BaseException as observed:
+            caught = observed
+        captured = capsys.readouterr()
+        _private_check(captured.out == "" and captured.err == "", "Admitted preview emitted diagnostics")
+        _private_check(type(caught) is click.ClickException, "Admitted preview lacks fixed refusal")
+        _private_check(caught.message == _SAFE_FAILURES["preview"], "Admitted preview kept arbitrary text")
+    else:
+        result = CliRunner().invoke(cli, ["storage", "preview", "root"])
+        _private_check(result.exit_code != 0, "Admitted preview reported success after failure")
+        _private_check(result.output == "Error: " + _SAFE_FAILURES["preview"] + "\n",
+                       "Admitted preview Click output is not fixed")
+        caught = result.exception.__context__
+        _private_check(type(caught) is click.ClickException, "Admitted preview lost fixed Click refusal")
+        captured = capsys.readouterr()
+        _private_check(captured.out == "" and captured.err == "", "Admitted preview leaked outside Click")
+    _private_check(caught.__cause__ is error, "Admitted preview lost private original exception")
+    _private_check(error.__cause__ is original_cause and error.__context__ is original_context,
+                   "Admitted preview rewrote original chain")
+    _private_check(getattr(error, "__notes__", None) is original_notes, "Admitted preview rewrote notes")
+    _private_check(not format_calls, "Admitted preview formatted an opaque exception")
+    assert snapshots(owned.directory) == before
+
+
+def test_unadmitted_preview_retains_legacy_error_policy(owned, monkeypatch):
+    from amplifier_foundation.session import media_conversion
+
+    owned.images(("PNG",))
+    events = []
+    monkeypatch.setattr(session_storage.SharedRootSession, "acquire",
+                        lambda identity: pytest.fail("Legacy test preview should refuse before fence"))
+    for error in (ValueError("fixture-legacy-read-refusal"), LookupError("fixture-legacy-lookup")):
+        def refuse(*args, **kwargs):
+            events.append(True)
+            raise error
+
+        monkeypatch.setattr(media_conversion, "preview", refuse)
+        owned.register(None)
+        result = CliRunner().invoke(owned.cli, ["storage", "preview", "root"])
+        assert result.exit_code != 0
+        if type(error) is ValueError:
+            assert result.output == "Error: fixture-legacy-read-refusal\n"
+            assert result.exception.__context__.__cause__ is error
+        else:
+            assert result.exception is error and result.output == ""
+    assert len(events) == 2
+
+
+@pytest.mark.parametrize("command", ["preview", "prepare", "apply", "resume", "export"])
+def test_same_id_native_bound_foreign_media_root_refuses_before_effects(owned, tmp_path, monkeypatch, command):
+    """Real public SessionMediaStore, wrong canonical root, not a stand-in."""
+    from amplifier_foundation.session import media_activation, media_conversion
+
+    owned.images(("PNG",))
+    expected = owned.expected(tmp_path)
+    operation = tmp_path / "operation"
+    if command in {"apply", "resume", "export"}:
+        owned.invoke("prepare", "root", operation, "--expected-plan", expected, "--export-assets")
+    foreign = SessionMediaStore(
+        tmp_path / "foreign-media", "root", policy=owned.media.policy,
+        checkpoint_verifier=verified_checkpoint_refs,
+    )
+    assert type(foreign) is SessionMediaStore and foreign.session_id == "root" and not foreign.read_only
+    assert owned.media.root == owned.source.parent / "media"
+    assert foreign.root != owned.source.parent / "media"
+    original = owned.admission_factory
+    owned.native.unbind_media_store("root", owned.media)
+    owned.native.bind_media_store("root", foreign)
+    calls = []
+
+    def trap(name):
+        def unexpected(*args, **kwargs):
+            calls.append(name)
+            raise RuntimeError("Fixture crossed preeffect media-root boundary")
+        return unexpected
+
+    @contextmanager
+    def wrong_root(*args, **kwargs):
+        with original(*args, **kwargs) as admitted:
+            yield replace(admitted, media_store=foreign)
+
+    owned.register(wrong_root)
+    try:
+        for name in ("ingest", "ingest_sync", "ingest_group_sync", "publish", "publish_sync",
+                     "acknowledge_checkpoint", "resolve_published_ref", "resolve_ref", "validate_published_ref"):
+            monkeypatch.setattr(foreign, name, trap(name))
+        for name in ("preview", "build_candidate", "reconcile", "verify_export"):
+            monkeypatch.setattr(media_conversion, name, trap(name))
+        for name in ("apply_candidate", "resume_candidate", "reconcile_activation"):
+            monkeypatch.setattr(media_activation, name, trap(name))
+        before = snapshots(tmp_path)
+        args = [command, "root"]
+        if command != "preview":
+            args += [operation]
+        if command in {"prepare", "apply", "resume"}:
+            args += ["--expected-plan", expected]
+        result = CliRunner().invoke(owned.cli, ["storage", *map(str, args)])
+        _private_check(result.exit_code != 0 and "STORAGE_MEDIA_ROOT_MISMATCH" in result.output,
+                       "Foreign same-ID media root was not refused at the admission boundary")
+        assert calls == []
+        assert snapshots(tmp_path) == before
+    finally:
+        owned.native.unbind_media_store("root", foreign)
+        foreign.close()
+        owned.native.bind_media_store("root", owned.media)
+
+
+@pytest.mark.skipif(os.sys.platform != "linux", reason="Actual prospective fixture is Linux-only")
+@pytest.mark.parametrize("admitted", [False, True], ids=["legacy-read-or-held", "private-admission"])
+@pytest.mark.parametrize("namespace", ["actual-v2", "damaged-file", "dangling-link"])
+@pytest.mark.parametrize("command", ["preview", "status", "prepare", "apply", "resume", "export"])
+def test_unbound_native_v2_namespace_is_held_before_any_owner_callback(
+    owned, tmp_path, monkeypatch, namespace, command, admitted,
+):
+    from amplifier_foundation.session import media_activation, media_conversion
+    from amplifier_foundation.session.transcript_lifetime import VersionedSessionBinding
+
+    owned.images(("PNG",))
+    expected = owned.expected(tmp_path)
+    operation = tmp_path / "operation"
+    binding = None
+    identity = "root"
+    if namespace == "actual-v2":
+        identity = "t2"
+        binding = VersionedSessionBinding.create_new(
+            owned.directory.parent / identity, session_id=identity,
+            operation_id="allocate", admit=lambda *args: None,
+        )
+        directory = binding.directory
+    else:
+        directory = owned.directory
+        marker = directory / "transcript.v2"
+        if namespace == "damaged-file":
+            marker.write_bytes(b"fixture-damaged-v2-namespace")
+        else:
+            marker.symlink_to(tmp_path / "absent-v2-target", target_is_directory=True)
+    assert os.path.lexists(directory / "transcript.v2")
+    assert owned.native._canonical_binding is None
+    calls = []
+
+    def unexpected(*args, **kwargs):
+        calls.append(True)
+        raise RuntimeError("Fixture selected legacy processing of a v2 namespace")
+
+    @contextmanager
+    def admission(*args, **kwargs):
+        unexpected()
+        yield
+
+    cli = click.Group()
+    session_storage.register_session_storage_commands(
+        cli, store_factory=owned.store_factory, admission_factory=admission if admitted else None,
+    )
+    monkeypatch.setattr(session_storage.SharedRootSession, "acquire", unexpected)
+    for module, names in (
+        (media_conversion, ("preview", "build_candidate", "reconcile", "verify_export")),
+        (media_activation, ("apply_candidate", "resume_candidate", "reconcile_activation")),
+    ):
+        for name in names:
+            monkeypatch.setattr(module, name, unexpected)
+    before = snapshots(tmp_path)
+    try:
+        args = [command, identity]
+        if command != "preview":
+            args += [str(operation)]
+        if command in {"prepare", "apply", "resume"}:
+            args += ["--expected-plan", str(expected)]
+        result = CliRunner().invoke(cli, ["storage", *args])
+        _private_check(result.exit_code != 0 and "HELD: native-v1 converter" in result.output,
+                       "Unbound v2 namespace was not held before legacy processing")
+        assert calls == []
+        assert snapshots(tmp_path) == before
+        assert os.path.lexists(directory / "transcript.v2")
+        if binding is not None:
+            binding.check()
+    finally:
+        if binding is not None:
+            binding.close()
