@@ -45,6 +45,7 @@ from amplifier_foundation.session.versioned_checkpoint import (
 )
 
 from amplifier_app_cli.session_hooks import seal_session_hook_graph, session_hook_coordinator
+from amplifier_app_cli.session_execution import execute_session
 from amplifier_app_cli.session_runner import SessionConfig, create_initialized_session
 from amplifier_app_cli.session_store import SessionStore
 
@@ -548,7 +549,7 @@ async def test_late_ack_failure_stops_checkpoint_then_dispatch_and_never_rewrite
             # Actual Rust Core execute reports the callback's refusal as its
             # RuntimeError envelope; do not claim callback-type propagation.
             with pytest.raises(RuntimeError, match="VersionedCheckpointRefused"):
-                await opened.session.execute("inspect generated observation")
+                await execute_session(opened.session, "inspect generated observation")
         assert len(receipts) == len(writes) == 1
         assert raw.observed == []
         with pytest.raises(VersionedCheckpointRefused):
@@ -573,7 +574,7 @@ async def test_late_ack_failure_stops_checkpoint_then_dispatch_and_never_rewrite
             RuntimeError,
             match=r"^Execution failed: CheckpointBlocked: Durable checkpoint failed; owner reconciliation is required\.$",
         ) as blocked_dispatch:
-            await opened.session.execute("inspect generated observation")
+            await execute_session(opened.session, "inspect generated observation")
         assert "late ACK" not in str(blocked_dispatch.value)
         assert "late ACK" not in caplog.text
         assert blocked_dispatch.value.__cause__ is None
@@ -1199,7 +1200,7 @@ async def test_actual_checkpoint_request_only_publication_refuses_before_commit(
     monkeypatch.setattr(runtime.host.store, "acknowledge_checkpoint", observe_ack)
     try:
         with pytest.raises(RuntimeError, match="VersionedSessionConflict.*durable publication"):
-            await opened.session.execute("request-only checkpoint must refuse")
+            await execute_session(opened.session, "request-only checkpoint must refuse")
         assert descriptor.read_bytes() == before
         assert committed(runtime.binding.directory) == runtime.binding.expected == selected
         assert runtime.binding.last_receipt is None
@@ -1249,7 +1250,7 @@ async def test_actual_checkpoint_strict_envelope_precommit_and_null_metadata_all
     monkeypatch.setattr(runtime.host.store, "acknowledge_checkpoint", observe_ack)
     try:
         if metadata is None:
-            assert await opened.session.execute("ordinary null metadata is allowed") == "checkpoint accepted"
+            assert await execute_session(opened.session, "ordinary null metadata is allowed") == "checkpoint accepted"
             receipt, = receipts
             assert type(receipt) is VersionedCheckpointReceipt
             assert receipt is runtime.binding.last_receipt
@@ -1262,7 +1263,7 @@ async def test_actual_checkpoint_strict_envelope_precommit_and_null_metadata_all
             refusal = ("ValueError: Invalid canonical media metadata carrier"
                        if isinstance(metadata, dict) else "VersionedSessionConflict")
             with pytest.raises(RuntimeError, match=refusal):
-                await opened.session.execute("strict malformed envelope must refuse")
+                await execute_session(opened.session, "strict malformed envelope must refuse")
             assert descriptor.read_bytes() == before
             assert committed(runtime.binding.directory) == runtime.binding.expected == selected
             assert acknowledgements == [] and runtime.binding.last_receipt is None

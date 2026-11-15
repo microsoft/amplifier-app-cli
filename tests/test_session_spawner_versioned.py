@@ -35,6 +35,7 @@ from amplifier_foundation.session.versioned_checkpoint import VersionedCheckpoin
 from amplifier_app_cli import session_spawner as spawner
 from amplifier_app_cli.session_binding_custody import binding_custody
 from amplifier_app_cli.session_checkpoint import install_session_checkpoint
+from amplifier_app_cli.session_execution import execute_session
 from amplifier_app_cli.session_hooks import install_session_hook_graph
 from amplifier_app_cli.session_media import CLISessionMedia, install_session_media
 from amplifier_app_cli.session_store import SessionStore
@@ -520,6 +521,8 @@ async def test_subprocess_binding_refused_before_payload_or_reservation(rig, con
 async def test_continuous_cleanup_preserves_primary_and_retains_failed_owner(
     rig, caplog, monkeypatch, phase, primary_kind, cleanup_kind,
 ):
+    from amplifier_app_cli.session_execution import SessionExecutionUnsettled, session_execution
+
     parent, _ = await rig.parent()
     owner = rig.allocate("child")
     primary = ValueError("PRIVATE_PRIMARY_SENTINEL") if primary_kind == "error" else asyncio.CancelledError("PRIVATE_PRIMARY_SENTINEL")
@@ -529,8 +532,8 @@ async def test_continuous_cleanup_preserves_primary_and_retains_failed_owner(
     if phase == "setup":
         rig.setup_error = primary
     else:
-        # Fault at the host's session.execute await boundary. Rust Core wraps an
-        # orchestrator-raised CancelledError; test that behavior separately.
+        # This fault is BEFORE Python entry, not a completed orchestrator
+        # failure. The new witness must keep that generation uncertain.
         async def fail_dispatch(actual, prompt):
             raise primary
         monkeypatch.setattr(AmplifierSession, "execute", fail_dispatch)
@@ -540,15 +543,58 @@ async def test_continuous_cleanup_preserves_primary_and_retains_failed_owner(
     rig.actions["child"] = execute
     try:
         with caplog.at_level(logging.WARNING, logger=spawner.__name__):
-            with pytest.raises(type(primary)) as caught:
+            expected_type = (type(primary) if phase == "setup" or primary_kind == "cancel"
+                             else SessionExecutionUnsettled)
+            with pytest.raises(expected_type) as caught:
                 await rig.spawn(parent)
-        assert caught.value is primary
-        assert rig.cleanup_calls == ["child"]
+        if phase == "execute":
+            actual, retained, cleanup_error = retained_child(owner)
+            execution = session_execution(actual)
+            host = actual.coordinator.get_capability("cli.session_media")
+            assert execution.invocation is not None and not execution.invocation.entered
+            assert execution.invocation.native.done() and not execution.invocation.exited.done()
+            assert not execution.idle
+            if primary_kind == "error":
+                assert execution.failure is primary
+                assert type(caught.value) is SessionExecutionUnsettled
+                assert "PRIVATE_" not in str(caught.value)
+            else:
+                # A cancelled native Task transports CancelledError through
+                # its waiter. Keep that exact transported cancellation private;
+                # it is not a witnessed Python exit or a cleanup permission.
+                assert isinstance(execution.failure, asyncio.CancelledError)
+                assert caught.value is execution.failure
+            assert actual.coordinator.get_capability("_cli.checkpoint_failure").primary is execution.failure
+            assert retained is owner and isinstance(cleanup_error, SessionExecutionUnsettled)
+            assert rig.cleanup_calls == [] and rig.core_cleanup_returns == []
+            assert not host.cleanup_attempted and not host.cleanup_settled and not host.closed
+            host.store._check()
+            owner.check()
+            before = snapshot(owner.directory)
+            with pytest.raises(RuntimeError, match="explicit owner settlement"):
+                await rig.spawn(parent)
+            with pytest.raises(VersionedSessionConflict, match="retains"):
+                VersionedSessionBinding.resume(
+                    owner.directory, session_id="child", expected=owner.expected,
+                )
+            assert snapshot(owner.directory) == before
+            assert rig.cleanup_calls == []  # Configured cleanup fault is never entered.
+            # Explicit fixture descriptor settlement only, not replay of host
+            # or Core cleanup and not a false production custody release.
+            for _, wrapper in host.wrappers.values():
+                await wrapper.aclose()
+            host.native.unbind_media_store(host.session_id, host.store)
+            host.store.close()
+        else:
+            assert caught.value is primary
+            assert rig.cleanup_calls == ["child"]
         assert "PRIVATE_PRIMARY_SENTINEL" not in caplog.text
         assert "PRIVATE_CLEANUP_SENTINEL" not in caplog.text
         assert all(record.exc_info is None for record in caplog.records if record.name == spawner.__name__)
         assert spawner._SETUP_SESSION.get() is None
-        if cleanup_kind == "success":
+        if phase == "execute":
+            assert retained_custody(owner)
+        elif cleanup_kind == "success":
             with pytest.raises(VersionedSessionConflict, match="closed"):
                 owner.check()
             assert not retained_custody(owner)
@@ -589,6 +635,69 @@ async def test_cleanup_failure_without_primary_propagates_exact_error(rig, clean
         owner.check()
         await rig.actual_cleanup(actual)
         owner.close()
+    finally:
+        rig.cleanup_error = None
+        await parent.cleanup()
+        for current in rig.owners.values():
+            current.close()
+
+
+@pytest.mark.parametrize("primary_kind", ["error", "cancel"])
+@pytest.mark.parametrize("cleanup_kind", ["success", "error", "cancel"])
+async def test_entered_python_error_keeps_core_classification_and_one_cleanup(
+    rig, primary_kind, cleanup_kind,
+):
+    """The completed Python path remains distinct from unentered dispatch."""
+    from amplifier_app_cli.session_execution import session_execution
+
+    parent, _ = await rig.parent()
+    owner = rig.allocate("child")
+    primary = (ValueError("controlled Python error") if primary_kind == "error"
+               else asyncio.CancelledError("controlled Python cancellation"))
+    cleanup_error = (OSError("controlled cleanup error") if cleanup_kind == "error"
+                     else asyncio.CancelledError("controlled cleanup cancellation"))
+    if cleanup_kind != "success":
+        rig.cleanup_error = cleanup_error
+    entered, exited, raised = [], [], []
+
+    async def execute(actual, **kwargs):
+        execution = session_execution(actual)
+        assert execution.invocation.entered
+        entered.append(actual)
+        try:
+            raised.append(primary)
+            raise primary
+        finally:
+            exited.append(actual)
+    rig.actions["child"] = execute
+    try:
+        with pytest.raises(RuntimeError, match="Execution failed: " + type(primary).__name__):
+            await rig.spawn(parent)
+        assert entered == exited and len(entered) == 1 and raised == [primary]
+        execution = session_execution(entered[0])
+        assert execution.invocation.entered and execution.invocation.exited.done()
+        assert execution.invocation.native.done() and execution.idle
+        assert execution.failure is None  # A real Python exit was witnessed.
+        assert rig.cleanup_calls == ["child"]
+        if cleanup_kind == "success":
+            assert binding_custody(owner) is None
+            with pytest.raises(VersionedSessionConflict, match="closed"):
+                owner.check()
+        else:
+            actual, retained, error = retained_child(owner)
+            assert actual is entered[0] and retained is owner and error is cleanup_error
+            owner.check()
+            with pytest.raises(VersionedSessionConflict, match="retains"):
+                VersionedSessionBinding.resume(
+                    owner.directory, session_id="child", expected=owner.expected,
+                )
+            # Fixture settlement through the underlying resource operations,
+            # not a second attempt at the failed host cleanup dispatch.
+            host = actual.coordinator.get_capability("cli.session_media")
+            for _, wrapper in host.wrappers.values():
+                await wrapper.aclose()
+            host.native.unbind_media_store(host.session_id, host.store)
+            host.store.close()
     finally:
         rig.cleanup_error = None
         await parent.cleanup()
@@ -710,24 +819,58 @@ async def test_actual_child_staged_assets_are_published_by_explicit_admission(ri
 
 @pytest.mark.parametrize("cleanup_kind", ["success", "error", "cancel"])
 async def test_external_task_cancellation_through_actual_core_keeps_cancelled_error(rig, cleanup_kind):
+    from amplifier_app_cli.session_execution import session_execution
+
     parent, _ = await rig.parent()
     owner = rig.allocate("child")
-    entered = asyncio.Event()
+    entered, finish_body, in_finally, release, exited = (asyncio.Event() for _ in range(5))
+    cancellations = []
 
     async def execute(actual, **kwargs):
         entered.set()
-        await asyncio.Event().wait()
+        try:
+            await finish_body.wait()
+        finally:
+            in_finally.set()
+            await release.wait()
+            exited.set()
 
     rig.actions["child"] = execute
-    task = asyncio.create_task(rig.spawn(parent))
+    async def invoke():
+        try:
+            return await rig.spawn(parent)
+        except asyncio.CancelledError as error:
+            cancellations.append(error)
+            raise
+    task = asyncio.create_task(invoke())
     try:
         await asyncio.wait_for(entered.wait(), timeout=5)
+        actual = rig.created[-1]
+        host = actual.coordinator.get_capability("cli.session_media")
+        execution = session_execution(actual)
         if cleanup_kind != "success":
             rig.cleanup_error = (RuntimeError("private cleanup") if cleanup_kind == "error"
                                  else asyncio.CancelledError("private cleanup"))
         task.cancel("actual caller cancellation")
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5)
+        finish_body.set()
+        await asyncio.wait_for(in_finally.wait(), timeout=5)
+        done, _ = await asyncio.wait({task}, timeout=0.02)
+        assert not done and not task.done() and not exited.is_set()
+        assert execution.invocation.entered and not execution.invocation.exited.done()
+        assert binding_custody(owner) is not None and rig.cleanup_calls == []
+        assert not host.cleanup_attempted and not host.closed
+        owner.check()
+        host.store._check()
+        with pytest.raises(VersionedSessionConflict, match="retains"):
+            VersionedSessionBinding.resume(owner.directory, session_id="child", expected=owner.expected)
+        release.set()
+        done, _ = await asyncio.wait({task}, timeout=5)
+        assert done == {task} and exited.is_set()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await task
+        assert cancellations == [caught.value]
+        assert caught.value.args == ("actual caller cancellation",)
+        assert execution.invocation.exited.done() and execution.idle
         assert task.cancelled() and rig.cleanup_calls == ["child"]
         assert not active_custody(owner)
         if cleanup_kind == "success":
@@ -737,9 +880,23 @@ async def test_external_task_cancellation_through_actual_core_keeps_cancelled_er
             owner.check()
             actual, retained, error = retained_child(owner)
             assert retained is owner and error is rig.cleanup_error
-            await rig.actual_cleanup(actual)
-            owner.close()
+            # Python exit is now proved, but failed host cleanup stays retained.
+            # Settle only fixture descriptors, never replay raw Core cleanup.
+            for _, wrapper in host.wrappers.values():
+                await wrapper.aclose()
+            host.native.unbind_media_store(host.session_id, host.store)
+            host.store.close()
+            assert rig.cleanup_calls == ["child"] and retained_custody(owner)
     finally:
+        finish_body.set()
+        release.set()
+        if not task.done():
+            done, _ = await asyncio.wait({task}, timeout=5)
+            assert done == {task}, "Controlled Python exit must settle before fixture teardown"
+            try:
+                await task
+            except BaseException:
+                pass
         rig.cleanup_error = None
         await parent.cleanup()
         for current in rig.owners.values():
@@ -911,6 +1068,8 @@ async def test_actual_core_swallowed_media_callback_failure_keeps_binding(
     rig, monkeypatch, caplog, entry, primary_kind, cleanup_kind,
 ):
     """A normal Core return and host.closed=True are not cleanup settlement."""
+    from amplifier_app_cli.session_execution import session_execution
+
     parent, _ = await rig.parent()
     owner = rig.allocate("child")
     rig.actions["child"] = AsyncMock(return_value="seed")
@@ -926,7 +1085,8 @@ async def test_actual_core_swallowed_media_callback_failure_keeps_binding(
     failure = (OSError("PRIVATE_REGISTERED_CALLBACK_FAILURE") if cleanup_kind == "error"
                else asyncio.CancelledError("PRIVATE_REGISTERED_CALLBACK_CANCEL"))
     callback_attempts = []
-    entered = asyncio.Event()
+    entered, finish_body, in_finally, release, exited = (asyncio.Event() for _ in range(5))
+    primary_raised, cancellations = [], []
     primary = None
     task = None
     host = None
@@ -948,25 +1108,37 @@ async def test_actual_core_swallowed_media_callback_failure_keeps_binding(
                    if primary_kind.endswith("cancel") else ValueError("PRIVATE_PRIMARY_ERROR"))
         if primary_kind.startswith("setup"):
             rig.setup_error = primary
-        else:
-            async def fail_dispatch(actual, prompt):
-                raise primary
-            monkeypatch.setattr(AmplifierSession, "execute", fail_dispatch)
 
     async def execute(actual, **kwargs):
         if primary_kind == "external-cancel":
             entered.set()
-            await asyncio.Event().wait()
+            try:
+                await finish_body.wait()
+            finally:
+                in_finally.set()
+                await release.wait()
+                exited.set()
+        elif primary_kind.startswith("dispatch"):
+            # Execute through unmodified actual Core and its selected Python
+            # endpoint. A witnessed Python error is Core-wrapped, not the
+            # separate pre-entry dispatch-uncertainty control above.
+            assert session_execution(actual).invocation.entered
+            primary_raised.append(primary)
+            raise primary
         return "normal execution is not cleanup success"
     rig.actions["child"] = execute
 
     async def invoke():
-        if entry == "spawn":
-            return await rig.spawn(parent)
-        return await spawner.resume_sub_session(
-            "child", "offline followup", canonical_binding=owner,
-            canonical_admit=rig.admit("child"),
-        )
+        try:
+            if entry == "spawn":
+                return await rig.spawn(parent)
+            return await spawner.resume_sub_session(
+                "child", "offline followup", canonical_binding=owner,
+                canonical_admit=rig.admit("child"),
+            )
+        except asyncio.CancelledError as error:
+            cancellations.append(error)
+            raise
 
     try:
         with caplog.at_level(logging.WARNING):
@@ -974,14 +1146,42 @@ async def test_actual_core_swallowed_media_callback_failure_keeps_binding(
             if primary_kind == "external-cancel":
                 await asyncio.wait_for(entered.wait(), timeout=5)
                 task.cancel("external caller cancellation")
+                finish_body.set()
+                await asyncio.wait_for(in_finally.wait(), timeout=5)
+                actual = rig.created[-1]
+                pending_host = actual.coordinator.get_capability("cli.session_media")
+                pending_execution = session_execution(actual)
+                done, _ = await asyncio.wait({task}, timeout=0.02)
+                assert not done and not exited.is_set()
+                assert not pending_execution.invocation.exited.done()
+                assert rig.cleanup_calls == [] and callback_attempts == []
+                assert not pending_host.cleanup_attempted
+                owner.check()
+                pending_host.store._check()
+                with pytest.raises(VersionedSessionConflict, match="retains"):
+                    VersionedSessionBinding.resume(
+                        owner.directory, session_id="child", expected=owner.expected,
+                    )
+                release.set()
             expected_error = (primary if primary is not None else failure)
+            done, _ = await asyncio.wait({task}, timeout=5)
+            assert done == {task}
             if primary_kind == "external-cancel":
-                with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(task, timeout=5)
-                assert task.cancelled()
+                with pytest.raises(asyncio.CancelledError) as caught:
+                    await task
+                assert task.cancelled() and exited.is_set()
+                assert cancellations == [caught.value]
+                assert caught.value.args == ("external caller cancellation",)
+            elif primary_kind.startswith("dispatch"):
+                with pytest.raises(RuntimeError, match="Execution failed: " + type(primary).__name__):
+                    await task
+                assert primary_raised == [primary]
+                execution = session_execution(rig.created[-1])
+                assert execution.invocation.entered and execution.invocation.exited.done()
+                assert execution.idle and execution.failure is None
             else:
                 with pytest.raises(type(expected_error)) as caught:
-                    await asyncio.wait_for(task, timeout=5)
+                    await task
                 assert caught.value is expected_error
 
         actual, retained, cleanup_error = retained_child(owner)
@@ -1016,8 +1216,11 @@ async def test_actual_core_swallowed_media_callback_failure_keeps_binding(
     finally:
         # Explicit test-owner resource settlement. Do not replay Core cleanup,
         # host.close or the failed _close operation to make the test look green.
+        finish_body.set()
+        release.set()
         if task is not None and not task.done():
-            task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=5)
+            assert done == {task}, "Controlled Python exit must settle before fixture teardown"
             try:
                 await task
             except BaseException:
@@ -1182,10 +1385,14 @@ async def test_nested_resume_uses_actual_child_media_limit_and_cancellation_owne
 
 async def test_actual_registered_root_resume_refuses_its_own_binding_before_child_acceptance(rig):
     from amplifier_app_cli.session_runner import register_session_spawning
+    from amplifier_app_cli.session_media import mount_session_media
 
     root_plan = deepcopy(PLAN)
     root_plan["session_media"] = {"enabled": False}
     actual_root, native = await rig.parent(config=root_plan)
+    # This fixture assembles a real CLI root manually. Complete the normal
+    # post-initialize host mount before using its armed execution entry point.
+    await mount_session_media(actual_root)
     owner = rig.owners["parent"]
     rows = [{"role": "user", "content": "root history must not become a child"}]
     native.save_versioned(
@@ -1216,7 +1423,7 @@ async def test_actual_registered_root_resume_refuses_its_own_binding_before_chil
                 owner.directory, session_id="parent", expected=selected,
             )
         assert native.load("parent")[0] == await actual_root.coordinator.get("context").get_messages()
-        assert await actual_root.execute("root still usable") == "parent"
+        assert await execute_session(actual_root, "root still usable") == "parent"
         owner.check()
     finally:
         await actual_root.cleanup()
@@ -1243,7 +1450,7 @@ async def test_shared_custody_idle_actual_root_refuses_raw_resume_without_parent
         owner.check()
         with pytest.raises(VersionedSessionConflict, match="retains"):
             VersionedSessionBinding.resume(owner.directory, session_id="root", expected=owner.expected)
-        assert await initialized.session.execute("root remains usable") == "fixture done"
+        assert await execute_session(initialized.session, "root remains usable") == "fixture done"
         assert runtime.asset_admissions == []
     finally:
         await initialized.cleanup()
@@ -1498,7 +1705,7 @@ async def test_shared_custody_claim_covers_actual_initialize_before_handoff(rig,
         result = await asyncio.wait_for(task, timeout=5)
         if producer == "root":
             root = result
-            assert await root.session.execute("still original root") == "constructed and executed"
+            assert await execute_session(root.session, "still original root") == "constructed and executed"
             await root.cleanup()
         else:
             assert result["output"] == "constructed and executed"
@@ -1706,7 +1913,7 @@ async def test_fable_unbound_root_selected_legacy_resume_remains_supported(rig, 
     )
     try:
         assert root.store is native and root.config.canonical_binding is None
-        assert await root.session.execute("continue") == "legacy root remains supported"
+        assert await execute_session(root.session, "continue") == "legacy root remains supported"
         assert not (rig.root / "legacy-root" / "transcript.v2").exists()
     finally:
         await root.cleanup()
@@ -2159,7 +2366,7 @@ async def test_selected_native_store_reused_by_shared_read_and_actual_root(
             import uuid
             assert str(uuid.UUID(root.session_id)) == root.session_id
         assert len(shared_stores) == int(shared)
-        assert await root.session.execute("ordinary source") == "ordinary source remains selected"
+        assert await execute_session(root.session, "ordinary source") == "ordinary source remains selected"
         if shared:
             assert root.root_state is root.config.root_state
             root.root_state.held.check()
