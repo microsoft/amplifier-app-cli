@@ -171,6 +171,12 @@ class SessionStorageOwner:
         self.resolved_config = resolved_config  # Host object only, never loaded from a plan/CLI JSON.
         self.binding = self.media = self.native = None
         self.projection = None
+        self._policy_witness = None
+        self._policy_witness_prefix = None
+        self._witness_projection = None
+        self._policy_invalidated = False
+        from .session_media_policy import OwnerPolicyReuse
+        self._closed_policy_reuse = OwnerPolicyReuse()
         self.epoch = None
         self.closed = False
         self.close_attempted = False
@@ -210,7 +216,7 @@ class SessionStorageOwner:
     def __exit__(self, exc_type, exc, tb):
         self.close()
 
-    def check(self):
+    def _check_physical_owner(self):
         if self.closed or self.close_attempted or self.binding is None:
             held("path")
         custody = binding_custody(self.binding)
@@ -223,22 +229,131 @@ class SessionStorageOwner:
                     or self.media.root != self.directory / "media"
                     or self.media.epoch != self.epoch):
                 held("source")
-            if self._policy_projection() != self.projection:
-                held("policy")
+
+    def check(self):
+        self._check_physical_owner()
+        if self.media is not None:
+            from .session_media_policy import owner_policy_scope
+            # Alternate-prefix subclasses share this same operation-local
+            # witness boundary without borrowing a parent's config or lease.
+            with owner_policy_scope(self._closed_policy_reuse):
+                if self._policy_projection() != self.projection:
+                    held("policy")
 
     def _policy_projection(self):
         if self.resolved_config is not None:
             return project_policy(self.session_id, resolved_config=self.resolved_config)
         from amplifier_foundation.session.media import MediaPolicy
-        from .session_media_policy import closed_policy_config
+        from .session_media_policy import capture_closed_policy_config
 
         try:
-            config = closed_policy_config(self.directory, self.session_id, self.current)
-            return project_policy(self.session_id, resolved_config=config)
+            if self._policy_invalidated:
+                held("policy")
+            if self._policy_witness is not None:
+                if self.current != self._policy_witness_prefix or not self._policy_witness.check():
+                    self._policy_invalidated = True
+                    held("policy")  # Changed/unknown inputs never use stale policy.
+                return self._witness_projection
+            config, witness = capture_closed_policy_config(
+                self.directory, self.session_id, self.current,
+            )
+            declaration = dict(config["session_media"])
+            if not declaration.pop("enabled"):
+                declaration["retention"] = "drop"
+            projection = PolicyProjection(MediaPolicy(**declaration), True)
+            self._witness_projection = projection
+            self._policy_witness_prefix = self.current
+            self._policy_witness = witness
+            return projection
         except Exception:
             # Missing/incomplete manifests or historical restrictions never
             # become a permissive default. Ref-free maintenance remains useful.
             return PolicyProjection(MediaPolicy(retention="drop"), False)
+
+    def publish_restriction_metadata(self, receipt, fields, *, expected_prefix):
+        """Own one only-tightening auxiliary write after this binding's ACK.
+
+        External edits never call this seam implicitly. An unknown/failed write
+        remains latched for explicit owner reconciliation, not replay/reset.
+        """
+        from copy import deepcopy
+        from amplifier_foundation.session.media import MediaPolicy, SessionMediaStore
+        from amplifier_foundation.session.metadata import SessionMetadataStore
+        from amplifier_foundation.session.versioned_checkpoint import VersionedCheckpointReceipt
+        from .session_media_policy import (
+            RESTRICTIONS_KEY, capture_closed_policy_config, meet, restriction_record,
+        )
+
+        fields = deepcopy(fields)
+        if (type(receipt) is not VersionedCheckpointReceipt
+                or receipt is not self.binding.last_receipt
+                or receipt is getattr(self, "_restriction_publication_receipt", None)
+                or type(fields) is not dict or RESTRICTIONS_KEY not in fields
+                or set(fields) - {RESTRICTIONS_KEY, "storage_snapshot"}
+                or type(self.media) is not SessionMediaStore):
+            held("policy")
+        self.check()
+        if self.native.versioned_publication_failure is not None:
+            held("policy")
+        selected = self.binding.expected
+        facts = receipt.verify()
+        if any(facts.get(key) != value for key, value in asdict(selected).items()):
+            held("policy")
+        store = SessionMetadataStore(self.directory)
+        original = store.read()
+        retained = restriction_record(
+            original.get(RESTRICTIONS_KEY), session_id=self.session_id, expected=expected_prefix,
+        )
+        narrowed = meet(retained, {"enabled": True, **asdict(self.media.policy)})
+        if fields[RESTRICTIONS_KEY] != {
+            "version": 1, "session_id": self.session_id,
+            "prefix": asdict(selected), "restrictions": narrowed,
+        }:
+            held("policy")
+        witness = self._policy_witness or self._closed_policy_reuse._publication_preimage()
+        attempted = False
+        try:
+            with self.binding.publication():
+                self.check()
+                if receipt is not self.binding.last_receipt or self.binding.expected != selected:
+                    held("policy")
+                if store.read() != original:
+                    held("policy")
+                attempted = True
+                store.update(fields)
+                self._check_physical_owner()
+                # The sole allowed replacement is this writer's exact metadata
+                # output; every other original read-set entry must stay current.
+                if store.read() != {**original, **fields}:
+                    held("policy")
+                if witness is not None and not witness._check(
+                    replaced_metadata=os.fspath(self.directory / "metadata.json"),
+                ):
+                    held("policy")
+                config, fresh_witness = capture_closed_policy_config(
+                    self.directory, self.session_id, selected,
+                )
+                value = dict(config["session_media"])
+                if not value.pop("enabled"):
+                    value["retention"] = "drop"
+                projection = PolicyProjection(MediaPolicy(**value), True)
+                if projection != self.projection:
+                    held("policy")
+                # Explicitly rebind this owner's exact publication, including
+                # no-op ACKs whose selector has not changed.
+                self._witness_projection = projection
+                self._policy_witness_prefix = selected
+                self._policy_witness = fresh_witness
+                self._closed_policy_reuse._install_publication(
+                    self.directory, self.session_id, selected, config, fresh_witness,
+                )
+                self._restriction_publication_receipt = receipt
+                self._check_physical_owner()
+        except BaseException as error:
+            if attempted:
+                self.native.versioned_publication_failure = error
+                self._policy_invalidated = True
+            raise
 
     def close(self):
         if self.closed:

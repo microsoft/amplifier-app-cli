@@ -1,8 +1,8 @@
-"""Thin native-v1 commands over Foundation's public conversion/activation APIs.
+"""Thin native-v1 and explicit closed-T2 owner maintenance commands.
 
 Candidate integrity is not activation, import authority or durable media ACK.
 No transcript reader that performs automatic recovery is used for preview.
-Mutation is HELD unless an embedding host supplies live, private admission.
+Legacy mutation requires private admission; prospective T2 uses its actual lease.
 """
 
 import asyncio
@@ -278,6 +278,65 @@ def register_session_storage_commands(session, *, store_factory, admission_facto
         still requires private host maintenance exclusion. Stable --operation-id
         is selection DATA, not permission; retain it for apply/resume/status.
         """
+
+    def snapshot_command(command, target_id, operation, operation_id, *, source_id=None):
+        try:
+            from ..session_storage_transfer import fork_snapshot, recover_snapshot
+
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                raise RuntimeError("Use the async snapshot owner outside Click")
+            if command == "fork":
+                report = asyncio.run(fork_snapshot(
+                    source_id, target_id, operation.absolute(), operation_id,
+                ))
+            else:
+                report = recover_snapshot(
+                    target_id, operation.absolute(), operation_id, resume=command == "resume",
+                )
+            output = _json(report)
+        except Exception as error:
+            from ..session_storage_owner import public_held
+
+            raise click.ClickException(public_held(error) or (
+                "STORAGE_SNAPSHOT_FAILED: Snapshot not confirmed; preserve target and operation. "
+                "Inspect snapshot-status; never repeat creation or transfer."
+            )) from error
+        click.echo(output)
+
+    @storage.command("fork-snapshot")
+    @click.argument("source_id")
+    @click.argument("target_id")
+    @click.argument("operation", type=click.Path(path_type=Path))
+    @click.option("--operation-id", required=True, help="Stable original operation selector DATA; retain for recovery.")
+    def fork_snapshot(source_id, target_id, operation, operation_id):
+        """Opt in to a NEW full-source closed T2 snapshot, not a chat-turn fork.
+
+        Checks/checkpoints ALL source assets. Unknown inline/restricted policy is
+        HELD. Target ID and operation must be absent. No events or ancestor CI
+        are copied; cost accounting is incomplete, not zero. Ordinary session
+        fork/run/resume defaults are unchanged; no automatic resume is offered.
+        """
+        snapshot_command("fork", target_id, operation, operation_id, source_id=source_id)
+
+    @storage.command("snapshot-status")
+    @click.argument("target_id")
+    @click.argument("operation", type=click.Path(path_type=Path))
+    @click.option("--operation-id", required=True)
+    def snapshot_status(target_id, operation, operation_id):
+        """Read original target snapshot facts, never a fresh ACK or transfer."""
+        snapshot_command("status", target_id, operation, operation_id)
+
+    @storage.command("snapshot-resume")
+    @click.argument("target_id")
+    @click.argument("operation", type=click.Path(path_type=Path))
+    @click.option("--operation-id", required=True)
+    def snapshot_resume(target_id, operation, operation_id):
+        """Reconcile the original target intent; never transfer or create again."""
+        snapshot_command("resume", target_id, operation, operation_id)
 
     @storage.command("preview")
     @click.argument("session_id")
