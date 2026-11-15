@@ -8,6 +8,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
 import logging
+import sys
 
 import pytest
 from rich.console import Console
@@ -54,6 +55,8 @@ def snapshot(root):
 
 @asynccontextmanager
 async def runtime(tmp_path, *, child=False):
+    if sys.platform != "linux":
+        pytest.skip("Actual prospective Foundation binding custody is Linux-only")
     parent = tmp_path / "sessions"
     parent.mkdir(mode=0o700)
     sid = "parent_child" if child else "root"
