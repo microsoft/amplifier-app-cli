@@ -33,45 +33,80 @@ class _CheckpointFailure:
     primary: BaseException = field(repr=False)
     interrupted: bool
     revocation_error: BaseException | None = field(default=None, repr=False)
+    coordinator_error: BaseException | None = field(default=None, repr=False)
 
 
-def _checkpoint_failure(session, store=None):
-    getter = getattr(session.coordinator, "get_capability", None)
-    failure = getter("_cli.checkpoint_failure") if callable(getter) else None
-    if not isinstance(failure, _CheckpointFailure):
-        failure = None
-    if failure is None and store is not None:
+def _stored_checkpoint_failure(session, store):
+    if store is not None:
         failure = vars(store).get("_cli_checkpoint_failures", {}).get(
             getattr(session, "session_id", None)
         )
-    return failure
+        if isinstance(failure, _CheckpointFailure):
+            return failure
+    return None
 
 
-def latch_checkpoint_failure(session, store, error: BaseException) -> None:
+def _checkpoint_failure(session, store=None):
+    failure = _stored_checkpoint_failure(session, store)
+    if failure is not None:
+        return failure  # A broken coordinator cannot hide an existing latch.
+    try:
+        getter = getattr(session.coordinator, "get_capability", None)
+        failure = getter("_cli.checkpoint_failure") if callable(getter) else None
+    except BaseException as error:
+        # An unavailable readiness read is not evidence that dispatch is safe.
+        # Retain it before any further coordinator access, then block safely.
+        if store is not None:
+            return latch_checkpoint_failure(session, store, error)
+        return _CheckpointFailure(
+            error, isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, SystemExit))
+        )
+    if isinstance(failure, _CheckpointFailure):
+        if store is not None:
+            vars(store).setdefault("_cli_checkpoint_failures", {})[session.session_id] = failure
+        return failure
+    return None
+
+
+def latch_checkpoint_failure(session, store, error: BaseException) -> _CheckpointFailure:
     """Retain the first actual failure privately, without formatting or replay.
 
-    A hook's cancellation is an interrupted checkpoint, not proof that Core
-    cancelled its task. Neither a surviving graph receipt nor an older media
+    Cancellation, KeyboardInterrupt and SystemExit inside a safe hook classify
+    an interrupted checkpoint, not task cancellation or host termination.
+    Neither a surviving graph receipt nor an older media
     ACK permits delivery after this latch. Reconciliation is owner-driven;
     installing another callback must not clear it.
     """
-    failure = _checkpoint_failure(session, store)
+    failure = _stored_checkpoint_failure(session, store)
     if failure is not None:
-        return
-    failure = _CheckpointFailure(error, isinstance(error, asyncio.CancelledError))
+        return failure
+    failure = _CheckpointFailure(
+        error, isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, SystemExit))
+    )
     # Core's actual RustSession has no mutable __dict__. Keep runtime-only
-    # custody on its coordinator, never in session metadata or persisted data.
-    session.coordinator.register_capability("_cli.checkpoint_failure", failure)
+    # custody in the actual store FIRST. Coordinator publication is auxiliary;
+    # its own failure must neither replace the primary nor escape a safe hook.
     vars(store).setdefault("_cli_checkpoint_failures", {})[session.session_id] = failure
-    from .session_media import CLISessionMedia
+    try:
+        session.coordinator.register_capability("_cli.checkpoint_failure", failure)
+    except BaseException as secondary:
+        failure.coordinator_error = secondary
+    try:
+        from .session_media import CLISessionMedia
 
-    host = session.coordinator.get_capability("cli.session_media")
+        host = session.coordinator.get_capability("cli.session_media")
+    except BaseException as secondary:
+        if failure.coordinator_error is None:
+            failure.coordinator_error = secondary
+        return failure
+
     if isinstance(host, CLISessionMedia) and host.session is session and host.native is store:
         if host.durable:
             try:
                 host.store.revoke()
             except BaseException as secondary:
                 failure.revocation_error = secondary
+    return failure
 
 
 def check_checkpoint_ready(session, store=None) -> None:
@@ -104,10 +139,9 @@ def checkpoint_hook(session, store, callback):
             check_checkpoint_ready(session, store)
             return result
         except BaseException as error:
-            latch_checkpoint_failure(session, store, error)
+            failure = latch_checkpoint_failure(session, store, error)
         # Outside the exception handler: no original exception escapes into
         # Core's diagnostic sink, including cause/context/notes/opaque __str__.
-        failure = _checkpoint_failure(session, store)
         reason = _INTERRUPTED if failure.interrupted else _BLOCKED
         return HookResult(action="deny", reason=reason, user_message=reason)
 
