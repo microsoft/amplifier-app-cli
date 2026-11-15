@@ -357,6 +357,16 @@ async def _create_initialized_session(
         elif config.is_resume and config.initial_transcript != committed_rows:
             raise ValueError("Prospective resume rows differ from the selected committed prefix")
 
+    native_store = None
+    if config.canonical_binding is None:
+        # Select once, after first-run handling, and carry this exact store
+        # through shared-root read and bundle construction. Namespace presence
+        # alone refuses unbound T2, including explicit-ID non-resume startup;
+        # do not acquire a legacy lock or read/recover its transcript first.
+        native_store = SessionStore()
+        if os.path.lexists(native_store.base_dir / session_id / "transcript.v2"):
+            raise RuntimeError("Versioned root resume requires its explicit live binding")
+
     # Acquire the one Foundation-owned writer capability before constructing
     # provider context.  A child has an inherited, different root ID and is
     # deliberately excluded.
@@ -387,7 +397,7 @@ async def _create_initialized_session(
             config.session_id = session_id
             config.root_state = await acquire_root(config, console)
             try:
-                shared_resume = config.root_state.read()
+                shared_resume = config.root_state.read(native_store)
                 if shared_resume is not None:
                     config.initial_transcript, shared_metadata = shared_resume
                     config.config.setdefault("shared_root_metadata", shared_metadata)
@@ -434,6 +444,7 @@ async def _create_initialized_session(
         display_system=display_system,
         console=console,
         lifetime=lifetime,
+        native_store=native_store,
     )
     lifetime.own(session)
 
@@ -760,6 +771,8 @@ async def _create_bundle_session(
     display_system: Any,
     console: "Console",
     lifetime: _RootSetupOwner | None = None,
+    *,
+    native_store: SessionStore | None = None,
 ) -> AmplifierSession:
     """Create session using bundle mode (foundation handles most setup).
 
@@ -773,6 +786,16 @@ async def _create_bundle_session(
     from .lib.bundle_loader import AppModuleResolver
     from .paths import create_foundation_resolver
     from .runtime.config import inject_user_providers
+
+    store = native_store if native_store is not None else (
+        SessionStore(config.canonical_binding.directory.parent, canonical_binding=config.canonical_binding)
+        if config.canonical_binding is not None else SessionStore()
+    )
+    if config.canonical_binding is None:
+        # Also protect direct private callers. Public initialization already
+        # checked this selected store before any shared-root work.
+        if os.path.lexists(store.base_dir / session_id / "transcript.v2"):
+            raise RuntimeError("Versioned root resume requires its explicit live binding")
 
     prepared_bundle = config.prepared_bundle
     assert prepared_bundle is not None  # Guaranteed by is_bundle_mode check
@@ -803,16 +826,6 @@ async def _create_bundle_session(
     from .session_checkpoint import install_session_checkpoint
     from .session_media import install_session_media, mount_session_media
 
-    store = (
-        SessionStore(config.canonical_binding.directory.parent, canonical_binding=config.canonical_binding)
-        if config.canonical_binding is not None else SessionStore()
-    )
-    if config.canonical_binding is None and config.is_resume:
-        # Use this invocation's actual selected native store, not a guessed
-        # default source. Check namespace presence only; Foundation owns reads.
-        # No Core/media owner or transcript FD has been constructed yet.
-        if os.path.lexists(store.base_dir / session_id / "transcript.v2"):
-            raise RuntimeError("Versioned root resume requires its explicit live binding")
     lifetime = lifetime if lifetime is not None else _RootSetupOwner()
 
     async def before_initialize(candidate: AmplifierSession) -> None:

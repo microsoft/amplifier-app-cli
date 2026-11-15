@@ -24,6 +24,8 @@ from PIL import Image
 from amplifier_core import AmplifierSession
 from amplifier_core.message_models import ChatRequest, ImageBlock, Message
 from amplifier_foundation.session.media import MEDIA_NAMESPACE
+# Resolve the bridge's exact Core type before the controlled root factory patch.
+from amplifier_foundation.session.media_hook_bridge import MediaHookBridge
 from amplifier_foundation.session.transcript_lifetime import (
     VersionedSessionBinding, VersionedSessionConflict,
 )
@@ -257,7 +259,7 @@ class Rig:
             canonical_binding=self.owners[sid], canonical_admit=self.admit(sid), **kwargs,
         )
 
-    async def open_root(self, binding, monkeypatch, *, bound=True, rows=None):
+    async def open_root(self, binding, monkeypatch, *, bound=True, rows=None, shared_root=False):
         from amplifier_foundation.bundle import Bundle, PreparedBundle
         from amplifier_app_cli.session_runner import SessionConfig, create_initialized_session
         from rich.console import Console
@@ -273,6 +275,7 @@ class Rig:
             config=deepcopy(PLAN), search_paths=[], verbose=False,
             session_id=binding.session_id, prepared_bundle=prepared,
             initial_transcript=rows,
+            shared_root=shared_root,
             canonical_binding=binding if bound else None,
             canonical_admit=self.admit(binding.session_id) if bound else None,
         ), Console(file=io.StringIO()))
@@ -2003,3 +2006,169 @@ async def test_actual_registered_child_checkpoint_hook_success_keeps_pixels_and_
         await parent.cleanup()
         for current in rig.owners.values():
             current.close()
+
+
+@pytest.mark.parametrize("shared", [True, False])
+@pytest.mark.parametrize("resume", [True, False])
+@pytest.mark.parametrize("damage", ["healthy", "descriptor", "dangling-namespace"])
+async def test_selected_t2_namespace_refuses_before_shared_acquire_read_and_preparation(
+    rig, monkeypatch, shared, resume, damage,
+):
+    from amplifier_foundation.session.shared_state import SharedSessionStore
+    from amplifier_app_cli import session_runner, shared_root_state
+
+    owner = rig.allocate("selected-t2")
+    owner.close()  # Actual closed prospective cohort, not serialized opt-in.
+    if damage == "descriptor":
+        (owner.directory / "transcript.v2" / "current.json").write_bytes(b"invalid descriptor")
+    elif damage == "dangling-namespace":
+        import shutil
+        shutil.rmtree(owner.directory / "transcript.v2")
+        (owner.directory / "transcript.v2").symlink_to(owner.directory / "missing", target_is_directory=True)
+    native = SessionStore(rig.root)
+    select_calls, acquisitions, native_reads, preparations = [], [], [], []
+    shared_directory = rig.root.parent / "shared-writer-state"
+
+    def select_native():
+        select_calls.append(native)
+        return native
+
+    # Redirect only the selected backend's storage root; construct the installed
+    # real Foundation shared store and acquire its real OS lock if reached.
+    def shared_store(workspace, session_id):
+        acquisitions.append(session_id)
+        result = SharedSessionStore(workspace, session_id, root=shared_directory)
+        # This fixture selects a private native store instead of HOME defaults.
+        # Keep the real shared backend's transfer-fence reads in that same
+        # selected namespace too; changing coordination root alone is not enough.
+        result._native_root = rig.root
+        result._native_directory = native.base_dir / session_id
+        return result
+
+    actual_api = shared_root_state._shared_api()
+    monkeypatch.setattr(shared_root_state, "_shared_api", lambda: (shared_store, actual_api[1]))
+    monkeypatch.setattr(shared_root_state, "_workspace", lambda: rig.root.parent)
+    monkeypatch.setattr("amplifier_app_cli.session_runner.SessionStore", select_native)
+    actual_load = native.load
+    actual_has_transcript = native.has_transcript
+
+    def read_native(sid):
+        native_reads.append(sid)
+        return actual_load(sid)
+
+    def probe_native(sid):
+        native_reads.append(("probe", sid))
+        return actual_has_transcript(sid)
+
+    monkeypatch.setattr(native, "load", read_native)
+    monkeypatch.setattr(native, "has_transcript", probe_native)
+    actual_resolver = __import__("amplifier_app_cli.paths", fromlist=["create_foundation_resolver"])
+    resolver = actual_resolver.create_foundation_resolver
+
+    def prepare_resolver():
+        preparations.append("resolver")
+        return resolver()
+
+    monkeypatch.setattr(actual_resolver, "create_foundation_resolver", prepare_resolver)
+    bundle_construction = AsyncMock(wraps=session_runner._create_bundle_session)
+    monkeypatch.setattr(session_runner, "_create_bundle_session", bundle_construction)
+    before = snapshot(rig.root.parent)
+    try:
+        with pytest.raises(RuntimeError, match="requires its explicit live binding"):
+            await rig.open_root(
+                owner, monkeypatch, bound=False, rows=[] if resume else None, shared_root=shared,
+            )
+        assert select_calls == [native]
+        assert acquisitions == native_reads == preparations == []
+        bundle_construction.assert_not_awaited()
+        assert not shared_directory.exists()
+        assert rig.created == rig.cleanup_calls == rig.admissions == []
+        assert snapshot(rig.root.parent) == before
+        assert binding_custody(owner) is None
+        assert not (owner.directory / "media").exists()
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize("shared", [True, False])
+@pytest.mark.parametrize("scenario", ["legacy-resume", "legacy-explicit-start", "generated-new"])
+async def test_selected_native_store_reused_by_shared_read_and_actual_root(
+    rig, monkeypatch, shared, scenario,
+):
+    from amplifier_foundation.session.shared_state import SharedSessionStore
+    from amplifier_app_cli import shared_root_state
+
+    native = SessionStore(rig.root)
+    sid = None if scenario == "generated-new" else "ordinary-root"
+    rows = [{"role": "user", "content": "unchanged ordinary history", "timestamp": "fixed"}]
+    if sid is not None:
+        native.save(sid, rows, {"config": deepcopy(PLAN), "agent_name": "named"})
+        rows = native.load(sid)[0]
+    selected, shared_reads, shared_stores = [], [], []
+    shared_directory = rig.root.parent / "ordinary-shared-state"
+
+    def select_native():
+        selected.append(native)
+        return native
+
+    actual_api = shared_root_state._shared_api()
+    def shared_store(workspace, session_id):
+        result = SharedSessionStore(workspace, session_id, root=shared_directory)
+        result._native_root = rig.root
+        result._native_directory = native.base_dir / session_id
+        shared_stores.append((session_id, result))
+        return result
+    actual_read = shared_root_state.SharedRootSession.read
+    def read_current(root, native_store=None):
+        shared_reads.append(native_store)
+        return actual_read(root, native_store)
+
+    monkeypatch.setattr(shared_root_state, "_shared_api", lambda: (shared_store, actual_api[1]))
+    monkeypatch.setattr(shared_root_state, "_workspace", lambda: rig.root.parent)
+    monkeypatch.setattr(shared_root_state.SharedRootSession, "read", read_current)
+    monkeypatch.setattr("amplifier_app_cli.session_runner.SessionStore", select_native)
+    expected_rows = rows if sid is not None and (shared or scenario == "legacy-resume") else []
+
+    async def execute(actual, context, **kwargs):
+        assert await context.get_messages() == expected_rows
+        assert actual.coordinator.get_capability("cli.session_store") is native
+        return "ordinary source remains selected"
+
+    # Generated identity is determined only by the actual initializer/Core.
+    rig.actions["ordinary-root"] = execute
+    original_factory = rig.factory
+    def factory(*args, **kwargs):
+        actual = original_factory(*args, **kwargs)
+        rig.actions[actual.session_id] = execute
+        return actual
+    monkeypatch.setattr(rig, "factory", factory)
+    root = await rig.open_root(
+        SimpleNamespace(session_id=sid), monkeypatch, bound=False,
+        rows=rows if scenario == "legacy-resume" else None, shared_root=shared,
+    )
+    try:
+        assert selected == [native]  # No second default store selection.
+        assert root.store is native
+        assert root.session.coordinator.get_capability("cli.session_media").native is native
+        assert isinstance(root.session.coordinator.get_capability("session.media.tool_post"), MediaHookBridge)
+        assert shared_reads == ([native] if shared else [])
+        assert root.session_id == root.session.session_id
+        if sid is not None:
+            assert root.session_id == sid
+        else:
+            import uuid
+            assert str(uuid.UUID(root.session_id)) == root.session_id
+        assert len(shared_stores) == int(shared)
+        assert await root.session.execute("ordinary source") == "ordinary source remains selected"
+        if shared:
+            assert root.root_state is root.config.root_state
+            root.root_state.held.check()
+    finally:
+        await root.cleanup()
+    if shared:
+        # Normal successful legacy cleanup still releases the actual shared lock.
+        held = shared_stores[0][1].acquire(app="post-cleanup-ordering-check")
+        try:
+            held.check()
+        finally:
+            held.release()
