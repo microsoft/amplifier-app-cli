@@ -4985,6 +4985,7 @@ def _initialize_cli() -> None:
             from .commands.notify import notify as notify_group
             from .commands.provider import provider as provider_group
             from .commands.reset import reset as reset_cmd
+            from .commands.settings import settings as settings_cmd
             from .commands.routing import routing_group
             from .commands.run import register_run_command
             from .commands.session import register_session_commands
@@ -5068,6 +5069,7 @@ def _initialize_cli() -> None:
             group.add_command(notify_group)
             group.add_command(provider_group)
             group.add_command(routing_group)
+            group.add_command(settings_cmd)
             group.add_command(source_group)
             group.add_command(tool_group)
             group.add_command(update_cmd)
