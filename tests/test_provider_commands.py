@@ -117,6 +117,19 @@ class TestProviderAdd:
         # real key store and its result depends on which keys they happen to
         # have saved.
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # This is a priority/settings unit test, not selected-source discovery.
+        # Credential lookup also consults provider metadata after configure_provider
+        # is mocked. Keep that boundary deterministic without evicting modules or
+        # weakening the production selected-origin guard.
+        monkeypatch.setattr(
+            "amplifier_app_cli.provider_config_utils.get_provider_info",
+            lambda module_id: {
+                "config_fields": [{
+                    "id": "api_key", "field_type": "secret",
+                    "env_var": "OPENAI_API_KEY" if module_id == "provider-openai" else "ANTHROPIC_API_KEY",
+                }],
+            },
+        )
         settings = _make_settings(tmp_path)
 
         # Seed an existing provider with priority 1

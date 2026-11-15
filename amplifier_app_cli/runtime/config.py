@@ -6,6 +6,7 @@ import asyncio
 import copy
 import logging
 import os
+from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
@@ -38,6 +39,7 @@ async def resolve_bundle_config(
     *,
     session_id: str | None = None,
     project_slug: str | None = None,
+    _declarations_only: bool = False,
 ) -> tuple[dict[str, Any], PreparedBundle]:
     """Resolve configuration from bundle using foundation's prepare workflow.
 
@@ -67,7 +69,11 @@ async def resolve_bundle_config(
     from ..lib.bundle_loader.prepare import load_and_prepare_bundle
     from ..paths import get_bundle_search_paths
 
-    discovery = AppBundleDiscovery(search_paths=get_bundle_search_paths())
+    if _declarations_only:
+        from ..session_media_policy import offline_discovery
+        discovery = offline_discovery(app_settings)
+    else:
+        discovery = AppBundleDiscovery(search_paths=get_bundle_search_paths())
 
     # Set up progress spinner for bundle preparation
     status = None
@@ -174,22 +180,35 @@ async def resolve_bundle_config(
         # If compose_behaviors is provided, those behaviors are composed onto the bundle
         # BEFORE prepare() runs, so their modules get installed correctly
         # If combined_sources is provided, module sources are resolved before download
-        prepared = await load_and_prepare_bundle(
-            bundle_name,
-            discovery,
-            compose_behaviors=compose_behaviors if compose_behaviors else None,
-            compose_defaults=compose_defaults or None,
-            source_overrides=combined_sources if combined_sources else None,
-            bundle_source_overrides=bundle_sources if bundle_sources else None,
-            progress_callback=_on_progress if status else None,
-        )
+        loader = load_and_prepare_bundle
+        extra = {}
+        if _declarations_only:
+            from ..lib.bundle_loader.prepare import load_and_compose_bundle
+            loader = load_and_compose_bundle
+            extra = {"require_complete": True, "load_agent_metadata": False}
+        from amplifier_foundation.sources.policy import source_resolution_policy
+        scope = source_resolution_policy(discovery.admit_source) if _declarations_only else nullcontext()
+        with scope:
+            loaded = await loader(
+                bundle_name,
+                discovery,
+                compose_behaviors=compose_behaviors if compose_behaviors else None,
+                compose_defaults=compose_defaults or None,
+                bundle_source_overrides=bundle_sources if bundle_sources else None,
+                progress_callback=_on_progress if status else None,
+                **(extra if _declarations_only else {"source_overrides": combined_sources or None}),
+            )
+            if _declarations_only:
+                await discovery.check_complete()
+        prepared = None if _declarations_only else loaded
 
         # Load full agent metadata from .md files (for descriptions)
         # Foundation handles this via load_agent_metadata() after source_base_paths is populated
-        prepared.bundle.load_agent_metadata()
+        if prepared is not None:
+            prepared.bundle.load_agent_metadata()
 
         # Get the mount plan from the prepared bundle (now includes agent descriptions)
-        bundle_config = prepared.mount_plan
+        bundle_config = copy.deepcopy(loaded.to_mount_plan()) if _declarations_only else prepared.mount_plan
     finally:
         if status:
             status.stop()
@@ -413,7 +432,7 @@ async def resolve_bundle_config(
     # credential -- see _validate_provider_credentials for why this matters
     # for the reuse-or-separate multi-instance flow.
     raw_providers = bundle_config.get("providers")
-    if isinstance(raw_providers, list):
+    if isinstance(raw_providers, list) and not _declarations_only:
         await _validate_provider_credentials(
             raw_providers,
             prepared_resolver=prepared.resolver,
@@ -423,6 +442,10 @@ async def resolve_bundle_config(
     # Expand environment variables
     # IMPORTANT: Must expand BEFORE syncing to mount_plan, so ${ANTHROPIC_API_KEY} etc. become actual values
     bundle_config = expand_env_vars(bundle_config)
+    from ..session_media_policy import apply_settings_media_restrictions
+    apply_settings_media_restrictions(
+        bundle_config, app_settings, session_id=session_id, project_slug=project_slug,
+    )
 
     if image_settings is not None:
         # Normal tool merges union allow lists and replace scalar flags. Images
@@ -437,6 +460,12 @@ async def resolve_bundle_config(
             if isinstance(row, dict) and row.get("module") == "tool-image":
                 row.setdefault("config", {}).update(copy.deepcopy(restrictions))
         _retain_legacy_image_intent(bundle_config, image_settings)
+
+    if _declarations_only:
+        return bundle_config, None
+
+    if "session_media" in bundle_config:
+        prepared.mount_plan["session_media"] = copy.deepcopy(bundle_config["session_media"])
 
     # CRITICAL: Sync providers, tools, and hooks to prepared.mount_plan so create_session() uses them
     # prepared.mount_plan is what create_session() uses, not bundle_config
@@ -1834,7 +1863,7 @@ def _build_app_cli_behaviors() -> list[str]:
             "directory is absent."
         )
 
-    return [f"file://{bundle_root}#subdirectory={_APP_CLI_BEHAVIOR_RELPATH}"]
+    return [f"{bundle_root.as_uri()}#subdirectory={_APP_CLI_BEHAVIOR_RELPATH}"]
 
 
 def _build_notification_behaviors(flags: NotificationFlags) -> list[str]:

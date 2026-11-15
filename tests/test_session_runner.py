@@ -1,6 +1,7 @@
 """Tests for session_runner module - unified session initialization."""
 
 import logging
+import asyncio
 import json
 import sys as _sys
 from decimal import Decimal
@@ -322,12 +323,20 @@ class TestInitializedSession:
 # ---------------------------------------------------------------------------
 
 
+def _return_stamped(selected):
+    async def create(**kwargs):
+        from amplifier_app_cli.session_runner import _stamp_candidate_metadata
+        _stamp_candidate_metadata(selected, kwargs["config"], kwargs["session_id"])
+        return selected
+    return create
+
+
 class TestPostSessionMetadataStamping:
-    """Tests for the two-phase root-level metadata stamping.
+    """Tests for metadata stamping on the actual pre-initialize candidate.
 
     create_initialized_session writes root-level metadata into config.config
     BEFORE session creation (to propagate via deep-merge to child sessions)
-    and then into session.config AFTER creation (belt-and-suspenders: the
+    and then into session.config BEFORE module initialization (the
     foundation layer may copy config.config into a fresh dict when building
     the coordinator, so session.config and config.config are not guaranteed
     to be the same object — hooks read coordinator.config, so we must ensure
@@ -358,7 +367,7 @@ class TestPostSessionMetadataStamping:
             patch(
                 f"{_MODULE}._create_bundle_session",
                 new_callable=AsyncMock,
-                return_value=mock_sess,
+                side_effect=_return_stamped(mock_sess),
             ),
             patch(
                 "amplifier_app_cli.commands.init.check_first_run", return_value=False
@@ -390,7 +399,7 @@ class TestPostSessionMetadataStamping:
             patch(
                 f"{_MODULE}._create_bundle_session",
                 new_callable=AsyncMock,
-                return_value=mock_sess,
+                side_effect=_return_stamped(mock_sess),
             ),
             patch(
                 "amplifier_app_cli.commands.init.check_first_run", return_value=False
@@ -418,7 +427,7 @@ class TestPostSessionMetadataStamping:
             patch(
                 f"{_MODULE}._create_bundle_session",
                 new_callable=AsyncMock,
-                return_value=mock_sess,
+                side_effect=_return_stamped(mock_sess),
             ),
             patch(
                 "amplifier_app_cli.commands.init.check_first_run", return_value=False
@@ -459,7 +468,7 @@ class TestPostSessionMetadataStamping:
             patch(
                 f"{_MODULE}._create_bundle_session",
                 new_callable=AsyncMock,
-                return_value=mock_sess,
+                side_effect=_return_stamped(mock_sess),
             ),
             patch(
                 "amplifier_app_cli.commands.init.check_first_run", return_value=False
@@ -492,7 +501,7 @@ class TestPostSessionMetadataStamping:
             patch(
                 f"{_MODULE}._create_bundle_session",
                 new_callable=AsyncMock,
-                return_value=mock_sess,
+                side_effect=_return_stamped(mock_sess),
             ),
             patch(
                 "amplifier_app_cli.commands.init.check_first_run", return_value=False
@@ -525,7 +534,7 @@ class TestPostSessionMetadataStamping:
             patch(
                 f"{_MODULE}._create_bundle_session",
                 new_callable=AsyncMock,
-                return_value=mock_sess,
+                side_effect=_return_stamped(mock_sess),
             ),
             patch(
                 "amplifier_app_cli.commands.init.check_first_run", return_value=False
@@ -777,6 +786,204 @@ def _configurator_patches(mock_sess):
     ]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["get_messages", "set_messages", "configurator"])
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_root_retains_cleanup_through_last_initialization_await(stage, cancelled, tmp_path):
+    from contextlib import ExitStack
+    from types import SimpleNamespace
+    failure = asyncio.CancelledError() if cancelled else RuntimeError("synthetic setup")
+    root = MagicMock()
+    cfg = _make_session_config(
+        session_id="root", root_state=root,
+        initial_transcript=[{"role": "user", "content": "saved"}] if stage != "configurator" else None,
+    )
+    selected = _make_mock_session()
+    selected.cleanup = AsyncMock()
+    context = SimpleNamespace(get_messages=AsyncMock(return_value=[]), set_messages=AsyncMock())
+    if stage != "configurator":
+        getattr(context, stage).side_effect = failure
+    selected.coordinator.get.return_value = context
+    configurator = MagicMock()
+    configurator.apply_saved_settings = AsyncMock(side_effect=failure if stage == "configurator" else None)
+    with ExitStack() as stack:
+        for patcher in _configurator_patches(selected):
+            stack.enter_context(patcher)
+        stack.enter_context(patch("amplifier_app_cli.session_store.SessionStore", return_value=MagicMock()))
+        stack.enter_context(patch("amplifier_foundation.configurator.SessionConfigurator", return_value=configurator))
+        # Existing ordinary configurator errors are deliberately best effort;
+        # cancellation and failed restoration must instead unwind setup.
+        if stage == "configurator" and not cancelled:
+            result = await create_initialized_session(cfg, MagicMock())
+            selected.cleanup.assert_not_awaited()
+            await result.cleanup()
+        else:
+            with pytest.raises(type(failure)):
+                await create_initialized_session(cfg, MagicMock())
+        selected.cleanup.assert_awaited_once()
+        root.release.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_resume", [False, True])
+async def test_root_retry_installs_fresh_checkpoint_before_each_initialize(
+    tmp_path, is_resume
+):
+    from contextlib import ExitStack
+    from amplifier_app_cli.session_runner import _create_bundle_session
+    from amplifier_app_cli.session_store import SessionStore
+
+    config = _make_session_config(
+        session_config_initial={"session_media": {"enabled": False}},
+        session_id="root",
+        initial_transcript=[] if is_resume else None,
+    )
+    store = SessionStore(tmp_path)
+    sessions = []
+    checkpoints = []
+    events = []
+
+    async def create(**kwargs):
+        candidate = _make_mock_session()
+        candidate.session_id = "root"
+        candidate.coordinator.session_id = "root"
+        candidate.cleanup = AsyncMock(side_effect=lambda: events.append("cleanup"))
+        candidate.coordinator.get.return_value = MagicMock(
+            get_messages=AsyncMock(return_value=[{"role": "user", "content": "saved"}])
+        )
+        capabilities = {}
+        candidate.coordinator.register_capability.side_effect = capabilities.__setitem__
+        candidate.coordinator.get_capability.side_effect = capabilities.get
+        await kwargs["before_initialize"](candidate)
+        checkpoints.append(capabilities["session.durable_checkpoint"])
+        assert kwargs["is_resumed"] is is_resume
+        events.append("initialize")
+        sessions.append(candidate)
+        return candidate
+
+    config.prepared_bundle.create_session = AsyncMock(side_effect=create)
+    with ExitStack() as stack:
+        stack.enter_context(patch(f"{_MODULE}.SessionStore", return_value=store))
+        stack.enter_context(patch(f"{_MODULE}._inject_observability_events"))
+        stack.enter_context(patch(f"{_MODULE}._inject_invocation_metadata"))
+        stack.enter_context(patch(f"{_MODULE}.register_mention_handling"))
+        stack.enter_context(patch(f"{_MODULE}.register_session_spawning"))
+        stack.enter_context(patch(f"{_MODULE}._invalidate_all_install_state"))
+        stack.enter_context(
+            patch(f"{_MODULE}._should_attempt_self_healing", side_effect=[True, False])
+        )
+        stack.enter_context(patch("amplifier_app_cli.runtime.config.inject_user_providers"))
+        stack.enter_context(patch("amplifier_app_cli.paths.create_foundation_resolver"))
+        result = await _create_bundle_session(
+            config, "root", MagicMock(), MagicMock(), Console(file=StringIO())
+        )
+
+    assert result is sessions[1]
+    assert checkpoints[0] is not checkpoints[1]
+    assert events == ["initialize", "cleanup", "initialize"]
+    await checkpoints[1]()
+    assert store.load("root")[0] == [{"role": "user", "content": "saved"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["mount", "register", "create", "retry"])
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_root_construction_cleanup_failure_retains_writer(stage, cancelled, tmp_path):
+    from contextlib import ExitStack
+    root = MagicMock()
+    config = _make_session_config(session_id="root", root_state=root)
+    selected = _make_mock_session()
+    selected.session_id = "root"
+    sentinel = "data:image/png;base64,PRIVATEPIXELS?secret=construction-cleanup"
+    cleanup_error = asyncio.CancelledError(sentinel) if cancelled else RuntimeError(sentinel)
+    selected.cleanup = AsyncMock(side_effect=cleanup_error)
+    setup_error = RuntimeError("setup failure")
+    called = []
+
+    async def create(**kwargs):
+        called.append("create")
+        await kwargs["before_initialize"](selected)
+        if stage == "create":
+            raise setup_error
+        return selected
+
+    config.prepared_bundle.create_session = AsyncMock(side_effect=create)
+    with ExitStack() as stack:
+        for patcher in _configurator_patches(selected):
+            # Exercise real construction, not the helper seam mock.
+            if patcher.attribute != "_create_bundle_session":
+                stack.enter_context(patcher)
+        stack.enter_context(patch(f"{_MODULE}.SessionStore", return_value=MagicMock()))
+        stack.enter_context(patch(f"{_MODULE}._inject_observability_events"))
+        stack.enter_context(patch(f"{_MODULE}._inject_invocation_metadata"))
+        stack.enter_context(patch(f"{_MODULE}._invalidate_all_install_state"))
+        stack.enter_context(patch(f"{_MODULE}._should_attempt_self_healing", return_value=stage == "retry"))
+        stack.enter_context(patch("amplifier_app_cli.session_media.install_session_media"))
+        stack.enter_context(patch("amplifier_app_cli.session_media.mount_session_media",
+                                  AsyncMock(side_effect=setup_error if stage == "mount" else None)))
+        stack.enter_context(patch(f"{_MODULE}.register_mention_handling",
+                                  side_effect=setup_error if stage == "register" else None))
+        stack.enter_context(patch(f"{_MODULE}.register_session_spawning"))
+        stack.enter_context(patch("amplifier_app_cli.runtime.config.inject_user_providers"))
+        stack.enter_context(patch("amplifier_app_cli.paths.create_foundation_resolver"))
+        warning = stack.enter_context(patch(f"{_MODULE}.logger.warning"))
+        with pytest.raises(RuntimeError) as error:
+            await create_initialized_session(config, Console(file=StringIO()))
+    assert error.value is setup_error if stage != "retry" else "self-healing" in str(error.value)
+    assert any("writer retained" in note for note in error.value.__notes__)
+    selected.cleanup.assert_awaited_once()
+    root.release.assert_not_called()
+    assert config.root_state is root
+    assert called == ["create"]  # No cleanup or create replay after uncertainty.
+    warning.assert_any_call(
+        "Root construction cleanup did not settle; writer retained; exception details withheld",
+        exc_info=None, stack_info=False,
+    )
+    custody_logs = [call for call in warning.call_args_list if call.kwargs.get("exc_info", True) is None]
+    assert len(custody_logs) == 1
+    assert sentinel not in repr(warning.call_args_list)
+    assert cleanup_error.args == (sentinel,)
+
+
+@pytest.mark.asyncio
+async def test_root_retry_first_cleanup_settles_second_cleanup_failure_retains_writer():
+    from contextlib import ExitStack
+    root = MagicMock()
+    config = _make_session_config(session_id="root", root_state=root)
+    first, second = _make_mock_session(), _make_mock_session()
+    first.cleanup = AsyncMock()
+    second.cleanup = AsyncMock(side_effect=asyncio.CancelledError())
+    failure = RuntimeError("second construction failed")
+    seen = []
+    async def create(**kwargs):
+        selected = first if not seen else second
+        seen.append(selected)
+        await kwargs["before_initialize"](selected)
+        if selected is second:
+            raise failure
+        return selected
+    config.prepared_bundle.create_session = AsyncMock(side_effect=create)
+    with ExitStack() as stack:
+        for patcher in _configurator_patches(first):
+            if patcher.attribute != "_create_bundle_session":
+                stack.enter_context(patcher)
+        for name in ("_inject_observability_events", "_inject_invocation_metadata", "_invalidate_all_install_state"):
+            stack.enter_context(patch(f"{_MODULE}.{name}"))
+        stack.enter_context(patch(f"{_MODULE}._should_attempt_self_healing", return_value=True))
+        stack.enter_context(patch("amplifier_app_cli.session_media.install_session_media"))
+        stack.enter_context(patch("amplifier_app_cli.runtime.config.inject_user_providers"))
+        stack.enter_context(patch("amplifier_app_cli.paths.create_foundation_resolver"))
+        with pytest.raises(RuntimeError) as caught:
+            await create_initialized_session(config, Console(file=StringIO()))
+    assert caught.value is failure
+    assert seen == [first, second]
+    first.cleanup.assert_awaited_once()
+    second.cleanup.assert_awaited_once()
+    root.release.assert_not_called()
+    assert config.root_state is root
+    assert any("writer retained" in note for note in failure.__notes__)
+
+
 class TestInitializedSessionConfiguratorField:
     """Tests for the new configurator field on InitializedSession."""
 
@@ -851,7 +1058,9 @@ class TestSessionConfiguratorWiring:
             result = await create_initialized_session(cfg, console)
 
         assert result.configurator is mock_configurator
-        mock_configurator_cls.assert_called_once_with(mock_sess, cfg.prepared_bundle)
+        mock_configurator_cls.assert_called_once_with(
+            mock_sess, cfg.prepared_bundle, coordinator=mock_sess.coordinator,
+        )
 
     @pytest.mark.anyio
     async def test_configurator_apply_saved_settings_called(self):

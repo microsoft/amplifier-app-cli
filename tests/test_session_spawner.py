@@ -16,7 +16,7 @@ SPAN_HEX_LEN = 16
 DEFAULT_PARENT_SPAN = "0" * SPAN_HEX_LEN
 
 # Configure anyio for async tests (asyncio backend only)
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("legacy_session_doubles_without_media")]
 
 
 def messages_equal_ignoring_timestamp(loaded: list, original: list) -> bool:
