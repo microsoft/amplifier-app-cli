@@ -1194,7 +1194,33 @@ class AppSettings:
         except Exception:
             return {}
 
-    def _write_scope(self, scope: Scope, settings: dict[str, Any]) -> None:
+    # ----- Public scope I/O -----
+    #
+    # Stable public entry points for callers outside this module (e.g. a
+    # settings UI) that do raw read-modify-write on one scope's file.
+    # Locking contract: hold ``scope_lock(scope)`` for the WHOLE
+    # read-modify-write, not just the write. ``write_scope`` does not take
+    # the lock itself (the lock is a non-reentrant ``filelock.FileLock``).
+
+    def write_scope(self, scope: Scope, settings: dict[str, Any]) -> list[str]:
+        """Atomically replace ``scope``'s settings file with ``settings``.
+
+        Literal provider secrets are moved to ``keys.env`` first and
+        replaced by ``${VAR}`` placeholders (see ``_write_scope``), so
+        ``settings`` may be mutated in place. Returns the env var names
+        whose literal secrets were moved, in the order they were moved
+        (empty if none). Raises ``ValueError`` -- before anything is
+        written -- for an unavailable scope or when no usable env var name
+        can be derived for a literal secret.
+        """
+        return self._write_scope(scope, settings)
+
+    def scope_lock(self, scope: Scope) -> BaseFileLock:
+        """Advisory file lock for ``scope``'s settings file; use as a
+        context manager around the full read-modify-write sequence."""
+        return self._scope_lock(scope)
+
+    def _write_scope(self, scope: Scope, settings: dict[str, Any]) -> list[str]:
         """Write settings to a specific scope.
 
         Before the atomic write below, scans any ``config.providers``
@@ -1211,6 +1237,9 @@ class AppSettings:
         mid-write can't corrupt the file: a reader always sees either the
         old or the new content, never a partial write. See
         docs/designs/provider-instance-credentials.md §5.5.
+
+        Returns the env var names whose literal secrets were moved to
+        ``keys.env`` (see ``normalize_provider_secrets``).
         """
         providers = (settings.get("config") or {}).get("providers")
         if isinstance(providers, list) and providers:
@@ -1219,10 +1248,13 @@ class AppSettings:
             # get_provider_overrides() above.
             from ..provider_config_utils import normalize_provider_secrets
 
-            normalize_provider_secrets(self, settings, scope)
+            moved = list(normalize_provider_secrets(self, settings, scope) or ())
+        else:
+            moved = []
 
         path = self._get_scope_path(scope)
         atomic_write_yaml(path, settings, sort_keys=True)
+        return moved
 
     def _scope_lock(self, scope: Scope) -> BaseFileLock:
         """Advisory file lock guarding the read-modify-write critical

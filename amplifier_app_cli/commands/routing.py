@@ -44,6 +44,12 @@ logger = logging.getLogger(__name__)
 # a prior `amplifier update`.
 _ROUTING_BUNDLE_URI = str(WELL_KNOWN_BUNDLES["routing-matrix"]["remote"])
 
+# Custom matrix names. Must be a subset of what hooks-routing's
+# ``matrix_loader.validate_matrix_name`` accepts (``[a-z][a-z0-9_-]*``),
+# otherwise the CLI saves a matrix the runtime rejects as "Invalid matrix
+# ID" (e.g. "Fast" or "2x"). The 64-char cap is the CLI's own.
+MATRIX_NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+
 INFRASTRUCTURE_CONFIG_FIELDS = frozenset(
     {
         "base_url",
@@ -104,7 +110,7 @@ def _ensure_routing_bundle_cached() -> None:
         console.print(f"[yellow]Could not fetch routing-matrix bundle: {e}[/yellow]")
 
 
-def _discover_matrix_files() -> list[Path]:
+def _discover_matrix_files(*, fetch: bool = True) -> list[Path]:
     """Discover available routing matrix YAML files.
 
     Looks in:
@@ -115,6 +121,11 @@ def _discover_matrix_files() -> list[Path]:
     fetches the routing-matrix bundle on first use. That makes `amplifier
     routing list` work out of the box instead of silently returning an
     empty list and telling the user to run a different command.
+
+    Pass ``fetch=False`` for a pure, offline filesystem scan: the bundle is
+    never fetched (no network, no console output) and only already-cached
+    and custom matrices are returned. For non-interactive callers (e.g. a
+    settings UI) that must not block on, or trigger, a download.
     """
     files: list[Path] = []
 
@@ -125,7 +136,7 @@ def _discover_matrix_files() -> list[Path]:
         if cache_base.exists()
         else []
     )
-    if not bundle_dirs:
+    if not bundle_dirs and fetch:
         # First run on a clean install — fetch the bundle with visible feedback.
         # This can take 5-30s on a slow network so we must NOT block silently.
         console.print("[dim]Fetching routing-matrix bundle...[/dim]")
@@ -245,6 +256,18 @@ def _load_all_matrices(matrix_files: list[Path]) -> dict[str, dict[str, Any]]:
         name: data
         for name, (data, _) in _load_all_matrices_with_paths(matrix_files).items()
     }
+
+
+def load_matrices(*, fetch: bool = True) -> dict[str, tuple[dict[str, Any], Path]]:
+    """Every matrix the runtime could load: ``{stem: (data, winning_path)}``.
+
+    Public wrapper over ``_discover_matrix_files`` +
+    ``_load_all_matrices_with_paths`` -- same keys, rows and winner selection
+    as ``amplifier routing list``. ``fetch=False`` never fetches the
+    routing-matrix bundle (no network, no console output) and returns only
+    already-cached and custom matrices; use it from non-interactive callers.
+    """
+    return _load_all_matrices_with_paths(_discover_matrix_files(fetch=fetch))
 
 
 def _declared_name(data: Mapping[str, Any]) -> str:
@@ -506,7 +529,7 @@ def _list_models_bounded(selector: str, settings: AppSettings) -> list[str] | No
         pool.shutdown(wait=False, cancel_futures=True)
 
 
-class _LiveModels:
+class LiveModels:
     """Memoized live ``list_models()`` per matrix provider name, for `show`.
 
     WHY `show` NEEDS THIS. "Configured" is a property of the PROVIDER; a
@@ -592,6 +615,10 @@ class _LiveModels:
             f"\n[dim]Model lists not fetched for: {', '.join(sorted(self.unverified))} "
             f"-- their globs are shown as configured but not verified live.[/dim]"
         )
+
+
+# Backward-compatible private alias; internal code and tests keep using it.
+_LiveModels = LiveModels
 
 
 def _resolve_role(
@@ -1927,10 +1954,10 @@ def _routing_create_interactive(settings: AppSettings) -> None:
         console.print("[red]Name cannot be empty.[/red]")
         return
 
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$", matrix_name):
+    if not MATRIX_NAME_RE.fullmatch(matrix_name):
         console.print(
-            "[red]Matrix name must start with a letter or digit and contain only "
-            "letters, numbers, hyphens, and underscores (max 64 chars).[/red]"
+            "[red]Matrix name must start with a lowercase letter and contain only "
+            "lowercase letters, digits, hyphens, and underscores (max 64 chars).[/red]"
         )
         return
 
@@ -2133,10 +2160,10 @@ def _routing_edit_matrix(settings: AppSettings) -> None:
         console.print("[red]Name cannot be empty.[/red]")
         return
 
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$", matrix_name):
+    if not MATRIX_NAME_RE.fullmatch(matrix_name):
         console.print(
-            "[red]Matrix name must start with a letter or digit and contain only "
-            "letters, numbers, hyphens, and underscores (max 64 chars).[/red]"
+            "[red]Matrix name must start with a lowercase letter and contain only "
+            "lowercase letters, digits, hyphens, and underscores (max 64 chars).[/red]"
         )
         return
 

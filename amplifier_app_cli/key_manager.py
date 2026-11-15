@@ -70,20 +70,33 @@ class KeyManager:
         scope's config references it via a ``${VAR}`` placeholder -- see
         docs/designs/provider-instance-credentials.md §5.4.1.
         """
+        return set(self.stored_items())
+
+    def stored_items(self) -> dict[str, str]:
+        """Return ``{name: value}`` for every entry in the on-disk
+        ``keys.env`` store, read once under one advisory lock.
+
+        Independent of ``os.environ``: a shell-exported variable that was
+        never written to ``keys.env`` is absent, and a stored value is
+        returned even when the environment holds a different one. Values
+        are unquoted the same way ``_load_keys()`` unquotes what it exports
+        into the environment. Returns ``{}`` if the file is missing or
+        unreadable.
+        """
         if not self.keys_file.exists():
-            return set()
-        names: set[str] = set()
+            return {}
+        stored: dict[str, str] = {}
         with self._lock:
             try:
                 with open(self.keys_file, encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
                         if line and not line.startswith("#") and "=" in line:
-                            k, _v = line.split("=", 1)
-                            names.add(k.strip())
+                            k, v = line.split("=", 1)
+                            stored[k.strip()] = v.strip().strip('"').strip("'")
             except Exception:
-                return set()
-        return names
+                return {}
+        return stored
 
     def save_key(self, key_name: str, key_value: str) -> None:
         """Save API key to keys.env file securely.

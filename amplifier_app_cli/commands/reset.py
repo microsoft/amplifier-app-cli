@@ -119,6 +119,13 @@ def _get_unmanaged_files() -> list[str]:
     )
 
 
+def unmanaged_files() -> list[str]:
+    """Public name for the entries in ~/.amplifier that reset does not
+    model and never removes (sorted names; ``[]`` if the directory does
+    not exist). See ``_get_unmanaged_files``."""
+    return _get_unmanaged_files()
+
+
 def _get_remove_paths(remove_cats: set[str]) -> set[str]:
     """Convert category names to actual file/directory names.
 

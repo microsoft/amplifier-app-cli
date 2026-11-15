@@ -629,7 +629,7 @@ def _suggest_instance_env_var(
 
 def normalize_provider_secrets(
     settings_obj: AppSettings, scope_settings: dict[str, Any], scope: Scope
-) -> None:
+) -> list[str]:
     """Rewrite any literal plaintext secret in ``scope_settings``'s provider
     entries into a ``${VAR}`` placeholder backed by ``~/.amplifier/keys.env``.
 
@@ -647,11 +647,17 @@ def normalize_provider_secrets(
     undecided/possibly-colliding name -- ``_write_scope``'s atomic write
     hasn't run yet at that point, so the old scope file is untouched.
 
+    Returns the env var names whose literal secrets were moved to
+    ``keys.env``, in the order they were moved (empty if none), so callers
+    such as ``AppSettings.write_scope`` can report them without capturing
+    console output.
+
     See docs/designs/provider-instance-credentials.md.
     """
+    moved: list[str] = []
     providers = (scope_settings.get("config") or {}).get("providers")
     if not isinstance(providers, list) or not providers:
-        return
+        return moved
 
     # Computed lazily, at most once per call, on the FIRST literal secret
     # actually found -- entries normalized earlier in this same batch must
@@ -739,6 +745,7 @@ def normalize_provider_secrets(
 
         entry["config"][field_id] = f"${{{chosen}}}"
         batch_claimed.add(chosen)
+        moved.append(chosen)
 
         message = (
             f"Note: found a plaintext credential for instance "
@@ -752,6 +759,8 @@ def normalize_provider_secrets(
                 "committed file.)"
             )
         console.print(message)
+
+    return moved
 
 
 def _prompt_for_field(
