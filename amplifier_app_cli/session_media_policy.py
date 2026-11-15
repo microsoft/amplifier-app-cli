@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 RESTRICTIONS_KEY = "cli_media_restrictions_v1"
 _FIELDS = ("max_bytes", "max_pixels", "max_images", "retention", "ttl_seconds")
@@ -21,6 +22,19 @@ class CurrentPolicyIncomplete(ValueError):
 
     def __init__(self):
         super().__init__("Current policy composition is incomplete")
+
+
+def _native_file_uri_path(encoded_path):
+    """Convert a local URI path once, including Windows drive syntax."""
+    from amplifier_foundation.sources.policy import SourceResolutionDenied
+
+    native = url2pathname(encoded_path)
+    if native.replace("\\", "/").startswith("//"):
+        raise SourceResolutionDenied("Nonlocal manifest")
+    path = Path(native)
+    if not path.is_absolute():
+        raise SourceResolutionDenied("Nonlocal manifest")
+    return path
 
 
 def meet(*declarations):
@@ -173,7 +187,7 @@ def offline_discovery(app_settings):
                 parsed = urlsplit(uri)
                 if parsed.netloc not in ("", "localhost") or parsed.query:
                     raise SourceResolutionDenied("Nonlocal manifest")
-                path = Path(unquote(parsed.path))
+                path = _native_file_uri_path(parsed.path)
                 if parsed.fragment:
                     # The supported local bundle form has one subdirectory,
                     # never a query or arbitrary fragment to silently discard.

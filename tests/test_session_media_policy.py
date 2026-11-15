@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import socket
+import sys
 from unittest.mock import AsyncMock
 
 import click
@@ -41,7 +42,29 @@ def digest_tree(path):
 
 
 @pytest.fixture
-def configuration(tmp_path, monkeypatch, isolated_home):
+def external_requests_forbidden(monkeypatch):
+    """Watch external clients/handlers, not asyncio's local self-pipe sockets."""
+    attempts = []
+
+    def forbidden(*args, **kwargs):
+        attempts.append(True)
+        pytest.fail("Configuration-only path attempted an external request")
+
+    monkeypatch.setattr(socket, "create_connection", forbidden)
+    monkeypatch.setattr("httpx.Client.request", forbidden)
+    monkeypatch.setattr("httpx.AsyncClient.request", forbidden)
+    monkeypatch.setattr("urllib.request.urlopen", forbidden)
+    monkeypatch.setattr("amplifier_foundation.sources.http.urlopen", forbidden)
+    monkeypatch.setattr("amplifier_foundation.sources.zip.urlopen", forbidden)
+    monkeypatch.setattr("amplifier_foundation.sources.git.GitSourceHandler.resolve", forbidden)
+    monkeypatch.setattr("amplifier_foundation.sources.http.HttpSourceHandler.resolve", forbidden)
+    monkeypatch.setattr("amplifier_foundation.sources.zip.ZipSourceHandler.resolve", forbidden)
+    yield attempts
+    assert attempts == [], "Configuration-only path attempted an external request"
+
+
+@pytest.fixture
+def configuration(tmp_path, monkeypatch, isolated_home, external_requests_forbidden):
     home = tmp_path / ".amplifier"
     home.mkdir(mode=0o700)
     monkeypatch.setenv("AMPLIFIER_HOME", str(home))
@@ -90,13 +113,15 @@ def configuration(tmp_path, monkeypatch, isolated_home):
     monkeypatch.setattr(Bundle, "prepare", forbidden)
     monkeypatch.setattr("amplifier_foundation.bundle.PreparedBundle.create_session", forbidden)
     monkeypatch.setattr(runtime, "_validate_provider_credentials", forbidden)
-    monkeypatch.setattr(socket, "create_connection", forbidden)
-    monkeypatch.setattr(socket.socket, "connect", forbidden)
-    monkeypatch.setattr("amplifier_foundation.sources.git.GitSourceHandler.resolve", forbidden)
     monkeypatch.setattr("amplifier_app_cli.commands.init.check_first_run", forbidden)
     monkeypatch.setattr("amplifier_foundation.session.history.SessionHistoryStore.load_messages", forbidden)
     monkeypatch.setattr("amplifier_app_cli.lib.bundle_loader.discovery.importlib.import_module", forbidden)
     return home, root, settings_path, sources
+
+
+def require_linux_custody():
+    if sys.platform != "linux":
+        pytest.skip("Actual prospective Foundation custody is qualified on Linux only")
 
 
 def declare(configuration, **limits):
@@ -107,6 +132,7 @@ def declare(configuration, **limits):
 
 
 def prospective(configuration, *, sid="root", actual=None, classification=None, image_format="PNG"):
+    require_linux_custody()  # Before selector, mkdir, media or binding effects.
     directory = default_session_directory(sid)
     directory.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     binding = VersionedSessionBinding.create_new(
@@ -314,7 +340,9 @@ def test_normal_restricted_classification_still_needs_actual_validator(configura
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "linux", reason="Actual prospective Foundation custody is qualified on Linux only")
 async def test_first_root_child_capture_uses_actual_store_and_resume_only_tightens(tmp_path):
+    require_linux_custody()
     from amplifier_core import AmplifierSession
     from amplifier_app_cli.session_media import install_session_media, restrict_child_media
 
@@ -584,3 +612,115 @@ def test_configonly_failure_message_and_notes_are_not_formatted(configuration, m
     assert not getattr(raised.value, "__notes__", [])
     assert all(r.exc_info is None for r in caplog.records)
     assert all("opaque-" not in str((r.msg, r.args)) for r in caplog.records)
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_prospective_fixture_skips_before_selector_or_filesystem(tmp_path, monkeypatch, platform):
+    def unexpected(*args):
+        pytest.fail("Unsupported fixture reached selector/filesystem")
+    before = digest_tree(tmp_path)
+    monkeypatch.setitem(globals(), "default_session_directory", unexpected)
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, "platform", platform)
+        with pytest.raises(pytest.skip.Exception, match="qualified on Linux only"):
+            prospective(None)
+    assert digest_tree(tmp_path) == before
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_actual_foundation_unsupported_platform_refuses_before_filesystem(tmp_path, monkeypatch, platform):
+    """Simulation exercises the installed public refusal, not native parity."""
+    from amplifier_foundation.session.transcript_lifetime import VersionedSessionConflict
+
+    before = digest_tree(tmp_path)
+    def unexpected():
+        pytest.fail("Unsupported Foundation binding reached asset admission")
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, "platform", platform)
+        with pytest.raises(VersionedSessionConflict, match="qualified on Linux only"):
+            VersionedSessionBinding.create_new(
+                tmp_path / "must-not-create" / "root", session_id="root",
+                operation_id="unsupported", admit=unexpected,
+            )
+    assert digest_tree(tmp_path) == before
+
+
+def test_external_request_tripwires_allow_local_selfpipe_and_event_loop(external_requests_forbidden):
+    # Windows ProactorEventLoop needs a socketpair, whose stdlib fallback
+    # connects to its own local listener. That is not a manifest/client fetch.
+    left, right = socket.socketpair()
+    try:
+        left.sendall(b"x")
+        assert right.recv(1) == b"x"
+    finally:
+        left.close()
+        right.close()
+    assert asyncio.run(asyncio.sleep(0, result="loop-ready")) == "loop-ready"
+    assert external_requests_forbidden == []
+    assert socket.create_connection.__name__ == "forbidden"
+
+
+@pytest.mark.parametrize("uri,expected", [
+    ("file:///D:/fixture/root", r"D:\fixture\root"),
+    ("file:///D:/fixture/space%20and%23hash.yaml", r"D:\fixture\space and#hash.yaml"),
+    ("file:///D:/fixture/literal%2520.yaml", r"D:\fixture\literal%20.yaml"),
+    ("file:///D:/fixture/caf%C3%A9.yaml", "D:\\fixture\\café.yaml"),
+])
+def test_windows_file_uri_uses_native_conversion_once(monkeypatch, uri, expected):
+    """Run the Windows stdlib conversion on any OS; no Windows I/O claim."""
+    import nturl2path
+    from pathlib import PureWindowsPath
+    from urllib.parse import urlsplit
+
+    monkeypatch.setattr(policy, "url2pathname", nturl2path.url2pathname)
+    monkeypatch.setattr(policy, "Path", PureWindowsPath)
+    selected = policy._native_file_uri_path(urlsplit(uri).path)
+    assert selected == PureWindowsPath(expected)
+    assert selected.drive == "D:" and selected.is_absolute()
+
+
+@pytest.mark.parametrize("encoded_path", ["//remote/share/file", "/%2Fremote/share/file", "/%5C%5Cremote/share/file"])
+def test_windows_native_conversion_does_not_admit_unc(monkeypatch, encoded_path):
+    import nturl2path
+    from pathlib import PureWindowsPath
+    from amplifier_foundation.sources.policy import SourceResolutionDenied
+
+    monkeypatch.setattr(policy, "url2pathname", nturl2path.url2pathname)
+    monkeypatch.setattr(policy, "Path", PureWindowsPath)
+    with pytest.raises(SourceResolutionDenied, match="Nonlocal manifest"):
+        policy._native_file_uri_path(encoded_path)
+
+
+def test_native_file_uri_preserves_encoded_names_and_refuses_nonlocal_forms(configuration):
+    from amplifier_foundation.sources.policy import SourceResolutionDenied
+
+    _, root, _, _ = configuration
+    manifest = root / "space # literal%20.yaml"
+    manifest.write_text("bundle: {name: encoded}\n")
+    discovery = policy.offline_discovery(AppSettings())
+    uri = manifest.as_uri()
+    assert "%20" in uri and "%23" in uri and "%2520" in uri
+    assert discovery.admit_source(uri, base_path=root).active_path == manifest
+    for bad_uri in (
+        uri + "?query=yes", uri + "#unexpected=yes",
+        "file://foreign-host" + uri[len("file://"):],
+        "file://user@localhost" + uri[len("file://"):],
+    ):
+        with pytest.raises(SourceResolutionDenied):
+            discovery.admit_source(bad_uri, base_path=root)
+
+
+def test_local_fragment_cannot_escape_through_symlink(configuration, tmp_path):
+    from amplifier_foundation.sources.policy import SourceResolutionDenied
+
+    _, root, _, _ = configuration
+    outside = tmp_path / "outside.yaml"
+    outside.write_text("bundle: {name: outside}\n")
+    link = root / "escape.yaml"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("This host does not permit creating the symlink test fixture")
+    discovery = policy.offline_discovery(AppSettings())
+    with pytest.raises(SourceResolutionDenied):
+        discovery.admit_source(root.as_uri() + "#subdirectory=escape.yaml", base_path=root)
