@@ -724,3 +724,47 @@ def test_local_fragment_cannot_escape_through_symlink(configuration, tmp_path):
     discovery = policy.offline_discovery(AppSettings())
     with pytest.raises(SourceResolutionDenied):
         discovery.admit_source(root.as_uri() + "#subdirectory=escape.yaml", base_path=root)
+
+
+@pytest.mark.parametrize("root_text", [
+    r"D:\fixture\amplifier_app_cli\_bundle",
+    r"D:\fixture\space # literal%20\amplifier_app_cli\_bundle",
+])
+def test_packaged_behavior_builder_emits_valid_windows_file_uri(monkeypatch, root_text):
+    """Exercise the actual producer with Windows path semantics on any OS."""
+    import nturl2path
+    from pathlib import PureWindowsPath
+    from urllib.parse import parse_qs, urlsplit
+
+    root = PureWindowsPath(root_text)
+    monkeypatch.setattr(runtime, "_find_app_cli_bundle_root", lambda: root)
+    [uri] = runtime._build_app_cli_behaviors()
+    parsed = urlsplit(uri)
+    assert parsed.scheme == "file" and parsed.netloc == "" and parsed.query == ""
+    assert parsed.path.startswith("/D:/") and "\\" not in uri
+    assert parse_qs(parsed.fragment) == {"subdirectory": ["behaviors/cli-expertise.yaml"]}
+    assert uri == root.as_uri() + "#subdirectory=behaviors/cli-expertise.yaml"
+    assert PureWindowsPath(nturl2path.url2pathname(parsed.path)) == root
+
+
+def test_actual_packaged_behavior_uri_enters_offline_public_composition(configuration):
+    """No fake resolver/strictness: load this install's actual packaged behavior."""
+    from amplifier_foundation import load_bundle
+
+    _, root, _, _ = configuration
+    [uri] = runtime._build_app_cli_behaviors()
+    bundle_root = runtime._find_app_cli_bundle_root()
+    assert uri == bundle_root.as_uri() + "#subdirectory=behaviors/cli-expertise.yaml"
+    discovery = policy.offline_discovery(AppSettings())
+    selected = discovery.admit_source(uri, base_path=root)
+    assert selected.active_path == bundle_root / "behaviors" / "cli-expertise.yaml"
+    assert selected.source_root == bundle_root
+
+    async def compose():
+        with source_resolution_policy(discovery.admit_source):
+            bundle = await load_bundle(uri, registry=discovery.registry)
+            await discovery.check_complete()
+        return bundle
+
+    bundle = asyncio.run(compose())
+    assert "app-cli:cli-expert" in bundle.agents

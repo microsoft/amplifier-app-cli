@@ -1863,7 +1863,7 @@ def _build_app_cli_behaviors() -> list[str]:
             "directory is absent."
         )
 
-    return [f"file://{bundle_root}#subdirectory={_APP_CLI_BEHAVIOR_RELPATH}"]
+    return [f"{bundle_root.as_uri()}#subdirectory={_APP_CLI_BEHAVIOR_RELPATH}"]
 
 
 def _build_notification_behaviors(flags: NotificationFlags) -> list[str]:
