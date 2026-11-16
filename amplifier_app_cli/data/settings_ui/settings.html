@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Amplifier</title>
+  <link rel="stylesheet" href="/settings.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div class="app">
+    <aside class="side">
+      <a class="brand" href="#home">
+        <span class="brand-name">Amplifier</span>
+      </a>
+      <p class="brand-version" id="version"></p>
+      <nav id="nav" aria-label="Sections"></nav>
+    </aside>
+
+    <div class="stage">
+      <header class="pagehead" id="pagehead"></header>
+      <main id="main" tabindex="-1">
+        <p class="quiet-note">Loading…</p>
+      </main>
+    </div>
+  </div>
+
+  <div class="savebar" id="savebar" hidden>
+    <p id="savebar-text">You have unsaved changes.</p>
+    <button type="button" class="btn ghost" id="discard">Discard</button>
+    <button type="button" class="btn primary" id="save">Save changes</button>
+  </div>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

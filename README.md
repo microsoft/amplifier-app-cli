@@ -211,6 +211,24 @@ Optional settings-only `auto_continue` overrides for truncated responses are
 also preserved verbatim across reconfiguration, including `false`. If absent,
 the CLI leaves the key unset so the provider's runtime default applies.
 
+### Settings Page
+
+```bash
+amplifier settings [--port N] [--no-browser]   # Edit settings in a local web page
+```
+
+Opens a page on `127.0.0.1` for the same settings the commands above change:
+providers and their keys, routing matrices and per-role overrides, the active
+bundle and app behaviors, notifications, and the raw YAML of each scope. Every
+change goes through the CLI's own write path, so it is the same file the
+commands produce, and other open commands or editors are detected before a
+save. Key values stay in `keys.env` and are shown masked. The page reads the
+environment `amplifier settings` was started in. It works without a restart
+when `keys.env` or a settings file changes, and stops with Ctrl+C.
+
+The launch link works once. Only that browser tab can use the page afterwards;
+run `amplifier settings` again for a new link.
+
 ### Session Commands
 
 ```bash

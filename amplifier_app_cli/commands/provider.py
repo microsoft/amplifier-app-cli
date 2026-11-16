@@ -65,6 +65,12 @@ def _ensure_providers_ready() -> None:
     check_first_run()
 
 
+def ensure_providers_ready() -> None:
+    """Public name for ``_ensure_providers_ready``: make sure provider
+    modules are installed before using them (runs the first-run check)."""
+    _ensure_providers_ready()
+
+
 def _normalize_module_id(provider_id: str) -> str:
     """Normalize provider ID to full module ID."""
     if provider_id.startswith("provider-"):
