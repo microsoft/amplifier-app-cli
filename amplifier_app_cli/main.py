@@ -1897,6 +1897,7 @@ class CommandProcessor:
                         "forked_from_turn": result.forked_from_turn,
                         "fork_cost_boundary": boundary,
                         "forked_at": now,
+                        "session_visibility": "chat",
                         "created": now,
                         "turn_count": count_turns(child_messages),
                         "bundle": parent_metadata.get("bundle", self.bundle_name),
@@ -1932,6 +1933,7 @@ class CommandProcessor:
                         "forked_from_turn": result.forked_from_turn,
                         "fork_cost_boundary": boundary,
                         "forked_at": now,
+                        "session_visibility": "chat",
                         "created": now,
                         "turn_count": count_turns(child_messages),
                         "bundle": parent_metadata.get("bundle", self.bundle_name),
@@ -3788,6 +3790,7 @@ async def interactive_chat(
         bundle_name,
         config,
         root_state=vars(initialized).get("root_state"),
+        creation_metadata=vars(initialized).get("creation_metadata", {}),
     )
 
     # Register /goal auto-continue progress renderer (docs/GOAL_COMMAND.md).
@@ -3880,6 +3883,7 @@ async def interactive_chat(
             # that may have been set by other hooks (e.g., session-naming)
             existing_metadata = store.get_metadata_if_exists(actual_session_id)
             metadata = {
+                **vars(initialized).get("creation_metadata", {}),
                 **existing_metadata,  # Preserve name, description, etc.
                 "session_id": actual_session_id,
                 "created": existing_metadata.get(
@@ -4525,6 +4529,7 @@ async def execute_single(
         # that may have been set by other hooks (e.g., session-naming)
         existing_metadata = store.get_metadata_if_exists(actual_session_id)
         metadata = {
+            **vars(initialized).get("creation_metadata", {}),
             **existing_metadata,  # Preserve name, description, etc.
             "session_id": actual_session_id,
             "created": existing_metadata.get("created", datetime.now(UTC).isoformat()),
@@ -4870,6 +4875,7 @@ async def execute_single(
             messages = await context.get_messages()
             store = SessionStore()
             metadata = {
+                **vars(initialized).get("creation_metadata", {}),
                 **store.get_metadata_if_exists(actual_session_id),
                 "session_id": actual_session_id,
                 "bundle": bundle_name,

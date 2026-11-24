@@ -1043,6 +1043,7 @@ def register_session_commands(
                         "forked_from_turn": result.forked_from_turn,
                         "fork_cost_boundary": boundary,
                         "forked_at": now,
+                        "session_visibility": "chat",
                         "created": now,
                         "turn_count": count_turns(child_messages),
                         "bundle": action_metadata.get("bundle"),
