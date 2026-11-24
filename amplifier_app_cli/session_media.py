@@ -159,6 +159,14 @@ class CLISessionMedia:
                 from amplifier_foundation.session.media import MediaRefusal
                 raise MediaRefusal("Current host observation lifetime expired", code="source_policy")
         classification = self.store.get_origin_classification(ref)
+        if classification == "composer-upload":
+            # Forks keep the original upload provenance even with locally owned bytes.
+            origin = ref["provenance"]
+            return (
+                purpose == "model"
+                and origin["kind"] == "upload"
+                and origin["session_id"] == self.session_id
+            )
         if classification == "computer-use":
             return self._computer_policy(ref, purpose=purpose)
         if classification is not None:
