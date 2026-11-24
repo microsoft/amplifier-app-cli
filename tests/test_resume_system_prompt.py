@@ -36,10 +36,11 @@ import pytest
 from amplifier_app_cli.session_spawner import resume_sub_session
 from amplifier_app_cli.session_spawner import BASE_SYSTEM_PROMPT_BUILDER_CAPABILITY
 from amplifier_app_cli.session_spawner import SYSTEM_PROMPT_SNAPSHOT_KEY
+
 from amplifier_app_cli.session_spawner import SYSTEM_PROMPT_SNAPSHOT_SCHEMA
 from amplifier_app_cli.session_store import SessionStore
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("legacy_session_doubles_without_media")]
 
 SENTINEL_INSTRUCTION = "SENTINEL-INSTRUCTION-42: you are the test agent."
 

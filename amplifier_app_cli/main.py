@@ -12,6 +12,7 @@ import signal
 import sys
 import uuid
 from collections.abc import Callable
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from functools import partial, wraps
 from pathlib import Path
@@ -546,6 +547,8 @@ class CommandProcessor:
         # command dispatch must never inherit another session's shortcuts.
         self._mode_shortcuts: dict[str, str] = {}
         self._skill_shortcuts: dict[str, dict] = {}
+        # Private diagnostic custody only, never session state or presentation.
+        self._mode_transition_error: BaseException | None = None
         # Initialize session_state if not present
         if not hasattr(self.session.coordinator, "session_state"):
             self.session.coordinator.session_state = {}
@@ -812,6 +815,64 @@ class CommandProcessor:
         return f"Unhandled action: {action}"
 
     async def _handle_mode(self, args: str) -> str:
+        from .session_hooks import CLIHookGraph, HOOK_GRAPH_CAPABILITY, transition_session_hook_graph
+        participating = isinstance(
+            self.session.coordinator.get_capability(HOOK_GRAPH_CAPABILITY), CLIHookGraph
+        )
+        state = self.session.coordinator.session_state
+        if participating and state.get("mode_transition_failure"):
+            raise RuntimeError("A failed participating mode operation requires host recovery")
+        command = args.strip().lower()
+        if not command or command == "info" or command.startswith("info "):
+            return await self._handle_mode_operation(args)
+        current = state.get("active_mode")
+        parts = command.split()
+        target, explicit = parts[0], parts[1] if len(parts) > 1 else None
+        discovery = state.get("mode_discovery")
+        unchanged = (
+            (command == "off" and not current)
+            or (explicit == "on" and current == target)
+            or (explicit == "off" and current != target)
+            or (target != "off" and discovery and not discovery.find(target))
+        )
+        if unchanged:
+            return await self._handle_mode_operation(args)
+        entered = False
+        try:
+            with transition_session_hook_graph(self.session):
+                entered = True
+                return await self._handle_mode_operation(args)
+        except BaseException as error:
+            if entered and participating:
+                self._mode_transition_error = error
+                state["active_mode"] = None
+                state["mode_transition_failure"] = {
+                    "source": "cli.command", "target_mode": target,
+                    "reason": "participating-mode-operation-did-not-settle",
+                }
+            raise
+
+    async def _emit_mode_event(self, event: str, payload: dict) -> None:
+        """Verify actual mode contributions before advancing CLI mode state."""
+        from .session_hooks import CLIHookGraph, HOOK_GRAPH_CAPABILITY
+        coordinator = self.session.coordinator
+        graph = coordinator.get_capability(HOOK_GRAPH_CAPABILITY)
+        mode_hooks = coordinator.session_state.get("mode_hooks")
+        if isinstance(graph, CLIHookGraph) and mode_hooks is not None:
+            tracker = getattr(mode_hooks, "track_transition", None)
+            if not callable(tracker):
+                raise RuntimeError("Participating mode contribution tracker is unavailable")
+            # The original target binds the completion witness. A string ID is
+            # the only tracker value crossing Core's event-data boundary.
+            with tracker(event, payload=payload) as operation:
+                await coordinator.hooks.emit(
+                    event, {**payload, "transition_id": operation.id}
+                )
+                operation.verify()
+        else:
+            await coordinator.hooks.emit(event, payload)
+
+    async def _handle_mode_operation(self, args: str) -> str:
         """Handle /mode command for setting, toggling, or clearing modes."""
         args = args.strip()
         args_lower = args.lower()
@@ -832,7 +893,7 @@ class CommandProcessor:
         if args == "off":
             if current_mode:
                 # Emit mode:cleared BEFORE state mutation so hooks see the old state
-                await self.session.coordinator.hooks.emit(
+                await self._emit_mode_event(
                     "mode:cleared",
                     {"name": current_mode, "previous_mode": current_mode},
                 )
@@ -891,7 +952,7 @@ class CommandProcessor:
                             "block_tools": mode_def.block_tools,
                         }
                     )
-                await self.session.coordinator.hooks.emit("mode:changed", _payload)
+                await self._emit_mode_event("mode:changed", _payload)
             else:
                 _payload = {"name": mode_name, "mode": mode_name}
                 if discovery:
@@ -905,7 +966,7 @@ class CommandProcessor:
                             "block_tools": mode_def.block_tools,
                         }
                     )
-                await self.session.coordinator.hooks.emit("mode:activated", _payload)
+                await self._emit_mode_event("mode:activated", _payload)
             session_state["active_mode"] = mode_name
             mode_hooks = session_state.get("mode_hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
@@ -916,7 +977,7 @@ class CommandProcessor:
             if current_mode != mode_name:
                 return f"Not in {mode_name} mode"
             # Emit mode:cleared BEFORE state mutation so hooks see the old state
-            await self.session.coordinator.hooks.emit(
+            await self._emit_mode_event(
                 "mode:cleared", {"name": mode_name, "previous_mode": mode_name}
             )
             session_state["active_mode"] = None
@@ -928,7 +989,7 @@ class CommandProcessor:
         # Toggle behavior (no explicit on/off)
         if current_mode == mode_name:
             # Emit mode:cleared BEFORE state mutation so hooks see the old state
-            await self.session.coordinator.hooks.emit(
+            await self._emit_mode_event(
                 "mode:cleared", {"name": mode_name, "previous_mode": mode_name}
             )
             session_state["active_mode"] = None
@@ -958,7 +1019,7 @@ class CommandProcessor:
                             "block_tools": mode_def.block_tools,
                         }
                     )
-                await self.session.coordinator.hooks.emit("mode:changed", _payload)
+                await self._emit_mode_event("mode:changed", _payload)
             else:
                 _payload = {"name": mode_name, "mode": mode_name}
                 if discovery:
@@ -972,7 +1033,7 @@ class CommandProcessor:
                             "block_tools": mode_def.block_tools,
                         }
                     )
-                await self.session.coordinator.hooks.emit("mode:activated", _payload)
+                await self._emit_mode_event("mode:activated", _payload)
             session_state["active_mode"] = mode_name
             mode_hooks = session_state.get("mode_hooks")
             if mode_hooks and hasattr(mode_hooks, "reset_warnings"):
@@ -1865,11 +1926,6 @@ class CommandProcessor:
                 # This root already owns Foundation's lock.  Fork from its
                 # live context rather than reacquiring the same lock or
                 # reading a potentially older on-disk history.
-                result = fork_session_in_memory(
-                    messages, turn=turn, parent_id=session_id
-                )
-                child_id = custom_name or result.session_id
-                now = datetime.now(UTC).isoformat()
                 shared_parent = root_state.read(store)
                 parent_messages = messages
                 parent_metadata = (
@@ -1877,68 +1933,26 @@ class CommandProcessor:
                     if shared_parent is not None
                     else store.get_metadata_if_exists(session_id)
                 )
-                child_messages = result.messages or []
-                from .cost_history import build_fork_cost_boundary
-
-                boundary = build_fork_cost_boundary(
-                    parent_dir=session_dir,
-                    parent_id=session_id,
-                    parent_messages=parent_messages,
-                    parent_metadata=parent_metadata,
-                    fork_turn=result.forked_from_turn,
-                    child_messages=child_messages,
+                from .session_media import CLISessionMedia
+                from .session_media_fork import fork_native_session
+                media_host = self.session.coordinator.get_capability("cli.session_media")
+                root_state.held.check()
+                result = fork_native_session(
+                    store, session_id, parent_messages, parent_metadata, turn=turn,
+                    new_session_id=custom_name, fenced=True, bundle=self.bundle_name,
+                    source_media=media_host.store if isinstance(media_host, CLISessionMedia) and media_host.durable else None,
                 )
-                store.save_new(
-                    child_id,
-                    child_messages,
-                    {
-                        "session_id": child_id,
-                        "parent_id": session_id,
-                        "forked_from_turn": result.forked_from_turn,
-                        "fork_cost_boundary": boundary,
-                        "forked_at": now,
-                        "created": now,
-                        "turn_count": count_turns(child_messages),
-                        "bundle": parent_metadata.get("bundle", self.bundle_name),
-                        "model": parent_metadata.get("model"),
-                    },
-                )
-                result.session_id = child_id
             else:
-                child_id = custom_name or str(uuid.uuid4())
-                from .cost_history import build_fork_cost_boundary
-                from .shared_root_state import load_root_resume
+                from .commands.session import _fork_source
+                from .session_media_fork import fork_native_session
+                from .shared_root_state import _shared_root_platform_supported, shared_root_id_supported
 
-                parent_messages, parent_metadata = load_root_resume(store, session_id)
-                result = fork_session_in_memory(
-                    parent_messages, turn=turn, parent_id=session_id
-                )
-                child_messages = result.messages or []
-                boundary = build_fork_cost_boundary(
-                    parent_dir=session_dir,
-                    parent_id=session_id,
-                    parent_messages=parent_messages,
-                    parent_metadata=parent_metadata,
-                    fork_turn=result.forked_from_turn,
-                    child_messages=child_messages,
-                )
-                now = datetime.now(UTC).isoformat()
-                store.save_new(
-                    child_id,
-                    child_messages,
-                    {
-                        "session_id": child_id,
-                        "parent_id": session_id,
-                        "forked_from_turn": result.forked_from_turn,
-                        "fork_cost_boundary": boundary,
-                        "forked_at": now,
-                        "created": now,
-                        "turn_count": count_turns(child_messages),
-                        "bundle": parent_metadata.get("bundle", self.bundle_name),
-                        "model": parent_metadata.get("model"),
-                    },
-                )
-                result.session_id = child_id
+                with _fork_source(store, session_id) as (parent_messages, parent_metadata):
+                    result = fork_native_session(
+                        store, session_id, parent_messages, parent_metadata, turn=turn,
+                        new_session_id=custom_name, bundle=self.bundle_name,
+                        fenced=_shared_root_platform_supported() and shared_root_id_supported(session_id),
+                    )
 
             lines = [
                 f"✓ Forked session created: {result.session_id}",
@@ -2689,9 +2703,38 @@ class CommandProcessor:
             return f"Method not available: {method_name}"
 
         try:
-            result = method(name)
-            if inspect.isawaitable(result):
-                result = await result
+            # Resolve harmless input errors through the public read-only inventory
+            # BEFORE the issuer retires the current generation. Do not recover a
+            # potentially mutating failure by restoring the old receipt.
+            from .session_hooks import CLIHookGraph, HOOK_GRAPH_CAPABILITY
+            graph = self.session.coordinator.get_capability(HOOK_GRAPH_CAPABILITY)
+            if isinstance(graph, CLIHookGraph):
+                inventory = getattr(configurator, {
+                    "context": "context_list", "tools": "tools_list",
+                    "providers": "providers_list", "agents": "agents_list",
+                    "behaviors": "behaviors_list",
+                }[category])()
+                matches = []
+                for item in inventory:
+                    names = (item.get("name"), item.get("module_id")) if isinstance(item, dict) else (
+                        getattr(item, "name", None), getattr(item, "module_id", None)
+                    )
+                    if name in names:
+                        matches.append(item)
+                if not matches:
+                    return f"Error: {category} item {name!r} not found."
+                states = [
+                    item.get("enabled") if isinstance(item, dict) else getattr(item, "enabled", None)
+                    for item in matches
+                ]
+                wanted = action == "enable"
+                if states and all(state is wanted for state in states):
+                    return f"Already {action}d {name}"
+            from .session_hooks import transition_session_hook_graph
+            with transition_session_hook_graph(self.session):
+                result = method(name)
+                if inspect.isawaitable(result):
+                    result = await result
 
             # Format success message
             if isinstance(result, dict):
@@ -2754,7 +2797,17 @@ class CommandProcessor:
                     parsed_value = value  # Keep as string
 
         try:
-            configurator.config_set(path, parsed_value)
+            from .session_hooks import CLIHookGraph, HOOK_GRAPH_CAPABILITY, transition_session_hook_graph
+            graph = self.session.coordinator.get_capability(HOOK_GRAPH_CAPABILITY)
+            if isinstance(graph, CLIHookGraph):
+                current_value = configurator.config_get(path)
+                # A no-op must not retire a counted request's generation. Keep
+                # bool/int and int/float distinct: config_set preserves those
+                # types even where Python's value equality would merge them.
+                if type(current_value) is type(parsed_value) and current_value == parsed_value:
+                    return f"Already set {path} = {parsed_value!r}"
+            with transition_session_hook_graph(self.session):
+                configurator.config_set(path, parsed_value)
             return f"\u2713 Set {path} = {parsed_value!r}"
         except (ValueError, RuntimeError) as e:
             return f"Error setting config: {e}"
@@ -3704,7 +3757,90 @@ def _with_loop_error_reporting(function):
     return wrapped
 
 
+_INTERACTIVE_SETUP: ContextVar[list | None] = ContextVar("cli_interactive_setup", default=None)
+
+
+def _protect_interactive_setup(function):
+    """Own initialized resources through late registration and prompt setup."""
+    @wraps(function)
+    async def protected(*args, **kwargs):
+        slot = []
+        token = _INTERACTIVE_SETUP.set(slot)
+        try:
+            return await function(*args, **kwargs)
+        finally:
+            try:
+                if slot:
+                    initialized = slot.pop()  # Attempt once, never replay uncertainty.
+                    cause = sys.exception()
+                    try:
+                        await initialized.cleanup()
+                    except BaseException as error:
+                        if cause is None:
+                            raise
+                        try:
+                            BaseException.add_note(
+                                cause, "Interactive setup cleanup did not settle; writer retained"
+                            )
+                        except BaseException:
+                            pass  # Diagnostics must not replace the primary cause.
+                        # Provider/cleanup errors and their chains can contain
+                        # private media. Keep only this fixed custody diagnostic
+                        # at the logging boundary; preserve the original cause
+                        # object in memory and propagate it unchanged.
+                        logger.warning(
+                            "Interactive setup cleanup did not settle; writer retained; "
+                            "exception details withheld",
+                            exc_info=None,
+                            stack_info=False,
+                        )
+                    finally:
+                        close_dedicated_tty_input()
+            finally:
+                _INTERACTIVE_SETUP.reset(token)
+    return protected
+
+
+def _handoff_interactive_setup():
+    slot = _INTERACTIVE_SETUP.get()
+    if slot is not None:
+        slot.clear()
+
+
+_CHECKPOINT_FAILURE_TEXT = (
+    "Durable checkpoint failed; owner reconciliation is required. Exception details withheld."
+)
+
+
+class _CheckpointPresentationError(Exception):
+    """Presentation-only signal; the checkpoint owner retains the private primary."""
+
+
+def _checkpoint_presentation_failed(session, store=None):
+    from .session_checkpoint import CheckpointBlocked, check_checkpoint_ready
+
+    try:
+        check_checkpoint_ready(session, store)
+    except CheckpointBlocked:
+        return True
+    return False
+
+
+def _save_checkpoint_for_presentation(session, store, session_id, messages, metadata):
+    from .session_checkpoint import save_runtime_checkpoint
+
+    try:
+        return save_runtime_checkpoint(session, store, session_id, messages, metadata)
+    except Exception:
+        if not _checkpoint_presentation_failed(session, store):
+            raise  # Preserve ordinary unbound persistence errors and their rendering.
+    # Never pass the original (or its chain) to a generic/verbose error renderer.
+    # The direct callback and its private failure latch retain original semantics.
+    raise _CheckpointPresentationError() from None
+
+
 @_with_loop_error_reporting
+@_protect_interactive_setup
 async def interactive_chat(
     config: dict,
     search_paths: list[Path],
@@ -3714,6 +3850,9 @@ async def interactive_chat(
     prepared_bundle: "PreparedBundle | None" = None,
     initial_prompt: str | None = None,
     initial_transcript: list[dict] | None = None,
+    *,
+    canonical_binding: Any = None,
+    canonical_admit: Any = None,
 ):
     """Run an interactive chat session.
 
@@ -3748,6 +3887,8 @@ async def interactive_chat(
         # presence into "chat".
         invocation_mode="chat",
         shared_root=True,
+        canonical_binding=canonical_binding,
+        canonical_admit=canonical_admit,
     )
 
     # Create fully initialized session (handles all setup including resume).
@@ -3762,6 +3903,7 @@ async def interactive_chat(
         if not exc.displayed:
             console.print(f"[red]Error:[/red] {escape_markup(exc)}")
         raise SystemExit(1) from None
+    _INTERACTIVE_SETUP.get().append(initialized)
     session = initialized.session
     actual_session_id = initialized.session_id
     from .session_handoff import CLIHandoff
@@ -3776,7 +3918,7 @@ async def interactive_chat(
         command_processor.configurator = initialized.configurator
 
     # Create session store for saving
-    store = SessionStore()
+    store = vars(initialized).get("store") or SessionStore()
 
     # Register incremental save hook for crash recovery between tool calls
     from .incremental_save import register_incremental_save
@@ -3806,6 +3948,9 @@ async def interactive_chat(
     from .goal_circuit_breaker import register_goal_circuit_breaker
 
     register_goal_circuit_breaker(session)
+
+    from .session_hooks import seal_session_hook_graph
+    seal_session_hook_graph(session)
 
     # Show banner only for NEW sessions (resume shows banner via history display in commands/session.py)
     if not session_config.is_resume:
@@ -3854,8 +3999,11 @@ async def interactive_chat(
         )
     except _TERMINAL_UNUSABLE_ERRORS as e:
         _report_terminal_unusable(e, verbose=verbose)
-        await initialized.cleanup()
-        close_dedicated_tty_input()
+        _handoff_interactive_setup()
+        try:
+            await initialized.cleanup()
+        finally:
+            close_dedicated_tty_input()
         return
 
     # Helper to extract model name from config
@@ -3897,7 +4045,9 @@ async def interactive_chat(
                     store, messages, bundle=bundle_name, metadata=metadata
                 )
             else:
-                store.save(actual_session_id, messages, metadata)
+                from .main import _save_checkpoint_for_presentation
+
+                _save_checkpoint_for_presentation(session, store, actual_session_id, messages, metadata)
 
     # Helper to detect and repair broken transcripts before each turn
     async def _repair_transcript_if_needed():
@@ -3981,7 +4131,8 @@ async def interactive_chat(
         # registry across turns.  The unique per-turn name does NOT prevent
         # that -- it defeats name-based dedup -- the unregister does.  Mirrors
         # the register/unregister-in-finally pattern in session_spawner.py.
-        _hooks = session.coordinator.get("hooks")
+        from .session_hooks import session_hooks
+        _hooks = session_hooks(session, "host.steering")
         _unregister_badge_hook = None
         if _hooks and hasattr(_hooks, "register"):
             _unregister_badge_hook = _hooks.register(
@@ -4036,7 +4187,9 @@ async def interactive_chat(
                 _reader_task = asyncio.create_task(_manager.run())
 
                 try:
-                    execute_task = asyncio.create_task(session.execute(prompt_text))
+                    from .session_execution import execute_session
+
+                    execute_task = asyncio.create_task(execute_session(session, prompt_text))
 
                     # Poll task while checking for cancellation
                     while not execute_task.done():
@@ -4109,6 +4262,8 @@ async def interactive_chat(
                         return True
 
                     except asyncio.CancelledError:
+                        if _checkpoint_presentation_failed(session, store):
+                            raise  # A first interrupted checkpoint is not a request to retry it.
                         # Immediate cancellation - task was force-cancelled
                         console.print("\n[yellow]Cancelled[/yellow]")
                         # Still save session to preserve any partial progress
@@ -4151,6 +4306,7 @@ async def interactive_chat(
     # so bailing on an unusable terminal still awaits initialized.cleanup()
     # and closes the dedicated tty fd -- leaking those was a real bug caught
     # by test_interactive_chat_teardown_does_not_raise_when_fd_never_opened.
+    _handoff_interactive_setup()
     try:
         await handoff.start()
         # An interactive session needs a terminal prompt_toolkit can actually
@@ -4247,9 +4403,21 @@ async def interactive_chat(
                                 console.print(f"[cyan]{text}[/cyan]")
                         else:
                             # Handle command
-                            result = await command_processor.handle_command(
-                                action, data
-                            )
+                            try:
+                                result = await command_processor.handle_command(
+                                    action, data
+                                )
+                            except Exception:
+                                if action != "handle_mode" or command_processor._mode_transition_error is None:
+                                    raise
+                                # Classify the actual participating failure before
+                                # any formatter or verbose traceback renderer sees
+                                # its private message, notes, cause or context.
+                                console.print(
+                                    "[red]Participating mode operation failed; host recovery is required. "
+                                    "Exception details withheld.[/red]"
+                                )
+                                continue  # Neither recovery nor trailing inference.
                             console.print(f"[cyan]{result}[/cyan]")
 
                         # If command included trailing text, execute it as a prompt
@@ -4288,6 +4456,10 @@ async def interactive_chat(
                     console.print("[dim]Exiting...[/dim]")
                     break
                 # Otherwise continue in the REPL
+
+            except _CheckpointPresentationError:
+                console.print(f"[red]{_CHECKPOINT_FAILURE_TEXT}[/red]")
+                break  # Failed ownership requires reconciliation, not another turn/save.
 
             except ModuleValidationError as e:
                 if not display_validation_error(console, e, verbose=verbose):
@@ -4340,6 +4512,10 @@ async def interactive_chat(
                 console.print(f"[red]Error:[/red] {escape_markup(e)}")
                 if verbose:
                     console.print_exception()
+
+    except _CheckpointPresentationError:
+        # Initial-prompt execution is outside the normal REPL iteration.
+        console.print(f"[red]{_CHECKPOINT_FAILURE_TEXT}[/red]")
 
     finally:
         # Get hooks first for cleanup-window observability
@@ -4414,6 +4590,9 @@ async def execute_single(
     output_format: str = "text",
     prepared_bundle: "PreparedBundle | None" = None,
     initial_transcript: list[dict] | None = None,
+    *,
+    canonical_binding: Any = None,
+    canonical_admit: Any = None,
 ):
     """Execute a single prompt and exit.
 
@@ -4470,6 +4649,8 @@ async def execute_single(
         # pipe arriving with no --mode at all.
         invocation_mode="single",
         shared_root=True,
+        canonical_binding=canonical_binding,
+        canonical_admit=canonical_admit,
     )
 
     # Session startup is outside the execution try/finally, so contention
@@ -4520,7 +4701,7 @@ async def execute_single(
         messages = await context.get_messages() if context else []
         if not messages:
             return 0
-        store = SessionStore()
+        store = vars(initialized).get("store") or SessionStore()
         # Load existing metadata to preserve fields like name, description
         # that may have been set by other hooks (e.g., session-naming)
         existing_metadata = store.get_metadata_if_exists(actual_session_id)
@@ -4539,8 +4720,24 @@ async def execute_single(
         if root_state is not None:
             root_state.checkpoint(store, messages, bundle=bundle_name, metadata=metadata)
         else:
-            store.save(actual_session_id, messages, metadata)
+            _save_checkpoint_for_presentation(session, store, actual_session_id, messages, metadata)
         return len(messages)
+
+    def _report_checkpoint_failure():
+        nonlocal json_output_data
+        json_output_data = None  # Discard a response assembled before the failed final save.
+        if output_format in ["json", "json-trace"]:
+            if original_stdout is not None:
+                sys.stdout = original_stdout
+            print(json.dumps({
+                "status": "error",
+                "error": _CHECKPOINT_FAILURE_TEXT,
+                "error_type": "CheckpointBlocked",
+                "session_id": actual_session_id,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }, indent=2))
+        else:
+            console.print(f"[red]{_CHECKPOINT_FAILURE_TEXT}[/red]")
 
     try:
         # Freeze the configured label under the cleanup boundary, before any
@@ -4549,7 +4746,8 @@ async def execute_single(
         await handoff.start()
         # Register trace collector hooks if in json-trace mode
         if trace_collector:
-            hooks = session.coordinator.get("hooks")
+            from .session_hooks import session_hooks
+            hooks = session_hooks(session, "host.trace_collector")
             if hooks:
                 hooks.register(
                     "tool:pre",
@@ -4581,6 +4779,8 @@ async def execute_single(
         from .goal_circuit_breaker import register_goal_circuit_breaker
 
         register_goal_circuit_breaker(session)
+        from .session_hooks import seal_session_hook_graph
+        seal_session_hook_graph(session)
 
         # === /goal support in headless mode (see docs/GOAL_COMMAND.md) ===
         # The auto-continue loop itself now lives in the orchestrator (see
@@ -4715,7 +4915,9 @@ async def execute_single(
             # added by a subsequent failed turn. Failed repair saves never get here.
             session_save_attempted = False
             execution_started = True
-            response = await session.execute(prompt)
+            from .session_execution import execute_session
+
+            response = await execute_session(session, prompt)
         finally:
             signal.signal(signal.SIGINT, _original_sigint_handler)
 
@@ -4783,6 +4985,15 @@ async def execute_single(
                 {"session_id": actual_session_id, "message_count": saved_count},
             )
 
+    except _CheckpointPresentationError:
+        _report_checkpoint_failure()
+        sys.exit(1)
+
+    except asyncio.CancelledError:
+        if _checkpoint_presentation_failed(session, vars(initialized).get("store")):
+            _report_checkpoint_failure()
+        raise  # Preserve task cancellation and the original interrupted-checkpoint identity.
+
     except ModuleValidationError as e:
         if output_format in ["json", "json-trace"]:
             json_output_data = None
@@ -4846,11 +5057,22 @@ async def execute_single(
 
     finally:
         hooks = session.coordinator.get("hooks")
+        checkpoint_interruption = None
         if execution_started and not session_save_attempted:
             # Do not gate this recovery write on observability hooks: a hook
             # failure must not prevent saving the turn before cleanup.
             try:
                 await _persist_session()
+            except _CheckpointPresentationError:
+                logger.warning(_CHECKPOINT_FAILURE_TEXT, exc_info=None, stack_info=False)
+            except asyncio.CancelledError as error:
+                if not _checkpoint_presentation_failed(session, vars(initialized).get("store")):
+                    raise
+                # A first checkpoint interrupted during failure persistence must
+                # not bypass cleanup or be replayed. Propagate its exact identity
+                # after the ordinary cleanup attempt and TTY release.
+                checkpoint_interruption = error
+                logger.warning(_CHECKPOINT_FAILURE_TEXT, exc_info=None, stack_info=False)
             except Exception as save_exc:  # noqa: BLE001 -- preserve the execution error
                 logger.warning(
                     "Session %s: transcript save after failed turn did not complete: %s",
@@ -4885,6 +5107,11 @@ async def execute_single(
             await handoff.finish(save_for_handoff, after_cleanup)
         finally:
             close_dedicated_tty_input()
+        if checkpoint_interruption is not None:
+            if original_stdout is not None:
+                sys.stdout = original_stdout
+                console.file = original_console_file
+            raise checkpoint_interruption
         # Close the dedicated terminal-input fd (see dedicated_tty_input.py)
         # opened for this session's PromptSessions -- no fd leak past this
         # session's teardown.

@@ -3,7 +3,8 @@
 Saves transcript.jsonl after each tool completion (tool:post event),
 providing crash recovery between tool calls rather than just between turns.
 
-This is a non-blocking hook that uses the existing SessionStore for atomic writes.
+Legacy saves remain best-effort. Prospective bound saves deny and latch failures
+without exposing private exceptions to Core's hook diagnostics.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
     from amplifier_core import AmplifierSession
 
 from .session_store import SessionStore
+from .session_hooks import session_hooks
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +66,15 @@ class IncrementalSaveHook:
         self._last_message_count = 0
 
     async def on_tool_post(self, event: str, data: dict[str, Any]):
+        if vars(self.store).get("_canonical_binding") is not None:
+            from .session_checkpoint import checkpoint_hook
+
+            return await checkpoint_hook(
+                self.session, self.store, self._on_tool_post,
+            )(event, data)
+        return await self._on_tool_post(event, data)
+
+    async def _on_tool_post(self, event: str, data: dict[str, Any]):
         """Save transcript after tool completion.
 
         Debounces by checking if message count has changed since last save.
@@ -74,7 +85,8 @@ class IncrementalSaveHook:
             data: Event data containing tool_name and result
 
         Returns:
-            HookResult with action="continue" (never blocks)
+            HookResult with action="continue" after saving/skipping. The outer
+            prospective hook boundary converts failures to a safe deny result.
         """
         from amplifier_core.models import HookResult
 
@@ -126,7 +138,10 @@ class IncrementalSaveHook:
                     self.store, messages, bundle=self.bundle_name, metadata=metadata
                 )
             else:
-                self.store.save(self.session_id, messages, metadata)
+                from .session_checkpoint import save_runtime_checkpoint
+                save_runtime_checkpoint(
+                    self.session, self.store, self.session_id, messages, metadata
+                )
 
             tool_name = data.get("tool_name", "unknown")
             logger.debug(
@@ -134,6 +149,8 @@ class IncrementalSaveHook:
             )
 
         except Exception as e:
+            if vars(self.store).get("_canonical_binding") is not None:
+                raise  # The outer safe hook retains/denies without formatting.
             # Log but don't fail - incremental save is best-effort
             logger.warning(f"Incremental save failed: {e}")
 
@@ -179,7 +196,7 @@ def register_incremental_save(
     Returns:
         The created hook instance, or None if hooks not available
     """
-    hooks = session.coordinator.get("hooks")
+    hooks = session_hooks(session, "host.incremental_save")
     if not hooks or not hasattr(hooks, "register"):
         logger.debug("Hooks not available, skipping incremental save registration")
         return None

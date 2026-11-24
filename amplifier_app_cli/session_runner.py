@@ -41,6 +41,7 @@ from amplifier_core import AmplifierSession
 from amplifier_core import ModuleValidationError
 
 from .lib.settings import AppSettings
+from .session_binding_custody import claim_binding, close_binding, retain_binding
 from .session_store import SessionStore
 from .ui.error_display import display_validation_error
 from .utils.error_format import escape_markup
@@ -152,6 +153,12 @@ class SessionConfig:
     # receive a shared writer handle.
     root_state: Any = None
 
+    # Process-local prospective cohort opt-in, never a mount-plan/settings key.
+    # The caller creates/reacquires the real Foundation owner before any native
+    # session FD is opened. A serialized prefix or Boolean cannot opt in.
+    canonical_binding: Any = None
+    canonical_admit: Any = None
+
     @property
     def is_resume(self) -> bool:
         """True if this is resuming an existing session."""
@@ -168,17 +175,113 @@ class InitializedSession:
     store: SessionStore = field(default_factory=SessionStore)
     configurator: Any = None
     root_state: Any = None
+    _cleanup_attempted: bool = field(default=False, init=False, repr=False)
+    _cleanup_error: BaseException | None = field(default=None, init=False, repr=False)
+    _binding_owner: Any = field(default=None, init=False, repr=False)
 
     async def cleanup(self, *, release_ownership: bool = True):
         """Clean up session resources."""
-        await self.session.cleanup()
-        if self.root_state is not None and release_ownership:
-            self.root_state.release()
+        if self._cleanup_attempted:
+            if self._cleanup_error is not None:
+                raise self._cleanup_error
+            return
+        self._cleanup_attempted = True
+        from .session_media import cleanup_session_media_owner
+        try:
+            await cleanup_session_media_owner(self.session)
+            if self.root_state is not None and release_ownership:
+                self.root_state.release()
+            if self.config.canonical_binding is not None and release_ownership:
+                close_binding(self.config.canonical_binding, self._binding_owner)
+        except BaseException as error:
+            self._cleanup_error = error
+            if self.config.canonical_binding is not None and self._binding_owner is not None:
+                retain_binding(
+                    self.config.canonical_binding, self._binding_owner, error,
+                    session=self.session,
+                )
+            raise
+
+
+class _RootSetupOwner:
+    """Keep construction and cleanup uncertainty beside the held root writer."""
+
+    def __init__(self):
+        self.session = None
+        self.attempted = False
+        self.settled = False
+        self.cleanup_error = None
+        self.canonical_binding = None
+
+    def own(self, session):
+        if self.session is session:
+            return
+        if self.session is not None and not self.settled:
+            raise RuntimeError("Previous root construction cleanup is not settled")
+        self.session = session
+        self.attempted = self.settled = False
+        self.cleanup_error = None
+
+    async def cleanup(self, cause):
+        if self.session is None:
+            return True
+        if self.attempted:
+            return self.settled  # Never replay failed or cancelled cleanup.
+        self.attempted = True
+        try:
+            from .session_media import cleanup_session_media_owner
+            await cleanup_session_media_owner(self.session)
+        except BaseException as error:
+            self.cleanup_error = error
+            if self.canonical_binding is not None:
+                retain_binding(self.canonical_binding, self, error, session=self.session)
+            try:
+                BaseException.add_note(cause, "Root construction cleanup did not settle; writer retained")
+            except BaseException:
+                pass  # Diagnostics must not replace the primary setup failure.
+            logger.warning(
+                "Root construction cleanup did not settle; writer retained; exception details withheld",
+                exc_info=None, stack_info=False,
+            )
+            return False
+        self.settled = True
+        return True
 
 
 async def create_initialized_session(
     config: SessionConfig,
     console: "Console",
+) -> InitializedSession:
+    """Retain setup ownership until the fully initialized result is returned."""
+    lifetime = _RootSetupOwner()
+    try:
+        result = await _create_initialized_session(config, console, lifetime)
+    except BaseException as cause:
+        cleanup_settled = await lifetime.cleanup(cause)
+        if config.root_state is not None and cleanup_settled:
+            config.root_state.release()
+            config.root_state = None
+        if lifetime.canonical_binding is not None and cleanup_settled:
+            try:
+                close_binding(lifetime.canonical_binding, lifetime)
+            except BaseException as error:
+                retain_binding(
+                    lifetime.canonical_binding, lifetime, error, session=lifetime.session,
+                )
+                try:
+                    BaseException.add_note(cause, "Root writer release did not settle; owner retained")
+                except BaseException:
+                    pass  # A diagnostic must not mask the original setup cause.
+                logger.warning("Root writer release failed; owner retained; exception details withheld")
+        raise
+    result._binding_owner = lifetime
+    return result
+
+
+async def _create_initialized_session(
+    config: SessionConfig,
+    console: "Console",
+    lifetime: _RootSetupOwner,
 ) -> InitializedSession:
     """Create and fully initialize a session.
 
@@ -230,7 +333,39 @@ async def create_initialized_session(
                 auto_init_from_env(console)
 
     # Step 2: Generate session ID if not provided
-    session_id = config.session_id or str(uuid.uuid4())
+    session_id = config.session_id or (
+        config.canonical_binding.session_id
+        if config.canonical_binding is not None else str(uuid.uuid4())
+    )
+    if config.canonical_binding is not None:
+        from amplifier_foundation.session.transcript_lifetime import VersionedSessionBinding
+        binding = config.canonical_binding
+        if type(binding) is not VersionedSessionBinding or binding.session_id != session_id:
+            raise ValueError("A real session-bound prospective transcript owner is required")
+        if not callable(config.canonical_admit) or config.root_state is not None:
+            raise ValueError("Prospective ownership requires explicit admission and no legacy writer")
+        binding.check()
+        claim_binding(binding, lifetime)
+        lifetime.canonical_binding = binding
+        config.session_id = session_id
+        # The prospective lease is the source owner, not proof of maintenance
+        # exclusion for old legacy writers and not a shared-root takeover.
+        config.shared_root = False
+        committed_rows = binding.load_messages()
+        if config.initial_transcript is None and committed_rows:
+            config.initial_transcript = committed_rows
+        elif config.is_resume and config.initial_transcript != committed_rows:
+            raise ValueError("Prospective resume rows differ from the selected committed prefix")
+
+    native_store = None
+    if config.canonical_binding is None:
+        # Select once, after first-run handling, and carry this exact store
+        # through shared-root read and bundle construction. Namespace presence
+        # alone refuses unbound T2, including explicit-ID non-resume startup;
+        # do not acquire a legacy lock or read/recover its transcript first.
+        native_store = SessionStore()
+        if os.path.lexists(native_store.base_dir / session_id / "transcript.v2"):
+            raise RuntimeError("Versioned root resume requires its explicit live binding")
 
     # Acquire the one Foundation-owned writer capability before constructing
     # provider context.  A child has an inherited, different root ID and is
@@ -262,7 +397,7 @@ async def create_initialized_session(
             config.session_id = session_id
             config.root_state = await acquire_root(config, console)
             try:
-                shared_resume = config.root_state.read()
+                shared_resume = config.root_state.read(native_store)
                 if shared_resume is not None:
                     config.initial_transcript, shared_metadata = shared_resume
                     config.config.setdefault("shared_root_metadata", shared_metadata)
@@ -302,51 +437,26 @@ async def create_initialized_session(
     display_system = CLIDisplaySystem()
 
     # Step 4: Create session (bundle mode only)
-    try:
-        session = await _create_bundle_session(
-            config=config,
-            session_id=session_id,
-            approval_system=approval_system,
-            display_system=display_system,
-            console=console,
-        )
-    except BaseException:
-        # No context was created successfully, so no session save is possible;
-        # release the just-acquired writer rather than leave a dead lock.
-        if config.root_state is not None:
-            config.root_state.release()
-            config.root_state = None
-        raise
+    session = await _create_bundle_session(
+        config=config,
+        session_id=session_id,
+        approval_system=approval_system,
+        display_system=display_system,
+        console=console,
+        lifetime=lifetime,
+        native_store=native_store,
+    )
+    lifetime.own(session)
 
+    from .session_hooks import configure_session_hook_graph
+    with configure_session_hook_graph(session):
+        return await _finish_initialized_session(session, config, session_id, console, cwd)
+
+
+async def _finish_initialized_session(session, config, session_id, console, cwd):
+    """Finish root restoration/settings while construction ownership is held."""
     if config.root_state is not None:
         session.coordinator.register_capability("cli.shared_root_state", config.root_state)
-
-    # Belt-and-suspenders: ensure session.config (== coordinator.config) carries the same
-    # root-level metadata that was written into config.config above.  This matters because
-    # the foundation layer may copy config.config into a fresh dict when building the
-    # coordinator, so session.config and config.config are not guaranteed to be the same
-    # object.  Hooks read from coordinator.config, so we must ensure the values are there.
-    # Guards mirror the pre-session guards: child sessions inherit values from the parent
-    # via config deep-merge, so we only fill in missing values, never overwrite.
-    session.config["working_dir"] = cwd
-    if "root_session_id" not in session.config:
-        session.config["root_session_id"] = config.config.get(
-            "root_session_id", session_id
-        )
-    if "application_host" not in session.config:
-        session.config["application_host"] = config.config.get(
-            "application_host", "Amplifier CLI"
-        )
-    if "bundle_name" not in session.config:
-        session.config["bundle_name"] = config.bundle_name
-    if "project_slug" not in session.config:
-        session.config["project_slug"] = config.config.get("project_slug", "")
-    if "project_dir" not in session.config:
-        session.config["project_dir"] = config.config.get("project_dir", cwd)
-    if "project_name" not in session.config:
-        session.config["project_name"] = config.config.get(
-            "project_name", Path(cwd).name if cwd else ""
-        )
 
     # Step 7: Restore transcript (resume only)
     # Initialization only restores history. Chat and headless host entry points
@@ -429,7 +539,8 @@ async def create_initialized_session(
         )
 
         try:
-            session_dir = SessionStore().base_dir / session_id
+            native = session.coordinator.get_capability("cli.session_store")
+            session_dir = (native if native is not None else SessionStore()).base_dir / session_id
             from amplifier_foundation.session.history import SessionHistoryStore
 
             metadata = SessionHistoryStore(session_dir).load_metadata()
@@ -491,7 +602,11 @@ async def create_initialized_session(
         try:
             from amplifier_foundation.configurator import SessionConfigurator
 
-            configurator = SessionConfigurator(session, config.prepared_bundle)
+            from .session_hooks import session_hook_coordinator
+            configurator = SessionConfigurator(
+                session, config.prepared_bundle,
+                coordinator=session_hook_coordinator(session, "host.configurator"),
+            )
             from .project_utils import get_project_slug
 
             app_settings = AppSettings().with_session(session_id, get_project_slug())
@@ -513,7 +628,7 @@ async def create_initialized_session(
         session=session,
         session_id=session_id,
         config=config,
-        store=SessionStore(),
+        store=session.coordinator.get_capability("cli.session_store") or SessionStore(),
         configurator=configurator,
         root_state=config.root_state,
     )
@@ -528,6 +643,22 @@ _CLEANUP_EVENTS: tuple[str, ...] = (
     "cleanup:finally_begin",
     "cleanup:finally_end",
 )
+
+
+def _stamp_candidate_metadata(candidate, config, session_id):
+    """Stamp the actual plan before the graph owner snapshots construction."""
+    try:
+        cwd = str(Path.cwd().resolve())
+    except OSError:
+        cwd = ""
+    candidate.config["working_dir"] = cwd
+    defaults = {
+        "root_session_id": session_id, "application_host": "Amplifier CLI",
+        "bundle_name": config.bundle_name, "project_slug": "",
+        "project_dir": cwd, "project_name": Path(cwd).name if cwd else "",
+    }
+    for name, default in defaults.items():
+        candidate.config.setdefault(name, config.config.get(name, default))
 
 
 def _inject_observability_events(prepared_bundle: "PreparedBundle") -> None:
@@ -639,6 +770,9 @@ async def _create_bundle_session(
     approval_system: Any,
     display_system: Any,
     console: "Console",
+    lifetime: _RootSetupOwner | None = None,
+    *,
+    native_store: SessionStore | None = None,
 ) -> AmplifierSession:
     """Create session using bundle mode (foundation handles most setup).
 
@@ -652,6 +786,16 @@ async def _create_bundle_session(
     from .lib.bundle_loader import AppModuleResolver
     from .paths import create_foundation_resolver
     from .runtime.config import inject_user_providers
+
+    store = native_store if native_store is not None else (
+        SessionStore(config.canonical_binding.directory.parent, canonical_binding=config.canonical_binding)
+        if config.canonical_binding is not None else SessionStore()
+    )
+    if config.canonical_binding is None:
+        # Also protect direct private callers. Public initialization already
+        # checked this selected store before any shared-root work.
+        if os.path.lexists(store.base_dir / session_id / "transcript.v2"):
+            raise RuntimeError("Versioned root resume requires its explicit live binding")
 
     prepared_bundle = config.prepared_bundle
     assert prepared_bundle is not None  # Guaranteed by is_bundle_mode check
@@ -679,6 +823,38 @@ async def _create_bundle_session(
     # create_session() below.
     _inject_invocation_metadata(prepared_bundle, mode=config.invocation_mode)
 
+    from .session_checkpoint import install_session_checkpoint
+    from .session_media import install_session_media, mount_session_media
+
+    lifetime = lifetime if lifetime is not None else _RootSetupOwner()
+
+    async def before_initialize(candidate: AmplifierSession) -> None:
+        lifetime.own(candidate)
+        _stamp_candidate_metadata(candidate, config, session_id)
+        from .session_hooks import install_session_hook_graph
+        interactive = config.invocation_mode == "chat"
+        install_session_hook_graph(
+            candidate, owner="cli.interactive" if interactive else "cli.headless",
+            host_participants=(
+                "host.incremental_save", "host.goal_progress",
+                "host.goal_circuit_breaker", "host.steering", "host.media",
+            ) if interactive else (
+                "host.trace_collector", "host.goal_progress", "host.goal_circuit_breaker", "host.media",
+            ),
+        )
+        install_session_checkpoint(
+            candidate,
+            store,
+            session_id=session_id,
+            bundle=config.bundle_name,
+            root_state=config.root_state,
+            canonical_admit=config.canonical_admit,
+        )
+        install_session_media(
+            candidate, store, config=config.config,
+            restored_messages=config.initial_transcript,
+        )
+
     # Step 4c: Create session (foundation handles init internally)
     # Self-healing: The kernel intentionally swallows module load errors to be resilient.
     # If providers fail to load due to stale install state (missing dependencies),
@@ -696,7 +872,9 @@ async def _create_bundle_session(
                 display_system=display_system,
                 session_cwd=Path.cwd(),  # CLI uses CWD for local @-mentions
                 is_resumed=config.is_resume,  # Pass resume flag to kernel
+                before_initialize=before_initialize,
             )
+            lifetime.own(session)
 
             # Self-healing check: if configured modules failed to load,
             # this likely indicates stale install state (missing dependencies).
@@ -707,6 +885,12 @@ async def _create_bundle_session(
                     "Likely stale install state - invalidating and retrying..."
                 )
                 _invalidate_all_install_state(prepared_bundle)
+                # Abandon the first coordinator and its session-bound resources
+                # before constructing a new one. Never carry live closures or
+                # prepared request state into the self-healed session.
+                retry_cause = RuntimeError("Abandoned root requires settled cleanup before self-healing retry")
+                if not await lifetime.cleanup(retry_cause):
+                    raise retry_cause from lifetime.cleanup_error
                 # Retry once - if it fails again, it's a real error
                 session = await prepared_bundle.create_session(
                     session_id=session_id,
@@ -714,14 +898,20 @@ async def _create_bundle_session(
                     display_system=display_system,
                     session_cwd=Path.cwd(),  # CLI uses CWD for local @-mentions
                     is_resumed=config.is_resume,  # Pass resume flag to kernel
+                    before_initialize=before_initialize,
                 )
+                lifetime.own(session)
                 # Warn if retry still has issues
                 if _should_attempt_self_healing(session, prepared_bundle):
                     logger.warning(
                         "Self-healing retry completed but some modules still failed to load. "
                         "Check module configuration, credentials, and dependencies."
                     )
-    except (ModuleValidationError, RuntimeError) as e:
+    except BaseException as e:
+        if not await lifetime.cleanup(e):
+            raise  # Original construction cause survives; cleanup detail is retained.
+        if not isinstance(e, (ModuleValidationError, RuntimeError)):
+            raise
         if not display_validation_error(console, e, verbose=config.verbose):
             console.print(f"[red]Error:[/red] {escape_markup(e)}")
             if config.verbose:
@@ -731,10 +921,14 @@ async def _create_bundle_session(
         core_logger.setLevel(original_level)
 
     # Step 5: Register mention handling (wrap foundation's resolver)
-    register_mention_handling(session)
-
-    # Step 6: Register session spawning
-    register_session_spawning(session, prepared_bundle=prepared_bundle)
+    try:
+        await mount_session_media(session)
+        register_mention_handling(session)
+        # Step 6: Register session spawning
+        register_session_spawning(session, prepared_bundle=prepared_bundle)
+    except BaseException as cause:
+        await lifetime.cleanup(cause)
+        raise
 
     return session
 
@@ -809,6 +1003,8 @@ def register_session_spawning(
         self_delegation_depth: int = 0,
         session_metadata: dict | None = None,
         use_subprocess: bool = False,
+        canonical_binding: Any = None,
+        canonical_admit: Any = None,
     ) -> dict:
         return await spawn_sub_session(
             agent_name=agent_name,
@@ -824,6 +1020,8 @@ def register_session_spawning(
             self_delegation_depth=self_delegation_depth,
             session_metadata=session_metadata,
             use_subprocess=use_subprocess,
+            canonical_binding=canonical_binding,
+            canonical_admit=canonical_admit,
         )
 
     async def resume_capability(
@@ -831,6 +1029,8 @@ def register_session_spawning(
         instruction: str,
         provider_preferences: list | None = None,
         model_role: str | list[str] | None = None,
+        canonical_binding: Any = None,
+        canonical_admit: Any = None,
     ) -> dict:
         # Mirrors spawn_capability's provider_preferences: a delegate pinned
         # to a provider at spawn must stay pinned on every subsequent leg.
@@ -839,8 +1039,11 @@ def register_session_spawning(
         return await resume_sub_session(
             sub_session_id=sub_session_id,
             instruction=instruction,
+            parent_session=session,
             provider_preferences=provider_preferences,
             model_role=model_role,
+            canonical_binding=canonical_binding,
+            canonical_admit=canonical_admit,
         )
 
     session.coordinator.register_capability("session.spawn", spawn_capability)

@@ -42,7 +42,7 @@ import pytest
 
 from amplifier_app_cli.session_store import SessionStore
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("legacy_session_doubles_without_media")]
 
 SUB_SESSION_ID = "parent0000000000-child00000000000_test-agent"
 
@@ -222,6 +222,69 @@ async def _spawn_until_timeout(
     exc = task.exception()
     assert exc is None, f"unexpected error unwinding the timeout: {exc!r}"
     return elapsed
+
+
+@pytest.mark.parametrize("resume", [False, True])
+async def test_raw_child_checkpoint_exists_before_initialize_and_bypasses_throttle(
+    monkeypatch, resume
+):
+    from amplifier_app_cli.session_spawner import resume_sub_session
+
+    # This setting governs only the old best-effort recovery autosave, not the
+    # explicit settled-row persistence promise.
+    monkeypatch.setenv("AMPLIFIER_SPAWN_CHECKPOINT_INTERVAL_S", "-1")
+    context = FakeContext()
+    hooks = FakeHooks()
+    capabilities = {}
+
+    async def execute(instruction):
+        context.messages.append({"role": "user", "content": "settled"})
+        await capabilities["session.durable_checkpoint"]()
+        raise asyncio.CancelledError
+
+    child = _make_child_session(context, hooks, execute)
+    child.coordinator.register_capability.side_effect = capabilities.__setitem__
+
+    async def initialize():
+        assert callable(capabilities["session.durable_checkpoint"])
+        # No context read/write is needed at registration/module mount.
+        assert context.get_messages_calls == 0
+
+    child.initialize.side_effect = initialize
+    parent = _make_parent_session()
+    store = SessionStore()
+    if resume:
+        store.save(
+            SUB_SESSION_ID,
+            [{"role": "user", "content": "before resume"}],
+            {"config": parent.config, "parent_id": parent.session_id},
+        )
+        p1, p2, p3, p4, p5 = _spawn_patches(child)
+        with p1, p2, p3, p4, p5, pytest.raises(asyncio.CancelledError):
+            await resume_sub_session(
+                SUB_SESSION_ID, "resume", parent_session=parent
+            )
+    else:
+        with pytest.raises(asyncio.CancelledError):
+            await _spawn(child, parent)
+
+    rows, _ = store.load(SUB_SESSION_ID)
+    assert rows[-1] == {"role": "user", "content": "settled"}
+    assert store.get_metadata(SUB_SESSION_ID)["config"]
+    if not resume:
+        # Exercise actual reconstruction, not just the existence of rows.
+        async def resumed_execute(instruction):
+            assert context.messages[-1]["content"] == "settled"
+            return "resumed"
+
+        child.execute.side_effect = resumed_execute
+        child.initialize.side_effect = None
+        p1, p2, p3, p4, p5 = _spawn_patches(child)
+        with p1, p2, p3, p4, p5:
+            result = await resume_sub_session(
+                SUB_SESSION_ID, "continue", parent_session=parent
+            )
+        assert result["output"] == "resumed"
 
 
 # ---------------------------------------------------------------------------

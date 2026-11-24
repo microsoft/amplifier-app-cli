@@ -469,7 +469,7 @@ def test_existing_filesystem_cwd_injection_is_unchanged(grant):
 
 @pytest.mark.asyncio
 async def test_empty_bundle_tools_resolve_explicit_patch_declaration_through_helper(
-    monkeypatch, patch_tool
+    monkeypatch, patch_tool, tmp_path
 ):
     """An explicitly configured patch module must not take the empty-tools bypass."""
     overrides = [
@@ -489,6 +489,12 @@ async def test_empty_bundle_tools_resolve_explicit_patch_declaration_through_hel
     prepared.bundle.providers = []
     prepared.bundle.hooks = []
     settings = Mock(spec=AppSettings)
+    settings.paths = SettingsPaths(
+        global_settings=tmp_path / "global.yaml",
+        project_settings=tmp_path / "project.yaml",
+        local_settings=tmp_path / "local.yaml",
+    )
+    settings.get_merged_settings.return_value = {}
     settings.get_config_overrides.return_value = {}
     settings.get_provider_overrides.return_value = []
     settings.get_tool_overrides.return_value = overrides

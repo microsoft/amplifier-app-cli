@@ -407,7 +407,8 @@ def register_goal_progress_hook(session: Any) -> GoalProgressHook | None:
     Returns:
         The created hook instance, or None if hooks not available
     """
-    hooks = session.coordinator.get("hooks")
+    from .session_hooks import session_hooks
+    hooks = session_hooks(session, "host.goal_progress")
     if not hooks or not hasattr(hooks, "register"):
         return None
 

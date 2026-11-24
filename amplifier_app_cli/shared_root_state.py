@@ -243,14 +243,14 @@ class SharedRootSession:
         *,
         bundle: str,
         metadata: dict[str, Any],
-    ) -> None:
+    ) -> Any:
         """Save native history under the shared lock without a second checkpoint.
 
         The method name is retained for existing CLI save-hook callers. The
         bundle argument is a host convention; metadata remains the native shape.
         """
         self.held.check()
-        native_store.save(self.session_id, messages, metadata)
+        return native_store.save(self.session_id, messages, metadata)
 
     def delete_checkpoint(self) -> None:
         """Remove a historical checkpoint on an explicit session deletion."""
@@ -342,6 +342,15 @@ def update_root_metadata(
         return native_store.get_metadata(session_id)
     root = SharedRootSession.acquire(session_id)
     try:
+        if native_store.has_transcript(session_id):
+            # Ordinary title/status changes are metadata-only. Holding the
+            # execution fence does not require reading or rewriting the
+            # canonical body (or advancing its recovery backup).
+            root.held.check()
+            return native_store.update_metadata(
+                session_id, {**updates, "session_id": session_id}
+            )
+        # A legacy checkpoint-only root still needs its one-time native import.
         current = root.read(native_store)
         if current is None:
             messages, metadata = native_store.load(session_id)

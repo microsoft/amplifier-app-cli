@@ -682,6 +682,7 @@ from amplifier_foundation.bundle import Bundle, BundleModuleResolver, PreparedBu
 import amplifier_app_cli.lib.bundle_loader as bundle_loader
 import amplifier_app_cli.lib.bundle_loader.prepare as prepare
 import amplifier_app_cli.paths as paths
+from amplifier_app_cli.lib.settings import SettingsPaths
 from amplifier_app_cli.runtime.config import resolve_bundle_config
 
 source_root = Path(sys.argv[1])
@@ -730,6 +731,12 @@ bundle_loader.AppBundleDiscovery = lambda **kwargs: object()
 paths.get_bundle_search_paths = lambda: []
 
 class Settings:
+    paths = SettingsPaths(
+        global_settings=source_root.parent / "fixture-global.yaml",
+        project_settings=source_root.parent / "fixture-project.yaml",
+        local_settings=source_root.parent / "fixture-local.yaml",
+    )
+    def get_merged_settings(self): return {}
     def get_app_bundles(self): return []
     def get_source_overrides(self):
         return {"provider-example": str(source_root)} if source_location == "override" else {}

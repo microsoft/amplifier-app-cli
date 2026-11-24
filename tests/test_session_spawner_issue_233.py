@@ -43,6 +43,7 @@ import pytest
 
 from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
 
+pytestmark = pytest.mark.usefixtures("legacy_session_doubles_without_media")
 
 # ---------------------------------------------------------------------------
 # Test helpers

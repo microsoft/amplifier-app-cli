@@ -11,10 +11,12 @@ dependencies = [
     "rich>=13.0.0",
     "pygments>=2.13.0",
     "pydantic>=2.0.0",
-    "amplifier-core>=1.5.3",
+    # Participating media hook receipts qualify this exact public Core ABI.
+    "amplifier-core==2.0.2",
     # Tool installs consume published metadata, not this repository's uv.lock.
-    # Accepted model-pattern/session APIs and completeness-aware child cost bridge.
-    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@851ba3e007be5d121b10956b40cdd77c22ecdc18",
+    # Includes accepted model/session and completeness-aware child cost APIs.
+    # Candidate media graph; draft merge hold until accepted upstream qualification.
+    "amplifier-foundation[media] @ git+https://github.com/microsoft/amplifier-foundation@7ab350e885a4a0c2f70210224b6d9cfa8754783a",
     "pyyaml>=6.0.3",
     "prompt-toolkit>=3.0.52",
     "httpx[socks]>=0.28.1",
@@ -70,10 +72,13 @@ dev = [
     "pytest-asyncio>=0.24.0",
     # Real context used by the repair/save/resume regression, not a runtime default.
     "amplifier-module-context-simple @ git+https://github.com/microsoft/amplifier-module-context-simple@main",
+    # Real mode contributors for the actual CLI-owned transition regression.
+    "amplifier-module-tool-mode @ git+https://github.com/microsoft/amplifier-bundle-modes@2b0e82a1ab8cd161336f6ae7912fb9a4fce4c7e9#subdirectory=modules/tool-mode",
+    "amplifier-module-hooks-mode @ git+https://github.com/microsoft/amplifier-bundle-modes@2b0e82a1ab8cd161336f6ae7912fb9a4fce4c7e9#subdirectory=modules/hooks-mode",
 ]
 
 [tool.uv.sources]
-amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "851ba3e007be5d121b10956b40cdd77c22ecdc18" }
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "7ab350e885a4a0c2f70210224b6d9cfa8754783a" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

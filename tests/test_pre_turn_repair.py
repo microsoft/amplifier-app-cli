@@ -317,6 +317,8 @@ def _installed_interactive_helpers(**bindings):
     ]
     assert {node.name for node in functions} == names
     namespace = {
+        "__name__": main.__name__,
+        "__package__": main.__package__,
         "datetime": datetime,
         "UTC": UTC,
         "Path": Path,
