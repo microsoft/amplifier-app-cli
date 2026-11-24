@@ -3,6 +3,8 @@
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from amplifier_app_cli.session_store import SessionStore
 
 
@@ -99,6 +101,54 @@ def test_sanitize_message_preserves_serializable():
 
         assert messages_equal_ignoring_timestamp(loaded_transcript, transcript)
         assert loaded_metadata == metadata
+
+
+def test_resave_preserves_existing_media_reference_and_inline_image(tmp_path):
+    import json
+
+    store = SessionStore(tmp_path)
+    # An existing conversation may have been created by another host. The CLI
+    # must keep the original reference identity, including a null expiry.
+    png = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4"
+           "nGNg+M8AAAICAQB7CYF4AAAAAElFTkSuQmCC")
+    digest = "64abf93fb4c16b4258aa6eff5660a6b97b013a1b9c0cc877fcceb14c6764680f"
+    ref = {
+        "v": 1, "session_id": "chat", "sha256": digest, "mime": "image/png",
+        "bytes": 69, "width": 1, "height": 1,
+        "provenance": {"kind": "upload", "session_id": "chat", "id": "1" * 32,
+                       "created_at": "2026-01-01T00:00:00+00:00", "expires_at": None},
+    }
+    row = {
+        "role": "user",
+        "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                         "data": png}},
+            {"type": "text", "text": f"[Session image {digest}]"},
+        ],
+        "metadata": {"experimental.media.v1": {"refs": [ref]}},
+    }
+    directory = tmp_path / "chat"
+    directory.mkdir()
+    (directory / "transcript.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    (directory / "metadata.json").write_text("{}", encoding="utf-8")
+    rows, metadata = store.load("chat")
+    store.save("chat", [*rows, {"role": "assistant", "content": "next turn"}], metadata)
+    restored, _ = store.load("chat")
+    assert restored[0] == row
+
+
+def test_malformed_media_carrier_preserves_previous_transcript(tmp_path):
+    store = SessionStore(tmp_path)
+    rows = [{"role": "user", "content": "existing turn"}]
+    store.save("chat", rows, {})
+    transcript = tmp_path / "chat" / "transcript.jsonl"
+    before = transcript.read_bytes()
+    malformed = {"role": "assistant", "content": "later turn",
+                 "metadata": {"experimental.media.v1": {"refs": "invalid"}}}
+    with pytest.raises(ValueError, match="Invalid canonical media metadata carrier"):
+        store.save("chat", [*rows, malformed], {})
+    assert transcript.read_bytes() == before
+    assert store.load("chat")[0] == rows
 
 
 def test_sanitize_nested_non_serializable():
