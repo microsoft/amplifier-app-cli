@@ -13,8 +13,8 @@ dependencies = [
     "pydantic>=2.0.0",
     "amplifier-core>=1.5.3",
     # Tool installs consume published metadata, not this repository's uv.lock.
-    # Accepted model-pattern/session APIs and completeness-aware child cost bridge.
-    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@851ba3e007be5d121b10956b40cdd77c22ecdc18",
+    # Preserve canonical session media references when saving existing chats.
+    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@896f0380fc71d75f08a6ae0fac4f5e8686cd2ad9",
     "pyyaml>=6.0.3",
     "prompt-toolkit>=3.0.52",
     "httpx[socks]>=0.28.1",
@@ -73,7 +73,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "851ba3e007be5d121b10956b40cdd77c22ecdc18" }
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "896f0380fc71d75f08a6ae0fac4f5e8686cd2ad9" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
