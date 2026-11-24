@@ -316,21 +316,11 @@ async def test_actual_raw_spawn_and_cold_resume_have_fresh_graph_and_owned_pixel
         await parent.cleanup()
 
 
-@pytest.mark.parametrize("selected_alias", ["account-A", "account-B"])
-@pytest.mark.skipif(os.name != "posix", reason="POSIX media durability")
-async def test_two_configured_aliases_keep_exact_selected_adapter_and_unsupported_warning(tmp_path, selected_alias):
-    native = SessionStore(tmp_path)
-    plan = {
-        "session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
-        "providers": [
-            {"module": "fixture-provider", "instance_id": "account-A", "config": {"support": True}},
-            {"module": "fixture-provider", "instance_id": "account-B", "config": {"support": False}},
-        ],
-    }
+async def _initialize_fixture_root(native, plan, *, restored=None):
     prepared = PreparedBundle(deepcopy(plan), MagicMock(), Bundle(name="fixture"))
     config = SessionConfig(config=deepcopy(plan), search_paths=[], verbose=False, session_id="root",
                            prepared_bundle=prepared, bundle_name="fixture", shared_root=False,
-                           invocation_mode="single")
+                           initial_transcript=restored, invocation_mode="single")
     def factory(*args, **kwargs):
         actual = AmplifierSession(*args, **kwargs)
         actual.coordinator.loader = Loader()
@@ -345,7 +335,21 @@ async def test_two_configured_aliases_keep_exact_selected_adapter_and_unsupporte
         patch("amplifier_app_cli.paths.create_foundation_resolver"),
         patch("amplifier_app_cli.runtime.config.inject_user_providers"),
     ):
-        initialized = await create_initialized_session(config, Console(file=StringIO()))
+        return await create_initialized_session(config, Console(file=StringIO()))
+
+
+@pytest.mark.parametrize("selected_alias", ["account-A", "account-B"])
+@pytest.mark.skipif(os.name != "posix", reason="POSIX media durability")
+async def test_two_configured_aliases_keep_exact_selected_adapter_and_unsupported_warning(tmp_path, selected_alias):
+    native = SessionStore(tmp_path)
+    plan = {
+        "session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+        "providers": [
+            {"module": "fixture-provider", "instance_id": "account-A", "config": {"support": True}},
+            {"module": "fixture-provider", "instance_id": "account-B", "config": {"support": False}},
+        ],
+    }
+    initialized = await _initialize_fixture_root(native, plan)
     actual = initialized.session
     try:
         seal_session_hook_graph(actual)
@@ -388,5 +392,88 @@ async def test_two_configured_aliases_keep_exact_selected_adapter_and_unsupporte
         assert raw_by_alias[other].observed == []
         assert await context.get_messages() == rows
         assert bridge.validate_receipt(bridge.graph_receipt)
+    finally:
+        await initialized.cleanup()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX media durability")
+async def test_cold_resume_replays_only_this_sessions_composer_uploads(tmp_path):
+    from amplifier_foundation.session.checkpoint import verified_media_checkpoint_refs
+    from amplifier_foundation.session.media import MEDIA_NAMESPACE, SessionMediaStore
+
+    native = SessionStore(tmp_path)
+    def stage(store, kind, color, upload_id):
+        data = io.BytesIO()
+        Image.new("RGB", (3, 2), color).save(data, "PNG")
+        origin = {"kind": kind, "session_id": store.session_id, "id": upload_id}
+        ref = store.ingest_sync(data.getvalue(), source_format="image-bytes",
+                                origin=origin, policy=None)["value"]
+        store.classify_origin(ref, classification="composer-upload")
+        store.publish_sync([ref], origin=origin, disposition="retain")
+        return ref, data.getvalue()
+
+    blocks, refs, expected = [], [], []
+    assets = SessionMediaStore(tmp_path / "root" / "media", "root")
+    donor = SessionMediaStore(tmp_path / "other" / "media", "other",
+                             checkpoint_verifier=verified_media_checkpoint_refs)
+    try:
+        for number, color in enumerate(("orange", "purple", "orange")):
+            ref, data = stage(assets, "upload", color, f"{number:032x}")
+            label = f"attachment {number}"
+            blocks.extend([{"type": "text", "text": label},
+                           {"type": "text", "text": f"[Session image {ref['sha256']}]"}])
+            expected.extend([label, data])
+            refs.append(ref)
+        # The same bytes and owner classification cannot confer original upload authority.
+        foreign, _ = stage(donor, "upload", "orange", "foreign")
+        native.bind_media_store("other", donor)
+        native.save("other", [{"role": "user", "content": "donor attachment",
+                               "metadata": {MEDIA_NAMESPACE: {"refs": [foreign]}}}], {})
+        adopted, = assets.adopt_sync([foreign], donor)
+        wrong_kind, _ = stage(assets, "tool", "orange", "tool-output")
+    finally:
+        native.unbind_media_store("other", donor)
+        donor.close()
+        assets.close()
+
+    rows = [
+        {"role": "user", "content": blocks, "metadata": {MEDIA_NAMESPACE: {"refs": refs}}},
+        {"role": "user", "content": "other origins",
+         "metadata": {MEDIA_NAMESPACE: {"refs": [adopted, wrong_kind]}}},
+    ]
+    native.save("root", rows, {})
+    transcript = tmp_path / "root" / "transcript.jsonl"
+    original = transcript.read_bytes()
+    plan = {"session": {"orchestrator": "fixture-loop", "context": "fixture-context"},
+            "providers": [{"module": "fixture-provider"}]}
+    initialized = await _initialize_fixture_root(native, plan, restored=native.load("root")[0])
+    try:
+        actual = initialized.session
+        seal_session_hook_graph(actual)
+        restored = await actual.coordinator.get("context").get_messages()
+        assert restored == rows
+        request = ChatRequest(messages=[Message(**row) for row in restored])
+        provider = actual.coordinator.get("providers")["fixture-provider"]
+        host = actual.coordinator.get_capability("cli.session_media")
+        raw = next(raw for raw, wrapper in host.wrappers.values() if wrapper is provider)
+        observe = raw.observe
+
+        def check_delivery(projected):
+            # Inspect the private request at both callbacks, before its buffer is released.
+            uploads, others = projected.messages
+            assert uploads.metadata[MEDIA_NAMESPACE]["refs"] == refs
+            assert [base64.b64decode(block.source["data"], validate=True)
+                    if isinstance(block, ImageBlock) else block.text
+                    for block in uploads.content] == expected
+            assert len(others.content) == 3 and others.content[0].text == "other origins"
+            assert all("source owner does not permit" in item.text for item in others.content[1:])
+            observe(projected)
+
+        with patch.object(raw, "observe", side_effect=check_delivery):
+            await provider.request_budget(request)
+            await provider.complete(request)
+        counted, sent = raw.observed
+        assert counted[0] is sent[0] and sent[0] is not request
+        assert transcript.read_bytes() == original
     finally:
         await initialized.cleanup()
